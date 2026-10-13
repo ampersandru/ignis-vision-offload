@@ -85,9 +85,11 @@ All three are agentic coding except the Rome runs.
 | normalized + capitalized words folded, < 0.20 | 25/25 | 34/38 | 0.177 (fires) | 0.264 | 7 |
 
 The 25 and 38 count runs after merging identical runs: some arms share up to 26k
-characters per seed. The 7 qwen-code parts that fire ungated are numeric tables
+characters per seed. Of the 7 qwen-code parts that fire ungated, 5 are numeric tables
 (Fibonacci, hex/binary, primes, fp16 encodings), where the digits carry the
-information. Their raw ratios are 0.307-0.384; the gate keeps 5 of them out.
+information. Their raw ratios are 0.307-0.384, and the gate keeps them out. The other 2
+are templated text (an issue-status checklist, quoted log lines) at raw 0.201 and
+0.218, and they pass the gate.
 
 Tried and dropped:
 - **Novelty against the reasoning's own history** (the window compressed with the
@@ -147,10 +149,12 @@ The private corpora stay there.
 ## Finding
 
 Observed:
-- The normalized score separates loops from the reasoning of real coding sessions and
-  from the Rome runs with no loop, on data never used to tune it: 25 rewinds, none on
-  legitimate reasoning. It catches counting and template loops, which the raw score
-  could not separate from code.
+- On the tuning data, the normalized score with the gate fires falsely on 2 of the
+  5,655 scored qwen-code parts, and on no opencode part and no clean Rome run. It
+  catches counting and template loops, which the raw score could not separate from
+  code.
+- On the held-out run (new seeds, same prompt) it made 25 rewinds, none on legitimate
+  reasoning.
 - The rewind and nudge work as an exit: every cut landed before the acute onset, and
   9 of 16 runs escaped for good after the first nudge. Harmful runs went from about a
   quarter to 10%, though on different runs.
@@ -174,10 +178,12 @@ Inferred:
 
 - The guard is usable today opt-in (`loop_guard=rewind`) in the Playground, where
   prompts are small. The tag and strike-through make every rewind visible.
-- Two things should come before it is a default for agents:
-  - the continuation reusing the original prompt;
+- Before it is a default for agents:
+  - a run on an agentic prompt (50k+ tokens of context), which is unmeasured;
   - a decision on `usage.completion_tokens`: forwarded tokens, or what the model
     actually has in context.
+  The continuation reusing the original prompt lowers a rewind's cost but is not a
+  precondition (next point).
 - A rewind costs one re-prefill. A loop left alone can burn the rest of a 14,336-token
   budget. When the detection is right, the rewind is the cheaper of the two in wall
   time, even without reuse.
