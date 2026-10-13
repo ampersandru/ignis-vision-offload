@@ -37,6 +37,7 @@ pub mod idle;
 pub mod instruction;
 pub mod load;
 pub mod locate;
+pub mod loop_guard;
 pub mod loader;
 pub mod media;
 pub mod metrics;
@@ -165,6 +166,8 @@ pub struct Live {
     /// it (`--model-idle-unload`, spec model-switch/02); zero never unloads.
     /// Read by the clock at every tick, so a live change needs no restart.
     pub idle_unload: Duration,
+    /// The loop guard (`--model-loop-guard`, exploration): read per request.
+    pub loop_guard: loop_guard::LoopGuardParams,
 }
 
 impl Default for Live {
@@ -181,6 +184,7 @@ impl Default for Live {
             default_thinking_budget: None,
             instruction_policy: instruction::InstructionPolicy::default(),
             idle_unload: Duration::ZERO,
+            loop_guard: loop_guard::LoopGuardParams::default(),
         }
     }
 }
@@ -195,6 +199,7 @@ impl Live {
             default_thinking_budget: config.thinking_budget,
             instruction_policy: config.instruction_policy,
             idle_unload: Duration::from_secs(u64::from(config.idle_unload_secs)),
+            loop_guard: config.loop_guard,
         }
     }
 }
@@ -468,6 +473,12 @@ impl Server {
     /// Set the server-wide thinking budget (`--model-thinking-budget`).
     pub fn with_thinking_budget(self, budget: Option<u32>) -> Self {
         self.update_live(|live| live.default_thinking_budget = budget);
+        self
+    }
+
+    /// Set the loop guard (`--model-loop-guard`).
+    pub fn with_loop_guard(self, params: loop_guard::LoopGuardParams) -> Self {
+        self.update_live(|live| live.loop_guard = params);
         self
     }
 

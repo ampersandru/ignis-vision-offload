@@ -1963,9 +1963,24 @@ async fn chat_completions(
     // The model the request runs on: its engine's cancel guard and its
     // template's decoder must be the ones it was submitted to.
     let loaded = server.active();
-    let (request_id, mut stream) = match loaded.engine.submit_with_notes(input, class, notes).await {
+    let starts_in_reasoning = loaded.template.decoder_starts_in_reasoning(&thinking);
+    // The loop guard (exploration, `loop_guard.rs`) builds its continuations
+    // from the request as submitted.
+    let loop_guard = server.live().loop_guard;
+    let guarded = (loop_guard.mode != crate::loop_guard::LoopGuardMode::Off && starts_in_reasoning).then(|| input.clone());
+    let (request_id, stream) = match loaded.engine.submit_with_notes(input, class, notes).await {
         Ok(x) => x,
         Err(err) => return submit_error(&server, err),
+    };
+    let mut stream = match guarded {
+        Some(input) => crate::loop_guard::guard(
+            loop_guard,
+            crate::loop_guard::EngineOps::new(loaded.engine.clone(), class, loaded.template.clone()),
+            input,
+            request_id,
+            stream,
+        ),
+        None => stream,
     };
     // GitHub #81 / ADR 0012: the HTTP root span declared `request_id`
     // `Empty` at ingress (`RootSpanMaker`) since the scheduler had not
@@ -1975,7 +1990,6 @@ async fn chat_completions(
     let id = format!("chatcmpl-{request_id}");
     let created = now();
 
-    let starts_in_reasoning = loaded.template.decoder_starts_in_reasoning(&thinking);
     if req.stream {
         // The SSE response: the request's event stream wrapped in the
         // `chat.completion.chunk` shape (a `[DONE]` marker terminates).

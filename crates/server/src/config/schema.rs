@@ -316,6 +316,21 @@ config_group! {
         /// is forced; `off` = no budget. A request's own thinking_budget
         /// overrides it.
         thinking_budget: ThinkingBudget = Some(super::DEFAULT_THINKING_BUDGET), NO_RULE, ALL, [Visible, Patchable];
+        /// The loop guard (exploration): `off`; `log`, a loop in a chat
+        /// request's reasoning is logged; `rewind`, it is taken back and the
+        /// model nudged, then closed after `loop_guard_retries` nudges.
+        loop_guard: LoopGuard = crate::loop_guard::LoopGuardMode::Off, Validator::OneOf(crate::loop_guard::LoopGuardMode::NAMES), ALL,
+            [Visible, Patchable];
+        /// A window of reasoning whose zlib ratio is under this many
+        /// thousandths is a loop.
+        loop_guard_ratio: Permille = crate::loop_guard::DEFAULT_RATIO_PERMILLE, between(1, 999), ALL, [Visible, Patchable];
+        /// The loop guard's window, in characters of reasoning.
+        loop_guard_window: Chars = crate::loop_guard::DEFAULT_WINDOW_CHARS, between(500, 100_000), ALL, [Visible, Patchable];
+        /// How far before a loop's window a rewind starts looking for where
+        /// the loop began, in characters.
+        loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
+        /// The nudges a looping reasoning gets before the guard closes it.
+        loop_guard_retries: Times = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];
         /// The text rotary table: `none` (the linear table) or
         /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
         /// trained 262,144-position envelope — what a context past it needs.

@@ -9,6 +9,7 @@ import { UnknownCalls } from "../tools/UnknownCalls.tsx";
 import { WebStrip } from "../tools/web/WebStrip.tsx";
 import { IconFork, IconPencil, IconRegenerate } from "../ui/icons.tsx";
 import { Markdown } from "../ui/Markdown.tsx";
+import { ReasoningText } from "../ui/ReasoningText.tsx";
 import { isAtBottom } from "../ui/scroll.ts";
 import { MessageEditor } from "./MessageEditor.tsx";
 import { ActionButton, ActionRow, EditedMark, RERUN_BLOCKED, sameTurnProps, type TurnActions } from "./TurnActions.tsx";
@@ -51,7 +52,7 @@ function ReplyTurn(props: {
             ref={reasoningView}
             onScroll={(e) => (followReasoning.current = isAtBottom(e.currentTarget))}
             className="mt-2 max-h-80 overflow-y-auto border-l-2 border-line pl-3 whitespace-pre-wrap break-words font-sans text-[13px] leading-normal text-ash">
-            {m.reasoning}
+            <ReasoningText text={m.reasoning} />
           </pre>
         </details>
       )}

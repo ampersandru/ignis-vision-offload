@@ -181,6 +181,36 @@ count_kind!(
     /// A count of mebibytes.
     Mib: u64, "MiB", "MiB count"
 );
+count_kind!(
+    /// A count of characters.
+    Chars: u32, "chars", "character count"
+);
+count_kind!(
+    /// Thousandths of one.
+    Permille: u32, "permille", "count of thousandths"
+);
+count_kind!(
+    /// A count of times.
+    Times: u32, "times", "count"
+);
+
+/// The loop guard's mode (`crate::loop_guard`): `off`, `log` or `rewind`.
+pub struct LoopGuard;
+
+impl FieldKind for LoopGuard {
+    type Value = crate::loop_guard::LoopGuardMode;
+    const TAG: &'static str = "loop guard mode";
+
+    fn parse(raw: &str) -> Result<crate::loop_guard::LoopGuardMode, String> {
+        crate::loop_guard::LoopGuardMode::parse(&raw.to_ascii_lowercase()).ok_or_else(|| {
+            format!("must be one of {}, got `{raw}`", crate::loop_guard::LoopGuardMode::NAMES.join(", "))
+        })
+    }
+
+    fn render(value: &crate::loop_guard::LoopGuardMode) -> Value {
+        Value::String(value.as_str().to_owned())
+    }
+}
 
 /// A byte count with the size suffixes an operator actually types: a bare
 /// count, or one followed by `K`/`M`/`G` (case-insensitive, binary — `4G`

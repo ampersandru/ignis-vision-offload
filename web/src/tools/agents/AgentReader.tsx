@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { BudgetReached } from "../../metrics/BudgetReached.tsx";
 import { Markdown } from "../../ui/Markdown.tsx";
+import { ReasoningText } from "../../ui/ReasoningText.tsx";
 import { isAtBottom } from "../../ui/scroll.ts";
 import { LocalStrip } from "../local/LocalStrip.tsx";
 import { UnknownCalls } from "../UnknownCalls.tsx";
@@ -89,7 +90,7 @@ export function AgentReader(props: { run: AgentRun; markdown: boolean; figures: 
               {forcedAt !== undefined && <BudgetReached at={forcedAt} />}
             </summary>
             <pre className="mt-2 border-l-2 border-line pl-3 whitespace-pre-wrap break-words font-sans text-[13px] leading-normal text-ash">
-              {run.reasoning}
+              <ReasoningText text={run.reasoning} />
             </pre>
           </details>
         )}
