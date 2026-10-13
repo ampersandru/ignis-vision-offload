@@ -145,9 +145,10 @@ pub const TAG_PREFIX: &str = "[LOOP DETECTED, REWINDING ";
 /// The tag the client reads in the reasoning where the guard took `tokens`
 /// tokens back: the `chars` characters (Unicode scalar values) of reasoning
 /// before it are no longer the model's context. It opens with a line break so
-/// that it never joins a character the last token left incomplete.
+/// that it never joins a character the last token left incomplete; what
+/// follows it (a nudge, the close) opens with its own.
 pub fn tag(tokens: usize, chars: usize) -> String {
-    format!("\n\n{TAG_PREFIX}{tokens} TOKENS / {chars} CHARS]\n\n")
+    format!("\n\n{TAG_PREFIX}{tokens} TOKENS / {chars} CHARS]")
 }
 
 /// The zlib ratio of `text`: compressed bytes over UTF-8 bytes. Lower is more
@@ -640,7 +641,7 @@ mod tests {
 
     #[test]
     fn the_tag_says_what_was_taken_back() {
-        assert_eq!(tag(812, 3104), "\n\n[LOOP DETECTED, REWINDING 812 TOKENS / 3104 CHARS]\n\n");
+        assert_eq!(tag(812, 3104), "\n\n[LOOP DETECTED, REWINDING 812 TOKENS / 3104 CHARS]");
         assert!(tag(1, 2).contains(TAG_PREFIX));
     }
 
@@ -782,7 +783,7 @@ mod tests {
 
         // The client: everything it was sent, the tag, the nudge, then the continuation.
         let (sent, rest) = text.split_once("\n\n[LOOP DETECTED, REWINDING ").expect("the tag");
-        let (counts, rest) = rest.split_once("]\n\n").expect("the tag's end");
+        let (counts, rest) = rest.split_once(']').expect("the tag's end");
         assert!(reasoning.starts_with(sent));
         let struck = sent.chars().count() - kept.chars().count();
         assert_eq!(counts, format!("{} TOKENS / {struck} CHARS", struck), "one token per char here");
