@@ -974,6 +974,7 @@ fn derive(
             mode: s.model.loop_guard,
             ratio_permille: s.model.loop_guard_ratio,
             window_chars: s.model.loop_guard_window,
+            normalize: s.model.loop_guard_normalize,
             margin_chars: s.model.loop_guard_margin,
             retries: s.model.loop_guard_retries,
         },

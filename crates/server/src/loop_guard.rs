@@ -8,11 +8,13 @@
 //! ninfer alike, and only the thinking budget's close ends them.
 //!
 //! **Detection.** Every [`CHECK_EVERY_CHARS`] characters of new reasoning, the
-//! zlib ratio of its last `window` characters; under `ratio` it is a loop.
-//! Measured offline on 2026-10-13 (`.scratch/loops/NOTES.md`): no real agent
-//! text of 838 (code included) under 0.12 at a 3,000-character window, and
-//! every verbatim and single-token loop of the 2026-10-12 runs over it.
-//! Counting loops (~0.21, the band of test code) are not seen.
+//! zlib ratio of the last `window` characters of the reasoning as
+//! [`Normalized`] scores it — code taken out, every run of digits read as one
+//! `0` — under `ratio` is a loop. Measured offline on 2026-10-13 with this
+//! detector (`.scratch/loop-rewind/NOTES.md`): no real reasoning part of
+//! 1,420 under 0.27 at a 1,000-character window, and 12 of the 17 template
+//! and counting loops the raw text at 3,000 and 0.12 missed under 0.20. The
+//! window found is mapped back to the raw reasoning, where the cut is made.
 //!
 //! **Rewind.** The engine request is cancelled and a **continuation**
 //! submitted: the same input, its prompt extended by the generated tokens
@@ -77,10 +79,13 @@ impl LoopGuardMode {
     }
 }
 
-/// `--model-loop-guard-ratio`'s default, in thousandths: 0.12.
-pub const DEFAULT_RATIO_PERMILLE: u32 = 120;
-/// `--model-loop-guard-window`'s default, in characters of reasoning.
-pub const DEFAULT_WINDOW_CHARS: u32 = 3000;
+/// `--model-loop-guard-ratio`'s default, in thousandths: 0.20.
+pub const DEFAULT_RATIO_PERMILLE: u32 = 200;
+/// `--model-loop-guard-window`'s default, in characters of scored reasoning.
+pub const DEFAULT_WINDOW_CHARS: u32 = 1000;
+/// `--model-loop-guard-normalize`'s default: the reasoning is scored
+/// [`Normalized`].
+pub const DEFAULT_NORMALIZE: bool = true;
 /// `--model-loop-guard-margin`'s default, in characters before the window.
 pub const DEFAULT_MARGIN_CHARS: u32 = 1000;
 /// `--model-loop-guard-retries`'s default: nudges before the close.
@@ -92,8 +97,10 @@ pub struct LoopGuardParams {
     pub mode: LoopGuardMode,
     /// A window whose zlib ratio is under this many thousandths is a loop.
     pub ratio_permille: u32,
-    /// The window, in characters of reasoning.
+    /// The window, in characters of scored reasoning.
     pub window_chars: u32,
+    /// Score the reasoning [`Normalized`]; off, as written.
+    pub normalize: bool,
     /// How far before the flagged window a rewind starts looking for the
     /// loop's start, in characters.
     pub margin_chars: u32,
@@ -107,6 +114,7 @@ impl Default for LoopGuardParams {
             mode: LoopGuardMode::Off,
             ratio_permille: DEFAULT_RATIO_PERMILLE,
             window_chars: DEFAULT_WINDOW_CHARS,
+            normalize: DEFAULT_NORMALIZE,
             margin_chars: DEFAULT_MARGIN_CHARS,
             retries: DEFAULT_RETRIES,
         }
@@ -165,13 +173,171 @@ fn ratio_of(chars: &[char]) -> f64 {
     compress_ratio(&chars.iter().collect::<String>())
 }
 
+/// The reasoning as the detector scores it, built one character at a time
+/// as it streams. With `normalize` on, fenced code blocks (one still open
+/// too: code being written never counts) and inline code are taken out and
+/// every run of ASCII digits reads as one `0`: a template loop whose slots
+/// are numbers ("the 321 AD, the 322 AD") repeats verbatim here, while code,
+/// which repeats by nature, is not scored. Off, it is the reasoning as
+/// written.
+///
+/// A character is kept only once it is decided — a backtick or two that may
+/// still open a block, an inline span that may still close on its line,
+/// wait — and keeps the offset of the raw character it stands for (a run of
+/// digits, its first), so a window found here is cut on the raw reasoning.
+/// The steps are those of `.scratch/loop-rewind/check.py` in its order:
+/// blocks, then inline code on what is left, then digits.
+pub struct Normalized {
+    steps: Vec<Box<dyn Step + Send>>,
+    text: Vec<char>,
+    raw_at: Vec<usize>,
+    raw_len: usize,
+    /// What one step hands the next.
+    pass: Vec<(char, usize)>,
+    spare: Vec<(char, usize)>,
+}
+
+impl Normalized {
+    /// Off, every character is kept as written.
+    pub fn new(normalize: bool) -> Self {
+        let steps: Vec<Box<dyn Step + Send>> = if normalize {
+            vec![Box::new(Fences::default()), Box::new(InlineCode::default()), Box::new(Digits::default())]
+        } else {
+            Vec::new()
+        };
+        Self { steps, text: Vec::new(), raw_at: Vec::new(), raw_len: 0, pass: Vec::new(), spare: Vec::new() }
+    }
+
+    /// The next character of the raw reasoning.
+    pub fn push(&mut self, c: char) {
+        self.pass.clear();
+        self.pass.push((c, self.raw_len));
+        self.raw_len += 1;
+        for step in &mut self.steps {
+            self.spare.clear();
+            for &(c, raw) in &self.pass {
+                step.push(c, raw, &mut self.spare);
+            }
+            std::mem::swap(&mut self.pass, &mut self.spare);
+        }
+        for &(c, raw) in &self.pass {
+            self.text.push(c);
+            self.raw_at.push(raw);
+        }
+    }
+
+    /// The scored text so far.
+    pub fn text(&self) -> &[char] {
+        &self.text
+    }
+
+    /// The raw character the scored character `i` stands for.
+    pub fn raw_at(&self, i: usize) -> usize {
+        self.raw_at[i]
+    }
+
+    /// The raw characters pushed so far.
+    pub fn raw_len(&self) -> usize {
+        self.raw_len
+    }
+}
+
+/// One step of [`Normalized`]: characters in, each with the raw offset it
+/// stands for; out, what the next step sees. Another fold is one more step.
+trait Step {
+    fn push(&mut self, c: char, raw: usize, out: &mut Vec<(char, usize)>);
+}
+
+/// Fenced code blocks out, the fences with them: three backticks in a row
+/// open a block, the next three close it (```` ```.*?``` ````). One or two
+/// backticks outside a block are held until the next character says whether
+/// they open one.
+#[derive(Default)]
+struct Fences {
+    open: bool,
+    /// The raw offsets of the backticks in a row just seen.
+    ticks: Vec<usize>,
+}
+
+impl Step for Fences {
+    fn push(&mut self, c: char, raw: usize, out: &mut Vec<(char, usize)>) {
+        if c == '`' {
+            self.ticks.push(raw);
+            if self.ticks.len() == 3 {
+                self.open = !self.open;
+                self.ticks.clear();
+            }
+            return;
+        }
+        if !self.open {
+            out.extend(self.ticks.iter().map(|&at| ('`', at)));
+            out.push((c, raw));
+        }
+        self.ticks.clear();
+    }
+}
+
+/// Inline code out: a backtick and what follows it on its line, up to and
+/// with the next backtick (`` `[^`\n]*` ``). A line break before that one
+/// makes the span text.
+#[derive(Default)]
+struct InlineCode {
+    open: bool,
+    span: Vec<(char, usize)>,
+}
+
+impl Step for InlineCode {
+    fn push(&mut self, c: char, raw: usize, out: &mut Vec<(char, usize)>) {
+        if !self.open {
+            if c == '`' {
+                self.open = true;
+                self.span.push((c, raw));
+            } else {
+                out.push((c, raw));
+            }
+            return;
+        }
+        match c {
+            '`' => {
+                self.open = false;
+                self.span.clear();
+            }
+            '\n' => {
+                self.open = false;
+                out.append(&mut self.span);
+                out.push((c, raw));
+            }
+            _ => self.span.push((c, raw)),
+        }
+    }
+}
+
+/// Every run of ASCII digits as one `0`.
+#[derive(Default)]
+struct Digits {
+    run: bool,
+}
+
+impl Step for Digits {
+    fn push(&mut self, c: char, raw: usize, out: &mut Vec<(char, usize)>) {
+        if c.is_ascii_digit() {
+            if !self.run {
+                out.push(('0', raw));
+            }
+            self.run = true;
+        } else {
+            self.run = false;
+            out.push((c, raw));
+        }
+    }
+}
+
 /// Where to take the reasoning back to, for a loop found in the window that
-/// ends at `at`: `window + margin` characters before `at`, walked back over
-/// the loop's leading edge while it stays repetitive, then to the line break
-/// before it. Never before `floor` (the end of the last nudge).
-pub fn cut_point(text: &[char], at: usize, floor: usize, params: &LoopGuardParams) -> usize {
-    let back = params.window_chars as usize + params.margin_chars as usize;
-    let mut cut = at.saturating_sub(back).max(floor);
+/// starts at raw character `start`: `margin` characters before it, walked
+/// back over the loop's leading edge while it stays repetitive, then to the
+/// line break before it. Never before `floor` (the end of the last nudge).
+pub fn cut_point(text: &[char], start: usize, floor: usize, params: &LoopGuardParams) -> usize {
+    let mut cut = start.saturating_sub(params.margin_chars as usize).max(floor);
     while cut >= floor + ONSET_STRIDE_CHARS
         && cut - ONSET_STRIDE_CHARS + ONSET_WINDOW_CHARS <= text.len()
         && ratio_of(&text[cut - ONSET_STRIDE_CHARS..cut - ONSET_STRIDE_CHARS + ONSET_WINDOW_CHARS]) < ONSET_RATIO
@@ -185,56 +351,82 @@ pub fn cut_point(text: &[char], at: usize, floor: usize, params: &LoopGuardParam
     }
 }
 
+/// A scored window of reasoning.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Score {
+    /// Its zlib ratio ([`compress_ratio`]).
+    pub ratio: f64,
+    /// The raw reasoning character it starts at.
+    pub start: usize,
+}
+
+impl Score {
+    /// Under `ratio`: a loop.
+    pub fn is_loop(&self, params: &LoopGuardParams) -> bool {
+        self.ratio * 1000.0 < f64::from(params.ratio_permille)
+    }
+}
+
 /// When to score the window, and from where a loop may be found.
 #[derive(Debug, Clone, Copy)]
-struct Watch {
-    /// No window that starts before this character is scored: the end of
-    /// the last nudge, or of the last logged loop.
+pub struct Watch {
+    /// No window that starts before this raw character is scored: the end
+    /// of the last nudge, or of the last logged loop.
     floor: usize,
-    /// The reasoning length the next score waits for.
+    /// The raw reasoning length the next score waits for.
     next_check: usize,
 }
 
 impl Watch {
     /// A watch whose first score is the first full window after `floor`.
-    fn from(floor: usize, params: &LoopGuardParams) -> Self {
+    pub fn from(floor: usize, params: &LoopGuardParams) -> Self {
         Self { floor, next_check: floor + params.window_chars as usize }
     }
 
-    /// The window's ratio when `text` has grown enough to score it again and
-    /// it is a loop.
-    fn check(&mut self, text: &[char], params: &LoopGuardParams) -> Option<f64> {
-        if text.len() < self.next_check {
+    /// The window's score when the reasoning has grown enough to score it
+    /// again: the first time a whole window of scored text lies after the
+    /// floor, then every [`CHECK_EVERY_CHARS`] raw characters.
+    pub fn score(&mut self, scored: &Normalized, params: &LoopGuardParams) -> Option<Score> {
+        if scored.raw_len() < self.next_check {
             return None;
         }
-        self.next_check = text.len() + CHECK_EVERY_CHARS;
-        let window = params.window_chars as usize;
-        if text.len() < self.floor + window {
+        let start = scored.text().len().checked_sub(params.window_chars as usize)?;
+        if scored.raw_at(start) < self.floor {
             return None;
         }
-        let ratio = ratio_of(&text[text.len() - window..]);
-        (ratio * 1000.0 < f64::from(params.ratio_permille)).then_some(ratio)
+        self.next_check = scored.raw_len() + CHECK_EVERY_CHARS;
+        Some(Score { ratio: ratio_of(&scored.text()[start..]), start: scored.raw_at(start) })
+    }
+
+    /// [`Watch::score`], when it is a loop.
+    fn check(&mut self, scored: &Normalized, params: &LoopGuardParams) -> Option<Score> {
+        self.score(scored, params).filter(|score| score.is_loop(params))
     }
 }
 
 /// The generation as the model sees it: its tokens, the reasoning they
-/// decoded to, and the reasoning's length after each token.
+/// decoded to, the reasoning's length after each token, and the reasoning
+/// as it is scored.
 struct View {
     decoder: OutputDecoder,
     tokens: Vec<TokenId>,
     text: Vec<char>,
     chars_after: Vec<usize>,
+    scored: Normalized,
 }
 
 impl View {
-    fn new(decoder: OutputDecoder) -> Self {
-        Self { decoder, tokens: Vec::new(), text: Vec::new(), chars_after: Vec::new() }
+    fn new(decoder: OutputDecoder, normalize: bool) -> Self {
+        Self { decoder, tokens: Vec::new(), text: Vec::new(), chars_after: Vec::new(), scored: Normalized::new(normalize) }
     }
 
     fn push(&mut self, token: TokenId) {
         for delta in self.decoder.push(&[token]) {
             if delta.channel == Channel::Reasoning {
-                self.text.extend(delta.text.chars());
+                for c in delta.text.chars() {
+                    self.text.push(c);
+                    self.scored.push(c);
+                }
             }
         }
         self.tokens.push(token);
@@ -364,23 +556,25 @@ impl<O: GuardOps> Guard<O> {
         if self.closed || !self.view.in_reasoning() {
             return None;
         }
-        let ratio = self.watch.check(&self.view.text, &self.params)?;
+        let score = self.watch.check(&self.view.scored, &self.params)?;
         let at = self.view.text.len();
         let rewindable = self.params.mode == LoopGuardMode::Rewind && self.input.multimodal.is_none();
         if !rewindable {
             tracing::info!(
                 name: "ignis.loop_guard.detected",
-                request = self.original, engine_request = self.current, at_chars = at, ratio = ratio,
+                request = self.original, engine_request = self.current, at_chars = at, ratio = score.ratio,
+                window_start_chars = score.start,
                 "loop in the reasoning (log only)"
             );
             self.watch = Watch::from(at, &self.params);
             return None;
         }
-        self.rewind(at, ratio).await
+        self.rewind(at, score).await
     }
 
-    async fn rewind(&mut self, at: usize, ratio: f64) -> Option<Continuation> {
-        let cut = cut_point(&self.view.text, at, self.watch.floor, &self.params);
+    async fn rewind(&mut self, at: usize, score: Score) -> Option<Continuation> {
+        let ratio = score.ratio;
+        let cut = cut_point(&self.view.text, score.start, self.watch.floor, &self.params);
         let kept = self.view.tokens_before(cut);
         // The kept tokens' whole text: a decoder holds back a trailing line
         // break until the text after it arrives, so their own count can be
@@ -430,14 +624,14 @@ impl<O: GuardOps> Guard<O> {
         tracing::info!(
             name: "ignis.loop_guard.rewound",
             request = self.original, cancelled = self.current, continuation = request,
-            at_chars = at, ratio = ratio, cut_chars = kept_chars,
+            at_chars = at, ratio = ratio, window_start_chars = score.start, cut_chars = kept_chars,
             rewound_tokens = self.view.tokens.len() - kept, rewound_chars = at - kept_chars,
             attempt = self.rewinds + 1, closed = close,
             "loop in the reasoning: rewound"
         );
 
         // The model's view: the kept tokens, then the nudge.
-        let mut view = View::new(self.ops.decoder());
+        let mut view = View::new(self.ops.decoder(), self.params.normalize);
         for &token in self.view.tokens[..kept].iter().chain(&nudge) {
             view.push(token);
         }
@@ -465,7 +659,7 @@ async fn run<O: GuardOps>(
     mut stream: EventStream,
     tx: UnboundedSender<SchedEvent>,
 ) {
-    let view = View::new(ops.decoder());
+    let view = View::new(ops.decoder(), params.normalize);
     let mut guard = Guard {
         params,
         ops,
@@ -588,8 +782,63 @@ mod tests {
         "the \"Dark Ages\" (the \"Dark Ages\", the \"Dark Ages\"), ".chars().cycle().take(chars).collect()
     }
 
+    /// A template loop whose slots are numbers, the shape of the loops the
+    /// raw score missed ("the 1527 sack, the 1348 plague").
+    fn counting(chars: usize) -> String {
+        let mut out = String::new();
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        while out.chars().count() < chars {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            out.push_str(&format!("the {} AD (the {}th year, page {}), ", 300 + state % 1700, state / 7 % 90 + 10, state / 11 % 9000));
+        }
+        out.chars().take(chars).collect()
+    }
+
+    /// A code block's worth of lines that repeat, as test code does.
+    fn code(chars: usize) -> String {
+        "    assert_eq!(watch.check(&scored, &p), None);\n".chars().cycle().take(chars).collect()
+    }
+
     fn params(mode: LoopGuardMode) -> LoopGuardParams {
         LoopGuardParams { mode, ..LoopGuardParams::default() }
+    }
+
+    fn raw(mode: LoopGuardMode) -> LoopGuardParams {
+        LoopGuardParams { normalize: false, ..params(mode) }
+    }
+
+    /// `text` as the detector scores it.
+    fn normalized(text: &str, normalize: bool) -> Normalized {
+        let mut scored = Normalized::new(normalize);
+        text.chars().for_each(|c| scored.push(c));
+        scored
+    }
+
+    fn scored_text(text: &str) -> String {
+        normalized(text, true).text().iter().collect()
+    }
+
+    /// Push `text` into `scored` up to raw character `n`.
+    fn grow(scored: &mut Normalized, text: &[char], n: usize) {
+        while scored.raw_len() < n {
+            scored.push(text[scored.raw_len()]);
+        }
+    }
+
+    /// The first loop the guard finds in `text`, looking after every
+    /// character: the raw length it was found at, and its score.
+    fn first_loop(text: &str, floor: usize, p: &LoopGuardParams) -> Option<(usize, Score)> {
+        let mut scored = Normalized::new(p.normalize);
+        let mut watch = Watch::from(floor, p);
+        for c in text.chars() {
+            scored.push(c);
+            if let Some(score) = watch.check(&scored, p) {
+                return Some((scored.raw_len(), score));
+            }
+        }
+        None
     }
 
     #[test]
@@ -597,38 +846,75 @@ mod tests {
         let text = prose(3000);
         assert!(compress_ratio(&text) > 0.2, "prose scored {}", compress_ratio(&text));
         assert!(compress_ratio(&looping(3000)) < 0.05, "loop scored {}", compress_ratio(&looping(3000)));
+        for p in [params(LoopGuardMode::Log), raw(LoopGuardMode::Log)] {
+            assert_eq!(first_loop(&prose(8000), 0, &p), None, "prose flagged with {p:?}");
+        }
     }
 
     #[test]
     fn the_window_is_scored_only_once_it_is_full_and_every_step_after() {
         let p = params(LoopGuardMode::Log);
-        let text: Vec<char> = looping(4000).chars().collect();
+        let text: Vec<char> = looping(2000).chars().collect();
+        let mut scored = Normalized::new(p.normalize);
         let mut watch = Watch::from(0, &p);
-        assert_eq!(watch.check(&text[..2999], &p), None, "under one window");
-        assert!(watch.check(&text[..3000], &p).is_some());
-        assert_eq!(watch.check(&text[..3100], &p), None, "within the step");
-        assert!(watch.check(&text[..3250], &p).is_some());
+        grow(&mut scored, &text, 999);
+        assert_eq!(watch.check(&scored, &p), None, "under one window");
+        grow(&mut scored, &text, 1000);
+        assert!(watch.check(&scored, &p).is_some());
+        grow(&mut scored, &text, 1100);
+        assert_eq!(watch.check(&scored, &p), None, "within the step");
+        grow(&mut scored, &text, 1250);
+        assert!(watch.check(&scored, &p).is_some());
+    }
+
+    /// Code is not scored text: the first score waits for a whole window
+    /// of what is, however many raw characters that takes.
+    #[test]
+    fn the_first_score_waits_for_a_whole_window_of_scored_text() {
+        let p = params(LoopGuardMode::Log);
+        let block = format!("```rust\n{}```", code(2000));
+        let text = block.clone() + &looping(2000);
+        let (at, score) = first_loop(&text, 0, &p).expect("the loop after the block");
+        let block_chars = block.chars().count();
+        assert_eq!(at, block_chars + 1000, "scored as soon as 1,000 characters after the block are");
+        assert_eq!(score.start, block_chars, "the window starts where the block ends");
     }
 
     #[test]
     fn nothing_before_the_floor_is_scored() {
         let p = params(LoopGuardMode::Log);
         let text: Vec<char> = (prose(1000) + &looping(3000)).chars().collect();
+        let mut scored = Normalized::new(p.normalize);
         let mut watch = Watch::from(1000, &p);
-        assert_eq!(watch.check(&text[..3900], &p), None, "the window would start before the floor");
-        assert!(watch.check(&text[..4000], &p).is_some());
+        grow(&mut scored, &text, 1999);
+        assert_eq!(watch.check(&scored, &p), None, "the window would start before the floor");
+        grow(&mut scored, &text, 2000);
+        assert_eq!(watch.check(&scored, &p).map(|score| score.start), Some(1000));
+    }
+
+    /// The floor is raw: a window of scored text after it is a window
+    /// whose first character comes after it, not `window` raw characters.
+    #[test]
+    fn a_window_reaching_back_past_the_floor_through_code_is_not_scored() {
+        let p = params(LoopGuardMode::Log);
+        let after = format!("```\n{}```", code(500)) + &looping(3000);
+        let text = prose(1000) + &after;
+        let (at, score) = first_loop(&text, 1000, &p).expect("found after the floor");
+        let block_chars = after.chars().count() - 3000;
+        assert_eq!(score.start, 1000 + block_chars);
+        assert_eq!(at, 1000 + block_chars + 1000);
     }
 
     #[test]
     fn the_cut_lands_before_the_loop_on_a_line_break() {
         let p = params(LoopGuardMode::Rewind);
         let head = prose(6000);
-        let text: Vec<char> = (head.clone() + &looping(5000)).chars().collect();
-        let mut watch = Watch::from(0, &p);
-        let at = (3000..=text.len()).find(|&n| watch.check(&text[..n], &p).is_some()).expect("found");
-        let cut = cut_point(&text, at, 0, &p);
+        let text = head.clone() + &looping(5000);
+        let (_, score) = first_loop(&text, 0, &p).expect("found");
+        let text: Vec<char> = text.chars().collect();
+        let cut = cut_point(&text, score.start, 0, &p);
         assert!(cut <= 6000, "cut {cut} is inside the loop (it starts at 6000)");
-        assert!(cut >= 6000 - 4500, "cut {cut} took back far more than the loop");
+        assert!(cut >= 6000 - 2500, "cut {cut} took back far more than the loop");
         assert_eq!(text[cut - 1], '\n', "not on a line break");
     }
 
@@ -636,7 +922,188 @@ mod tests {
     fn the_cut_never_crosses_the_floor() {
         let p = params(LoopGuardMode::Rewind);
         let text: Vec<char> = looping(9000).chars().collect();
-        assert_eq!(cut_point(&text, 9000, 5000, &p), 5000);
+        assert_eq!(cut_point(&text, 8000, 5000, &p), 5000);
+    }
+
+    /// A template loop over numbers compresses like prose as written, and
+    /// repeats verbatim once its digits fold.
+    #[test]
+    fn a_counting_loop_is_a_loop_only_normalized() {
+        let loop_text = counting(1000);
+        assert!(compress_ratio(&loop_text) > 0.215, "as written it must look like prose: {}", compress_ratio(&loop_text));
+        let text = prose(3000) + &counting(4000);
+        let (at, _) = first_loop(&text, 0, &params(LoopGuardMode::Log)).expect("normalized, a loop");
+        assert!(at > 3000, "flagged at {at}, before the loop");
+        assert_eq!(first_loop(&text, 0, &raw(LoopGuardMode::Log)), None, "as written, not one");
+    }
+
+    #[test]
+    fn a_verbatim_loop_is_a_loop_either_way() {
+        let text = prose(3000) + &looping(3000);
+        for p in [params(LoopGuardMode::Log), raw(LoopGuardMode::Log)] {
+            let (at, _) = first_loop(&text, 0, &p).expect("a loop");
+            assert!(at > 3000, "flagged at {at}, before the loop, with {p:?}");
+        }
+    }
+
+    #[test]
+    fn code_in_a_block_is_never_scored_closed_or_still_open() {
+        let words = prose(3000);
+        let (before, after) = words.split_at(1500);
+        let closed = format!("{before}\n```rust\n{}```\n{after}", code(6000));
+        let open = format!("{before}\n```python\n{}", code(6000));
+        for text in [&closed, &open] {
+            assert!(first_loop(text, 0, &raw(LoopGuardMode::Log)).is_some(), "the code alone would flag");
+            assert_eq!(first_loop(text, 0, &params(LoopGuardMode::Log)), None, "code was scored");
+        }
+        assert_eq!(scored_text(&closed), scored_text(&format!("{before}\n\n{after}")));
+        assert_eq!(scored_text(&open), scored_text(&format!("{before}\n")), "an open block is not scored as it is written");
+    }
+
+    #[test]
+    fn fences_follow_the_first_three_backticks_in_a_row() {
+        assert_eq!(scored_text("a```code```b"), "ab");
+        assert_eq!(scored_text("a````x```b"), "ab", "the fourth backtick is inside the block");
+        assert_eq!(scored_text("a```x`````b c"), "ab c", "the two backticks after the close are an empty inline span");
+        assert_eq!(scored_text("a```b```c```d"), "ac", "the third fence opens a block still open");
+        assert_eq!(scored_text("x ``"), "x ", "two backticks wait for a third");
+    }
+
+    #[test]
+    fn inline_code_is_taken_out_on_its_line() {
+        assert_eq!(scored_text("a `x` b `` c `d\ne` f"), "a  b  c `d\ne", "the span still open waits");
+        assert_eq!(scored_text("a `x` b `` c `d\ne` f\n"), "a  b  c `d\ne` f\n", "a line break makes it text");
+        assert_eq!(scored_text("a `x ```code``` y` b"), "a  b", "a block is out first, then the span around it");
+    }
+
+    #[test]
+    fn every_run_of_digits_reads_as_one_zero() {
+        assert_eq!(scored_text("the 321 AD, the 322 AD; 1.5e10"), "the 0 AD, the 0 AD; 0.0e0");
+        assert_eq!(scored_text("12`x`34 5"), "0 0", "a span taken out joins the run");
+        assert_eq!(scored_text("١٢ x"), "١٢ x", "ASCII digits only");
+    }
+
+    #[test]
+    fn off_scores_the_reasoning_as_written() {
+        let text = "a `x` 12 ```c```\n";
+        let scored = normalized(text, false);
+        assert_eq!(scored.text().iter().collect::<String>(), text);
+        assert!((0..scored.text().len()).all(|i| scored.raw_at(i) == i));
+    }
+
+    /// Each scored character maps to the raw character it stands for, in
+    /// Unicode scalars (the decoder's unit): itself, or a run's first digit.
+    #[test]
+    fn each_scored_character_maps_to_its_raw_character() {
+        let text = "è1é23 —`x` ```c``` 🦀4\n";
+        let raw_chars: Vec<char> = text.chars().collect();
+        let scored = normalized(text, true);
+        assert_eq!(scored.text().iter().collect::<String>(), "è0é0 —  🦀0\n");
+        assert_eq!(scored.raw_len(), raw_chars.len());
+        let raw_at: Vec<usize> = (0..scored.text().len()).map(|i| scored.raw_at(i)).collect();
+        assert_eq!(raw_at, [0, 1, 2, 3, 5, 6, 10, 18, 19, 20, 21]);
+        for (i, &c) in scored.text().iter().enumerate() {
+            let at = scored.raw_at(i);
+            if c == '0' {
+                assert!(raw_chars[at].is_ascii_digit() && (at == 0 || !raw_chars[at - 1].is_ascii_digit()), "{i}");
+            } else {
+                assert_eq!(raw_chars[at], c, "{i}");
+            }
+        }
+    }
+
+    /// What the scored text of `raw` must be, worked out on the whole text
+    /// at once the way `.scratch/loop-rewind/check.py`'s expressions do it,
+    /// less what its end leaves undecided: blocks out (one never closed, to
+    /// the end; one or two backticks at the very end wait), then on each
+    /// line backticks paired in order with what is between them (an odd one
+    /// on the last line waits with the rest of it), then digit runs.
+    fn reference(raw: &str) -> String {
+        let chars: Vec<char> = raw.chars().collect();
+        let fence = |i: usize| chars.len() >= i + 3 && chars[i..i + 3] == ['`'; 3];
+        let mut blocks_out = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if fence(i) {
+                i = (i + 3..chars.len()).find(|&j| fence(j)).map_or(chars.len(), |j| j + 3);
+            } else {
+                blocks_out.push(chars[i]);
+                i += 1;
+            }
+        }
+        if raw.ends_with('`') {
+            while blocks_out.last() == Some(&'`') {
+                blocks_out.pop();
+            }
+        }
+        let text: String = blocks_out.into_iter().collect();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let mut spans_out = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let ticks: Vec<usize> = line.char_indices().filter(|&(_, c)| c == '`').map(|(i, _)| i).collect();
+            let mut kept = String::new();
+            let mut from = 0;
+            for pair in ticks.chunks(2) {
+                match *pair {
+                    [open, close] => {
+                        kept.push_str(&line[from..open]);
+                        from = close + 1;
+                    }
+                    [odd] if n + 1 == lines.len() => {
+                        kept.push_str(&line[from..odd]);
+                        from = line.len();
+                    }
+                    _ => {}
+                }
+            }
+            kept.push_str(&line[from..]);
+            spans_out.push(kept);
+        }
+        let mut out = String::new();
+        let mut run = false;
+        for c in spans_out.join("\n").chars() {
+            if c.is_ascii_digit() {
+                if !run {
+                    out.push('0');
+                }
+                run = true;
+            } else {
+                run = false;
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Every prefix of every text, so every way a token can end inside a
+    /// fence or a span: the scored text as it streams is the reference's.
+    #[test]
+    fn the_streamed_text_is_the_whole_texts_at_every_prefix() {
+        let mut texts = vec![
+            "a```rust\nfn f() {}\n```b `x` c 12 `d\ne`` ```".to_owned(),
+            "x``y```z````w`````v``````u\n`1`2`3`\n``\n".to_owned(),
+        ];
+        let alphabet = ['`', '`', '`', 'a', '1', '2', '\n', 'é', ' ', '🦀'];
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..300 {
+            let mut text = String::new();
+            for _ in 0..40 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                text.push(alphabet[(state % alphabet.len() as u64) as usize]);
+            }
+            texts.push(text);
+        }
+        for text in &texts {
+            let mut scored = Normalized::new(true);
+            let mut prefix = String::new();
+            for c in text.chars() {
+                scored.push(c);
+                prefix.push(c);
+                assert_eq!(scored.text().iter().collect::<String>(), reference(&prefix), "prefix {prefix:?}");
+            }
+        }
     }
 
     #[test]
@@ -791,6 +1258,29 @@ mod tests {
         let Some(SchedEvent::Done { request, tokens, .. }) = done else { panic!("no done") };
         assert_eq!(request, 1);
         assert_eq!(tokens as usize, text.chars().count(), "every token the client received");
+    }
+
+    /// On the normalized score: a counting loop after a code block is found,
+    /// and the cut is made on the raw reasoning, after the block.
+    #[tokio::test]
+    async fn a_counting_loop_after_code_is_rewound_on_the_raw_text() {
+        let ops = Arc::new(FakeOps {
+            cancelled: Mutex::default(),
+            submitted: Mutex::default(),
+            streams: Mutex::new(vec![(2, scripted(2, "Roma.", true))]),
+        });
+        let words = prose(5500);
+        let (before, after) = words.split_at(3000);
+        let head = format!("{before}\n```rust\n{}```\n{after}", code(3000));
+        let reasoning = head.clone() + &counting(4000);
+        let (text, _) =
+            drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        assert!(text.contains(TAG_PREFIX), "the counting loop was not rewound");
+        let submitted = ops.submitted.lock().unwrap();
+        let continued = text_of(&submitted[0].tokens);
+        let kept = continued.strip_prefix("P").expect("the prompt first").strip_suffix(NUDGES[0]).expect("the nudge last");
+        assert!(head.starts_with(kept), "the cut is inside the loop");
+        assert!(kept.len() > head.len() - after.len(), "the cut took the code block back too: kept {}", kept.len());
     }
 
     #[tokio::test]

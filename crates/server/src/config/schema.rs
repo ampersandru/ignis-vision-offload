@@ -321,11 +321,16 @@ config_group! {
         /// model nudged, then closed after `loop_guard_retries` nudges.
         loop_guard: LoopGuard = crate::loop_guard::LoopGuardMode::Off, Validator::OneOf(crate::loop_guard::LoopGuardMode::NAMES), ALL,
             [Visible, Patchable];
-        /// A window of reasoning whose zlib ratio is under this many
+        /// A window of scored reasoning whose zlib ratio is under this many
         /// thousandths is a loop.
         loop_guard_ratio: Permille = crate::loop_guard::DEFAULT_RATIO_PERMILLE, between(1, 999), ALL, [Visible, Patchable];
-        /// The loop guard's window, in characters of reasoning.
+        /// The loop guard's window, in characters of scored reasoning.
         loop_guard_window: Chars = crate::loop_guard::DEFAULT_WINDOW_CHARS, between(500, 100_000), ALL, [Visible, Patchable];
+        /// Whether the loop guard scores the reasoning normalized: fenced
+        /// and inline code taken out, every run of digits read as one `0`.
+        /// `off` scores it as written, which at this window and ratio
+        /// flags far more than the raw prototype did (3,000 and 120).
+        loop_guard_normalize: Bool = crate::loop_guard::DEFAULT_NORMALIZE, NO_RULE, ALL, [Visible, Patchable];
         /// How far before a loop's window a rewind starts looking for where
         /// the loop began, in characters.
         loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];

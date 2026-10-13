@@ -1156,6 +1156,32 @@ fn the_idle_unload_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
     assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().idle_unload_secs, 45, "the file key is model.idle_unload");
 }
 
+// ── loop guard (exploration, branch experiment/loop-rewind) ──────────────
+
+/// The loop guard scores normalized reasoning at 1,000 characters and 0.20
+/// by default; `model.loop_guard_normalize` resolves from flag, env and
+/// file, and the scoring knobs are visible and patchable with no reload.
+#[test]
+fn the_loop_guard_scores_normalized_by_default_and_off_scores_the_text_as_written() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!((defaults.normalize, defaults.window_chars, defaults.ratio_permille), (true, 1000, 200));
+    assert_eq!(defaults, crate::loop_guard::LoopGuardParams::default());
+    assert!(!config(&["--model-loop-guard-normalize", "off"]).loop_guard.normalize);
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_NORMALIZE", "false")]);
+    assert!(!expect_config(resolve(&[], env).expect("resolve")).loop_guard.normalize);
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_NORMALIZE", "off")]);
+    let flag = expect_config(resolve(&args(&["--model-loop-guard-normalize", "on"]), env).expect("resolve"));
+    assert!(flag.loop_guard.normalize, "flag must win over env");
+    assert!(refused(&["--model-loop-guard-normalize", "maybe"]).contains("maybe"));
+    for name in ["loop_guard_normalize", "loop_guard_window", "loop_guard_ratio"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_normalize: false\n  loop_guard_window: 3000\n  loop_guard_ratio: 120\n")]);
+    let prototype = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((prototype.normalize, prototype.window_chars, prototype.ratio_permille), (false, 3000, 120), "the prototype's raw score");
+}
+
 #[test]
 fn a_model_field_may_switch_models_unless_the_operator_says_otherwise() {
     assert!(config(&[]).allow_model_switch);
