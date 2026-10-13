@@ -423,16 +423,21 @@ async fn a_loop_guard_patch_applies_live() {
     let server = server_on(&loader, started(&[]));
     let app = server.app();
     assert!(server.live().loop_guard.normalize);
-    let body = json!({ "model": { "loop_guard": "log", "loop_guard_normalize": "off", "loop_guard_window": 3000, "loop_guard_ratio": 120 } });
+    let body = json!({ "model": {
+        "loop_guard": "log", "loop_guard_normalize": "off", "loop_guard_window": 3000, "loop_guard_ratio": 120,
+        "loop_guard_raw_gate": 0, "loop_guard_clean": 350, "loop_guard_margin": 1000,
+    } });
     let (status, applied) = send(&app, Method::PATCH, "/v1/config", Some(body)).await;
     assert_eq!(status, StatusCode::OK, "{applied}");
     assert_eq!(applied["applied"], "live");
     assert_eq!(applied["config"]["model"]["loop_guard_normalize"], false);
+    assert_eq!((&applied["config"]["model"]["loop_guard_raw_gate"], &applied["config"]["model"]["loop_guard_clean"]), (&json!(0), &json!(350)));
     let guard = server.live().loop_guard;
     assert_eq!(
         (guard.mode, guard.normalize, guard.window_chars, guard.ratio_permille),
         (ignis_server::loop_guard::LoopGuardMode::Log, false, 3000, 120)
     );
+    assert_eq!((guard.raw_gate_permille, guard.clean_permille, guard.margin_chars), (0, 350, 1000), "the gate off, the cut's knobs");
     assert!(loader.prepared_options().is_empty(), "no model was prepared, so none was switched");
 }
 

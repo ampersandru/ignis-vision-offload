@@ -331,8 +331,17 @@ config_group! {
         /// `off` scores it as written, which at this window and ratio
         /// flags far more than the raw prototype did (3,000 and 120).
         loop_guard_normalize: Bool = crate::loop_guard::DEFAULT_NORMALIZE, NO_RULE, ALL, [Visible, Patchable];
-        /// How far before a loop's window a rewind starts looking for where
-        /// the loop began, in characters.
+        /// The loop guard's raw gate, in thousandths: a loop's last
+        /// `loop_guard_window` characters as written must score under it
+        /// too, which a table of numbers (a template once its digits fold)
+        /// does not. 0, no gate.
+        loop_guard_raw_gate: Permille = crate::loop_guard::DEFAULT_RAW_GATE_PERMILLE, between(0, 999), ALL, [Visible, Patchable];
+        /// A window of scored reasoning at or over this many thousandths is
+        /// clean: a rewind goes back to the start of the last one before
+        /// the loop (no clean one since the last nudge: to its end).
+        loop_guard_clean: Permille = crate::loop_guard::DEFAULT_CLEAN_PERMILLE, between(1, 999), ALL, [Visible, Patchable];
+        /// How many characters before that clean window's start a rewind
+        /// cuts.
         loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
         /// The nudges a looping reasoning gets before the guard closes it.
         loop_guard_retries: Times = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];

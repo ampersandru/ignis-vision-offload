@@ -10,15 +10,20 @@
 //! **Detection.** Every [`CHECK_EVERY_CHARS`] characters of new reasoning, the
 //! zlib ratio of the last `window` characters of the reasoning as
 //! [`Normalized`] scores it — code taken out, every run of digits read as one
-//! `0` — under `ratio` is a loop. Measured offline on 2026-10-13 with this
+//! `0` — under `ratio` is a loop, when the last `window` characters as
+//! written are under `raw_gate` too. Measured offline on 2026-10-13 with this
 //! detector (`.scratch/loop-rewind/NOTES.md`): no real reasoning part of
 //! 1,420 under 0.27 at a 1,000-character window, and 12 of the 17 template
 //! and counting loops the raw text at 3,000 and 0.12 missed under 0.20. The
-//! window found is mapped back to the raw reasoning, where the cut is made.
+//! gate is for tables of numbers (Fibonacci, hex, primes), a template once
+//! their digits fold, whose digits carry the information as written: on 47M
+//! characters of qwen-code reasoning it takes 5 of 7 such fires away and no
+//! harmful loop (`.scratch/loop-rewind/research/REPORT.md`).
 //!
 //! **Rewind.** The engine request is cancelled and a **continuation**
 //! submitted: the same input, its prompt extended by the generated tokens
-//! kept from before the loop ([`cut_point`]) and a nudge sentence, with what
+//! kept from before the loop ([`Watch::cut_point`]: back to the start of the
+//! last window that scored clean) and a nudge sentence, with what
 //! is left of `max_tokens` and of the thinking budget. The prompt's own
 //! checkpoint absorbs the prompt, so only the kept reasoning prefills. The
 //! client keeps what it has already received and is told what was taken back
@@ -86,8 +91,16 @@ pub const DEFAULT_WINDOW_CHARS: u32 = 1000;
 /// `--model-loop-guard-normalize`'s default: the reasoning is scored
 /// [`Normalized`].
 pub const DEFAULT_NORMALIZE: bool = true;
-/// `--model-loop-guard-margin`'s default, in characters before the window.
-pub const DEFAULT_MARGIN_CHARS: u32 = 1000;
+/// `--model-loop-guard-raw-gate`'s default, in thousandths: 0.30.
+pub const DEFAULT_RAW_GATE_PERMILLE: u32 = 300;
+/// `--model-loop-guard-clean`'s default, in thousandths: 0.40. The longest
+/// run of 1,000-character windows under it in 47 clean Rome runs spans
+/// 2,750 characters; going back to the last window over it, a rewind cuts
+/// before the onset of each of the 33 labelled loops the detector catches.
+pub const DEFAULT_CLEAN_PERMILLE: u32 = 400;
+/// `--model-loop-guard-margin`'s default, in characters before the clean
+/// window: none.
+pub const DEFAULT_MARGIN_CHARS: u32 = 0;
 /// `--model-loop-guard-retries`'s default: nudges before the close.
 pub const DEFAULT_RETRIES: u32 = 2;
 
@@ -101,8 +114,13 @@ pub struct LoopGuardParams {
     pub window_chars: u32,
     /// Score the reasoning [`Normalized`]; off, as written.
     pub normalize: bool,
-    /// How far before the flagged window a rewind starts looking for the
-    /// loop's start, in characters.
+    /// A loop's last `window` raw characters must also score under this
+    /// many thousandths; 0, no gate.
+    pub raw_gate_permille: u32,
+    /// A window scoring at least this many thousandths is clean: a rewind
+    /// goes back to the start of the last one before the loop.
+    pub clean_permille: u32,
+    /// How many characters before that window's start a rewind cuts.
     pub margin_chars: u32,
     /// The nudges a looping reasoning gets before it is closed.
     pub retries: u32,
@@ -115,6 +133,8 @@ impl Default for LoopGuardParams {
             ratio_permille: DEFAULT_RATIO_PERMILLE,
             window_chars: DEFAULT_WINDOW_CHARS,
             normalize: DEFAULT_NORMALIZE,
+            raw_gate_permille: DEFAULT_RAW_GATE_PERMILLE,
+            clean_permille: DEFAULT_CLEAN_PERMILLE,
             margin_chars: DEFAULT_MARGIN_CHARS,
             retries: DEFAULT_RETRIES,
         }
@@ -124,14 +144,6 @@ impl Default for LoopGuardParams {
 /// How often the window is scored, in characters of new reasoning.
 pub const CHECK_EVERY_CHARS: usize = 250;
 
-/// The cut's walk back over the loop's leading edge: a window of this many
-/// characters, moved back this many at a time while its ratio stays under
-/// [`ONSET_RATIO`]. Calibrated by eye on the 16 flagged reasoning loops of
-/// 2026-10-12 (`.scratch/loop-rewind/cut_rule.py`); real reasoning's
-/// 400-character windows bottom out at 0.255 (0.295 at the 1st percentile).
-const ONSET_WINDOW_CHARS: usize = 400;
-const ONSET_STRIDE_CHARS: usize = 50;
-const ONSET_RATIO: f64 = 0.35;
 /// The cut moves back to the line break before it, when one is this close.
 const SNAP_CHARS: usize = 300;
 
@@ -186,12 +198,13 @@ fn ratio_of(chars: &[char]) -> f64 {
 /// wait — and keeps the offset of the raw character it stands for (a run of
 /// digits, its first), so a window found here is cut on the raw reasoning.
 /// The steps are those of `.scratch/loop-rewind/check.py` in its order:
-/// blocks, then inline code on what is left, then digits.
+/// blocks, then inline code on what is left, then digits. The raw reasoning
+/// is kept beside it, for the raw gate and the cut.
 pub struct Normalized {
     steps: Vec<Box<dyn Step + Send>>,
     text: Vec<char>,
     raw_at: Vec<usize>,
-    raw_len: usize,
+    raw: Vec<char>,
     /// What one step hands the next.
     pass: Vec<(char, usize)>,
     spare: Vec<(char, usize)>,
@@ -205,14 +218,14 @@ impl Normalized {
         } else {
             Vec::new()
         };
-        Self { steps, text: Vec::new(), raw_at: Vec::new(), raw_len: 0, pass: Vec::new(), spare: Vec::new() }
+        Self { steps, text: Vec::new(), raw_at: Vec::new(), raw: Vec::new(), pass: Vec::new(), spare: Vec::new() }
     }
 
     /// The next character of the raw reasoning.
     pub fn push(&mut self, c: char) {
         self.pass.clear();
-        self.pass.push((c, self.raw_len));
-        self.raw_len += 1;
+        self.pass.push((c, self.raw.len()));
+        self.raw.push(c);
         for step in &mut self.steps {
             self.spare.clear();
             for &(c, raw) in &self.pass {
@@ -236,9 +249,14 @@ impl Normalized {
         self.raw_at[i]
     }
 
+    /// The raw reasoning so far.
+    pub fn raw(&self) -> &[char] {
+        &self.raw
+    }
+
     /// The raw characters pushed so far.
     pub fn raw_len(&self) -> usize {
-        self.raw_len
+        self.raw.len()
     }
 }
 
@@ -255,6 +273,8 @@ trait Step {
 #[derive(Default)]
 struct Fences {
     open: bool,
+    /// The raw offset of the open block's first backtick.
+    opened_at: usize,
     /// The raw offsets of the backticks in a row just seen.
     ticks: Vec<usize>,
 }
@@ -265,6 +285,7 @@ impl Step for Fences {
             self.ticks.push(raw);
             if self.ticks.len() == 3 {
                 self.open = !self.open;
+                self.opened_at = self.ticks[0];
                 self.ticks.clear();
             }
             return;
@@ -275,6 +296,18 @@ impl Step for Fences {
         }
         self.ticks.clear();
     }
+}
+
+/// The first backtick of the code block `text` ends inside, if it does: by
+/// [`Fences`]' own rule.
+fn open_block(text: &[char]) -> Option<usize> {
+    let mut fences = Fences::default();
+    let mut out = Vec::new();
+    for (at, &c) in text.iter().enumerate() {
+        fences.push(c, at, &mut out);
+        out.clear();
+    }
+    fences.open.then_some(fences.opened_at)
 }
 
 /// Inline code out: a backtick and what follows it on its line, up to and
@@ -332,105 +365,141 @@ impl Step for Digits {
     }
 }
 
-/// Where to take the reasoning back to, for a loop found in the window that
-/// starts at raw character `start`: `margin` characters before it, walked
-/// back over the loop's leading edge while it stays repetitive, then to the
-/// line break before it. Never before `floor` (the end of the last nudge).
-pub fn cut_point(text: &[char], start: usize, floor: usize, params: &LoopGuardParams) -> usize {
-    let mut cut = start.saturating_sub(params.margin_chars as usize).max(floor);
-    while cut >= floor + ONSET_STRIDE_CHARS
-        && cut - ONSET_STRIDE_CHARS + ONSET_WINDOW_CHARS <= text.len()
-        && ratio_of(&text[cut - ONSET_STRIDE_CHARS..cut - ONSET_STRIDE_CHARS + ONSET_WINDOW_CHARS]) < ONSET_RATIO
-    {
-        cut -= ONSET_STRIDE_CHARS;
-    }
-    let low = cut.saturating_sub(SNAP_CHARS).max(floor);
-    match text[low..cut].iter().rposition(|&c| c == '\n') {
-        Some(i) => low + i + 1,
-        None => cut,
-    }
-}
-
 /// A scored window of reasoning.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Score {
     /// Its zlib ratio ([`compress_ratio`]).
     pub ratio: f64,
+    /// The zlib ratio of the last `window` raw characters when it was taken.
+    pub raw_ratio: f64,
     /// The raw reasoning character it starts at.
     pub start: usize,
+    /// The raw reasoning length it was taken at: where it ends.
+    pub end: usize,
 }
 
 impl Score {
-    /// Under `ratio`: a loop.
+    /// Under `ratio`, and as written under `raw_gate` (when there is one):
+    /// a loop.
     pub fn is_loop(&self, params: &LoopGuardParams) -> bool {
         self.ratio * 1000.0 < f64::from(params.ratio_permille)
+            && (params.raw_gate_permille == 0 || self.raw_ratio * 1000.0 < f64::from(params.raw_gate_permille))
+    }
+
+    /// At `clean` or over: no loop in it.
+    pub fn is_clean(&self, params: &LoopGuardParams) -> bool {
+        self.ratio * 1000.0 >= f64::from(params.clean_permille)
     }
 }
 
-/// When to score the window, and from where a loop may be found.
-#[derive(Debug, Clone, Copy)]
+/// When to score the window, from where a loop may be found, and what was
+/// scored since.
+#[derive(Debug, Clone)]
 pub struct Watch {
     /// No window that starts before this raw character is scored: the end
     /// of the last nudge, or of the last logged loop.
     floor: usize,
     /// The raw reasoning length the next score waits for.
     next_check: usize,
+    /// Every score taken since the floor, in order.
+    history: Vec<Score>,
 }
 
 impl Watch {
     /// A watch whose first score is the first full window after `floor`.
     pub fn from(floor: usize, params: &LoopGuardParams) -> Self {
-        Self { floor, next_check: floor + params.window_chars as usize }
+        Self { floor, next_check: floor + params.window_chars as usize, history: Vec::new() }
     }
 
     /// The window's score when the reasoning has grown enough to score it
     /// again: the first time a whole window of scored text lies after the
-    /// floor, then every [`CHECK_EVERY_CHARS`] raw characters.
+    /// floor, then every [`CHECK_EVERY_CHARS`] raw characters. Its raw
+    /// window, the last `window` raw characters, lies after the floor too:
+    /// the scored one spans at least as many.
     pub fn score(&mut self, scored: &Normalized, params: &LoopGuardParams) -> Option<Score> {
         if scored.raw_len() < self.next_check {
             return None;
         }
-        let start = scored.text().len().checked_sub(params.window_chars as usize)?;
+        let window = params.window_chars as usize;
+        let start = scored.text().len().checked_sub(window)?;
         if scored.raw_at(start) < self.floor {
             return None;
         }
         self.next_check = scored.raw_len() + CHECK_EVERY_CHARS;
-        Some(Score { ratio: ratio_of(&scored.text()[start..]), start: scored.raw_at(start) })
+        let raw = scored.raw();
+        let score = Score {
+            ratio: ratio_of(&scored.text()[start..]),
+            raw_ratio: ratio_of(&raw[raw.len() - window..]),
+            start: scored.raw_at(start),
+            end: raw.len(),
+        };
+        self.history.push(score);
+        Some(score)
     }
 
     /// [`Watch::score`], when it is a loop.
     fn check(&mut self, scored: &Normalized, params: &LoopGuardParams) -> Option<Score> {
         self.score(scored, params).filter(|score| score.is_loop(params))
     }
+
+    /// Where to take the raw reasoning `text` back to, for the loop the last
+    /// score found: the start of the last window before it that scored
+    /// clean, `margin` characters earlier, then the line break before that
+    /// when one is within [`SNAP_CHARS`]; with no clean window since the
+    /// floor, the floor. Never before the floor.
+    ///
+    /// A cut inside a code block moves to just before the block's opening
+    /// fence: an open block is never scored, so the continuation would go
+    /// unwatched until the model closed it. (Unless the block opened before
+    /// the floor, which only a loop logged inside one leaves.)
+    pub fn cut_point(&self, text: &[char], params: &LoopGuardParams) -> usize {
+        let before = &self.history[..self.history.len().saturating_sub(1)];
+        let cut = match before.iter().rev().find(|score| score.is_clean(params)) {
+            Some(clean) => clean.start.saturating_sub(params.margin_chars as usize).max(self.floor),
+            None => self.floor,
+        };
+        let low = cut.saturating_sub(SNAP_CHARS).max(self.floor);
+        let cut = match text[low..cut].iter().rposition(|&c| c == '\n') {
+            Some(i) => low + i + 1,
+            None => cut,
+        };
+        match open_block(&text[..cut]) {
+            Some(fence) => fence.max(self.floor),
+            None => cut,
+        }
+    }
 }
 
 /// The generation as the model sees it: its tokens, the reasoning they
-/// decoded to, the reasoning's length after each token, and the reasoning
-/// as it is scored.
+/// decoded to (as written and as scored), and the reasoning's length after
+/// each token.
 struct View {
     decoder: OutputDecoder,
     tokens: Vec<TokenId>,
-    text: Vec<char>,
     chars_after: Vec<usize>,
     scored: Normalized,
 }
 
 impl View {
     fn new(decoder: OutputDecoder, normalize: bool) -> Self {
-        Self { decoder, tokens: Vec::new(), text: Vec::new(), chars_after: Vec::new(), scored: Normalized::new(normalize) }
+        Self { decoder, tokens: Vec::new(), chars_after: Vec::new(), scored: Normalized::new(normalize) }
     }
 
     fn push(&mut self, token: TokenId) {
         for delta in self.decoder.push(&[token]) {
             if delta.channel == Channel::Reasoning {
                 for c in delta.text.chars() {
-                    self.text.push(c);
                     self.scored.push(c);
                 }
             }
         }
         self.tokens.push(token);
-        self.chars_after.push(self.text.len());
+        self.chars_after.push(self.scored.raw_len());
+    }
+
+    /// The reasoning as written.
+    fn text(&self) -> &[char] {
+        self.scored.raw()
     }
 
     fn in_reasoning(&self) -> bool {
@@ -557,13 +626,14 @@ impl<O: GuardOps> Guard<O> {
             return None;
         }
         let score = self.watch.check(&self.view.scored, &self.params)?;
-        let at = self.view.text.len();
+        let at = self.view.text().len();
         let rewindable = self.params.mode == LoopGuardMode::Rewind && self.input.multimodal.is_none();
         if !rewindable {
             tracing::info!(
                 name: "ignis.loop_guard.detected",
                 request = self.original, engine_request = self.current, at_chars = at, ratio = score.ratio,
-                window_start_chars = score.start,
+                raw_ratio = score.raw_ratio, window_start_chars = score.start,
+                cut_chars = self.watch.cut_point(self.view.text(), &self.params),
                 "loop in the reasoning (log only)"
             );
             self.watch = Watch::from(at, &self.params);
@@ -574,7 +644,7 @@ impl<O: GuardOps> Guard<O> {
 
     async fn rewind(&mut self, at: usize, score: Score) -> Option<Continuation> {
         let ratio = score.ratio;
-        let cut = cut_point(&self.view.text, score.start, self.watch.floor, &self.params);
+        let cut = self.watch.cut_point(self.view.text(), &self.params);
         let kept = self.view.tokens_before(cut);
         // The kept tokens' whole text: a decoder holds back a trailing line
         // break until the text after it arrives, so their own count can be
@@ -624,7 +694,7 @@ impl<O: GuardOps> Guard<O> {
         tracing::info!(
             name: "ignis.loop_guard.rewound",
             request = self.original, cancelled = self.current, continuation = request,
-            at_chars = at, ratio = ratio, window_start_chars = score.start, cut_chars = kept_chars,
+            at_chars = at, ratio = ratio, raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = kept_chars,
             rewound_tokens = self.view.tokens.len() - kept, rewound_chars = at - kept_chars,
             attempt = self.rewinds + 1, closed = close,
             "loop in the reasoning: rewound"
@@ -636,7 +706,7 @@ impl<O: GuardOps> Guard<O> {
             view.push(token);
         }
         self.view = view;
-        self.watch = Watch::from(self.view.text.len(), &self.params);
+        self.watch = Watch::from(self.view.text().len(), &self.params);
         self.rewinds += 1;
         self.closed = close;
         self.current = request;
@@ -749,7 +819,8 @@ mod tests {
     }
 
     /// Plausible reasoning that does not repeat: a running account of
-    /// numbered, varied sentences.
+    /// numbered, varied sentences. Its windows score 0.45-0.49 normalized,
+    /// clean with room to spare, as real reasoning's mostly do.
     fn prose(chars: usize) -> String {
         const WORDS: &[&str] = &[
             "Rome", "founded", "kings", "republic", "senate", "consuls", "tribunes", "plebeians", "wars", "Carthage",
@@ -757,6 +828,10 @@ mod tests {
             "Flavians", "Trajan", "Hadrian", "crisis", "Diocletian", "Constantine", "Christianity", "Goths", "Vandals",
             "Odoacer", "popes", "Charlemagne", "communes", "Avignon", "Renaissance", "Borgia", "sack", "Baroque",
             "Bernini", "Napoleon", "unification", "capital", "Fascism", "war", "liberation", "republic", "Jubilee",
+            "aqueducts", "Forum", "Colosseum", "Pantheon", "Tiber", "Palatine", "legions", "Latin", "law", "Cicero",
+            "Vergil", "Ostia", "plague", "Gregory", "Leo", "Vatican", "Sistine", "Michelangelo", "Raphael", "Trastevere",
+            "Garibaldi", "Mazzini", "Cavour", "Mussolini", "Lateran", "Olympics", "Fellini", "Tridentine", "Jesuits",
+            "Inquisition", "Galileo", "Campidoglio", "Aventine", "Esquiline", "Quirinal", "Viminal", "Caelian", "Janiculum",
         ];
         let mut out = String::new();
         let mut state: u64 = 0x2545_F491_4F6C_DD1D;
@@ -792,6 +867,18 @@ mod tests {
             state ^= state >> 7;
             state ^= state << 17;
             out.push_str(&format!("the {} AD (the {}th year, page {}), ", 300 + state % 1700, state / 7 % 90 + 10, state / 11 % 9000));
+        }
+        out.chars().take(chars).collect()
+    }
+
+    /// A table of numbers, the layout of every line the same and every
+    /// number new: a template once its digits fold, information as written.
+    fn numeric_table(chars: usize) -> String {
+        let mut out = String::new();
+        let mut n: u64 = 1000;
+        while out.chars().count() < chars {
+            out.push_str(&format!("{n}^2 = {}, {n}^3 = {}\n", n * n, n * n * n));
+            n += 7;
         }
         out.chars().take(chars).collect()
     }
@@ -839,6 +926,31 @@ mod tests {
             }
         }
         None
+    }
+
+    /// The watch that found the first loop in `text`.
+    fn watch_to_loop(text: &str, p: &LoopGuardParams) -> Watch {
+        let mut scored = Normalized::new(p.normalize);
+        let mut watch = Watch::from(0, p);
+        for c in text.chars() {
+            scored.push(c);
+            if watch.check(&scored, p).is_some() {
+                return watch;
+            }
+        }
+        panic!("no loop in the text");
+    }
+
+    /// A watch from `floor` that took `checks`, each (window start, ratio),
+    /// the last one the loop.
+    fn watch_with(floor: usize, checks: &[(usize, f64)]) -> Watch {
+        let history = checks.iter().map(|&(start, ratio)| Score { ratio, raw_ratio: ratio, start, end: start + 1000 }).collect();
+        Watch { floor, next_check: 0, history }
+    }
+
+    /// Text for the cut to read: no line break, no backtick.
+    fn flat(chars: usize) -> Vec<char> {
+        vec!['x'; chars]
     }
 
     #[test]
@@ -905,24 +1017,97 @@ mod tests {
         assert_eq!(at, 1000 + block_chars + 1000);
     }
 
+    /// On a stream: the last window before the loop that scored clean is
+    /// the reasoning just before it, and the cut is at its start or on the
+    /// line break just before.
     #[test]
-    fn the_cut_lands_before_the_loop_on_a_line_break() {
+    fn the_cut_lands_before_the_loop_at_the_last_clean_windows_start() {
         let p = params(LoopGuardMode::Rewind);
-        let head = prose(6000);
-        let text = head.clone() + &looping(5000);
-        let (_, score) = first_loop(&text, 0, &p).expect("found");
-        let text: Vec<char> = text.chars().collect();
-        let cut = cut_point(&text, score.start, 0, &p);
-        assert!(cut <= 6000, "cut {cut} is inside the loop (it starts at 6000)");
-        assert!(cut >= 6000 - 2500, "cut {cut} took back far more than the loop");
-        assert_eq!(text[cut - 1], '\n', "not on a line break");
+        let text = prose(6000) + &looping(5000);
+        let watch = watch_to_loop(&text, &p);
+        let fire = *watch.history.last().expect("the loop's score");
+        let clean = *watch.history.iter().rev().skip(1).find(|score| score.is_clean(&p)).expect("a clean window");
+        assert!(clean.start < 6000 && clean.end >= 6000 && fire.end > clean.end, "clean {clean:?}, loop {fire:?}");
+        let cut = watch.cut_point(&text.chars().collect::<Vec<_>>(), &p);
+        assert!(cut <= clean.start && clean.start - cut <= SNAP_CHARS, "cut {cut}, clean window from {}", clean.start);
+    }
+
+    #[test]
+    fn the_cut_is_the_last_clean_windows_start_less_the_margin() {
+        let p = params(LoopGuardMode::Rewind);
+        let text = flat(4000);
+        let watch = watch_with(0, &[(1000, 0.45), (1250, 0.41), (1500, 0.38), (1750, 0.30), (2000, 0.15)]);
+        assert_eq!(watch.cut_point(&text, &p), 1250);
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { margin_chars: 100, ..p }), 1150);
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { clean_permille: 420, ..p }), 1000);
+        let lenient = LoopGuardParams { ratio_permille: 500, clean_permille: 100, ..p };
+        assert_eq!(watch_with(0, &[(1000, 0.45), (1250, 0.42)]).cut_point(&text, &lenient), 1000, "the loop's own score is never the clean one");
+    }
+
+    #[test]
+    fn the_cut_moves_back_to_a_line_break_within_300_characters() {
+        let p = params(LoopGuardMode::Rewind);
+        let watch = watch_with(0, &[(1000, 0.45), (1250, 0.15)]);
+        let mut text = flat(4000);
+        text[650] = '\n';
+        assert_eq!(watch.cut_point(&text, &p), 1000, "the line break is 350 characters back");
+        text[750] = '\n';
+        text[800] = '\n';
+        assert_eq!(watch.cut_point(&text, &p), 801, "after the last line break before it");
     }
 
     #[test]
     fn the_cut_never_crosses_the_floor() {
         let p = params(LoopGuardMode::Rewind);
-        let text: Vec<char> = looping(9000).chars().collect();
-        assert_eq!(cut_point(&text, 8000, 5000, &p), 5000);
+        let mut text = flat(4000);
+        text[1100] = '\n';
+        let watch = watch_with(1200, &[(1300, 0.45), (1550, 0.15)]);
+        assert_eq!(watch.cut_point(&text, &p), 1300, "the line break is before the floor");
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { margin_chars: 500, ..p }), 1200, "the margin stops at the floor");
+    }
+
+    #[test]
+    fn with_no_clean_window_since_the_floor_the_cut_is_the_floor() {
+        let p = params(LoopGuardMode::Rewind);
+        let mut text = flat(4000);
+        text[600] = '\n';
+        let watch = watch_with(700, &[(700, 0.39), (950, 0.25), (1200, 0.12)]);
+        assert_eq!(watch.cut_point(&text, &p), 700);
+    }
+
+    /// A cut that would keep a code block open moves to just before its
+    /// opening fence: the continuation is scored at once, not once the
+    /// model closes the block.
+    #[test]
+    fn a_cut_inside_a_code_block_moves_before_its_fence() {
+        let p = params(LoopGuardMode::Rewind);
+        // A block from 900 (its fence) to 1411, a line break there.
+        let text: Vec<char> =
+            format!("{}```rust\n{}```\n{}", "x".repeat(900), code(500), "y".repeat(2000)).chars().collect();
+        assert_eq!((&text[900..903], text[1411]), (&['`'; 3][..], '\n'));
+        let after_the_block = watch_with(0, &[(1500, 0.45), (1750, 0.15)]);
+        assert_eq!(after_the_block.cut_point(&text, &p), 1412, "a block closed before the cut stays");
+        let on_its_line_break = watch_with(0, &[(1411, 0.45), (1661, 0.15)]);
+        assert_eq!(on_its_line_break.cut_point(&text, &p), 900, "snapped into the block");
+        let margin = LoopGuardParams { margin_chars: 300, ..p };
+        assert_eq!(after_the_block.cut_point(&text, &margin), 900, "taken back into the block");
+        let floor_in_the_block = watch_with(1000, &[(1500, 0.45), (1750, 0.15)]);
+        assert_eq!(floor_in_the_block.cut_point(&text, &margin), 1000, "never before the floor");
+    }
+
+    /// The raw gate: a table of numbers is a loop to the normalized score
+    /// alone, not as written; a counting loop is one both ways.
+    #[test]
+    fn a_numeric_table_is_not_a_loop_through_the_raw_gate_and_a_counting_loop_is() {
+        let p = params(LoopGuardMode::Log);
+        let ungated = LoopGuardParams { raw_gate_permille: 0, ..p };
+        let table = prose(3000) + &numeric_table(4000);
+        let (at, score) = first_loop(&table, 0, &ungated).expect("ungated, the folded table is a loop");
+        assert!(at > 3000 && score.raw_ratio >= 0.30, "flagged at {at}: {score:?}");
+        assert_eq!(first_loop(&table, 0, &p), None, "the gate lets the table through");
+        let counted = prose(3000) + &counting(4000);
+        let (at, score) = first_loop(&counted, 0, &p).expect("a counting loop is one through the gate");
+        assert!(at > 3000 && score.raw_ratio < 0.30, "flagged at {at}: {score:?}");
     }
 
     /// A template loop over numbers compresses like prose as written, and
@@ -1258,6 +1443,28 @@ mod tests {
         let Some(SchedEvent::Done { request, tokens, .. }) = done else { panic!("no done") };
         assert_eq!(request, 1);
         assert_eq!(tokens as usize, text.chars().count(), "every token the client received");
+    }
+
+    /// After a rewind the watch starts again at the nudge's end: a loop
+    /// straight after it has no clean window since, and is cut there, the
+    /// first continuation kept whole.
+    #[tokio::test]
+    async fn the_watch_starts_again_after_a_rewind() {
+        let ops = Arc::new(FakeOps {
+            cancelled: Mutex::default(),
+            submitted: Mutex::default(),
+            streams: Mutex::new(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]),
+        });
+        let reasoning = prose(5000) + &looping(6000);
+        let (text, _) =
+            drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        assert_eq!(*ops.cancelled.lock().unwrap(), vec![1, 2]);
+        let submitted = ops.submitted.lock().unwrap();
+        assert_eq!(submitted.len(), 2, "two loops, two rewinds");
+        let first = text_of(&submitted[0].tokens);
+        assert!(first.ends_with(NUDGES[0]));
+        assert_eq!(text_of(&submitted[1].tokens), format!("{first}{}", NUDGES[1]), "cut at the first nudge's end");
+        assert!(text.ends_with(&format!("{}Roma.", NUDGES[1])));
     }
 
     /// On the normalized score: a counting loop after a code block is found,

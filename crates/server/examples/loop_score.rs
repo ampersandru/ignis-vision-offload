@@ -14,6 +14,12 @@
 //! - `online`: the worst score the guard sees, `[ratio, at, start]` (raw
 //!   characters pushed when it was taken, raw character its window starts at);
 //! - `checks`: every score, `[at, scored length, ratio, window hash]`;
+//! - `raw_ratios`: every score's raw-gate ratio (the last window of raw
+//!   characters), in the order of `checks`;
+//! - `fire`: the first score that is a loop with the default raw gate,
+//!   `[at, start, ratio, raw ratio]`, and `fire_ungated` the first with no
+//!   gate; `cut`: where a rewind at `fire` takes the reasoning back to (floor
+//!   0), with `clean`, the clean score it went back to, `[at, start]`;
 //! - `offline`: the whole text's scored form, windows every 250 scored
 //!   characters as `.scratch/loop-rewind/check.py` takes them, the worst as
 //!   `[ratio, end]`; with `scored_len` and `scored_hash` of that whole form.
@@ -23,8 +29,12 @@
 
 use std::io::{BufRead, BufWriter, Write};
 
-use ignis_server::loop_guard::{compress_ratio, LoopGuardParams, Normalized, Watch, CHECK_EVERY_CHARS};
+use ignis_server::loop_guard::{compress_ratio, LoopGuardParams, Normalized, Score, Watch, CHECK_EVERY_CHARS};
 use serde_json::{json, Value};
+
+fn fire(score: &Score) -> Value {
+    json!([score.end, score.start, score.ratio, score.raw_ratio])
+}
 
 fn fnv1a(text: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -64,10 +74,13 @@ fn main() {
         let mut record: Value = serde_json::from_str(&line).expect("a JSON object per line");
         let text = record["text"].as_str().expect("a text").to_owned();
 
+        let ungated = LoopGuardParams { raw_gate_permille: 0, ..params };
         let mut scored = Normalized::new(params.normalize);
         let mut watch = Watch::from(0, &params);
         let mut checks = Vec::new();
+        let mut scores: Vec<Score> = Vec::new();
         let mut online: Option<(f64, usize, usize)> = None;
+        let (mut first, mut first_ungated, mut cut) = (Value::Null, Value::Null, Value::Null);
         for c in text.chars() {
             scored.push(c);
             if let Some(score) = watch.score(&scored, &params) {
@@ -77,6 +90,18 @@ fn main() {
                 if online.is_none_or(|(worst, _, _)| score.ratio < worst) {
                     online = Some((score.ratio, scored.raw_len(), score.start));
                 }
+                if first_ungated.is_null() && score.is_loop(&ungated) {
+                    first_ungated = fire(&score);
+                }
+                if first.is_null() && score.is_loop(&params) {
+                    first = fire(&score);
+                    let clean = scores.iter().rev().find(|s| s.is_clean(&params));
+                    cut = json!({
+                        "at": watch.cut_point(scored.raw(), &params),
+                        "clean": clean.map_or(Value::Null, |s| json!([s.end, s.start])),
+                    });
+                }
+                scores.push(score);
             }
         }
 
@@ -97,6 +122,10 @@ fn main() {
         object.insert("online".into(), online.map_or(Value::Null, |(r, at, start)| json!([r, at, start])));
         object.insert("offline".into(), offline.map_or(Value::Null, |(r, end)| json!([r, end])));
         object.insert("checks".into(), Value::Array(checks));
+        object.insert("raw_ratios".into(), scores.iter().map(|s| s.raw_ratio).collect());
+        object.insert("fire".into(), first);
+        object.insert("fire_ungated".into(), first_ungated);
+        object.insert("cut".into(), cut);
         writeln!(out, "{record}").expect("write");
         texts += 1;
     }

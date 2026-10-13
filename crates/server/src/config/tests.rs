@@ -1182,6 +1182,29 @@ fn the_loop_guard_scores_normalized_by_default_and_off_scores_the_text_as_writte
     assert_eq!((prototype.normalize, prototype.window_chars, prototype.ratio_permille), (false, 3000, 120), "the prototype's raw score");
 }
 
+/// The raw gate (0.30, 0 = none) and the clean window a rewind goes back to
+/// (0.40, no margin) resolve from flag, env and file, visible and patchable
+/// with no reload.
+#[test]
+fn the_loop_guards_raw_gate_and_clean_window_resolve_from_flag_env_and_file() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!((defaults.raw_gate_permille, defaults.clean_permille, defaults.margin_chars), (300, 400, 0));
+    let flags = config(&["--model-loop-guard-raw-gate", "0", "--model-loop-guard-clean", "350"]).loop_guard;
+    assert_eq!((flags.raw_gate_permille, flags.clean_permille), (0, 350), "0 turns the gate off");
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_RAW_GATE", "250"), ("IGNIS_MODEL_LOOP_GUARD_CLEAN", "450")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve")).loop_guard;
+    assert_eq!((from_env.raw_gate_permille, from_env.clean_permille), (250, 450));
+    assert!(refused(&["--model-loop-guard-raw-gate", "1000"]).contains("--model-loop-guard-raw-gate"));
+    assert!(refused(&["--model-loop-guard-clean", "0"]).contains("--model-loop-guard-clean"));
+    for name in ["loop_guard_raw_gate", "loop_guard_clean", "loop_guard_margin"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_raw_gate: 320\n  loop_guard_clean: 380\n  loop_guard_margin: 200\n")]);
+    let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((file.raw_gate_permille, file.clean_permille, file.margin_chars), (320, 380, 200));
+}
+
 #[test]
 fn a_model_field_may_switch_models_unless_the_operator_says_otherwise() {
     assert!(config(&[]).allow_model_switch);
