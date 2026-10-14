@@ -1967,18 +1967,20 @@ async fn chat_completions(
     // The loop guard (exploration, `loop_guard.rs`) builds its continuations
     // from the request as submitted.
     let loop_guard = server.live().loop_guard;
+    let rewound = crate::loop_guard::Rewound::default();
     let guarded = (loop_guard.mode != crate::loop_guard::LoopGuardMode::Off && starts_in_reasoning).then(|| input.clone());
     let (request_id, stream) = match loaded.engine.submit_with_notes(input, class, notes).await {
         Ok(x) => x,
         Err(err) => return submit_error(&server, err),
     };
     let mut stream = match guarded {
-        Some(input) => crate::loop_guard::guard(
+        Some(input) => crate::loop_guard::guard_counted(
             loop_guard,
             crate::loop_guard::EngineOps::new(loaded.engine.clone(), class, loaded.template.clone()),
             input,
             request_id,
             stream,
+            rewound.clone(),
         ),
         None => stream,
     };
@@ -2007,7 +2009,8 @@ async fn chat_completions(
             ),
             prompt_tokens,
             include_usage,
-        ))
+        )
+        .with_rewound(rewound))
         .into_response();
     }
     let timed_out = || {
@@ -2036,7 +2039,7 @@ async fn chat_completions(
                     AnswerEnding::Done(reason) => resolve_finish_reason(reason, !calls.is_empty(), answer.mid_call),
                     AnswerEnding::Stopped => resolve_finish_reason(FinishReason::Stop, !calls.is_empty(), false),
                 };
-                let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens);
+                let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens).with_rewound(&rewound);
                 completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage)
             }
             Err(_) => timed_out(),
@@ -2051,7 +2054,7 @@ async fn chat_completions(
                 split_reasoning_and_tools(loaded.template.as_ref(), &tokens, &thinking, schemas);
             let completion_tokens = tokens.len() as u32;
             let finish_reason = resolve_finish_reason(reason, !tool_calls.is_empty(), false);
-            let usage = Usage::new(prompt_tokens, completion_tokens, cached_tokens);
+            let usage = Usage::new(prompt_tokens, completion_tokens, cached_tokens).with_rewound(&rewound);
             completion_body(
                 id,
                 created,
@@ -2451,6 +2454,10 @@ struct Usage {
     total_tokens: u32,
     /// Always present: a `0` says nothing was reused.
     prompt_tokens_details: PromptTokensDetails,
+    /// Present only when the loop guard rewound this request (ignis
+    /// extension, additive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 impl Usage {
@@ -2460,8 +2467,29 @@ impl Usage {
             completion_tokens,
             total_tokens: prompt_tokens.saturating_add(completion_tokens),
             prompt_tokens_details: PromptTokensDetails { cached_tokens },
+            completion_tokens_details: None,
         }
     }
+
+    /// The tokens the loop guard took back, when it took any.
+    fn with_rewound(mut self, rewound: &crate::loop_guard::Rewound) -> Self {
+        self.completion_tokens_details = Self::rewound_details(rewound.load(std::sync::atomic::Ordering::Relaxed));
+        self
+    }
+
+    fn rewound_details(rewound_tokens: u32) -> Option<CompletionTokensDetails> {
+        (rewound_tokens > 0).then_some(CompletionTokensDetails { rewound_tokens })
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+struct CompletionTokensDetails {
+    /// The generated tokens a loop-guard rewind took back (ADR 0052): the
+    /// tokens struck from the reasoning, as the rewind tag's `N TOKENS`
+    /// reports them. Not the tag's own tokens nor the nudges. They are
+    /// still counted in `completion_tokens`, which counts everything the
+    /// model generated. The object is absent when nothing was rewound.
+    rewound_tokens: u32,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2562,6 +2590,8 @@ struct ChunkStream {
     /// The prompt tokens the request did not prefill, as its reuse reports
     /// arrive ([`crate::engine::reused_prompt_tokens`]).
     cached_tokens: u32,
+    /// The tokens the loop guard struck, when it is on for this request.
+    rewound: Option<crate::loop_guard::Rewound>,
     /// `stream_options.include_usage` — gates the trailing usage chunk
     /// (OpenAI only sends it when the client opts in).
     include_usage: bool,
@@ -2647,6 +2677,7 @@ impl ChunkStream {
             pipeline,
             prompt_tokens,
             cached_tokens: 0,
+            rewound: None,
             include_usage,
             pending: VecDeque::new(),
             done_sent: false,
@@ -2655,6 +2686,12 @@ impl ChunkStream {
             emitted_reasoning: false,
             emitted_content_or_call: false,
         }
+    }
+
+    /// The loop guard's count of struck tokens, for the usage chunk.
+    fn with_rewound(mut self, rewound: crate::loop_guard::Rewound) -> Self {
+        self.rewound = Some(rewound);
+        self
     }
 
     /// Queues each piece as its SSE chunk: reasoning and content as their
@@ -2759,7 +2796,10 @@ impl ChunkStream {
             created: self.created,
             model: self.model.clone(),
             choices: vec![],
-            usage: Some(Usage::new(self.prompt_tokens, completion_tokens, self.cached_tokens)),
+            usage: Some(match &self.rewound {
+                Some(rewound) => Usage::new(self.prompt_tokens, completion_tokens, self.cached_tokens).with_rewound(rewound),
+                None => Usage::new(self.prompt_tokens, completion_tokens, self.cached_tokens),
+            }),
         };
         Event::default().data(serde_json::to_string(&chunk).expect("chunk serializes"))
     }
@@ -3047,6 +3087,71 @@ mod tests {
         assert_eq!(json["usage"]["total_tokens"], 1558);
         // Spec server/09: always there, a 0 included.
         assert_eq!(json["usage"]["prompt_tokens_details"]["cached_tokens"], 0);
+    }
+
+    #[test]
+    fn usage_carries_rewound_tokens_only_when_the_guard_rewound() {
+        let rewound = |n: u32| crate::loop_guard::Rewound::new(std::sync::atomic::AtomicU32::new(n));
+        let none = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(0))).unwrap();
+        assert!(none.get("completion_tokens_details").is_none(), "absent, byte-identical to before: {none}");
+        let some = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(321))).unwrap();
+        assert_eq!(some["completion_tokens_details"]["rewound_tokens"], 321);
+        assert_eq!(some["completion_tokens"], 1500, "completion_tokens still counts everything generated");
+    }
+
+    /// The streaming usage chunk of a four-token request, the guard's count
+    /// being `rewound`.
+    async fn streamed_usage(rewound: Option<u32>) -> JsonValue {
+        let scheduler = ignis_core::ConcreteScheduler::with_config(
+            ignis_core::SchedulerConfig { model: "m".into(), ..ignis_core::SchedulerConfig::default() },
+            Arc::new(ignis_core::MockCompute::new()),
+        );
+        let engine = Engine::new(Box::new(scheduler));
+        let (route, stream) = tokio::sync::mpsc::unbounded_channel();
+        for token in 0..4 {
+            route.send(SchedEvent::Token { request: 9, token }).unwrap();
+        }
+        route
+            .send(SchedEvent::Done {
+                request: 9,
+                tokens: 4,
+                reason: FinishReason::Stop,
+                spec: None,
+                readout: None,
+                attention: None,
+                drawn: None,
+                thinking: None,
+                reasoning_redirected_at: None,
+            })
+            .unwrap();
+        drop(route);
+        let mut chunks = ChunkStream::new(
+            stream,
+            CancelOnDrop::new(engine, 9),
+            "chatcmpl-9".into(),
+            0,
+            "m".into(),
+            AnswerPipeline::new(OutputDecoder::new(Box::new(Words), false), ToolSchemas::from_tools(&[]), Vec::new()),
+            1,
+            true,
+        );
+        if let Some(n) = rewound {
+            chunks = chunks.with_rewound(crate::loop_guard::Rewound::new(std::sync::atomic::AtomicU32::new(n)));
+        }
+        let body = Sse::new(chunks).into_response().into_body();
+        let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let usage = std::str::from_utf8(&body).unwrap().lines().filter_map(|l| l.strip_prefix("data: ")).nth(2).unwrap().to_owned();
+        serde_json::from_str(&usage).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_streaming_usage_chunk_reports_rewound_tokens() {
+        let rewound = streamed_usage(Some(17)).await;
+        assert_eq!(rewound["usage"]["completion_tokens"], 4);
+        assert_eq!(rewound["usage"]["completion_tokens_details"]["rewound_tokens"], 17);
+        for none in [streamed_usage(Some(0)).await, streamed_usage(None).await] {
+            assert!(none["usage"].get("completion_tokens_details").is_none(), "{none}");
+        }
     }
 
     // ── spec server/09: honoured or refused ─────────────────────────────

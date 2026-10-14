@@ -24,8 +24,9 @@
 //! submitted: the same input, its prompt extended by the generated tokens
 //! kept from before the loop ([`Watch::cut_point`]: back to the start of the
 //! last window that scored clean) and a nudge sentence, with what
-//! is left of `max_tokens` and of the thinking budget. The prompt's own
-//! checkpoint absorbs the prompt, so only the kept reasoning prefills. The
+//! is left of `max_tokens` and of the thinking budget. The whole
+//! continuation prompt prefills (it is submitted without a `reuse_source`;
+//! reusing the original's state is a follow-up, ADR 0052 Consequences). The
 //! client keeps what it has already received and is told what was taken back
 //! by a tag in the reasoning ([`tag`]), which the Playground strikes through.
 //! After `retries` nudges, the next loop is closed with the thinking budget's
@@ -38,6 +39,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -577,15 +579,34 @@ impl GuardOps for EngineOps {
     }
 }
 
+/// The generated tokens the guard's rewinds took back, shared with the
+/// handler that builds `usage.completion_tokens_details.rewound_tokens`.
+/// It counts the struck tokens only (those the client's tag reports as
+/// `N TOKENS`): not the tag's own tokens, nor the nudges. The guard adds to
+/// it before it sends the `Done` that ends the stream.
+pub type Rewound = Arc<AtomicU32>;
+
 /// Put the guard between `stream` (the engine's, for `request`, submitted
 /// from `input`) and its consumer: the stream returned. `Off` returns
 /// `stream` itself.
 pub fn guard(params: LoopGuardParams, ops: impl GuardOps, input: RequestInput, request: RequestId, stream: EventStream) -> EventStream {
+    guard_counted(params, ops, input, request, stream, Rewound::default())
+}
+
+/// [`guard`], adding the tokens each rewind takes back to `rewound`.
+pub fn guard_counted(
+    params: LoopGuardParams,
+    ops: impl GuardOps,
+    input: RequestInput,
+    request: RequestId,
+    stream: EventStream,
+    rewound: Rewound,
+) -> EventStream {
     if params.mode == LoopGuardMode::Off {
         return stream;
     }
     let (tx, rx) = unbounded_channel();
-    tokio::spawn(run(params, ops, input, request, stream, tx));
+    tokio::spawn(run(params, ops, input, request, stream, tx, rewound));
     rx
 }
 
@@ -610,6 +631,7 @@ struct Guard<O: GuardOps> {
     /// The client's token count when the current continuation's first token
     /// arrives: what its `Done` indices are offset by.
     offset: u32,
+    rewound: Rewound,
 }
 
 /// A continuation, ready to go: the tokens the client receives before it.
@@ -700,6 +722,8 @@ impl<O: GuardOps> Guard<O> {
             "loop in the reasoning: rewound"
         );
 
+        self.rewound.fetch_add((self.view.tokens.len() - kept) as u32, Ordering::Relaxed);
+
         // The model's view: the kept tokens, then the nudge.
         let mut view = View::new(self.ops.decoder(), self.params.normalize);
         for &token in self.view.tokens[..kept].iter().chain(&nudge) {
@@ -728,6 +752,7 @@ async fn run<O: GuardOps>(
     request: RequestId,
     mut stream: EventStream,
     tx: UnboundedSender<SchedEvent>,
+    rewound: Rewound,
 ) {
     let view = View::new(ops.decoder(), params.normalize);
     let mut guard = Guard {
@@ -742,6 +767,7 @@ async fn run<O: GuardOps>(
         closed: false,
         forwarded: 0,
         offset: 0,
+        rewound,
     };
     // Once a continuation runs, only its tokens and its end reach the
     // client: its admission and prompt-reuse events describe a request the
@@ -1443,6 +1469,37 @@ mod tests {
         let Some(SchedEvent::Done { request, tokens, .. }) = done else { panic!("no done") };
         assert_eq!(request, 1);
         assert_eq!(tokens as usize, text.chars().count(), "every token the client received");
+    }
+
+    /// The count the handler reports: the struck tokens of every rewind,
+    /// not the tags or the nudges.
+    #[tokio::test]
+    async fn the_rewound_count_is_the_struck_tokens_of_every_rewind() {
+        let ops = Arc::new(FakeOps {
+            cancelled: Mutex::default(),
+            submitted: Mutex::default(),
+            streams: Mutex::new(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]),
+        });
+        let reasoning = prose(5000) + &looping(6000);
+        let rewound = Rewound::default();
+        let (text, _) = drain(guard_counted(
+            params(LoopGuardMode::Rewind),
+            ops.clone(),
+            input("P", 40_000),
+            1,
+            scripted(1, &reasoning, false),
+            rewound.clone(),
+        ))
+        .await;
+        // One token per char here: each tag reports its struck tokens.
+        let tags: u32 = text
+            .split("[LOOP DETECTED, REWINDING ")
+            .skip(1)
+            .map(|rest| rest.split_once(" TOKENS").unwrap().0.parse::<u32>().unwrap())
+            .sum();
+        assert_eq!(ops.submitted.lock().unwrap().len(), 2);
+        assert!(tags > 0);
+        assert_eq!(rewound.load(Ordering::Relaxed), tags);
     }
 
     /// After a rewind the watch starts again at the nudge's end: a loop
