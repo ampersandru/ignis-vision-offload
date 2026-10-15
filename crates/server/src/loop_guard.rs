@@ -25,8 +25,9 @@
 //! **Rewind.** The engine request is cancelled and a **continuation**
 //! submitted: the same input, its prompt extended by the generated tokens
 //! kept from before the loop ([`Watch::cut_point`]: back to the start of the
-//! last window that scored clean) and a nudge sentence, with what
-//! is left of `max_tokens` and of the thinking budget. The whole
+//! last window that scored clean) and a nudge sentence (after a kept text
+//! that ends in a line break, without its own: [`sentence_after`]), with
+//! what is left of `max_tokens` and of the thinking budget. The whole
 //! continuation prompt prefills (it is submitted without a `reuse_source`;
 //! reusing the original's state is a follow-up, ADR 0052 Consequences). The
 //! client keeps what it has already received and is told what was taken back
@@ -187,11 +188,27 @@ const MIN_CONTINUATION_TOKENS: u32 = 512;
 /// The nudges, in order: the model's own words when it caught itself
 /// (2026-10-12 seed 109: "I'm repeating. Let me stop the repetition and just
 /// write the content directly."). The last one repeats when `retries` asks
-/// for more.
+/// for more. After a kept text that ends in a line break, a nudge goes in
+/// without its leading ones ([`sentence_after`]).
 pub const NUDGES: [&str; 2] = [
     "\n\nWait, I'm starting to repeat myself. Let me stop and move on with what I already have.\n\n",
     "\n\nI keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now.\n\n",
 ];
+
+/// The sentence a continuation's prompt carries after `kept`, the kept
+/// reasoning as the client shows it: `sentence` (a nudge, the close) as
+/// written, or without its leading line breaks when `kept` already ends in
+/// one. Otherwise the kept text's last newline token and the sentence's
+/// opening `\n\n` re-tokenize as one (`"." "\n\n" | "\n\n" "Wait"` is
+/// `"." "\n\n\n\n" "Wait"` from the text), and the next turn's prompt would
+/// leave the retained state at the cut (`examples/loop_retokenize.rs`).
+pub fn sentence_after<'a>(kept: &str, sentence: &'a str) -> &'a str {
+    if kept.ends_with('\n') {
+        sentence.trim_start_matches('\n')
+    } else {
+        sentence
+    }
+}
 
 /// The tag's fixed opening, for a client that looks for it.
 pub const TAG_PREFIX: &str = "[LOOP DETECTED, REWINDING ";
@@ -206,7 +223,8 @@ const TAG_OPEN: &str = "\n\n[LOOP DETECTED, REWINDING ";
 /// `m` characters right before the tag's line breaks are no longer the
 /// model's context, and [`repair`] takes them out when they hash to `h`. It
 /// opens with a line break so that it never joins a character the last token
-/// left incomplete; what follows it (a nudge, the close) opens with its own.
+/// left incomplete; what follows it (a nudge, the close) opens with its own
+/// unless the kept text ended in one ([`sentence_after`]).
 pub fn tag(tokens: usize, struck: &str) -> String {
     format!("{TAG_OPEN}{tokens} TOKENS / {} CHARS \u{b7} {}]", struck.chars().count(), struck_hash(struck))
 }
@@ -829,15 +847,15 @@ impl<O: GuardOps> Guard<O> {
         // The kept text and what the client received, as the client shows
         // them: a decoder holds back a trailing line break until the text
         // after it arrives, and the tag is that text.
-        let kept_chars = shown(self.ops.decoder(), &self.view.tokens[..kept]).chars().count();
+        let kept_text = shown(self.ops.decoder(), &self.view.tokens[..kept]);
+        let kept_chars = kept_text.chars().count();
         let struck = (self.sent > kept)
             .then(|| shown(self.ops.decoder(), &self.view.tokens[..self.sent]).chars().skip(kept_chars).collect::<String>());
         let close = self.rewinds >= self.params.retries;
-        let sentence = if close {
-            crate::thinking::THINKING_CLOSE_TEXT
-        } else {
-            NUDGES[(self.rewinds as usize).min(NUDGES.len() - 1)]
-        };
+        let sentence = sentence_after(
+            &kept_text,
+            if close { crate::thinking::THINKING_CLOSE_TEXT } else { NUDGES[(self.rewinds as usize).min(NUDGES.len() - 1)] },
+        );
         let encoded_tag = match &struck {
             Some(struck) => self.ops.encode(&tag(self.sent - kept, struck)),
             None => Some(Vec::new()),
@@ -1556,6 +1574,22 @@ mod tests {
         assert_eq!(tag(2, "è🦀\n").split(" CHARS").next().unwrap().rsplit(' ').next(), Some("3"), "m counts scalar values");
     }
 
+    /// After a kept text that ends in a line break, a sentence goes in
+    /// without its own: `"." "\n\n" | "\n\n" "Wait"` re-tokenizes as
+    /// `"." "\n\n\n\n" "Wait"`, and the next turn's prompt would leave the
+    /// retained state at the cut.
+    #[test]
+    fn a_sentence_after_a_line_break_opens_without_its_own() {
+        for sentence in NUDGES.into_iter().chain([crate::thinking::THINKING_CLOSE_TEXT]) {
+            let bare = sentence.trim_start_matches('\n');
+            assert_ne!(bare, sentence, "every sentence opens with line breaks");
+            assert_eq!(sentence_after("kept.\n", sentence), bare);
+            assert_eq!(sentence_after("kept.\n\n", sentence), bare);
+            assert_eq!(sentence_after("kept.", sentence), sentence);
+            assert_eq!(sentence_after("", sentence), sentence, "nothing kept, no line break to join");
+        }
+    }
+
     /// `kept`, a rewind of `struck` tagged after it, then `after`.
     fn rewound_text(kept: &str, struck: &str, after: &str) -> String {
         format!("{kept}{struck}{}{after}", tag(9, struck))
@@ -1779,6 +1813,20 @@ mod tests {
         assert_eq!(repair(&received), model);
     }
 
+    /// A continuation prompt's tail past the client's prompt: the reasoning
+    /// it kept from `reasoning`, then `sentence` as [`sentence_after`] joins
+    /// it. (A test reasoning never has two line breaks in a row, so only
+    /// one split fits.)
+    fn kept_then<'a>(tail: &'a str, sentence: &'a str, reasoning: &str) -> (&'a str, &'a str) {
+        [sentence.trim_start_matches('\n'), sentence]
+            .into_iter()
+            .find_map(|joined| {
+                let kept = tail.strip_suffix(joined)?;
+                (reasoning.starts_with(kept) && sentence_after(kept, sentence) == joined).then_some((kept, joined))
+            })
+            .unwrap_or_else(|| panic!("no kept reasoning then {sentence:?}"))
+    }
+
     /// The `m` and the struck text of the first tag the client shows.
     fn first_struck(shown: &str) -> (usize, String) {
         let (before, rest) = shown.split_once(TAG_OPEN).expect("the tag");
@@ -1824,10 +1872,10 @@ mod tests {
         let submitted = ops.submitted.lock().unwrap();
         let next = &submitted[0];
         let continued = text_of(&next.tokens);
-        let kept = continued.strip_prefix("PROMPT").expect("the prompt first").strip_suffix(NUDGES[0]).expect("the nudge last");
+        let (kept, nudge) = kept_then(continued.strip_prefix("PROMPT").expect("the prompt first"), NUDGES[0], &reasoning);
         assert!(head.starts_with(kept), "the continuation keeps a prefix of the reasoning before the loop");
         assert!(kept.len() > 1000, "kept only {} chars", kept.len());
-        let used = (kept.chars().count() + NUDGES[0].chars().count()) as u32;
+        let used = (kept.chars().count() + nudge.chars().count()) as u32;
         assert_eq!(next.params.max_tokens, Some(40_000 - used));
         assert_eq!(next.params.thinking_budget, Some(40_000 - 2048 - used));
         assert!(next.params.starts_in_reasoning);
@@ -1840,10 +1888,30 @@ mod tests {
         let struck = &sent[kept.len()..];
         let m = struck.chars().count();
         assert_eq!(counts, format!("{m} TOKENS / {m} CHARS \u{b7} {}", struck_hash(struck)), "one token per char here");
-        assert_eq!(rest, format!("{}{after}", NUDGES[0]));
+        assert_eq!(rest, format!("{nudge}{after}"));
         let Some(SchedEvent::Done { request, tokens, .. }) = done else { panic!("no done") };
         assert_eq!(request, 1);
         assert_eq!(tokens as usize, text.chars().count(), "every token the client received");
+    }
+
+    /// A cut on a line break continues with the nudge's words straight
+    /// after it, in the continuation's prompt and in what the client gets
+    /// after the tag; a cut that is not on one keeps the nudge's line breaks.
+    #[tokio::test]
+    async fn a_nudge_after_a_kept_line_break_goes_in_without_its_own() {
+        for (head, on_a_line_break) in [(prose(5000), true), (prose(5000).replace('\n', " "), false)] {
+            let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+            let reasoning = head.clone() + &looping(6000);
+            let (text, _) =
+                drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+            let continued = text_of(&ops.submitted.lock().unwrap()[0].tokens);
+            let sentence = if on_a_line_break { NUDGES[0].trim_start_matches('\n') } else { NUDGES[0] };
+            let kept = continued.strip_prefix('P').unwrap().strip_suffix(sentence).expect("the nudge last");
+            assert!(head.starts_with(kept));
+            assert_eq!(kept.ends_with('\n'), on_a_line_break, "kept ends {:?}", &kept[kept.len() - 20..]);
+            let (_, after_tag) = text.split_once(TAG_OPEN).expect("the tag");
+            assert_eq!(after_tag.split_once(']').unwrap().1, format!("{sentence}Roma."));
+        }
     }
 
     /// The count the handler reports: the struck tokens of every rewind,
@@ -1894,9 +1962,10 @@ mod tests {
         let submitted = ops.submitted.lock().unwrap();
         assert_eq!(submitted.len(), 2, "two loops, two rewinds");
         let first = text_of(&submitted[0].tokens);
-        assert!(first.ends_with(NUDGES[0]));
-        assert_eq!(text_of(&submitted[1].tokens), format!("{first}{}", NUDGES[1]), "cut at the first nudge's end");
-        assert!(text.ends_with(&format!("{}Roma.", NUDGES[1])));
+        kept_then(first.strip_prefix('P').unwrap(), NUDGES[0], &reasoning);
+        let second = sentence_after(&first, NUDGES[1]);
+        assert_eq!(text_of(&submitted[1].tokens), format!("{first}{second}"), "cut at the first nudge's end");
+        assert!(text.ends_with(&format!("{second}Roma.")));
     }
 
     /// On the normalized score: a counting loop after a code block is found,
@@ -1917,7 +1986,7 @@ mod tests {
         assert!(text.contains(TAG_PREFIX), "the counting loop was not rewound");
         let submitted = ops.submitted.lock().unwrap();
         let continued = text_of(&submitted[0].tokens);
-        let kept = continued.strip_prefix("P").expect("the prompt first").strip_suffix(NUDGES[0]).expect("the nudge last");
+        let (kept, _) = kept_then(continued.strip_prefix("P").expect("the prompt first"), NUDGES[0], &reasoning);
         assert!(head.starts_with(kept), "the cut is inside the loop");
         assert!(kept.len() > head.len() - after.len(), "the cut took the code block back too: kept {}", kept.len());
     }
@@ -1934,10 +2003,11 @@ mod tests {
         let (text, _) = drain(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
         let submitted = ops.submitted.lock().unwrap();
         let next = &submitted[0];
-        assert!(text_of(&next.tokens).ends_with(crate::thinking::THINKING_CLOSE_TEXT));
+        let continued = text_of(&next.tokens);
+        let (_, close) = kept_then(continued.strip_prefix('P').unwrap(), crate::thinking::THINKING_CLOSE_TEXT, &reasoning);
         assert_eq!(next.params.thinking_budget, None);
         assert!(!next.params.starts_in_reasoning, "the prompt closed the reasoning");
-        assert!(text.ends_with(&format!("{}Roma.", crate::thinking::THINKING_CLOSE_TEXT)));
+        assert!(text.ends_with(&format!("{close}Roma.")));
     }
 
     #[tokio::test]
@@ -1992,7 +2062,8 @@ mod tests {
             let (received, _) = drain_tokens(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
             let text = text_of(&received);
             assert_eq!(text.matches(TAG_PREFIX).count(), 2, "retries {retries}");
-            assert_eq!(text.contains(crate::thinking::THINKING_CLOSE_TEXT), retries == 1, "retries {retries}");
+            let close = crate::thinking::THINKING_CLOSE_TEXT.trim_start_matches('\n');
+            assert_eq!(text.contains(close), retries == 1, "retries {retries}");
             assert_repair_gives_the_models_view(&received, &ops, "P", &tokens_of("Roma."));
         }
     }
@@ -2039,7 +2110,7 @@ mod tests {
             drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false), rewound.clone())).await;
         let text = text_of(&received);
         let (sent, _) = text.split_once(TAG_OPEN).expect("the cut is in what was sent: a tag");
-        let kept = models_view(&ops, "P", &[]).len() - tokens_of(NUDGES[0]).len();
+        let kept = kept_then(&text_of(&models_view(&ops, "P", &[])), NUDGES[0], &reasoning).0.chars().count();
         let generated = kept + rewound.taken() as usize;
         assert!(reasoning.starts_with(sent));
         assert_eq!(sent.chars().count(), generated - rewound.unsent() as usize, "the client got all it was sent, then the tag");

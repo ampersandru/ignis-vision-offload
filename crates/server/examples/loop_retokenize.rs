@@ -18,13 +18,16 @@
 //! At each cut, for each sentence a continuation ends its prompt with (the
 //! two nudges, the close): `kept tokens ++ encode(sentence)` against
 //! `encode(decode(kept tokens) + sentence)`, and where they first differ,
-//! relative to the cut (-1: the last kept token).
+//! relative to the cut (-1: the last kept token). Each sentence twice: as
+//! written (the guard before 2026-10-15) and as
+//! `loop_guard::sentence_after` joins it to the kept text (the guard now:
+//! without its leading line breaks after a kept text that ends in one).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use ignis_server::artifact_template::ArtifactTemplateProvider;
-use ignis_server::loop_guard::{NUDGES, TAG_PREFIX};
+use ignis_server::loop_guard::{sentence_after, NUDGES, TAG_PREFIX};
 use ignis_server::template::TemplateProvider;
 use ignis_server::thinking::THINKING_CLOSE_TEXT;
 use serde_json::Value;
@@ -63,10 +66,10 @@ fn main() {
     let template = ArtifactTemplateProvider::new(ignis_artifact::FrontendSet::from_reader(&reader).expect("its frontend"));
     let encode = |text: &str| template.encode_literal(text).expect("encode");
     let sentences = [("nudge 1", NUDGES[0]), ("nudge 2", NUDGES[1]), ("close", THINKING_CLOSE_TEXT)];
-    let encoded: Vec<_> = sentences.iter().map(|(_, s)| encode(s)).collect();
+    let rules = [("as written", false), ("joined", true)];
 
-    // (sentence, real cut?) -> (cuts, identical, first divergences relative to the cut)
-    let mut tally: BTreeMap<(&str, bool), (usize, usize, BTreeMap<i64, usize>)> = BTreeMap::new();
+    // (rule, sentence, real cut?) -> (cuts, identical, first divergences relative to the cut)
+    let mut tally: BTreeMap<(&str, &str, bool), (usize, usize, BTreeMap<i64, usize>)> = BTreeMap::new();
     let mut prefix_unstable = 0;
     let mut cuts_total = 0;
     let mut examples = Vec::new();
@@ -103,23 +106,24 @@ fn main() {
             if encode(&kept_text) != tokens[..kept] {
                 prefix_unstable += 1;
             }
-            for ((name, sentence), sentence_tokens) in sentences.iter().zip(&encoded) {
-                let view: Vec<_> = tokens[..kept].iter().chain(sentence_tokens).copied().collect();
+            for ((rule, joined), (name, sentence)) in rules.iter().flat_map(|rule| sentences.iter().map(move |s| (rule, s))) {
+                let sentence = if *joined { sentence_after(&kept_text, sentence) } else { sentence };
+                let view: Vec<_> = tokens[..kept].iter().copied().chain(encode(sentence)).collect();
                 let repaired = encode(&format!("{kept_text}{sentence}"));
-                let entry = tally.entry((name, is_real)).or_default();
+                let entry = tally.entry((rule, name, is_real)).or_default();
                 entry.0 += 1;
                 match view.iter().zip(&repaired).position(|(a, b)| a != b).or((view.len() != repaired.len()).then(|| view.len().min(repaired.len()))) {
                     None => entry.1 += 1,
                     Some(at) => {
                         *entry.2.entry(at as i64 - kept as i64).or_default() += 1;
-                        if examples.len() < 6 {
+                        if examples.iter().filter(|(of, _)| of == rule).count() < 6 {
                             let show = |ids: &[u32]| ids.iter().map(|&t| format!("{:?}", template.render_tokens(&[t]))).collect::<Vec<_>>().join(" ");
                             let from = at.saturating_sub(2);
-                            examples.push(format!(
-                                "{path} cut {cut} ({name}): view [{}] vs repaired [{}]",
+                            examples.push((*rule, format!(
+                                "{path} cut {cut} ({name}, {rule}): view [{}] vs repaired [{}]",
                                 show(&view[from..(at + 3).min(view.len())]),
                                 show(&repaired[from..(at + 3).min(repaired.len())])
-                            ));
+                            )));
                         }
                     }
                 }
@@ -127,16 +131,16 @@ fn main() {
         }
     }
     println!("cuts {cuts_total}; kept tokens != encode(kept text): {prefix_unstable}");
-    for ((name, real), (cuts, same, diverge)) in &tally {
+    for ((rule, name, real), (cuts, same, diverge)) in &tally {
         let at: Vec<String> = diverge.iter().map(|(at, n)| format!("{at:+}: {n}")).collect();
         println!(
-            "{name:8} {:9} cuts {cuts:5}  identical {same:5} ({:.1}%)  first difference at {}",
+            "{rule:10} {name:8} {:9} cuts {cuts:5}  identical {same:5} ({:.1}%)  first difference at {}",
             if *real { "real cut" } else { "line ends" },
             100.0 * *same as f64 / *cuts as f64,
             if at.is_empty() { "-".to_owned() } else { at.join(", ") }
         );
     }
-    for example in examples {
+    for (_, example) in examples {
         println!("{example}");
     }
 }
