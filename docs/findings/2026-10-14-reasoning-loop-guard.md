@@ -435,7 +435,7 @@ Inferred:
   rewound tokens, and `rewound_tokens` says how many).
 - An ADR on rewinding output a client already received, and the `loop_guard` default:
   done, [ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md)
-  (proposed), `rewind` by default.
+  (accepted 2026-10-15), `rewind` by default.
 - Loops in the answer: what action, and whether the same score applies.
 - What a natural rewind does to an agentic turn's quality.
 - The retained-prefix restore's missing `reuse_source` on the done line (outside the
