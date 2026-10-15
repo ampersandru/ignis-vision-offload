@@ -24,7 +24,7 @@ use crate::Server;
 /// A Responses request: the `POST /v1/responses` body, and the body of a
 /// socket's `response.create` beside its `type`, `stream_id` and `generate`.
 /// Every other field OpenAI documents is inert or refused by value
-/// (`crate::openai_fields`, spec server/09) — `include`, `prompt_cache_key`,
+/// (`crate::openai_fields`, spec server/09) — `prompt_cache_key`,
 /// `client_metadata` and the rest that do not change the answer are
 /// accepted — and a field outside that list is ignored.
 #[derive(Clone, Default, Deserialize, ToSchema)]
@@ -82,6 +82,11 @@ pub(crate) struct CreateResponse {
     metadata: Option<JsonValue>,
     #[schema(value_type = bool)]
     store: Option<JsonValue>,
+    /// `["reasoning.encrypted_content"]` gives the reasoning item an
+    /// `encrypted_content`: the reasoning as the model saw it (ADR 0052).
+    /// Any other value is accepted and changes nothing.
+    #[schema(value_type = Vec<String>)]
+    include: Option<JsonValue>,
     /// The thinking controls, the same ignis extensions as on chat
     /// completions.
     #[schema(value_type = Object)]
@@ -117,6 +122,9 @@ pub(crate) struct Prepared {
     /// what a continuation of this response starts from, before its output.
     pub items: Vec<JsonValue>,
     pub start: ResponseStart,
+    /// The request starts inside its reasoning block: the loop guard watches
+    /// it (ADR 0052).
+    pub starts_in_reasoning: bool,
 }
 
 /// A response before it has an id: what its [`ResponseEvents`] start from.
@@ -125,15 +133,17 @@ pub(crate) struct ResponseStart {
     decoder: OutputDecoder,
     schemas: ToolSchemas,
     prompt_tokens: u32,
+    /// `include: ["reasoning.encrypted_content"]`.
+    encrypted_reasoning: bool,
 }
 
 impl ResponseStart {
     /// The event producer for this response, now that it is `resp_<suffix>`.
     pub(crate) fn events(self, suffix: String, created_at: u64) -> ResponseEvents {
-        let ResponseStart { mut response, decoder, schemas, prompt_tokens } = self;
+        let ResponseStart { mut response, decoder, schemas, prompt_tokens, encrypted_reasoning } = self;
         response.id = format!("resp_{suffix}");
         response.created_at = created_at;
-        ResponseEvents::new(response, suffix, decoder, schemas, prompt_tokens)
+        ResponseEvents::new(response, suffix, decoder, schemas, prompt_tokens).with_encrypted_reasoning(encrypted_reasoning)
     }
 }
 
@@ -301,6 +311,11 @@ pub(crate) async fn prepare(
         metadata: req.metadata.clone().unwrap_or_else(|| json!({})),
         thinking_budget_forced_at: None,
     };
+    let encrypted_reasoning = req
+        .include
+        .as_ref()
+        .and_then(JsonValue::as_array)
+        .is_some_and(|values| values.iter().any(|value| value == "reasoning.encrypted_content"));
     Ok(Prepared {
         input,
         class,
@@ -311,7 +326,9 @@ pub(crate) async fn prepare(
             decoder: OutputDecoder::new(server.active().template.token_decoder(), starts_in_reasoning),
             schemas,
             prompt_tokens,
+            encrypted_reasoning,
         },
+        starts_in_reasoning,
     })
 }
 
@@ -427,10 +444,17 @@ pub(crate) fn messages(items: &[JsonValue]) -> Result<Vec<ChatMessage>, Response
                 messages.push(chat_message(item, index)?);
             }
             "reasoning" => {
-                let text = reasoning_text(item);
+                // The model's own view of a reasoning this server wrote
+                // (ADR 0052) wins over the text a client shows; any other
+                // blob is not this server's to read.
+                let text = object
+                    .get("encrypted_content")
+                    .and_then(JsonValue::as_str)
+                    .and_then(crate::responses::events::read_reasoning_blob)
+                    .unwrap_or_else(|| reasoning_text(item));
                 if text.is_empty() {
-                    // Only a summary or an encrypted blob: nothing this
-                    // server produced, and nothing it can render.
+                    // Only a summary or another server's blob: nothing this
+                    // server can render.
                     continue;
                 }
                 if turn.as_ref().is_some_and(Turn::started) {

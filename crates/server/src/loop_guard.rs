@@ -1,9 +1,11 @@
 //! The **loop guard** (ADR 0052, branch `experiment/loop-rewind`): a task
-//! between a chat request's engine stream and its consumer that watches the
+//! between a request's engine stream and its consumer that watches the
 //! reasoning for a loop and, in `rewind` mode, takes the generation back to
-//! before it. `rewind` is the default; `log` only logs; benches and gates run
-//! `off`, for reference parity. A server built without a config
-//! ([`crate::Live`]'s default) runs `off`.
+//! before it. It covers every request that starts inside its reasoning, on
+//! chat completions and on `/v1/responses` over HTTP and the WebSocket.
+//! `rewind` is the default; `log` only logs; benches and gates run `off`,
+//! for reference parity. A server built without a config ([`crate::Live`]'s
+//! default) runs `off`.
 //!
 //! Why: `docs/findings/2026-10-12-reasoning-loops-are-the-models.md` — about a
 //! third of long-enumeration turns loop in their reasoning, on ignis and on
@@ -54,15 +56,29 @@
 //! (`api::conversation`): chat completions, `/v1/responses` (its `reasoning`
 //! items are that reasoning) and `/v1/tokenize`.
 //!
-//! Not covered by the guard: `/v1/responses`; a request with images (logged,
-//! never rewound); a loop in the answer. A continuation's penalty counts
-//! start from zero, and a forced tool call (`tool_choice`) is not forced
-//! after a close the guard made.
+//! **Cancel by response.** A rewind replaces the engine request: [`Running`]
+//! names the one generating now, and on `/v1/responses` what cancels a
+//! response (`response.cancel`, a socket closing, an HTTP client hanging up,
+//! through `api::CancelOnDrop`) cancels that one. On every surface a
+//! consumer that leaves stops it from the guard's side as well, even when
+//! the holdback has nothing to send it, and takes a continuation out of its
+//! wait for room. A socket's continuation waits in the socket's own
+//! admission queue (`responses::queue::QueuedOps`).
+//!
+//! **On `/v1/responses`** the count is `output_tokens_details.rewound_tokens`;
+//! a WebSocket stream continues from the model's view of a rewound response,
+//! and `include: ["reasoning.encrypted_content"]` carries that view to the
+//! client (`responses::events::reasoning_blob`), which may send it back.
+//!
+//! Not covered by the guard: a request with images (logged, never rewound);
+//! a loop in the answer. A continuation's penalty counts start from zero, and
+//! a forced tool call (`tool_choice`) is not forced after a close the guard
+//! made.
 
 use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -740,19 +756,44 @@ impl RewoundTokens {
 /// [`RewoundTokens`], shared.
 pub type Rewound = Arc<RewoundTokens>;
 
+/// The engine request generating for a guarded request now: the one first
+/// submitted, then each continuation in turn. Shared with what cancels the
+/// request by its response (`api::CancelOnDrop`): after a rewind the first
+/// one is gone, and only the continuation is left to stop.
+#[derive(Debug, Clone)]
+pub struct Running(Arc<AtomicU64>);
+
+impl Running {
+    /// `request`, until a rewind replaces it.
+    pub fn new(request: RequestId) -> Self {
+        Self(Arc::new(AtomicU64::new(request)))
+    }
+
+    /// The engine request generating now.
+    pub fn get(&self) -> RequestId {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, request: RequestId) {
+        self.0.store(request, Ordering::Relaxed);
+    }
+}
+
 /// Put the guard between `stream` (the engine's, for `request`, submitted
 /// from `input`) and its consumer: the stream returned. `Off` returns
 /// `stream` itself.
 pub fn guard(params: LoopGuardParams, ops: impl GuardOps, input: RequestInput, request: RequestId, stream: EventStream) -> EventStream {
-    guard_counted(params, ops, input, request, stream, Rewound::default())
+    guard_counted(params, ops, input, Running::new(request), stream, Rewound::default())
 }
 
-/// [`guard`], adding the tokens each rewind takes back to `rewound`.
+/// [`guard`] on the request `running` names, adding the tokens each rewind
+/// takes back to `rewound` and keeping `running` on the engine request
+/// generating now.
 pub fn guard_counted(
     params: LoopGuardParams,
     ops: impl GuardOps,
     input: RequestInput,
-    request: RequestId,
+    running: Running,
     stream: EventStream,
     rewound: Rewound,
 ) -> EventStream {
@@ -760,7 +801,7 @@ pub fn guard_counted(
         return stream;
     }
     let (tx, rx) = unbounded_channel();
-    tokio::spawn(run(params, ops, input, request, stream, tx, rewound));
+    tokio::spawn(run(params, ops, input, running, stream, tx, rewound));
     rx
 }
 
@@ -786,8 +827,9 @@ struct Guard<O: GuardOps> {
     input: RequestInput,
     /// The client's request id: every event it receives carries it.
     original: RequestId,
-    /// The engine request generating now.
-    current: RequestId,
+    /// The engine request generating now, shared with what cancels by
+    /// response.
+    current: Running,
     view: View,
     watch: Watch,
     /// The nudges given so far.
@@ -828,7 +870,7 @@ impl<O: GuardOps> Guard<O> {
         if !rewindable {
             tracing::info!(
                 name: "ignis.loop_guard.detected",
-                request = self.original, engine_request = self.current, at_chars = at, ratio = score.ratio,
+                request = self.original, engine_request = self.current.get(), at_chars = at, ratio = score.ratio,
                 raw_ratio = score.raw_ratio, window_start_chars = score.start,
                 cut_chars = self.watch.cut_point(self.view.text(), &self.params),
                 "loop in the reasoning (log only)"
@@ -886,11 +928,19 @@ impl<O: GuardOps> Guard<O> {
         next.tokens.extend_from_slice(&self.view.tokens[..kept]);
         next.tokens.extend_from_slice(&nudge);
 
-        self.ops.cancel(self.current);
-        let (request, stream) = self.ops.submit(next).await?;
+        let cancelled = self.current.get();
+        self.ops.cancel(cancelled);
+        // A consumer that leaves while the continuation waits for room takes
+        // it out of the wait: a submission dropped before its answer is
+        // cancelled (`Engine::submit_with_notes`), a queue ticket leaves.
+        let (request, stream) = tokio::select! {
+            submitted = self.ops.submit(next) => submitted?,
+            () = self.tx.closed() => return None,
+        };
+        self.current.set(request);
         tracing::info!(
             name: "ignis.loop_guard.rewound",
-            request = self.original, cancelled = self.current, continuation = request,
+            request = self.original, cancelled, continuation = request,
             at_chars = at, ratio = ratio, raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = kept_chars,
             rewound_tokens = generated - kept, rewound_chars = at - kept_chars,
             struck_chars = struck.as_ref().map_or(0, |struck| struck.chars().count()), held_back = struck.is_none(),
@@ -913,7 +963,6 @@ impl<O: GuardOps> Guard<O> {
         self.watch = Watch::from(self.view.text().len(), &self.params);
         self.rewinds += 1;
         self.closed = close;
-        self.current = request;
         Some(Continuation { request, stream, tag: encoded_tag })
     }
 
@@ -960,7 +1009,7 @@ async fn run<O: GuardOps>(
     params: LoopGuardParams,
     ops: O,
     input: RequestInput,
-    request: RequestId,
+    running: Running,
     mut stream: EventStream,
     tx: UnboundedSender<SchedEvent>,
     rewound: Rewound,
@@ -972,8 +1021,8 @@ async fn run<O: GuardOps>(
         ops,
         tx,
         input,
-        original: request,
-        current: request,
+        original: running.get(),
+        current: running,
         view,
         watch: Watch::from(0, &params),
         rewinds: 0,
@@ -988,12 +1037,24 @@ async fn run<O: GuardOps>(
     // client: its admission and prompt-reuse events describe a request the
     // client never made.
     let mut continued = false;
-    while let Some(mut event) = stream.recv().await {
+    loop {
+        // A consumer that left (cancelled by its response, or gone) stops
+        // the engine request generating now, also when the holdback has
+        // nothing to send it that would fail.
+        let event = tokio::select! {
+            biased;
+            () = guard.tx.closed() => {
+                guard.ops.cancel(guard.current.get());
+                return;
+            }
+            event = stream.recv() => event,
+        };
+        let Some(mut event) = event else { break };
         match event {
             SchedEvent::Token { token, .. } => {
                 guard.view.push(token);
                 if !guard.release() {
-                    guard.ops.cancel(guard.current);
+                    guard.ops.cancel(guard.current.get());
                     return;
                 }
                 if let Some(continuation) = guard.after_token().await {
@@ -1033,7 +1094,7 @@ async fn run<O: GuardOps>(
             }
             other if !continued => {
                 if guard.tx.send(other).is_err() {
-                    guard.ops.cancel(guard.current);
+                    guard.ops.cancel(guard.current.get());
                     return;
                 }
             }
@@ -1929,7 +1990,7 @@ mod tests {
             params(LoopGuardMode::Rewind),
             ops.clone(),
             input("P", 40_000),
-            1,
+            Running::new(1),
             scripted(1, &reasoning, false),
             rewound.clone(),
         ))
@@ -2038,6 +2099,86 @@ mod tests {
         panic!("the continuation was never cancelled: {:?}", ops.cancelled.lock().unwrap());
     }
 
+    /// Yield until `done` holds, or fail naming `what`.
+    async fn until(what: &str, done: impl Fn() -> bool) {
+        for _ in 0..1000 {
+            if done() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("{what}");
+    }
+
+    /// What cancels by response reads the engine request generating now:
+    /// the one submitted first, then the continuation.
+    #[tokio::test]
+    async fn the_running_request_is_the_continuation_after_a_rewind() {
+        let (_cont_tx, cont_rx) = unbounded_channel();
+        let ops = ops_with(vec![(2, cont_rx)]);
+        let running = Running::new(1);
+        let reasoning = prose(5000) + &looping(6000);
+        let _rx = guard_counted(
+            params(LoopGuardMode::Rewind),
+            ops.clone(),
+            input("P", 40_000),
+            running.clone(),
+            scripted(1, &reasoning, false),
+            Rewound::default(),
+        );
+        assert_eq!(running.get(), 1);
+        until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
+        assert_eq!(running.get(), 2);
+    }
+
+    /// A consumer that leaves stops the engine request generating now even
+    /// when there is nothing to send it, so no failed send tells: here the
+    /// holdback hid the rewind and holds every token.
+    #[tokio::test]
+    async fn a_consumer_that_leaves_cancels_the_continuation_with_nothing_to_send() {
+        let (_cont_tx, cont_rx) = unbounded_channel();
+        let ops = ops_with(vec![(2, cont_rx)]);
+        let reasoning = prose(5000) + &looping(6000);
+        let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
+        let rx = guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false));
+        until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
+        drop(rx);
+        until("the continuation was never cancelled", || ops.cancelled.lock().unwrap().contains(&2)).await;
+    }
+
+    /// [`FakeOps`] whose submissions never get an answer: the engine full.
+    struct Stalled(Arc<FakeOps>);
+
+    impl GuardOps for Stalled {
+        fn cancel(&self, request: RequestId) {
+            self.0.cancel(request);
+        }
+        fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+            self.0.submitted.lock().unwrap().push(input);
+            Box::pin(std::future::pending())
+        }
+        fn decoder(&self) -> OutputDecoder {
+            self.0.decoder()
+        }
+        fn encode(&self, text: &str) -> Option<Vec<TokenId>> {
+            self.0.encode(text)
+        }
+    }
+
+    /// A consumer that leaves while the continuation waits for room takes
+    /// it out of the wait: the guard ends, and nothing is left to admit.
+    #[tokio::test]
+    async fn a_consumer_that_leaves_while_the_continuation_waits_ends_the_wait() {
+        let ops = ops_with(Vec::new());
+        let reasoning = prose(5000) + &looping(6000);
+        let rx = guard(params(LoopGuardMode::Rewind), Stalled(ops.clone()), input("P", 40_000), 1, scripted(1, &reasoning, false));
+        until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
+        drop(rx);
+        until("the guard still waits", || Arc::strong_count(&ops) == 1).await;
+        let cancelled = ops.cancelled.lock().unwrap();
+        assert!(cancelled.contains(&1) && cancelled.iter().all(|&request| request == 1), "only the looping request: {cancelled:?}");
+    }
+
     // ── history repair on the guard's own streams ──────────────────────
 
     #[tokio::test]
@@ -2107,7 +2248,7 @@ mod tests {
         let p = LoopGuardParams { holdback_chars: 500, ..params(LoopGuardMode::Rewind) };
         let rewound = Rewound::default();
         let (received, done) =
-            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false), rewound.clone())).await;
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone())).await;
         let text = text_of(&received);
         let (sent, _) = text.split_once(TAG_OPEN).expect("the cut is in what was sent: a tag");
         let kept = kept_then(&text_of(&models_view(&ops, "P", &[])), NUDGES[0], &reasoning).0.chars().count();
@@ -2139,7 +2280,7 @@ mod tests {
         let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
         let rewound = Rewound::default();
         let (received, done) =
-            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false), rewound.clone())).await;
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone())).await;
         assert_eq!(ops.submitted.lock().unwrap().len(), 1, "rewound");
         assert!(!text_of(&received).contains(TAG_PREFIX), "no tag");
         assert_eq!(received, models_view(&ops, "P", &tokens_of(after)), "the model's view, token for token");

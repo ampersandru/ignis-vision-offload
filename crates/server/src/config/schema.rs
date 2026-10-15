@@ -322,10 +322,11 @@ config_group! {
         /// is forced; `off` = no budget. A request's own thinking_budget
         /// overrides it.
         thinking_budget: ThinkingBudget = Some(super::DEFAULT_THINKING_BUDGET), NO_RULE, ALL, [Visible, Patchable];
-        /// The loop guard (ADR 0052): `rewind`, a loop in a chat request's
-        /// reasoning is taken back and the model nudged, then closed after
-        /// `loop_guard_retries` nudges; `log`, it is only logged; `off`, no
-        /// guard, as benches and gates run for reference parity.
+        /// The loop guard (ADR 0052): `rewind`, a loop in a request's
+        /// reasoning (chat completions, `/v1/responses`) is taken back and
+        /// the model nudged, then closed after `loop_guard_retries` nudges;
+        /// `log`, it is only logged; `off`, no guard, as benches and gates
+        /// run for reference parity.
         loop_guard: LoopGuard = crate::loop_guard::LoopGuardMode::Rewind, Validator::OneOf(crate::loop_guard::LoopGuardMode::NAMES), ALL,
             [Visible, Patchable];
         /// A window of scored reasoning whose zlib ratio is under this many

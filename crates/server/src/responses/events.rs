@@ -22,6 +22,15 @@
 //! reasoning item closes as soon as the content channel produces anything; a
 //! call closes the message before it, and text the model writes after a call
 //! opens a new message item.
+//!
+//! **The loop guard** (ADR 0052): the reasoning item carries what the client
+//! was streamed, a rewind's struck text and tag included. What the model saw
+//! is that text repaired ([`crate::loop_guard::repair`]): what
+//! `encrypted_content` carries when the request asked for it
+//! ([`reasoning_blob`]), and what a continuation of the response starts from
+//! ([`ResponseEvents::model_view_output`]).
+
+use std::borrow::Cow;
 
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
@@ -30,7 +39,27 @@ use utoipa::ToSchema;
 use ignis_core::{FinishReason, SchedEvent, TokenId};
 
 use crate::decoder::{Channel, Delta, OutputDecoder};
+use crate::loop_guard::Rewound;
 use crate::toolcall::{ToolCall, ToolCallScanner, ToolEvent, ToolSchemas};
+
+/// What `encrypted_content` opens with when this server wrote it. In this
+/// version, standard padded base64 of the reasoning's UTF-8 follows.
+pub(crate) const REASONING_BLOB_PREFIX: &str = "ignis:v1:";
+
+/// `reasoning`, the model's view of a reasoning item, as its
+/// `encrypted_content` (ADR 0052): opaque to a client, and neither signed
+/// nor encrypted, since a client can send any reasoning it likes in clear.
+pub(crate) fn reasoning_blob(reasoning: &str) -> String {
+    format!("{REASONING_BLOB_PREFIX}{}", crate::images::job::base64(reasoning.as_bytes()))
+}
+
+/// The reasoning a [`reasoning_blob`] carries; `None` for any other
+/// `encrypted_content` (another server's, malformed base64, bytes that are
+/// not UTF-8).
+pub(crate) fn read_reasoning_blob(blob: &str) -> Option<String> {
+    let payload = blob.strip_prefix(REASONING_BLOB_PREFIX)?;
+    String::from_utf8(crate::media::base64_bytes(payload)?).ok()
+}
 
 /// An engine `f32` sampling value as the decimal it was written as: widened
 /// directly, `0.95_f32` is 0.949999988079071 — a number no client sent, and
@@ -122,8 +151,18 @@ pub(crate) struct InputTokensDetails {
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub(crate) struct OutputTokensDetails {
-    /// The generated tokens on the thinking channel.
+    /// The generated tokens on the thinking channel, those a loop-guard
+    /// rewind took back included.
     pub reasoning_tokens: u32,
+    /// An ignis extension (ADR 0052), as chat's
+    /// `completion_tokens_details.rewound_tokens`: the generated tokens a
+    /// loop-guard rewind took back from the reasoning, those a holdback kept
+    /// from the client included; with no holdback, the sum of the rewind
+    /// tags' `N TOKENS`. Not the tags' own tokens nor the nudges. They are
+    /// still counted in `output_tokens`, which counts everything the model
+    /// generated. Absent when nothing was rewound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rewound_tokens: Option<u32>,
 }
 
 /// One output item, as its events and the response carry it: the one type
@@ -131,13 +170,21 @@ pub(crate) struct OutputTokensDetails {
 #[derive(Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum OutputItem {
-    /// The thinking channel: one `reasoning_text` part, no summary, never
-    /// `encrypted_content`.
+    /// The thinking channel: one `reasoning_text` part, as streamed, and no
+    /// summary.
     Reasoning {
         id: String,
         #[schema(value_type = Vec<Object>)]
         summary: Vec<JsonValue>,
         content: Vec<Part>,
+        /// With `include: ["reasoning.encrypted_content"]`, on the item's
+        /// `done` and in the response: `ignis:v1:` and the base64 of the
+        /// reasoning as the model saw it, a loop-guard rewind's struck text
+        /// and tag taken out (ADR 0052). Sent back on a `reasoning` input
+        /// item, it is rendered in place of the item's text. Absent
+        /// otherwise.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
     },
     /// The content channel: one `output_text` part.
     Message {
@@ -209,6 +256,10 @@ pub(crate) struct ResponseEvents {
     cached_tokens: u32,
     output_tokens: u32,
     reasoning_tokens: u32,
+    /// What the loop guard's rewinds took back, when it watches the request.
+    rewound: Option<Rewound>,
+    /// `include: ["reasoning.encrypted_content"]`.
+    encrypted_reasoning: bool,
     ending: Option<Ending>,
 }
 
@@ -236,8 +287,22 @@ impl ResponseEvents {
             cached_tokens: 0,
             output_tokens: 0,
             reasoning_tokens: 0,
+            rewound: None,
+            encrypted_reasoning: false,
             ending: None,
         }
+    }
+
+    /// Count the tokens the loop guard's rewinds take back in the usage.
+    pub(crate) fn with_rewound(mut self, rewound: Rewound) -> Self {
+        self.rewound = Some(rewound);
+        self
+    }
+
+    /// Give the reasoning item its `encrypted_content`, when `on`.
+    pub(crate) fn with_encrypted_reasoning(mut self, on: bool) -> Self {
+        self.encrypted_reasoning = on;
+        self
     }
 
     /// The response's id (`resp_...`).
@@ -253,6 +318,21 @@ impl ResponseEvents {
     /// The response object as it stands (the terminal one once it ended).
     pub(crate) fn response(&self) -> &ResponseObject {
         &self.response
+    }
+
+    /// The output items as the model saw them, what a continuation of this
+    /// response starts from (ADR 0052): a reasoning item's text repaired,
+    /// a loop-guard rewind's struck text and tag taken out.
+    pub(crate) fn model_view_output(&self) -> Vec<JsonValue> {
+        let mut output = self.response.output.clone();
+        for item in output.iter_mut().filter(|item| item["type"] == "reasoning") {
+            for part in item["content"].as_array_mut().into_iter().flatten() {
+                if let Some(Cow::Owned(repaired)) = part["text"].as_str().map(crate::loop_guard::repair) {
+                    part["text"] = json!(repaired);
+                }
+            }
+        }
+        output
     }
 
     /// `response.created`: `status: "queued"` and then `response.queued` for
@@ -444,7 +524,8 @@ impl ResponseEvents {
             return;
         }
         let id = format!("rs_{}", self.suffix);
-        let index = self.add(OutputItem::Reasoning { id: id.clone(), summary: Vec::new(), content: Vec::new() }, out);
+        let added = OutputItem::Reasoning { id: id.clone(), summary: Vec::new(), content: Vec::new(), encrypted_content: None };
+        let index = self.add(added, out);
         let item = OpenItem { index, id, text: String::new() };
         out.push(self.part_event("response.content_part.added", &item, Part::ReasoningText { text: String::new() }));
         self.reasoning = Some(item);
@@ -467,7 +548,8 @@ impl ResponseEvents {
             "text": item.text,
         })));
         out.push(self.part_event("response.content_part.done", &item, part.clone()));
-        let done = OutputItem::Reasoning { id: item.id, summary: Vec::new(), content: vec![part] };
+        let encrypted_content = self.encrypted_reasoning.then(|| reasoning_blob(&crate::loop_guard::repair(&item.text)));
+        let done = OutputItem::Reasoning { id: item.id, summary: Vec::new(), content: vec![part], encrypted_content };
         self.done(item.index, done, out);
     }
 
@@ -566,16 +648,23 @@ impl ResponseEvents {
         out.push(self.end(ending, status));
     }
 
-    /// The terminal event, with the usage figures.
+    /// The terminal event, with the usage figures. A loop-guard rewind's
+    /// tokens a holdback never sent were generated in the reasoning, and
+    /// are counted with the ones streamed.
     fn end(&mut self, ending: Ending, status: &'static str) -> JsonValue {
         self.ending = Some(ending);
         self.response.status = status;
+        let (taken, unsent) = self.rewound.as_ref().map_or((0, 0), |rewound| (rewound.taken(), rewound.unsent()));
+        let output_tokens = self.output_tokens.saturating_add(unsent);
         self.response.usage = Some(ResponseUsage {
             input_tokens: self.prompt_tokens,
             input_tokens_details: InputTokensDetails { cached_tokens: self.cached_tokens },
-            output_tokens: self.output_tokens,
-            output_tokens_details: OutputTokensDetails { reasoning_tokens: self.reasoning_tokens },
-            total_tokens: self.prompt_tokens.saturating_add(self.output_tokens),
+            output_tokens,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: self.reasoning_tokens.saturating_add(unsent),
+                rewound_tokens: (taken > 0).then_some(taken),
+            },
+            total_tokens: self.prompt_tokens.saturating_add(output_tokens),
         });
         let kind = match ending {
             Ending::Completed => "response.completed",
@@ -591,6 +680,7 @@ mod tests {
     use super::*;
     use crate::decoder::TokenDecoder;
     use crate::responses::{drive, Driven};
+    use std::sync::Arc;
 
     #[test]
     fn a_sampling_value_is_echoed_as_the_decimal_it_was_written_as() {
@@ -715,6 +805,73 @@ mod tests {
         assert_eq!(calls(&run).len(), 2);
         assert_eq!(run.last().unwrap()["response"]["output"], one.last().unwrap()["response"]["output"]);
         assert!(of_type(&run, "response.output_text.delta").len() < of_type(&one, "response.output_text.delta").len());
+    }
+
+    /// `events`' whole response for `tokens`, as one run, then the finish.
+    fn finished(events: &mut ResponseEvents, tokens: &[TokenId]) -> Vec<JsonValue> {
+        let mut out = events.on_tokens(tokens);
+        out.extend(events.on_event(done(tokens.len() as u32)));
+        out
+    }
+
+    /// ADR 0052: `output_tokens` counts what the model generated, a rewind's
+    /// tokens the holdback never sent included, and `rewound_tokens` says
+    /// how many were taken back; absent when none were.
+    #[test]
+    fn usage_counts_the_tokens_a_rewind_took_back_and_names_them() {
+        const TEXTS: &[&str] = &["think", "ing", "</think>", "done"];
+        let usage = |out: &[JsonValue]| out.last().unwrap()["response"]["usage"].clone();
+        let plain = usage(&finished(&mut events(TEXTS, true), &[0, 1, 2, 3]));
+        assert_eq!((plain["output_tokens"].clone(), plain["output_tokens_details"]["reasoning_tokens"].clone()), (json!(4), json!(3)));
+        assert!(plain["output_tokens_details"].get("rewound_tokens").is_none(), "{plain}");
+
+        let watched = Arc::new(crate::loop_guard::RewoundTokens::new(0, 0));
+        let unrewound = usage(&finished(&mut events(TEXTS, true).with_rewound(watched), &[0, 1, 2, 3]));
+        assert_eq!(unrewound, plain, "a guard that never rewound changes nothing");
+
+        let rewound = Arc::new(crate::loop_guard::RewoundTokens::new(5, 3));
+        let counted = usage(&finished(&mut events(TEXTS, true).with_rewound(rewound), &[0, 1, 2, 3]));
+        assert_eq!(counted["output_tokens"], 4 + 3, "the 3 never sent were generated too");
+        assert_eq!(counted["output_tokens_details"]["reasoning_tokens"], 3 + 3, "in the reasoning");
+        assert_eq!(counted["output_tokens_details"]["rewound_tokens"], 5);
+        assert_eq!(counted["total_tokens"], 1 + 7);
+    }
+
+    #[test]
+    fn a_reasoning_blob_is_the_prefix_and_padded_base64_and_only_ours_is_read() {
+        assert_eq!(reasoning_blob("ab"), "ignis:v1:YWI=");
+        assert_eq!(read_reasoning_blob(&reasoning_blob("è 🦀\n")).as_deref(), Some("è 🦀\n"));
+        assert_eq!(read_reasoning_blob("ignis:v1:").as_deref(), Some(""));
+        for other in ["gAAAAABo-another-servers-blob", "ignis:v2:YWI=", "ignis:v1:!!!", "ignis:v1://4=", "YWI="] {
+            assert_eq!(read_reasoning_blob(other), None, "{other}");
+        }
+    }
+
+    /// With `include: ["reasoning.encrypted_content"]` the reasoning item's
+    /// `done` and the response carry the model's view encoded, the rewind
+    /// taken out; the item's text stays what was streamed. A continuation
+    /// starts from the model's view either way.
+    #[test]
+    fn the_reasoning_items_encrypted_content_is_the_models_view() {
+        let streamed: &'static str = Box::leak(format!("kept lo{}Wait.", crate::loop_guard::tag(2, "lo")).into_boxed_str());
+        let texts: &'static [&'static str] = Box::leak(vec![streamed, "</think>", "answer"].into_boxed_slice());
+        for include in [false, true] {
+            let mut events = events(texts, true).with_encrypted_reasoning(include);
+            let out = finished(&mut events, &[0, 1, 2]);
+            let added = &of_type(&out, "response.output_item.added")[0]["item"];
+            assert!(added.get("encrypted_content").is_none(), "not on the added item: {added}");
+            let item = &of_type(&out, "response.output_item.done")[0]["item"];
+            let output = &out.last().unwrap()["response"]["output"];
+            assert_eq!(item, &output[0]);
+            assert_eq!(item["content"][0]["text"], streamed, "the item's text is what was streamed");
+            match include {
+                true => assert_eq!(item["encrypted_content"], reasoning_blob("kept Wait."), "{item}"),
+                false => assert!(item.get("encrypted_content").is_none(), "{item}"),
+            }
+            let model_view = events.model_view_output();
+            assert_eq!(model_view[0]["content"][0]["text"], "kept Wait.");
+            assert_eq!(model_view[1], output[1], "the message as it is");
+        }
     }
 
     /// A round's tokens waiting together are one delta, and the ending still

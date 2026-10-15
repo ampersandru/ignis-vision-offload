@@ -2176,7 +2176,7 @@ async fn chat_completions(
             loop_guard,
             crate::loop_guard::EngineOps::new(loaded.text_engine().clone(), class, loaded.template.clone()),
             input,
-            request_id,
+            crate::loop_guard::Running::new(request_id),
             stream,
             rewound.clone(),
         ),
@@ -2825,13 +2825,21 @@ struct ChunkStream {
 /// reservation generating to `max_tokens` for nobody.
 pub(crate) struct CancelOnDrop {
     engine: Engine,
-    request: RequestId,
+    /// The engine request to cancel: under the loop guard, whichever one
+    /// generates for the response when it is dropped (ADR 0052).
+    request: crate::loop_guard::Running,
     completed: bool,
 }
 
 impl CancelOnDrop {
     pub(crate) fn new(engine: Engine, request: RequestId) -> Self {
-        Self { engine, request, completed: false }
+        Self::following(engine, crate::loop_guard::Running::new(request))
+    }
+
+    /// Cancels the engine request `running` names when it is dropped: the
+    /// loop guard's continuation after a rewind, not the request it replaced.
+    pub(crate) fn following(engine: Engine, running: crate::loop_guard::Running) -> Self {
+        Self { engine, request: running, completed: false }
     }
 
     /// The request reached its own terminal event: dropping is now a
@@ -2843,7 +2851,7 @@ impl CancelOnDrop {
     /// A stop sequence ended the request after `tokens` generated tokens
     /// ([`Engine::stop`]): it is released now, and reported done.
     fn stop(&mut self, tokens: u32) {
-        self.engine.stop(self.request, tokens);
+        self.engine.stop(self.request.get(), tokens);
         self.completed = true;
     }
 }
@@ -2851,7 +2859,7 @@ impl CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if !self.completed {
-            self.engine.cancel(self.request);
+            self.engine.cancel(self.request.get());
         }
     }
 }

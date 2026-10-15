@@ -6,7 +6,9 @@
 //! Both run on the engine path chat completions uses: a Responses
 //! conversation is mapped onto chat messages ([`input`]) and rendered by the
 //! same template, and the response's events come from the one producer in
-//! [`events`], so the transports cannot disagree on a payload.
+//! [`events`], so the transports cannot disagree on a payload. The loop
+//! guard (ADR 0052, [`crate::loop_guard`]) watches both as it watches chat
+//! completions ([`Guarding`]).
 
 pub(crate) mod events;
 pub(crate) mod input;
@@ -33,10 +35,47 @@ use utoipa::ToSchema;
 
 use crate::api::{self, ApiError, CancelOnDrop};
 use crate::engine::{drain_tokens, EventStream};
-use ignis_core::SchedEvent;
+use crate::loop_guard::{GuardOps, LoopGuardMode, LoopGuardParams, Rewound, Running};
+use ignis_core::{RequestId, RequestInput, SchedEvent};
 use crate::Server;
 use events::{ResponseEvents, ResponseObject};
 use input::CreateResponse;
+
+/// The loop guard on one Responses request (ADR 0052): on as on chat
+/// completions — the live `loop_guard` knobs, a request that starts inside
+/// its reasoning — and never on a warm-up, which generates nothing. Taken
+/// before the request is submitted, since every continuation is built from
+/// the request as submitted.
+pub(crate) struct Guarding {
+    watched: Option<(LoopGuardParams, RequestInput)>,
+    rewound: Rewound,
+}
+
+impl Guarding {
+    pub(crate) fn new(server: &Server, input: &RequestInput, starts_in_reasoning: bool) -> Self {
+        let params = server.live().loop_guard;
+        let watched = (params.mode != LoopGuardMode::Off && starts_in_reasoning && !input.warm_up).then(|| (params, input.clone()));
+        Self { watched, rewound: Rewound::default() }
+    }
+
+    /// What the guard's rewinds take back, for the response's usage.
+    pub(crate) fn rewound(&self) -> Rewound {
+        self.rewound.clone()
+    }
+
+    /// `stream`, the engine's for `request`, behind the guard when it
+    /// watches the request, continuations submitted through `ops`; and the
+    /// engine request generating for the response, which a cancel by
+    /// response stops.
+    pub(crate) fn guard(self, ops: impl GuardOps, request: RequestId, stream: EventStream) -> (EventStream, Running) {
+        let running = Running::new(request);
+        let stream = match self.watched {
+            Some((params, input)) => crate::loop_guard::guard_counted(params, ops, input, running.clone(), stream, self.rewound),
+            None => stream,
+        };
+        (stream, running)
+    }
+}
 
 /// How [`drive`] left a response.
 pub(crate) enum Driven {
@@ -131,7 +170,9 @@ struct ResponseStreamEvent {
 
 `stream: true` answers `text/event-stream`, one event per `event:`/`data:` pair: `response.created`, `response.in_progress`, then per output item `response.output_item.added`, its content events (`response.reasoning_text.delta`, `response.output_text.delta`, `response.function_call_arguments.delta`, ...), `response.output_item.done`, and one terminal event (`response.completed`, `response.incomplete` on `max_output_tokens`, `response.failed`). Every event carries a `sequence_number` counting from 0. Without it the body is the terminal event's `response`.
 
-Not served, and refused with a 400 rather than ignored: hosted tools (anything but `type: \"function\"`), `text.format` other than `text`, `background: true`, and `previous_response_id`, since this server stores no responses over HTTP (the WebSocket mode, `GET /v1/responses`, continues from its connection). `usage.input_tokens_details.cached_tokens` is the prompt this request resumed from retained state instead of prefilling. The ignis extensions of chat completions are accepted with the same names and meaning, and `model` is read as there: another model the server lists switches it to that model before this request is served on it.",
+Not served, and refused with a 400 rather than ignored: hosted tools (anything but `type: \"function\"`), `text.format` other than `text`, `background: true`, and `previous_response_id`, since this server stores no responses over HTTP (the WebSocket mode, `GET /v1/responses`, continues from its connection). `usage.input_tokens_details.cached_tokens` is the prompt this request resumed from retained state instead of prefilling. The ignis extensions of chat completions are accepted with the same names and meaning, and `model` is read as there: another model the server lists switches it to that model before this request is served on it.
+
+The reasoning-loop guard (`--model-loop-guard`, ADR 0052) watches a request that reasons, as on chat completions: a loop is taken back, the model nudged and the generation continued, within this one response. The reasoning then carries a tag, `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]`, after the `m` characters taken back, and `usage.output_tokens_details.rewound_tokens` (an ignis extension, absent when nothing was rewound) counts the tokens taken back, which `output_tokens` counts too. `include: [\"reasoning.encrypted_content\"]` gives every reasoning output item an `encrypted_content`: `ignis:v1:` and the base64 of the reasoning as the model saw it, without the tags and the text they took back. A `reasoning` input item whose `encrypted_content` is one of these is rendered from it in place of its text; any other `encrypted_content` is ignored, and the item's text is rendered with every verified rewind taken out. Any other `include` value is accepted and changes nothing.",
     request_body = CreateResponse,
     responses(
         (status = 200, description = "The response. `application/json` when `stream` is false or absent; `text/event-stream` when it is true.", content(
@@ -172,15 +213,21 @@ pub(crate) async fn create_response(
     // The engine the request is submitted to is the one its cancel guard
     // must reach, whatever a model switch does meanwhile.
     let engine = server.active().text_engine().clone();
-    let (request_id, mut scheduled) =
+    let guarding = Guarding::new(&server, &prepared.input, prepared.starts_in_reasoning);
+    let rewound = guarding.rewound();
+    let (request_id, scheduled) =
         match engine.submit_with_notes(prepared.input, prepared.class, prepared.notes).await {
             Ok(submitted) => submitted,
             Err(err) => return api::submit_error(&server, err),
         };
+    // A continuation is submitted as this request was, straight to the
+    // engine (its `Full` retried, as chat completions does).
+    let ops = crate::loop_guard::EngineOps::new(engine.clone(), prepared.class, server.active().template.clone());
+    let (mut scheduled, running) = guarding.guard(ops, request_id, scheduled);
     // GitHub #81 / ADR 0012: see the matching comment in `chat_completions`.
     tracing::Span::current().record("request_id", request_id);
-    let mut events = prepared.start.events(request_id.to_string(), created_at(&server));
-    let mut cancel = CancelOnDrop::new(engine, request_id);
+    let mut events = prepared.start.events(request_id.to_string(), created_at(&server)).with_rewound(rewound);
+    let mut cancel = CancelOnDrop::following(engine, running);
     let deadline = tokio::time::Instant::now() + server.live().request_timeout;
 
     if stream {

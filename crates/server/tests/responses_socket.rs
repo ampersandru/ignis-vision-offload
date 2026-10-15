@@ -19,6 +19,8 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use ignis_core::mock::GatedCompute;
 use ignis_core::{Compute, MockCompute, SchedulerConfig};
+use ignis_server::images::job::base64;
+use ignis_server::loop_guard::{repair, LoopGuardMode, LoopGuardParams, TAG_PREFIX};
 use serde_json::{json, Value as JsonValue};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -847,4 +849,129 @@ async fn a_client_close_is_answered_with_a_close_frame() {
         }
         other => panic!("expected the server's Close frame, got {other:?}"),
     }
+}
+
+// ── the loop guard (ADR 0052) ─────────────────────────────────────────────
+
+/// A server with the loop guard on (`holdback` characters held back), over
+/// `mock`, whose request 0 reasons prose and then a loop the guard rewinds.
+fn looping_server(mock: &Arc<MockCompute>, config: SchedulerConfig, holdback: u32) -> (ignis_server::Server, Arc<Script>) {
+    let reasoning = responses::prose(3000) + &responses::looping(4000);
+    let script = Script::encoding(responses::scripted_text(mock, 0, &reasoning));
+    let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, holdback_chars: holdback, ..LoopGuardParams::default() };
+    (server(&script, config, mock.clone() as Arc<dyn Compute>).with_loop_guard(guard), script)
+}
+
+/// Read the default stream's events until its reasoning has carried a
+/// rewind tag.
+async fn until_rewound(socket: &mut Socket) {
+    let mut reasoning = String::new();
+    while !reasoning.contains(TAG_PREFIX) {
+        let event = next_event(socket).await;
+        assert!(!terminal(&event), "it ended before a rewind: {event}");
+        if event["type"] == "response.reasoning_text.delta" {
+            reasoning.push_str(event["delta"].as_str().unwrap());
+        }
+    }
+}
+
+/// Wait until the scheduler has prefilled `request`.
+async fn prefilled(mock: &MockCompute, request: u64) {
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
+        while !mock.prefill_calls().iter().flatten().any(|job| job.request == request) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "request {request} was never prefilled");
+}
+
+/// Wait until the scheduler has released `request`.
+async fn released(mock: &MockCompute, request: u64) {
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
+        while !mock.released_requests().contains(&request) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "request {request} was never released: {:?}", mock.released_requests());
+}
+
+/// After a rewind the engine request generating for the response is the
+/// continuation: `response.cancel`, and closing the socket, cancel it. The
+/// looping request it replaced was already cancelled by the rewind, so the
+/// count of cancelled requests reaches two: a continuation left to run to
+/// its cap would end done, not cancelled. Also when the holdback hid the
+/// rewind and holds every token back, so no failed send could tell the
+/// guard the client left.
+#[tokio::test]
+async fn a_cancel_or_a_close_after_a_rewind_stops_the_continuation() {
+    for (close, holdback) in [(false, 0), (true, 0), (false, 6000)] {
+        let mock = Arc::new(MockCompute::new());
+        let (server, _) = looping_server(&mock, hog_config(2), holdback);
+        let server = server.with_metrics();
+        let metrics = Arc::clone(server.metrics.as_ref().unwrap());
+        let live = live(server).await;
+        let mut socket = socket(&live).await;
+        let body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 1_000_000 });
+        send(&mut socket, create(&body, None)).await;
+        let created = next_of(&mut socket, None, "response.created").await;
+        let id = created["response"]["id"].as_str().unwrap().to_owned();
+        match holdback {
+            0 => until_rewound(&mut socket).await,
+            _ => prefilled(&mock, 1).await,
+        }
+        released(&mock, 0).await;
+        metric_reaches(&metrics, "ignis_requests_cancelled_total 1").await;
+        assert!(!mock.released_requests().contains(&1), "the continuation runs until it is cancelled");
+        if close {
+            socket.close(None).await.unwrap();
+            drop(socket);
+        } else {
+            send(&mut socket, json!({ "type": "response.cancel", "response_id": id })).await;
+            let cancelled = next_of(&mut socket, None, "response.incomplete").await;
+            assert_eq!(cancelled["response"]["status"], "cancelled");
+        }
+        metric_reaches(&metrics, "ignis_requests_cancelled_total 2").await;
+        released(&mock, 1).await;
+    }
+}
+
+/// A rewound response's stream continues from the model's view of it, the
+/// struck text and the tag out; with the include its reasoning item's
+/// `done` carries that view, and its usage the tokens taken back.
+#[tokio::test]
+async fn a_rewound_response_is_continued_from_the_models_view() {
+    let mock = Arc::new(MockCompute::new());
+    mock.eos_after(1, 20);
+    let (server, script) = looping_server(&mock, SchedulerConfig::default(), 0);
+    let live = live(server).await;
+    let mut socket = socket(&live).await;
+    let first = json!({
+        "model": MODEL,
+        "input": "the whole history of Rome",
+        "max_output_tokens": 4000,
+        "include": ["reasoning.encrypted_content"],
+    });
+    send(&mut socket, create(&first, None)).await;
+    let events = stream_until_terminal(&mut socket, None).await;
+    let done = events
+        .iter()
+        .find(|e| e["type"] == "response.output_item.done" && e["item"]["type"] == "reasoning")
+        .expect("the reasoning item");
+    let shown = done["item"]["content"][0]["text"].as_str().unwrap();
+    let model_view = repair(shown).into_owned();
+    assert!(shown.contains(TAG_PREFIX) && !model_view.contains(TAG_PREFIX), "{shown}");
+    assert_eq!(done["item"]["encrypted_content"], format!("ignis:v1:{}", base64(model_view.as_bytes())));
+    let finished = events.last().unwrap();
+    assert_eq!(finished["type"], "response.completed", "{finished}");
+    let tag_tokens: u64 = shown.split_once(TAG_PREFIX).unwrap().1.split_once(" TOKENS").unwrap().0.parse().unwrap();
+    assert_eq!(finished["response"]["usage"]["output_tokens_details"]["rewound_tokens"], tag_tokens);
+
+    let id = finished["response"]["id"].as_str().unwrap();
+    let next = json!({ "model": MODEL, "input": "go on", "max_output_tokens": 1, "previous_response_id": id });
+    send(&mut socket, create(&next, None)).await;
+    stream_until_terminal(&mut socket, None).await;
+    let rendered = script.seen().last().unwrap().messages.iter().find(|m| m.role == "assistant").unwrap().reasoning_content.clone();
+    assert_eq!(rendered.as_deref(), Some(model_view.as_str()));
 }

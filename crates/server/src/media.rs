@@ -227,6 +227,12 @@ fn decode_data_uri(value: &str, max_bytes: u64) -> Result<Vec<u8>, AcquireError>
     Ok(bytes)
 }
 
+/// [`decode_base64`]'s bytes, `None` where it refuses `text`: for a caller
+/// with no media error to report (a Responses reasoning blob).
+pub(crate) fn base64_bytes(text: &str) -> Option<Vec<u8>> {
+    decode_base64(text).ok()
+}
+
 /// The reference's strict standard-alphabet base64: ASCII whitespace is
 /// skipped, `=` ends the data (anything but padding after it is an error),
 /// and a dangling six-bit group is an error.
