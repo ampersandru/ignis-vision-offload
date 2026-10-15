@@ -2085,11 +2085,16 @@ mod tests {
     /// at the reasoning's close; in `log` mode nothing is held.
     #[tokio::test]
     async fn a_holdback_keeps_the_client_behind_until_the_reasoning_closes() {
-        async fn received_now(out: &mut EventStream, got: &mut Vec<TokenId>) {
-            while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(50), out.recv()).await {
-                match event {
+        /// The tokens the client has once the guard has taken in everything
+        /// sent so far: a marker event goes after them, and the guard passes
+        /// it on only when it reaches it, every release before it made.
+        async fn received_by(tx: &UnboundedSender<SchedEvent>, out: &mut EventStream, got: &mut Vec<TokenId>) {
+            tx.send(SchedEvent::Evicted { request: 1, snapshot_micros: 0 }).unwrap();
+            loop {
+                match out.recv().await.expect("the marker") {
                     SchedEvent::Token { token, .. } => got.push(token),
-                    other => panic!("only tokens yet: {other:?}"),
+                    SchedEvent::Evicted { .. } => return,
+                    other => panic!("only tokens and the marker: {other:?}"),
                 }
             }
         }
@@ -2102,14 +2107,14 @@ mod tests {
             let p = LoopGuardParams { holdback_chars: 1000, ..params(mode) };
             let mut out = guard(p, ops_with(Vec::new()), input("P", 40_000), 1, rx);
             let mut got = Vec::new();
-            received_now(&mut out, &mut got).await;
+            received_by(&tx, &mut out, &mut got).await;
             let lag = 3000 - got.len();
             assert!(lag.abs_diff(behind) <= 1, "{mode:?}: {lag} characters behind");
             assert!(reasoning.starts_with(&text_of(&got)));
             for token in tokens_of("</think>answer") {
                 tx.send(SchedEvent::Token { request: 1, token }).unwrap();
             }
-            received_now(&mut out, &mut got).await;
+            received_by(&tx, &mut out, &mut got).await;
             assert_eq!(text_of(&got), format!("{reasoning}</think>answer"), "{mode:?}: all of it at the close");
         }
     }

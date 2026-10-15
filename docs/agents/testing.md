@@ -365,8 +365,11 @@ Every ignis leg of a bench or a gate runs with the loop guard off:
 `--model-loop-guard off`, or `LOOP_GUARD=off` on `make start` (`make config`
 prints the flag). The server's default, `rewind`, takes a looping reasoning
 back and nudges the model, so wherever it acts the output, the token counts
-and the timing differ from a reference that has no guard (ADR 0052). In-process
-GPU tests build their server without a config and run with it off already.
+and the timing differ from a reference that has no guard (ADR 0052). The
+in-process GPU tests that compare output (`openai_http_gpu.rs`,
+`hq_canary_gpu.rs`, the `LiveServer` ones) build their server without a config
+and run with it off; one built from flags or a config gets `rewind`, and a new
+one that compares output passes `--model-loop-guard off`.
 
 `ignis-server` takes the engine shape the run needs as flags (each over its
 own env var, each validated before any loader work starts): `--model-prefill-chunk`
