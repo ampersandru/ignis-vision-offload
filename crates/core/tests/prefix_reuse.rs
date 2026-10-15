@@ -117,6 +117,7 @@ fn a_sibling_skips_the_shared_prefix() {
                 request,
                 tokens,
                 retained: false,
+                ..
             } if *request == sub_id => Some(*tokens),
             _ => None,
         })

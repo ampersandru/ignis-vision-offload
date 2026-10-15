@@ -190,11 +190,23 @@ struct RequestTelemetry {
     /// which is how the request log says `reuse_source: none` — by saying
     /// nothing at all, exactly as it does for `spec.*` on a load with no
     /// drafter.
-    reuse: Option<(ReuseSource, u32, u64)>,
+    reuse: Option<RequestReuse>,
     /// `reasoning_effort: "max"` dropped a thinking budget this request
     /// would otherwise have run under (spec server/08), read off the
     /// submission since the scheduler never sees it.
     thinking_budget_dropped: bool,
+}
+
+/// The retained state a request's prefill resumed from, as its `done` line
+/// reports it (GitHub #186, #325).
+#[derive(Debug, Clone, Copy)]
+struct RequestReuse {
+    source: ReuseSource,
+    tokens: u32,
+    /// What the restore cost; `None` for a prefix, which is claimed by
+    /// sharing pages and restores nothing.
+    restore_micros: Option<u64>,
+    kind: RetainedKind,
 }
 
 /// The server's telemetry: tracks per-request state and emits the interval +
@@ -528,22 +540,36 @@ impl Telemetry {
     }
 
     /// A request's prefill skipped `tokens` prompt tokens through a cached
-    /// prefix (core-07). Not logged — the request log has no line for it — so
-    /// only the installed projection observes it (GitHub #90).
+    /// prefix (core-07).
     ///
     /// Two kinds arrive here since GitHub #188: a concurrent sibling's prefix,
     /// and a **retained prefix** left by a request that has already finished.
     /// `retained` tells them apart (#190), so `ignis_prefix_reused_tokens_total`
     /// keeps the *sibling*-prefix meaning ADR 0017's row gives it, and
-    /// cross-request reuse is counted as reuse of retained state on the device.
-    pub fn on_prefix_reused(&mut self, tokens: u32, retained: bool) {
+    /// cross-request reuse is counted as reuse of retained state, on the tier
+    /// the prefix came from: the same tier its hit and its `done` line name
+    /// (#325).
+    pub fn on_prefix_reused(&mut self, id: RequestId, tokens: u32, retained: bool, source: ReuseSource) {
         if let Some(metrics) = &self.metrics {
             if retained {
                 // A `PrefixReused` fact is a prefix by its own name, so the
                 // kind is read off the event and not off the tier (#216).
-                metrics.record_retained_reused(ReuseSource::Device, RetainedKind::Prefix, tokens);
+                metrics.record_retained_reused(source, RetainedKind::Prefix, tokens);
             } else {
                 metrics.record_prefix_reused(tokens);
+            }
+        }
+        // GitHub #325: a retained prefix is per-request reuse too, so the
+        // request's `done` line says so. A live sibling's prefix is not
+        // retained state and reports nothing, as before.
+        if retained {
+            if let Some(rt) = self.requests.get_mut(&id) {
+                rt.reuse = Some(RequestReuse {
+                    source,
+                    tokens,
+                    restore_micros: None,
+                    kind: RetainedKind::Prefix,
+                });
             }
         }
     }
@@ -568,7 +594,12 @@ impl Telemetry {
             metrics.record_retained_reused(source, kind, tokens);
         }
         if let Some(rt) = self.requests.get_mut(&id) {
-            rt.reuse = Some((source, tokens, restore_micros));
+            rt.reuse = Some(RequestReuse {
+                source,
+                tokens,
+                restore_micros: Some(restore_micros),
+                kind,
+            });
         }
     }
 
@@ -919,7 +950,7 @@ impl Telemetry {
         itl_samples: u64,
         class: RequestClass,
         spec: Option<SpecCounters>,
-        reuse: Option<(ReuseSource, u32, u64)>,
+        reuse: Option<RequestReuse>,
         thinking: ThinkingReport,
     ) {
         let _span = tracing::info_span!("ignis.telemetry.emit", request_id = id).entered();
@@ -947,9 +978,15 @@ impl Telemetry {
             // the way `spec.*` is absent on a load with no drafter, so the
             // log never reports a placeholder for something that never
             // happened.
-            reuse_source = reuse.map(|(source, _, _)| source.as_str()),
-            reused_prompt_tokens = reuse.map(|(_, tokens, _)| tokens),
-            restore_ms = reuse.map(|(_, _, micros)| micros as f64 / 1000.0),
+            reuse_source = reuse.map(|r| r.source.as_str()),
+            reused_prompt_tokens = reuse.map(|r| r.tokens),
+            // GitHub #325: which kind of retained state the tokens came back
+            // through. A prefix is page-floored and a checkpoint is not, so
+            // the number alone does not say which one it was.
+            reuse_kind = reuse.map(|r| r.kind.as_str()),
+            // Absent for a prefix: it is claimed by sharing pages, so there
+            // is no restore to time (0.0 would claim a free one).
+            restore_ms = reuse.and_then(|r| r.restore_micros).map(|micros| micros as f64 / 1000.0),
             // Spec server/08. Absent on a request with no budget, the same
             // way: `thinking_forced: false` is said only about a budget that
             // could have been forced.
@@ -1781,7 +1818,7 @@ mod tests {
         telemetry.with_metrics(Arc::clone(&metrics));
 
         telemetry.note_submit(1, 3, RequestClass::Agent);
-        telemetry.on_prefix_reused(32, false);
+        telemetry.on_prefix_reused(7, 32, false, ReuseSource::Device);
         telemetry.on_evicted(1, 450);
         telemetry.on_token(1);
         telemetry.on_token(1);
@@ -1960,6 +1997,50 @@ mod tests {
         assert!(text.contains("\nignis_request_duration_seconds_count 0\n"), "{text}");
     }
 
+    /// GitHub #325: the `done` line says which retained state a request came
+    /// back through, and says nothing for one that reused nothing.
+    #[test]
+    fn the_done_line_reports_a_prefix_restore_a_checkpoint_restore_and_a_cold_prefill() {
+        let mut telemetry = telemetry();
+        let events = capture_events(|| {
+            for id in 1..=4 {
+                telemetry.note_submit(id, 3, RequestClass::Interactive);
+                telemetry.on_admitted(id, 0);
+            }
+            telemetry.on_prefix_reused(1, 78_784, true, ReuseSource::KvRam); // a retained prefix, brought back
+            telemetry.on_state_reused(2, ReuseSource::KvRam, RetainedKind::Checkpoint, 1536, 42);
+            telemetry.on_prefix_reused(4, 32, false, ReuseSource::Device); // a live sibling's
+            for id in 1..=4 {
+                telemetry.on_done(id, 1, FinishReason::Stop, None, None, None);
+            }
+        });
+        let done = |id: u64| {
+            events
+                .iter()
+                .find(|e| e["event_name"] == "ignis.request.done" && e["attributes"]["request_id"] == id)
+                .unwrap_or_else(|| panic!("no done line for {id}: {events:?}"))["attributes"]
+                .clone()
+        };
+
+        let prefix = done(1);
+        assert_eq!(prefix["reuse_source"], "kv_ram");
+        assert_eq!(prefix["reused_prompt_tokens"], 78_784);
+        assert_eq!(prefix["reuse_kind"], "prefix");
+        assert!(prefix.get("restore_ms").is_none(), "a prefix restores nothing to time: {prefix}");
+
+        let checkpoint = done(2);
+        assert_eq!(checkpoint["reuse_source"], "kv_ram");
+        assert_eq!(checkpoint["reused_prompt_tokens"], 1536);
+        assert_eq!(checkpoint["reuse_kind"], "checkpoint");
+        assert_eq!(checkpoint["restore_ms"], 0.042);
+
+        for cold in [done(3), done(4)] {
+            for field in ["reuse_source", "reused_prompt_tokens", "reuse_kind", "restore_ms"] {
+                assert!(cold.get(field).is_none(), "`{field}` on a request that reused nothing: {cold}");
+            }
+        }
+    }
+
     #[test]
     fn reuse_is_counted_by_kind_and_tier_never_summed_into_the_sibling_counter() {
         let metrics = Arc::new(Metrics::new());
@@ -1967,8 +2048,9 @@ mod tests {
         telemetry.with_metrics(Arc::clone(&metrics));
         telemetry.note_submit(7, 2048, RequestClass::Interactive);
         telemetry.on_state_reused(7, ReuseSource::KvRam, RetainedKind::Checkpoint, 1536, 42);
-        telemetry.on_prefix_reused(64, true);
-        telemetry.on_prefix_reused(32, false);
+        telemetry.on_prefix_reused(7, 64, true, ReuseSource::Device);
+        telemetry.on_prefix_reused(7, 128, true, ReuseSource::KvRam);
+        telemetry.on_prefix_reused(7, 32, false, ReuseSource::Device);
         telemetry.on_retained_state(
             RetainedStateOperation::Spill,
             ReuseSource::KvRam,
@@ -1980,7 +2062,9 @@ mod tests {
             // A checkpoint's restore and a retained prefix's claim are both
             // retained reuse, and the two are told apart (GitHub #216).
             "ignis_retained_reused_tokens_total{tier=\"kv_ram\",kind=\"checkpoint\"} 1536",
-            "ignis_retained_reused_tokens_total{tier=\"kv_ram\",kind=\"prefix\"} 0",
+            // A prefix its claim brought back from KV-RAM is counted on the
+            // tier its hit and its `done` line name (#325).
+            "ignis_retained_reused_tokens_total{tier=\"kv_ram\",kind=\"prefix\"} 128",
             "ignis_retained_reused_tokens_total{tier=\"device\",kind=\"prefix\"} 64",
             "ignis_retained_reused_tokens_total{tier=\"device\",kind=\"checkpoint\"} 0",
             "ignis_prefix_reused_tokens_total 32",

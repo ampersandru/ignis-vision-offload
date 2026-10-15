@@ -830,6 +830,10 @@ pub enum SchedEvent {
         /// The claimed entry's publisher had already finished: this was
         /// reuse of retained state, not of a concurrent sibling's prefix.
         retained: bool,
+        /// The tier a retained prefix came from (GitHub #325): `device` for
+        /// one that never left the card, `kv_ram` for one this very claim
+        /// brought back. Meaningless for a live sibling's.
+        source: crate::checkpoint::ReuseSource,
     },
     /// A request's prefill resumed from **retained state** left by an earlier,
     /// already-finished request (GitHub #186, ADR 0029): the `tokens` leading

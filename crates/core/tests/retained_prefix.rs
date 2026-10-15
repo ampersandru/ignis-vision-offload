@@ -610,6 +610,78 @@ fn a_retained_prefix_wins_when_no_checkpoint_reaches_further() {
     assert_eq!(prefix_reuses(&events, later), vec![32], "the block is");
 }
 
+// ── GitHub #325: a restore through a retained prefix is a reported hit ──
+
+/// The `Hit` facts for `kind`, as the tier each one names.
+fn hits(events: &[SchedEvent], kind: RetainedKind) -> Vec<ReuseSource> {
+    retained_state(events)
+        .into_iter()
+        .filter(|(operation, _, k)| *operation == RetainedStateOperation::Hit && *k == kind)
+        .map(|(_, source, _)| source)
+        .collect()
+}
+
+#[test]
+fn a_restore_through_a_retained_prefix_is_one_prefix_hit_on_the_device_tier() {
+    let compute = Arc::new(MockCompute::with_sections(crate::sections()));
+    let mut sched = scheduler(compute, config());
+    sched.submit(subagent(500), RequestClass::Agent).unwrap();
+    let first = run_to_idle(&mut sched);
+    assert!(
+        hits(&first, RetainedKind::Prefix).is_empty() && hits(&first, RetainedKind::Checkpoint).is_empty(),
+        "a cold prefill resumed from nothing, so it hit nothing"
+    );
+
+    let second = sched.submit(subagent(900), RequestClass::Agent).unwrap();
+    let events = run_to_idle(&mut sched);
+    assert_eq!(prefix_reuses(&events, second), vec![32], "the block was restored");
+    assert_eq!(
+        hits(&events, RetainedKind::Prefix),
+        vec![ReuseSource::Device],
+        "one hit for the one restore, on the tier it came from"
+    );
+    assert!(
+        hits(&events, RetainedKind::Checkpoint).is_empty(),
+        "the checkpoint series does not move for a prefix"
+    );
+}
+
+#[test]
+fn a_live_siblings_prefix_is_not_retained_state_and_is_no_hit() {
+    let compute = Arc::new(MockCompute::with_sections(crate::sections()));
+    let mut sched = scheduler(compute, config());
+    // The first is still decoding when the second arrives, so the second
+    // claims what a live request stands on: sibling reuse (core-07).
+    sched
+        .submit(
+            input([tokens(1, BLOCK), tokens(500, 25)].concat(), Some(BLOCK), Some(57), 40),
+            RequestClass::Agent,
+        )
+        .unwrap();
+    let mut events = sched.advance();
+    let b = sched.submit(subagent(900), RequestClass::Agent).unwrap();
+    events.extend(run_to_idle(&mut sched));
+    assert_eq!(prefix_reuses(&events, b), vec![32], "the second claimed the live block");
+    assert!(hits(&events, RetainedKind::Prefix).is_empty());
+}
+
+#[test]
+fn a_restore_through_a_checkpoint_is_a_checkpoint_hit_and_no_prefix_hit() {
+    let compute = Arc::new(MockCompute::with_sections(crate::sections()));
+    let mut sched = scheduler(compute, config());
+    sched
+        .submit(input(tokens(1, 40), None, Some(37), 4), RequestClass::Interactive)
+        .unwrap();
+    run_to_idle(&mut sched);
+    let later = sched
+        .submit(input([tokens(1, 37), tokens(900, 20)].concat(), None, Some(54), 4), RequestClass::Interactive)
+        .unwrap();
+    let events = run_to_idle(&mut sched);
+    assert_eq!(state_reuses(&events, later), vec![(ReuseSource::Device, 37)]);
+    assert_eq!(hits(&events, RetainedKind::Checkpoint), vec![ReuseSource::Device]);
+    assert!(hits(&events, RetainedKind::Prefix).is_empty());
+}
+
 // ── Retained state never costs a live request ───────────────────────────
 
 #[test]
