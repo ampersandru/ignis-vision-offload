@@ -3,7 +3,7 @@
 - Kind: experiment
 - Status: current
 - Observed: 2026-10-14
-- Last verified: 2026-10-14
+- Last verified: 2026-10-15
 - Scope: server / reasoning-loop guard on chat completions (`crates/server/src/loop_guard.rs`, config v2 `model.loop_guard*`, branch `experiment/loop-rewind` at `f19d6f4`, not on main); serving / sampled reasoning on qwen3.8-27b; Playground reasoning view
 - Related: [Reasoning loops are the model's](2026-10-12-reasoning-loops-are-the-models.md), [ADR 0048](../adr/0048-an-end-of-turn-inside-the-reasoning-closes-it.md), [ADR 0046](../adr/0046-one-declaration-per-config-field.md), [#288](https://github.com/gpillon/ignis/issues/288)
 - Superseded by: none
@@ -213,3 +213,35 @@ Inferred:
 - Loops in the answer: what action, and whether the same score applies.
 - If the guard ships: an ADR on rewinding output a client already received, and the
   `loop_guard` default (the data favours `rewind`).
+
+## Addendum (2026-10-15): the nudge's line breaks and the tokenizer
+
+History repair gives the model back the text it saw. Whether that text re-tokenizes
+into the tokens the continuation's prompt carried was measured with
+`crates/server/examples/loop_retokenize.rs` on the 27B's tokenizer, over the 48 runs
+above (`.scratch/loop-rewind/out/rewind/`, `.scratch/loop-rewind/confirm/out/rewind2/`):
+4,165 cuts at the end of a line-break run after the first 1,000 characters, and the 18
+real cuts. At each cut, `kept tokens ++ encode(sentence)` against
+`encode(kept text + sentence)`. The generated tokens are stood in for by the
+tokenizer's own split of the reasoning, which was prefix-stable at every cut.
+
+| Sentence after the kept text | Line-break cuts identical | Real cuts identical |
+|---|---|---|
+| As written, opening with `\n\n` | 0 / 4,165 | 5 / 18 |
+| Without its leading line breaks after a kept line break | 4,165 / 4,165 | 18 / 18 |
+
+The figures are the same for both nudges and for the close.
+
+- As written, the kept text's last newline token and the sentence's opening `\n\n`
+  re-tokenize as one: `"." "\n\n" | "\n\n" "Wait"` becomes `"." "\n\n\n\n" "Wait"`.
+  The next turn's prompt then leaves the retained state at the cut.
+- The 5 real cuts that matched are the ones whose kept text does not end in a line
+  break.
+- The guard now drops the sentence's leading line breaks when the kept text ends in
+  one (`loop_guard::sentence_after`). That applies to the model's view and to what
+  the client receives after the tag.
+- What the model reads changed with it. A kept text ending in one `\n` used to be
+  followed by three line breaks before the nudge, and now by that one. Its effect on
+  the continuations was not re-measured on the GPU.
+- Not measured: the junction at the sentence's end, between its closing `\n\n` and
+  the continuation's first token.

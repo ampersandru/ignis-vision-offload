@@ -109,8 +109,11 @@ request, guard on or off, ignis repairs that text before rendering the prompt:
   off, and a reprise of the conversation goes through the same repair.
 - **Effect.** The repaired reasoning equals the text the model saw, so the prompt matches
   the retained state (ADR 0029) and reuse works across turns. Text equality is what repair
-  guarantees; whether the tokenizer splits the repaired text into the same tokens at a cut
-  is measured, not assumed.
+  guarantees. Token equality needs one more rule: after a kept text that ends in a line
+  break, the nudge or the close goes in without its leading line breaks, because the two
+  runs would re-tokenize as one. With that rule, the repaired reasoning re-tokenizes into
+  the continuation's prompt at every cut measured: 4,165 line-break cuts and 18 real cuts
+  (`examples/loop_retokenize.rs`, finding addendum). Without it, 0 and 5 do.
 
 **Holdback: an option to hide a rewind before the client sees it.** `loop_guard_holdback`
 holds the reasoning stream back by that many characters (0 = off, the default):
