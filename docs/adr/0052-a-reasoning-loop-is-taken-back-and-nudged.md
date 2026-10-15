@@ -86,8 +86,9 @@ nudge or the close:
 \n\n[LOOP DETECTED, REWINDING <n> TOKENS / <m> CHARS · <h>]
 ```
 
-`<m>` counts the Unicode scalar values before the tag, back to the cut: the **struck
-text**. `<h>` is the first 6 lowercase hex digits of the SHA-256 of the struck text's
+`<m>` counts the Unicode scalar values before the tag, back to the cut, as the client
+shows them (a line break its decoder still held when the guard fired is one of them): the
+**struck text**. `<h>` is the first 6 lowercase hex digits of the SHA-256 of the struck text's
 UTF-8 bytes. A client that understands the tag strikes the `m` characters through: the
 Playground does (`web/src/ui/rewinds.ts`, which also still reads the tag without `· <h>`).
 Any other client shows the tag as text. Every standard field keeps its meaning. This is
@@ -113,7 +114,8 @@ request, guard on or off, ignis repairs that text before rendering the prompt:
 
 **Holdback: an option to hide a rewind before the client sees it.** `loop_guard_holdback`
 holds the reasoning stream back by that many characters (0 = off, the default):
-- a rewind whose cut falls in the unsent part streams no tag, and the client never sees
+- a rewind whose cut falls in the unsent part streams no tag: the client gets the kept
+  text, the nudge and the continuation, the model's view token for token, and never sees
   the loop;
 - a cut inside the sent part strikes only the sent characters, and the unsent rest is
   dropped;
