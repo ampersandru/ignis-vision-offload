@@ -9,6 +9,7 @@ mod responses;
 mod failing_prefill;
 use failing_prefill::FailingPrefill;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,6 +19,8 @@ use ignis_core::{MockCompute, SchedulerConfig};
 use serde_json::{json, Value as JsonValue};
 use tower::ServiceExt;
 
+use ignis_server::images::job::base64;
+use ignis_server::loop_guard::{repair, LoopGuardMode, LoopGuardParams, TAG_PREFIX};
 use responses::{server, sse_events, Script, MODEL};
 
 /// POST `body` to `path`; the status, the content type and the body text.
@@ -271,6 +274,43 @@ async fn a_responses_conversation_renders_what_chat_completions_renders() {
     assert_eq!(body["status"], "incomplete", "{body}");
 }
 
+/// History repair (ADR 0052): a rewind the loop guard tagged in an
+/// assistant's reasoning reaches the template taken out, on both surfaces
+/// and with the guard off, as this harness runs. Only the reasoning: a user
+/// message and assistant content carrying the same tag reach it as sent.
+#[tokio::test]
+async fn a_rewound_reasoning_reaches_the_template_repaired_on_both_surfaces() {
+    let tag = ignis_server::loop_guard::tag(4, "the loop, ");
+    let reasoning = format!("planning, the loop, {tag}\n\nWait, I'm starting to repeat myself.");
+    let echoed = format!("the loop, {tag}");
+    let (chat, responses, _) = render_both(
+        json!({
+            "model": MODEL,
+            "max_tokens": 1,
+            "messages": [
+                { "role": "user", "content": echoed },
+                { "role": "assistant", "content": echoed, "reasoning_content": reasoning },
+                { "role": "user", "content": "go on" }
+            ]
+        }),
+        json!({
+            "model": MODEL,
+            "max_output_tokens": 1,
+            "input": [
+                { "role": "user", "content": echoed },
+                { "type": "reasoning", "summary": [], "content": [{ "type": "reasoning_text", "text": reasoning }] },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": echoed }] },
+                { "role": "user", "content": "go on" }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(responses, chat);
+    assert_eq!(chat.messages[1].reasoning_content.as_deref(), Some("planning, \n\nWait, I'm starting to repeat myself."));
+    assert_eq!(chat.messages[0].content.text(), echoed, "a user message is never repaired");
+    assert_eq!(chat.messages[1].content.text(), echoed, "nor an assistant's content");
+}
+
 /// The items of one turn, listed in the order this server emits them when a
 /// call comes before any text, still make the one assistant message.
 #[tokio::test]
@@ -359,7 +399,6 @@ async fn fields_that_do_not_change_the_answer_are_accepted() {
         "input": "hi",
         "max_output_tokens": 1,
         "store": false,
-        "include": ["reasoning.encrypted_content"],
         "metadata": { "run": "7" },
         "user": "u",
         "safety_identifier": "s",
@@ -452,4 +491,244 @@ async fn usage_reports_the_prompt_resumed_from_retained_state() {
     assert_eq!(status, 200, "{answer}");
     let answer: JsonValue = serde_json::from_str(&answer).unwrap();
     assert_eq!(answer["usage"]["input_tokens_details"]["cached_tokens"], 20, "{answer}");
+}
+
+// ── the loop guard (ADR 0052) ──────────────────────────────────────────────
+
+/// The reasoning request 0 writes: prose, then a loop the guard rewinds.
+fn looping_reasoning() -> String {
+    responses::prose(3000) + &responses::looping(4000)
+}
+
+/// A server with the loop guard on, `holdback` characters held back, whose
+/// request 0 reasons [`looping_reasoning`] and whose continuation (request
+/// 1) reasons silently for 20 tokens and stops.
+fn looping_app(holdback: u32) -> (axum::Router, Arc<Script>) {
+    let mock = Arc::new(MockCompute::new());
+    mock.eos_after(1, 20);
+    let script = Script::encoding(responses::scripted_text(&mock, 0, &looping_reasoning()));
+    let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, holdback_chars: holdback, ..LoopGuardParams::default() };
+    (server(&script, SchedulerConfig::default(), mock).with_loop_guard(guard).app(), script)
+}
+
+fn looping_request(stream: bool, include: bool) -> JsonValue {
+    let mut body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 4000, "stream": stream });
+    if include {
+        body["include"] = json!(["reasoning.encrypted_content"]);
+    }
+    body
+}
+
+/// The response to `body`: its terminal object, and, streamed, the
+/// reasoning its deltas carried.
+async fn respond(app: &axum::Router, body: JsonValue) -> (JsonValue, Option<String>) {
+    let stream = body["stream"] == true;
+    let (status, _, text) = post(app, "/v1/responses", body).await;
+    assert_eq!(status, 200, "{text}");
+    if !stream {
+        return (serde_json::from_str(&text).unwrap(), None);
+    }
+    let events = sse_events(&text);
+    let deltas =
+        events.iter().filter(|(name, _)| name == "response.reasoning_text.delta").map(|(_, e)| e["delta"].as_str().unwrap()).collect();
+    (events.last().unwrap().1["response"].clone(), Some(deltas))
+}
+
+/// A rewound reasoning around its tag: the text the client had before it,
+/// the tag's `N TOKENS`, and what follows the tag.
+fn split_tag(reasoning: &str) -> (&str, u32, &str) {
+    let (before, rest) = reasoning.split_once(TAG_PREFIX).expect("a rewind tag");
+    let (tokens, _) = rest.split_once(" TOKENS").unwrap();
+    let (_, after) = rest.split_once(']').unwrap();
+    (before.strip_suffix("\n\n").expect("the tag's blank line"), tokens.parse().unwrap(), after)
+}
+
+/// The loop guard on `POST /v1/responses`, streamed and not: the reasoning
+/// item carries the tag and the nudge, `rewound_tokens` the tag's count,
+/// and `output_tokens` every token the model generated.
+#[tokio::test]
+async fn a_looping_reasoning_is_rewound_over_http_and_the_usage_counts_it() {
+    for stream in [false, true] {
+        let (app, _) = looping_app(0);
+        let (response, deltas) = respond(&app, looping_request(stream, false)).await;
+        assert_eq!(response["status"], "completed", "{response}");
+        let reasoning = response["output"][0]["content"][0]["text"].as_str().unwrap();
+        if let Some(deltas) = deltas {
+            assert_eq!(deltas, reasoning, "the deltas are the item");
+        }
+        let (sent, rewound, after) = split_tag(reasoning);
+        assert!(looping_reasoning().starts_with(sent));
+        assert!(after.trim_start_matches('\n').starts_with("Wait, I'm starting to repeat myself."), "{after:?}");
+        let usage = &response["usage"];
+        assert_eq!(usage["output_tokens_details"]["rewound_tokens"], rewound, "{usage}");
+        // A token per 8 characters before the tag, one per character of the
+        // tag and the nudge (this tokenizer's), then the continuation's 20.
+        assert_eq!(sent.chars().count() % 8, 0);
+        let generated = sent.chars().count() / 8 + (reasoning.chars().count() - sent.chars().count()) + 20;
+        assert_eq!(usage["output_tokens"], generated, "{usage}");
+        assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], generated);
+    }
+}
+
+/// A holdback past the cut hides the rewind: no tag, the kept reasoning
+/// then the nudge, and the tokens never sent still counted.
+#[tokio::test]
+async fn a_rewind_the_holdback_hid_is_still_counted() {
+    let (app, _) = looping_app(6000);
+    let (response, _) = respond(&app, looping_request(false, false)).await;
+    let reasoning = response["output"][0]["content"][0]["text"].as_str().unwrap();
+    assert!(!reasoning.contains(TAG_PREFIX), "{reasoning}");
+    let at = reasoning.find("Wait, I'm starting to repeat myself.").expect("the nudge");
+    // The prose never has two line breaks in a row: two are the nudge's.
+    let kept = reasoning[..at].strip_suffix("\n\n").unwrap_or(&reasoning[..at]);
+    assert!(looping_reasoning().starts_with(kept) && kept.chars().count() % 8 == 0);
+    let usage = &response["usage"];
+    let rewound = usage["output_tokens_details"]["rewound_tokens"].as_u64().expect("rewound tokens");
+    let received = kept.chars().count() / 8 + (reasoning.chars().count() - kept.chars().count()) + 20;
+    assert_eq!(usage["output_tokens"], received as u64 + rewound, "every rewound token was held back, and generated: {usage}");
+}
+
+/// The reasoning item's `encrypted_content` with the `include`: on a
+/// response the guard did not rewind, the reasoning as streamed; on one it
+/// did, the model's view, which the same item sent back renders in place of
+/// whatever text it shows, with nothing left for history repair to do.
+#[tokio::test]
+async fn include_gives_the_reasoning_item_the_models_view_and_it_comes_back_as_that() {
+    let mut plain = agent_request(false);
+    plain["include"] = json!(["reasoning.encrypted_content"]);
+    let (plain, _) = respond(&agent_app(), plain).await;
+    assert_eq!(plain["output"][0]["encrypted_content"], format!("ignis:v1:{}", base64(b"planning")), "{plain}");
+    let (unasked, _) = respond(&agent_app(), agent_request(false)).await;
+    assert!(unasked["output"][0].get("encrypted_content").is_none(), "{unasked}");
+    let mut other = agent_request(false);
+    other["include"] = json!(["message.output_text.logprobs"]);
+    let (other, _) = respond(&agent_app(), other).await;
+    assert_eq!(other["output"], unasked["output"], "any other include changes nothing");
+
+    let (app, script) = looping_app(0);
+    let (response, _) = respond(&app, looping_request(false, true)).await;
+    let item = response["output"][0].clone();
+    let shown = item["content"][0]["text"].as_str().unwrap();
+    let model_view = repair(shown).into_owned();
+    assert!(shown.contains(TAG_PREFIX) && !model_view.contains(TAG_PREFIX));
+    assert_eq!(item["encrypted_content"], format!("ignis:v1:{}", base64(model_view.as_bytes())));
+
+    let mut sent_back = item.clone();
+    sent_back["content"][0]["text"] = json!("what the client showed");
+    let next = json!({
+        "model": MODEL,
+        "max_output_tokens": 1,
+        "input": [
+            { "role": "user", "content": "the whole history of Rome" },
+            sent_back,
+            { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Rome." }] },
+            { "role": "user", "content": "go on" }
+        ]
+    });
+    let (status, _, body) = post(&app, "/v1/responses", next).await;
+    assert_eq!(status, 200, "{body}");
+    let rendered = script.seen().last().unwrap().messages[1].reasoning_content.clone().unwrap();
+    assert_eq!(rendered, model_view);
+    assert!(matches!(repair(&rendered), Cow::Borrowed(_)), "nothing for history repair to do");
+}
+
+/// An `encrypted_content` this server did not write (another server's, or
+/// a malformed one) renders the item's visible text, which history repair
+/// sees; one of ours with no visible text (how Codex sends an item back)
+/// renders from the blob alone.
+#[tokio::test]
+async fn a_reasoning_blob_this_server_cannot_read_falls_back_to_the_visible_text() {
+    let tag = ignis_server::loop_guard::tag(4, "the loop, ");
+    let visible = format!("planning, the loop, {tag}Wait.");
+    let ours = format!("ignis:v1:{}", base64("the model's view".as_bytes()));
+    let cases = [
+        (json!([{ "type": "reasoning_text", "text": visible }]), "gAAAAABo-another-servers-blob".to_owned(), "planning, Wait."),
+        (json!([{ "type": "reasoning_text", "text": visible }]), "ignis:v1:!!!".to_owned(), "planning, Wait."),
+        (json!([{ "type": "reasoning_text", "text": visible }]), "ignis:v1://4=".to_owned(), "planning, Wait."),
+        (json!([]), ours, "the model's view"),
+    ];
+    for (content, blob, rendered) in cases {
+        let script = Script::new(HashMap::new());
+        let app = server(&script, SchedulerConfig::default(), Arc::new(MockCompute::new())).app();
+        let body = json!({
+            "model": MODEL,
+            "max_output_tokens": 1,
+            "input": [
+                { "role": "user", "content": "q" },
+                { "type": "reasoning", "summary": [], "content": content, "encrypted_content": blob },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "a" }] },
+                { "role": "user", "content": "go on" }
+            ]
+        });
+        let (status, _, answer) = post(&app, "/v1/responses", body).await;
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(script.seen()[0].messages[1].reasoning_content.as_deref(), Some(rendered), "{blob}");
+    }
+}
+
+/// A stop sequence the continuation writes stops the continuation itself
+/// (ADR 0052): the request log reports it done at its stop, and only the
+/// looping request the rewind replaced is cancelled. Chat completions,
+/// streamed and not. With no retries the rewind closes the reasoning, and
+/// the continuation answers at once.
+#[tokio::test]
+async fn a_stop_sequence_after_a_rewind_stops_the_continuation_by_its_own_id() {
+    for stream in [false, true] {
+        let mock = Arc::new(MockCompute::new());
+        // Every token the continuation draws reads as this.
+        let script = Script::encoding_or(responses::scripted_text(&mock, 0, &looping_reasoning()), "Fine! STOP ");
+        let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, retries: 0, ..LoopGuardParams::default() };
+        let server = server(&script, SchedulerConfig::default(), mock).with_loop_guard(guard).with_metrics();
+        let metrics = Arc::clone(server.metrics.as_ref().unwrap());
+        let app = server.app();
+        let body = json!({
+            "model": MODEL,
+            "messages": [{ "role": "user", "content": "the whole history of Rome" }],
+            "max_tokens": 4000,
+            "stop": ["STOP"],
+            "stream": stream,
+        });
+        let (status, _, text) = post(&app, "/v1/chat/completions", body).await;
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(text.matches("Fine! ").count(), 1, "nothing after the stop sequence: {text}");
+        if !stream {
+            let answer: JsonValue = serde_json::from_str(&text).unwrap();
+            let message = &answer["choices"][0]["message"];
+            assert!(message["reasoning_content"].as_str().unwrap().contains(TAG_PREFIX), "rewound: {answer}");
+            assert_eq!((&message["content"], &answer["choices"][0]["finish_reason"]), (&json!("Fine! "), &json!("stop")), "{answer}");
+        }
+        responses::metric_reaches(&metrics, "ignis_requests_completed_total 1").await;
+        assert!(metrics.render().contains("\nignis_requests_cancelled_total 1\n"), "{}", metrics.render());
+    }
+}
+
+/// A streamed response its timeout cuts short still gets what the holdback
+/// held back (ADR 0052): `response.failed` carries it in the reasoning item,
+/// its deltas come first, and `output_tokens` counts it. Here the holdback
+/// is longer than the whole reasoning, so the client had none of it.
+#[tokio::test]
+async fn a_timeout_lets_what_the_holdback_held_reach_the_streamed_response() {
+    let mock = Arc::new(MockCompute::new());
+    let reasoning = responses::prose(2000);
+    let script = Script::encoding(responses::scripted_text(&mock, 0, &reasoning));
+    let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, holdback_chars: 100_000, ..LoopGuardParams::default() };
+    // Room for a request that runs until its timeout.
+    let config = SchedulerConfig { max_sequence_tokens: 2 << 20, kv_capacity_pages: (2 << 20) / 16 * 2, ..SchedulerConfig::default() };
+    let app = server(&script, config, mock)
+        .with_loop_guard(guard)
+        .with_request_timeout(std::time::Duration::from_millis(500))
+        .app();
+    let body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 1_000_000, "stream": true });
+    let (status, _, text) = post(&app, "/v1/responses", body).await;
+    assert_eq!(status, 200, "{text}");
+    let events = sse_events(&text);
+    let (name, failed) = events.last().unwrap();
+    assert_eq!((name.as_str(), &failed["response"]["error"]["code"]), ("response.failed", &json!("request_timeout")));
+    let shown = failed["response"]["output"][0]["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(!shown.is_empty() && reasoning.starts_with(shown), "the held reasoning reaches the item: {shown:?}");
+    let deltas: String =
+        events.iter().filter(|(name, _)| name == "response.reasoning_text.delta").map(|(_, e)| e["delta"].as_str().unwrap()).collect();
+    assert_eq!(deltas, shown, "streamed before the end");
+    let output_tokens = failed["response"]["usage"]["output_tokens"].as_u64().unwrap() as usize;
+    assert!(output_tokens >= shown.chars().count() / 8, "{}", failed["response"]["usage"]);
 }

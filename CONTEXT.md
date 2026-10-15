@@ -84,6 +84,34 @@ When output names a domain concept, use the term as defined here.
   The request log's `reasoning_redirected_at` is that `</think>`'s output
   index. It also closes the thinking budget's one-round hole, where the token
   drawn freely before the forced close could be the EOS.
+- **Loop guard** — the server task between a reasoning request's engine event
+  stream and its consumer that watches the reasoning for a loop (ADR 0052,
+  config `model.loop_guard*`, `rewind` by default). A check, every
+  `loop_guard_check_every` raw characters (250 by default), fires when the
+  reasoning's last window compresses too well once
+  code is removed and digit runs are folded, and its raw text compresses well
+  too. In `log` mode it only logs; in `rewind` mode it **rewinds**.
+- **Rewind** — the loop guard's action: the engine request is cancelled and a
+  **continuation** submitted. The client keeps what it received and gets the
+  tag `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]` in the reasoning,
+  `h` a short hash of the struck text; the Playground strikes the `m`
+  characters before it through. The rewound tokens
+  stay in `usage.completion_tokens` and are reported again as
+  `completion_tokens_details.rewound_tokens`.
+- **Continuation** — the request a rewind submits: the same input, its prompt
+  extended by the tokens kept before the cut and a **nudge**, with what is left
+  of the generation cap and of the thinking budget.
+- **Nudge** — the sentence, in the model's own voice, a continuation ends its
+  prompt with ("Wait, I'm starting to repeat myself. …"). After
+  `loop_guard_retries` nudges, the thinking close takes its place and the
+  reasoning ends.
+- **History repair** — on every incoming request, guard on or off, the `m`
+  characters before each rewind tag and the tag itself are removed from
+  assistant reasoning when they hash to the tag's `h`, so the model is given
+  back the text it actually saw (ADR 0052). Never applied to any other text.
+- **Holdback** — `loop_guard_holdback` characters of reasoning held back from
+  the client (0, off, by default), so a rewind whose cut falls in the unsent
+  part reaches the client with no tag at all.
 - **KV reservation** — the KV pages the pool has given a request. Its *bound*
   is prompt plus **generation cap**, never past `--model-max-context`. A submission
   is checked against the bound, so a request alone always fits the pool.

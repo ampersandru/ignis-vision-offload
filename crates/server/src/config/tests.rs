@@ -1212,6 +1212,118 @@ fn the_idle_unload_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
     assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().idle_unload_secs, 45, "the file key is model.idle_unload");
 }
 
+// ── loop guard (ADR 0052) ────────────────────────────────────────────────
+
+/// The loop guard scores normalized reasoning at 1,000 characters and 0.20
+/// by default; `model.loop_guard_normalize` resolves from flag, env and
+/// file, and the scoring knobs are visible and patchable with no reload.
+#[test]
+fn the_loop_guard_scores_normalized_by_default_and_off_scores_the_text_as_written() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!((defaults.normalize, defaults.window_chars, defaults.ratio_permille), (true, 1000, 200));
+    assert_eq!(defaults, crate::loop_guard::LoopGuardParams::default());
+    assert!(!config(&["--model-loop-guard-normalize", "off"]).loop_guard.normalize);
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_NORMALIZE", "false")]);
+    assert!(!expect_config(resolve(&[], env).expect("resolve")).loop_guard.normalize);
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_NORMALIZE", "off")]);
+    let flag = expect_config(resolve(&args(&["--model-loop-guard-normalize", "on"]), env).expect("resolve"));
+    assert!(flag.loop_guard.normalize, "flag must win over env");
+    assert!(refused(&["--model-loop-guard-normalize", "maybe"]).contains("maybe"));
+    for name in ["loop_guard_normalize", "loop_guard_window", "loop_guard_ratio"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_normalize: false\n  loop_guard_window: 3000\n  loop_guard_ratio: 120\n")]);
+    let prototype = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((prototype.normalize, prototype.window_chars, prototype.ratio_permille), (false, 3000, 120), "the prototype's raw score");
+}
+
+/// The raw gate (0.30, 0 = none) and the clean window a rewind goes back to
+/// (0.40, no margin) resolve from flag, env and file, visible and patchable
+/// with no reload.
+#[test]
+fn the_loop_guards_raw_gate_and_clean_window_resolve_from_flag_env_and_file() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!((defaults.raw_gate_permille, defaults.clean_permille, defaults.margin_chars), (300, 400, 0));
+    let flags = config(&["--model-loop-guard-raw-gate", "0", "--model-loop-guard-clean", "350"]).loop_guard;
+    assert_eq!((flags.raw_gate_permille, flags.clean_permille), (0, 350), "0 turns the gate off");
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_RAW_GATE", "250"), ("IGNIS_MODEL_LOOP_GUARD_CLEAN", "450")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve")).loop_guard;
+    assert_eq!((from_env.raw_gate_permille, from_env.clean_permille), (250, 450));
+    assert!(refused(&["--model-loop-guard-raw-gate", "1000"]).contains("--model-loop-guard-raw-gate"));
+    assert!(refused(&["--model-loop-guard-clean", "0"]).contains("--model-loop-guard-clean"));
+    for name in ["loop_guard_raw_gate", "loop_guard_clean", "loop_guard_margin"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_raw_gate: 320\n  loop_guard_clean: 380\n  loop_guard_margin: 200\n")]);
+    let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((file.raw_gate_permille, file.clean_permille, file.margin_chars), (320, 380, 200));
+}
+
+/// The guard rewinds by default (ADR 0052, the owner's 2026-10-14 call) and
+/// `off` and `log` stay; a server built without a config runs with none, as
+/// it runs with no idle unload.
+#[test]
+fn the_loop_guard_rewinds_by_default_and_off_and_log_stay() {
+    use crate::loop_guard::LoopGuardMode;
+    assert_eq!(config(&[]).loop_guard.mode, LoopGuardMode::Rewind);
+    assert_eq!(crate::Live::of(&config(&[])).loop_guard.mode, LoopGuardMode::Rewind);
+    assert_eq!(crate::Live::default().loop_guard.mode, LoopGuardMode::Off, "no in-process harness meets a rewind it did not ask for");
+    assert_eq!(crate::Live::default().loop_guard, crate::loop_guard::LoopGuardParams { mode: LoopGuardMode::Off, ..config(&[]).loop_guard });
+    for (raw, mode) in [("off", LoopGuardMode::Off), ("LOG", LoopGuardMode::Log), ("rewind", LoopGuardMode::Rewind)] {
+        assert_eq!(config(&["--model-loop-guard", raw]).loop_guard.mode, mode, "{raw}");
+    }
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD", "off")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).loop_guard.mode, LoopGuardMode::Off);
+    assert!(refused(&["--model-loop-guard", "on"]).contains("on"));
+}
+
+/// The holdback: none by default, from flag, env and file, visible and
+/// patchable with no reload, and bounded like the other character fields.
+#[test]
+fn the_loop_guards_holdback_is_off_by_default_and_resolves_from_flag_env_and_file() {
+    assert_eq!(config(&[]).loop_guard.holdback_chars, 0);
+    assert_eq!(config(&["--model-loop-guard-holdback", "3000"]).loop_guard.holdback_chars, 3000);
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_HOLDBACK", "6000")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).loop_guard.holdback_chars, 6000);
+    assert!(refused(&["--model-loop-guard-holdback", "100001"]).contains("--model-loop-guard-holdback"));
+    let field = schema::field("model", "loop_guard_holdback").expect("declared");
+    assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_holdback: 2500\n")]);
+    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard.holdback_chars, 2500);
+}
+
+/// The guard's cadence (a check every 250 characters), the cut's snap to a
+/// line break (300), the room a continuation needs (512 tokens) and how
+/// long one the engine refuses as full waits (60 s) are config fields too,
+/// from flag, env and file, visible and patchable with no reload.
+#[test]
+fn the_loop_guards_cadence_snap_room_and_submit_wait_resolve_from_flag_env_and_file() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!(
+        (defaults.check_every_chars, defaults.snap_chars, defaults.min_continuation_tokens, defaults.submit_wait_secs),
+        (250, 300, 512, 60)
+    );
+    let flags = config(&["--model-loop-guard-check-every", "500", "--model-loop-guard-snap", "0"]).loop_guard;
+    assert_eq!((flags.check_every_chars, flags.snap_chars), (500, 0), "0 never snaps");
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_MIN_CONTINUATION", "1024"), ("IGNIS_MODEL_LOOP_GUARD_SUBMIT_WAIT", "0")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve")).loop_guard;
+    assert_eq!((from_env.min_continuation_tokens, from_env.submit_wait_secs), (1024, 0), "0 tries once");
+    assert!(refused(&["--model-loop-guard-check-every", "0"]).contains("--model-loop-guard-check-every"));
+    assert!(refused(&["--model-loop-guard-submit-wait", "3601"]).contains("--model-loop-guard-submit-wait"));
+    for name in ["loop_guard_check_every", "loop_guard_snap", "loop_guard_min_continuation", "loop_guard_submit_wait"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[(
+        "c.yaml",
+        "model:\n  loop_guard_check_every: 125\n  loop_guard_snap: 600\n  loop_guard_min_continuation: 256\n  loop_guard_submit_wait: 30\n",
+    )]);
+    let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((file.check_every_chars, file.snap_chars, file.min_continuation_tokens, file.submit_wait_secs), (125, 600, 256, 30));
+}
+
 #[test]
 fn a_model_field_may_switch_models_unless_the_operator_says_otherwise() {
     assert!(config(&[]).allow_model_switch);

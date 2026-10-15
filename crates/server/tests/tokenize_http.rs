@@ -43,8 +43,8 @@ const KEY: &str = "sk-tokenize";
 // ── the double ──────────────────────────────────────────────────────────────
 
 /// One token per byte, ids 0..=255. The render is a fixed layout of the
-/// conversation, the tool block and the thinking controls, so a body's count
-/// moves with each of them.
+/// conversation (a prior turn's reasoning included), the tool block and the
+/// thinking controls, so a body's count moves with each of them.
 struct ByteTemplate;
 
 impl ByteTemplate {
@@ -54,7 +54,8 @@ impl ByteTemplate {
             text.push_str(&format!("<tools>{}</tools>\n", Value::Array(tools.to_vec())));
         }
         for message in messages {
-            text.push_str(&format!("<|{}|>{}\n", message.role, message.content.text()));
+            let reasoning = message.reasoning_content.as_ref().map(|r| format!("<think>{r}</think>")).unwrap_or_default();
+            text.push_str(&format!("<|{}|>{reasoning}{}\n", message.role, message.content.text()));
         }
         text.push_str(if options.enable_thinking { "<|assistant|><think>\n" } else { "<|assistant|>" });
         text
@@ -309,6 +310,31 @@ async fn every_answer_carries_the_servers_context_ceiling() {
         assert_eq!(status, 200, "{answer}");
         assert_eq!(answer["max_model_len"], ceiling);
     }
+}
+
+/// History repair (ADR 0052) is part of the render: a reasoning that
+/// carries a rewind the loop guard tagged counts as the model saw it, the
+/// number the same body reports when served.
+#[tokio::test]
+async fn a_rewound_reasoning_is_counted_repaired() {
+    let h = harness();
+    let tag = ignis_server::loop_guard::tag(3, "loop loop ");
+    let turn = |reasoning: &str| {
+        json!({ "model": MODEL, "messages": [
+            user("hi"),
+            { "role": "assistant", "content": "hello", "reasoning_content": reasoning },
+            user("again"),
+        ] })
+    };
+    let tagged_turn = turn(&format!("plan loop loop {tag}\n\nWait."));
+    let (status, tagged) = post(&h.app, "/v1/tokenize", merged(&tagged_turn, json!({ "return_text": true }))).await;
+    assert_eq!(status, 200, "{tagged}");
+    let (_, repaired) = post(&h.app, "/v1/tokenize", merged(&turn("plan \n\nWait."), json!({ "return_text": true }))).await;
+    assert_eq!(tagged["text"], repaired["text"]);
+    assert!(tagged["text"].as_str().unwrap().contains("<think>plan \n\nWait.</think>"), "{tagged}");
+    let (status, served) = post(&h.app, "/v1/chat/completions", merged(&tagged_turn, json!({ "max_tokens": 1 }))).await;
+    assert_eq!(status, 200, "{served}");
+    assert_eq!(served["usage"]["prompt_tokens"], tagged["count"]);
 }
 
 // ── the optional fields ─────────────────────────────────────────────────────

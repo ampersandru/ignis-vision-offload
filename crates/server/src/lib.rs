@@ -40,6 +40,7 @@ pub mod images;
 pub mod instruction;
 pub mod load;
 pub mod locate;
+pub mod loop_guard;
 pub mod loader;
 pub mod media;
 pub mod metrics;
@@ -171,6 +172,8 @@ pub struct Live {
     /// it (`--model-idle-unload`, spec model-switch/02); zero never unloads.
     /// Read by the clock at every tick, so a live change needs no restart.
     pub idle_unload: Duration,
+    /// The loop guard (`--model-loop-guard`, ADR 0052): read per request.
+    pub loop_guard: loop_guard::LoopGuardParams,
     /// The image model's serving (`image.*`, spec image-model/05): its
     /// queue, what one request may ask for, the condition budget, prompt
     /// enhancement — each read per request, so a live change needs no
@@ -181,9 +184,9 @@ pub struct Live {
 impl Default for Live {
     /// What a server built without a config runs with: the timeout's
     /// default, thinking on with no effort or budget, merge / inplace — and
-    /// no idle unload: only a configured server (`main`, a live `PATCH`)
-    /// unloads its model, so no test or in-process harness meets a cold
-    /// reload it did not ask for.
+    /// no idle unload and no loop guard: only a configured server (`main`, a
+    /// live `PATCH`) unloads its model or rewinds a reasoning, so no test or
+    /// in-process harness meets a cold reload or a rewind it did not ask for.
     fn default() -> Self {
         Self {
             request_timeout: Duration::from_secs(crate::config::DEFAULT_REQUEST_TIMEOUT_SECS as u64),
@@ -192,6 +195,7 @@ impl Default for Live {
             default_thinking_budget: None,
             instruction_policy: instruction::InstructionPolicy::default(),
             idle_unload: Duration::ZERO,
+            loop_guard: loop_guard::LoopGuardParams { mode: loop_guard::LoopGuardMode::Off, ..Default::default() },
             image: config::schema::ImageGroup::default(),
         }
     }
@@ -207,6 +211,7 @@ impl Live {
             default_thinking_budget: config.thinking_budget,
             instruction_policy: config.instruction_policy,
             idle_unload: Duration::from_secs(u64::from(config.idle_unload_secs)),
+            loop_guard: config.loop_guard,
             image: config.settings().image.clone(),
         }
     }
@@ -492,6 +497,12 @@ impl Server {
     /// Set the server-wide thinking budget (`--model-thinking-budget`).
     pub fn with_thinking_budget(self, budget: Option<u32>) -> Self {
         self.update_live(|live| live.default_thinking_budget = budget);
+        self
+    }
+
+    /// Set the loop guard (`--model-loop-guard`).
+    pub fn with_loop_guard(self, params: loop_guard::LoopGuardParams) -> Self {
+        self.update_live(|live| live.loop_guard = params);
         self
     }
 

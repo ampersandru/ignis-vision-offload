@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use ignis_core::{Compute, ConcreteScheduler, SchedulerConfig, TokenId};
+use ignis_core::{Compute, ConcreteScheduler, MockCompute, RequestId, SchedulerConfig, TokenId};
 use ignis_server::decoder::TokenDecoder;
 use ignis_server::engine::Engine;
 use ignis_server::template::{
@@ -33,6 +33,11 @@ pub const GENERATION_PROMPT: TokenId = 0x7FFF_FFF0;
 /// What every response's `created_at` reads, so events are reproducible.
 pub const CREATED_AT_MS: u64 = 1_790_000_000_000;
 
+/// Where [`Script::encoding`]'s character tokens start: the token for a
+/// Latin-1 character `c` is `CHAR_TOKENS + c`. A mock token lands in that
+/// range about once in 17 million.
+pub const CHAR_TOKENS: TokenId = 0xFFE0_0000;
+
 /// One conversation as the template received it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rendered {
@@ -52,6 +57,9 @@ pub struct Script {
     boundaries: bool,
     /// What a token `decode` does not name reads as.
     unnamed: &'static str,
+    /// Text encodes one [`CHAR_TOKENS`] token per character, and those
+    /// tokens decode back: what the loop guard's nudges and tags need.
+    chars: bool,
     pub seen: Mutex<Vec<Rendered>>,
 }
 
@@ -77,6 +85,30 @@ impl Script {
     /// [`Script::new`], reporting the prompt's structure.
     pub fn with_boundaries(decode: HashMap<TokenId, &'static str>) -> Arc<Self> {
         Arc::new(Self { decode, boundaries: true, unnamed: "?", ..Self::default() })
+    }
+
+    /// [`Script::quiet_except`], with a tokenizer for Latin-1 text: one
+    /// [`CHAR_TOKENS`] token per character.
+    pub fn encoding(decode: HashMap<TokenId, &'static str>) -> Arc<Self> {
+        Arc::new(Self { decode, chars: true, ..Self::default() })
+    }
+
+    /// [`Script::encoding`], every token it does not name reading as
+    /// `unnamed`: what a loop guard continuation, whose fresh seed draws
+    /// tokens no script names, writes.
+    pub fn encoding_or(decode: HashMap<TokenId, &'static str>, unnamed: &'static str) -> Arc<Self> {
+        Arc::new(Self { decode, chars: true, unnamed, ..Self::default() })
+    }
+
+    /// What `token` reads as.
+    fn piece(&self, token: TokenId) -> String {
+        if let Some(text) = self.decode.get(&token) {
+            return (*text).to_owned();
+        }
+        match token.checked_sub(CHAR_TOKENS).filter(|&c| self.chars && c <= 0xFF).and_then(char::from_u32) {
+            Some(c) => c.to_string(),
+            None => self.unnamed.to_owned(),
+        }
     }
 
     pub fn seen(&self) -> Vec<Rendered> {
@@ -115,7 +147,14 @@ impl TemplateProvider for Handle {
     }
 
     fn render_tokens(&self, tokens: &[TokenId]) -> String {
-        tokens.iter().map(|t| self.0.decode.get(t).copied().unwrap_or(self.0.unnamed)).collect()
+        tokens.iter().map(|&t| self.0.piece(t)).collect()
+    }
+
+    fn encode_literal(&self, text: &str) -> Option<Vec<TokenId>> {
+        if !self.0.chars {
+            return None;
+        }
+        text.chars().map(|c| (u32::from(c) <= 0xFF).then_some(CHAR_TOKENS + u32::from(c))).collect()
     }
 
     fn thinking_capabilities(&self) -> ThinkingCapabilities {
@@ -123,17 +162,17 @@ impl TemplateProvider for Handle {
     }
 
     fn token_decoder(&self) -> Box<dyn TokenDecoder> {
-        Box::new(Decoder(self.0.decode.clone(), self.0.unnamed))
+        Box::new(Decoder(Arc::clone(&self.0)))
     }
     // `decoder_starts_in_reasoning` stays the trait default: a request with
     // thinking on starts in the reasoning channel, as a real template's does.
 }
 
-struct Decoder(HashMap<TokenId, &'static str>, &'static str);
+struct Decoder(Arc<Script>);
 
 impl TokenDecoder for Decoder {
     fn push(&mut self, token: TokenId) -> String {
-        self.0.get(&token).copied().unwrap_or(self.1).to_owned()
+        self.0.piece(token)
     }
     fn finish(&mut self) -> String {
         String::new()
@@ -147,6 +186,42 @@ pub fn server(script: &Arc<Script>, config: SchedulerConfig, compute: Arc<dyn Co
         .with_request_timeout(Duration::from_secs(5))
         .with_wall_clock(Arc::new(FixedClock::new(CREATED_AT_MS)))
         .with_seedless_seed(0)
+}
+
+// ── the loop guard (ADR 0052) ────────────────────────────────────────────
+
+/// `request`'s tokens on `mock`, from the first, read as `text` cut into
+/// pieces of 8 characters: what a [`Script`] decodes them to.
+pub fn scripted_text(mock: &MockCompute, request: RequestId, text: &str) -> HashMap<TokenId, &'static str> {
+    let chars: Vec<char> = text.chars().collect();
+    chars
+        .chunks(8)
+        .enumerate()
+        .map(|(step, piece)| {
+            let piece: &'static str = Box::leak(piece.iter().collect::<String>().into_boxed_str());
+            (mock.token_for(request, step as u32), piece)
+        })
+        .collect()
+}
+
+#[path = "loop_text.rs"]
+mod loop_text;
+// Not every test binary that includes this file reasons.
+#[allow(unused_imports)]
+pub use loop_text::{looping, prose};
+
+/// Poll `metrics`' exposition until `line` is in it.
+pub async fn metric_reaches(metrics: &ignis_server::metrics::Metrics, line: &str) {
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if metrics.render().contains(&format!("\n{line}\n")) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "no `{line}` in:\n{}", metrics.render());
 }
 
 /// The events of a `text/event-stream` body: each `event:` line's name, and

@@ -361,6 +361,16 @@ cargo run -p ignis-bench -- g2 `
 # 4. Restart the reference.
 ```
 
+Every ignis leg of a bench or a gate runs with the loop guard off:
+`--model-loop-guard off`, or `LOOP_GUARD=off` on `make start` (`make config`
+prints the flag). The server's default, `rewind`, takes a looping reasoning
+back and nudges the model, so wherever it acts the output, the token counts
+and the timing differ from a reference that has no guard (ADR 0052). The
+in-process GPU tests that compare output (`openai_http_gpu.rs`,
+`hq_canary_gpu.rs`, the `LiveServer` ones) build their server without a config
+and run with it off; one built from flags or a config gets `rewind`, and a new
+one that compares output passes `--model-loop-guard off`.
+
 `ignis-server` takes the engine shape the run needs as flags (each over its
 own env var, each validated before any loader work starts): `--model-prefill-chunk`
 (default 1024, a nonzero multiple of 128), `--model-max-context` (default
@@ -576,7 +586,7 @@ nvidia-smi --format=csv,noheader -l 1 `
 .\target\x86_64-pc-windows-msvc\release\ignis-server.exe --model-artifact $Artifact `
   --server-bind 127.0.0.1:8000 --model-kv-format hq-e8-2b --model-max-context 40960 `
   --vram-kv-pool-bytes 576M --model-prefill-chunk 1024 --server-request-timeout 900 `
-  --model-idle-unload 0
+  --model-idle-unload 0 --model-loop-guard off
 
 # the reference, same two formats
 F:\ai\q38\ninfer\build-ninja\apps\ninfer-serve.exe $Artifact `

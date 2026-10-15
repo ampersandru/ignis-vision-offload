@@ -43,6 +43,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # The media cache's key: the SHA-256 of the acquired bytes, computed before
 # the lookup so a hit skips decode, resize and packing.
 sha2 = "0.10"
+# The loop guard's repetition score (`loop_guard.rs`): the zlib ratio of a
+# window of reasoning. Already in the tree under `flate2`.
+miniz_oxide = "0.9"
 # The image routes' output (spec image-model/05): RGBA 8-bit PNG, the
 # version `ignis-artifact` decodes with.
 png = "0.18"

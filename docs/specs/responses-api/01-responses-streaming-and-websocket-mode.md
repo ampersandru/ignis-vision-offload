@@ -132,7 +132,8 @@ So the three transports cannot disagree on a payload.
 
 **Output items.** In generation order: a `reasoning` item when the thinking
 channel produced text (`content: [{type: "reasoning_text", text}]`,
-`summary: []`, no `encrypted_content`), a `message` item with one
+`summary: []`, no `encrypted_content`; ADR 0052 later adds one with
+`include: ["reasoning.encrypted_content"]`), a `message` item with one
 `output_text` part (`annotations: []`) when the content channel produced text,
 and one `function_call` item per scanned tool call (`id`, `call_id`, `name`,
 `arguments` as a JSON string, `status`). Ids are `resp_<request id>`,
@@ -169,7 +170,7 @@ and produces nothing (no summaries). `text.format` of type `text` or absent is
 served; any other format (`json_schema`, `json_object`) is a 400 (structured
 output is not served; ignoring it would change the answer). `background: true`
 is a 400. Fields that do not change the answer are accepted and ignored:
-`store`, `include` (including `reasoning.encrypted_content`), `metadata`,
+`store`, `include` (`reasoning.encrypted_content` is served since ADR 0052), `metadata`,
 `user`, `safety_identifier`, `prompt_cache_key`, `prompt_cache_retention`,
 `service_tier`, `truncation` (`disabled` behaviour), `stream_options`,
 `client_metadata`, `text.verbosity`, and unknown top-level fields (tolerant
@@ -384,7 +385,8 @@ the event module's internals or the cache's layout.
 - Hosted tools (web search, file search, code interpreter, image generation,
   MCP run by the server, custom/freeform tools), structured outputs
   (`text.format` `json_schema`), reasoning summaries and
-  `encrypted_content`, logprobs.
+  `encrypted_content` (ADR 0052 later serves it: the reasoning the model saw,
+  in clear), logprobs.
 - The Realtime API (`/v1/realtime`): a different, audio-first protocol.
 - The HTTP 426 fallback that makes Codex drop to HTTP: not needed once the
   socket is served.

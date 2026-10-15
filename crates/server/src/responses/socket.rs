@@ -21,7 +21,8 @@
 //!   received, so a request that then waits cannot lose its parent to the
 //!   source stream advancing. The request renders that response's whole
 //!   conversation plus its own items: the same prompt a client re-sending
-//!   everything produces, so reuse stays ADR 0029's content match.
+//!   everything produces, so reuse stays ADR 0029's content match. A
+//!   response the loop guard rewound is kept as the model saw it (ADR 0052).
 //! - **Admission.** A request the engine finds full waits in the server-wide
 //!   queue ([`super::queue`]) with `response.queued`, instead of a 503.
 //! - **Close.** Closing the socket, by either side, cancels every response it
@@ -45,7 +46,8 @@ use tracing::Instrument;
 use crate::api::{self, ApiError, CancelOnDrop};
 use crate::responses::events::{Ending, ResponseEvents};
 use crate::responses::input::{self, CreateResponse, Prepared};
-use crate::responses::queue::{Admission, Hub};
+use crate::responses::queue::{Admission, Hub, QueuedOps};
+use crate::loop_guard::Guarding;
 use crate::responses::{created_at, drive, Driven};
 use crate::Server;
 
@@ -92,9 +94,9 @@ fn offered(headers: &HeaderMap) -> impl Iterator<Item = &str> {
     summary = "The Responses API's WebSocket mode",
     description = "Upgrades to a WebSocket (OpenAI's Responses WebSocket mode; the events and their sources are in `docs/findings/2026-09-29-openai-websocket-inference-interfaces.md`). Authenticate with `Authorization: Bearer <key>` on the upgrade, or, from a browser, with a `Sec-WebSocket-Protocol` entry `openai-insecure-api-key.<key>`; the server selects the first offered entry that is not a credential.
 
-The client sends text frames carrying one JSON event each. `response.create` takes the `POST /v1/responses` body's fields beside its `type`, plus `stream_id` (a named stream, 1-256 characters of `[A-Za-z0-9_.-]`; 32 per connection) and `generate: false` (a warm-up: the prompt is prefilled and its state kept, nothing is generated). The server answers with the same events as the HTTP stream, with `stream_id` on the events of a named stream. Requests on one stream run in order; different streams run concurrently, up to 16 responses per connection. `previous_response_id` continues a stream's latest finished response on this connection with only the new items. A request the engine cannot admit waits in a server-wide queue (`response.created` with `status: \"queued\"`, then `response.queued`, then `response.in_progress`).
+The client sends text frames carrying one JSON event each. `response.create` takes the `POST /v1/responses` body's fields beside its `type`, plus `stream_id` (a named stream, 1-256 characters of `[A-Za-z0-9_.-]`; 32 per connection) and `generate: false` (a warm-up: the prompt is prefilled and its state kept, nothing is generated). The server answers with the same events as the HTTP stream, with `stream_id` on the events of a named stream. Requests on one stream run in order; different streams run concurrently, up to 16 responses per connection. `previous_response_id` continues a stream's latest finished response on this connection with only the new items; a response the reasoning-loop guard rewound is continued from the reasoning as the model saw it, without the tags and the text they took back. A request the engine cannot admit waits in a server-wide queue (`response.created` with `status: \"queued\"`, then `response.queued`, then `response.in_progress`), and so does the continuation of a rewind. The loop guard, `usage.output_tokens_details.rewound_tokens` and `include: [\"reasoning.encrypted_content\"]` work as over HTTP.
 
-`response.cancel` (an ignis extension borrowed from the Realtime API, `{type, response_id}`) ends one response with `response.incomplete`, `status: \"cancelled\"`. `response.steer` is refused (`steering_not_supported`). A failure is an `error` event `{type: \"error\", status, error: {type, code, message, param}, stream_id?}`, and never closes the socket. Closing it cancels everything the connection had running or queued.",
+`response.cancel` (an ignis extension borrowed from the Realtime API, `{type, response_id}`) ends one response with `response.incomplete`, `status: \"cancelled\"`, and stops the engine request generating for it, a rewind's continuation included. `response.steer` is refused (`steering_not_supported`). A failure is an `error` event `{type: \"error\", status, error: {type, code, message, param}, stream_id?}`, and never closes the socket. Closing it cancels everything the connection had running or queued.",
     responses(
         (status = 101, description = "Switching protocols: the socket is open."),
         (status = 400, description = "Not a WebSocket upgrade.", body = ApiError),
@@ -573,7 +575,7 @@ async fn serve(
     // when it began.
     let server = &server.pinned();
     let mut cancel = std::pin::pin!(cancel);
-    let Prepared { input, class, notes, items, start } =
+    let Prepared { input, class, notes, items, start, starts_in_reasoning } =
         match input::prepare(server, job.body, job.history, job.warm_up).await {
             Ok(prepared) => prepared,
             Err(refusal) => {
@@ -585,14 +587,16 @@ async fn serve(
     // The engine the request is submitted to is the one its cancel guard
     // must reach, whatever a model switch does meanwhile.
     let engine = server.active().text_engine().clone();
-    let (mut events, request, mut scheduled) = match queue.submit(&engine, &input, class, notes).await {
+    let guarding = Guarding::new(server.live().loop_guard, &input, starts_in_reasoning);
+    let rewound = guarding.rewound();
+    let (mut events, request, scheduled) = match queue.submit(&engine, &input, class, notes).await {
         Admission::Refused(refused) => {
             emit(refusal_event(api::submit_error(server, refused)).await);
             return Outcome::Failed;
         }
         Admission::Admitted(request, scheduled) => {
             tracing::Span::current().record("request_id", request);
-            let mut events = start.events(request.to_string(), created_at(server));
+            let mut events = start.events(request.to_string(), created_at(server)).with_rewound(rewound);
             let _ = outbox.send(Outgoing::Named { key, id: events.id().to_owned() });
             events.created(false).into_iter().for_each(emit);
             emit(events.in_progress());
@@ -600,7 +604,7 @@ async fn serve(
         }
         Admission::Queued(ticket) => {
             // No request id yet: the ticket names the response.
-            let mut events = start.events(format!("q{}", ticket.number()), created_at(server));
+            let mut events = start.events(format!("q{}", ticket.number()), created_at(server)).with_rewound(rewound);
             let _ = outbox.send(Outgoing::Named { key, id: events.id().to_owned() });
             events.created(true).into_iter().for_each(emit);
             let admitted = tokio::select! {
@@ -629,13 +633,24 @@ async fn serve(
             }
         }
     };
-    let mut guard = CancelOnDrop::new(engine, request);
+    // A continuation waits for admission in the same queue.
+    let ops = QueuedOps::new(Arc::clone(queue), engine.clone(), class, server.active().template.clone());
+    let (mut scheduled, running) = guarding.guard(ops, request, scheduled);
+    // Cancels the engine request generating now, a continuation after a
+    // rewind (ADR 0052).
+    let mut guard = CancelOnDrop::following(engine, running.clone());
     // `--server-request-timeout` counts from admission, never from queueing.
     let deadline = tokio::time::Instant::now() + server.live().request_timeout;
     let driven = tokio::select! {
         driven = drive(&mut events, &mut scheduled, deadline, emit) => Some(driven),
         () = &mut cancel => None,
     };
+    if !matches!(driven, Some(Driven::Ended)) {
+        // Cut short: what the loop guard held back still reaches the
+        // response (ADR 0052).
+        let held = crate::loop_guard::held_back(&running, &mut scheduled).await;
+        events.on_tokens(&held).into_iter().for_each(emit);
+    }
     match driven {
         Some(Driven::Ended) => guard.completed(),
         Some(Driven::TimedOut) => {
@@ -651,13 +666,40 @@ async fn serve(
     ended(&events, items)
 }
 
-/// The outcome of a response that has its terminal event.
+/// The outcome of a response that has its terminal event. A continuation
+/// starts from its output as the model saw it: a loop-guard rewind's struck
+/// text and tag are not part of it (ADR 0052).
 fn ended(events: &ResponseEvents, mut items: Vec<JsonValue>) -> Outcome {
     match events.ending() {
         Some(Ending::Completed | Ending::Incomplete | Ending::Cancelled) => {
-            items.extend(events.response().output.iter().cloned());
+            items.extend(events.model_view_output());
             Outcome::Ended(Cached { id: events.id().to_owned(), items })
         }
         Some(Ending::Failed) | None => Outcome::Failed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::responses::events::testing::{done, events};
+
+    /// What a socket keeps of a rewound response, for the next request on
+    /// its stream, is the model's view (ADR 0052): the struck text and the
+    /// tag out of the reasoning, the rest as it is; the response itself
+    /// keeps what was streamed.
+    #[test]
+    fn a_rewound_response_is_kept_as_the_model_saw_it() {
+        let streamed: &'static str = Box::leak(format!("kept lo{}Wait.", crate::loop_guard::tag(2, "lo")).into_boxed_str());
+        let texts: &'static [&'static str] = Box::leak(vec![streamed, "</think>", "answer"].into_boxed_slice());
+        let mut events = events(texts, true);
+        events.on_tokens(&[0, 1, 2]);
+        events.on_event(done(3));
+        let asked = json!({ "type": "message", "role": "user", "content": "q" });
+        let Outcome::Ended(cached) = ended(&events, vec![asked.clone()]) else { panic!("a completed response is kept") };
+        assert_eq!(cached.items[0], asked);
+        assert_eq!(cached.items[1]["content"][0]["text"], "kept Wait.", "{:?}", cached.items);
+        assert_eq!(cached.items[2], events.response().output[1], "the message as it is");
+        assert_eq!(events.response().output[0]["content"][0]["text"], streamed, "the response shows what was streamed");
     }
 }

@@ -322,6 +322,57 @@ config_group! {
         /// is forced; `off` = no budget. A request's own thinking_budget
         /// overrides it.
         thinking_budget: ThinkingBudget = Some(super::DEFAULT_THINKING_BUDGET), NO_RULE, ALL, [Visible, Patchable];
+        /// The loop guard (ADR 0052): `rewind`, a loop in a request's
+        /// reasoning (chat completions, `/v1/responses`) is taken back and
+        /// the model nudged, then closed after `loop_guard_retries` nudges;
+        /// `log`, it is only logged; `off`, no guard, as benches and gates
+        /// run for reference parity.
+        loop_guard: LoopGuard = crate::loop_guard::LoopGuardMode::Rewind, Validator::OneOf(crate::loop_guard::LoopGuardMode::NAMES), ALL,
+            [Visible, Patchable];
+        /// A window of scored reasoning whose zlib ratio is under this many
+        /// thousandths is a loop.
+        loop_guard_ratio: Permille = crate::loop_guard::DEFAULT_RATIO_PERMILLE, between(1, 999), ALL, [Visible, Patchable];
+        /// The loop guard's window, in characters of scored reasoning.
+        loop_guard_window: Chars = crate::loop_guard::DEFAULT_WINDOW_CHARS, between(500, 100_000), ALL, [Visible, Patchable];
+        /// Whether the loop guard scores the reasoning normalized: fenced
+        /// and inline code taken out, every run of digits read as one `0`.
+        /// `off` scores it as written, which at this window and ratio
+        /// flags far more than the raw prototype did (3,000 and 120).
+        loop_guard_normalize: Bool = crate::loop_guard::DEFAULT_NORMALIZE, NO_RULE, ALL, [Visible, Patchable];
+        /// The loop guard's raw gate, in thousandths: a loop's last
+        /// `loop_guard_window` characters as written must score under it
+        /// too, which a table of numbers (a template once its digits fold)
+        /// does not. 0, no gate.
+        loop_guard_raw_gate: Permille = crate::loop_guard::DEFAULT_RAW_GATE_PERMILLE, between(0, 999), ALL, [Visible, Patchable];
+        /// A window of scored reasoning at or over this many thousandths is
+        /// clean: a rewind goes back to the start of the last one before
+        /// the loop (no clean one since the last nudge: to its end).
+        loop_guard_clean: Permille = crate::loop_guard::DEFAULT_CLEAN_PERMILLE, between(1, 999), ALL, [Visible, Patchable];
+        /// How many characters before that clean window's start a rewind
+        /// cuts.
+        loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
+        /// The nudges a looping reasoning gets before the guard closes it.
+        loop_guard_retries: Retries = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];
+        /// In `rewind` mode, the characters of reasoning held back from the
+        /// client: a rewind whose cut falls in them reaches it with no tag
+        /// and none of the loop. 0, none; under ~2,000 it hides almost no
+        /// rewind.
+        loop_guard_holdback: Chars = crate::loop_guard::DEFAULT_HOLDBACK_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
+        /// The loop guard scores the window again after this many
+        /// characters of new reasoning.
+        loop_guard_check_every: Chars = crate::loop_guard::DEFAULT_CHECK_EVERY_CHARS, between(1, 100_000), ALL, [Visible, Patchable];
+        /// A rewind's cut moves back to the line break before it when one
+        /// is within this many characters. 0, never.
+        loop_guard_snap: Chars = crate::loop_guard::DEFAULT_SNAP_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
+        /// The least of a request's `max_tokens` a continuation must have
+        /// left after the cut and the nudge: with less, the loop is only
+        /// logged.
+        loop_guard_min_continuation: Tokens = crate::loop_guard::DEFAULT_MIN_CONTINUATION_TOKENS, at_least(1), ALL, [Visible, Patchable];
+        /// How long a continuation the engine refuses as full waits for
+        /// room, in seconds, before the loop is left as it is; 0 tries
+        /// once. A WebSocket request's continuation waits in the socket's
+        /// admission queue instead, as the socket's own requests do.
+        loop_guard_submit_wait: Secs = crate::loop_guard::DEFAULT_SUBMIT_WAIT_SECS, between(0, 3600), ALL, [Visible, Patchable];
         /// The text rotary table: `none` (the linear table) or
         /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
         /// trained 262,144-position envelope — what a context past it needs.

@@ -84,7 +84,9 @@ before the GDN fold and the KV ring invalidation that use it.
   `</think>` as a new prompt. Prompt retention holds the prompt's checkpoint,
   not the generated tokens, so the continuation re-prefills the whole
   reasoning: tens of seconds on Flash-Next for this turn, and two engine
-  requests per HTTP request.
+  requests per HTTP request. ADR 0052 chooses it for a reasoning loop, where
+  no in-leaf fix exists: there the continuation keeps only the text before
+  the loop, and the prompt comes back from its checkpoint.
 - **A device-side deny mask on the EOS while the block is open.** It needs a
   mask inside the captured decode graph and the verify path. And it does not
   close anything: the model keeps reasoning past the point where it wanted

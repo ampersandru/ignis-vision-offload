@@ -155,6 +155,15 @@ impl OutputDecoder {
         self.channel
     }
 
+    /// The text held back from the current channel: a newline run or a
+    /// partial `</think>`, which the next text releases. Unlike
+    /// [`OutputDecoder::finish`], which drops a partial marker, this is what
+    /// a client shows once any other text follows. Not the token decoder's
+    /// own incomplete bytes.
+    pub fn pending(&self) -> &str {
+        &self.hold
+    }
+
     /// Flush the token decoder and this decoder's own held-back text.
     pub fn finish(&mut self) -> Vec<Delta> {
         let mut deltas = Vec::new();
@@ -480,5 +489,24 @@ mod tests {
 
         assert_eq!(concat(&streamed, Channel::Reasoning), concat(&batched, Channel::Reasoning));
         assert_eq!(concat(&streamed, Channel::Content), concat(&batched, Channel::Content));
+    }
+
+    /// What the decoder holds is what a client shows once any other text
+    /// follows: a newline run, a partial marker. Published and pending
+    /// together are the reasoning so far, as text after it would release it.
+    #[test]
+    fn pending_is_the_held_text_the_next_text_releases() {
+        for (chunks, published, pending) in [
+            (&["ab\n"][..], "ab", "\n"),
+            (&["ab</thi"][..], "ab", "</thi"),
+            (&["a</think>b"][..], "a", ""),
+            (&["ab", "c"][..], "abc", ""),
+        ] {
+            let mut decoder = OutputDecoder::new(Box::new(ScriptedDecoder::new(chunks)), true);
+            let ids: Vec<TokenId> = (0..chunks.len() as u32).collect();
+            let deltas = decoder.push(&ids);
+            assert_eq!(concat(&deltas, Channel::Reasoning), published, "{chunks:?}");
+            assert_eq!(decoder.pending(), pending, "{chunks:?}");
+        }
     }
 }

@@ -1108,6 +1108,7 @@ dependencies = [
  "ignis-core",
  "ignis-logging",
  "ignis-runtime",
+ "miniz_oxide 0.9.1",
  "png",
  "reqwest",
  "serde",

@@ -8,18 +8,25 @@
 //! order across every connection, and one busy client cannot starve
 //! another. A submission that finds others already waiting joins them rather
 //! than overtaking them. Only "full" queues: every other refusal is answered
-//! at once.
+//! at once. A loop-guard continuation of a socket request comes in this way
+//! too ([`QueuedOps`]).
 
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tokio::sync::watch;
 
-use ignis_core::{RequestClass, RequestId, RequestInput, SubmitError};
+use ignis_core::{RequestClass, RequestId, RequestInput, SubmitError, TokenId};
 
+use crate::decoder::OutputDecoder;
 use crate::engine::{Engine, EventStream, RequestNotes};
+use crate::loop_guard::{EngineOps, GuardOps};
 use crate::metrics::Metrics;
+use crate::template::TemplateProvider;
 
 /// What every Responses socket on this server shares: the admission queue,
 /// and the open-socket count behind its gauge.
@@ -178,5 +185,51 @@ impl AdmissionQueue {
         if let Some(metrics) = self.metrics.get() {
             metrics.set_responses_queued(queued as u64);
         }
+    }
+}
+
+/// The loop guard's engine for a socket request (ADR 0052): a continuation
+/// is admitted as the socket's requests are, through the server-wide queue
+/// and behind whatever already waits in it, for as long as they wait (the
+/// guard's `submit_wait` is for a request with no queue); the rest is
+/// [`EngineOps`].
+pub(crate) struct QueuedOps {
+    queue: Arc<AdmissionQueue>,
+    ops: EngineOps,
+}
+
+impl QueuedOps {
+    pub(crate) fn new(queue: Arc<AdmissionQueue>, engine: Engine, class: RequestClass, template: Arc<dyn TemplateProvider>) -> Self {
+        Self { queue, ops: EngineOps::new(engine, class, template) }
+    }
+}
+
+impl GuardOps for QueuedOps {
+    fn cancel(&self, request: RequestId) {
+        self.ops.cancel(request);
+    }
+
+    fn submit(&self, input: RequestInput, _: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+        Box::pin(async move {
+            let (engine, class, notes) = (self.ops.engine(), self.ops.class(), RequestNotes::default());
+            let refused = match self.queue.submit(engine, &input, class, notes).await {
+                Admission::Admitted(request, stream) => return Some((request, stream)),
+                Admission::Queued(ticket) => match self.queue.wait(&ticket, engine, &input, class, notes).await {
+                    Ok(submitted) => return Some(submitted),
+                    Err(refused) => refused,
+                },
+                Admission::Refused(refused) => refused,
+            };
+            tracing::warn!(name: "ignis.loop_guard.submit_refused", error = ?refused, "the continuation was refused");
+            None
+        })
+    }
+
+    fn decoder(&self) -> OutputDecoder {
+        self.ops.decoder()
+    }
+
+    fn encode(&self, text: &str) -> Option<Vec<TokenId>> {
+        self.ops.encode(text)
     }
 }

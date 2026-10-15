@@ -276,9 +276,8 @@ pub const RESPONSES: &[FieldRule] = &[
     FieldRule { name: "prompt_cache_key", inert: always, inert_when: ALWAYS, refusal: None },
     FieldRule { name: "prompt_cache_retention", inert: always, inert_when: ALWAYS, refusal: None },
     FieldRule { name: "safety_identifier", inert: always, inert_when: ALWAYS, refusal: None },
-    // Codex asks for `reasoning.encrypted_content`; this server has nothing
-    // to encrypt and sends the reasoning as text.
-    FieldRule { name: "include", inert: always, inert_when: ALWAYS, refusal: None },
+    // `include` is not here: the handler reads it, for
+    // `reasoning.encrypted_content` (ADR 0052), and takes any other value.
     FieldRule { name: "stream_options", inert: always, inert_when: ALWAYS, refusal: None },
     // Counts hosted-tool calls, and this server runs none.
     FieldRule { name: "max_tool_calls", inert: always, inert_when: ALWAYS, refusal: None },
@@ -461,7 +460,6 @@ mod tests {
     fn responses_takes_what_codex_sends() {
         accepted(Surface::Responses, "parallel_tool_calls", &[json!(false), json!(true)]);
         accepted(Surface::Responses, "store", &[json!(false), json!(true)]);
-        accepted(Surface::Responses, "include", &[json!(["reasoning.encrypted_content"])]);
         accepted(Surface::Responses, "prompt_cache_key", &[json!("thread-1")]);
         accepted(Surface::Responses, "client_metadata", &[json!({ "a": "b" })]);
         accepted(Surface::Responses, "service_tier", &[json!("auto"), json!("flex"), json!("priority")]);

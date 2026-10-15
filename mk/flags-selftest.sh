@@ -83,6 +83,12 @@ done
 has "IDLE_UNLOAD=0" "$(flags IDLE_UNLOAD=0)" "--model-idle-unload 0"
 has "IDLE_UNLOAD=600" "$(flags MODEL=flash-next IDLE_UNLOAD=600)" "--model-idle-unload 600"
 lacks "idle default" "$(flags)" "--model-idle-unload"
+# ADR 0052: the loop guard reaches the server as named (off is what a bench or
+# a gate passes, for reference parity), and nothing when the knob is empty
+# (the server's rewind).
+has "LOOP_GUARD=off" "$(flags LOOP_GUARD=off)" "--model-loop-guard off"
+has "LOOP_GUARD=log" "$(flags MODEL=flash-next LOOP_GUARD=log)" "--model-loop-guard log"
+lacks "loop guard default" "$(flags)" "--model-loop-guard"
 out="$(flags MODEL=flash-next ALLOW_EXPERT_CACHE_BELOW_FLOOR=1)"
 has "ALLOW_EXPERT_CACHE_BELOW_FLOOR=1" "$out" "--vram-allow-expert-cache-below-floor"
 lacks "floor default" "$(flags MODEL=flash-next)" "--vram-allow-expert-cache-below-floor"
