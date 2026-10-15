@@ -919,6 +919,21 @@ where appropriate.
 
 HTTP logging MUST NOT introduce a separate unrelated access-log format unless required for compatibility with an external component.
 
+The `ignis.request.done` line reports retained-state reuse (GitHub #186, #325) with
+three attributes that appear together and **only** on a request that reused
+something; their absence is "none", never a placeholder:
+
+```text
+reuse_source          device | kv_ram | disk   the tier the state came from
+reused_prompt_tokens  integer                  prompt tokens skipped
+reuse_kind            checkpoint | prefix      which kind of retained state
+```
+
+`reuse_kind` uses the same `checkpoint|prefix` spelling as the `kind` label of
+the `ignis_retained_*` metric families (ADR 0017), so a log line and a series
+name one thing one way. A prompt-checkpoint restore also carries `restore_ms`;
+a prefix is claimed by sharing pages, restores nothing, and carries none.
+
 Where OpenTelemetry Semantic Conventions exist, standard attributes SHOULD be preferred.
 
 ---

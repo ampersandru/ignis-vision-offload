@@ -4287,11 +4287,23 @@ impl Scheduler for ConcreteScheduler {
                         // subtracting its whole pages is exact.
                         r.resources.kv_pages = r.resources.kv_pages.saturating_sub(claim.pages);
                         let request = r.id;
+                        let retained = !self.is_live(claim.publisher);
                         events.push(SchedEvent::PrefixReused {
                             request,
                             tokens: claim.tokens,
-                            retained: !self.is_live(claim.publisher),
+                            retained,
                         });
+                        // GitHub #325: a request that chose to resume from a
+                        // retained prefix is a hit on the device tier, the
+                        // way the checkpoint claim below is one. A live
+                        // sibling's prefix is not retained state.
+                        if retained {
+                            events.push(SchedEvent::RetainedState {
+                                operation: RetainedStateOperation::Hit,
+                                source: ReuseSource::Device,
+                                kind: RetainedKind::Prefix,
+                            });
+                        }
                     } else if let Some(m) = retained {
                         // Resume from an *earlier, finished* request's state.
                         // The claimant takes a holder's reference on the

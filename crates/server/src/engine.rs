@@ -748,12 +748,14 @@ async fn telemetry_task(
                     ..
                 } => telemetry.on_prefill_chunk(request, prefilled_tokens, encode_micros),
                 SchedEvent::PrefixReused {
-                    tokens, retained, ..
-                } => telemetry.on_prefix_reused(tokens, retained),
-                // GitHub #186: unlike `PrefixReused`, this one keeps its
-                // request id — `reuse_source`, `reused_prompt_tokens` and
+                    request,
+                    tokens,
+                    retained,
+                } => telemetry.on_prefix_reused(request, tokens, retained),
+                // GitHub #186: `reuse_source`, `reused_prompt_tokens` and
                 // `restore_ms` are per-request fields of the request log,
-                // not a server-wide counter.
+                // not a server-wide counter. A retained prefix reports the
+                // same fields through `PrefixReused` (#325).
                 SchedEvent::StateReused {
                     request,
                     source,
