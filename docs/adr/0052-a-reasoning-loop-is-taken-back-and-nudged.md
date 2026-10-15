@@ -9,6 +9,11 @@ the finding `docs/findings/2026-10-14-reasoning-loop-guard.md`. Code on branch
 `experiment/loop-rewind` (`crates/server/src/loop_guard.rs`). **Flags a conflict with ADR
 0048**, whose rejected alternatives include re-submitting a turn from the server (below).
 
+Owner decisions of 2026-10-14, folded in below: `completion_tokens` counts the rewound
+tokens; the guard is on (`rewind`) by default; **history repair** is always active; the
+Responses state stores the model's view and carries it in `encrypted_content`; a
+**holdback** can hide a rewind from the client; the guard is wired on `/v1/responses`.
+
 ## Context
 
 Qwen3.8-27B loops inside its reasoning on long enumerations. On the Playground's "whole
@@ -78,14 +83,57 @@ by a whole window. So the guard streams a tag into the reasoning channel, follow
 nudge or the close:
 
 ```
-\n\n[LOOP DETECTED, REWINDING <n> TOKENS / <m> CHARS]
+\n\n[LOOP DETECTED, REWINDING <n> TOKENS / <m> CHARS · <h>]
 ```
 
-`<m>` counts the Unicode scalar values before the tag, back to the cut. A client that
-understands the tag strikes them through: the Playground does
-(`web/src/ui/rewinds.ts`). Any other client shows the tag as text. Every standard field
-keeps its meaning. This is the extension rule of the Responses spec: ignis extensions are
-additive and never change what a standard field means.
+`<m>` counts the Unicode scalar values before the tag, back to the cut: the **struck
+text**. `<h>` is the first 6 lowercase hex digits of the SHA-256 of the struck text's
+UTF-8 bytes. A client that understands the tag strikes the `m` characters through: the
+Playground does (`web/src/ui/rewinds.ts`, which also still reads the tag without `· <h>`).
+Any other client shows the tag as text. Every standard field keeps its meaning. This is
+the extension rule of the Responses spec: ignis extensions are additive and never change
+what a standard field means.
+
+**History repair: the next request gives the model back its own view.** A client sends the
+reasoning back as it received it, struck text and tags included, but the model never saw
+those: its view is the kept text, the nudge and the continuation. On every incoming
+request, guard on or off, ignis repairs that text before rendering the prompt:
+- **Where.** Only assistant reasoning: chat `messages[].reasoning_content` on an
+  `assistant` message, and the text of Responses `reasoning` input items. Never a user,
+  system, developer or tool message, never assistant `content`.
+- **What.** For each tag, from the last to the first, the `m` characters before it and the
+  tag itself are removed, if and only if those `m` characters hash to `<h>`. On a
+  mismatch, too few characters, or a tag without a hash, the text is left as it is.
+- **Why always.** A history written while the guard was on reaches a server where it is
+  off, and a reprise of the conversation goes through the same repair.
+- **Effect.** The repaired reasoning equals the text the model saw, so the prompt matches
+  the retained state (ADR 0029) and reuse works across turns. Text equality is what repair
+  guarantees; whether the tokenizer splits the repaired text into the same tokens at a cut
+  is measured, not assumed.
+
+**Holdback: an option to hide a rewind before the client sees it.** `loop_guard_holdback`
+holds the reasoning stream back by that many characters (0 = off, the default):
+- a rewind whose cut falls in the unsent part streams no tag, and the client never sees
+  the loop;
+- a cut inside the sent part strikes only the sent characters, and the unsent rest is
+  dropped;
+- everything held back flushes at the reasoning's close, at the end of the stream, and on
+  an error or a cancel.
+- Holding back delays the reasoning a client sees by that many characters. Below ~2,000
+  it hides almost nothing: the shortest rewind measured struck 1,577 characters. On the
+  confirm run, 3,000 would have hidden 19 of 25 rewinds, and 6,000 would have hidden 24.
+
+**The Responses state stores the model's view.** `/v1/responses` keeps state on the server
+(`previous_response_id`, the WebSocket session). What it stores for a rewound response is
+the model's view, kept text + nudge + continuation, not what was streamed:
+- the next turn that chains on it needs no repair;
+- with `include: ["reasoning.encrypted_content"]` (Codex asks for it), every reasoning
+  output item carries `encrypted_content`, an opaque string: `ignis:v1:` followed by the
+  base64 of the model-view reasoning's UTF-8;
+- on input, a reasoning item whose `encrypted_content` ignis can read is used in place of
+  its visible text; one it cannot read (another server's blob, a malformed value) falls
+  back to the visible text, which history repair then sees;
+- it is not signed or encrypted: a client can already send any reasoning it likes in clear.
 
 **Usage counts what the model generated.**
 - `usage.completion_tokens` counts every token generated for the request, the rewound
@@ -103,6 +151,8 @@ additive and never change what a standard field means.
 - The Playground talks over the Responses WebSocket by default, and Codex CLI speaks only
   Responses.
 - `/v1/responses` reports the same count as `output_tokens_details.rewound_tokens`.
+- After a rewind the engine request id changes. A `response.cancel` addressed to the
+  response cancels whichever engine request is running for it.
 - A request with images is logged, never rewound, until a continuation can carry its
   media.
 - The answer is not watched: a nudge cannot go into content.
@@ -112,7 +162,7 @@ no reload):
 
 | field | default |
 |---|---|
-| `loop_guard` | `off` (also `log`, `rewind`) |
+| `loop_guard` | `rewind` (also `log`, `off`) |
 | `loop_guard_normalize` | on |
 | `loop_guard_window` | 1,000 characters |
 | `loop_guard_ratio` | 200 permille |
@@ -120,10 +170,16 @@ no reload):
 | `loop_guard_clean` | 400 permille |
 | `loop_guard_margin` | 0 characters |
 | `loop_guard_retries` | 2 |
+| `loop_guard_holdback` | 0 characters (off) |
 
-**`off` until the guard is measured on an agentic prompt.** It has been measured only on a
-2,000-token prompt. A run with a 50,000-token-or-larger context decides the default. If it
-holds, the default becomes `rewind`, since the data favours it.
+History repair has no field: it is always on, and a tag whose hash does not match is
+never touched.
+
+**`rewind` by default** (owner, 2026-10-14). The held-out run favours it: no false rewind
+in 25, and harmful runs fell from about a quarter to 4 in 40. `log` stays for diagnosis.
+The guard has been measured only on a 2,000-token prompt. A run on a context of 50,000
+tokens or more measures the cost of a rewind there, and any false rewind it finds
+reopens this default.
 
 ## Alternatives rejected
 
@@ -158,11 +214,14 @@ holds, the default becomes `rewind`, since the data favours it.
 ## Consequences
 
 - **Reference parity.** Output differs from the reference whenever the guard acts. Benches
-  and gates run with it `off`, which is the default.
+  and gates set `loop_guard=off` explicitly, since the default is `rewind`.
 - **Cost of a rewind.** A rewind is one engine request more. Today the continuation
   prefills its whole prompt, because nothing offers the cancelled request's prompt for
   reuse (ADR 0029). Reusing it is the follow-up that makes a rewind cheap on a long
   agentic context.
+- **History repair touches input.** It edits what a client sent, in one place only:
+  assistant reasoning, behind a matching hash. A client that wants its text verbatim
+  sends it without the tag.
 - **What a continuation does not carry over:**
   - its penalty counts start from zero;
   - a forced tool call (`tool_choice`) is not forced after a close the guard made.
@@ -174,7 +233,9 @@ holds, the default becomes `rewind`, since the data favours it.
   `no_tokenizer` and `submit_refused`, each with its scores and offsets. `log` mode
   reports the cut a rewind would have made, without acting.
 - **Wiring.** Implementing this ADR means:
-  - wiring `/v1/responses`, HTTP and WebSocket, with its own count field;
+  - wiring `/v1/responses`, HTTP and WebSocket, with its own count field, cancel by
+    response, the model-view store and `encrypted_content`;
   - wiring the `rewound_tokens` field;
-  - the glossary terms (**Loop guard**, **Rewind**, **Continuation**, **Nudge**) in
-    `CONTEXT.md`.
+  - the hashed tag, history repair on both surfaces, and `loop_guard_holdback`;
+  - the glossary terms (**Loop guard**, **Rewind**, **Continuation**, **Nudge**,
+    **History repair**, **Holdback**) in `CONTEXT.md`.
