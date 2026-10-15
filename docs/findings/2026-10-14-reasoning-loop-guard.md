@@ -326,7 +326,9 @@ tokens.
   `reasoning_content` back on the assistant tool-call message of its loop. This was
   seen through a logging proxy on one `opencode run`.
 
-Raw material is in the worktree's `.scratch/` (not tracked):
+Raw material is in the worktree's `.scratch/` (not tracked), archived after the merge in
+the main clone's `.scratch/worktrees/loop-rewind-scratch/` (the paths below are relative
+to it):
 - `loop-rewind/NOTES.md`: design, calibration, every run's table;
 - `loop-rewind/research/`: labels, variant and cut scripts, `REPORT.md`;
 - `loop-rewind/parity/`;
