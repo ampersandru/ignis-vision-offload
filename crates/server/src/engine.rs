@@ -751,7 +751,8 @@ async fn telemetry_task(
                     request,
                     tokens,
                     retained,
-                } => telemetry.on_prefix_reused(request, tokens, retained),
+                    source,
+                } => telemetry.on_prefix_reused(request, tokens, retained, source),
                 // GitHub #186: `reuse_source`, `reused_prompt_tokens` and
                 // `restore_ms` are per-request fields of the request log,
                 // not a server-wide counter. A retained prefix reports the
@@ -969,6 +970,7 @@ mod tests {
     use std::sync::Arc;
 
     use ignis_core::mock::{GatedCompute, MockCompute};
+    use ignis_core::checkpoint::ReuseSource;
     use ignis_core::{ConcreteScheduler, Compute, DecodeParams, EngineMode, SchedulerConfig};
 
     /// A test engine: the concrete scheduler over a deterministic mock
@@ -1196,6 +1198,7 @@ mod tests {
                     request: ProtectedBatchScheduler::ID,
                     tokens: 32,
                     retained: false,
+                    source: ReuseSource::Device,
                 },
                 SchedEvent::Token {
                     request: ProtectedBatchScheduler::ID,

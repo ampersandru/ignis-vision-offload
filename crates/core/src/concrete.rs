@@ -4240,6 +4240,7 @@ impl Scheduler for ConcreteScheduler {
                     // comes back to the device when it beats every device
                     // reuse by the restore floor and every KV-RAM checkpoint
                     // outright — and from then on the burst shares it there.
+                    let mut returned_from_kv_ram = false;
                     if let Some((spilled, length)) = self
                         .prefix
                         .longest_spilled_match(&keys)
@@ -4257,6 +4258,7 @@ impl Scheduler for ConcreteScheduler {
                             && self.return_prefix(spilled, &mut events)
                         {
                             device_prefix = length;
+                            returned_from_kv_ram = true;
                             retained = self.claimable(self.checkpoints.select(&lookup, device_prefix));
                         }
                     }
@@ -4292,12 +4294,16 @@ impl Scheduler for ConcreteScheduler {
                             request,
                             tokens: claim.tokens,
                             retained,
+                            source: if returned_from_kv_ram { ReuseSource::KvRam } else { ReuseSource::Device },
                         });
                         // GitHub #325: a request that chose to resume from a
                         // retained prefix is a hit on the device tier, the
                         // way the checkpoint claim below is one. A live
-                        // sibling's prefix is not retained state.
-                        if retained {
+                        // sibling's prefix is not retained state, and one
+                        // this claim brought back from KV-RAM was already
+                        // counted as a `kv_ram` hit by `return_prefix`: one
+                        // restore, one hit.
+                        if retained && !returned_from_kv_ram {
                             events.push(SchedEvent::RetainedState {
                                 operation: RetainedStateOperation::Hit,
                                 source: ReuseSource::Device,

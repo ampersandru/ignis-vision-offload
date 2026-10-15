@@ -548,7 +548,7 @@ impl Telemetry {
     /// `retained` tells them apart (#190), so `ignis_prefix_reused_tokens_total`
     /// keeps the *sibling*-prefix meaning ADR 0017's row gives it, and
     /// cross-request reuse is counted as reuse of retained state on the device.
-    pub fn on_prefix_reused(&mut self, id: RequestId, tokens: u32, retained: bool) {
+    pub fn on_prefix_reused(&mut self, id: RequestId, tokens: u32, retained: bool, source: ReuseSource) {
         if let Some(metrics) = &self.metrics {
             if retained {
                 // A `PrefixReused` fact is a prefix by its own name, so the
@@ -564,7 +564,7 @@ impl Telemetry {
         if retained {
             if let Some(rt) = self.requests.get_mut(&id) {
                 rt.reuse = Some(RequestReuse {
-                    source: ReuseSource::Device,
+                    source,
                     tokens,
                     restore_micros: None,
                     kind: RetainedKind::Prefix,
@@ -1817,7 +1817,7 @@ mod tests {
         telemetry.with_metrics(Arc::clone(&metrics));
 
         telemetry.note_submit(1, 3, RequestClass::Agent);
-        telemetry.on_prefix_reused(7, 32, false);
+        telemetry.on_prefix_reused(7, 32, false, ReuseSource::Device);
         telemetry.on_evicted(1, 450);
         telemetry.on_token(1);
         telemetry.on_token(1);
@@ -2006,9 +2006,9 @@ mod tests {
                 telemetry.note_submit(id, 3, RequestClass::Interactive);
                 telemetry.on_admitted(id, 0);
             }
-            telemetry.on_prefix_reused(1, 78_784, true); // a retained prefix
+            telemetry.on_prefix_reused(1, 78_784, true, ReuseSource::KvRam); // a retained prefix, brought back
             telemetry.on_state_reused(2, ReuseSource::KvRam, RetainedKind::Checkpoint, 1536, 42);
-            telemetry.on_prefix_reused(4, 32, false); // a live sibling's
+            telemetry.on_prefix_reused(4, 32, false, ReuseSource::Device); // a live sibling's
             for id in 1..=4 {
                 telemetry.on_done(id, 1, FinishReason::Stop, None, None, None);
             }
@@ -2022,7 +2022,7 @@ mod tests {
         };
 
         let prefix = done(1);
-        assert_eq!(prefix["reuse_source"], "device");
+        assert_eq!(prefix["reuse_source"], "kv_ram");
         assert_eq!(prefix["reused_prompt_tokens"], 78_784);
         assert_eq!(prefix["reuse_kind"], "prefix");
         assert!(prefix.get("restore_ms").is_none(), "a prefix restores nothing to time: {prefix}");
@@ -2047,8 +2047,8 @@ mod tests {
         telemetry.with_metrics(Arc::clone(&metrics));
         telemetry.note_submit(7, 2048, RequestClass::Interactive);
         telemetry.on_state_reused(7, ReuseSource::KvRam, RetainedKind::Checkpoint, 1536, 42);
-        telemetry.on_prefix_reused(7, 64, true);
-        telemetry.on_prefix_reused(7, 32, false);
+        telemetry.on_prefix_reused(7, 64, true, ReuseSource::Device);
+        telemetry.on_prefix_reused(7, 32, false, ReuseSource::Device);
         telemetry.on_retained_state(
             RetainedStateOperation::Spill,
             ReuseSource::KvRam,

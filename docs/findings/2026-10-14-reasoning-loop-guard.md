@@ -251,7 +251,8 @@ prefill.*
   1,231 × 64) has no `reuse_source` on its done line and adds nothing to
   `ignis_retained_state_hits_total`. Only `cached_tokens` and
   `ignis_retained_reused_tokens_total{kind="prefix"}` show it. The deep continuation
-  above was one of these: 4 chunks, no reuse field. Fixed by #325 (spec
+  above was one of these: 4 chunks, no reuse field.
+  Fixed by #325 (spec
   `docs/specs/kv-reuse/03-a-prefix-restore-is-reported.md`): the done line now carries
   `reuse_source`, `reused_prompt_tokens` and `reuse_kind=prefix`, and the hits counter moves. A continuation cancelled by the next
   rewind has no done line at all.

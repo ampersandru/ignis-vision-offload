@@ -652,7 +652,7 @@ fn a_live_siblings_prefix_is_not_retained_state_and_is_no_hit() {
     let mut sched = scheduler(compute, config());
     // The first is still decoding when the second arrives, so the second
     // claims what a live request stands on: sibling reuse (core-07).
-    let a = sched
+    sched
         .submit(
             input([tokens(1, BLOCK), tokens(500, 25)].concat(), Some(BLOCK), Some(57), 40),
             RequestClass::Agent,
@@ -662,7 +662,6 @@ fn a_live_siblings_prefix_is_not_retained_state_and_is_no_hit() {
     let b = sched.submit(subagent(900), RequestClass::Agent).unwrap();
     events.extend(run_to_idle(&mut sched));
     assert_eq!(prefix_reuses(&events, b), vec![32], "the second claimed the live block");
-    let _ = a;
     assert!(hits(&events, RetainedKind::Prefix).is_empty());
 }
 

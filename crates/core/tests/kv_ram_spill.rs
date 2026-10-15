@@ -725,6 +725,7 @@ fn prefix_reuses(events: &[SchedEvent], request: RequestId) -> Vec<(u32, bool)> 
                 request: r,
                 tokens,
                 retained,
+                ..
             } if *r == request => Some((*tokens, *retained)),
             _ => None,
         })
@@ -764,6 +765,9 @@ fn a_burst_block_the_device_gave_up_comes_back_once_and_the_burst_shares_it() {
     assert_eq!(count(&events, RetainedStateOperation::Hit, ReuseSource::KvRam), 1);
     assert_eq!(count(&events, RetainedStateOperation::Restore, ReuseSource::KvRam), 1);
     assert_eq!(prefix_reuses(&events, second), vec![(BIG_BLOCK, true)]);
+    // GitHub #325: one restore, one hit -- the `kv_ram` one `return_prefix`
+    // raised -- and the claim that follows it adds none on the device.
+    assert_eq!(count_kind(&events, RetainedStateOperation::Hit, ReuseSource::Device, RetainedKind::Prefix), 0);
     assert_eq!(widths(&compute, second), vec![40], "it prefilled its own question only");
     assert_eq!(sched.prefix_pinned_pages(), BIG_BLOCK / PAGE, "the block is on the device again");
 
@@ -772,6 +776,12 @@ fn a_burst_block_the_device_gave_up_comes_back_once_and_the_burst_shares_it() {
     let events = run_to_idle(&mut sched);
     assert_eq!(compute.returned_prefixes().len(), 1);
     assert_eq!(prefix_reuses(&events, third), vec![(BIG_BLOCK, true)]);
+    assert_eq!(
+        count_kind(&events, RetainedStateOperation::Hit, ReuseSource::Device, RetainedKind::Prefix),
+        1,
+        "a later member choosing the block already back on the device is a device hit"
+    );
+    assert_eq!(count(&events, RetainedStateOperation::Hit, ReuseSource::KvRam), 0);
 
     // Given up again, it copies nothing: the blob is still in KV-RAM...
     sched.submit(whole_pool(700_000), RequestClass::Interactive).unwrap();

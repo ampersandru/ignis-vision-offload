@@ -933,6 +933,8 @@ reuse_kind            checkpoint | prefix      which kind of retained state
 the `ignis_retained_*` metric families (ADR 0017), so a log line and a series
 name one thing one way. A prompt-checkpoint restore also carries `restore_ms`;
 a prefix is claimed by sharing pages, restores nothing, and carries none.
+For a prefix, `reuse_source` is `kv_ram` when that very claim brought the block back
+from KV-RAM and `device` otherwise.
 
 Where OpenTelemetry Semantic Conventions exist, standard attributes SHOULD be preferred.
 
