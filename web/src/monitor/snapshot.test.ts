@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseExposition } from "./exposition.ts";
-import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, KV_DISK_EXPOSITION } from "./fixture.ts";
+import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION } from "./fixture.ts";
 import { emptySnapshot, readSnapshot, counterValues, RETAINED_FAMILY_KEYS } from "./snapshot.ts";
 
 describe("readSnapshot", () => {
@@ -55,6 +55,20 @@ describe("readSnapshot", () => {
     // GitHub #281: of the ten, eight on the host, in their pinned block.
     expect(memory.retainedHost).toEqual({ slots: 8, bytes: 1_860_257_792 });
     expect(memory.slotSkips).toEqual({ publish_skipped_no_slot: 12, capture_skipped_no_slot: 5, capture_skipped_no_page: 1 });
+  });
+
+  it("reads the image model's condition budget and the prefixes its jobs hold, and leaves them null on a server without them (GitHub #324)", () => {
+    const { memory, unknown } = readSnapshot(parseExposition(IMAGE_LOAD_EXPOSITION));
+    expect([memory.reserved.weights, memory.reserved.workspace, memory.reserved.condition_budget]).toEqual([15_460_000_000, 1_320_000_000, 12_300_000_000]);
+    expect([memory.reserved.cuda_context, memory.reserved.residual, memory.kvPoolPages]).toEqual([0, 0, 0]);
+    expect(memory.budgetBytes).toBe(29_100_000_000);
+    expect(memory.conditionBudgetUsedBytes).toBe(1_120_000_000);
+    expect(unknown).toEqual([]);
+
+    const text = readSnapshot(parseExposition(IGNIS_EXPOSITION)).memory;
+    expect([text.reserved.condition_budget, text.conditionBudgetUsedBytes]).toEqual([0, 0]);
+    const older = readSnapshot(parseExposition('ignis_vram_reserved_bytes{line="weights"} 1\n')).memory;
+    expect([older.reserved.condition_budget, older.conditionBudgetUsedBytes]).toEqual([null, null]);
   });
 
   it("reads the KV-disk tier when the scrape carries it, and leaves it null when not (spec vram-budget/03)", () => {
@@ -138,8 +152,8 @@ ignis_retained_state_hits_total{tier="tape",kind="prefix"} 1
     // 8 plain counters, 3 reject reasons, 36 retained series (disk's 12 null without the tier), 3 skips, 4 KV-disk, then
     // Flash-Next's 32 expert hit and miss series, 2 prefetch, 2 bytes, 2
     // stall (GitHub #306), 2 n-gram rows, 2 reads, the 3 speculative totals
-    // (GitHub #307), and 2 histogram counts.
-    expect(counterValues(empty)).toHaveLength(101);
+    // (GitHub #307), the image jobs' 5 outcomes, images, 4 phases and duration count (GitHub #324), and 2 histogram counts.
+    expect(counterValues(empty)).toHaveLength(112);
     expect(counterValues(moved).filter((v) => v !== null)).toHaveLength(40);
     const flashNext = readSnapshot(parseExposition(FLASH_NEXT_EXPOSITION));
     expect(counterValues(flashNext).filter((v) => v !== null)).toHaveLength(82);
@@ -194,6 +208,24 @@ ignis_retained_state_hits_total{tier="tape",kind="prefix"} 1
     expect(readSnapshot(parseExposition(FLASH_NEXT_EXPOSITION)).speculation).toBeNull();
     const stray = readSnapshot(parseExposition(`${FLASH_NEXT_EXPOSITION}${spec}\nignis_speculative_position_drafted_total{position="8"} 1\n`));
     expect(stray.unknown).toEqual([{ name: "ignis_speculative_position_drafted_total", labels: { position: "8" }, value: 1 }]);
+  });
+
+  // GitHub #324: the image families, once the image model admitted a job.
+  it("reads the image jobs, all in the contract, and none from a text-only server", () => {
+    const s = readSnapshot(parseExposition(IMAGE_EXPOSITION));
+    expect(s.unknown).toEqual([]);
+    expect(s.images).toMatchObject({
+      jobs: { completed: 10, cancelled: 1, stopped: 0, refused: 0, failed: 1 },
+      images: 21,
+      phaseSeconds: { queued: 5, encoding: 3, denoising: 14, decoding: 3 },
+      waiting: 2,
+      running: 1,
+    });
+    expect(s.images?.duration).toMatchObject({ count: 10, sum: 20 });
+    expect(readSnapshot(parseExposition(IGNIS_EXPOSITION)).images).toBeNull();
+    const stray = readSnapshot(parseExposition(`${IMAGE_EXPOSITION}ignis_image_jobs_total{outcome="lost"} 1
+`));
+    expect(stray.unknown).toEqual([{ name: "ignis_image_jobs_total", labels: { outcome: "lost" }, value: 1 }]);
   });
 
   it("reads no stall from a server that does not time it yet", () => {

@@ -94,8 +94,38 @@ W8Launch select_w8_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
             if (t <= 4) { return launch_w8_simt_r8_c4; }
             if (t == 5) { return launch_w8_simt_r8_c8; }
             return launch_w8_mma_r64_c128;
+        case 4096:
+            // ignis #320: the image model's merger and DeepStack fc2.
+            if (t <= 4) { return launch_w8_simt_r8_c4; }
+            if (t <= 16) { return launch_w8_simt_r8_c8; }
+            return launch_w8_mma_r64_c128;
         default:
             break;
+        }
+        break;
+    // ignis #320: the image model's W8 vision tower (Qwen3-VL-8B), on the shape-generic routes:
+    // qkv [3456,1152], output [1152,1152], fc1 [4304,1152], the patch embedding [1152,1536] and
+    // fc2 [1152,4304] (stored K 4352, the padded path), on SIMT to T 16, then mma_r64_c128. At
+    // K 1152 a row of scales (padded K / 16 bytes) is 72 bytes, not a multiple of 16: the MMA
+    // kernel stages it in 8-byte halves (ignis #324, its recorded patch).
+    case 1152:
+        switch (n) {
+        case 1152:
+        case 3456:
+        case 4304:
+            if (t <= 4) { return launch_w8_simt_r8_c4; }
+            if (t <= 16) { return launch_w8_simt_r8_c8; }
+            return launch_w8_mma_r64_c128;
+        default:
+            break;
+        }
+        break;
+    case 1536:
+    case 4304:
+        if (n == 1152) {
+            if (t <= 4) { return launch_w8_simt_r8_c4; }
+            if (t <= 16) { return launch_w8_simt_r8_c8; }
+            return launch_w8_mma_r64_c128;
         }
         break;
     case 16384:

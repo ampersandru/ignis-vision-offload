@@ -716,6 +716,12 @@ add_test(NAME ignis_kernel_residency_trace_test COMMAND ignis_kernel_residency_t
 add_test(NAME ignis_kernel_residency_graph_test COMMAND ignis_kernel_residency_trace_test graph)
 add_test(NAME ignis_kernel_residency_split_test COMMAND ignis_kernel_residency_trace_test split)
 add_test(NAME ignis_kernel_residency_graph_split_test COMMAND ignis_kernel_residency_trace_test graph split)
+# GitHub #324 (item 7): every upload a step reads lands 2 ms late on its own stream, so a step not
+# ordered after its upload reads the old bytes every run instead of now and then. A guard on the
+# test's uploads, not a reproduction of the flake: a synchronous copy plus the delay passed.
+add_test(NAME ignis_kernel_residency_upload_order_test COMMAND ignis_kernel_residency_trace_test split)
+set_tests_properties(ignis_kernel_residency_upload_order_test PROPERTIES
+  ENVIRONMENT "IGNIS_RESIDENCY_UPLOAD_DELAY_US=2000")
 # GitHub #306 (decode fusion, step 5): OURS -- residency's routed demand step (the router's selection
 # made in the resolve's launch) against the router and the demand step it replaces, bit for bit.
 # GPU (ADR 0006: no SKIP_RETURN_CODE).
@@ -762,3 +768,135 @@ endforeach()
 # Spec flash-next/04 acceptance 7: the hq route against the BF16 route on real Flash-Next KV rows.
 target_compile_definitions(ignis_kernel_flash_next_sparse_attention_hq_test PRIVATE
   IGNIS_HQ_KV_FLASH_NEXT_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hq_kv_rows_flash_next.bin")
+
+# --- the image model's kernels (spec image-model/02, GitHub #319): OURS -----------------------
+#
+# The tensor-core instruction microbenchmark (acceptance 1): BF16 m16n8k16, FP8 kind::f8f6f4 and
+# unit-scale kind::mxf8f6f4 rates on register-resident operands, plus the one-instruction
+# semantics and accumulation probes the FP8 GEMM's error bound rests on. A timing is a finding,
+# not a pass/fail: a tool, NOT registered with CTest.
+add_executable(ignis_mma_peak_bench bench_mma_peak.cu)
+target_include_directories(ignis_mma_peak_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_mma_peak_bench PRIVATE CUDA::cudart)
+# The FP8 W8A8 GEMM and the per-token activation quantization (acceptance 2 and 3,
+# kernel/include/ignis_image_gemm.h) against our own fp64 references at the DiT's and the text
+# encoder's linear shapes. GPU (ADR 0006: no SKIP_RETURN_CODE).
+# image_gemm_sweep.cu: the bench sweep's tile configurations, held to the same mechanics check at
+# the edge shapes; built here and into the bench, never into the leaf.
+add_executable(ignis_kernel_image_gemm_test test_image_gemm.cu image_gemm_sweep.cu)
+target_include_directories(ignis_kernel_image_gemm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_gemm_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_gemm_test COMMAND ignis_kernel_image_gemm_test)
+# Its speed at the DiT's shapes (acceptance 2 "Speed") and the standalone quantization's cost
+# (acceptance 3). A timing is a finding: a tool, NOT registered with CTest.
+add_executable(ignis_image_gemm_bench bench_image_gemm.cu image_gemm_sweep.cu)
+target_include_directories(ignis_image_gemm_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_image_gemm_bench PRIVATE ignis_kernel ignis_vendor CUDA::nvml)
+# The 8-bit DiT attention (acceptance 4, kernel/include/ignis_image_attn.h; an adapted op): the
+# quantizers against their definitions, every call the DiT makes against fp64 on the same
+# quantized operands (a tight bound) and on the unquantized inputs (cosine per head). GPU
+# (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_attn_test test_image_attn.cu)
+target_include_directories(ignis_kernel_image_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_attn_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_attn_test COMMAND ignis_kernel_image_attn_test)
+# The same checks on real Q, K and V from a diffusers run (the per-head cosine gated at 0.99). The dump
+# lives outside the repo (--qkv-probe DIR, $IGNIS_IMAGE_QKV_PROBE, or the default under
+# F:/ai/models): without it the case prints SKIP and passes, unless IGNIS_GPU_PROFILE=1, where a
+# missing dump fails it (docs/agents/testing.md: a skip is never green in the profile).
+add_test(NAME ignis_kernel_image_attn_qkv_probe_test COMMAND ignis_kernel_image_attn_test --cases qkv-probe)
+# Its speed (acceptance 4 "Speed") as TOPS with the SM clock and board power, and the quantizers'
+# cost. A timing is a finding: a tool, NOT registered with CTest.
+add_executable(ignis_image_attn_bench bench_image_attn.cu)
+target_include_directories(ignis_image_attn_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_image_attn_bench PRIVATE ignis_kernel ignis_vendor CUDA::nvml)
+# The encoder attention (acceptance 5, kernel/include/ignis_image_encoder_attn.h; an adapted op,
+# FlashAttention-2's forward): one causal GQA 32/8 sequence from 1 to 41,000 tokens against fp64
+# that replays the kernel's softmax (a tight bound) and against plain fp64 attention. GPU (ADR
+# 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_encoder_attn_test test_image_encoder_attn.cu)
+target_include_directories(ignis_kernel_image_encoder_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_encoder_attn_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_encoder_attn_test COMMAND ignis_kernel_image_encoder_attn_test)
+# Its speed (acceptance 5 "TOPS") with the SM clock and board power, and the encoder's 36 layers.
+# A timing is a finding: a tool, NOT registered with CTest.
+add_executable(ignis_image_encoder_attn_bench bench_image_encoder_attn.cu)
+target_include_directories(ignis_image_encoder_attn_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_image_encoder_attn_bench PRIVATE ignis_kernel ignis_vendor CUDA::nvml)
+# The VAE ops (acceptance 6, kernel/include/ignis_image_vae.h): every convolution shape of the VAE
+# at a 1024² and a 2048² image (and the 2752 x 1536 preset) against an fp64 conv2d, banded calls
+# against the whole image bit for bit, the shortcuts against PyTorch's own outputs (the fixture,
+# recorded by fixtures/image_vae/record.py), and the mid-block attention against fp64 that
+# replays its softmax. GPU (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_vae_test test_image_vae.cu)
+target_include_directories(ignis_kernel_image_vae_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_vae_test PRIVATE ignis_kernel ignis_vendor)
+target_compile_definitions(ignis_kernel_image_vae_test PRIVATE
+  IGNIS_IMAGE_VAE_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/image_vae/shortcuts.bin")
+add_test(NAME ignis_kernel_image_vae_test COMMAND ignis_kernel_image_vae_test)
+# Its speed (acceptance 6 "Speed"): the convolution's TFLOPS at the decoder's heavy shapes and a
+# whole decode's convolutions, the attention's time, with the SM clock and board power. A timing is
+# a finding: a tool, NOT registered with CTest.
+add_executable(ignis_image_vae_bench bench_image_vae.cu)
+target_include_directories(ignis_image_vae_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_image_vae_bench PRIVATE ignis_kernel ignis_vendor CUDA::nvml)
+# The elementwise ops (acceptance 7, kernel/include/ignis_image_dit.h and the VAE's channel norm):
+# the modulated LayerNorm with its per-token t / t=0 row, the zero-centred RMSNorm, the gated
+# residual, the QK RMSNorm with RoPE, SiLU, GELU-tanh, SwiGLU and the VAE norm against fp64
+# references that track the kernels' roundings, with the E4M3 outputs against the standalone
+# quantization bit for bit; the RoPE positions and table against diffusers' definition restated.
+# GPU (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_elementwise_test test_image_elementwise.cu)
+target_include_directories(ignis_kernel_image_elementwise_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_elementwise_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_elementwise_test COMMAND ignis_kernel_image_elementwise_test)
+# The RoPE table of the oracle's t2i and edit layouts against diffusers' own pos_embed (rope.npy
+# in spec 01's recordings). The oracle lives outside the repo (--oracle DIR, $IGNIS_IMAGE_ORACLE,
+# or the default under F:/ai/models): without it the case prints SKIP and passes, as the attention's
+# qkv-probe case does, unless IGNIS_GPU_PROFILE=1, where it fails.
+add_test(NAME ignis_kernel_image_elementwise_rope_oracle_test
+         COMMAND ignis_kernel_image_elementwise_test --cases rope-oracle)
+# Their speed at a 1024² and a 2048² denoising step and the VAE decoder's stage sizes (GB/s), with
+# the fused quantization against the separate one. A timing is a finding: a tool, NOT registered
+# with CTest.
+add_executable(ignis_image_elementwise_bench bench_image_elementwise.cu)
+target_include_directories(ignis_image_elementwise_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_image_elementwise_bench PRIVATE ignis_kernel ignis_vendor)
+
+# --- the image model's text encoder (spec image-model/03, GitHub #320): OURS ----------------------
+#
+# Its three ops (kernel/include/ignis_image_encoder.h) against fp64 references that track their
+# roundings -- the residual add with the RMSNorm and its E4M3 output, the QK RMSNorm with the
+# interleaved mrope on three different position rows (with two layouts as negative controls), the
+# vision rows -- and the forward on synthetic FP8 weights: the vision hooks against the same
+# additions made on the host between one-layer calls, bit for bit. The real model against the
+# oracle is the Rust test crates/core/tests/image_encoder_gpu.rs. GPU (ADR 0006: no
+# SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_encoder_test test_image_encoder.cu)
+target_include_directories(ignis_kernel_image_encoder_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_encoder_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_encoder_test COMMAND ignis_kernel_image_encoder_test)
+# The vision tower (kernel/include/ignis_image_vision.h: the 27B's tower program with the image
+# model's parameters) on synthetic W8G32 weights: the merger and the three DeepStack mergers against
+# fp64 that tracks the BF16 stores (with the norm placements swapped as negative controls), the
+# DeepStack taps' blocks, two images in one call against each alone (bit for bit), the refusals.
+# The real tower against transformers is the Rust test
+# crates/server/tests/image_encoder_edit_gpu.rs. GPU (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_vision_test test_image_vision.cu)
+target_include_directories(ignis_kernel_image_vision_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_vision_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_vision_test COMMAND ignis_kernel_image_vision_test)
+
+# --- the image model's diffusion transformer (spec image-model/04, GitHub #321): OURS -------------
+#
+# The program's ops of its own (kernel/include/ignis_image_transformer.h) against fp64 references
+# that track their roundings -- the gated residual with the modulated LayerNorm and its E4M3
+# output, the BF16 linear, the fp32 quantization, the timestep embedding's chain -- and the program
+# on synthetic FP8 weights: txt_in and img_in per row, the prefix and target passes split by block
+# against whole (bit for bit), the target reading the prefix, the Euler update against the host.
+# The real model against the oracle is the Rust test crates/core/tests/image_leaf_gpu.rs. GPU
+# (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_image_transformer_test test_image_transformer.cu)
+target_include_directories(ignis_kernel_image_transformer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_image_transformer_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_image_transformer_test COMMAND ignis_kernel_image_transformer_test)

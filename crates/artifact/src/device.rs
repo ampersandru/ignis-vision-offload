@@ -184,7 +184,13 @@ impl Device for CpuDevice {
 #[cfg(feature = "cuda")]
 pub struct CudaDevice {
     handle: *mut crate::ffi::IgnisDevice,
+    /// The ordinal it was created on.
+    device_id: i32,
 }
+
+/// Set once a [`CudaDevice`] has been created in this process (GitHub #324).
+#[cfg(feature = "cuda")]
+static CONTEXT_CREATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(feature = "cuda")]
 impl CudaDevice {
@@ -199,7 +205,22 @@ impl CudaDevice {
                 "ignis_device_create({device_id}) failed; is the CUDA driver available?"
             )));
         }
-        Ok(CudaDevice { handle })
+        CONTEXT_CREATED.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(CudaDevice { handle, device_id })
+    }
+
+    /// Whether this process has created its CUDA context (GitHub #324).
+    /// Dropping a device frees its stream and event, never the context
+    /// (`ignis_device_destroy` resets nothing), so from the first
+    /// [`CudaDevice::create`] on the process holds it until it exits: a free
+    /// reading by [`CudaDevice::nvml_memory`] no longer counts it.
+    pub fn context_created() -> bool {
+        CONTEXT_CREATED.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The device's ordinal: what [`CudaDevice::nvml_memory`] reads for it.
+    pub fn ordinal(&self) -> i32 {
+        self.device_id
     }
 
     /// Free and total memory of device `device_id` as NVML reports it -- what

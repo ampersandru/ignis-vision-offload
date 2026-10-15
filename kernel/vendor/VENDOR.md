@@ -86,6 +86,18 @@ will not overwrite a patched file unless it is told to.
 A patch is admitted for one of two reasons, and its `reason` says which: a
 measured bottleneck (ADR 0031), or a demonstrated correctness bug (ADR 0037),
 in which case the `reason` also names the test that fails without the patch.
+One patch has neither reason and says so: the W8 dispatch's arms for the
+image model's vision tower (`src/ops/linear/w8/w8_dispatch.cpp` and its test
+cases, spec image-model/03, GitHub #320), a registry extension sanctioned as
+that ticket's one vendor edit. Its `reason` names the new problems and the
+test cases that throw without it; whether such extensions become a third
+standing reason is the owner's call. Its K-1152 arms (the tower's qkv,
+output and fc1) reach the MMA route through an ADR 0031 patch of
+`src/ops/linear/w8/w8_rowsplit_gemm_mma.cuh` (GitHub #324): a row of scales
+that is a multiple of 8 bytes but not of 16 is staged in two 8-byte halves.
+The tower's profile opened it (those linears on SIMT were 73% of the
+ten-image encode's kernel time) and shows the move (2.68 s to 0.43 s for
+the ten-image tower).
 
 ### Ignis-patched behaviours
 
@@ -201,6 +213,10 @@ P1-10 (GitHub #46) vendors the BF16 and W8G32 linear families:
   launch table spans geometries beyond this model's own (it is the
   reference's one dispatcher for the whole W8 family), so the family is
   vendored whole rather than picking out only the shapes G1 needs.
+  `w8_dispatch.cpp` is **patched** (and `tests/ops/linear/test_w8_a16.cpp`,
+  below): the six W8 problems of the image model's vision tower, see the
+  patch policy above. `w8_rowsplit_gemm_mma.cuh` is **patched** for the
+  tower's K-1152 problems (GitHub #324, ADR 0031), same place.
 - **their reference op tests** — `tests/ops/linear/test_bf16_a16.cpp` +
   `tests/ops/direct_bf16_weight.h`, and `tests/ops/linear/test_w8_a16.cpp` +
   `tests/ops/linear/linear_test_common.{h,cpp}` + `tests/ops/quantized_weight.h`,

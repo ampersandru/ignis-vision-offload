@@ -27,25 +27,42 @@ export type LastSwitch = {
   to: string;
   /** `refused`: nothing was torn down; `restored`: the old model was loaded again; `failed`: nothing serves. */
   outcome: "switched" | "refused" | "restored" | "failed";
-  /** Present for every outcome but `switched`. */
+  /** Present for every outcome but `switched`: for a person, in GiB, with the shortfall. */
   reason?: string;
+  /** The host plan that refused the target in exact bytes, when that is what failed it (Flash-Next short of RAM). */
+  host_plan?: HostPlan;
 };
+
+/** A refused host plan (`last_switch.host_plan`): every figure in bytes. */
+export type HostPlan = {
+  available_bytes: number;
+  margin_bytes: number;
+  planned_bytes: number;
+  needed_bytes: number;
+  short_bytes: number;
+  /** The first line, in plan order, the available memory could not hold. */
+  crossing_line: "expert_pool" | "ngram_hot_rows" | "staging" | "retained_host_slots" | "kv_ram_arena";
+  lines: { name: string; bytes: number }[];
+};
+
+/** What a model makes (`kind` of `GET /v1/models`, spec image-model/05): text answers chat, image answers the image routes. */
+export type ModelKind = "text" | "image";
 
 export type ModelState =
   /** The page's own first read of the model, under way. */
   | { state: "reading" }
-  | { state: "ready"; id: string; contextLimit: number | null; lastSwitch?: LastSwitch }
+  | { state: "ready"; id: string; contextLimit: number | null; kind?: ModelKind; lastSwitch?: LastSwitch }
   /** `since`: when this page first saw this switch, for the seconds it has run. */
   | { state: "switching"; from: string; to: string; since: number; lastSwitch?: LastSwitch }
   /** Unloaded while idle (`status: unloaded`): the next message loads `id` again. */
-  | { state: "unloaded"; id: string; contextLimit: number | null; lastSwitch?: LastSwitch }
+  | { state: "unloaded"; id: string; contextLimit: number | null; kind?: ModelKind; lastSwitch?: LastSwitch }
   /** A model loads while none is loaded (`status: loading`): `to` is the one loading, `since` as for a switch. */
   | { state: "loading"; to: string; since: number; lastSwitch?: LastSwitch }
   /** `failed`: the server reports a switch that failed (`status: failed`), not a read that did. */
   | { state: "error"; message: string; failed?: true; lastSwitch?: LastSwitch };
 
 type ModelList = {
-  data?: { id: string; max_model_len?: number }[];
+  data?: { id: string; max_model_len?: number; kind?: string }[];
   status?: string;
   switching?: { from: string; to: string };
   reason?: string;
@@ -72,10 +89,13 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     }
     const id = body.data?.[0]?.id;
     if (!id) throw new Error("GET /v1/models: no model listed");
+    // The image model reports no context at all; an older server no kind (a text model).
     const contextLimit = body.data?.[0]?.max_model_len ?? null;
-    if (body.status === "unloaded") return { state: "unloaded", id, contextLimit, ...last };
+    const reported = body.data?.[0]?.kind;
+    const kind: { kind?: ModelKind } = reported === "image" || reported === "text" ? { kind: reported } : {};
+    if (body.status === "unloaded") return { state: "unloaded", id, contextLimit, ...kind, ...last };
     if (body.status === "loading") return { state: "loading", to: body.switching?.to ?? id, since: now, ...last };
-    return { state: "ready", id, contextLimit, ...last };
+    return { state: "ready", id, contextLimit, ...kind, ...last };
   } catch (err) {
     return { state: "error", message: String(err) };
   }
@@ -102,6 +122,19 @@ export function afterRefresh(shown: ModelState, read: ModelState): ModelState {
  */
 export function canSend(model: ModelState): model is Extract<ModelState, { state: "ready" | "unloaded" }> {
   return model.state === "ready" || model.state === "unloaded";
+}
+
+/**
+ * Whether the chat can use the model loaded: `canSend`, and not an image model, whose routes are the image view's
+ * (a chat sent to it is a `409 model_kind_mismatch`).
+ */
+export function canChat(model: ModelState): model is Extract<ModelState, { state: "ready" | "unloaded" }> {
+  return canSend(model) && model.kind !== "image";
+}
+
+/** Whether the image model is the one loaded (or unloaded while idle). */
+export function imageLoaded(model: ModelState): boolean {
+  return (model.state === "ready" || model.state === "unloaded") && model.kind === "image";
 }
 
 /**

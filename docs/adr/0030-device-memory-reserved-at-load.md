@@ -40,6 +40,9 @@ load and nothing is allocated while serving. A 27B load's plan is unchanged.
 Lines and arithmetic: `crates/core/src/residency/plan.rs`.
 **Amended 2026-10-07 by ADR 0045** (spec `vram-budget/03`): the KV pool line
 follows the **KV pool policy** — see the amendment at the end.
+**Amended 2026-10-15 by GitHub #324**: a later load in the same process adds
+back the device memory the process already holds, and the image model's load
+reports its plan into the memory gauges — see the amendment at the end.
 
 ## Context
 
@@ -159,7 +162,7 @@ again. They add no serving work of any kind.
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `ignis_vram_reserved_bytes` | gauge | `line=weights\|cuda_context\|workspace\|media_embedding\|sampling\|decode_graph\|verify_round\|drafter_round\|lane_state\|retained_slots\|hq_residual_window\|residual\|residency\|expert_cache` | the plan's twelve lines (`hq_residual_window` since #257), the same set and spelling the `ignis.runtime.vram_plan` event carries, then Flash-Next's two (#306): `residency`, the expert residency's fixed bytes (ring and tables), and `expert_cache`, the VRAM expert cache that takes the budget the weights, program, pool and residency leave (the `residency_fixed_bytes` and `expert_cache_bytes` of `ignis.runtime.flash_next_plan`). Both are 0 on the 27B, and the KV pool is no line, so the budget less every line is the pool plus its page rounding |
+| `ignis_vram_reserved_bytes` | gauge | `line=weights\|cuda_context\|workspace\|media_embedding\|sampling\|decode_graph\|verify_round\|drafter_round\|lane_state\|retained_slots\|hq_residual_window\|residual\|residency\|expert_cache\|condition_budget` | the plan's twelve lines (`hq_residual_window` since #257), the same set and spelling the `ignis.runtime.vram_plan` event carries, then Flash-Next's two (#306): `residency`, the expert residency's fixed bytes (ring and tables), and `expert_cache`, the VRAM expert cache that takes the budget the weights, program, pool and residency leave (the `residency_fixed_bytes` and `expert_cache_bytes` of `ignis.runtime.flash_next_plan`). Both are 0 on the 27B, and the KV pool is no line, so the budget less every line is the pool plus its page rounding. Then the image model's `condition_budget` (#324): the bytes its plan sets aside for its jobs' condition prefixes, 0 on a text load; its weights are `weights` and its arena `workspace` |
 | `ignis_vram_budget_bytes` | gauge | none | the budget the plan was laid out inside, derived or explicit |
 | `ignis_kv_pool_pages` | gauge | none | the pool's page count, leaf-verified at load |
 | `ignis_kv_page_bytes` | gauge | none | one page's bytes |
@@ -414,3 +417,66 @@ Spec: `docs/specs/vram-budget/03-kv-pool-policy-and-kv-disk.md`.
 - **§Observability gains the disk gauge**
   `ignis_kv_disk_bytes{state="capacity"|"used"}`, beside the KV-RAM arena's. It
   renders only on a load with the tier.
+
+## Amendment (2026-10-15) — a later load in the same process (GitHub #324)
+
+- **The derived budget still starts from what was free before this process
+  held anything.** A first load reads NVML before its context exists, as #210
+  built it.
+- **A later load reads NVML with the context already held**: a model switch,
+  or the reload after an idle unload. ignis never resets the primary context
+  (`ignis_device_destroy` frees a device's stream and event only), and after a
+  27B load the process also keeps state the 27B's kernels set up once per
+  process. The plan's `cuda_context` line, and the 27B's `residual` line,
+  charged those bytes a second time: the 27B came back from a switch with
+  667,392 KV tokens against 726,848 cold (−8.2%), and a plain reload, what an
+  idle unload's is, lost as much (12,457 → 11,516 pages in `vram_reload_gpu`
+  before the fix).
+- **The load adds back what the process holds** (`held_before_load` in
+  `ignis-runtime`): nothing before the context exists, `CUDA_CONTEXT_BYTES`
+  once it does, and on a 27B plan `QWEN27B_PROCESS_STATE_BYTES` too once a 27B
+  load has run. `free_at_start_bytes` is NVML's reading plus that figure, and
+  `ignis.runtime.vram_plan` and `ignis.runtime.flash_next_plan` carry it as
+  `process_held_bytes`. The lines, their order and the metrics are unchanged.
+- **Measured** with the WDDM counter `CUDA_CONTEXT_BYTES` came from, on an
+  idle-unloaded server (RTX 5090, 2026-10-15): 536,485,888 B after any 27B
+  load, the same at every unload with an image model's in between; 452,595,712
+  B, the context alone, after only the image model. Nothing leaks, and the
+  image leaf leaves nothing behind.
+- **Flash-Next adds back the context only.** Its plan has no residual line,
+  and its own per-process state is not measured: an under-count costs pool,
+  never more memory than the card has.
+- **The image plan is unchanged.** It reads NVML after its context and charges
+  none, so a 27B's state, when one has run, stays outside its budget: about
+  84 MB (0.7% of the condition budget) less than in a process that loaded only
+  the image model.
+- **Result** at the Makefile's 27B shape: cold 11,129 pages, then image, then
+  27B 11,105 (−0.2%, the desktop's own drift between the two readings), and
+  `vram_loaded`'s delta within 15 MB of `allocated_at_load` on both loads.
+- **Re-measured later on 2026-10-15** with the same counter, at the Makefile
+  defaults: `LOAD_RESIDUAL_BYTES` is 124,474,800 B (88,028,656 B since
+  2026-09-17; a cold start and a switch round trip held 123.7 and 124.5 MB
+  beyond the plan's other lines), and `QWEN27B_PROCESS_STATE_BYTES`
+  83,894,272 B on that build. Of the 27B's state, 6 MiB + 8 KiB is module
+  code CUDA loads lazily (gone under `CUDA_MODULE_LOADING=EAGER`, which loads
+  every module with the context); 74 MiB is per-context state that survives
+  eager loading and is not identified. It is not the stack reservation, the
+  stream-ordered or graph memory pools, freed small allocations or pinned
+  host mappings (the constants' docs say how each was ruled out).
+- **The image model's load reports its plan** (#324, the image model's VRAM;
+  spec image-model/05): until then it reported nothing, and with it loaded
+  §Observability's gauges read no load. Its plan's three lines go into
+  `ignis_vram_reserved_bytes` — the weights as `weights`, the one arena its
+  calls share as `workspace`, the condition budget as `condition_budget`, a
+  line no text plan has (0 there, as Flash-Next's two are on the 27B) — inside
+  `ignis_vram_budget_bytes`. It has no KV pool (`ignis_kv_pool_pages` 0), and
+  no `cuda_context` or `residual` line: the plan reads NVML with its context
+  already held and charges neither, as above. The condition budget is
+  set aside, not allocated: each job's prefix is allocated from it as the job
+  encodes and freed as it ends, so `ignis_condition_budget_used_bytes`
+  (ADR 0017) reads what the jobs hold against the line, the image model's
+  counterpart of `ignis_kv_pool_used_pages`. The job sets it with the runner
+  held, and every load's reservations reset it to 0, so a switch in either
+  direction leaves nothing of the other model's. The meter reads below 100% at a full budget by
+  `prefix_kv_bytes(n)`: the line includes the encode's transient chunked-pass
+  BF16 K/V, which `condition_bytes` (the runs alone) does not count.

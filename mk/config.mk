@@ -13,12 +13,15 @@ PROFILE ?= release
 # unless told not to -- make says which it means rather than relying on that.
 UI ?= 1
 
-# 1 = pass --server-metrics (ADR 0017): Prometheus text at GET /metrics on its own
-# listener (METRICS_BIND, no key, never exposed) and, with UI=1, at
-# /ui/metrics on BIND (behind API_KEY when set). Off until #90 measures it on
-# the GPU, so gate runs started through make do not carry it by default.
-# make metrics scrapes the metrics listener.
-METRICS ?= 0
+# Prometheus metrics (ADR 0017): text at GET /metrics on their own listener
+# (METRICS_BIND, no key, never exposed) and, with UI=1, at /ui/metrics on BIND
+# (behind API_KEY when set). The server's own default since 2026-10-15 (the
+# owner's call; #90 proved they cost the inference path nothing), so 1 passes
+# nothing; METRICS=0 passes --server-metrics false, as a gate run that must
+# not carry them does. A second server on the host finds the default listener
+# taken and starts without it, warning; a METRICS_BIND that is taken refuses
+# the start. make metrics scrapes the metrics listener.
+METRICS ?= 1
 # The metrics listener (--server-metrics-bind). Empty = the server's 127.0.0.1:9464.
 METRICS_BIND ?=
 
@@ -31,7 +34,7 @@ MODEL ?=
 # The family MODEL selects, decided here once: every other place reads this.
 # The server still checks it against the artifact's own at start, and refuses
 # a served id that names the other model.
-MODEL_FAMILY := $(if $(filter flash-next,$(MODEL)),flash-next,27b)
+MODEL_FAMILY := $(if $(filter flash-next,$(MODEL)),flash-next,$(if $(filter image,$(MODEL)),image,27b))
 ifeq ($(MODEL_FAMILY),flash-next)
   ARTIFACT ?= F:/ai/models/Qwen3.8-Flash-Next-ignis/qwen3_8_flash_next_trellis_a25-v2.ninfer
   # 262,144 tokens per lane under hq-e8-2b, the checkpoint's whole trained
@@ -60,19 +63,41 @@ ifeq ($(MODEL_FAMILY),flash-next)
   DRAFT_TOKENS ?=
   DRAFT_ROWS ?=
   VISION ?=
-  # The KV-RAM arena spec flash-next/05 sizes for Flash-Next: the 38 GB of
-  # pinned experts leave no room for the 27B's 8G (the host plan refuses it).
-  KV_HOST_POOL_BYTES ?= 2G
   # The n-gram rows held in RAM (--ngram-hot-bytes, GitHub #306): a size (4G),
-  # or auto for what the host plan leaves after its other lines and the 6 GiB
-  # margin -- the whole ~29 GB table when that fits, and then no step reads
-  # the NVMe. Empty = the server's 1G.
+  # or auto for what the host plan leaves after its other lines and its
+  # margin (HOST_MARGIN_BYTES) -- the whole ~29 GB table when that fits, and
+  # then no step reads the NVMe. Empty = the server's 1G.
   NGRAM_HOT_BYTES ?=
   # No Flash-Next headroom of its own: the server's 1536M, as on the 27B (the
   # owner's call, 2026-10-09; it was 4G for spec flash-next/04 AC10's 29 GB
   # with the desktop). The expert cache takes what the budget leaves: 1536M
   # measured +5-13% over 4G, while 1G let WDDM page the model out (finding
   # 2026-10-09-vram-headroom-wddm-paging). VRAM_HEADROOM=4G restores the ceiling.
+endif
+
+ifeq ($(MODEL_FAMILY),image)
+  # MODEL=image serves the image model (spec image-model/05) as
+  # ignis-image-2.1-turbo, from its own artifact (`ignis-server model download
+  # ignis-image-2.1-turbo` fetches it). It has no context, lanes, prefill
+  # chunk, speculation, KV format or vision, so none of those knobs defaults
+  # to a value: they are empty, and a flag the server does not take for this
+  # family is never passed. The settings every model shares (BIND, API_KEY,
+  # REQUEST_TIMEOUT, IDLE_UNLOAD, ...) are unchanged.
+  ARTIFACT ?= F:/ai/models/ignis-image-2.1-turbo/ignis_image_2_1_turbo-v2.ninfer
+  MAX_CONTEXT ?=
+  KV_FORMAT ?=
+  PREFILL_CHUNK ?=
+  DECODE_SHARE ?=
+  SPEC ?=
+  DRAFT_TOKENS ?=
+  DRAFT_ROWS ?=
+  ROPE_SCALING ?=
+  VISION ?=
+  KV_HOST_POOL_BYTES ?=
+  # A switch from here to the 27B takes the 27B's arena (--qwen38-reuse-kv-host-pool-bytes,
+  # the scoped spelling: the image model takes no general one), as a
+  # switch to Flash-Next takes FN_KV_HOST_POOL_BYTES, never the server's 2G.
+  IMAGE_27B_KV_HOST_POOL_BYTES ?= 8G
 endif
 
 # The .ninfer container (used with CUDA=1 only). See README "Models".
@@ -179,8 +204,19 @@ VISION_MAX_TOKENS ?=
 # included, so MAX_CONTEXT=262144 wants ROPE_SCALING=none beside it.
 ROPE_SCALING ?= yarn:2
 # The KV-RAM host tier's budget (--reuse-kv-host-pool-bytes, P4-07, GitHub #125):
-# 0 disables the host tier entirely (no evict-to-RAM overflow path).
+# 0 disables the host tier entirely (no evict-to-RAM overflow path). The
+# 27B's: Flash-Next takes FN_KV_HOST_POOL_BYTES instead.
 KV_HOST_POOL_BYTES ?= 8G
+# Flash-Next's own KV-RAM arena (--qwen38flashnext-reuse-kv-host-pool-bytes,
+# ADR 0046), passed on every start -- the 27B's too, so a switch to
+# Flash-Next gets it rather than the 27B's 8G: beside the 38 GB of pinned
+# experts the host plan refuses 8G (spec flash-next/05 sizes it at 2G). 0
+# turns Flash-Next's tier off; its evictions then go to KV-disk.
+FN_KV_HOST_POOL_BYTES ?= 2G
+# What Flash-Next's host plan leaves of the RAM available at load
+# (--model-host-margin-bytes): a load whose pinned lines leave less is
+# refused, naming the line to shrink. Empty = the server's 4G.
+HOST_MARGIN_BYTES ?=
 # KV-disk, the tier below KV-RAM (--kv-disk-bytes, spec vram-budget/03):
 # evicted sequences and retained prompt checkpoints kept as files and read
 # back instead of prefilled again. A ceiling the server cuts at start to the

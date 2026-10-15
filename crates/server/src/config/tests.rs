@@ -947,6 +947,62 @@ fn a_zero_host_pool_budget_is_accepted_and_disables_the_tier() {
     assert_eq!(config(&["--reuse-kv-host-pool-bytes", "0"]).host_pool_bytes, 0);
 }
 
+// ── the host plan's margin (`--model-host-margin-bytes`) ──────────────────
+
+#[test]
+fn the_host_margin_is_four_gib_unless_named() {
+    assert_eq!(DEFAULT_HOST_MARGIN_BYTES, 4 * GIB);
+    assert_eq!(config(&["--profile", "none"]).host_margin_bytes, DEFAULT_HOST_MARGIN_BYTES);
+    assert_eq!(config(&["--model-host-margin-bytes", "3G"]).host_margin_bytes, 3 * GIB);
+    assert_eq!(config(&["--model-host-margin-bytes", "0"]).host_margin_bytes, 0, "no margin is the operator's call");
+    let env = env_map(&[("IGNIS_MODEL_HOST_MARGIN_BYTES", "5G")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).host_margin_bytes, 5 * GIB);
+}
+
+/// The owner's flow: the server starts on the 27B and switches to
+/// Flash-Next, so Flash-Next's own margin is named on a 27B start, taken
+/// without refusal, and reaches the load's shape after the switch.
+#[test]
+fn a_27b_start_carries_flash_nexts_own_margin_to_the_switch() {
+    let config = config(&["--profile", "none", "--qwen38flashnext-model-host-margin-bytes", "3G"]);
+    let qwen = config.for_family(ModelFamily::Qwen38_27b).unwrap();
+    assert_eq!(qwen.host_margin_bytes, DEFAULT_HOST_MARGIN_BYTES, "the 27B's is the default");
+    let (switched, dropped) = fit_to_family(&qwen, ModelFamily::FlashNext).unwrap();
+    assert_eq!(switched.host_margin_bytes, 3 * GIB);
+    assert!(dropped.is_empty());
+    assert_eq!(crate::runtime::EngineShape::from(&switched).host_margin_bytes, 3 * GIB);
+}
+
+/// The image model makes no host plan either (its arena is VRAM), and its
+/// start takes Flash-Next's own margin and KV-RAM arena — make passes the
+/// arena on every start — for a switch to Flash-Next, where they arrive.
+#[test]
+fn an_image_start_carries_flash_nexts_margin_and_arena_to_the_switch() {
+    let config = config(&[
+        "--profile",
+        "none",
+        "--qwen38flashnext-model-host-margin-bytes",
+        "3G",
+        "--qwen38flashnext-reuse-kv-host-pool-bytes",
+        "2G",
+    ]);
+    let image = config.for_family(ModelFamily::QwenImage21).expect("an image start takes Flash-Next's values");
+    assert_eq!(image.host_margin_bytes, DEFAULT_HOST_MARGIN_BYTES, "the image model's is the default");
+    let (switched, dropped) = fit_to_family(&image, ModelFamily::FlashNext).unwrap();
+    assert!(dropped.is_empty(), "{dropped:?}");
+    let shape = crate::runtime::EngineShape::from(&switched);
+    assert_eq!((shape.host_margin_bytes, shape.host_pool_bytes), (3 * GIB, 2 * GIB));
+}
+
+/// ADR 0046: the margin's third spelling, the file key, scoped too.
+#[test]
+fn the_host_margin_reads_from_a_file_per_family() {
+    let files = MemFiles::with(&[("c.yaml", "model:\n  host_margin_bytes: 5G\n  qwen38flashnext:\n    host_margin_bytes: 3G\n")]);
+    let config = with_files(&["--profile", "none", "--config", "c.yaml"], no_env, &files).unwrap();
+    assert_eq!(config.host_margin_bytes, 5 * GIB, "the general value");
+    assert_eq!(config.for_family(ModelFamily::FlashNext).unwrap().host_margin_bytes, 3 * GIB, "Flash-Next's own");
+}
+
 #[test]
 fn a_malformed_host_pool_budget_is_a_usage_error() {
     assert!(refused(&["--reuse-kv-host-pool-bytes", "not-a-size"]).contains("--reuse-kv-host-pool-bytes"));
@@ -1393,6 +1449,15 @@ fn flash_next_refuses_speculation_and_vision_at_start_naming_itself() {
     let vision = config(&["--vision-enabled"]);
     let err = served_model_for(&vision, ModelFamily::FlashNext).expect_err("no vision").0;
     assert!(err.contains("--vision-enabled") && err.contains("Qwen3.8-Flash-Next"), "{err}");
+}
+
+/// The image model (ADR 0050) decodes no tokens: any speculative backend is
+/// refused at start, saying it has no drafter.
+#[test]
+fn the_image_model_refuses_speculation_saying_it_has_no_drafter() {
+    let spec = config(&["--spec-backend", "dflash2", "--spec-draft-tokens", "7"]);
+    let err = served_model_for(&spec, ModelFamily::QwenImage21).expect_err("no drafter").0;
+    assert!(err.contains("--spec-backend dflash2") && err.contains("Qwen-Image-2.1 has no drafter"), "{err}");
 }
 
 /// GitHub #228: the 27B's GQA envelope bounds `--model-max-context` per KV
@@ -1943,29 +2008,84 @@ fn a_relative_catalog_path_resolves_against_the_config_file_that_set_it() {
 
 // ── Prometheus metrics (GitHub #89, ADR 0017) ────────────────────────────
 
+/// On by default since 2026-10-15 (the owner's call, ADR 0017), on their
+/// own loopback listener; each of the three spellings turns them off.
 #[test]
-fn metrics_are_off_by_default_and_on_their_own_listener_when_on() {
-    assert_eq!(config(&[]).metrics, None);
+fn metrics_are_on_by_default_on_their_own_listener_and_off_when_asked() {
+    assert!(DEFAULT_METRICS);
+    assert_eq!(config(&[]).metrics, Some(DEFAULT_METRICS_BIND.to_owned()));
     assert_eq!(config(&["--server-metrics"]).metrics, Some(DEFAULT_METRICS_BIND.to_owned()));
     assert_ne!(DEFAULT_METRICS_BIND, DEFAULT_BIND);
+    assert!(DEFAULT_METRICS_BIND.starts_with("127.0.0.1:"), "loopback, never exposed");
+    for off in ["false", "off", "0"] {
+        assert_eq!(config(&["--server-metrics", off]).metrics, None, "{off}");
+    }
+    let env = env_map(&[("IGNIS_SERVER_METRICS", "false")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).metrics, None);
+    let files = MemFiles::with(&[("c.yaml", "server:\n  metrics: false\n")]);
+    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().metrics, None);
 }
 
 #[test]
-fn metrics_bind_moves_the_metrics_listener_in_either_order() {
+fn metrics_bind_moves_the_metrics_listener_in_either_order_or_alone() {
     for argv in [
-        ["--server-metrics", "--server-metrics-bind", "127.0.0.1:9100"],
-        ["--server-metrics-bind", "127.0.0.1:9100", "--server-metrics"],
+        &["--server-metrics", "--server-metrics-bind", "127.0.0.1:9100"][..],
+        &["--server-metrics-bind", "127.0.0.1:9100", "--server-metrics"],
+        &["--server-metrics-bind", "127.0.0.1:9100"],
     ] {
-        assert_eq!(config(&argv).metrics.as_deref(), Some("127.0.0.1:9100"), "{argv:?}");
+        assert_eq!(config(argv).metrics.as_deref(), Some("127.0.0.1:9100"), "{argv:?}");
     }
 }
 
+/// A default address another process holds (a second server on the host)
+/// costs a start its listener, never the start; one the operator named is
+/// theirs, and refuses it (ADR 0017's 2026-10-15 amendment). Named means an
+/// address other than the default, from any of the three spellings.
 #[test]
-fn metrics_bind_without_metrics_or_value_or_on_the_api_address_is_refused() {
-    assert!(refused(&["--server-metrics-bind", "127.0.0.1:9100"]).contains("--server-metrics"));
+fn only_a_metrics_address_other_than_the_default_counts_as_named() {
+    assert!(!config(&[]).metrics_bind_named);
+    assert!(!config(&["--server-metrics"]).metrics_bind_named);
+    assert!(!config(&["--server-metrics-bind", DEFAULT_METRICS_BIND]).metrics_bind_named, "the default, named");
+    assert!(config(&["--server-metrics-bind", "127.0.0.1:9100"]).metrics_bind_named);
+    let env = env_map(&[("IGNIS_SERVER_METRICS_BIND", "127.0.0.1:9100")]);
+    assert!(expect_config(resolve(&[], env).expect("resolve")).metrics_bind_named);
+    let files = MemFiles::with(&[("c.yaml", "server:\n  metrics_bind: 127.0.0.1:9100\n")]);
+    assert!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().metrics_bind_named);
+}
+
+#[test]
+fn metrics_bind_with_metrics_off_or_without_value_or_on_the_api_address_is_refused() {
+    let err = refused(&["--server-metrics", "false", "--server-metrics-bind", "127.0.0.1:9100"]);
+    assert!(err.contains("`--server-metrics-bind`") && err.contains("(`--server-metrics` is false)"), "{err}");
     assert!(resolve(&args(&["--server-metrics", "--server-metrics-bind"]), no_env).is_err());
     let err = refused(&["--server-metrics", "--server-bind", "127.0.0.1:7000", "--server-metrics-bind", "127.0.0.1:7000"]);
     assert!(err.contains("--server-bind"), "{err}");
+}
+
+/// The host plan's refusal (core `residency/plan.rs`) spells its remedies
+/// as literals; each must be a flag a start accepts, or the refusal sends an
+/// operator to one that does not parse (5d85aed4 fixed one such).
+#[test]
+fn every_flag_the_host_plan_refusal_names_is_a_flag_a_start_accepts() {
+    for flag in [
+        "--ngram-hot-bytes",
+        "--qwen38flashnext-kv-disk-bytes",
+        "--qwen38flashnext-reuse-retained-host",
+        "--qwen38flashnext-reuse-kv-host-pool-bytes",
+        "--qwen38flashnext-model-host-margin-bytes",
+    ] {
+        let resolved = resolve(&args(&[flag, "0"]), no_env);
+        assert!(resolved.is_ok(), "{flag}: {:?}", resolved.err());
+    }
+}
+
+/// The default metrics address is never a reason not to start: an API bound
+/// there leaves the metrics listener to the warn path, with no flag named.
+#[test]
+fn an_api_on_the_default_metrics_address_starts_without_naming_a_metrics_flag() {
+    let resolved = config(&["--server-bind", DEFAULT_METRICS_BIND]);
+    assert_eq!(resolved.metrics.as_deref(), Some(DEFAULT_METRICS_BIND));
+    assert!(!resolved.metrics_bind_named);
 }
 
 /// ADR 0046: every field has its env var, metrics included — the drift
@@ -1977,7 +2097,7 @@ fn metrics_has_its_env_var_now_and_no_alias() {
     assert_eq!(expect_config(resolve(&[], env).expect("resolve")).metrics.as_deref(), Some("127.0.0.1:9100"));
     for name in ["IGNIS_METRICS", "IGNIS_PROMETHEUS", "IGNIS_METRICS_BIND"] {
         let env = move |key: &str| (key == name).then(|| "127.0.0.1:9100".to_owned());
-        assert_eq!(expect_config(resolve(&[], env).expect("resolve")).metrics, None, "{name}");
+        assert_eq!(expect_config(resolve(&[], env).expect("resolve")).metrics.as_deref(), Some(DEFAULT_METRICS_BIND), "{name}");
     }
     for alias in ["-M", "--prometheus", "--server-metrics=true", "--metrics"] {
         assert!(resolve(&args(&[alias]), no_env).is_err(), "`{alias}` is not a metrics alias");
@@ -2086,4 +2206,90 @@ fn exposing_keeps_the_key_the_operator_chose() {
 fn help_lists_the_expose_flag() {
     let text = help();
     assert!(text.contains("--server-expose") && text.contains("cloudflare-quick"), "{text}");
+}
+
+// ── the image model's group (spec image-model/05 AC 10) ─────────────────
+
+/// AC 10: every `image.*` field resolves from its flag, its env var and the
+/// config file with config v2's precedence — the flag over the env var over
+/// the file over the default — and the server's live knobs carry it.
+#[test]
+fn every_image_field_resolves_from_flag_env_and_file_by_precedence() {
+    // Per field: the file's value, the env var's, the flag's.
+    let cases = [
+        ("queue_depth", "1", "2", "3"),
+        ("max_n", "4", "5", "6"),
+        ("max_condition_images", "7", "8", "9"),
+        ("max_condition_mipx", "4", "8", "32"),
+        ("max_condition_decodes", "2", "3", "4"),
+        ("sizes", "1024x1024", "2048x2048;1024x1024", "2752x1536"),
+        ("max_target_cells", "4096", "8192", "16384"),
+        ("condition_budget_tokens", "8192", "16384", "4096"),
+        ("min_condition_budget_tokens", "0", "4096", "16384"),
+        ("condition_floor_px", "256", "384", "640"),
+        ("prompt_enhancement", "true", "false", "true"),
+        ("prompt_enhancer", "qwen3.8-flash-next", "my-27b", "qwen3.8-27b"),
+        ("prompt_enhancer_max_tokens", "256", "512", "2048"),
+    ];
+    assert_eq!(cases.len(), schema::ImageGroup::FIELDS.len(), "every image field has a case");
+    for (name, file, env, flag) in cases {
+        let meta = schema::field("image", name).unwrap();
+        let canonical = |raw: &str| (meta.canonical)(raw).unwrap();
+        let resolved = |config: &Config| config.settings().render()["image"][name].clone();
+        let files = MemFiles::with(&[("c.yaml", &format!("image:\n  {name}: \"{file}\"\n"))]);
+        let env_var = |key: &str| (key == meta.env()).then(|| env.to_owned());
+
+        assert_eq!(resolved(&config(&[])), (meta.default)(), "{name}: the default");
+        let from_file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap();
+        assert_eq!(resolved(&from_file), canonical(file), "{name}: the file over the default");
+        let from_env = with_files(&["--config", "c.yaml"], env_var, &files).unwrap();
+        assert_eq!(resolved(&from_env), canonical(env), "{name}: the env var over the file");
+        let from_flag = with_files(&["--config", "c.yaml", &meta.flag(), flag], env_var, &files).unwrap();
+        assert_eq!(resolved(&from_flag), canonical(flag), "{name}: the flag over the env var");
+        assert!(meta.visible && meta.patchable && !meta.reload_required, "{name}: shown and changed live");
+    }
+    let image = crate::Live::of(&config(&["--image-queue-depth", "2", "--image-sizes", "1024x1024"])).image;
+    assert_eq!((image.queue_depth, image.sizes), (2, vec![ImageSize::new(1024, 1024)]));
+    assert_eq!(config(&[]).settings().image.sizes, DEFAULT_IMAGE_SIZES);
+    assert_eq!(config(&[]).settings().image.prompt_enhancer, "qwen3.8-27b");
+}
+
+/// AC 10: a value past an `image.*` field's bounds is refused naming the
+/// spelling it came under and the bound, from a flag, an env var or the
+/// file alike; at the bound it is taken. The sizes refuse a side that is
+/// not a multiple of 32.
+#[test]
+fn an_image_field_past_its_bounds_is_refused_naming_it() {
+    for (name, low, high) in [
+        ("queue_depth", 0, 64),
+        ("max_n", 1, 64),
+        ("max_condition_images", 1, 10),
+        ("max_condition_mipx", 1, 64),
+        ("max_condition_decodes", 1, 16),
+        ("max_target_cells", 1, 1 << 20),
+        ("min_condition_budget_tokens", 0, 1 << 20),
+        ("condition_floor_px", 32, 1024),
+        ("prompt_enhancer_max_tokens", 16, 8192),
+    ] {
+        let flag = schema::field("image", name).unwrap().flag();
+        for taken in [low, high] {
+            assert!(resolve(&args(&[&flag, &taken.to_string()]), no_env).is_ok(), "{flag} {taken}");
+        }
+        let err = refused(&[&flag, &(high + 1).to_string()]);
+        assert!(err.contains(&flag) && err.contains(&format!("{low}..={high}")), "{err}");
+        if low > 0 {
+            assert!(refused(&[&flag, &(low - 1).to_string()]).contains(&format!("{low}..={high}")));
+        }
+    }
+    let env = env_map(&[("IGNIS_IMAGE_MAX_CONDITION_IMAGES", "11")]);
+    let err = resolve(&[], env).expect_err("past the encoder's ten").0;
+    assert!(err.contains("IGNIS_IMAGE_MAX_CONDITION_IMAGES") && err.contains("1..=10"), "{err}");
+    let files = MemFiles::with(&[("c.yaml", "image:\n  queue_depth: 65\n")]);
+    let err = with_files(&["--config", "c.yaml"], no_env, &files).expect_err("past the queue's bound").0;
+    assert!(err.contains("image.queue_depth") && err.contains("0..=64"), "{err}");
+    let err = refused(&["--image-sizes", "1000x1000"]);
+    assert!(err.contains("--image-sizes") && err.contains("multiples of 32"), "{err}");
+    let err = refused(&["--image-sizes", "16416x32"]);
+    assert!(err.contains("--image-sizes") && err.contains("16384"), "{err}");
+    assert_eq!(config(&[]).settings().image.max_target_cells, 16_800, "2400x1792, the largest preset");
 }

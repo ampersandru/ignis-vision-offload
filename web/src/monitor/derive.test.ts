@@ -246,7 +246,7 @@ describe("deriveMemory", () => {
     const reserved = Object.fromEntries(Object.keys(emptySnapshot().memory.reserved).map((line) => [line, 0])) as MemorySeries["reserved"];
     Object.assign(reserved, { weights: 600, residency: 100, expert_cache: 500 });
     const m = deriveMemory([memoryAt(0, { reserved, budgetBytes: 2000, kvPoolPages: 8, kvPageBytes: 100 })], 0);
-    expect(m.lines.slice(-2).map((l) => l.line)).toEqual(["residency", "expert_cache"]);
+    expect(m.lines.slice(-3).map((l) => l.line)).toEqual(["residency", "expert_cache", "condition_budget"]);
     expect(m.linesBytes).toBe(1200);
     expect(m.expertCacheBytes).toBe(500);
     expect(m.kvRoomBytes).toBe(800);
@@ -257,6 +257,26 @@ describe("deriveMemory", () => {
     expect(o.planned).toBe(true);
     expect(o.linesBytes).toBe(600);
     expect(o.expertCacheBytes).toBe(0);
+  });
+
+  it("lays an image load's plan out: the condition budget takes what the weights and the arena leave, and the prefixes held read against it (GitHub #324)", () => {
+    const reserved = Object.fromEntries(Object.keys(emptySnapshot().memory.reserved).map((line) => [line, 0])) as MemorySeries["reserved"];
+    Object.assign(reserved, { weights: 600, workspace: 100, condition_budget: 280 });
+    const image = { reserved, budgetBytes: 1000, kvPoolPages: 0, kvPageBytes: 0 };
+    const m = deriveMemory([memoryAt(0, { ...image, conditionBudgetUsedBytes: 0 }), memoryAt(60_000, { ...image, conditionBudgetUsedBytes: 70 })], 0);
+    expect(m.planned).toBe(true);
+    expect(m.lines.at(-1)).toEqual({ line: "condition_budget", bytes: 280 });
+    expect(m.linesBytes).toBe(980);
+    expect(m.conditionBudgetBytes).toBe(280);
+    expect(m.kvPool.bytes).toBe(0);
+    expect(m.spareBytes).toBe(20);
+    expect(m.conditionInUse).toMatchObject({ used: 70, capacity: 280, share: 0.25, series: [0, 70] });
+    // A text load's condition budget is 0, and a server that predates it exports none: no
+    // condition row either way, and the plan is whole without the line.
+    const text = deriveMemory([memoryAt(0, { ...image, reserved: { ...reserved, condition_budget: 0 }, conditionBudgetUsedBytes: 0 })], 0);
+    expect([text.conditionBudgetBytes, text.conditionInUse]).toEqual([0, null]);
+    const older = deriveMemory([memoryAt(0, { ...image, reserved: { ...reserved, condition_budget: null } })], 0);
+    expect([older.planned, older.linesBytes, older.conditionBudgetBytes, older.conditionInUse]).toEqual([true, 700, 0, null]);
   });
 
   it("will not add a plan up unless the scrape carries all twelve lines", () => {
@@ -274,9 +294,9 @@ describe("deriveMemory", () => {
     // was laid out in, and the panel has to be able to say so.
     const reserved = Object.fromEntries(Object.keys(emptySnapshot().memory.reserved).map((line) => [line, 100]));
     const m = deriveMemory([memoryAt(0, { reserved: reserved as MemorySeries["reserved"], budgetBytes: 900, kvPoolPages: 2, kvPageBytes: 50 })], 0);
-    expect(m.linesBytes).toBe(1400);
-    expect(m.kvRoomBytes).toBe(-500);
-    expect(m.spareBytes).toBe(-600);
+    expect(m.linesBytes).toBe(1500);
+    expect(m.kvRoomBytes).toBe(-600);
+    expect(m.spareBytes).toBe(-700);
     expect(m.oversubscribed).toBe(true);
   });
 
@@ -406,5 +426,33 @@ describe("deriveSpeculation", () => {
 
   it("is absent from the dashboard until a verify round ran", () => {
     expect(deriveDashboard([at(0, {})], 60_000)!.speculation).toBeNull();
+  });
+});
+
+// GitHub #324: the image jobs are read over the window, with the time's shares.
+describe("deriveDashboard images", () => {
+  const images = (completed: number, failed: number, made: number, denoising: number, decoding: number) => ({
+    jobs: { completed, cancelled: 0, stopped: 0, refused: 0, failed },
+    images: made,
+    phaseSeconds: { queued: 0, encoding: 0, denoising, decoding },
+    duration: null,
+    waiting: 1,
+    running: 0,
+  });
+
+  it("gains the jobs by outcome, the images and each phase's share of the window's image time", () => {
+    const points = [at(0, { images: images(10, 0, 20, 100, 20) }), at(60_000, { images: images(13, 1, 27, 130, 30) })];
+    const dash = deriveDashboard(points, 60_000)!;
+    expect(dash.images?.jobs).toMatchObject({ total: 14, window: 4 });
+    expect(dash.images?.jobs.byOutcome.failed).toEqual({ total: 1, window: 1 });
+    expect(dash.images?.images).toMatchObject({ total: 27, window: 7 });
+    expect([dash.images?.waiting, dash.images?.running]).toEqual([1, 0]);
+    const share = Object.fromEntries(dash.images!.phases.map((p) => [p.phase, p.share]));
+    expect(share.denoising).toBeCloseTo(0.75);
+    expect(share.decoding).toBeCloseTo(0.25);
+  });
+
+  it("is absent from the dashboard on a text-only server", () => {
+    expect(deriveDashboard([at(0, {})], 60_000)!.images).toBeNull();
   });
 });

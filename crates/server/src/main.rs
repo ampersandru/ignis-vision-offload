@@ -152,6 +152,8 @@ async fn main() {
         vram: _,
         allow_expert_cache_below_floor: _,
         host_pool_bytes,
+        // Read through `EngineShape`, like the other load-shape knobs.
+        host_margin_bytes: _,
         prompt_reuse: _,
         retained_device_slots: _,
         retained_host_slots: _,
@@ -175,6 +177,7 @@ async fn main() {
         known_models,
         ui,
         metrics,
+        metrics_bind_named,
         api_key,
         expose,
         // What the options were resolved from: the load fits them again.
@@ -309,7 +312,8 @@ async fn main() {
     let server = server
         .with_request_timeout(std::time::Duration::from_secs(request_timeout_secs as u64))
         .with_instruction_policy(instruction_policy)
-        .with_idle_unload(std::time::Duration::from_secs(u64::from(idle_unload_secs)));
+        .with_idle_unload(std::time::Duration::from_secs(u64::from(idle_unload_secs)))
+        .with_image(running.settings().image.clone());
     // Spec config-v2/02: the running configuration, shown and changed over
     // `GET`/`PATCH /v1/config` and written back to the config file in use;
     // the model loader shares it, so a later switch loads with a live change
@@ -349,6 +353,19 @@ async fn main() {
         )
         .with_config(config_state);
 
+    // Spec image-model/05 §Prompt enhancement: an enhancer no switch reaches
+    // leaves every enhanced request on its prompt as sent. A `PATCH` naming
+    // one is refused; the start is not, and says so once.
+    let enhancer = server.live().image.prompt_enhancer.clone();
+    if let Some(reason) = ignis_server::images::enhance::unknown_enhancer(&server, &enhancer, &Default::default()) {
+        tracing::warn!(
+            name: "ignis.config.prompt_enhancer_unknown",
+            enhancer = %enhancer,
+            %reason,
+            "prompt enhancement uses each prompt as sent until image.prompt_enhancer names a text model this server can switch to"
+        );
+    }
+
     // GitHub #209: joining or gathering developer messages trades prefix
     // reuse for fewer system blocks; the operator is told once, at start.
     if instruction_policy.developer.rerenders_history() {
@@ -366,16 +383,19 @@ async fn main() {
 
     // A default the loaded template cannot honour is a refused start (a
     // model swap must not silently change behaviour), matching how the
-    // server already treats a missing EOS token or an unclean checksum.
+    // server already treats a missing EOS token or an unclean checksum. The
+    // image model thinks nothing: a text model's load judges them.
     let thinking_defaults = ThinkingDefaults {
         enable_thinking: default_enable_thinking,
         reasoning_effort: default_reasoning_effort,
     };
-    if let Err(err) =
-        thinking::validate_defaults(&thinking_defaults, &server.active().template.thinking_capabilities())
-    {
-        tracing::error!(name: "ignis.config.thinking_invalid", error = %err, "refusing to start");
-        exit_after_flush(&logging_handle, 1);
+    if server.active().engine().is_some() {
+        if let Err(err) =
+            thinking::validate_defaults(&thinking_defaults, &server.active().template.thinking_capabilities())
+        {
+            tracing::error!(name: "ignis.config.thinking_invalid", error = %err, "refusing to start");
+            exit_after_flush(&logging_handle, 1);
+        }
     }
     let server = server
         .with_thinking_defaults(default_enable_thinking, default_reasoning_effort)
@@ -395,8 +415,9 @@ async fn main() {
     } else {
         server
     };
-    // Prometheus metrics (GitHub #89, ADR 0017): without `--server-metrics`, neither
-    // the projection nor any route to it exists.
+    // Prometheus metrics (GitHub #89, ADR 0017), on by default: with
+    // `--server-metrics false`, neither the projection nor any route to it
+    // exists.
     let server = if metrics.is_some() { server.with_metrics() } else { server };
     let server = match load_reservations {
         Some(reserved) => server.with_load_reservations(reserved),
@@ -420,16 +441,37 @@ async fn main() {
     };
 
     // The metrics listener (ADR 0017): its own address, bound before serving
-    // like the API's, and never the one `--server-expose` tunnels.
+    // like the API's, and never the one `--server-expose` tunnels. Metrics are
+    // on by default, so the default address may be a second server's: that
+    // costs this start its listener, never the start (`/ui/metrics` still
+    // serves). An address the operator named is theirs, and refuses it.
     let metrics_listener = match &metrics {
         None => None,
         Some(metrics_bind) => match tokio::net::TcpListener::bind(metrics_bind).await {
             Ok(listener) => Some(listener),
+            Err(err) if !metrics_bind_named => {
+                tracing::warn!(
+                    name: "ignis.server.metrics_unavailable",
+                    bind = %metrics_bind,
+                    error = %err,
+                    "the metrics listener's default address could not be bound (another server on this host holds it?): serving without it; --server-metrics-bind names another address, --server-metrics false turns metrics off"
+                );
+                None
+            }
             Err(err) => {
                 tracing::error!(name: "ignis.server.failed", bind = %metrics_bind, error = %err, "metrics listener could not bind");
                 exit_after_flush(&logging_handle, 1);
             }
         },
+    };
+    // Where the metrics listener is, for the start line: the port a `:0`
+    // bind was given, `off` when metrics are off, or `unavailable` when the
+    // default address was taken (`/ui/metrics` still serves).
+    let metrics_at = match metrics_listener.as_ref().map(tokio::net::TcpListener::local_addr) {
+        Some(Ok(local)) => local.to_string(),
+        Some(Err(_)) => metrics.clone().unwrap_or_default(),
+        None if metrics.is_some() => "unavailable".to_owned(),
+        None => "off".to_owned(),
     };
 
     // `--server-expose` (ADR 0028): opened on the bound port, before serving, so a
@@ -476,10 +518,10 @@ async fn main() {
         name: "ignis.process.started",
         // The id the load is served under (`config::Config::for_family`): a
         // Flash-Next artifact started without `--model-id` is its own.
-        model = %server.active().engine.model_id(),
+        model = %server.active().model_id(),
         bind = %bind,
         api_key_required = auth,
-        metrics = metrics.as_deref().unwrap_or("off"),
+        metrics = %metrics_at,
         // GitHub #216: the pinned host arena is locked in RAM from start
         // (ADR 0030), and until now no line anywhere said how large it is.
         kv_host_pool_bytes = host_pool_bytes,

@@ -128,6 +128,65 @@ families on a load with KV-disk. Three disk families join them:
 render only on such a load.
 `ignis_kv_cache_evictions_total` and `ignis_kv_ram_evictions_total` keep their
 meanings.
+Amended 2026-10-15 (#324 item 4, spec image-model/05): five families for the
+**image jobs**, rendered after the counting routes' counter and before
+Flash-Next's. The image model has no engine, so no fact of it reaches the
+telemetry consumer: the job itself records them (`images::job::spawn`), once,
+as it ends, into the same atomics; a scrape still formats atomics only. They
+take the decision family's exception: **absent until the image model has
+admitted a job**, then every series renders, zeros included. Fixed labels:
+`outcome=completed|cancelled|stopped|refused|failed`, `phase=queued|encoding|
+denoising|decoding`, `state=waiting|running`. A completed job's duration runs
+from its turn to its last image (the PNG encodes and the sends included: the log's
+`run_ms`), so the wait is the `queued` phase's alone. The queue gauge is set by the
+queue itself, under its lock, at each admission, turn and departure, so the last
+change to land is the last one shown.
+Each ended job also writes one `ignis.image.job` log line (id, kind, model,
+`n`, size, condition images, enhancement, outcome, images made, and the
+milliseconds of enhancing, switching, queueing, encoding, denoising,
+decoding, the run and the total). The Playground's Monitor reads the families
+(an *Image jobs* card, shown once they exist).
+Amended 2026-10-15 (owner decision): **metrics are on by default.** The reason
+they were opt-in -- #90 had to show they cost the inference path nothing -- is
+closed, and every server the owner runs carried them. `server.metrics`
+defaults to `true` (ADR 0046 spells the flag `--server-metrics`, its env
+var `IGNIS_SERVER_METRICS`, its file key `server.metrics`);
+`--server-metrics false`, `IGNIS_SERVER_METRICS=false` or
+`server.metrics: false` turns them off, and then neither the projection nor a
+route to it exists, as below. `--server-metrics-bind` no longer needs
+`--server-metrics` beside it; it is refused only beside an explicit `false`.
+Everything else stands: the listener's default is still `127.0.0.1:9464`, it
+asks for no key and is never exposed, and the Playground's `/ui/metrics` is
+behind the API key when one is set -- the same key that guards `/v1` on the
+same listener. Since the default address is a fixed port, a second server on
+the host finds it taken, and refusing that start would make a default feature
+a reason not to start: **a default address that cannot be bound is a warning**
+(`ignis.server.metrics_unavailable`, with the address and the error), and the
+server serves without the listener; the projection stays, so `/ui/metrics`
+still answers. An address other than the default that the operator named --
+`server.metrics_bind` from a flag, its env var or a file -- is theirs, and a
+bind failure on it still refuses the start (`ignis.server.failed`).
+`ignis.process.started` names the address the listener bound (the port a `:0`
+bind was given), or `off`. The user stories below and "disabled by default" in
+the decisions read with this amendment.
+Amended again 2026-10-15 (#324, the image model's VRAM, spec image-model/05):
+the image model's load reports what its plan reserved, into ADR 0030's
+memory gauges rather than a family of its own: its weights as
+`ignis_vram_reserved_bytes{line="weights"}`, its one arena as `workspace`, and
+its condition budget as a new `line="condition_budget"` (always rendered, 0 on
+a text load, as Flash-Next's two lines are on the 27B), inside
+`ignis_vram_budget_bytes`; it has no KV pool, and no `cuda_context` or
+`residual` line. One family joins them, `ignis_condition_budget_used_bytes`:
+the bytes of the condition prefixes the image model's jobs hold, read against
+the `condition_budget` line as `ignis_kv_pool_used_pages` is against
+`ignis_kv_pool_pages`. Like the image job families it is recorded by the job,
+not projected from a telemetry fact: the job sets it, with the runner held, as
+it encodes its prefix and releases it, and every load's reservations reset it.
+Unlike them it is **rendered from the first scrape, 0 on a text load** --
+a memory gauge's zero is a reading -- which is why its name stays outside the
+`ignis_image_` families that are absent until a job. The Monitor's *VRAM plan*
+lays an image load out by its condition budget, and *In use now* reads the
+prefixes against it.
 
 ## Context
 
@@ -209,10 +268,14 @@ critical-path performance regression. The only numerical allowance is at most
   layer, formatter, or consumer of rendered log output.
 - Metrics are disabled by default and enabled only by the boolean CLI flag
   `--metrics`. There is no short alias, environment variable, or config-file
-  key in this scope.
+  key in this scope. (Superseded: ADR 0046 gave the field its env var and
+  file key, and since 2026-10-15 metrics are on unless `--server-metrics
+  false` -- see Status.)
 - When enabled, `GET /metrics` is served by a second `ignis-server` listener
   of its own, at `--metrics-bind <addr>` (flag only, default
-  `127.0.0.1:9464`; refused without `--metrics` or on the API's `--bind`). It
+  `127.0.0.1:9464`; refused without `--metrics` or on the API's `--bind`;
+  since 2026-10-15 refused beside `--server-metrics false`, and a default
+  address that cannot be bound is a warning, not a refusal). It
   serves nothing else and asks for no API key: it is kept private by its bind
   address, and `--expose` (ADR 0028) only ever tunnels the API listener. One
   shutdown stops both listeners.
@@ -293,6 +356,12 @@ The initial stable metric contract is:
 | `ignis_locates_total` | counter | `kind=log\|prose\|records`, `method=shortlist\|vote`, `compression=template_fold\|none`, `found=true\|false\|unmeasured` | `locate`s answered, by the route that answered them and whether it found an answer (#278, spec 22). Only the served combinations have a series. **Absent until the first one** |
 | `ignis_thinking_forced_closes_total` | counter | none | Completed requests whose reasoning block the thinking budget closed (#265, spec server/08). The request log's `thinking_forced` says which. **Absent until the first one** |
 | `ignis_tokenize_requests_total` | counter | `route=tokenize\|detokenize` | Calls to `POST /v1/tokenize` and `/v1/detokenize`, whatever they answered (#285, spec server/10). Not requests of the lifecycle above: they never enter the scheduler. **Absent until the first one** |
+| `ignis_image_jobs_total` | counter | `outcome=completed\|cancelled\|stopped\|refused\|failed` | Image jobs ended, by how (#324, spec image-model/05). A request that went away is `cancelled`, a model stopped under it `stopped`, a runner that refused its condition `refused`, a failed or panicked call `failed`. **Absent until the image model admitted a job**, as the four below |
+| `ignis_image_images_total` | counter | none | Images the image jobs made, including those of a job that ended before its last (#324) |
+| `ignis_image_job_duration_seconds` | histogram | none | A **completed** job's time from its turn to its last image, buckets 0.1 s to 600 s (#324) |
+| `ignis_image_job_phase_seconds_total` | counter | `phase=queued\|encoding\|denoising\|decoding` | Seconds the jobs of every outcome spent waiting for their turn, encoding the condition, denoising and decoding (#324). A phase's share of the total is computed by the reader |
+| `ignis_image_queue_jobs` | gauge | `state=waiting\|running` | Image jobs waiting for their turn behind the running one, and the one running (#324); set as a job is admitted, takes its turn or ends |
+| `ignis_condition_budget_used_bytes` | gauge | none | Bytes of the condition prefixes the image model's jobs hold now, against `ignis_vram_reserved_bytes{line="condition_budget"}` (#324, the image model's VRAM); set by the job as it encodes and releases its prefix, reset by every load. **Rendered from the first scrape**, 0 on a text load |
 | `ignis_responses_sockets` | gauge | none | Open Responses API WebSocket connections (#282) |
 | `ignis_responses_queued_requests` | gauge | none | Responses WebSocket requests waiting in the server-wide **socket admission queue**; a request the engine found full is counted here rather than in `ignis_requests_rejected_total` (#282) |
 | `ignis_expert_cache_hits_total` | counter | `class`, `phase=decode\|prefill` | Flash-Next: selected expert projections already resident in the VRAM expert cache, or staged for their layer (#301). A decode hit rate is hits over hits plus misses of `phase="decode"` |
@@ -315,7 +384,8 @@ The initial stable metric contract is:
 | `ignis_speculative_position_accepted_total` | counter | `position=1..k` | Rounds that committed the draft at that position (#307). **Absent until the first round** |
 
 ADR 0030 §Observability adds the memory gauges to this contract: the plan's
-reserved lines (eleven, twelve since #257 added `hq_residual_window`), the budget, the KV pool's pages and page bytes, the
+reserved lines (eleven, twelve since #257 added `hq_residual_window`, then
+Flash-Next's two and the image model's `condition_budget`), the budget, the KV pool's pages and page bytes, the
 pages occupied of it, the KV-RAM arena's capacity and use, the retained slots'
 capacity and use, and the retained-slot skips. Every one is bytes, pages or
 slots; no percentage is exported.

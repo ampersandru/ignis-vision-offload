@@ -9,19 +9,29 @@
 //! compute is alive exactly as long as the scheduler that owns it, so the
 //! count of live ones when a load begins is how many models were still
 //! resident then — the mock's proof that the old model was gone first.
+//!
+//! An id of the image family (`ignis-image-2.1-turbo`, spec image-model/05)
+//! builds the image model over a `FakeImageRunner` instead, resident until
+//! its runner is dropped, the prompt of every condition prefix it encodes
+//! logged — and, for the server's first one, each denoising step behind a
+//! [`StepGate`] if the test asks ([`MockLoader::gated_image_model`]).
 
 #![allow(dead_code)]
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use ignis_core::compute::ModelFamily;
+use ignis_core::image::{ConditionId, FakeImageRunner, ImageCondition, ImageError, ImagePlan, ImageRunner, ImageSize, RgbaImage, TargetLatents};
 use ignis_core::mock::{GateController, GatedCompute, MockCompute};
 use ignis_core::{Compute, ConcreteScheduler, SchedulerConfig};
 use ignis_server::config_http::ConfigState;
 use ignis_server::engine::Engine;
-use ignis_server::model_switch::{load_options, ModelLoader, PreparedLoad};
+use ignis_server::images::ImageModel;
+use ignis_server::model_switch::{load_options, LoadFailure, ModelLoader, PreparedLoad};
 use ignis_server::load::LoadedModel;
 use ignis_server::telemetry::SystemClock;
 use ignis_server::template::SimpleTemplateProvider;
@@ -32,6 +42,13 @@ use ignis_server::{ActiveModel, ModelSource};
 struct State {
     /// Every compute built, weakly.
     built: Mutex<Vec<Weak<dyn Compute>>>,
+    /// Every image runner built, by a handle only the runner keeps alive.
+    built_images: Mutex<Vec<Weak<AtomicUsize>>>,
+    /// The prompt of every condition prefix an image runner encoded, in
+    /// order.
+    encoded: Arc<Mutex<Vec<String>>>,
+    /// Set, the next denoising step of any image runner panics, once.
+    panic_step: Arc<AtomicBool>,
     /// How many built models were still alive as each load began.
     resident_at_load: Mutex<Vec<usize>>,
     /// The ids loaded, in order.
@@ -40,6 +57,8 @@ struct State {
     refused: Mutex<HashSet<String>>,
     /// Ids whose load fails after prepare accepted them.
     broken: Mutex<HashSet<String>>,
+    /// Ids whose load Flash-Next's host plan refuses ([`starved_plan`]).
+    starved: Mutex<HashSet<String>>,
     /// Each load takes the first of these and waits for a message on it
     /// before it builds: how a test holds a switch inside its load step (a
     /// second one holds the reload that follows a failed load).
@@ -61,6 +80,9 @@ struct State {
     fitting: Mutex<Option<(Arc<ConfigState>, Vec<(String, ModelFamily)>)>>,
     /// The options each fitted load runs with, in order.
     fitted: Mutex<Vec<ignis_server::config::Config>>,
+    /// What each id's load reports it reserved ([`MockLoader::reserve`]);
+    /// an id not here reserved nothing, as on a build without `cuda`.
+    reservations: Mutex<std::collections::HashMap<String, ignis_server::metrics::LoadReservations>>,
 }
 
 /// The mock loader. Clone the `Arc` into a `Switcher`, keep one to steer it.
@@ -94,6 +116,16 @@ impl MockLoader {
         (model, gated, controller)
     }
 
+    /// [`MockLoader::model`] for the image model `id`, each denoising step
+    /// of its runner waiting at the returned gate, shut.
+    pub fn gated_image_model(&self, id: &str) -> (ActiveModel, Arc<StepGate>) {
+        let gate = Arc::new(StepGate::default());
+        let runner = FakeImageRunner::default();
+        self.state.built_images.lock().unwrap().push(Arc::downgrade(&runner.held_conditions()));
+        let runner = Logged { inner: runner, encoded: Arc::clone(&self.state.encoded), gate: Some(Arc::clone(&gate)), panic: Arc::clone(&self.state.panic_step) };
+        (ActiveModel::image(ImageModel::new(id, Box::new(runner))).with_source(source(id)), gate)
+    }
+
     /// [`MockLoader::model`] over `compute`, a test's own (counted as
     /// resident like every compute this loader builds).
     pub fn model_over(&self, id: &str, compute: Arc<dyn Compute>) -> ActiveModel {
@@ -111,10 +143,28 @@ impl MockLoader {
         self.state.broken.lock().unwrap().insert(id.to_owned());
     }
 
+    /// Fail `id`'s load as Flash-Next's host plan refuses one short of RAM
+    /// ([`starved_plan`]), the refusal kept whole as the real loader keeps it.
+    pub fn starve(&self, id: &str) {
+        self.state.starved.lock().unwrap().insert(id.to_owned());
+    }
+
     /// Let `id` load again ([`MockLoader::break_load`] undone): the way a
     /// test proves a later attempt is made, and can succeed.
     pub fn mend(&self, id: &str) {
         self.state.broken.lock().unwrap().remove(id);
+    }
+
+    /// Have every load of `id` report `reserved` as what its VRAM plan
+    /// reserved, as the production loader does on a build with `cuda`.
+    pub fn reserve(&self, id: &str, reserved: ignis_server::metrics::LoadReservations) {
+        self.state.reservations.lock().unwrap().insert(id.to_owned(), reserved);
+    }
+
+    /// Make the next denoising step of an image runner panic, as a leaf
+    /// fault would.
+    pub fn panic_next_step(&self) {
+        self.state.panic_step.store(true, Ordering::SeqCst);
     }
 
     /// Hold the next load until the returned sender sends (or is dropped).
@@ -157,6 +207,12 @@ impl MockLoader {
         self.state.loads.lock().unwrap().clone()
     }
 
+    /// The prompt of every condition prefix the image models encoded, in
+    /// order: what an image job ran on.
+    pub fn encoded_prompts(&self) -> Vec<String> {
+        self.state.encoded.lock().unwrap().clone()
+    }
+
     /// How many built models are alive now.
     pub fn resident(&self) -> usize {
         resident(&self.state)
@@ -173,11 +229,33 @@ impl MockLoader {
     }
 }
 
+/// The host plan of the switch refused on 2026-10-13: 41.6 GB available,
+/// too little for Flash-Next's experts and the 4 GiB margin.
+pub fn starved_plan() -> ignis_core::residency::HostPlanError {
+    ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
+        available_physical_bytes: 41_632_530_432,
+        expert_pool_bytes: 37_795_446_784,
+        ngram_hot_rows_bytes: 1 << 30,
+        staging_bytes: 64 << 20,
+        retained_host_slots_bytes: 1_040_115_712,
+        kv_ram_arena_bytes: 2 << 30,
+        margin_bytes: ignis_core::residency::DEFAULT_HOST_MARGIN_BYTES,
+    })
+    .expect_err("short of RAM")
+}
+
 fn resident(state: &State) -> usize {
-    state.built.lock().unwrap().iter().filter(|built| built.strong_count() > 0).count()
+    let images = state.built_images.lock().unwrap().iter().filter(|built| built.strong_count() > 0).count();
+    images + state.built.lock().unwrap().iter().filter(|built| built.strong_count() > 0).count()
 }
 
 fn build(state: &State, id: &str, compute: Arc<dyn Compute>) -> ActiveModel {
+    if ModelFamily::of_model_id(id) == Some(ModelFamily::QwenImage21) {
+        let runner = FakeImageRunner::default();
+        state.built_images.lock().unwrap().push(Arc::downgrade(&runner.held_conditions()));
+        let runner = Logged { inner: runner, encoded: Arc::clone(&state.encoded), gate: None, panic: Arc::clone(&state.panic_step) };
+        return ActiveModel::image(ImageModel::new(id, Box::new(runner))).with_source(source(id));
+    }
     state.built.lock().unwrap().push(Arc::downgrade(&compute));
     let scheduler =
         ConcreteScheduler::with_config(SchedulerConfig { model: id.into(), ..SchedulerConfig::default() }, compute);
@@ -223,10 +301,97 @@ impl PreparedLoad for MockPrepared {
         if self.state.broken.lock().unwrap().contains(&self.id) {
             return Err(format!("{} failed to load (simulated kernel load error)", self.id));
         }
-        Ok(LoadedModel { model: build(&self.state, &self.id, Arc::new(MockCompute::new())), reservations: None })
+        if self.state.starved.lock().unwrap().contains(&self.id) {
+            return Err(starved_plan().to_string());
+        }
+        let reservations = self.state.reservations.lock().unwrap().get(&self.id).cloned();
+        Ok(LoadedModel { model: build(&self.state, &self.id, Arc::new(MockCompute::new())), reservations })
+    }
+
+    fn load_detailed(self: Box<Self>) -> Result<LoadedModel, LoadFailure> {
+        let starved = self.state.starved.lock().unwrap().contains(&self.id);
+        self.load().map_err(|reason| if starved { starved_plan().into() } else { reason.into() })
     }
 
     fn options(&self) -> Option<&ignis_server::config::Config> {
         self.options.as_ref()
+    }
+}
+
+/// Shut, an image runner's denoising step waits at it; open, every step
+/// passes. A step waits 30 s at most, so a failed test leaves no thread
+/// behind.
+#[derive(Default)]
+pub struct StepGate {
+    open: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl StepGate {
+    pub fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+
+    fn pass(&self) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut open = self.open.lock().unwrap();
+        while !*open && Instant::now() < deadline {
+            open = self.changed.wait_timeout(open, Duration::from_millis(50)).unwrap().0;
+        }
+    }
+}
+
+/// `FakeImageRunner`, logging the prompt of each prefix it encodes, each
+/// denoising step behind `gate` when there is one, and panicking at one when
+/// `panic` is set.
+struct Logged {
+    inner: FakeImageRunner,
+    encoded: Arc<Mutex<Vec<String>>>,
+    gate: Option<Arc<StepGate>>,
+    panic: Arc<AtomicBool>,
+}
+
+impl ImageRunner for Logged {
+    fn plan(&self) -> &ImagePlan {
+        self.inner.plan()
+    }
+
+    fn condition_tokens(&self, prompt: &str, images: &[ImageSize]) -> Result<u64, ignis_core::image::ConditionUnfit> {
+        self.inner.condition_tokens(prompt, images)
+    }
+
+    fn encode_condition(&mut self, condition: &ImageCondition) -> Result<ConditionId, ImageError> {
+        self.encoded.lock().unwrap().push(condition.prompt.clone());
+        self.inner.encode_condition(condition)
+    }
+
+    fn denoise_step(
+        &mut self,
+        condition: ConditionId,
+        latents: &mut TargetLatents,
+        sigma: f32,
+        sigma_next: f32,
+        velocity: Option<&mut Vec<f32>>,
+    ) -> Result<(), ImageError> {
+        if let Some(gate) = &self.gate {
+            gate.pass();
+        }
+        if self.panic.swap(false, Ordering::SeqCst) {
+            panic!("a leaf fault (simulated)");
+        }
+        self.inner.denoise_step(condition, latents, sigma, sigma_next, velocity)
+    }
+
+    fn vae_decode(&mut self, latents: &TargetLatents) -> Result<RgbaImage, ImageError> {
+        self.inner.vae_decode(latents)
+    }
+
+    fn release_condition(&mut self, condition: ConditionId) {
+        self.inner.release_condition(condition);
+    }
+
+    fn condition_bytes(&self) -> u64 {
+        self.inner.condition_bytes()
     }
 }

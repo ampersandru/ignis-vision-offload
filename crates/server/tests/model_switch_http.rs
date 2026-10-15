@@ -114,6 +114,63 @@ async fn a_switch_is_accepted_reported_while_it_runs_and_serves_the_new_model_af
     assert_eq!(status, StatusCode::NOT_FOUND, "the old id is no longer served: {stale}");
 }
 
+/// A target Flash-Next's host plan refused: `last_switch` says why for a
+/// person (`reason`, in GiB, with the shortfall) and in exact bytes for an
+/// agent (`host_plan`), and the old model serves again.
+#[tokio::test]
+async fn a_switch_short_of_ram_reports_the_host_plan_in_bytes_beside_its_reason() {
+    let loader = MockLoader::new();
+    loader.starve("mock-flash");
+    let app = server_on(&loader).app();
+
+    let (status, _, _) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-flash"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let mut models = Value::Null;
+    for _ in 0..10_000 {
+        models = send(&app, Method::GET, "/v1/models", None).await.2;
+        if models["last_switch"]["outcome"] == "restored" && models["status"] == "serving" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let last = &models["last_switch"];
+    assert_eq!(last["outcome"], "restored", "{models}");
+    assert_eq!(models["data"][0]["id"], "mock-a", "the old model serves again: {models}");
+    let reason = last["reason"].as_str().unwrap();
+    assert!(reason.contains("needs 43.2 GiB available, but only 38.8 GiB is (4.5 GiB short)"), "{reason}");
+    let plan = &last["host_plan"];
+    assert_eq!(plan["available_bytes"], 41_632_530_432u64, "{plan}");
+    assert_eq!(plan["margin_bytes"], 4u64 << 30);
+    assert_eq!(plan["planned_bytes"], 42_123_896_832u64);
+    assert_eq!(plan["needed_bytes"], 46_418_864_128u64);
+    assert_eq!(plan["short_bytes"], 4_786_333_696u64);
+    assert_eq!(plan["crossing_line"], "expert_pool");
+    assert_eq!(
+        plan["lines"],
+        json!([
+            { "name": "expert_pool", "bytes": 37_795_446_784u64 },
+            { "name": "ngram_hot_rows", "bytes": 1u64 << 30 },
+            { "name": "staging", "bytes": 64u64 << 20 },
+            { "name": "retained_host_slots", "bytes": 1_040_115_712u64 },
+            { "name": "kv_ram_arena", "bytes": 2u64 << 30 },
+        ])
+    );
+
+    // A switch that fails any other way names no host plan.
+    loader.break_load("mock-broken");
+    let (status, _, _) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-broken"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    for _ in 0..10_000 {
+        models = send(&app, Method::GET, "/v1/models", None).await.2;
+        if models["last_switch"]["to"] == "mock-broken" && models["status"] == "serving" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(models["last_switch"]["outcome"], "restored", "{models}");
+    assert!(models["last_switch"].get("host_plan").is_none(), "{models}");
+}
+
 #[tokio::test]
 async fn a_failed_switch_with_nothing_to_reload_says_why_and_takes_the_next_switch() {
     let loader = MockLoader::new();
@@ -303,7 +360,7 @@ async fn a_response_naming_a_known_model_is_answered_by_it_after_the_switch_over
     let (status, _, response) = send(&app, Method::POST, "/v1/responses", Some(response_body("mock-b"))).await;
     assert_eq!(status, StatusCode::OK, "{response}");
     assert_eq!(response["model"], "mock-b");
-    assert_eq!(server.active().engine.model_id(), "mock-b");
+    assert_eq!(server.active().model_id(), "mock-b");
 
     let live = responses::live(server.clone()).await;
     let mut socket = responses::socket(&live).await;
@@ -314,7 +371,7 @@ async fn a_response_naming_a_known_model_is_answered_by_it_after_the_switch_over
     let last = events.last().expect("a terminal event");
     assert!(matches!(last["type"].as_str(), Some("response.completed" | "response.incomplete")), "{events:?}");
     assert_eq!(last["response"]["model"], "mock-a");
-    assert_eq!(server.active().engine.model_id(), "mock-a");
+    assert_eq!(server.active().model_id(), "mock-a");
     assert_eq!(loader.loads(), ["mock-b", "mock-a"]);
 }
 
@@ -334,7 +391,7 @@ async fn a_decision_naming_a_known_model_switches_first_even_from_a_load_that_se
     assert_eq!(refused["error"]["code"], "model_unsupported");
 
     let (status, _, answered) = send(&app, Method::POST, "/v1/decide", Some(decision("mock-a@interactive"))).await;
-    assert_eq!(server.active().engine.model_id(), "mock-a", "{answered}");
+    assert_eq!(server.active().model_id(), "mock-a", "{answered}");
     assert_eq!(loader.loads(), ["mock-a"]);
     // The mock template has no answer labels, so the 27B-family mock refuses
     // the question itself — past the model checks, which is what this shows.
