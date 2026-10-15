@@ -1,7 +1,9 @@
-//! The **loop guard** (exploration, branch `experiment/loop-rewind`): a task
+//! The **loop guard** (ADR 0052, branch `experiment/loop-rewind`): a task
 //! between a chat request's engine stream and its consumer that watches the
 //! reasoning for a loop and, in `rewind` mode, takes the generation back to
-//! before it.
+//! before it. `rewind` is the default; `log` only logs; benches and gates run
+//! `off`, for reference parity. A server built without a config
+//! ([`crate::Live`]'s default) runs `off`.
 //!
 //! Why: `docs/findings/2026-10-12-reasoning-loops-are-the-models.md` — about a
 //! third of long-enumeration turns loop in their reasoning, on ignis and on
@@ -28,15 +30,35 @@
 //! continuation prompt prefills (it is submitted without a `reuse_source`;
 //! reusing the original's state is a follow-up, ADR 0052 Consequences). The
 //! client keeps what it has already received and is told what was taken back
-//! by a tag in the reasoning ([`tag`]), which the Playground strikes through.
-//! After `retries` nudges, the next loop is closed with the thinking budget's
-//! own close ([`crate::thinking::THINKING_CLOSE_TEXT`]).
+//! by a tag in the reasoning ([`tag`]): `[LOOP DETECTED, REWINDING n TOKENS /
+//! m CHARS · h]`, `m` the characters it received since the cut as it shows
+//! them (a line break its decoder still held included) and `h` their
+//! [`struck_hash`]. The Playground strikes them through. After `retries`
+//! nudges, the next loop is closed with the thinking budget's own close
+//! ([`crate::thinking::THINKING_CLOSE_TEXT`]).
 //!
-//! Not covered: `/v1/responses`; a request with images (logged, never
-//! rewound); a loop in the answer. A continuation's penalty counts start from
-//! zero, and a forced tool call (`tool_choice`) is not forced after a close
-//! the guard made.
+//! **Holdback.** With `holdback_chars` (0, off, by default) the client is
+//! kept that many characters of reasoning behind the model. A cut in what it
+//! has not received yet sends no tag: the struck tokens are dropped and the
+//! client gets the kept text, the nudge and the continuation, the model's
+//! view token for token. A cut in what it has received strikes only that;
+//! the rest is dropped. Everything held goes out at the reasoning's close, at
+//! the `Done` (an error's too) and when the engine's stream ends. Tokens
+//! dropped unsent still count in `completion_tokens` ([`RewoundTokens`]).
+//!
+//! **History repair** ([`repair`], [`repair_history`]): on every request,
+//! guard on or off, each assistant message's reasoning loses every tagged
+//! rewind whose struck text hashes to its tag, so the next turn's prompt is
+//! what the model saw. Applied where every prompt is built
+//! (`api::conversation`): chat completions, `/v1/responses` (its `reasoning`
+//! items are that reasoning) and `/v1/tokenize`.
+//!
+//! Not covered by the guard: `/v1/responses`; a request with images (logged,
+//! never rewound); a loop in the answer. A continuation's penalty counts
+//! start from zero, and a forced tool call (`tool_choice`) is not forced
+//! after a close the guard made.
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -44,21 +66,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ignis_core::{RequestClass, RequestId, RequestInput, SchedEvent, SubmitError, TokenId};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 use crate::decoder::{Channel, OutputDecoder};
 use crate::engine::{Engine, EventStream, RequestNotes};
-use crate::template::TemplateProvider;
+use crate::template::{ChatMessage, TemplateProvider};
 
 /// What the guard does with a request (`--model-loop-guard`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoopGuardMode {
     /// No guard: the engine's stream goes to the consumer untouched.
-    #[default]
     Off,
     /// Detect and log, never act.
     Log,
-    /// Detect, take the loop back and nudge; close after the retries.
+    /// Detect, take the loop back and nudge; close after the retries. The
+    /// default (the owner, 2026-10-14): benches and gates set `off`.
+    #[default]
     Rewind,
 }
 
@@ -105,6 +129,9 @@ pub const DEFAULT_CLEAN_PERMILLE: u32 = 400;
 pub const DEFAULT_MARGIN_CHARS: u32 = 0;
 /// `--model-loop-guard-retries`'s default: nudges before the close.
 pub const DEFAULT_RETRIES: u32 = 2;
+/// `--model-loop-guard-holdback`'s default, in characters of reasoning held
+/// back from the client: none.
+pub const DEFAULT_HOLDBACK_CHARS: u32 = 0;
 
 /// The guard's knobs, as the live config holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,12 +153,16 @@ pub struct LoopGuardParams {
     pub margin_chars: u32,
     /// The nudges a looping reasoning gets before it is closed.
     pub retries: u32,
+    /// In `rewind` mode, how many characters of reasoning the client is
+    /// kept behind the model: a rewind whose cut falls in them reaches the
+    /// client with no tag. 0, none.
+    pub holdback_chars: u32,
 }
 
 impl Default for LoopGuardParams {
     fn default() -> Self {
         Self {
-            mode: LoopGuardMode::Off,
+            mode: LoopGuardMode::default(),
             ratio_permille: DEFAULT_RATIO_PERMILLE,
             window_chars: DEFAULT_WINDOW_CHARS,
             normalize: DEFAULT_NORMALIZE,
@@ -139,6 +170,7 @@ impl Default for LoopGuardParams {
             clean_permille: DEFAULT_CLEAN_PERMILLE,
             margin_chars: DEFAULT_MARGIN_CHARS,
             retries: DEFAULT_RETRIES,
+            holdback_chars: DEFAULT_HOLDBACK_CHARS,
         }
     }
 }
@@ -164,13 +196,90 @@ pub const NUDGES: [&str; 2] = [
 /// The tag's fixed opening, for a client that looks for it.
 pub const TAG_PREFIX: &str = "[LOOP DETECTED, REWINDING ";
 
-/// The tag the client reads in the reasoning where the guard took `tokens`
-/// tokens back: the `chars` characters (Unicode scalar values) of reasoning
-/// before it are no longer the model's context. It opens with a line break so
-/// that it never joins a character the last token left incomplete; what
-/// follows it (a nudge, the close) opens with its own.
-pub fn tag(tokens: usize, chars: usize) -> String {
-    format!("\n\n{TAG_PREFIX}{tokens} TOKENS / {chars} CHARS]")
+/// The tag's whole opening as [`tag`] writes it, its line breaks included.
+const TAG_OPEN: &str = "\n\n[LOOP DETECTED, REWINDING ";
+
+/// The tag the client reads in the reasoning where the guard took back
+/// `struck`, the reasoning it had received since the cut, in `tokens`
+/// tokens: `\n\n[LOOP DETECTED, REWINDING <n> TOKENS / <m> CHARS · <h>]`,
+/// `m` its length in Unicode scalar values and `h` its [`struck_hash`]. The
+/// `m` characters right before the tag's line breaks are no longer the
+/// model's context, and [`repair`] takes them out when they hash to `h`. It
+/// opens with a line break so that it never joins a character the last token
+/// left incomplete; what follows it (a nudge, the close) opens with its own.
+pub fn tag(tokens: usize, struck: &str) -> String {
+    format!("{TAG_OPEN}{tokens} TOKENS / {} CHARS \u{b7} {}]", struck.chars().count(), struck_hash(struck))
+}
+
+/// The first 6 lowercase hex digits of the SHA-256 of `text`'s UTF-8: what
+/// a [`tag`] carries of its struck text.
+pub fn struck_hash(text: &str) -> String {
+    Sha256::digest(text.as_bytes())[..3].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// **History repair** (ADR 0052): `reasoning` as a client sends it back,
+/// with every rewind the guard took out of it again, so the model is given
+/// the text it saw. For each [`tag`], from the last to the first, the `m`
+/// characters before it and the tag itself go, if and only if those
+/// characters hash to the tag's `h`. A mismatch, fewer than `m` characters
+/// before it, or a tag without a hash (the format before ADR 0052's hash)
+/// leaves that text as it is.
+pub fn repair(reasoning: &str) -> Cow<'_, str> {
+    if !reasoning.contains(TAG_OPEN) {
+        return Cow::Borrowed(reasoning);
+    }
+    let mut text = reasoning.to_owned();
+    let mut limit = text.len();
+    while let Some(open) = text[..limit].rfind(TAG_OPEN) {
+        let struck = parse_tag(&text[open..limit]).and_then(|(len, chars, hash)| {
+            let start = start_of_last(&text[..open], chars)?;
+            (struck_hash(&text[start..open]) == hash).then_some((start, open + len))
+        });
+        match struck {
+            Some((start, end)) => {
+                text.replace_range(start..end, "");
+                limit = start;
+            }
+            None => limit = open,
+        }
+    }
+    Cow::Owned(text)
+}
+
+/// [`repair`] over a conversation: the reasoning of each assistant message,
+/// and nothing else — never its content, never another role's text.
+pub fn repair_history(messages: &mut [ChatMessage]) {
+    for message in messages.iter_mut().filter(|message| message.role == "assistant") {
+        if let Some(reasoning) = message.reasoning_content.as_mut() {
+            if let Cow::Owned(repaired) = repair(reasoning) {
+                *reasoning = repaired;
+            }
+        }
+    }
+}
+
+/// A [`tag`] at the start of `text`: its length in bytes, its `m` and its
+/// `h`. `None` when `text` does not start with one in the hashed format.
+fn parse_tag(text: &str) -> Option<(usize, usize, &str)> {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let rest = text.strip_prefix(TAG_OPEN)?;
+    let (tokens, rest) = rest.split_once(" TOKENS / ")?;
+    let (chars, rest) = rest.split_once(" CHARS \u{b7} ")?;
+    let hash = rest.get(..6)?;
+    let hex = hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !digits(tokens) || !digits(chars) || !hex || !rest[6..].starts_with(']') {
+        return None;
+    }
+    Some((text.len() - rest.len() + 7, chars.parse().ok()?, hash))
+}
+
+/// Where the last `chars` characters of `text` start; `None` when it has
+/// fewer.
+fn start_of_last(text: &str, chars: usize) -> Option<usize> {
+    match chars {
+        0 => Some(text.len()),
+        _ => text.char_indices().rev().nth(chars - 1).map(|(at, _)| at),
+    }
 }
 
 /// The zlib ratio of `text`: compressed bytes over UTF-8 bytes. Lower is more
@@ -579,12 +688,39 @@ impl GuardOps for EngineOps {
     }
 }
 
-/// The generated tokens the guard's rewinds took back, shared with the
-/// handler that builds `usage.completion_tokens_details.rewound_tokens`.
-/// It counts the struck tokens only (those the client's tag reports as
-/// `N TOKENS`): not the tag's own tokens, nor the nudges. The guard adds to
-/// it before it sends the `Done` that ends the stream.
-pub type Rewound = Arc<AtomicU32>;
+/// What the guard's rewinds took back, shared with the handler that builds
+/// the usage. The guard adds to it before it sends the `Done` that ends the
+/// stream.
+#[derive(Debug, Default)]
+pub struct RewoundTokens {
+    taken: AtomicU32,
+    unsent: AtomicU32,
+}
+
+impl RewoundTokens {
+    /// A count with `taken` tokens taken back, `unsent` of them never sent.
+    pub fn new(taken: u32, unsent: u32) -> Self {
+        Self { taken: AtomicU32::new(taken), unsent: AtomicU32::new(unsent) }
+    }
+
+    /// Every generated token a rewind took back, whether the client received
+    /// it or not: `usage.completion_tokens_details.rewound_tokens`. Not the
+    /// tags' own tokens, nor the nudges. With no holdback, the sum of the
+    /// tags' `N TOKENS`.
+    pub fn taken(&self) -> u32 {
+        self.taken.load(Ordering::Relaxed)
+    }
+
+    /// Of [`RewoundTokens::taken`], those the holdback never sent: generated,
+    /// so `completion_tokens` counts them beside the tokens the stream
+    /// carried.
+    pub fn unsent(&self) -> u32 {
+        self.unsent.load(Ordering::Relaxed)
+    }
+}
+
+/// [`RewoundTokens`], shared.
+pub type Rewound = Arc<RewoundTokens>;
 
 /// Put the guard between `stream` (the engine's, for `request`, submitted
 /// from `input`) and its consumer: the stream returned. `Off` returns
@@ -610,10 +746,24 @@ pub fn guard_counted(
     rx
 }
 
+/// The reasoning `tokens` decode to as a client that received them shows
+/// it once any text follows: what the decoder published and what it still
+/// holds (a newline run, a partial `</think>`). Not what
+/// [`OutputDecoder::finish`] gives, which drops a partial marker.
+fn shown(mut decoder: OutputDecoder, tokens: &[TokenId]) -> String {
+    let mut text: String =
+        decoder.push(tokens).into_iter().filter(|delta| delta.channel == Channel::Reasoning).map(|delta| delta.text).collect();
+    if decoder.channel() == Channel::Reasoning {
+        text.push_str(decoder.pending());
+    }
+    text
+}
+
 /// One guarded request's state.
 struct Guard<O: GuardOps> {
     params: LoopGuardParams,
     ops: O,
+    tx: UnboundedSender<SchedEvent>,
     /// The request as submitted: every continuation is built from it.
     input: RequestInput,
     /// The client's request id: every event it receives carries it.
@@ -626,6 +776,12 @@ struct Guard<O: GuardOps> {
     rewinds: u32,
     /// The guard closed the reasoning: nothing more to watch.
     closed: bool,
+    /// The characters of reasoning the client is kept behind the view:
+    /// `holdback_chars` in `rewind` mode on a request it can rewind, else 0.
+    holdback: usize,
+    /// The view's tokens the client has been sent, from the first: the rest
+    /// are held back.
+    sent: usize,
     /// Token events sent to the client.
     forwarded: u32,
     /// The client's token count when the current continuation's first token
@@ -634,11 +790,12 @@ struct Guard<O: GuardOps> {
     rewound: Rewound,
 }
 
-/// A continuation, ready to go: the tokens the client receives before it.
+/// A continuation, ready to go: the tag the client receives before it, if
+/// the cut took back anything it had received.
 struct Continuation {
     request: RequestId,
     stream: EventStream,
-    announce: Vec<TokenId>,
+    tag: Vec<TokenId>,
 }
 
 impl<O: GuardOps> Guard<O> {
@@ -668,24 +825,24 @@ impl<O: GuardOps> Guard<O> {
         let ratio = score.ratio;
         let cut = self.watch.cut_point(self.view.text(), &self.params);
         let kept = self.view.tokens_before(cut);
-        // The kept tokens' whole text: a decoder holds back a trailing line
-        // break until the text after it arrives, so their own count can be
-        // one short of what the client has.
-        let kept_chars = {
-            let mut decoder = self.ops.decoder();
-            let mut deltas = decoder.push(&self.view.tokens[..kept]);
-            deltas.extend(decoder.finish());
-            deltas.iter().filter(|d| d.channel == Channel::Reasoning).map(|d| d.text.chars().count()).sum::<usize>()
-        };
+        let generated = self.view.tokens.len();
+        // The kept text and what the client received, as the client shows
+        // them: a decoder holds back a trailing line break until the text
+        // after it arrives, and the tag is that text.
+        let kept_chars = shown(self.ops.decoder(), &self.view.tokens[..kept]).chars().count();
+        let struck = (self.sent > kept)
+            .then(|| shown(self.ops.decoder(), &self.view.tokens[..self.sent]).chars().skip(kept_chars).collect::<String>());
         let close = self.rewinds >= self.params.retries;
         let sentence = if close {
             crate::thinking::THINKING_CLOSE_TEXT
         } else {
             NUDGES[(self.rewinds as usize).min(NUDGES.len() - 1)]
         };
-        let (Some(nudge), Some(announce)) =
-            (self.ops.encode(sentence), self.ops.encode(&tag(self.view.tokens.len() - kept, at - kept_chars)))
-        else {
+        let encoded_tag = match &struck {
+            Some(struck) => self.ops.encode(&tag(self.sent - kept, struck)),
+            None => Some(Vec::new()),
+        };
+        let (Some(nudge), Some(encoded_tag)) = (self.ops.encode(sentence), encoded_tag) else {
             tracing::warn!(name: "ignis.loop_guard.no_tokenizer", request = self.original, "cannot encode the nudge: log only");
             self.watch = Watch::from(at, &self.params);
             return None;
@@ -717,31 +874,67 @@ impl<O: GuardOps> Guard<O> {
             name: "ignis.loop_guard.rewound",
             request = self.original, cancelled = self.current, continuation = request,
             at_chars = at, ratio = ratio, raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = kept_chars,
-            rewound_tokens = self.view.tokens.len() - kept, rewound_chars = at - kept_chars,
+            rewound_tokens = generated - kept, rewound_chars = at - kept_chars,
+            struck_chars = struck.as_ref().map_or(0, |struck| struck.chars().count()), held_back = struck.is_none(),
             attempt = self.rewinds + 1, closed = close,
             "loop in the reasoning: rewound"
         );
 
-        self.rewound.fetch_add((self.view.tokens.len() - kept) as u32, Ordering::Relaxed);
+        self.rewound.taken.fetch_add((generated - kept) as u32, Ordering::Relaxed);
+        self.rewound.unsent.fetch_add((generated - self.sent.max(kept)) as u32, Ordering::Relaxed);
 
-        // The model's view: the kept tokens, then the nudge.
+        // The model's view: the kept tokens, then the nudge. The client has
+        // its first `sent` (all of them, when the tag goes out), and gets
+        // the rest as the holdback lets them go.
         let mut view = View::new(self.ops.decoder(), self.params.normalize);
         for &token in self.view.tokens[..kept].iter().chain(&nudge) {
             view.push(token);
         }
         self.view = view;
+        self.sent = self.sent.min(kept);
         self.watch = Watch::from(self.view.text().len(), &self.params);
         self.rewinds += 1;
         self.closed = close;
         self.current = request;
-        let mut announce = announce;
-        announce.extend_from_slice(&nudge);
-        Some(Continuation { request, stream, announce })
+        Some(Continuation { request, stream, tag: encoded_tag })
     }
 
-    fn send_token(&mut self, tx: &UnboundedSender<SchedEvent>, token: TokenId) -> bool {
+    fn send_token(&mut self, token: TokenId) -> bool {
         self.forwarded += 1;
-        tx.send(SchedEvent::Token { request: self.original, token }).is_ok()
+        self.tx.send(SchedEvent::Token { request: self.original, token }).is_ok()
+    }
+
+    /// Send the client every token the holdback no longer covers: inside the
+    /// reasoning, each whose text ends at least `holdback` characters before
+    /// the view's; past it, every one. With no holdback, every token at once.
+    fn release(&mut self) -> bool {
+        let end = self.view.text().len();
+        let all = !self.view.in_reasoning();
+        while self.sent < self.view.tokens.len() && (all || self.view.chars_after[self.sent] + self.holdback <= end) {
+            let token = self.view.tokens[self.sent];
+            self.sent += 1;
+            if !self.send_token(token) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Send the client everything held back: at the stream's end.
+    fn flush(&mut self) -> bool {
+        while self.sent < self.view.tokens.len() {
+            let token = self.view.tokens[self.sent];
+            self.sent += 1;
+            if !self.send_token(token) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The view's tokens the client has not received yet.
+    fn held(&self) -> u32 {
+        (self.view.tokens.len() - self.sent) as u32
     }
 }
 
@@ -755,9 +948,11 @@ async fn run<O: GuardOps>(
     rewound: Rewound,
 ) {
     let view = View::new(ops.decoder(), params.normalize);
+    let rewinds = params.mode == LoopGuardMode::Rewind && input.multimodal.is_none();
     let mut guard = Guard {
         params,
         ops,
+        tx,
         input,
         original: request,
         current: request,
@@ -765,6 +960,8 @@ async fn run<O: GuardOps>(
         watch: Watch::from(0, &params),
         rewinds: 0,
         closed: false,
+        holdback: if rewinds { params.holdback_chars as usize } else { 0 },
+        sent: 0,
         forwarded: 0,
         offset: 0,
         rewound,
@@ -776,24 +973,33 @@ async fn run<O: GuardOps>(
     while let Some(mut event) = stream.recv().await {
         match event {
             SchedEvent::Token { token, .. } => {
-                if !guard.send_token(&tx, token) {
+                guard.view.push(token);
+                if !guard.release() {
                     guard.ops.cancel(guard.current);
                     return;
                 }
-                guard.view.push(token);
                 if let Some(continuation) = guard.after_token().await {
-                    for token in continuation.announce {
-                        if !guard.send_token(&tx, token) {
+                    for token in continuation.tag {
+                        if !guard.send_token(token) {
                             guard.ops.cancel(continuation.request);
                             return;
                         }
                     }
-                    guard.offset = guard.forwarded;
+                    if !guard.release() {
+                        guard.ops.cancel(continuation.request);
+                        return;
+                    }
+                    // What the client still waits for comes before the
+                    // continuation's first token.
+                    guard.offset = guard.forwarded + guard.held();
                     stream = continuation.stream;
                     continued = true;
                 }
             }
             SchedEvent::Done { ref mut request, ref mut tokens, ref mut thinking, ref mut reasoning_redirected_at, .. } => {
+                if !guard.flush() {
+                    return;
+                }
                 *request = guard.original;
                 if continued {
                     let offset = guard.offset;
@@ -804,11 +1010,11 @@ async fn run<O: GuardOps>(
                     }
                     *reasoning_redirected_at = reasoning_redirected_at.map(|at| at + offset);
                 }
-                let _ = tx.send(event);
+                let _ = guard.tx.send(event);
                 return;
             }
             other if !continued => {
-                if tx.send(other).is_err() {
+                if guard.tx.send(other).is_err() {
                     guard.ops.cancel(guard.current);
                     return;
                 }
@@ -816,6 +1022,9 @@ async fn run<O: GuardOps>(
             _ => {}
         }
     }
+    // The engine's stream ended with no `Done`: what was held back still
+    // reaches the client.
+    guard.flush();
 }
 
 #[cfg(test)]
@@ -825,14 +1034,26 @@ mod tests {
     use ignis_core::{DecodeParams, FinishReason};
     use std::sync::Mutex;
 
-    /// One token per character: its code point.
+    /// One token per character: its code point. A token at [`NEWLINE_AFTER`]
+    /// and over is two: a character, then a line break.
     struct CharDecoder;
     impl TokenDecoder for CharDecoder {
         fn push(&mut self, token: TokenId) -> String {
-            char::from_u32(token).map(String::from).unwrap_or_default()
+            piece(token)
         }
         fn finish(&mut self) -> String {
             String::new()
+        }
+    }
+
+    /// The token for `c` followed by a line break: what a real tokenizer's
+    /// `.\n` is, a token whose text ends in a newline the decoder holds.
+    const NEWLINE_AFTER: TokenId = 0x20_0000;
+
+    fn piece(token: TokenId) -> String {
+        match token.checked_sub(NEWLINE_AFTER) {
+            Some(c) => char::from_u32(c).map(|c| format!("{c}\n")).unwrap_or_default(),
+            None => char::from_u32(token).map(String::from).unwrap_or_default(),
         }
     }
 
@@ -841,7 +1062,16 @@ mod tests {
     }
 
     fn text_of(tokens: &[TokenId]) -> String {
-        tokens.iter().filter_map(|&t| char::from_u32(t)).collect()
+        tokens.iter().map(|&t| piece(t)).collect()
+    }
+
+    /// The reasoning a client shows for `tokens`: through the decoder the
+    /// chat handler uses, to the end.
+    fn client_reasoning(tokens: &[TokenId]) -> String {
+        let mut decoder = OutputDecoder::new(Box::new(CharDecoder), true);
+        let mut deltas = decoder.push(tokens);
+        deltas.extend(decoder.finish());
+        deltas.into_iter().filter(|d| d.channel == Channel::Reasoning).map(|d| d.text).collect()
     }
 
     /// Plausible reasoning that does not repeat: a running account of
@@ -1318,9 +1548,94 @@ mod tests {
     }
 
     #[test]
-    fn the_tag_says_what_was_taken_back() {
-        assert_eq!(tag(812, 3104), "\n\n[LOOP DETECTED, REWINDING 812 TOKENS / 3104 CHARS]");
-        assert!(tag(1, 2).contains(TAG_PREFIX));
+    fn the_tag_says_what_was_taken_back_and_hashes_it() {
+        assert_eq!(tag(812, "abc"), "\n\n[LOOP DETECTED, REWINDING 812 TOKENS / 3 CHARS \u{b7} ba7816]");
+        assert!(tag(1, "x").contains(TAG_PREFIX));
+        // SHA-256's own test vectors: "abc" is ba7816bf…, the empty string e3b0c442….
+        assert_eq!((struck_hash("abc"), struck_hash("")), ("ba7816".to_owned(), "e3b0c4".to_owned()));
+        assert_eq!(tag(2, "è🦀\n").split(" CHARS").next().unwrap().rsplit(' ').next(), Some("3"), "m counts scalar values");
+    }
+
+    /// `kept`, a rewind of `struck` tagged after it, then `after`.
+    fn rewound_text(kept: &str, struck: &str, after: &str) -> String {
+        format!("{kept}{struck}{}{after}", tag(9, struck))
+    }
+
+    #[test]
+    fn repair_takes_a_tag_and_its_struck_text_out() {
+        let text = rewound_text("kept\n", "the loop, the loop, ", NUDGES[0]);
+        assert_eq!(repair(&text), format!("kept\n{}", NUDGES[0]));
+        assert!(matches!(repair("no tag here"), Cow::Borrowed(_)));
+        let multibyte = rewound_text("è ", "🦀🦀 ü\n", "next");
+        assert_eq!(repair(&multibyte), "è next", "m counts scalar values, not bytes");
+        assert_eq!(repair(&rewound_text("kept", "", "next")), "keptnext", "an empty struck text is the tag alone");
+        assert_eq!(repair(&format!("{}{}", tag(1, "abc"), "x")), "\n\n[LOOP DETECTED, REWINDING 1 TOKENS / 3 CHARS \u{b7} ba7816]x", "nothing before it");
+    }
+
+    /// Two rewinds, the second's struck text after the first's tag: from
+    /// the last to the first, both go.
+    #[test]
+    fn repair_takes_every_tag_out_from_the_last() {
+        let first = rewound_text("A", "loop one ", NUDGES[0]);
+        let text = rewound_text(&format!("{first}kept two "), "loop two ", NUDGES[1]);
+        assert_eq!(repair(&text), format!("A{}kept two {}", NUDGES[0], NUDGES[1]));
+        // The struck text of the second may begin right at the first tag's end.
+        let back_to_back = rewound_text(&rewound_text("A", "loop one ", ""), "loop two", "end");
+        assert_eq!(repair(&back_to_back), "Aend");
+    }
+
+    /// A tag whose hash does not match, one with fewer characters before it
+    /// than it names, and one in the format before the hash are all left as
+    /// they are; a good tag beside them still goes.
+    #[test]
+    fn repair_leaves_a_tag_it_cannot_verify() {
+        let edited = rewound_text("kept ", "the loop", "next").replace("the loop", "the LOOP");
+        assert_eq!(repair(&edited), edited, "a mismatch");
+        let short = format!("ab{}", tag(1, "abc"));
+        assert_eq!(repair(&short), short, "fewer characters than m");
+        let old = "kept the loop\n\n[LOOP DETECTED, REWINDING 2 TOKENS / 8 CHARS]next";
+        assert_eq!(repair(old), old, "the old format");
+        let upper = rewound_text("k", "abc", "n").replace("ba7816", "BA7816");
+        assert_eq!(repair(&upper), upper, "the hash is lowercase");
+        for broken in ["\n\n[LOOP DETECTED, REWINDING x TOKENS / 3 CHARS \u{b7} ba7816]", "\n\n[LOOP DETECTED, REWINDING 1 TOKENS / 3 CHARS \u{b7} ba78]"] {
+            let text = format!("abc{broken}");
+            assert_eq!(repair(&text), text, "{broken:?}");
+        }
+        let mixed = format!("{old}{}", rewound_text(" k ", "loop", "end"));
+        assert_eq!(repair(&mixed), format!("{old} k end"), "the old tag stays, the good one goes");
+        let after_a_bad_one = format!("{}{edited}", rewound_text("A", "loop", "B"));
+        assert_eq!(repair(&after_a_bad_one), format!("AB{edited}"), "a bad tag does not stop the ones before it");
+    }
+
+    #[test]
+    fn history_repair_touches_only_assistant_reasoning() {
+        let tagged = rewound_text("kept ", "loop", "next");
+        let mut messages = vec![
+            ChatMessage::text("system", tagged.clone()),
+            ChatMessage::text("user", tagged.clone()),
+            ChatMessage { reasoning_content: Some(tagged.clone()), ..ChatMessage::text("assistant", tagged.clone()) },
+            ChatMessage { reasoning_content: Some(tagged.clone()), ..ChatMessage::text("user", "q") },
+            ChatMessage::text("tool", tagged.clone()),
+            ChatMessage::text("assistant", "no reasoning"),
+        ];
+        let before = messages.clone();
+        repair_history(&mut messages);
+        assert_eq!(messages[2].reasoning_content.as_deref(), Some("kept next"), "assistant reasoning is repaired");
+        assert_eq!(messages[2].content, before[2].content, "assistant content is not");
+        for i in [0, 1, 3, 4, 5] {
+            assert_eq!(messages[i], before[i], "message {i}");
+        }
+    }
+
+    /// What a client shows: published text and what the decoder holds,
+    /// never what `finish` drops.
+    #[test]
+    fn shown_is_the_text_with_what_the_decoder_holds() {
+        let decoder = || OutputDecoder::new(Box::new(CharDecoder), true);
+        assert_eq!(shown(decoder(), &tokens_of("ab\n")), "ab\n");
+        assert_eq!(shown(decoder(), &tokens_of("ab</thi")), "ab</thi");
+        assert_eq!(shown(decoder(), &tokens_of("a</think>b")), "a");
+        assert_eq!(shown(decoder(), &[u32::from('a'), NEWLINE_AFTER + u32::from('b')]), "ab\n");
     }
 
     /// A stand-in engine: records every cancel and submission, and answers a
@@ -1360,16 +1675,26 @@ mod tests {
     }
 
     fn done_event(request: RequestId, tokens: u32) -> SchedEvent {
+        done_with(request, tokens, FinishReason::Stop, None, None)
+    }
+
+    fn done_with(
+        request: RequestId,
+        tokens: u32,
+        reason: FinishReason,
+        thinking: Option<ignis_core::thinking_budget::BudgetOutcome>,
+        reasoning_redirected_at: Option<u32>,
+    ) -> SchedEvent {
         SchedEvent::Done {
             request,
             tokens,
-            reason: FinishReason::Stop,
+            reason,
             spec: None,
             readout: None,
             attention: None,
             drawn: None,
-            thinking: None,
-            reasoning_redirected_at: None,
+            thinking,
+            reasoning_redirected_at,
         }
     }
 
@@ -1396,7 +1721,13 @@ mod tests {
         }
     }
 
-    async fn drain(mut rx: EventStream) -> (String, Option<SchedEvent>) {
+    async fn drain(rx: EventStream) -> (String, Option<SchedEvent>) {
+        let (tokens, done) = drain_tokens(rx).await;
+        (text_of(&tokens), done)
+    }
+
+    /// Every token the client received, in order, and the `Done`.
+    async fn drain_tokens(mut rx: EventStream) -> (Vec<TokenId>, Option<SchedEvent>) {
         let mut tokens = Vec::new();
         let mut done = None;
         while let Some(event) = rx.recv().await {
@@ -1409,7 +1740,50 @@ mod tests {
                 _ => {}
             }
         }
-        (text_of(&tokens), done)
+        (tokens, done)
+    }
+
+    /// [`scripted`], from tokens.
+    fn scripted_tokens(request: RequestId, tokens: &[TokenId], done: bool) -> EventStream {
+        let (tx, rx) = unbounded_channel();
+        for &token in tokens {
+            tx.send(SchedEvent::Token { request, token }).unwrap();
+        }
+        if done {
+            tx.send(done_event(request, tokens.len() as u32)).unwrap();
+        }
+        rx
+    }
+
+    fn ops_with(streams: Vec<(RequestId, EventStream)>) -> Arc<FakeOps> {
+        Arc::new(FakeOps { cancelled: Mutex::default(), submitted: Mutex::default(), streams: Mutex::new(streams) })
+    }
+
+    /// The tokens the model saw after the client's prompt `prompt`: those the
+    /// last continuation's prompt carried past it, then `last`, what that
+    /// continuation generated.
+    fn models_view(ops: &FakeOps, prompt: &str, last: &[TokenId]) -> Vec<TokenId> {
+        let submitted = ops.submitted.lock().unwrap();
+        let mut view = submitted.last().expect("a continuation").tokens[tokens_of(prompt).len()..].to_vec();
+        view.extend_from_slice(last);
+        view
+    }
+
+    /// History repair's promise on a stream the guard produced: the
+    /// reasoning the client received, repaired, is the reasoning the model
+    /// saw, which is what the continuation's prompt carried.
+    fn assert_repair_gives_the_models_view(received: &[TokenId], ops: &FakeOps, prompt: &str, last: &[TokenId]) {
+        let model = client_reasoning(&models_view(ops, prompt, last));
+        let received = client_reasoning(received);
+        assert_ne!(received, model, "the client was sent a rewind: there is something to repair");
+        assert_eq!(repair(&received), model);
+    }
+
+    /// The `m` and the struck text of the first tag the client shows.
+    fn first_struck(shown: &str) -> (usize, String) {
+        let (before, rest) = shown.split_once(TAG_OPEN).expect("the tag");
+        let m: usize = rest.split_once(" CHARS").unwrap().0.rsplit(' ').next().unwrap().parse().unwrap();
+        (m, before.chars().skip(before.chars().count() - m).collect())
     }
 
     #[tokio::test]
@@ -1463,8 +1837,9 @@ mod tests {
         let (sent, rest) = text.split_once("\n\n[LOOP DETECTED, REWINDING ").expect("the tag");
         let (counts, rest) = rest.split_once(']').expect("the tag's end");
         assert!(reasoning.starts_with(sent));
-        let struck = sent.chars().count() - kept.chars().count();
-        assert_eq!(counts, format!("{} TOKENS / {struck} CHARS", struck), "one token per char here");
+        let struck = &sent[kept.len()..];
+        let m = struck.chars().count();
+        assert_eq!(counts, format!("{m} TOKENS / {m} CHARS \u{b7} {}", struck_hash(struck)), "one token per char here");
         assert_eq!(rest, format!("{}{after}", NUDGES[0]));
         let Some(SchedEvent::Done { request, tokens, .. }) = done else { panic!("no done") };
         assert_eq!(request, 1);
@@ -1499,7 +1874,7 @@ mod tests {
             .sum();
         assert_eq!(ops.submitted.lock().unwrap().len(), 2);
         assert!(tags > 0);
-        assert_eq!(rewound.load(Ordering::Relaxed), tags);
+        assert_eq!((rewound.taken(), rewound.unsent()), (tags, 0), "with no holdback every struck token was sent");
     }
 
     /// After a rewind the watch starts again at the nudge's end: a loop
@@ -1591,5 +1966,170 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("the continuation was never cancelled: {:?}", ops.cancelled.lock().unwrap());
+    }
+
+    // ── history repair on the guard's own streams ──────────────────────
+
+    #[tokio::test]
+    async fn repair_gives_back_the_models_view_after_one_rewind() {
+        let after = "\nRome's story, written.</think>\n\nRoma.";
+        let ops = ops_with(vec![(2, scripted(2, after, true))]);
+        let reasoning = prose(5000) + &looping(6000);
+        let (received, _) =
+            drain_tokens(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        assert_eq!(text_of(&received).matches(TAG_PREFIX).count(), 1);
+        assert_repair_gives_the_models_view(&received, &ops, "P", &tokens_of(after));
+    }
+
+    /// Two rewinds, the second cut at the first nudge's end; and a nudge
+    /// then the close, which ends the reasoning.
+    #[tokio::test]
+    async fn repair_gives_back_the_models_view_after_two_rewinds_and_after_a_close() {
+        for retries in [2, 1] {
+            let ops = ops_with(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]);
+            let reasoning = prose(5000) + &looping(6000);
+            let p = LoopGuardParams { retries, ..params(LoopGuardMode::Rewind) };
+            let (received, _) = drain_tokens(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+            let text = text_of(&received);
+            assert_eq!(text.matches(TAG_PREFIX).count(), 2, "retries {retries}");
+            assert_eq!(text.contains(crate::thinking::THINKING_CLOSE_TEXT), retries == 1, "retries {retries}");
+            assert_repair_gives_the_models_view(&received, &ops, "P", &tokens_of("Roma."));
+        }
+    }
+
+    /// The token the guard fires on ends in a line break the decoder holds:
+    /// the client shows it once the tag arrives, so the tag's `m` counts it,
+    /// and repair still gives back the model's view exactly.
+    #[tokio::test]
+    async fn a_line_break_held_when_the_guard_fires_is_struck_with_the_rest() {
+        let reasoning = prose(5000) + &looping(6000);
+        let mut tokens = tokens_of(&reasoning);
+        // Where the guard fires: the first token the client gets that the
+        // reasoning does not have is the tag's.
+        let (plain, _) =
+            drain_tokens(guard(params(LoopGuardMode::Rewind), ops_with(vec![(2, scripted(2, "Roma.", true))]), input("P", 40_000), 1, scripted(1, &reasoning, false)))
+                .await;
+        let fired = plain.iter().zip(&tokens).position(|(a, b)| a != b).expect("a tag");
+        let fired_on = char::from_u32(tokens[fired - 1]).unwrap();
+        tokens[fired - 1] += NEWLINE_AFTER;
+
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let (received, _) =
+            drain_tokens(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted_tokens(1, &tokens, false))).await;
+        assert_eq!(received[fired - 1], tokens[fired - 1], "the guard fired on the same token");
+        let shown = client_reasoning(&received);
+        let (m, struck) = first_struck(&shown);
+        assert!(struck.ends_with(&format!("{fired_on}\n")), "the held line break is struck: {struck:?}");
+        let (_, rest) = shown.split_once(TAG_OPEN).unwrap();
+        assert!(rest.starts_with(&format!("{} TOKENS / {m} CHARS \u{b7} {}]", m - 1, struck_hash(&struck))), "one token for two characters");
+        assert_repair_gives_the_models_view(&received, &ops, "P", &tokens_of("Roma."));
+    }
+
+    // ── holdback ─────────────────────────────────────────────────────────
+
+    /// A cut inside what the client was sent: the tag strikes only that, the
+    /// rest it never received is dropped, and the counts say so.
+    #[tokio::test]
+    async fn with_a_holdback_a_cut_in_what_was_sent_strikes_only_that() {
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let reasoning = prose(5000) + &looping(6000);
+        let p = LoopGuardParams { holdback_chars: 500, ..params(LoopGuardMode::Rewind) };
+        let rewound = Rewound::default();
+        let (received, done) =
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false), rewound.clone())).await;
+        let text = text_of(&received);
+        let (sent, _) = text.split_once(TAG_OPEN).expect("the cut is in what was sent: a tag");
+        let kept = models_view(&ops, "P", &[]).len() - tokens_of(NUDGES[0]).len();
+        let generated = kept + rewound.taken() as usize;
+        assert!(reasoning.starts_with(sent));
+        assert_eq!(sent.chars().count(), generated - rewound.unsent() as usize, "the client got all it was sent, then the tag");
+        assert!((499..=501).contains(&rewound.unsent()), "about the holdback was never sent: {}", rewound.unsent());
+        let (m, struck) = first_struck(&client_reasoning(&received));
+        assert_eq!((m, struck.as_str()), (sent.chars().count() - kept, &sent[kept..]), "only what was sent is struck");
+        let Some(SchedEvent::Done { tokens, .. }) = done else { panic!("no done") };
+        assert_eq!(tokens as usize, received.len());
+        assert_repair_gives_the_models_view(&received, &ops, "P", &tokens_of("Roma."));
+    }
+
+    /// A cut inside what is still held back: no tag, the loop never reaches
+    /// the client, and what it receives is the model's view token for token.
+    /// The continuation's indices land where its tokens do.
+    #[tokio::test]
+    async fn with_a_holdback_past_the_cut_the_client_never_sees_the_loop() {
+        let after = "Roma, written.";
+        let (cont_tx, cont_rx) = unbounded_channel();
+        for token in tokens_of(after) {
+            cont_tx.send(SchedEvent::Token { request: 2, token }).unwrap();
+        }
+        let outcome = ignis_core::thinking_budget::BudgetOutcome { budget: 100, forced_at: Some(3), closed_at: Some(4) };
+        cont_tx.send(done_with(2, after.len() as u32, FinishReason::Stop, Some(outcome), Some(2))).unwrap();
+        let ops = ops_with(vec![(2, cont_rx)]);
+        let reasoning = prose(5000) + &looping(6000);
+        let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
+        let rewound = Rewound::default();
+        let (received, done) =
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false), rewound.clone())).await;
+        assert_eq!(ops.submitted.lock().unwrap().len(), 1, "rewound");
+        assert!(!text_of(&received).contains(TAG_PREFIX), "no tag");
+        assert_eq!(received, models_view(&ops, "P", &tokens_of(after)), "the model's view, token for token");
+        assert!(matches!(repair(&client_reasoning(&received)), Cow::Borrowed(_)), "nothing to repair");
+        assert!(rewound.taken() > 0 && rewound.unsent() == rewound.taken(), "every struck token was held back");
+        let Some(SchedEvent::Done { tokens, thinking, reasoning_redirected_at, .. }) = done else { panic!("no done") };
+        let before = (received.len() - after.len()) as u32;
+        assert_eq!(tokens as usize, received.len());
+        let thinking = thinking.unwrap();
+        assert_eq!((thinking.forced_at, thinking.closed_at, reasoning_redirected_at), (Some(before + 3), Some(before + 4), Some(before + 2)));
+    }
+
+    /// The client stays `holdback` characters behind, and gets everything
+    /// at the reasoning's close; in `log` mode nothing is held.
+    #[tokio::test]
+    async fn a_holdback_keeps_the_client_behind_until_the_reasoning_closes() {
+        async fn received_now(out: &mut EventStream, got: &mut Vec<TokenId>) {
+            while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(50), out.recv()).await {
+                match event {
+                    SchedEvent::Token { token, .. } => got.push(token),
+                    other => panic!("only tokens yet: {other:?}"),
+                }
+            }
+        }
+        let reasoning = prose(3000);
+        for (mode, behind) in [(LoopGuardMode::Rewind, 1000), (LoopGuardMode::Log, 0)] {
+            let (tx, rx) = unbounded_channel();
+            for token in tokens_of(&reasoning) {
+                tx.send(SchedEvent::Token { request: 1, token }).unwrap();
+            }
+            let p = LoopGuardParams { holdback_chars: 1000, ..params(mode) };
+            let mut out = guard(p, ops_with(Vec::new()), input("P", 40_000), 1, rx);
+            let mut got = Vec::new();
+            received_now(&mut out, &mut got).await;
+            let lag = 3000 - got.len();
+            assert!(lag.abs_diff(behind) <= 1, "{mode:?}: {lag} characters behind");
+            assert!(reasoning.starts_with(&text_of(&got)));
+            for token in tokens_of("</think>answer") {
+                tx.send(SchedEvent::Token { request: 1, token }).unwrap();
+            }
+            received_now(&mut out, &mut got).await;
+            assert_eq!(text_of(&got), format!("{reasoning}</think>answer"), "{mode:?}: all of it at the close");
+        }
+    }
+
+    /// Everything held back goes out ahead of the `Done`, an error's
+    /// included, and when the engine's stream ends with none.
+    #[tokio::test]
+    async fn a_holdback_lets_everything_go_at_the_end_and_on_an_error() {
+        let reasoning = prose(3000);
+        let p = LoopGuardParams { holdback_chars: 1000, ..params(LoopGuardMode::Rewind) };
+        let (text, done) = drain(guard(p, ops_with(Vec::new()), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        assert_eq!((text.as_str(), done.is_none()), (reasoning.as_str(), true), "the stream ended with no Done");
+        let (tx, rx) = unbounded_channel();
+        for token in tokens_of(&reasoning) {
+            tx.send(SchedEvent::Token { request: 1, token }).unwrap();
+        }
+        tx.send(done_with(1, 3000, FinishReason::Error, None, None)).unwrap();
+        let (text, done) = drain(guard(p, ops_with(Vec::new()), input("P", 40_000), 1, rx)).await;
+        assert_eq!(text, reasoning);
+        let Some(SchedEvent::Done { reason, tokens, .. }) = done else { panic!("no done") };
+        assert_eq!((reason, tokens), (FinishReason::Error, 3000));
     }
 }

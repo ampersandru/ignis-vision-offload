@@ -627,9 +627,19 @@ pub(crate) fn render_prompt(
     tools: &[JsonValue],
     structure: Structure,
 ) -> Result<PreparedRequest, Response> {
-    let messages = &server.live().instruction_policy.normalize(messages).map_err(template_rejection)?;
+    let messages = &conversation(server, messages)?;
     build_request(server, None, messages, DecodeParams::default(), thinking, tools, structure)
         .map_err(template_rejection)
+}
+
+/// The conversation a prompt renders from, on every path: instruction
+/// messages placed under the server's policies (GitHub #209), and each
+/// assistant reasoning given back as the model saw it (history repair, ADR
+/// 0052), guard on or off.
+fn conversation(server: &Server, messages: &[ChatMessage]) -> Result<Vec<ChatMessage>, Response> {
+    let mut messages = server.live().instruction_policy.normalize(messages).map_err(template_rejection)?;
+    crate::loop_guard::repair_history(&mut messages);
+    Ok(messages)
 }
 
 /// The request's model, the templated prompt tokens, and the prompt-token
@@ -738,8 +748,9 @@ async fn prepare_input(
     structure: Structure,
 ) -> Result<PreparedRequest, Response> {
     // GitHub #209: instruction messages are placed under the server's
-    // policies before any template sees the conversation, on both paths.
-    let messages = &server.live().instruction_policy.normalize(messages).map_err(template_rejection)?;
+    // policies before any template sees the conversation, on both paths;
+    // ADR 0052: assistant reasoning is repaired.
+    let messages = &conversation(server, messages)?;
     // One model for the whole render: the acquirer and the template that
     // expands its placeholders must be the same load's.
     let model_loaded = server.active();
@@ -2658,9 +2669,13 @@ impl Usage {
         }
     }
 
-    /// The tokens the loop guard took back, when it took any.
+    /// The tokens the loop guard took back, when it took any; and the ones
+    /// of them its holdback never sent, which the stream did not carry but
+    /// the model generated.
     fn with_rewound(mut self, rewound: &crate::loop_guard::Rewound) -> Self {
-        self.completion_tokens_details = Self::rewound_details(rewound.load(std::sync::atomic::Ordering::Relaxed));
+        self.completion_tokens = self.completion_tokens.saturating_add(rewound.unsent());
+        self.total_tokens = self.prompt_tokens.saturating_add(self.completion_tokens);
+        self.completion_tokens_details = Self::rewound_details(rewound.taken());
         self
     }
 
@@ -2672,10 +2687,11 @@ impl Usage {
 #[derive(Serialize, ToSchema)]
 struct CompletionTokensDetails {
     /// The generated tokens a loop-guard rewind took back (ADR 0052): the
-    /// tokens struck from the reasoning, as the rewind tag's `N TOKENS`
-    /// reports them. Not the tag's own tokens nor the nudges. They are
-    /// still counted in `completion_tokens`, which counts everything the
-    /// model generated. The object is absent when nothing was rewound.
+    /// tokens struck from the reasoning, those a holdback kept from the
+    /// client included; with no holdback, the sum of the rewind tags'
+    /// `N TOKENS`. Not the tag's own tokens nor the nudges. They are still
+    /// counted in `completion_tokens`, which counts everything the model
+    /// generated. The object is absent when nothing was rewound.
     rewound_tokens: u32,
 }
 
@@ -3292,17 +3308,21 @@ mod tests {
 
     #[test]
     fn usage_carries_rewound_tokens_only_when_the_guard_rewound() {
-        let rewound = |n: u32| crate::loop_guard::Rewound::new(std::sync::atomic::AtomicU32::new(n));
-        let none = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(0))).unwrap();
+        let rewound = |taken: u32, unsent: u32| Arc::new(crate::loop_guard::RewoundTokens::new(taken, unsent));
+        let none = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(0, 0))).unwrap();
         assert!(none.get("completion_tokens_details").is_none(), "absent, byte-identical to before: {none}");
-        let some = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(321))).unwrap();
+        let some = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(321, 0))).unwrap();
         assert_eq!(some["completion_tokens_details"]["rewound_tokens"], 321);
         assert_eq!(some["completion_tokens"], 1500, "completion_tokens still counts everything generated");
+        // A holdback kept 40 of them from the stream: generated all the same.
+        let held = serde_json::to_value(Usage::new(58, 1500, 0).with_rewound(&rewound(321, 40))).unwrap();
+        assert_eq!((&held["completion_tokens"], &held["total_tokens"]), (&serde_json::json!(1540), &serde_json::json!(1598)));
+        assert_eq!(held["completion_tokens_details"]["rewound_tokens"], 321);
     }
 
     /// The streaming usage chunk of a four-token request, the guard's count
     /// being `rewound`.
-    async fn streamed_usage(rewound: Option<u32>) -> JsonValue {
+    async fn streamed_usage(rewound: Option<(u32, u32)>) -> JsonValue {
         let scheduler = ignis_core::ConcreteScheduler::with_config(
             ignis_core::SchedulerConfig { model: "m".into(), ..ignis_core::SchedulerConfig::default() },
             Arc::new(ignis_core::MockCompute::new()),
@@ -3336,8 +3356,8 @@ mod tests {
             1,
             true,
         );
-        if let Some(n) = rewound {
-            chunks = chunks.with_rewound(crate::loop_guard::Rewound::new(std::sync::atomic::AtomicU32::new(n)));
+        if let Some((taken, unsent)) = rewound {
+            chunks = chunks.with_rewound(Arc::new(crate::loop_guard::RewoundTokens::new(taken, unsent)));
         }
         let body = Sse::new(chunks).into_response().into_body();
         let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
@@ -3347,10 +3367,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_streaming_usage_chunk_reports_rewound_tokens() {
-        let rewound = streamed_usage(Some(17)).await;
+        let rewound = streamed_usage(Some((17, 0))).await;
         assert_eq!(rewound["usage"]["completion_tokens"], 4);
         assert_eq!(rewound["usage"]["completion_tokens_details"]["rewound_tokens"], 17);
-        for none in [streamed_usage(Some(0)).await, streamed_usage(None).await] {
+        let held = streamed_usage(Some((17, 5))).await;
+        assert_eq!(held["usage"]["completion_tokens"], 9, "the stream's 4 and the 5 the holdback never sent");
+        for none in [streamed_usage(Some((0, 0))).await, streamed_usage(None).await] {
             assert!(none["usage"].get("completion_tokens_details").is_none(), "{none}");
         }
     }

@@ -1039,6 +1039,7 @@ fn derive(
             clean_permille: s.model.loop_guard_clean,
             margin_chars: s.model.loop_guard_margin,
             retries: s.model.loop_guard_retries,
+            holdback_chars: s.model.loop_guard_holdback,
         },
         prefill_chunk: s.model.prefill_chunk,
         decode_share_percent: s.model.decode_share,

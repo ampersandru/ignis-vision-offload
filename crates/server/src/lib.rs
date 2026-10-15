@@ -184,9 +184,9 @@ pub struct Live {
 impl Default for Live {
     /// What a server built without a config runs with: the timeout's
     /// default, thinking on with no effort or budget, merge / inplace — and
-    /// no idle unload: only a configured server (`main`, a live `PATCH`)
-    /// unloads its model, so no test or in-process harness meets a cold
-    /// reload it did not ask for.
+    /// no idle unload and no loop guard: only a configured server (`main`, a
+    /// live `PATCH`) unloads its model or rewinds a reasoning, so no test or
+    /// in-process harness meets a cold reload or a rewind it did not ask for.
     fn default() -> Self {
         Self {
             request_timeout: Duration::from_secs(crate::config::DEFAULT_REQUEST_TIMEOUT_SECS as u64),
@@ -195,7 +195,7 @@ impl Default for Live {
             default_thinking_budget: None,
             instruction_policy: instruction::InstructionPolicy::default(),
             idle_unload: Duration::ZERO,
-            loop_guard: loop_guard::LoopGuardParams::default(),
+            loop_guard: loop_guard::LoopGuardParams { mode: loop_guard::LoopGuardMode::Off, ..Default::default() },
             image: config::schema::ImageGroup::default(),
         }
     }

@@ -1261,6 +1261,39 @@ fn the_loop_guards_raw_gate_and_clean_window_resolve_from_flag_env_and_file() {
     assert_eq!((file.raw_gate_permille, file.clean_permille, file.margin_chars), (320, 380, 200));
 }
 
+/// The guard rewinds by default (ADR 0052, the owner's 2026-10-14 call) and
+/// `off` and `log` stay; a server built without a config runs with none, as
+/// it runs with no idle unload.
+#[test]
+fn the_loop_guard_rewinds_by_default_and_off_and_log_stay() {
+    use crate::loop_guard::LoopGuardMode;
+    assert_eq!(config(&[]).loop_guard.mode, LoopGuardMode::Rewind);
+    assert_eq!(crate::Live::of(&config(&[])).loop_guard.mode, LoopGuardMode::Rewind);
+    assert_eq!(crate::Live::default().loop_guard.mode, LoopGuardMode::Off, "no in-process harness meets a rewind it did not ask for");
+    assert_eq!(crate::Live::default().loop_guard, crate::loop_guard::LoopGuardParams { mode: LoopGuardMode::Off, ..config(&[]).loop_guard });
+    for (raw, mode) in [("off", LoopGuardMode::Off), ("LOG", LoopGuardMode::Log), ("rewind", LoopGuardMode::Rewind)] {
+        assert_eq!(config(&["--model-loop-guard", raw]).loop_guard.mode, mode, "{raw}");
+    }
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD", "off")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).loop_guard.mode, LoopGuardMode::Off);
+    assert!(refused(&["--model-loop-guard", "on"]).contains("on"));
+}
+
+/// The holdback: none by default, from flag, env and file, visible and
+/// patchable with no reload, and bounded like the other character fields.
+#[test]
+fn the_loop_guards_holdback_is_off_by_default_and_resolves_from_flag_env_and_file() {
+    assert_eq!(config(&[]).loop_guard.holdback_chars, 0);
+    assert_eq!(config(&["--model-loop-guard-holdback", "3000"]).loop_guard.holdback_chars, 3000);
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_HOLDBACK", "6000")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).loop_guard.holdback_chars, 6000);
+    assert!(refused(&["--model-loop-guard-holdback", "100001"]).contains("--model-loop-guard-holdback"));
+    let field = schema::field("model", "loop_guard_holdback").expect("declared");
+    assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_holdback: 2500\n")]);
+    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard.holdback_chars, 2500);
+}
+
 #[test]
 fn a_model_field_may_switch_models_unless_the_operator_says_otherwise() {
     assert!(config(&[]).allow_model_switch);

@@ -322,10 +322,11 @@ config_group! {
         /// is forced; `off` = no budget. A request's own thinking_budget
         /// overrides it.
         thinking_budget: ThinkingBudget = Some(super::DEFAULT_THINKING_BUDGET), NO_RULE, ALL, [Visible, Patchable];
-        /// The loop guard (exploration): `off`; `log`, a loop in a chat
-        /// request's reasoning is logged; `rewind`, it is taken back and the
-        /// model nudged, then closed after `loop_guard_retries` nudges.
-        loop_guard: LoopGuard = crate::loop_guard::LoopGuardMode::Off, Validator::OneOf(crate::loop_guard::LoopGuardMode::NAMES), ALL,
+        /// The loop guard (ADR 0052): `rewind`, a loop in a chat request's
+        /// reasoning is taken back and the model nudged, then closed after
+        /// `loop_guard_retries` nudges; `log`, it is only logged; `off`, no
+        /// guard, as benches and gates run for reference parity.
+        loop_guard: LoopGuard = crate::loop_guard::LoopGuardMode::Rewind, Validator::OneOf(crate::loop_guard::LoopGuardMode::NAMES), ALL,
             [Visible, Patchable];
         /// A window of scored reasoning whose zlib ratio is under this many
         /// thousandths is a loop.
@@ -351,6 +352,11 @@ config_group! {
         loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
         /// The nudges a looping reasoning gets before the guard closes it.
         loop_guard_retries: Times = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];
+        /// In `rewind` mode, the characters of reasoning held back from the
+        /// client: a rewind whose cut falls in them reaches it with no tag
+        /// and none of the loop. 0, none; under ~2,000 it hides almost no
+        /// rewind.
+        loop_guard_holdback: Chars = crate::loop_guard::DEFAULT_HOLDBACK_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
         /// The text rotary table: `none` (the linear table) or
         /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
         /// trained 262,144-position envelope — what a context past it needs.

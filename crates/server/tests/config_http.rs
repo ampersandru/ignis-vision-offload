@@ -443,28 +443,38 @@ async fn a_pinned_request_keeps_the_live_knobs_it_began_with() {
 }
 
 /// The loop guard's knobs are live: a patch reaches the next request's
-/// guard at once, no model touched — the raw prototype back, for one.
+/// guard at once, no model touched — the raw prototype back, for one. A
+/// configured server starts in `rewind` with no holdback.
 #[tokio::test]
 async fn a_loop_guard_patch_applies_live() {
     let loader = MockLoader::new();
     let server = server_on(&loader, started(&[]));
     let app = server.app();
     assert!(server.live().loop_guard.normalize);
+    assert_eq!(
+        (server.live().loop_guard.mode, server.live().loop_guard.holdback_chars),
+        (ignis_server::loop_guard::LoopGuardMode::Rewind, 0),
+        "rewind by default"
+    );
+    let (_, before) = send(&app, Method::GET, "/v1/config", None).await;
+    assert_eq!((&before["model"]["loop_guard"], &before["model"]["loop_guard_holdback"]), (&json!("rewind"), &json!(0)));
     let body = json!({ "model": {
         "loop_guard": "log", "loop_guard_normalize": "off", "loop_guard_window": 3000, "loop_guard_ratio": 120,
-        "loop_guard_raw_gate": 0, "loop_guard_clean": 350, "loop_guard_margin": 1000,
+        "loop_guard_raw_gate": 0, "loop_guard_clean": 350, "loop_guard_margin": 1000, "loop_guard_holdback": 3000,
     } });
     let (status, applied) = send(&app, Method::PATCH, "/v1/config", Some(body)).await;
     assert_eq!(status, StatusCode::OK, "{applied}");
     assert_eq!(applied["applied"], "live");
     assert_eq!(applied["config"]["model"]["loop_guard_normalize"], false);
     assert_eq!((&applied["config"]["model"]["loop_guard_raw_gate"], &applied["config"]["model"]["loop_guard_clean"]), (&json!(0), &json!(350)));
+    assert_eq!(applied["config"]["model"]["loop_guard_holdback"], 3000);
     let guard = server.live().loop_guard;
     assert_eq!(
         (guard.mode, guard.normalize, guard.window_chars, guard.ratio_permille),
         (ignis_server::loop_guard::LoopGuardMode::Log, false, 3000, 120)
     );
     assert_eq!((guard.raw_gate_permille, guard.clean_permille, guard.margin_chars), (0, 350, 1000), "the gate off, the cut's knobs");
+    assert_eq!(guard.holdback_chars, 3000, "the holdback");
     assert!(loader.prepared_options().is_empty(), "no model was prepared, so none was switched");
 }
 

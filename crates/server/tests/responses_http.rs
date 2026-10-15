@@ -271,6 +271,43 @@ async fn a_responses_conversation_renders_what_chat_completions_renders() {
     assert_eq!(body["status"], "incomplete", "{body}");
 }
 
+/// History repair (ADR 0052): a rewind the loop guard tagged in an
+/// assistant's reasoning reaches the template taken out, on both surfaces
+/// and with the guard off, as this harness runs. Only the reasoning: a user
+/// message and assistant content carrying the same tag reach it as sent.
+#[tokio::test]
+async fn a_rewound_reasoning_reaches_the_template_repaired_on_both_surfaces() {
+    let tag = ignis_server::loop_guard::tag(4, "the loop, ");
+    let reasoning = format!("planning, the loop, {tag}\n\nWait, I'm starting to repeat myself.");
+    let echoed = format!("the loop, {tag}");
+    let (chat, responses, _) = render_both(
+        json!({
+            "model": MODEL,
+            "max_tokens": 1,
+            "messages": [
+                { "role": "user", "content": echoed },
+                { "role": "assistant", "content": echoed, "reasoning_content": reasoning },
+                { "role": "user", "content": "go on" }
+            ]
+        }),
+        json!({
+            "model": MODEL,
+            "max_output_tokens": 1,
+            "input": [
+                { "role": "user", "content": echoed },
+                { "type": "reasoning", "summary": [], "content": [{ "type": "reasoning_text", "text": reasoning }] },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": echoed }] },
+                { "role": "user", "content": "go on" }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(responses, chat);
+    assert_eq!(chat.messages[1].reasoning_content.as_deref(), Some("planning, \n\nWait, I'm starting to repeat myself."));
+    assert_eq!(chat.messages[0].content.text(), echoed, "a user message is never repaired");
+    assert_eq!(chat.messages[1].content.text(), echoed, "nor an assistant's content");
+}
+
 /// The items of one turn, listed in the order this server emits them when a
 /// call comes before any text, still make the one assistant message.
 #[tokio::test]
