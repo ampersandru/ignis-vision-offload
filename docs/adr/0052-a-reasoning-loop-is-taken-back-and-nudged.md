@@ -2,7 +2,12 @@
 
 ## Status
 
-Proposed (2026-10-14), for the owner to accept. The design is the owner's (2026-10-13: an
+Accepted (2026-10-15, owner). The owner also ratified what the implementation decided on
+the way: the junction rule (a nudge after a kept line break goes in without its own
+leading line breaks), `reasoning_tokens` counting what a holdback never sent, the guard
+`off` on a server built without a config, a WebSocket continuation waiting in the
+socket's queue rather than within `loop_guard_submit_wait`, and the new fields' bounds.
+Proposed 2026-10-14. The design is the owner's (2026-10-13: an
 engine-level detector off the critical path, an injected sentence, a few retries before
 the reasoning is closed, a visible tag the Playground strikes through). The numbers are in
 the finding `docs/findings/2026-10-14-reasoning-loop-guard.md`. Code on branch
