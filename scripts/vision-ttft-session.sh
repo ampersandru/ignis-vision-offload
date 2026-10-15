@@ -71,7 +71,7 @@ REFERENCE_PROFILE="ninfer-serve --vision --spec mtp --draft-tokens 3 --lm-head-d
 IGNIS_PROFILE="hq-e8-2b KV, 262144 context, 1024 chunk, dflash2/7, prompt reuse"
 IGNIS=("$BIN/ignis-server.exe" --server-bind 127.0.0.1:8000 --model-artifact "$ARTIFACT" --model-kv-format hq-e8-2b --model-max-context 262144
   --model-prefill-chunk 1024 --reuse-kv-host-pool-bytes 8G --server-request-timeout 1800 --spec-backend dflash2 --spec-draft-tokens 7
-  --model-idle-unload 0)
+  --model-idle-unload 0 --model-loop-guard off)
 
 for n in 1 2; do
   launch "reference-$n" http://127.0.0.1:8080 ninfer-serve.exe reference "$REFERENCE_PROFILE" 1 \

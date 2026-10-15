@@ -116,6 +116,7 @@ SERVER_FLAGS = --server-bind $(BIND) \
   $(if $(DEVELOPER_MESSAGE_POLICY),--server-developer-message-policy $(DEVELOPER_MESSAGE_POLICY)) \
   $(if $(DEFAULT_MAX_TOKENS),--model-default-max-tokens $(DEFAULT_MAX_TOKENS)) \
   $(if $(IDLE_UNLOAD),--model-idle-unload $(IDLE_UNLOAD)) \
+  $(if $(LOOP_GUARD),--model-loop-guard $(LOOP_GUARD)) \
   $(ARGS)
 # The KV pool `make config` reports (ADR 0045). The 27B is resident: its pool
 # takes the rest of the VRAM budget. Flash-Next on a card that cannot hold
@@ -214,6 +215,7 @@ config: ## Print the resolved knobs and paths
 	@echo "EXPOSE          $(or $(EXPOSE),(none: reachable at BIND only))"
 	@echo "MAX_TOKENS      default=$(or $(DEFAULT_MAX_TOKENS),(server default: 38912)) (a request that sends no max_tokens; 0 = up to the context)"
 	@echo "IDLE_UNLOAD     $(or $(IDLE_UNLOAD),(server default: 300)) (seconds unused before the model is unloaded; 0 = never)"
+	@echo "LOOP_GUARD      $(or $(LOOP_GUARD),(server default: rewind)) (rewind, log or off; a bench or a gate passes off)"
 	@echo "MESSAGES        system=$(or $(SYSTEM_MESSAGE_POLICY),(server default: merge)) developer=$(or $(DEVELOPER_MESSAGE_POLICY),(server default: inplace))"
 	@echo "ARGS            $(ARGS)"
 	@echo "GPU_CHECK       $(GPU_CHECK)  (threshold $(GPU_THRESHOLD_MIB) MiB)"

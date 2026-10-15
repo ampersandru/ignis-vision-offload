@@ -146,6 +146,11 @@ DEFAULT_MAX_TOKENS ?=
 # Empty = the server's 300; 0 = never. A measurement (a bench, a gate leg, an
 # A/B leg) passes 0: a cold reload mid-run is not what it measures.
 IDLE_UNLOAD ?=
+# The loop guard (--model-loop-guard, ADR 0052): rewind, log or off. Empty =
+# the server's rewind, which takes a looping reasoning back and nudges the
+# model. A measurement (a bench, a gate leg, an A/B leg) passes off: the guard
+# changes the output wherever it acts, and the reference has no guard.
+LOOP_GUARD ?=
 
 # The GPU engine configuration (CUDA=1 only; the CPU mock gets none of it).
 # Defaults: a 524288-token context -- twice the checkpoint's trained 262,144

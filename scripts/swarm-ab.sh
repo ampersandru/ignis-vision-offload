@@ -36,8 +36,10 @@ SWARM_ARGS=${SWARM_ARGS:-}
 PYTHON=${PYTHON:-python}
 
 # IDLE_UNLOAD=0: a leg is a measurement, and a cold reload mid-swarm is not
-# what it measures (ADR 0049).
-common=(UI=0 METRICS=1 LOG_LEVEL=debug IDLE_UNLOAD=0 "ARTIFACT=$ARTIFACT" "BIND=$BIND" "METRICS_BIND=$METRICS_BIND")
+# what it measures (ADR 0049). LOOP_GUARD=off: nor is a rewind, which changes
+# the output wherever it acts (ADR 0052); a leg that measures the guard says
+# LOOP_GUARD=rewind, which wins over this.
+common=(UI=0 METRICS=1 LOG_LEVEL=debug IDLE_UNLOAD=0 LOOP_GUARD=off "ARTIFACT=$ARTIFACT" "BIND=$BIND" "METRICS_BIND=$METRICS_BIND")
 mkdir -p "$OUT"
 git rev-parse HEAD > "$OUT/commit"
 echo "swarm-ab -> $OUT"

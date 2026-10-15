@@ -1441,7 +1441,10 @@ speculates with dflash2). `VISION=1` loads the tower; `UNCENSORED=1` loads
 image, served as `qwen3.8-27b-abliterated`; `ROPE_SCALING=yarn:4` rescales the
 envelope further (`none` keeps the trained table); the metrics listener is on (`METRICS=0` starts without it); `API_KEY=` and `EXPOSE=` set
 the access flags; `IDLE_UNLOAD=<secs>` sets [idle unload](#idle-unload)
-(`IDLE_UNLOAD=0` for a measurement); `ARGS='…'` passes anything verbatim.
+(`IDLE_UNLOAD=0` for a measurement); `LOOP_GUARD=off` turns the reasoning
+loop guard off (the server's default rewinds a loop; a measurement passes
+`off`, as the A/B and TTFT session scripts do); `ARGS='…'` passes anything
+verbatim.
 
 A CUDA `run` or `start` first runs a GPU guard (the preflight plus a check for
 other Ignis GPU work), skippable with `GPU_CHECK=0`.
