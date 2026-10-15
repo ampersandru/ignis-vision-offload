@@ -540,20 +540,21 @@ impl Telemetry {
     }
 
     /// A request's prefill skipped `tokens` prompt tokens through a cached
-    /// prefix (core-07). Not logged — the request log has no line for it — so
-    /// only the installed projection observes it (GitHub #90).
+    /// prefix (core-07).
     ///
     /// Two kinds arrive here since GitHub #188: a concurrent sibling's prefix,
     /// and a **retained prefix** left by a request that has already finished.
     /// `retained` tells them apart (#190), so `ignis_prefix_reused_tokens_total`
     /// keeps the *sibling*-prefix meaning ADR 0017's row gives it, and
-    /// cross-request reuse is counted as reuse of retained state on the device.
+    /// cross-request reuse is counted as reuse of retained state, on the tier
+    /// the prefix came from: the same tier its hit and its `done` line name
+    /// (#325).
     pub fn on_prefix_reused(&mut self, id: RequestId, tokens: u32, retained: bool, source: ReuseSource) {
         if let Some(metrics) = &self.metrics {
             if retained {
                 // A `PrefixReused` fact is a prefix by its own name, so the
                 // kind is read off the event and not off the tier (#216).
-                metrics.record_retained_reused(ReuseSource::Device, RetainedKind::Prefix, tokens);
+                metrics.record_retained_reused(source, RetainedKind::Prefix, tokens);
             } else {
                 metrics.record_prefix_reused(tokens);
             }
@@ -2048,6 +2049,7 @@ mod tests {
         telemetry.note_submit(7, 2048, RequestClass::Interactive);
         telemetry.on_state_reused(7, ReuseSource::KvRam, RetainedKind::Checkpoint, 1536, 42);
         telemetry.on_prefix_reused(7, 64, true, ReuseSource::Device);
+        telemetry.on_prefix_reused(7, 128, true, ReuseSource::KvRam);
         telemetry.on_prefix_reused(7, 32, false, ReuseSource::Device);
         telemetry.on_retained_state(
             RetainedStateOperation::Spill,
@@ -2060,7 +2062,9 @@ mod tests {
             // A checkpoint's restore and a retained prefix's claim are both
             // retained reuse, and the two are told apart (GitHub #216).
             "ignis_retained_reused_tokens_total{tier=\"kv_ram\",kind=\"checkpoint\"} 1536",
-            "ignis_retained_reused_tokens_total{tier=\"kv_ram\",kind=\"prefix\"} 0",
+            // A prefix its claim brought back from KV-RAM is counted on the
+            // tier its hit and its `done` line name (#325).
+            "ignis_retained_reused_tokens_total{tier=\"kv_ram\",kind=\"prefix\"} 128",
             "ignis_retained_reused_tokens_total{tier=\"device\",kind=\"prefix\"} 64",
             "ignis_retained_reused_tokens_total{tier=\"device\",kind=\"checkpoint\"} 0",
             "ignis_prefix_reused_tokens_total 32",
