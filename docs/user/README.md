@@ -370,6 +370,9 @@ change does not reach and a `null` removes.
 | `--model-enable-thinking <bool>` | `IGNIS_MODEL_ENABLE_THINKING` | `true` | The server-wide default for `enable_thinking`. |
 | `--model-reasoning-effort <value>` | `IGNIS_MODEL_REASONING_EFFORT` | template default | The server-wide default `reasoning_effort`. An effort the template does not take is rounded up to one it does (Qwen3.8: `high` and `max` are `xhigh`, `minimal` is `low`), the same as a per-request one. |
 | `--model-thinking-budget <n\|off>` | `IGNIS_MODEL_THINKING_BUDGET` | `32768` | The server-wide thinking budget: after `n` reasoning tokens with the block still open, or 2,048 tokens before the request's `max_tokens` if that comes first, a close (`My thinking time is over. I must now write the complete final answer from what I already have, without calling any more tools.\n</think>`) is forced and the model answers. `off` = no default budget. A request's `thinking_budget` overrides it, and `reasoning_effort: max` runs without one. Set with a tokenizer that has no single-token `</think>`, the server refuses to start. |
+| `--model-loop-guard <off\|log\|rewind>` | `IGNIS_MODEL_LOOP_GUARD` | `rewind` | The reasoning-loop guard ([ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md)), on chat completions and `/v1/responses`. `rewind`: a loop in a request's reasoning is taken back, the model is nudged in its own words and the generation goes on in the same response; after `--model-loop-guard-retries` nudges the next loop closes the reasoning instead. The reasoning shows a tag, `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]`, after the `m` characters taken back (the Playground strikes them through), and the usage reports them as `rewound_tokens`. A reasoning sent back with its tags is repaired before the next prompt, whatever this flag says. `log` only logs a loop; `off` is no guard, what a measurement runs. A request with images is never rewound. Patchable live. (`make` knob `LOOP_GUARD`.) |
+| `--model-loop-guard-holdback <chars>` | `IGNIS_MODEL_LOOP_GUARD_HOLDBACK` | `0` (max `100000`) | In `rewind` mode, the characters of reasoning held back from the client: a rewind whose cut falls in them reaches it with no tag and none of the loop. The client sees the reasoning that much later; under about 2,000 it hides almost no rewind. `0` holds nothing back. Patchable live. |
+| `--model-loop-guard-ratio`, `-window`, `-normalize`, `-raw-gate`, `-clean`, `-margin`, `-retries` | `IGNIS_MODEL_LOOP_GUARD_*` | `200`, `1000`, on, `300`, `400`, `0`, `2` | The detector: every 250 characters of reasoning, a window of the last `window` characters, with code taken out and digit runs folded when `normalize` is on, is a loop when it compresses under `ratio` thousandths and its raw text under `raw-gate` (`0` = no gate). A rewind goes back to the start of the last window at or over `clean`, `margin` characters earlier, and `retries` nudges come before a close. Each is patchable live. |
 | `--server-system-message-policy <p>` | `IGNIS_SERVER_SYSTEM_MESSAGE_POLICY` | `merge` | `merge`: a leading run of system messages joins the system prompt, a later one is its own block in place. `strict`: a system message that is not first is a 400. |
 | `--server-developer-message-policy <p>` | `IGNIS_SERVER_DEVELOPER_MESSAGE_POLICY` | `inplace` | One of `inplace`, `into-system`, `after-system`, `one-after-system`, `reject`. A leading developer message is the system prompt except under `reject`. |
 
@@ -828,6 +831,15 @@ Accepts `messages` (role + content), `model`, `stream`, `max_tokens`,
   `ignis.request.done` line marks it with `reasoning_redirected_at`, the
   output index of that `</think>`. With thinking off, or `ignore_eos`, the
   end of turn ends the turn as it always has.
+- **A loop in the reasoning is taken back** (`--model-loop-guard`, `rewind`
+  by default, in the table above). `usage.completion_tokens_details.rewound_tokens`
+  (`usage.output_tokens_details.rewound_tokens` on `/v1/responses`) counts
+  the tokens taken back, which `completion_tokens` (`output_tokens`) still
+  counts; it is absent when nothing was. On `/v1/responses`,
+  `include: ["reasoning.encrypted_content"]` gives each reasoning item an
+  `encrypted_content` with the reasoning as the model saw it, and a
+  reasoning input item that carries one is rendered from it in place of its
+  text.
 - Values outside the ranges above are rejected with
   `invalid_sampling_parameter`; they are never silently clamped.
 - **Absent sampling fields take the Qwen3.8 model card's values** for the

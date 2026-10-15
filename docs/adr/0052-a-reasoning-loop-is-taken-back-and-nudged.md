@@ -134,7 +134,8 @@ the model's view, kept text + nudge + continuation, not what was streamed:
 - the next turn that chains on it needs no repair;
 - with `include: ["reasoning.encrypted_content"]` (Codex asks for it), every reasoning
   output item carries `encrypted_content`, an opaque string: `ignis:v1:` followed by the
-  base64 of the model-view reasoning's UTF-8;
+  base64 of the model-view reasoning's UTF-8. It is on the item's `done` event and in
+  the response; the `added` event's empty item has none;
 - on input, a reasoning item whose `encrypted_content` ignis can read is used in place of
   its visible text; one it cannot read (another server's blob, a malformed value) falls
   back to the visible text, which history repair then sees;
@@ -156,8 +157,13 @@ the model's view, kept text + nudge + continuation, not what was streamed:
 - The Playground talks over the Responses WebSocket by default, and Codex CLI speaks only
   Responses.
 - `/v1/responses` reports the same count as `output_tokens_details.rewound_tokens`.
+  Its `output_tokens` and `output_tokens_details.reasoning_tokens` both count the
+  tokens a holdback never sent: they were generated in the reasoning.
 - After a rewind the engine request id changes. A `response.cancel` addressed to the
-  response cancels whichever engine request is running for it.
+  response cancels whichever engine request is running for it, as do a socket that
+  closes and an HTTP client that hangs up.
+- A WebSocket request's continuation waits for admission in the socket's server-wide
+  queue, behind what already waits there, as the socket's own requests do.
 - A request with images is logged, never rewound, until a continuation can carry its
   media.
 - The answer is not watched: a nudge cannot go into content.

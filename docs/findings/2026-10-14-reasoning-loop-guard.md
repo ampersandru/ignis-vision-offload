@@ -201,15 +201,17 @@ Inferred:
   long enumerations are untested.
 - The gate's 0.30 was set after seeing 7 negatives.
 - A loop inside an open code block is never scored.
-- Only chat completions are guarded. `/v1/responses` and image requests are not wired,
-  and answers are not watched.
+- These runs guarded chat completions only. `/v1/responses` is wired since 2026-10-15
+  (HTTP and WebSocket) and unmeasured on the GPU; image requests are not rewound, and
+  answers are not watched.
 - Streaming was checked on 8 runs.
 
 ## Follow-ups
 
 - The continuation reuses the cancelled request's prompt: why no `reuse_source`, and
   what makes it one.
-- `usage.completion_tokens` under a rewind.
+- `usage.completion_tokens` under a rewind (answered by ADR 0052: it counts the
+  rewound tokens, and `rewound_tokens` says how many).
 - Loops in the answer: what action, and whether the same score applies.
 - If the guard ships: an ADR on rewinding output a client already received, and the
   `loop_guard` default (the data favours `rewind`).
