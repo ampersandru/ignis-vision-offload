@@ -1,6 +1,6 @@
-//! The **loop guard** (ADR 0052, branch `experiment/loop-rewind`): a task
-//! between a request's engine stream and its consumer that watches the
-//! reasoning for a loop and, in `rewind` mode, takes the generation back to
+//! The **loop guard** (ADR 0052): a task between a request's engine stream
+//! and its consumer that watches the reasoning for a loop and, in `rewind`
+//! mode, takes the generation back to
 //! before it. It covers every request that starts inside its reasoning, on
 //! chat completions and on `/v1/responses` over HTTP and the WebSocket.
 //! `rewind` is the default; `log` only logs; benches and gates run `off`,
@@ -16,23 +16,26 @@
 //! [`Normalized`] scores it — code taken out, every run of digits read as one
 //! `0` — under `ratio` is a loop, when the last `window` characters as
 //! written are under `raw_gate` too. Measured offline on 2026-10-13 with this
-//! detector (`.scratch/loop-rewind/NOTES.md`): no real reasoning part of
-//! 1,420 under 0.27 at a 1,000-character window, and 12 of the 17 template
-//! and counting loops the raw text at 3,000 and 0.12 missed under 0.20. The
-//! gate is for tables of numbers (Fibonacci, hex, primes), a template once
-//! their digits fold, whose digits carry the information as written: on 47M
-//! characters of qwen-code reasoning it takes 5 of 7 such fires away and no
-//! harmful loop (`.scratch/loop-rewind/research/REPORT.md`).
+//! detector (`docs/findings/2026-10-14-reasoning-loop-guard.md`): no real
+//! reasoning part of 1,420 under 0.27 at a 1,000-character window, and 12 of
+//! the 17 template and counting loops the raw text at 3,000 and 0.12 missed
+//! under 0.20. The gate is for tables of numbers (Fibonacci, hex, primes), a
+//! template once their digits fold, whose digits carry the information as
+//! written: on 47M characters of qwen-code reasoning it takes 5 of 7 such
+//! fires away and no harmful loop (the same finding).
 //!
 //! **Rewind.** The engine request is cancelled and a **continuation**
 //! submitted: the same input, its prompt extended by the generated tokens
 //! kept from before the loop ([`Watch::cut_point`]: back to the start of the
 //! last window that scored clean) and a nudge sentence (after a kept text
 //! that ends in a line break, without its own: [`sentence_after`]), with
-//! what is left of `max_tokens` and of the thinking budget. The whole
-//! continuation prompt prefills (it is submitted without a `reuse_source`;
-//! reusing the original's state is a follow-up, ADR 0052 Consequences). The
-//! client keeps what it has already received and is told what was taken back
+//! what is left of `max_tokens` and of the thinking budget. Only the kept
+//! tokens and the nudge prefill: the continuation's prompt starts with the
+//! request's own, whose checkpoint the cancelled request published at its
+//! generation opener (ADR 0029), and the engine restores it. Measured at
+//! 79k-138k tokens of prompt: 0.08-0.10 s from the tag to the next delta,
+//! 1.28 s with about 3,645 tokens kept (the finding). The client keeps what
+//! it has already received and is told what was taken back
 //! by a tag in the reasoning ([`tag`]): `[LOOP DETECTED, REWINDING n TOKENS /
 //! m CHARS · h]`, `m` the characters it received since the cut as it shows
 //! them (a line break its decoder still held included) and `h` their
@@ -378,8 +381,10 @@ fn ratio_of(chars: &[char]) -> f64 {
 /// still open a block, an inline span that may still close on its line,
 /// wait — and keeps the offset of the raw character it stands for (a run of
 /// digits, its first), so a window found here is cut on the raw reasoning.
-/// The steps are those of `.scratch/loop-rewind/check.py` in its order:
-/// blocks, then inline code on what is left, then digits. The raw reasoning
+/// The steps are those of the offline research scorer the finding checks
+/// parity against (`docs/findings/2026-10-14-reasoning-loop-guard.md`), in
+/// its order: blocks, then inline code on what is left, then digits. The raw
+/// reasoning
 /// is kept beside it, for the raw gate and the cut.
 pub struct Normalized {
     steps: Vec<Box<dyn Step + Send>>,
@@ -1670,7 +1675,7 @@ mod tests {
     }
 
     /// What the scored text of `raw` must be, worked out on the whole text
-    /// at once the way `.scratch/loop-rewind/check.py`'s expressions do it,
+    /// at once the way the offline research scorer's expressions do it,
     /// less what its end leaves undecided: blocks out (one never closed, to
     /// the end; one or two backticks at the very end wait), then on each
     /// line backticks paired in order with what is between them (an odd one

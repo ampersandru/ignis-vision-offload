@@ -4,8 +4,8 @@
 - Status: current
 - Observed: 2026-10-14
 - Last verified: 2026-10-15
-- Scope: server / reasoning-loop guard on chat completions and `/v1/responses` (`crates/server/src/loop_guard.rs`, config v2 `model.loop_guard*`, branch `experiment/loop-rewind` at `f19d6f4`, agentic addendum at `dbe03653`, not on main); serving / sampled reasoning on qwen3.8-27b, agentic contexts of 79k and 138k tokens, cross-turn prompt reuse; Playground reasoning view and Responses WebSocket transport
-- Related: [Reasoning loops are the model's](2026-10-12-reasoning-loops-are-the-models.md), [ADR 0048](../adr/0048-an-end-of-turn-inside-the-reasoning-closes-it.md), [ADR 0046](../adr/0046-one-declaration-per-config-field.md), [#288](https://github.com/gpillon/ignis/issues/288)
+- Scope: server / reasoning-loop guard on chat completions and `/v1/responses`, HTTP and WebSocket (`crates/server/src/loop_guard.rs`, config v2 `model.loop_guard*`); serving / sampled reasoning on qwen3.8-27b, agentic contexts of 79k and 138k tokens, cross-turn prompt reuse; Playground reasoning view and Responses WebSocket transport
+- Related: [ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md), [Reasoning loops are the model's](2026-10-12-reasoning-loops-are-the-models.md), [ADR 0048](../adr/0048-an-end-of-turn-inside-the-reasoning-closes-it.md), [ADR 0046](../adr/0046-one-declaration-per-config-field.md), [#288](https://github.com/gpillon/ignis/issues/288)
 - Superseded by: none
 
 ## Question
@@ -18,12 +18,17 @@ reasoning? And which signal finds the loops, including counting loops
 (`the 321 AD, the 322 AD, …`) and template loops whose slots vary
 (`the election of Clement XII, the construction of the Sistine Chapel (1508–1512)`)?
 
+Then, on 2026-10-15: does the repaired history re-tokenize into what the model saw, does
+the guard stay quiet on agentic contexts of 50k tokens or more, what does a rewind cost
+there, and what does the next turn after a rewind reuse?
+
 ## Evidence
 
-**The guard as built** (branch `experiment/loop-rewind`):
+**The guard as the confirm run measured it** (`f19d6f4`):
 - It is a tokio task between a chat request's engine event stream and its consumer, so
-  it runs off the scheduler thread. It covers chat completions only, and the
-  reasoning only.
+  it runs off the scheduler thread. At `f19d6f4` it covered chat completions only, and
+  the reasoning only. `/v1/responses`, HTTP and WebSocket, was wired at `4daf4be3` and
+  measured on the agentic run below.
 - **Detection.** Every 250 raw reasoning characters it scores the last `window`
   characters of the **normalized** reasoning:
   - fenced code is removed, and a block still open is never scored;
@@ -42,11 +47,13 @@ reasoning? And which signal finds the loops, including counting loops
   state cannot go back to a position without a snapshot.
 - **What the client sees.** The client receives `[LOOP DETECTED, REWINDING n TOKENS /
   m CHARS]` inside the reasoning. The Playground strikes through the `m` characters
-  before the tag (`web/src/ui/rewinds.ts`).
+  before the tag (`web/src/ui/rewinds.ts`). The tag's hash (`· h`) came later, with
+  ADR 0052's history repair.
 - **Retries and close.** After `retries` nudges, the next fire closes the reasoning
   instead.
-- **Config.** All knobs are live config v2 fields (`PATCH /v1/config`), and `loop_guard`
-  defaults to `off`:
+- **Config.** All knobs are live config v2 fields (`PATCH /v1/config`). At `f19d6f4`,
+  `loop_guard` defaulted to `off`; ADR 0052 makes it `rewind`, and makes the cadence,
+  the snap, the room a continuation needs and its submit wait fields too:
 
 | field | default |
 |---|---|
@@ -123,7 +130,7 @@ threshold.
 | harmful | **4/40 (10%)**: 102 and 124 clear; 101 and 123 escaped the loop but met the budget |
 | answered or called a tool | 40/40 |
 | streaming (8 runs) | well-formed, `[DONE]` last, one usage chunk; tag and nudge in one reasoning delta |
-| continuation | prompt 4,416-13,867 tokens; TTFT 369-1,744 ms (corrected 2026-10-15: it restored the 1,984-token prompt checkpoint and prefilled only the kept text and the nudge, 3-12 chunks; see the agentic addendum) |
+| continuation | prompt 4,416-13,867 tokens; TTFT 369-1,744 ms: it restored the 1,984-token prompt checkpoint and prefilled only the kept text and the nudge, 3-12 chunks (see the agentic run's cost below) |
 
 - **Harmful, compared.** 4/40 here against 23/82 in all unguarded runs: Fisher
   two-sided p = 0.035. Against the 8/32 in the two arms at the same configuration:
@@ -138,102 +145,15 @@ threshold.
 - **Loops in the answer.** 4 of the 18 runs that answered in content end that answer
   in a verbatim loop. The guard does not watch content.
 
-Raw material is in the worktree's `.scratch/loop-rewind/` (not tracked):
-- `NOTES.md`: design, calibration, every run's table;
-- `research/`: labels, variant and cut scripts, `REPORT.md`;
-- `parity/`;
-- `confirm/`: responses, SSE captures, server log, `labels.json`, `summary.json`.
-
-The private corpora stay there.
-
-## Finding
-
-Observed:
-- On the tuning data, the normalized score with the gate fires falsely on 2 of the
-  5,655 scored qwen-code parts, and on no opencode part and no clean Rome run. It
-  catches counting and template loops, which the raw score could not separate from
-  code.
-- On the held-out run (new seeds, same prompt) it made 25 rewinds, none on legitimate
-  reasoning.
-- The rewind and nudge work as an exit: every cut landed before the acute onset, and
-  9 of 16 runs escaped for good after the first nudge. Harmful runs went from about a
-  quarter to 10%, though on different runs.
-- What is left is in the 0.21-0.31 band. It holds slow templates and numeric loops
-  that compression cannot tell from numeric tables (run 124 sits among them at raw
-  0.33).
-- Every continuation re-prefills its whole prompt. (Corrected 2026-10-15: every
-  continuation restores the original prompt's checkpoint and prefills only the kept
-  text and the nudge; the agentic addendum has the evidence.)
-
-Inferred:
-- No threshold change helps recall any more. The lowest legitimate texts sit at
-  0.257 (Rome) and 0.273 (opencode), and the gate's 0.30 cuts through the numeric-loop
-  tail. A new signal would be needed. Entropy was not shown to be that signal; the
-  reasoning above argues it shares the confusion.
-- The resubmit re-prefills because nothing publishes the cancelled request's prompt
-  for reuse. On a 50-100k-token agentic prompt, a rewind would cost a re-prefill of
-  that size. This is extrapolated from 1.7 s at 14k tokens, not measured. (Corrected
-  2026-10-15: measured at 79k and 138k tokens, the continuation restores the prompt
-  checkpoint the cancelled request published at its generation opener, and the gap
-  the client feels is 0.08-0.10 s; see the agentic addendum.)
-- Cuts that keep a degenerate lead-in ("?"-hedging) relapsed more often: 5 of 7,
-  against 2 of 9 clean cuts. That is suggestive only at this n.
-
-## Implications
-
-- The guard is usable today opt-in (`loop_guard=rewind`) in the Playground, where
-  prompts are small. The tag and strike-through make every rewind visible.
-- Before it is a default for agents:
-  - a run on an agentic prompt (50k+ tokens of context), which is unmeasured
-    (measured 2026-10-15: no rewind in 16 seeds, 1,369 checks; the agentic addendum);
-  - a decision on `usage.completion_tokens`: forwarded tokens, or what the model
-    actually has in context.
-  The continuation reusing the original prompt lowers a rewind's cost but is not a
-  precondition (next point).
-- A rewind costs one re-prefill (corrected 2026-10-15: one prefill of the kept text
-  and the nudge; the prompt is restored). A loop left alone can burn the rest of a 14,336-token
-  budget. When the detection is right, the rewind is the cheaper of the two in wall
-  time, even without reuse.
-- Loops in the answer are a separate problem of the same size here. A nudge cannot go
-  into content, so the action there has to differ, for example truncating at the cut
-  or resampling.
-
-## Limits and unknowns
-
-- One prompt (the Rome enumeration) and one labeller. Thresholds were chosen on the
-  same 98 runs. The confirm run is new seeds, not a new prompt.
-- The arms share long prefixes per seed and use different seeds, so the comparisons
-  are unpaired. 4 harmful against 8 is n too small to give a rate beyond its direction.
-- The negatives are agentic coding plus one prose prompt. Other languages and other
-  long enumerations are untested.
-- The gate's 0.30 was set after seeing 7 negatives.
-- A loop inside an open code block is never scored.
-- These runs guarded chat completions only. `/v1/responses` is wired since 2026-10-15
-  (HTTP and WebSocket), measured on the GPU in the agentic addendum; image requests
-  are not rewound, and answers are not watched.
-- Streaming was checked on 8 runs.
-
-## Follow-ups
-
-- The continuation reuses the cancelled request's prompt: why no `reuse_source`, and
-  what makes it one. (Answered 2026-10-15: it already does, through the prompt
-  checkpoint; the agentic addendum.)
-- `usage.completion_tokens` under a rewind (answered by ADR 0052: it counts the
-  rewound tokens, and `rewound_tokens` says how many).
-- Loops in the answer: what action, and whether the same score applies.
-- If the guard ships: an ADR on rewinding output a client already received, and the
-  `loop_guard` default (the data favours `rewind`).
-
-## Addendum (2026-10-15): the nudge's line breaks and the tokenizer
-
-History repair gives the model back the text it saw. Whether that text re-tokenizes
-into the tokens the continuation's prompt carried was measured with
-`crates/server/examples/loop_retokenize.rs` on the 27B's tokenizer, over the 48 runs
-above (`.scratch/loop-rewind/out/rewind/`, `.scratch/loop-rewind/confirm/out/rewind2/`):
-4,165 cuts at the end of a line-break run after the first 1,000 characters, and the 18
-real cuts. At each cut, `kept tokens ++ encode(sentence)` against
-`encode(kept text + sentence)`. The generated tokens are stood in for by the
-tokenizer's own split of the reasoning, which was prefix-stable at every cut.
+**The nudge's line breaks and the tokenizer** (2026-10-15). History repair gives the
+model back the text it saw. Whether that text re-tokenizes into the tokens the
+continuation's prompt carried was measured with `crates/server/examples/loop_retokenize.rs`
+on the 27B's tokenizer, over the 48 runs above (`.scratch/loop-rewind/out/rewind/`,
+`.scratch/loop-rewind/confirm/out/rewind2/`): 4,165 cuts at the end of a line-break run
+after the first 1,000 characters, and the 18 real cuts. At each cut,
+`kept tokens ++ encode(sentence)` against `encode(kept text + sentence)`. The generated
+tokens are stood in for by the tokenizer's own split of the reasoning, which was
+prefix-stable at every cut.
 
 | Sentence after the kept text | Line-break cuts identical | Real cuts identical |
 |---|---|---|
@@ -251,16 +171,12 @@ The figures are the same for both nudges and for the close.
   one (`loop_guard::sentence_after`). That applies to the model's view and to what
   the client receives after the tag.
 - What the model reads changed with it. A kept text ending in one `\n` used to be
-  followed by three line breaks before the nudge, and now by that one. Its effect on
-  the continuations was not re-measured on the GPU.
-- Not measured: the junction at the sentence's end, between its closing `\n\n` and
-  the continuation's first token.
+  followed by three line breaks before the nudge, and now by that one.
 
-## Addendum (2026-10-15): agentic contexts of 79k and 138k tokens, the next turn, the transports
-
-Branch `experiment/loop-rewind` at `dbe03653`, CUDA release build, the owner's serving
-flags (`yarn:2`, 524,288, `hq-e8-2b`, DFlash2/7, chunk 1,024, 8G host pool), idle unload
-off, the loop guard at its defaults (`rewind`). One GPU hold.
+**Agentic contexts of 79k and 138k tokens** (2026-10-15). Branch `experiment/loop-rewind`
+at `dbe03653`, CUDA release build, the owner's serving flags (`yarn:2`, 524,288,
+`hq-e8-2b`, DFlash2/7, chunk 1,024, 8G host pool), idle unload off, the loop guard at its
+defaults (`rewind`). One GPU hold.
 
 Two request bodies came from real opencode sessions, cut at a real user turn. Their
 tools have the session's names and permissive schemas, and they use the Playground's
@@ -272,10 +188,10 @@ settings: temperature 1, `top_p` 0.95, `xhigh`, `max_tokens` 16,384, class
 | A | a debugging session the 27B ran on ignis | 78,773, or 78,809 with one sentence appended asking for the whole analysis before any edit |
 | B | an infrastructure session a llama.cpp-served Qwen3.8-27B ran | 137,742, or 137,772 with the same sentence |
 
-**False rewinds: none.** Run 1 used body A with the analysis sentence, 8 seeds,
-concurrency 4. Checks are counted as 1 + (reasoning chars − 1,000) / 250: the first
-check comes when a window is full, then one every 250 raw characters. The lowest score
-of each run comes from the research scorer, fed prefix by prefix.
+*False rewinds.* Run 1 used body A with the analysis sentence, 8 seeds, concurrency 4.
+Checks are counted as 1 + (reasoning chars − 1,000) / 250: the first check comes when a
+window is full, then one every 250 raw characters. The lowest score of each run comes
+from the research scorer, fed prefix by prefix.
 
 | seed | reasoning chars | checks | lowest normalized | lowest raw | completion tokens | finish |
 |---|---:|---:|---:|---:|---:|---|
@@ -298,14 +214,14 @@ of each run comes from the research scorer, fed prefix by prefix.
   0.20 threshold. No check went under 0.40.
 - The earlier floors were 0.257 (Rome) and 0.273 (the opencode corpus).
 
-**Forcing rewinds took a higher ratio than planned.** At ratio 0.35 nothing fired on
+*Forcing rewinds took a higher ratio than planned.* At ratio 0.35 nothing fired on
 this reasoning, so the cost samples ran at 0.50-0.54 with the raw gate off. That is
 above `clean` (0.40). The cut then walks back to the previous check, or to the floor
 when the first check fires. Every rewind below was forced: they are cost samples, not
 detections.
 
-**The cost of a rewind: the prompt is restored, and only the kept text and the nudge
-prefill.**
+*The cost of a rewind: the prompt is restored, and only the kept text and the nudge
+prefill.*
 
 | context | rewinds | kept before the cut | continuation prefill | admitted in | gap the client feels (tag → next delta) |
 |---|---:|---|---|---|---|
@@ -323,8 +239,8 @@ prefill.**
   So a continuation does not depend on other seeds sharing the prompt.
 - The 10-20 s once estimated for 100k assumed a full re-prefill. The measured cost is a
   tenth of a second plus the kept text's own prefill. The kept-heavy case is n = 1.
-- **Correction to the confirm run above.** Its continuations did not re-prefill their
-  whole prompt.
+- **The confirm run, read again.** Its continuations did not re-prefill their whole
+  prompt, as this finding first said.
   - Their done lines say `reuse_source: device`, `reused_prompt_tokens: 1984`.
   - Their chunk counts (3-12) are (prompt − 1,984) / 1,024.
   - So the 0.4-1.7 s was the kept text and the nudge, 2.4k-11.9k tokens.
@@ -338,12 +254,10 @@ prefill.**
   above was one of these: 4 chunks, no reuse field. A continuation cancelled by the next
   rewind has no done line at all.
 
-**The next turn after a rewind: the repaired history is the model's view, token for
-token. Reuse stops at the first turn's generation opener, as for any turn.**
-
-The shape is the agentic loop: the assistant turn (reasoning, text, tool calls) after
-the last user message, then a tool result. `/v1/tokenize` shows that the reasoning is
-rendered in this shape: 78,868 tokens without `reasoning_content`, 78,935 with it.
+*The next turn after a rewind.* The shape is the agentic loop: the assistant turn
+(reasoning, text, tool calls) after the last user message, then a tool result.
+`/v1/tokenize` shows that the reasoning is rendered in this shape: 78,868 tokens without
+`reasoning_content`, 78,935 with it.
 
 Each arm sent `max_tokens` 8. The arms ran right after their source response, whose
 own last continuation had ended at 78,912 (chat), 80,149 (socket) and 80,351 (HTTP)
@@ -382,7 +296,7 @@ tokens.
     checkpoint displaced the chained one. That run's good arm got only the opener; the
     rerun shown here fixed the order.
 
-**The transports.**
+*The transports.*
 
 - **Playground-shaped socket.** The client spoke the socket as the Playground's
   `socket.ts` does: subprotocol `responses`, `response.create` built as
@@ -406,19 +320,123 @@ tokens.
   - `ignis_requests_cancelled_total` rose by 2 at the first sample.
   - The scheduler was idle.
   - The continuation was cancelled before admission.
-  - Chat's own `CancelOnDrop` names the first request, so the guard's `tx.closed()`
-    select is what covers it, and it does.
+  - Chat's own `CancelOnDrop` named the first request at `dbe03653`, so the guard's
+    `tx.closed()` select is what covers it, and it does.
 - **opencode** 1.18.35 (`@ai-sdk/openai-compatible`, no `interleaved` option) sends
   `reasoning_content` back on the assistant tool-call message of its loop. This was
-  seen through a logging proxy on one `opencode run`. History repair therefore applies
-  to opencode sessions.
+  seen through a logging proxy on one `opencode run`.
 
-**Limits.**
-- One debugging turn (8 seeds) and one infrastructure turn carry the false-rewind
-  count.
-- No rewind here was a detection. What a rewind does to the quality of an agentic turn
-  is unmeasured.
+Raw material is in the worktree's `.scratch/` (not tracked):
+- `loop-rewind/NOTES.md`: design, calibration, every run's table;
+- `loop-rewind/research/`: labels, variant and cut scripts, `REPORT.md`;
+- `loop-rewind/parity/`;
+- `loop-rewind/confirm/`: responses, SSE captures, server log, `labels.json`,
+  `summary.json`;
+- `loop-gpu/`: the agentic bodies, the run and check scripts, their outputs, the server
+  log.
+
+The private corpora and bodies stay there.
+
+## Finding
+
+Observed:
+- On the tuning data, the normalized score with the gate fires falsely on 2 of the
+  5,655 scored qwen-code parts, and on no opencode part and no clean Rome run. It
+  catches counting and template loops, which the raw score could not separate from
+  code.
+- On the held-out run (new seeds, same prompt) it made 25 rewinds, none on legitimate
+  reasoning.
+- On agentic contexts of 79k and 138k tokens it made no rewind: 16 seeds, 1,369 checks,
+  the lowest normalized score 0.449.
+- The rewind and nudge work as an exit: every cut landed before the acute onset, and
+  9 of 16 runs escaped for good after the first nudge. Harmful runs went from about a
+  quarter to 10%, though on different runs.
+- What is left is in the 0.21-0.31 band. It holds slow templates and numeric loops
+  that compression cannot tell from numeric tables (run 124 sits among them at raw
+  0.33).
+- Every continuation restores the original prompt's checkpoint and prefills only the
+  kept text and the nudge: the client waits 0.08-0.10 s at 79k-138k tokens with little
+  kept, and 1.276 s with about 3,645 tokens kept. (First written here as a re-prefill of
+  the whole prompt, a misreading of `prefilled_tokens`; corrected 2026-10-15.)
+- With the sentence's leading line breaks dropped after a kept line break, the repaired
+  reasoning re-tokenizes into the continuation's prompt at every cut measured (4,165 /
+  4,165 line-break cuts, 18 / 18 real cuts); as written, 0 and 5 do.
+- The next turn after a rewind renders the model's view token for token from the
+  repaired visible text, from `encrypted_content` and from the socket's stored view;
+  its reuse stops at the previous turn's generation opener, as any turn's does.
+- Chat SSE, the Responses socket and its cancel carry a rewind and stop its
+  continuation; opencode sends `reasoning_content` back.
+
+Inferred:
+- No threshold change helps recall any more. The lowest legitimate texts sit at
+  0.257 (Rome) and 0.273 (opencode), and the gate's 0.30 cuts through the numeric-loop
+  tail. A new signal would be needed. Entropy was not shown to be that signal; the
+  reasoning above argues it shares the confusion.
+- A rewind's cost does not grow with the prompt: the prompt is restored from the
+  checkpoint the request publishes at its generation opener, and the kept text sets the
+  prefill. (First inferred here as a re-prefill of the whole prompt on a 50-100k-token
+  agentic prompt, extrapolated from 1.7 s at 14k tokens; measured false on 2026-10-15.)
+- Cuts that keep a degenerate lead-in ("?"-hedging) relapsed more often: 5 of 7,
+  against 2 of 9 clean cuts. That is suggestive only at this n.
+
+## Implications
+
+- The data supports `rewind` as the default, which ADR 0052 adopts: no false rewind on
+  the held-out run nor on agentic contexts of 79k-138k tokens, and a rewind costs about
+  a tenth of a second there plus the kept text's prefill. The tag and strike-through
+  make every rewind visible.
+- The two preconditions this finding first set for a default on agents are met: the
+  agentic run above, and a decision on `usage.completion_tokens` (ADR 0052: it counts
+  the rewound tokens, and `rewound_tokens` says how many).
+- A loop left alone can burn the rest of a 14,336-token budget. When the detection is
+  right, the rewind is the cheaper of the two in wall time.
+- History repair matters to agents: opencode sends its reasoning back. Token equality
+  needs the junction rule (`sentence_after`), not text equality alone.
+- Loops in the answer are a separate problem of the same size here. A nudge cannot go
+  into content, so the action there has to differ, for example truncating at the cut
+  or resampling.
+- A restore through a retained prefix is invisible to `reuse_source` and
+  `ignis_retained_state_hits_total`: reading reuse from the done line alone undercounts
+  it.
+
+## Limits and unknowns
+
+- One prompt (the Rome enumeration) and one labeller for the detection's numbers.
+  Thresholds were chosen on the same 98 runs. The confirm run is new seeds, not a new
+  prompt.
+- The arms share long prefixes per seed and use different seeds, so the comparisons
+  are unpaired. 4 harmful against 8 is n too small to give a rate beyond its direction.
+- The negatives are agentic coding plus one prose prompt. Other languages and other
+  long enumerations are untested.
+- The gate's 0.30 was set after seeing 7 negatives.
+- A loop inside an open code block is never scored.
+- The Rome runs guarded chat completions only; `/v1/responses` was measured only on
+  the agentic run, with forced rewinds. Image requests are not rewound, and answers are
+  not watched.
+- Streaming was checked on 8 runs.
+- The junction rule changed what the model reads after a kept line break (one line
+  break before the nudge, not three); its effect on the continuations was not
+  re-measured on the GPU. The junction at the sentence's end, between its closing
+  `\n\n` and the continuation's first token, was not measured.
+- One debugging turn (8 seeds) and one infrastructure turn carry the agentic
+  false-rewind count; run 1 ran at concurrency 4.
+- No agentic rewind was a detection. What a rewind does to the quality of an agentic
+  turn is unmeasured.
 - The kept-heavy cost sample is n = 1, at concurrency 2.
-- Run 1 ran at concurrency 4.
 - A continuation under memory pressure could find its prompt checkpoint evicted
   (retained state is the first victim); not exercised.
+
+## Follow-ups
+
+- The continuation reuses the cancelled request's prompt: why no `reuse_source`, and
+  what makes it one. (Answered 2026-10-15: it already does, through the prompt
+  checkpoint; see the agentic run's cost.)
+- `usage.completion_tokens` under a rewind (answered by ADR 0052: it counts the
+  rewound tokens, and `rewound_tokens` says how many).
+- An ADR on rewinding output a client already received, and the `loop_guard` default:
+  done, [ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md)
+  (proposed), `rewind` by default.
+- Loops in the answer: what action, and whether the same score applies.
+- What a natural rewind does to an agentic turn's quality.
+- The retained-prefix restore's missing `reuse_source` on the done line (outside the
+  guard).

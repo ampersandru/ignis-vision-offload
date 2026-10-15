@@ -32,6 +32,13 @@ The rate is the same on ninfer with the same artifact. It is the model's, and ig
 cannot fix the model. A turn that loops wastes up to the whole 14,336-token budget, and an
 agent that reaches the forced close keeps 2,048 tokens for its answer.
 
+Agents send the reasoning back. opencode 1.18.35 (`@ai-sdk/openai-compatible`, no
+`interleaved` option) puts `reasoning_content` on the assistant tool-call message of its
+loop (measured 2026-10-15 through a logging proxy, in the
+[finding](../findings/2026-10-14-reasoning-loop-guard.md)), so whatever the server streams
+into the reasoning comes back in the next turn's prompt, and history repair (below)
+applies to it.
+
 What ignis can do is notice. A loop is text that compresses far better than reasoning
 does. A request's reasoning passes through the server on its way to the client, and the
 server can score it as it goes without touching the scheduler.
@@ -48,8 +55,8 @@ reasoning of a request that starts inside its reasoning block. Until it acts, it
 every event unchanged.
 
 **Detection is a compression score over normalized reasoning.**
-- Every 250 raw reasoning characters, the guard takes the last `loop_guard_window`
-  characters of the reasoning after three steps:
+- Every `loop_guard_check_every` raw reasoning characters (250), the guard takes the
+  last `loop_guard_window` characters of the reasoning after three steps:
   - fenced code is removed, and a block still open is never scored;
   - inline code is removed;
   - every run of ASCII digits becomes `0`.
@@ -64,13 +71,20 @@ every event unchanged.
 **The action is a rewind: cancel, then a continuation.**
 - **The cut.** The guard walks back over its own checks to the last one that scored at
   least `loop_guard_clean`. The cut is the raw start of that check's window, minus
-  `loop_guard_margin`, snapped to a line break, and never before the previous cut. If the
-  kept text would end inside a ``` block, the cut moves before that block's fence.
+  `loop_guard_margin`, snapped to the line break before it when one is within
+  `loop_guard_snap` characters, and never before the previous cut. If the kept text
+  would end inside a ``` block, the cut moves before that block's fence.
 - **The continuation.** The engine request is cancelled. The **continuation** is the same
   request input, with its prompt extended by the tokens kept before the cut and by a
   **nudge**: a sentence in the model's own voice ("Wait, I'm starting to repeat myself.
   Let me stop and move on with what I already have."). It gets what is left of the
   generation cap and of the thinking budget, and a fresh seed.
+- **When there is no continuation.** A loop with fewer than
+  `loop_guard_min_continuation` tokens of the generation cap left after the kept text
+  and the nudge is only logged (`no_room`). A continuation the engine refuses as full
+  waits up to `loop_guard_submit_wait` for room, and the loop is left as it is when none
+  comes (`submit_refused`); a WebSocket request's continuation waits in the socket's
+  queue instead (below).
 - **Retries and close.** After `loop_guard_retries` nudges, the next fire continues with
   the thinking budget's own close text in place of a nudge. That closes the reasoning,
   and the model answers.
@@ -107,13 +121,24 @@ request, guard on or off, ignis repairs that text before rendering the prompt:
   mismatch, too few characters, or a tag without a hash, the text is left as it is.
 - **Why always.** A history written while the guard was on reaches a server where it is
   off, and a reprise of the conversation goes through the same repair.
-- **Effect.** The repaired reasoning equals the text the model saw, so the prompt matches
-  the retained state (ADR 0029) and reuse works across turns. Text equality is what repair
-  guarantees. Token equality needs one more rule: after a kept text that ends in a line
-  break, the nudge or the close goes in without its leading line breaks, because the two
-  runs would re-tokenize as one. With that rule, the repaired reasoning re-tokenizes into
-  the continuation's prompt at every cut measured: 4,165 line-break cuts and 18 real cuts
-  (`examples/loop_retokenize.rs`, finding addendum). Without it, 0 and 5 do.
+- **Effect.** The repaired reasoning equals the text the model saw. Text equality is what
+  repair guarantees. Token equality needs one more rule: after a kept text that ends in a
+  line break, the nudge or the close goes in without its leading line breaks, because the
+  two runs would re-tokenize as one. With that rule, the repaired reasoning re-tokenizes
+  into the continuation's prompt at every cut measured: 4,165 line-break cuts and 18 real
+  cuts (`examples/loop_retokenize.rs`). Without it, 0 and 5 do.
+- **Measured on the next turn** (2026-10-15, a 79k-token agentic context,
+  [finding](../findings/2026-10-14-reasoning-loop-guard.md)). The repaired history is the
+  model's view token for token: the visible text with a good hash, the `encrypted_content`
+  blob and the socket's stored view (`previous_response_id`) render the same tokens. The
+  proof is a checkpoint hit, since a checkpoint is matched by content: on HTTP the
+  good-hash arm restored the blob arm's checkpoint at prompt − 2, and on the socket the
+  full good-hash input restored the chained turn's. A corrupted hash
+  leaves +585 (chat), +866 (socket) and +790 (HTTP) tokens of struck text and tags in the
+  prompt. Reuse stops at the previous turn's generation opener, as for any turn: ADR 0029
+  keeps no checkpoint after generation, and the controls without a rewind stop at the
+  same place. A rewind therefore costs the next turn no reuse that an ordinary turn
+  would have.
 
 **Holdback: an option to hide a rewind before the client sees it.** `loop_guard_holdback`
 holds the reasoning stream back by that many characters (0 = off, the default):
@@ -182,15 +207,24 @@ no reload):
 | `loop_guard_margin` | 0 characters |
 | `loop_guard_retries` | 2 |
 | `loop_guard_holdback` | 0 characters (off) |
+| `loop_guard_check_every` | 250 characters |
+| `loop_guard_snap` | 300 characters (0 = never snaps) |
+| `loop_guard_min_continuation` | 512 tokens |
+| `loop_guard_submit_wait` | 60 seconds (0 = tried once; at most 3,600) |
 
 History repair has no field: it is always on, and a tag whose hash does not match is
 never touched.
 
 **`rewind` by default** (owner, 2026-10-14). The held-out run favours it: no false rewind
 in 25, and harmful runs fell from about a quarter to 4 in 40. `log` stays for diagnosis.
-The guard has been measured only on a 2,000-token prompt. A run on a context of 50,000
-tokens or more measures the cost of a rewind there, and any false rewind it finds
-reopens this default.
+The run on agentic contexts of 79k and 138k tokens (2026-10-15,
+[finding](../findings/2026-10-14-reasoning-loop-guard.md)) found no false rewind: 16
+seeds, 1,369 checks, the lowest normalized score 0.449 against the 0.20 threshold. Any
+false rewind found later reopens this default.
+
+A server built without a config (`Live::default()`: the in-process tests, the
+output-comparing GPU tests) runs the guard `off`: only a configured server (`main`, a
+live `PATCH`) rewinds, so no test meets a rewind it did not ask for.
 
 ## Alternatives rejected
 
@@ -203,8 +237,10 @@ reopens this default.
   here it is the chosen one. 0048 rejected it because the leaf could redirect an EOS for
   free, and a resubmit re-prefills the whole reasoning. For a loop there is no free
   in-leaf fix: the damage is thousands of tokens back. A rewind costs one prefill of the
-  prompt plus the kept text (measured 0.4-1.7 s at 4-14k tokens). A loop left alone can
-  cost the rest of the budget.
+  kept text and the nudge, the prompt restored from its own checkpoint: measured
+  0.4-1.7 s on the confirm run, whose continuations prefilled 2.4k-11.9k kept tokens, and
+  0.08-0.10 s at 79k-138k tokens with little kept. A loop left alone can cost the rest of
+  the budget.
 - **Close the reasoning at the first loop.** That forfeits the rest of the budget. After
   one nudge, 9 of 16 rewound runs went on reasoning normally.
 - **Prevent loops in the sampler.** `presence_penalty` 1.5 halved the loops on 8 seeds but
@@ -226,10 +262,16 @@ reopens this default.
 
 - **Reference parity.** Output differs from the reference whenever the guard acts. Benches
   and gates set `loop_guard=off` explicitly, since the default is `rewind`.
-- **Cost of a rewind.** A rewind is one engine request more. Today the continuation
-  prefills its whole prompt, because nothing offers the cancelled request's prompt for
-  reuse (ADR 0029). Reusing it is the follow-up that makes a rewind cheap on a long
-  agentic context.
+- **Cost of a rewind.** A rewind is one engine request more, and it prefills only the
+  kept text and the nudge. Every request publishes its prompt's checkpoint at its
+  generation opener (ADR 0029), and the continuation's prompt starts with that prompt,
+  so the engine restores it, even when the request prefilled its prompt cold. Measured
+  2026-10-15 ([finding](../findings/2026-10-14-reasoning-loop-guard.md)): the client
+  waits 0.078-0.090 s from the tag to the next delta at 78,773 tokens and 0.099-0.100 s
+  at 137,772, with little kept, and 1.276 s with 17,944 characters (about 3,645 tokens)
+  kept. Prefilled cold, 78,809 tokens
+  take 13.09 s and 137,742 take 34.5 s. A continuation under memory pressure could find
+  that checkpoint evicted: not measured.
 - **History repair touches input.** It edits what a client sent, in one place only:
   assistant reasoning, behind a matching hash. A client that wants its text verbatim
   sends it without the tag.

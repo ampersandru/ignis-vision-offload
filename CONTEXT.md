@@ -86,8 +86,9 @@ When output names a domain concept, use the term as defined here.
   drawn freely before the forced close could be the EOS.
 - **Loop guard** — the server task between a reasoning request's engine event
   stream and its consumer that watches the reasoning for a loop (ADR 0052,
-  config `model.loop_guard*`, `rewind` by default). A check, every 250 raw
-  characters, fires when the reasoning's last window compresses too well once
+  config `model.loop_guard*`, `rewind` by default). A check, every
+  `loop_guard_check_every` raw characters (250 by default), fires when the
+  reasoning's last window compresses too well once
   code is removed and digit runs are folded, and its raw text compresses well
   too. In `log` mode it only logs; in `rewind` mode it **rewinds**.
 - **Rewind** — the loop guard's action: the engine request is cancelled and a
