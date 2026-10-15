@@ -675,22 +675,14 @@ impl ResponseEvents {
     }
 }
 
+/// What a test of the events, or of what consumes them, builds them from.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
     use crate::decoder::TokenDecoder;
-    use crate::responses::{drive, Driven};
-    use std::sync::Arc;
-
-    #[test]
-    fn a_sampling_value_is_echoed_as_the_decimal_it_was_written_as() {
-        for value in [0.95_f32, 0.8, 0.7, 1.0, 0.0, 0.6] {
-            assert_eq!(wire_number(value).to_string(), value.to_string());
-        }
-    }
 
     /// Token `n` is `TEXTS[n]`.
-    struct Texts(&'static [&'static str]);
+    pub(crate) struct Texts(&'static [&'static str]);
 
     impl TokenDecoder for Texts {
         fn push(&mut self, token: TokenId) -> String {
@@ -701,7 +693,7 @@ mod tests {
         }
     }
 
-    fn events(texts: &'static [&'static str], thinking: bool) -> ResponseEvents {
+    pub(crate) fn events(texts: &'static [&'static str], thinking: bool) -> ResponseEvents {
         let response = ResponseObject {
             id: "resp_0".into(),
             object: "response",
@@ -732,7 +724,7 @@ mod tests {
         ResponseEvents::new(response, "0".into(), decoder, ToolSchemas::from_tools(&[]), 1)
     }
 
-    fn done(tokens: u32) -> SchedEvent {
+    pub(crate) fn done(tokens: u32) -> SchedEvent {
         SchedEvent::Done {
             request: 0,
             tokens,
@@ -743,6 +735,21 @@ mod tests {
             drawn: None,
             thinking: None,
             reasoning_redirected_at: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{done, events};
+    use super::*;
+    use crate::responses::{drive, Driven};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_sampling_value_is_echoed_as_the_decimal_it_was_written_as() {
+        for value in [0.95_f32, 0.8, 0.7, 1.0, 0.0, 0.6] {
+            assert_eq!(wire_number(value).to_string(), value.to_string());
         }
     }
 

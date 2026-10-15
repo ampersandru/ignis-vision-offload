@@ -47,7 +47,8 @@ use crate::api::{self, ApiError, CancelOnDrop};
 use crate::responses::events::{Ending, ResponseEvents};
 use crate::responses::input::{self, CreateResponse, Prepared};
 use crate::responses::queue::{Admission, Hub, QueuedOps};
-use crate::responses::{created_at, drive, Driven, Guarding};
+use crate::loop_guard::Guarding;
+use crate::responses::{created_at, drive, Driven};
 use crate::Server;
 
 /// The subprotocol prefix a browser authenticates with (OpenAI's Realtime
@@ -586,7 +587,7 @@ async fn serve(
     // The engine the request is submitted to is the one its cancel guard
     // must reach, whatever a model switch does meanwhile.
     let engine = server.active().text_engine().clone();
-    let guarding = Guarding::new(server, &input, starts_in_reasoning);
+    let guarding = Guarding::new(server.live().loop_guard, &input, starts_in_reasoning);
     let rewound = guarding.rewound();
     let (mut events, request, scheduled) = match queue.submit(&engine, &input, class, notes).await {
         Admission::Refused(refused) => {
@@ -637,13 +638,19 @@ async fn serve(
     let (mut scheduled, running) = guarding.guard(ops, request, scheduled);
     // Cancels the engine request generating now, a continuation after a
     // rewind (ADR 0052).
-    let mut guard = CancelOnDrop::following(engine, running);
+    let mut guard = CancelOnDrop::following(engine, running.clone());
     // `--server-request-timeout` counts from admission, never from queueing.
     let deadline = tokio::time::Instant::now() + server.live().request_timeout;
     let driven = tokio::select! {
         driven = drive(&mut events, &mut scheduled, deadline, emit) => Some(driven),
         () = &mut cancel => None,
     };
+    if !matches!(driven, Some(Driven::Ended)) {
+        // Cut short: what the loop guard held back still reaches the
+        // response (ADR 0052).
+        let held = crate::loop_guard::held_back(&running, &mut scheduled).await;
+        events.on_tokens(&held).into_iter().for_each(emit);
+    }
     match driven {
         Some(Driven::Ended) => guard.completed(),
         Some(Driven::TimedOut) => {
@@ -669,5 +676,30 @@ fn ended(events: &ResponseEvents, mut items: Vec<JsonValue>) -> Outcome {
             Outcome::Ended(Cached { id: events.id().to_owned(), items })
         }
         Some(Ending::Failed) | None => Outcome::Failed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::responses::events::testing::{done, events};
+
+    /// What a socket keeps of a rewound response, for the next request on
+    /// its stream, is the model's view (ADR 0052): the struck text and the
+    /// tag out of the reasoning, the rest as it is; the response itself
+    /// keeps what was streamed.
+    #[test]
+    fn a_rewound_response_is_kept_as_the_model_saw_it() {
+        let streamed: &'static str = Box::leak(format!("kept lo{}Wait.", crate::loop_guard::tag(2, "lo")).into_boxed_str());
+        let texts: &'static [&'static str] = Box::leak(vec![streamed, "</think>", "answer"].into_boxed_slice());
+        let mut events = events(texts, true);
+        events.on_tokens(&[0, 1, 2]);
+        events.on_event(done(3));
+        let asked = json!({ "type": "message", "role": "user", "content": "q" });
+        let Outcome::Ended(cached) = ended(&events, vec![asked.clone()]) else { panic!("a completed response is kept") };
+        assert_eq!(cached.items[0], asked);
+        assert_eq!(cached.items[1]["content"][0]["text"], "kept Wait.", "{:?}", cached.items);
+        assert_eq!(cached.items[2], events.response().output[1], "the message as it is");
+        assert_eq!(events.response().output[0]["content"][0]["text"], streamed, "the response shows what was streamed");
     }
 }

@@ -8,7 +8,7 @@
 //! same template, and the response's events come from the one producer in
 //! [`events`], so the transports cannot disagree on a payload. The loop
 //! guard (ADR 0052, [`crate::loop_guard`]) watches both as it watches chat
-//! completions ([`Guarding`]).
+//! completions ([`crate::loop_guard::Guarding`]).
 
 pub(crate) mod events;
 pub(crate) mod input;
@@ -35,47 +35,11 @@ use utoipa::ToSchema;
 
 use crate::api::{self, ApiError, CancelOnDrop};
 use crate::engine::{drain_tokens, EventStream};
-use crate::loop_guard::{GuardOps, LoopGuardMode, LoopGuardParams, Rewound, Running};
-use ignis_core::{RequestId, RequestInput, SchedEvent};
+use crate::loop_guard::{Guarding, Running};
+use ignis_core::SchedEvent;
 use crate::Server;
 use events::{ResponseEvents, ResponseObject};
 use input::CreateResponse;
-
-/// The loop guard on one Responses request (ADR 0052): on as on chat
-/// completions — the live `loop_guard` knobs, a request that starts inside
-/// its reasoning — and never on a warm-up, which generates nothing. Taken
-/// before the request is submitted, since every continuation is built from
-/// the request as submitted.
-pub(crate) struct Guarding {
-    watched: Option<(LoopGuardParams, RequestInput)>,
-    rewound: Rewound,
-}
-
-impl Guarding {
-    pub(crate) fn new(server: &Server, input: &RequestInput, starts_in_reasoning: bool) -> Self {
-        let params = server.live().loop_guard;
-        let watched = (params.mode != LoopGuardMode::Off && starts_in_reasoning && !input.warm_up).then(|| (params, input.clone()));
-        Self { watched, rewound: Rewound::default() }
-    }
-
-    /// What the guard's rewinds take back, for the response's usage.
-    pub(crate) fn rewound(&self) -> Rewound {
-        self.rewound.clone()
-    }
-
-    /// `stream`, the engine's for `request`, behind the guard when it
-    /// watches the request, continuations submitted through `ops`; and the
-    /// engine request generating for the response, which a cancel by
-    /// response stops.
-    pub(crate) fn guard(self, ops: impl GuardOps, request: RequestId, stream: EventStream) -> (EventStream, Running) {
-        let running = Running::new(request);
-        let stream = match self.watched {
-            Some((params, input)) => crate::loop_guard::guard_counted(params, ops, input, running.clone(), stream, self.rewound),
-            None => stream,
-        };
-        (stream, running)
-    }
-}
 
 /// How [`drive`] left a response.
 pub(crate) enum Driven {
@@ -213,7 +177,7 @@ pub(crate) async fn create_response(
     // The engine the request is submitted to is the one its cancel guard
     // must reach, whatever a model switch does meanwhile.
     let engine = server.active().text_engine().clone();
-    let guarding = Guarding::new(&server, &prepared.input, prepared.starts_in_reasoning);
+    let guarding = Guarding::new(server.live().loop_guard, &prepared.input, prepared.starts_in_reasoning);
     let rewound = guarding.rewound();
     let (request_id, scheduled) =
         match engine.submit_with_notes(prepared.input, prepared.class, prepared.notes).await {
@@ -227,7 +191,7 @@ pub(crate) async fn create_response(
     // GitHub #81 / ADR 0012: see the matching comment in `chat_completions`.
     tracing::Span::current().record("request_id", request_id);
     let mut events = prepared.start.events(request_id.to_string(), created_at(&server)).with_rewound(rewound);
-    let mut cancel = CancelOnDrop::following(engine, running);
+    let mut cancel = CancelOnDrop::following(engine, running.clone());
     let deadline = tokio::time::Instant::now() + server.live().request_timeout;
 
     if stream {
@@ -240,6 +204,8 @@ pub(crate) async fn create_response(
             pending,
             deadline: Box::pin(tokio::time::sleep_until(deadline)),
             timeout: server.live().request_timeout,
+            running,
+            stopping: false,
             ended: false,
             held: None,
         })
@@ -263,7 +229,8 @@ pub(crate) async fn create_response(
 /// A streamed response: the request's scheduler stream through its
 /// [`ResponseEvents`], one server-sent event per Responses event, ended by
 /// the terminal one. The request's deadline ends it `failed` with
-/// `request_timeout`; a client that hangs up cancels the request.
+/// `request_timeout`, after what the loop guard held back (ADR 0052); a
+/// client that hangs up cancels the request.
 struct EventSse {
     stream: EventStream,
     cancel: CancelOnDrop,
@@ -271,6 +238,11 @@ struct EventSse {
     pending: VecDeque<JsonValue>,
     deadline: Pin<Box<tokio::time::Sleep>>,
     timeout: std::time::Duration,
+    /// The engine request generating, which the deadline stops.
+    running: Running,
+    /// The deadline passed and the loop guard sends what it held back: the
+    /// stream's end ends the response.
+    stopping: bool,
     ended: bool,
     /// The event that ended the last run of tokens, handled next.
     held: Option<SchedEvent>,
@@ -291,10 +263,14 @@ impl Stream for EventSse {
                 return Poll::Ready(None);
             }
             // First, for the reason `drive` checks it first.
-            if this.deadline.as_mut().poll(cx).is_ready() {
+            if !this.stopping && this.deadline.as_mut().poll(cx).is_ready() {
+                // A guard sends what it held back, then ends the stream.
+                if this.running.stop() {
+                    this.stopping = true;
+                    continue;
+                }
                 // Left unfinished: dropping the body cancels the request.
-                let message = api::request_timeout_message(this.timeout);
-                this.pending.extend(this.events.failed("request_timeout", message));
+                this.pending.extend(this.events.failed("request_timeout", api::request_timeout_message(this.timeout)));
                 this.ended = true;
                 continue;
             }
@@ -310,12 +286,20 @@ impl Stream for EventSse {
                     this.pending.extend(this.events.on_tokens(&run));
                     continue;
                 }
+                // Past the deadline only the tokens still count.
+                Poll::Ready(Some(_)) if this.stopping => continue,
                 Poll::Ready(Some(event)) => {
                     this.pending.extend(this.events.on_event(event));
                     if this.events.ending().is_some() {
                         this.cancel.completed();
                         this.ended = true;
                     }
+                    continue;
+                }
+                // Everything held back went out: the deadline's end.
+                Poll::Ready(None) if this.stopping => {
+                    this.pending.extend(this.events.failed("request_timeout", api::request_timeout_message(this.timeout)));
+                    this.ended = true;
                     continue;
                 }
                 Poll::Ready(None) => {

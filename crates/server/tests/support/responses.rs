@@ -93,6 +93,13 @@ impl Script {
         Arc::new(Self { decode, chars: true, ..Self::default() })
     }
 
+    /// [`Script::encoding`], every token it does not name reading as
+    /// `unnamed`: what a loop guard continuation, whose fresh seed draws
+    /// tokens no script names, writes.
+    pub fn encoding_or(decode: HashMap<TokenId, &'static str>, unnamed: &'static str) -> Arc<Self> {
+        Arc::new(Self { decode, chars: true, unnamed, ..Self::default() })
+    }
+
     /// What `token` reads as.
     fn piece(&self, token: TokenId) -> String {
         if let Some(text) = self.decode.get(&token) {
@@ -197,44 +204,24 @@ pub fn scripted_text(mock: &MockCompute, request: RequestId, text: &str) -> Hash
         .collect()
 }
 
-/// Reasoning that does not repeat: numbered sentences of varied words, a
-/// line break every fourth (the loop guard's own test prose, whose windows
-/// score clean).
-pub fn prose(chars: usize) -> String {
-    const WORDS: &[&str] = &[
-        "Rome", "founded", "kings", "republic", "senate", "consuls", "tribunes", "plebeians", "wars", "Carthage",
-        "Hannibal", "Scipio", "Gracchi", "Marius", "Sulla", "Pompey", "Caesar", "Augustus", "empire", "Nero",
-        "Flavians", "Trajan", "Hadrian", "crisis", "Diocletian", "Constantine", "Christianity", "Goths", "Vandals",
-        "Odoacer", "popes", "Charlemagne", "communes", "Avignon", "Renaissance", "Borgia", "sack", "Baroque",
-        "Bernini", "Napoleon", "unification", "capital", "Fascism", "war", "liberation", "republic", "Jubilee",
-        "aqueducts", "Forum", "Colosseum", "Pantheon", "Tiber", "Palatine", "legions", "Latin", "law", "Cicero",
-        "Vergil", "Ostia", "plague", "Gregory", "Leo", "Vatican", "Sistine", "Michelangelo", "Raphael", "Trastevere",
-        "Garibaldi", "Mazzini", "Cavour", "Mussolini", "Lateran", "Olympics", "Fellini", "Tridentine", "Jesuits",
-        "Inquisition", "Galileo", "Campidoglio", "Aventine", "Esquiline", "Quirinal", "Viminal", "Caelian", "Janiculum",
-    ];
-    let mut out = String::new();
-    let mut state: u64 = 0x2545_F491_4F6C_DD1D;
-    let mut n = 0;
-    while out.chars().count() < chars {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        let len = 6 + (state % 9) as usize;
-        out.push_str(&format!("{n}. "));
-        for k in 0..len {
-            let word = WORDS[((state >> ((k * 5) % 60)) as usize + k * 7 + n) % WORDS.len()];
-            out.push_str(word);
-            out.push(if k + 1 == len { '.' } else { ' ' });
-        }
-        out.push(if n % 4 == 3 { '\n' } else { ' ' });
-        n += 1;
-    }
-    out.chars().take(chars).collect()
-}
+#[path = "loop_text.rs"]
+mod loop_text;
+// Not every test binary that includes this file reasons.
+#[allow(unused_imports)]
+pub use loop_text::{looping, prose};
 
-/// A verbatim loop, `chars` long.
-pub fn looping(chars: usize) -> String {
-    "the \"Dark Ages\" (the \"Dark Ages\", the \"Dark Ages\"), ".chars().cycle().take(chars).collect()
+/// Poll `metrics`' exposition until `line` is in it.
+pub async fn metric_reaches(metrics: &ignis_server::metrics::Metrics, line: &str) {
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if metrics.render().contains(&format!("\n{line}\n")) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "no `{line}` in:\n{}", metrics.render());
 }
 
 /// The events of a `text/event-stream` body: each `event:` line's name, and

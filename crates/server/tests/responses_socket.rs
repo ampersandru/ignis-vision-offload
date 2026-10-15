@@ -25,7 +25,7 @@ use serde_json::{json, Value as JsonValue};
 use tokio_tungstenite::tungstenite::Message;
 
 use responses::{
-    live, next_event, next_frame, send, server, socket, sse_events, terminal, Script, Socket, MODEL,
+    live, metric_reaches, next_event, next_frame, send, server, socket, sse_events, terminal, Script, Socket, MODEL,
 };
 
 fn plain() -> Arc<MockCompute> {
@@ -115,20 +115,6 @@ async fn next_of(socket: &mut Socket, stream: Option<&str>, kind: &str) -> JsonV
             return event;
         }
     }
-}
-
-/// Poll `server`'s exposition until `line` is in it.
-async fn metric_reaches(metrics: &ignis_server::metrics::Metrics, line: &str) {
-    let found = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if metrics.render().contains(&format!("\n{line}\n")) {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
-    assert!(found.is_ok(), "no `{line}` in:\n{}", metrics.render());
 }
 
 // ── golden transcripts ──────────────────────────────────────────────────
@@ -974,4 +960,95 @@ async fn a_rewound_response_is_continued_from_the_models_view() {
     stream_until_terminal(&mut socket, None).await;
     let rendered = script.seen().last().unwrap().messages.iter().find(|m| m.role == "assistant").unwrap().reasoning_content.clone();
     assert_eq!(rendered.as_deref(), Some(model_view.as_str()));
+}
+
+/// A response cut short, by `response.cancel` or by its timeout, still gets
+/// what the holdback held back (ADR 0052): the reasoning item carries it,
+/// its deltas came first, `output_tokens` counts it, and a cancelled
+/// response continues from it. Here the holdback hid the rewind, so what it
+/// held is the kept reasoning and the nudge, the model's view, of which the
+/// client had received nothing.
+#[tokio::test]
+async fn a_cancel_or_a_timeout_lets_what_the_holdback_held_reach_the_response() {
+    let nudge = ignis_server::loop_guard::NUDGES[0].trim();
+    for timeout in [false, true] {
+        let mock = Arc::new(MockCompute::new());
+        let (server, script) = looping_server(&mock, hog_config(2), 6000);
+        let server = if timeout { server.with_request_timeout(Duration::from_millis(500)) } else { server };
+        let live = live(server).await;
+        let mut socket = socket(&live).await;
+        let body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 1_000_000 });
+        send(&mut socket, create(&body, None)).await;
+        let created = next_of(&mut socket, None, "response.created").await;
+        let id = created["response"]["id"].as_str().unwrap().to_owned();
+        // The continuation runs: the rewind is behind it, held back.
+        prefilled(&mock, 1).await;
+        if !timeout {
+            send(&mut socket, json!({ "type": "response.cancel", "response_id": id })).await;
+        }
+        let events = stream_until_terminal(&mut socket, None).await;
+        let ended = events.last().unwrap();
+        match timeout {
+            false => assert_eq!((&ended["type"], &ended["response"]["status"]), (&json!("response.incomplete"), &json!("cancelled"))),
+            true => assert_eq!((&ended["type"], &ended["response"]["error"]["code"]), (&json!("response.failed"), &json!("request_timeout"))),
+        }
+        let deltas: String =
+            events.iter().filter(|e| e["type"] == "response.reasoning_text.delta").map(|e| e["delta"].as_str().unwrap()).collect();
+        let reasoning = ended["response"]["output"][0]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+        assert_eq!(deltas, reasoning, "the held text was streamed before the end");
+        let at = reasoning.find(nudge).unwrap_or_else(|| panic!("the kept reasoning and the nudge: {reasoning:?}"));
+        let kept = reasoning[..at].trim_end_matches('\n');
+        assert!(kept.chars().count() > 1000 && (responses::prose(3000) + &responses::looping(4000)).starts_with(kept), "{kept:?}");
+        assert!(!reasoning.contains(TAG_PREFIX), "the rewind stays hidden");
+        let output_tokens = ended["response"]["usage"]["output_tokens"].as_u64().unwrap() as usize;
+        assert!(output_tokens >= kept.chars().count() / 8 + nudge.chars().count(), "{}", ended["response"]["usage"]);
+        if timeout {
+            continue;
+        }
+        let next = json!({ "model": MODEL, "input": "go on", "max_output_tokens": 1, "previous_response_id": id });
+        send(&mut socket, create(&next, None)).await;
+        stream_until_terminal(&mut socket, None).await;
+        let rendered = script.seen().last().unwrap().messages.iter().find(|m| m.role == "assistant").unwrap().reasoning_content.clone();
+        assert_eq!(rendered.as_deref(), Some(reasoning.as_str()), "the cancelled response continues from what it held");
+    }
+}
+
+/// A WebSocket request's continuation is admitted through the server-wide
+/// queue, behind what already waits there (ADR 0052), never past it. One
+/// lane: a hog holds it while the looping request and a second hog queue
+/// in that order; the first hog goes, the looping request is admitted and
+/// rewound, and its continuation joins the queue behind the second hog,
+/// which takes the lane the looping request leaves. Straight to the engine,
+/// the continuation would take the lane itself, or wait outside the queue.
+#[tokio::test]
+async fn a_socket_continuation_waits_in_the_queue_behind_what_already_waits() {
+    let mock = Arc::new(MockCompute::new());
+    // The looping request is admitted second: request 1.
+    let script = Script::encoding(responses::scripted_text(&mock, 1, &(responses::prose(3000) + &responses::looping(4000))));
+    let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, ..LoopGuardParams::default() };
+    let server = server(&script, hog_config(1), mock.clone() as Arc<dyn Compute>).with_loop_guard(guard).with_metrics();
+    let metrics = Arc::clone(server.metrics.as_ref().unwrap());
+    let live = live(server).await;
+    let mut socket = socket(&live).await;
+    send(&mut socket, create(&hog(), Some("first"))).await;
+    let first = next_of(&mut socket, Some("first"), "response.in_progress").await;
+    let looping = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 4000 });
+    send(&mut socket, create(&looping, Some("looping"))).await;
+    next_of(&mut socket, Some("looping"), "response.queued").await;
+    send(&mut socket, create(&hog(), Some("second"))).await;
+    let second = next_of(&mut socket, Some("second"), "response.queued").await;
+    metric_reaches(&metrics, "ignis_responses_queued_requests 2").await;
+
+    send(&mut socket, json!({ "type": "response.cancel", "response_id": first["response"]["id"] })).await;
+    next_of(&mut socket, Some("second"), "response.in_progress").await;
+    released(&mock, 1).await;
+    metric_reaches(&metrics, "ignis_responses_queued_requests 1").await;
+    assert!(!mock.prefill_calls().iter().flatten().any(|job| job.request == 3), "the continuation waits behind the second hog");
+
+    send(&mut socket, json!({ "type": "response.cancel", "response_id": second["response"]["id"] })).await;
+    let ended = stream_until_terminal(&mut socket, Some("looping")).await;
+    let ended = ended.last().unwrap();
+    assert_eq!(ended["type"], "response.incomplete", "{ended}");
+    assert!(ended["response"]["output"][0]["content"][0]["text"].as_str().unwrap().contains(TAG_PREFIX), "rewound");
+    metric_reaches(&metrics, "ignis_responses_queued_requests 0").await;
 }

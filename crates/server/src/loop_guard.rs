@@ -78,13 +78,14 @@
 use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use ignis_core::{RequestClass, RequestId, RequestInput, SchedEvent, SubmitError, TokenId};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::watch;
 
 use crate::decoder::{Channel, OutputDecoder};
 use crate::engine::{Engine, EventStream, RequestNotes};
@@ -174,6 +175,22 @@ pub struct LoopGuardParams {
     /// kept behind the model: a rewind whose cut falls in them reaches the
     /// client with no tag. 0, none.
     pub holdback_chars: u32,
+}
+
+impl LoopGuardParams {
+    /// Whether the guard watches `input`, which starts inside its reasoning
+    /// when `starts_in_reasoning`: in `log` or `rewind` mode, on a request
+    /// that reasons and generates (never a warm-up).
+    pub fn watches(&self, input: &RequestInput, starts_in_reasoning: bool) -> bool {
+        self.mode != LoopGuardMode::Off && starts_in_reasoning && !input.warm_up
+    }
+
+    /// Whether the guard may rewind `input`, and so hold its reasoning back:
+    /// in `rewind` mode, on a request with no images, which a continuation
+    /// cannot carry yet.
+    pub fn rewinds(&self, input: &RequestInput) -> bool {
+        self.mode == LoopGuardMode::Rewind && input.multimodal.is_none()
+    }
 }
 
 impl Default for LoopGuardParams {
@@ -759,23 +776,99 @@ pub type Rewound = Arc<RewoundTokens>;
 /// The engine request generating for a guarded request now: the one first
 /// submitted, then each continuation in turn. Shared with what cancels the
 /// request by its response (`api::CancelOnDrop`): after a rewind the first
-/// one is gone, and only the continuation is left to stop.
+/// one is gone, and only the continuation is left to stop. Also how that
+/// consumer ends the request before its own end ([`Running::stop`]).
 #[derive(Debug, Clone)]
-pub struct Running(Arc<AtomicU64>);
+pub struct Running(Arc<RunningState>);
+
+#[derive(Debug)]
+struct RunningState {
+    request: AtomicU64,
+    /// A guard watches the request: it may hold back what the client is owed.
+    guarded: AtomicBool,
+    /// Set by [`Running::stop`], for good.
+    stop: watch::Sender<bool>,
+}
 
 impl Running {
     /// `request`, until a rewind replaces it.
     pub fn new(request: RequestId) -> Self {
-        Self(Arc::new(AtomicU64::new(request)))
+        Self(Arc::new(RunningState { request: AtomicU64::new(request), guarded: AtomicBool::new(false), stop: watch::Sender::new(false) }))
     }
 
     /// The engine request generating now.
     pub fn get(&self) -> RequestId {
-        self.0.load(Ordering::Relaxed)
+        self.0.request.load(Ordering::Relaxed)
     }
 
     fn set(&self, request: RequestId) {
-        self.0.store(request, Ordering::Relaxed);
+        self.0.request.store(request, Ordering::Relaxed);
+    }
+
+    /// End the request before its own end, for a client's cancel or a
+    /// timeout: the guard cancels the engine request generating now, sends
+    /// the client everything it held back, and ends its stream, which the
+    /// caller reads to the end ([`held_back`]). False when no guard watches
+    /// the request: nothing is held, and its stream ends with the engine's.
+    pub fn stop(&self) -> bool {
+        self.0.stop.send_replace(true);
+        self.0.guarded.load(Ordering::Relaxed)
+    }
+
+    /// Once [`Running::stop`] was called.
+    async fn stopped(&self) {
+        let _ = self.0.stop.subscribe().wait_for(|&stop| stop).await;
+    }
+}
+
+/// What the client of a request cut short is still owed (ADR 0052:
+/// everything held back flushes on a cancel and a timeout): [`Running::stop`],
+/// then every token left on `stream`, the guard's, to its end. None when no
+/// guard watches the request.
+pub async fn held_back(running: &Running, stream: &mut EventStream) -> Vec<TokenId> {
+    let mut tokens = Vec::new();
+    if running.stop() {
+        while let Some(event) = stream.recv().await {
+            if let SchedEvent::Token { token, .. } = event {
+                tokens.push(token);
+            }
+        }
+    }
+    tokens
+}
+
+/// The loop guard on one request (chat completions, `/v1/responses` over
+/// HTTP and the WebSocket), taken before the request is submitted, since
+/// every continuation is built from the request as submitted.
+pub struct Guarding {
+    watched: Option<(LoopGuardParams, RequestInput)>,
+    rewound: Rewound,
+}
+
+impl Guarding {
+    /// The guard on `input` under `params`, the live `loop_guard` knobs,
+    /// when it watches it ([`LoopGuardParams::watches`]).
+    pub fn new(params: LoopGuardParams, input: &RequestInput, starts_in_reasoning: bool) -> Self {
+        let watched = params.watches(input, starts_in_reasoning).then(|| (params, input.clone()));
+        Self { watched, rewound: Rewound::default() }
+    }
+
+    /// What the guard's rewinds take back, for the usage.
+    pub fn rewound(&self) -> Rewound {
+        self.rewound.clone()
+    }
+
+    /// `stream`, the engine's for `request`, behind the guard when it
+    /// watches the request, continuations submitted through `ops`; and the
+    /// engine request generating for the client, which a stop sequence, a
+    /// cancel by response or a timeout ends.
+    pub fn guard(self, ops: impl GuardOps, request: RequestId, stream: EventStream) -> (EventStream, Running) {
+        let running = Running::new(request);
+        let stream = match self.watched {
+            Some((params, input)) => guard_counted(params, ops, input, running.clone(), stream, self.rewound),
+            None => stream,
+        };
+        (stream, running)
     }
 }
 
@@ -800,6 +893,7 @@ pub fn guard_counted(
     if params.mode == LoopGuardMode::Off {
         return stream;
     }
+    running.0.guarded.store(true, Ordering::Relaxed);
     let (tx, rx) = unbounded_channel();
     tokio::spawn(run(params, ops, input, running, stream, tx, rewound));
     rx
@@ -832,12 +926,15 @@ struct Guard<O: GuardOps> {
     current: Running,
     view: View,
     watch: Watch,
+    /// The guard may rewind this request ([`LoopGuardParams::rewinds`]);
+    /// else it only logs.
+    rewindable: bool,
     /// The nudges given so far.
     rewinds: u32,
     /// The guard closed the reasoning: nothing more to watch.
     closed: bool,
     /// The characters of reasoning the client is kept behind the view:
-    /// `holdback_chars` in `rewind` mode on a request it can rewind, else 0.
+    /// `holdback_chars` on a request the guard may rewind, else 0.
     holdback: usize,
     /// The view's tokens the client has been sent, from the first: the rest
     /// are held back.
@@ -866,8 +963,7 @@ impl<O: GuardOps> Guard<O> {
         }
         let score = self.watch.check(&self.view.scored, &self.params)?;
         let at = self.view.text().len();
-        let rewindable = self.params.mode == LoopGuardMode::Rewind && self.input.multimodal.is_none();
-        if !rewindable {
+        if !self.rewindable {
             tracing::info!(
                 name: "ignis.loop_guard.detected",
                 request = self.original, engine_request = self.current.get(), at_chars = at, ratio = score.ratio,
@@ -936,6 +1032,13 @@ impl<O: GuardOps> Guard<O> {
         let (request, stream) = tokio::select! {
             submitted = self.ops.submit(next) => submitted?,
             () = self.tx.closed() => return None,
+            // Ended before the continuation was admitted: the client is owed
+            // the kept reasoning, never the loop.
+            () = self.current.stopped() => {
+                self.view = self.view_of(&self.view.tokens[..kept]);
+                self.sent = self.sent.min(kept);
+                return None;
+            }
         };
         self.current.set(request);
         tracing::info!(
@@ -954,16 +1057,19 @@ impl<O: GuardOps> Guard<O> {
         // The model's view: the kept tokens, then the nudge. The client has
         // its first `sent` (all of them, when the tag goes out), and gets
         // the rest as the holdback lets them go.
-        let mut view = View::new(self.ops.decoder(), self.params.normalize);
-        for &token in self.view.tokens[..kept].iter().chain(&nudge) {
-            view.push(token);
-        }
-        self.view = view;
+        self.view = self.view_of(&[&self.view.tokens[..kept], &nudge[..]].concat());
         self.sent = self.sent.min(kept);
         self.watch = Watch::from(self.view.text().len(), &self.params);
         self.rewinds += 1;
         self.closed = close;
         Some(Continuation { request, stream, tag: encoded_tag })
+    }
+
+    /// The model's view of `tokens`, its generation so far.
+    fn view_of(&self, tokens: &[TokenId]) -> View {
+        let mut view = View::new(self.ops.decoder(), self.params.normalize);
+        tokens.iter().for_each(|&token| view.push(token));
+        view
     }
 
     fn send_token(&mut self, token: TokenId) -> bool {
@@ -987,7 +1093,8 @@ impl<O: GuardOps> Guard<O> {
         true
     }
 
-    /// Send the client everything held back: at the stream's end.
+    /// Send the client everything held back: at the stream's end, and when
+    /// the request is stopped.
     fn flush(&mut self) -> bool {
         while self.sent < self.view.tokens.len() {
             let token = self.view.tokens[self.sent];
@@ -1015,7 +1122,7 @@ async fn run<O: GuardOps>(
     rewound: Rewound,
 ) {
     let view = View::new(ops.decoder(), params.normalize);
-    let rewinds = params.mode == LoopGuardMode::Rewind && input.multimodal.is_none();
+    let rewindable = params.rewinds(&input);
     let mut guard = Guard {
         params,
         ops,
@@ -1025,9 +1132,10 @@ async fn run<O: GuardOps>(
         current: running,
         view,
         watch: Watch::from(0, &params),
+        rewindable,
         rewinds: 0,
         closed: false,
-        holdback: if rewinds { params.holdback_chars as usize } else { 0 },
+        holdback: if rewindable { params.holdback_chars as usize } else { 0 },
         sent: 0,
         forwarded: 0,
         offset: 0,
@@ -1040,11 +1148,17 @@ async fn run<O: GuardOps>(
     loop {
         // A consumer that left (cancelled by its response, or gone) stops
         // the engine request generating now, also when the holdback has
-        // nothing to send it that would fail.
+        // nothing to send it that would fail. One that ends the request
+        // ([`Running::stop`]) is sent what was held back first.
         let event = tokio::select! {
             biased;
             () = guard.tx.closed() => {
                 guard.ops.cancel(guard.current.get());
+                return;
+            }
+            () = guard.current.stopped() => {
+                guard.ops.cancel(guard.current.get());
+                guard.flush();
                 return;
             }
             event = stream.recv() => event,
@@ -1107,7 +1221,12 @@ async fn run<O: GuardOps>(
 }
 
 #[cfg(test)]
+#[path = "../tests/support/loop_text.rs"]
+mod loop_text;
+
+#[cfg(test)]
 mod tests {
+    use super::loop_text::{looping, prose};
     use super::*;
     use crate::decoder::TokenDecoder;
     use ignis_core::{DecodeParams, FinishReason};
@@ -1151,45 +1270,6 @@ mod tests {
         let mut deltas = decoder.push(tokens);
         deltas.extend(decoder.finish());
         deltas.into_iter().filter(|d| d.channel == Channel::Reasoning).map(|d| d.text).collect()
-    }
-
-    /// Plausible reasoning that does not repeat: a running account of
-    /// numbered, varied sentences. Its windows score 0.45-0.49 normalized,
-    /// clean with room to spare, as real reasoning's mostly do.
-    fn prose(chars: usize) -> String {
-        const WORDS: &[&str] = &[
-            "Rome", "founded", "kings", "republic", "senate", "consuls", "tribunes", "plebeians", "wars", "Carthage",
-            "Hannibal", "Scipio", "Gracchi", "Marius", "Sulla", "Pompey", "Caesar", "Augustus", "empire", "Nero",
-            "Flavians", "Trajan", "Hadrian", "crisis", "Diocletian", "Constantine", "Christianity", "Goths", "Vandals",
-            "Odoacer", "popes", "Charlemagne", "communes", "Avignon", "Renaissance", "Borgia", "sack", "Baroque",
-            "Bernini", "Napoleon", "unification", "capital", "Fascism", "war", "liberation", "republic", "Jubilee",
-            "aqueducts", "Forum", "Colosseum", "Pantheon", "Tiber", "Palatine", "legions", "Latin", "law", "Cicero",
-            "Vergil", "Ostia", "plague", "Gregory", "Leo", "Vatican", "Sistine", "Michelangelo", "Raphael", "Trastevere",
-            "Garibaldi", "Mazzini", "Cavour", "Mussolini", "Lateran", "Olympics", "Fellini", "Tridentine", "Jesuits",
-            "Inquisition", "Galileo", "Campidoglio", "Aventine", "Esquiline", "Quirinal", "Viminal", "Caelian", "Janiculum",
-        ];
-        let mut out = String::new();
-        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
-        let mut n = 0;
-        while out.chars().count() < chars {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            let len = 6 + (state % 9) as usize;
-            out.push_str(&format!("{n}. "));
-            for k in 0..len {
-                let word = WORDS[((state >> ((k * 5) % 60)) as usize + k * 7 + n) % WORDS.len()];
-                out.push_str(word);
-                out.push(if k + 1 == len { '.' } else { ' ' });
-            }
-            out.push(if n % 4 == 3 { '\n' } else { ' ' });
-            n += 1;
-        }
-        out.chars().take(chars).collect()
-    }
-
-    fn looping(chars: usize) -> String {
-        "the \"Dark Ages\" (the \"Dark Ages\", the \"Dark Ages\"), ".chars().cycle().take(chars).collect()
     }
 
     /// A template loop whose slots are numbers, the shape of the loops the
@@ -2179,6 +2259,152 @@ mod tests {
         assert!(cancelled.contains(&1) && cancelled.iter().all(|&request| request == 1), "only the looping request: {cancelled:?}");
     }
 
+    /// A loop the guard did not act on, given the client's text and the ops
+    /// that would have: nothing cancelled, nothing submitted, the stream
+    /// passed through.
+    fn assert_passed_through(ops: &FakeOps, text: &str, reasoning: &str) {
+        assert_eq!(text, reasoning, "the client got the reasoning as generated");
+        assert!(ops.cancelled.lock().unwrap().is_empty(), "nothing cancelled");
+        assert!(ops.submitted.lock().unwrap().is_empty(), "nothing submitted");
+    }
+
+    /// A loop with too little of `max_tokens` left after the cut for a
+    /// continuation to be worth one is only logged (`no_room`), and one
+    /// token more is rewound.
+    #[tokio::test]
+    async fn a_loop_with_no_room_left_to_continue_is_only_logged() {
+        let reasoning = prose(5000) + &looping(6000);
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        let used = 40_000 - ops.submitted.lock().unwrap()[0].params.max_tokens.unwrap();
+        for (max_tokens, rewound) in [(used + MIN_CONTINUATION_TOKENS - 1, false), (used + MIN_CONTINUATION_TOKENS, true)] {
+            let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+            let (text, done) =
+                drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", max_tokens), 1, scripted(1, &reasoning, true))).await;
+            assert!(done.is_some());
+            match rewound {
+                false => assert_passed_through(&ops, &text, &reasoning),
+                true => assert_eq!(ops.submitted.lock().unwrap()[0].params.max_tokens, Some(MIN_CONTINUATION_TOKENS)),
+            }
+        }
+    }
+
+    /// [`FakeOps`] with no tokenizer: `encode` gives nothing.
+    struct NoTokenizer(Arc<FakeOps>);
+
+    impl GuardOps for NoTokenizer {
+        fn cancel(&self, request: RequestId) {
+            self.0.cancel(request);
+        }
+        fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+            self.0.submit(input)
+        }
+        fn decoder(&self) -> OutputDecoder {
+            self.0.decoder()
+        }
+        fn encode(&self, _: &str) -> Option<Vec<TokenId>> {
+            None
+        }
+    }
+
+    /// With no tokenizer to write the nudge in, a loop is only logged
+    /// (`no_tokenizer`).
+    #[tokio::test]
+    async fn a_loop_with_no_tokenizer_for_the_nudge_is_only_logged() {
+        let reasoning = prose(5000) + &looping(6000);
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let (text, done) =
+            drain(guard(params(LoopGuardMode::Rewind), NoTokenizer(ops.clone()), input("P", 40_000), 1, scripted(1, &reasoning, true))).await;
+        assert!(done.is_some());
+        assert_passed_through(&ops, &text, &reasoning);
+    }
+
+    /// The tokens the client has once the guard has taken in everything
+    /// sent on `tx` so far: a marker event goes after them, and the guard
+    /// passes it on only when it reaches it, every release before it made.
+    async fn received_by(tx: &UnboundedSender<SchedEvent>, out: &mut EventStream, got: &mut Vec<TokenId>) {
+        tx.send(SchedEvent::Evicted { request: 1, snapshot_micros: 0 }).unwrap();
+        loop {
+            match out.recv().await.expect("the marker") {
+                SchedEvent::Token { token, .. } => got.push(token),
+                SchedEvent::Evicted { .. } => return,
+                other => panic!("only tokens and the marker: {other:?}"),
+            }
+        }
+    }
+
+    /// A request with images is never rewound, since a continuation cannot
+    /// carry its media: a loop is only logged, and no holdback keeps the
+    /// client behind.
+    #[tokio::test]
+    async fn a_request_with_images_is_never_rewound_nor_held_back() {
+        let reasoning = prose(5000) + &looping(6000);
+        let images = RequestInput {
+            multimodal: Some(Arc::new(ignis_core::vision::Multimodal { positions: Vec::new(), rope_delta: 0, media: Vec::new() })),
+            ..input("P", 40_000)
+        };
+        let p = LoopGuardParams { holdback_chars: 1000, ..params(LoopGuardMode::Rewind) };
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let (tx, rx) = unbounded_channel();
+        let mut out = guard(p, ops.clone(), images, 1, rx);
+        for token in tokens_of(&reasoning) {
+            tx.send(SchedEvent::Token { request: 1, token }).unwrap();
+        }
+        let mut got = Vec::new();
+        received_by(&tx, &mut out, &mut got).await;
+        assert_passed_through(&ops, &text_of(&got), &reasoning);
+    }
+
+    /// A request ended before its own end (a cancel, a timeout) gets what
+    /// the holdback held: the engine request is cancelled, and the stream
+    /// carries the rest of the reasoning, then ends.
+    #[tokio::test]
+    async fn a_stopped_request_is_sent_what_was_held_back() {
+        let reasoning = prose(3000);
+        let ops = ops_with(Vec::new());
+        let (tx, rx) = unbounded_channel();
+        let running = Running::new(1);
+        let p = LoopGuardParams { holdback_chars: 1000, ..params(LoopGuardMode::Rewind) };
+        let mut out = guard_counted(p, ops.clone(), input("P", 40_000), running.clone(), rx, Rewound::default());
+        for token in tokens_of(&reasoning) {
+            tx.send(SchedEvent::Token { request: 1, token }).unwrap();
+        }
+        let mut got = Vec::new();
+        received_by(&tx, &mut out, &mut got).await;
+        assert!(got.len() < 2100, "the holdback keeps the client behind: {}", got.len());
+        got.extend(held_back(&running, &mut out).await);
+        assert_eq!(text_of(&got), reasoning, "the rest, then the end");
+        assert_eq!(*ops.cancelled.lock().unwrap(), vec![1]);
+    }
+
+    /// Stopped while its continuation waits for room: the client is owed
+    /// the kept reasoning, never the loop the rewind took back, and nothing
+    /// is left to admit.
+    #[tokio::test]
+    async fn a_request_stopped_while_its_continuation_waits_is_sent_the_kept_reasoning() {
+        let ops = ops_with(Vec::new());
+        let reasoning = prose(5000) + &looping(6000);
+        let running = Running::new(1);
+        let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
+        let mut out = guard_counted(p, Stalled(ops.clone()), input("P", 40_000), running.clone(), scripted(1, &reasoning, false), Rewound::default());
+        until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
+        let kept = text_of(&held_back(&running, &mut out).await);
+        let continued = text_of(&ops.submitted.lock().unwrap()[0].tokens);
+        assert!(continued.strip_prefix('P').unwrap().starts_with(&kept) && kept.len() > 1000, "kept {} chars", kept.len());
+        assert!(prose(5000).starts_with(&kept), "none of the loop");
+        until("the guard still waits", || Arc::strong_count(&ops) == 1).await;
+    }
+
+    /// With no guard on the request, stopping it holds nothing back.
+    #[tokio::test]
+    async fn a_request_no_guard_watches_holds_nothing_back() {
+        let running = Running::new(1);
+        let (_tx, rx) = unbounded_channel();
+        let mut out = guard_counted(params(LoopGuardMode::Off), ops_with(Vec::new()), input("P", 40_000), running.clone(), rx, Rewound::default());
+        assert!(!running.stop());
+        assert!(held_back(&running, &mut out).await.is_empty(), "nothing read from the engine's own stream");
+    }
+
     // ── history repair on the guard's own streams ──────────────────────
 
     #[tokio::test]
@@ -2297,19 +2523,6 @@ mod tests {
     /// at the reasoning's close; in `log` mode nothing is held.
     #[tokio::test]
     async fn a_holdback_keeps_the_client_behind_until_the_reasoning_closes() {
-        /// The tokens the client has once the guard has taken in everything
-        /// sent so far: a marker event goes after them, and the guard passes
-        /// it on only when it reaches it, every release before it made.
-        async fn received_by(tx: &UnboundedSender<SchedEvent>, out: &mut EventStream, got: &mut Vec<TokenId>) {
-            tx.send(SchedEvent::Evicted { request: 1, snapshot_micros: 0 }).unwrap();
-            loop {
-                match out.recv().await.expect("the marker") {
-                    SchedEvent::Token { token, .. } => got.push(token),
-                    SchedEvent::Evicted { .. } => return,
-                    other => panic!("only tokens and the marker: {other:?}"),
-                }
-            }
-        }
         let reasoning = prose(3000);
         for (mode, behind) in [(LoopGuardMode::Rewind, 1000), (LoopGuardMode::Log, 0)] {
             let (tx, rx) = unbounded_channel();

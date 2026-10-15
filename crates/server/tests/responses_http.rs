@@ -665,3 +665,70 @@ async fn a_reasoning_blob_this_server_cannot_read_falls_back_to_the_visible_text
         assert_eq!(script.seen()[0].messages[1].reasoning_content.as_deref(), Some(rendered), "{blob}");
     }
 }
+
+/// A stop sequence the continuation writes stops the continuation itself
+/// (ADR 0052): the request log reports it done at its stop, and only the
+/// looping request the rewind replaced is cancelled. Chat completions,
+/// streamed and not. With no retries the rewind closes the reasoning, and
+/// the continuation answers at once.
+#[tokio::test]
+async fn a_stop_sequence_after_a_rewind_stops_the_continuation_by_its_own_id() {
+    for stream in [false, true] {
+        let mock = Arc::new(MockCompute::new());
+        // Every token the continuation draws reads as this.
+        let script = Script::encoding_or(responses::scripted_text(&mock, 0, &looping_reasoning()), "Fine! STOP ");
+        let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, retries: 0, ..LoopGuardParams::default() };
+        let server = server(&script, SchedulerConfig::default(), mock).with_loop_guard(guard).with_metrics();
+        let metrics = Arc::clone(server.metrics.as_ref().unwrap());
+        let app = server.app();
+        let body = json!({
+            "model": MODEL,
+            "messages": [{ "role": "user", "content": "the whole history of Rome" }],
+            "max_tokens": 4000,
+            "stop": ["STOP"],
+            "stream": stream,
+        });
+        let (status, _, text) = post(&app, "/v1/chat/completions", body).await;
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(text.matches("Fine! ").count(), 1, "nothing after the stop sequence: {text}");
+        if !stream {
+            let answer: JsonValue = serde_json::from_str(&text).unwrap();
+            let message = &answer["choices"][0]["message"];
+            assert!(message["reasoning_content"].as_str().unwrap().contains(TAG_PREFIX), "rewound: {answer}");
+            assert_eq!((&message["content"], &answer["choices"][0]["finish_reason"]), (&json!("Fine! "), &json!("stop")), "{answer}");
+        }
+        responses::metric_reaches(&metrics, "ignis_requests_completed_total 1").await;
+        assert!(metrics.render().contains("\nignis_requests_cancelled_total 1\n"), "{}", metrics.render());
+    }
+}
+
+/// A streamed response its timeout cuts short still gets what the holdback
+/// held back (ADR 0052): `response.failed` carries it in the reasoning item,
+/// its deltas come first, and `output_tokens` counts it. Here the holdback
+/// is longer than the whole reasoning, so the client had none of it.
+#[tokio::test]
+async fn a_timeout_lets_what_the_holdback_held_reach_the_streamed_response() {
+    let mock = Arc::new(MockCompute::new());
+    let reasoning = responses::prose(2000);
+    let script = Script::encoding(responses::scripted_text(&mock, 0, &reasoning));
+    let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, holdback_chars: 100_000, ..LoopGuardParams::default() };
+    // Room for a request that runs until its timeout.
+    let config = SchedulerConfig { max_sequence_tokens: 2 << 20, kv_capacity_pages: (2 << 20) / 16 * 2, ..SchedulerConfig::default() };
+    let app = server(&script, config, mock)
+        .with_loop_guard(guard)
+        .with_request_timeout(std::time::Duration::from_millis(500))
+        .app();
+    let body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 1_000_000, "stream": true });
+    let (status, _, text) = post(&app, "/v1/responses", body).await;
+    assert_eq!(status, 200, "{text}");
+    let events = sse_events(&text);
+    let (name, failed) = events.last().unwrap();
+    assert_eq!((name.as_str(), &failed["response"]["error"]["code"]), ("response.failed", &json!("request_timeout")));
+    let shown = failed["response"]["output"][0]["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(!shown.is_empty() && reasoning.starts_with(shown), "the held reasoning reaches the item: {shown:?}");
+    let deltas: String =
+        events.iter().filter(|(name, _)| name == "response.reasoning_text.delta").map(|(_, e)| e["delta"].as_str().unwrap()).collect();
+    assert_eq!(deltas, shown, "streamed before the end");
+    let output_tokens = failed["response"]["usage"]["output_tokens"].as_u64().unwrap() as usize;
+    assert!(output_tokens >= shown.chars().count() / 8, "{}", failed["response"]["usage"]);
+}

@@ -2162,26 +2162,19 @@ async fn chat_completions(
     // template's decoder must be the ones it was submitted to.
     let loaded = server.active();
     let starts_in_reasoning = loaded.template.decoder_starts_in_reasoning(&thinking);
-    // The loop guard (exploration, `loop_guard.rs`) builds its continuations
-    // from the request as submitted.
-    let loop_guard = server.live().loop_guard;
-    let rewound = crate::loop_guard::Rewound::default();
-    let guarded = (loop_guard.mode != crate::loop_guard::LoopGuardMode::Off && starts_in_reasoning).then(|| input.clone());
-    let (request_id, stream) = match loaded.text_engine().submit_with_notes(input, class, notes).await {
+    // The loop guard (ADR 0052) builds its continuations from the request as
+    // submitted.
+    let guarding = crate::loop_guard::Guarding::new(server.live().loop_guard, &input, starts_in_reasoning);
+    let rewound = guarding.rewound();
+    let engine = loaded.text_engine();
+    let (request_id, stream) = match engine.submit_with_notes(input, class, notes).await {
         Ok(x) => x,
         Err(err) => return submit_error(&server, err),
     };
-    let mut stream = match guarded {
-        Some(input) => crate::loop_guard::guard_counted(
-            loop_guard,
-            crate::loop_guard::EngineOps::new(loaded.text_engine().clone(), class, loaded.template.clone()),
-            input,
-            crate::loop_guard::Running::new(request_id),
-            stream,
-            rewound.clone(),
-        ),
-        None => stream,
-    };
+    // After a rewind the engine request generating for the client is the
+    // continuation: a stop sequence or a hang-up ends that one (`running`).
+    let ops = crate::loop_guard::EngineOps::new(engine.clone(), class, loaded.template.clone());
+    let (mut stream, running) = guarding.guard(ops, request_id, stream);
     // GitHub #81 / ADR 0012: the HTTP root span declared `request_id`
     // `Empty` at ingress (`RootSpanMaker`) since the scheduler had not
     // assigned one yet; record it now so every log record for the rest of
@@ -2196,7 +2189,7 @@ async fn chat_completions(
         let include_usage = req.stream_options.is_some_and(|o| o.include_usage);
         return Sse::new(ChunkStream::new(
             stream,
-            CancelOnDrop::new(loaded.text_engine().clone(), request_id),
+            CancelOnDrop::following(engine.clone(), running),
             id,
             created,
             model,
@@ -2229,7 +2222,7 @@ async fn chat_completions(
             schemas,
             stop,
         );
-        return match collect_answer(loaded.text_engine(), request_id, &mut stream, server.live().request_timeout, pipeline).await {
+        return match collect_answer(engine, &running, &mut stream, server.live().request_timeout, pipeline).await {
             Ok(Answer { ending: AnswerEnding::Done(FinishReason::Error), .. }) => engine_error_response(),
             Ok(answer) => {
                 let (reasoning, content, calls) = answer.parts();
@@ -2376,11 +2369,12 @@ impl Answer {
 
 /// Drive a request with `stop` to its answer: each token through `pipeline`
 /// as it arrives, until the engine finishes the request or a stop sequence
-/// matches — then the request is stopped ([`Engine::stop`]) and nothing past
-/// that token is read. Bounded by `timeout`, as [`collect_completion`] is.
+/// matches — then the engine request generating it, `request`'s, is
+/// stopped ([`Engine::stop`]) and nothing past that token is read. Bounded
+/// by `timeout`, as [`collect_completion`] is.
 async fn collect_answer(
     engine: &Engine,
-    request: RequestId,
+    request: &crate::loop_guard::Running,
     stream: &mut EventStream,
     timeout: std::time::Duration,
     mut pipeline: AnswerPipeline,
@@ -2399,7 +2393,7 @@ async fn collect_answer(
                 if !pipeline.fired() {
                     continue;
                 }
-                engine.stop(request, pipeline.consumed());
+                engine.stop(request.get(), pipeline.consumed());
                 (AnswerEnding::Stopped, false, None)
             }
             SchedEvent::Done { reason, thinking, .. } => {
