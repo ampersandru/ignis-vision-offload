@@ -1212,7 +1212,7 @@ fn the_idle_unload_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
     assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().idle_unload_secs, 45, "the file key is model.idle_unload");
 }
 
-// ── loop guard (exploration, branch experiment/loop-rewind) ──────────────
+// ── loop guard (ADR 0052) ────────────────────────────────────────────────
 
 /// The loop guard scores normalized reasoning at 1,000 characters and 0.20
 /// by default; `model.loop_guard_normalize` resolves from flag, env and
@@ -1292,6 +1292,36 @@ fn the_loop_guards_holdback_is_off_by_default_and_resolves_from_flag_env_and_fil
     assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
     let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_holdback: 2500\n")]);
     assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard.holdback_chars, 2500);
+}
+
+/// The guard's cadence (a check every 250 characters), the cut's snap to a
+/// line break (300), the room a continuation needs (512 tokens) and how
+/// long one the engine refuses as full waits (60 s) are config fields too,
+/// from flag, env and file, visible and patchable with no reload.
+#[test]
+fn the_loop_guards_cadence_snap_room_and_submit_wait_resolve_from_flag_env_and_file() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!(
+        (defaults.check_every_chars, defaults.snap_chars, defaults.min_continuation_tokens, defaults.submit_wait_secs),
+        (250, 300, 512, 60)
+    );
+    let flags = config(&["--model-loop-guard-check-every", "500", "--model-loop-guard-snap", "0"]).loop_guard;
+    assert_eq!((flags.check_every_chars, flags.snap_chars), (500, 0), "0 never snaps");
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_MIN_CONTINUATION", "1024"), ("IGNIS_MODEL_LOOP_GUARD_SUBMIT_WAIT", "0")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve")).loop_guard;
+    assert_eq!((from_env.min_continuation_tokens, from_env.submit_wait_secs), (1024, 0), "0 tries once");
+    assert!(refused(&["--model-loop-guard-check-every", "0"]).contains("--model-loop-guard-check-every"));
+    assert!(refused(&["--model-loop-guard-submit-wait", "3601"]).contains("--model-loop-guard-submit-wait"));
+    for name in ["loop_guard_check_every", "loop_guard_snap", "loop_guard_min_continuation", "loop_guard_submit_wait"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[(
+        "c.yaml",
+        "model:\n  loop_guard_check_every: 125\n  loop_guard_snap: 600\n  loop_guard_min_continuation: 256\n  loop_guard_submit_wait: 30\n",
+    )]);
+    let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((file.check_every_chars, file.snap_chars, file.min_continuation_tokens, file.submit_wait_secs), (125, 600, 256, 30));
 }
 
 #[test]

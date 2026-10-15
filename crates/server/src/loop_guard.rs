@@ -11,7 +11,7 @@
 //! third of long-enumeration turns loop in their reasoning, on ignis and on
 //! ninfer alike, and only the thinking budget's close ends them.
 //!
-//! **Detection.** Every [`CHECK_EVERY_CHARS`] characters of new reasoning, the
+//! **Detection.** Every `check_every` characters of new reasoning, the
 //! zlib ratio of the last `window` characters of the reasoning as
 //! [`Normalized`] scores it — code taken out, every run of digits read as one
 //! `0` — under `ratio` is a loop, when the last `window` characters as
@@ -150,6 +150,18 @@ pub const DEFAULT_RETRIES: u32 = 2;
 /// `--model-loop-guard-holdback`'s default, in characters of reasoning held
 /// back from the client: none.
 pub const DEFAULT_HOLDBACK_CHARS: u32 = 0;
+/// `--model-loop-guard-check-every`'s default, in characters of new
+/// reasoning between two scores.
+pub const DEFAULT_CHECK_EVERY_CHARS: u32 = 250;
+/// `--model-loop-guard-snap`'s default, in characters: how far back from the
+/// cut a line break pulls it.
+pub const DEFAULT_SNAP_CHARS: u32 = 300;
+/// `--model-loop-guard-min-continuation`'s default, in tokens of `max_tokens`
+/// a continuation must have left.
+pub const DEFAULT_MIN_CONTINUATION_TOKENS: u32 = 512;
+/// `--model-loop-guard-submit-wait`'s default, in seconds a continuation the
+/// engine refuses as full waits for room.
+pub const DEFAULT_SUBMIT_WAIT_SECS: u32 = 60;
 
 /// The guard's knobs, as the live config holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +187,18 @@ pub struct LoopGuardParams {
     /// kept behind the model: a rewind whose cut falls in them reaches the
     /// client with no tag. 0, none.
     pub holdback_chars: u32,
+    /// The window is scored again after this many characters of new
+    /// reasoning.
+    pub check_every_chars: u32,
+    /// The cut moves back to the line break before it, when one is within
+    /// this many characters. 0, never.
+    pub snap_chars: u32,
+    /// The least of `max_tokens` a continuation must have left to be worth
+    /// one: with less, the loop is only logged.
+    pub min_continuation_tokens: u32,
+    /// How long a continuation the engine refuses as full waits for room,
+    /// in seconds, before the loop is left as it is. 0, it is tried once.
+    pub submit_wait_secs: u32,
 }
 
 impl LoopGuardParams {
@@ -205,18 +229,13 @@ impl Default for LoopGuardParams {
             margin_chars: DEFAULT_MARGIN_CHARS,
             retries: DEFAULT_RETRIES,
             holdback_chars: DEFAULT_HOLDBACK_CHARS,
+            check_every_chars: DEFAULT_CHECK_EVERY_CHARS,
+            snap_chars: DEFAULT_SNAP_CHARS,
+            min_continuation_tokens: DEFAULT_MIN_CONTINUATION_TOKENS,
+            submit_wait_secs: DEFAULT_SUBMIT_WAIT_SECS,
         }
     }
 }
-
-/// How often the window is scored, in characters of new reasoning.
-pub const CHECK_EVERY_CHARS: usize = 250;
-
-/// The cut moves back to the line break before it, when one is this close.
-const SNAP_CHARS: usize = 300;
-
-/// The least of `max_tokens` a continuation must have left to be worth one.
-const MIN_CONTINUATION_TOKENS: u32 = 512;
 
 /// The nudges, in order: the model's own words when it caught itself
 /// (2026-10-12 seed 109: "I'm repeating. Let me stop the repetition and just
@@ -575,7 +594,7 @@ impl Watch {
 
     /// The window's score when the reasoning has grown enough to score it
     /// again: the first time a whole window of scored text lies after the
-    /// floor, then every [`CHECK_EVERY_CHARS`] raw characters. Its raw
+    /// floor, then every `check_every` raw characters. Its raw
     /// window, the last `window` raw characters, lies after the floor too:
     /// the scored one spans at least as many.
     pub fn score(&mut self, scored: &Normalized, params: &LoopGuardParams) -> Option<Score> {
@@ -587,7 +606,7 @@ impl Watch {
         if scored.raw_at(start) < self.floor {
             return None;
         }
-        self.next_check = scored.raw_len() + CHECK_EVERY_CHARS;
+        self.next_check = scored.raw_len() + params.check_every_chars as usize;
         let raw = scored.raw();
         let score = Score {
             ratio: ratio_of(&scored.text()[start..]),
@@ -607,7 +626,7 @@ impl Watch {
     /// Where to take the raw reasoning `text` back to, for the loop the last
     /// score found: the start of the last window before it that scored
     /// clean, `margin` characters earlier, then the line break before that
-    /// when one is within [`SNAP_CHARS`]; with no clean window since the
+    /// when one is within `snap`; with no clean window since the
     /// floor, the floor. Never before the floor.
     ///
     /// A cut inside a code block moves to just before the block's opening
@@ -620,7 +639,7 @@ impl Watch {
             Some(clean) => clean.start.saturating_sub(params.margin_chars as usize).max(self.floor),
             None => self.floor,
         };
-        let low = cut.saturating_sub(SNAP_CHARS).max(self.floor);
+        let low = cut.saturating_sub(params.snap_chars as usize).max(self.floor);
         let cut = match text[low..cut].iter().rposition(|&c| c == '\n') {
             Some(i) => low + i + 1,
             None => cut,
@@ -680,8 +699,11 @@ impl View {
 pub trait GuardOps: Send + Sync + 'static {
     /// Abort a request (fire-and-forget).
     fn cancel(&self, request: RequestId);
-    /// Submit a continuation; `None` when the engine would not take it.
-    fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>>;
+    /// Submit a continuation; `None` when the engine would not take it. One
+    /// the engine refuses as full waits up to `wait` for room (`Duration::ZERO`,
+    /// it is tried once); an implementation with its own admission queue
+    /// waits there instead.
+    fn submit(&self, input: RequestInput, wait: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>>;
     /// A fresh channel-splitting decoder, starting in the reasoning.
     fn decoder(&self) -> OutputDecoder;
     /// `text` as tokens of the loaded tokenizer.
@@ -699,34 +721,53 @@ impl EngineOps {
     pub fn new(engine: Engine, class: RequestClass, template: Arc<dyn TemplateProvider>) -> Self {
         Self { engine, class, template }
     }
+
+    /// The engine a continuation is submitted to.
+    pub(crate) fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
+    /// The class a continuation is submitted in: the request's own.
+    pub(crate) fn class(&self) -> RequestClass {
+        self.class
+    }
 }
 
-/// How many times a continuation the engine refused as `Full` is tried
-/// again, each after a request leaves (or five seconds).
-const SUBMIT_TRIES: u32 = 12;
+/// A continuation the engine refused as `Full` is tried again when a
+/// request leaves, or after this long, within its `submit_wait`.
+const SUBMIT_RETRY_EVERY: Duration = Duration::from_secs(5);
 
 impl GuardOps for EngineOps {
     fn cancel(&self, request: RequestId) {
         self.engine.cancel(request);
     }
 
-    fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+    fn submit(&self, input: RequestInput, wait: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
         Box::pin(async move {
-            for _ in 0..SUBMIT_TRIES {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                // Marked seen before the attempt: a request that leaves
+                // between the refusal and the wait still wakes it.
                 let mut freed = self.engine.freed();
                 freed.borrow_and_update();
-                match self.engine.submit_with_notes(input.clone(), self.class, RequestNotes::default()).await {
+                let error = match self.engine.submit_with_notes(input.clone(), self.class, RequestNotes::default()).await {
                     Ok(pair) => return Some(pair),
                     Err(SubmitError::Full) => {
-                        let _ = tokio::time::timeout(Duration::from_secs(5), freed.changed()).await;
+                        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if left.is_zero() {
+                            SubmitError::Full
+                        } else if let Ok(Err(_)) = tokio::time::timeout(left.min(SUBMIT_RETRY_EVERY), freed.changed()).await {
+                            // A model thread that is gone frees nothing.
+                            SubmitError::Full
+                        } else {
+                            continue;
+                        }
                     }
-                    Err(error) => {
-                        tracing::warn!(name: "ignis.loop_guard.submit_refused", error = ?error, "the continuation was refused");
-                        return None;
-                    }
-                }
+                    Err(error) => error,
+                };
+                tracing::warn!(name: "ignis.loop_guard.submit_refused", error = ?error, wait_secs = wait.as_secs(), "the continuation was refused");
+                return None;
             }
-            None
         })
     }
 
@@ -767,6 +808,16 @@ impl RewoundTokens {
     /// carried.
     pub fn unsent(&self) -> u32 {
         self.unsent.load(Ordering::Relaxed)
+    }
+
+    /// What the usage reports, for a count of `streamed` generated tokens
+    /// (all of them, or the reasoning's) the stream carried: that count
+    /// with the [`RewoundTokens::unsent`] ones, which were generated in the
+    /// reasoning all the same; and `rewound_tokens`, `None` (the field
+    /// absent) when nothing was taken back.
+    pub fn usage(&self, streamed: u32) -> (u32, Option<u32>) {
+        let taken = self.taken();
+        (streamed.saturating_add(self.unsent()), (taken > 0).then_some(taken))
     }
 }
 
@@ -1007,7 +1058,7 @@ impl<O: GuardOps> Guard<O> {
         let mut next = self.input.clone();
         if let Some(max_tokens) = next.params.max_tokens {
             let left = max_tokens.saturating_sub(used);
-            if left < MIN_CONTINUATION_TOKENS {
+            if left < self.params.min_continuation_tokens {
                 tracing::info!(name: "ignis.loop_guard.no_room", request = self.original, at_chars = at, left, "loop, no room left to rewind");
                 self.watch = Watch::from(at, &self.params);
                 return None;
@@ -1030,7 +1081,7 @@ impl<O: GuardOps> Guard<O> {
         // it out of the wait: a submission dropped before its answer is
         // cancelled (`Engine::submit_with_notes`), a queue ticket leaves.
         let (request, stream) = tokio::select! {
-            submitted = self.ops.submit(next) => submitted?,
+            submitted = self.ops.submit(next, Duration::from_secs(u64::from(self.params.submit_wait_secs))) => submitted?,
             () = self.tx.closed() => return None,
             // Ended before the continuation was admitted: the client is owed
             // the kept reasoning, never the loop.
@@ -1378,20 +1429,23 @@ mod tests {
         }
     }
 
+    /// The step is `check_every`: 250 by default.
     #[test]
     fn the_window_is_scored_only_once_it_is_full_and_every_step_after() {
-        let p = params(LoopGuardMode::Log);
-        let text: Vec<char> = looping(2000).chars().collect();
-        let mut scored = Normalized::new(p.normalize);
-        let mut watch = Watch::from(0, &p);
-        grow(&mut scored, &text, 999);
-        assert_eq!(watch.check(&scored, &p), None, "under one window");
-        grow(&mut scored, &text, 1000);
-        assert!(watch.check(&scored, &p).is_some());
-        grow(&mut scored, &text, 1100);
-        assert_eq!(watch.check(&scored, &p), None, "within the step");
-        grow(&mut scored, &text, 1250);
-        assert!(watch.check(&scored, &p).is_some());
+        for step in [DEFAULT_CHECK_EVERY_CHARS as usize, 500] {
+            let p = LoopGuardParams { check_every_chars: step as u32, ..params(LoopGuardMode::Log) };
+            let text: Vec<char> = looping(2000).chars().collect();
+            let mut scored = Normalized::new(p.normalize);
+            let mut watch = Watch::from(0, &p);
+            grow(&mut scored, &text, 999);
+            assert_eq!(watch.check(&scored, &p), None, "under one window");
+            grow(&mut scored, &text, 1000);
+            assert!(watch.check(&scored, &p).is_some());
+            grow(&mut scored, &text, 1000 + step - 1);
+            assert_eq!(watch.check(&scored, &p), None, "within the step of {step}");
+            grow(&mut scored, &text, 1000 + step);
+            assert!(watch.check(&scored, &p).is_some(), "a step of {step}");
+        }
     }
 
     /// Code is not scored text: the first score waits for a whole window
@@ -1444,7 +1498,7 @@ mod tests {
         let clean = *watch.history.iter().rev().skip(1).find(|score| score.is_clean(&p)).expect("a clean window");
         assert!(clean.start < 6000 && clean.end >= 6000 && fire.end > clean.end, "clean {clean:?}, loop {fire:?}");
         let cut = watch.cut_point(&text.chars().collect::<Vec<_>>(), &p);
-        assert!(cut <= clean.start && clean.start - cut <= SNAP_CHARS, "cut {cut}, clean window from {}", clean.start);
+        assert!(cut <= clean.start && clean.start - cut <= p.snap_chars as usize, "cut {cut}, clean window from {}", clean.start);
     }
 
     #[test]
@@ -1459,16 +1513,19 @@ mod tests {
         assert_eq!(watch_with(0, &[(1000, 0.45), (1250, 0.42)]).cut_point(&text, &lenient), 1000, "the loop's own score is never the clean one");
     }
 
+    /// Within `snap` characters: 300 by default, 0 never.
     #[test]
-    fn the_cut_moves_back_to_a_line_break_within_300_characters() {
+    fn the_cut_moves_back_to_a_line_break_within_the_snap() {
         let p = params(LoopGuardMode::Rewind);
         let watch = watch_with(0, &[(1000, 0.45), (1250, 0.15)]);
         let mut text = flat(4000);
         text[650] = '\n';
         assert_eq!(watch.cut_point(&text, &p), 1000, "the line break is 350 characters back");
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { snap_chars: 400, ..p }), 651, "within a snap of 400");
         text[750] = '\n';
         text[800] = '\n';
         assert_eq!(watch.cut_point(&text, &p), 801, "after the last line break before it");
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { snap_chars: 0, ..p }), 1000, "a snap of 0 never moves it");
     }
 
     #[test]
@@ -1813,11 +1870,14 @@ mod tests {
         assert_eq!(shown(decoder(), &[u32::from('a'), NEWLINE_AFTER + u32::from('b')]), "ab\n");
     }
 
-    /// A stand-in engine: records every cancel and submission, and answers a
-    /// submission with the next scripted stream.
+    /// A stand-in engine: records every cancel and submission (and how long
+    /// it may wait for room), and answers a submission with the next
+    /// scripted stream.
+    #[derive(Default)]
     struct FakeOps {
         cancelled: Mutex<Vec<RequestId>>,
         submitted: Mutex<Vec<RequestInput>>,
+        waits: Mutex<Vec<Duration>>,
         streams: Mutex<Vec<(RequestId, EventStream)>>,
     }
 
@@ -1825,8 +1885,9 @@ mod tests {
         fn cancel(&self, request: RequestId) {
             self.cancelled.lock().unwrap().push(request);
         }
-        fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+        fn submit(&self, input: RequestInput, wait: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
             self.submitted.lock().unwrap().push(input);
+            self.waits.lock().unwrap().push(wait);
             let next = self.streams.lock().unwrap().pop();
             Box::pin(async move { next })
         }
@@ -1931,7 +1992,7 @@ mod tests {
     }
 
     fn ops_with(streams: Vec<(RequestId, EventStream)>) -> Arc<FakeOps> {
-        Arc::new(FakeOps { cancelled: Mutex::default(), submitted: Mutex::default(), streams: Mutex::new(streams) })
+        Arc::new(FakeOps { streams: Mutex::new(streams), ..FakeOps::default() })
     }
 
     /// The tokens the model saw after the client's prompt `prompt`: those the
@@ -1977,7 +2038,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_hands_the_stream_back_untouched() {
-        let ops = Arc::new(FakeOps { cancelled: Mutex::default(), submitted: Mutex::default(), streams: Mutex::default() });
+        let ops = ops_with(Vec::new());
         let (text, done) = drain(guard(params(LoopGuardMode::Off), ops.clone(), input("p", 40_000), 1, scripted(1, "abc", true))).await;
         assert_eq!(text, "abc");
         assert!(done.is_some());
@@ -1985,7 +2046,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_mode_passes_a_loop_through_and_acts_on_nothing() {
-        let ops = Arc::new(FakeOps { cancelled: Mutex::default(), submitted: Mutex::default(), streams: Mutex::default() });
+        let ops = ops_with(Vec::new());
         let reasoning = prose(2000) + &looping(6000);
         let (text, done) =
             drain(guard(params(LoopGuardMode::Log), ops.clone(), input("p", 40_000), 1, scripted(1, &reasoning, true))).await;
@@ -1998,11 +2059,7 @@ mod tests {
     #[tokio::test]
     async fn a_loop_is_rewound_nudged_and_continued() {
         let after = "\nRome's story, written.</think>\n\nRoma.";
-        let ops = Arc::new(FakeOps {
-            cancelled: Mutex::default(),
-            submitted: Mutex::default(),
-            streams: Mutex::new(vec![(2, scripted(2, after, true))]),
-        });
+        let ops = ops_with(vec![(2, scripted(2, after, true))]);
         let head = prose(5000);
         let reasoning = head.clone() + &looping(6000);
         let (text, done) =
@@ -2059,11 +2116,7 @@ mod tests {
     /// not the tags or the nudges.
     #[tokio::test]
     async fn the_rewound_count_is_the_struck_tokens_of_every_rewind() {
-        let ops = Arc::new(FakeOps {
-            cancelled: Mutex::default(),
-            submitted: Mutex::default(),
-            streams: Mutex::new(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]),
-        });
+        let ops = ops_with(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]);
         let reasoning = prose(5000) + &looping(6000);
         let rewound = Rewound::default();
         let (text, _) = drain(guard_counted(
@@ -2086,16 +2139,22 @@ mod tests {
         assert_eq!((rewound.taken(), rewound.unsent()), (tags, 0), "with no holdback every struck token was sent");
     }
 
+    /// The usage's arithmetic, on both surfaces: the tokens a holdback never
+    /// sent are added to what the stream carried, and `rewound_tokens` is
+    /// absent when nothing was taken back.
+    #[test]
+    fn the_usage_counts_what_was_never_sent_and_names_what_was_taken_back() {
+        assert_eq!(RewoundTokens::default().usage(40), (40, None));
+        assert_eq!(RewoundTokens::new(321, 0).usage(1500), (1500, Some(321)));
+        assert_eq!(RewoundTokens::new(321, 40).usage(1500), (1540, Some(321)));
+    }
+
     /// After a rewind the watch starts again at the nudge's end: a loop
     /// straight after it has no clean window since, and is cut there, the
     /// first continuation kept whole.
     #[tokio::test]
     async fn the_watch_starts_again_after_a_rewind() {
-        let ops = Arc::new(FakeOps {
-            cancelled: Mutex::default(),
-            submitted: Mutex::default(),
-            streams: Mutex::new(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]),
-        });
+        let ops = ops_with(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]);
         let reasoning = prose(5000) + &looping(6000);
         let (text, _) =
             drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
@@ -2113,11 +2172,7 @@ mod tests {
     /// and the cut is made on the raw reasoning, after the block.
     #[tokio::test]
     async fn a_counting_loop_after_code_is_rewound_on_the_raw_text() {
-        let ops = Arc::new(FakeOps {
-            cancelled: Mutex::default(),
-            submitted: Mutex::default(),
-            streams: Mutex::new(vec![(2, scripted(2, "Roma.", true))]),
-        });
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
         let words = prose(5500);
         let (before, after) = words.split_at(3000);
         let head = format!("{before}\n```rust\n{}```\n{after}", code(3000));
@@ -2134,11 +2189,7 @@ mod tests {
 
     #[tokio::test]
     async fn after_the_retries_the_loop_is_closed() {
-        let ops = Arc::new(FakeOps {
-            cancelled: Mutex::default(),
-            submitted: Mutex::default(),
-            streams: Mutex::new(vec![(2, scripted(2, "Roma.", true))]),
-        });
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
         let reasoning = prose(5000) + &looping(6000);
         let p = LoopGuardParams { retries: 0, ..params(LoopGuardMode::Rewind) };
         let (text, _) = drain(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
@@ -2154,11 +2205,7 @@ mod tests {
     #[tokio::test]
     async fn a_client_that_leaves_cancels_the_continuation() {
         let (cont_tx, cont_rx) = unbounded_channel();
-        let ops = Arc::new(FakeOps {
-            cancelled: Mutex::default(),
-            submitted: Mutex::default(),
-            streams: Mutex::new(vec![(2, cont_rx)]),
-        });
+        let ops = ops_with(vec![(2, cont_rx)]);
         let reasoning = prose(5000) + &looping(6000);
         let mut rx = guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false));
         // Read until the tag, then leave.
@@ -2233,7 +2280,7 @@ mod tests {
         fn cancel(&self, request: RequestId) {
             self.0.cancel(request);
         }
-        fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+        fn submit(&self, input: RequestInput, _: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
             self.0.submitted.lock().unwrap().push(input);
             Box::pin(std::future::pending())
         }
@@ -2269,24 +2316,95 @@ mod tests {
     }
 
     /// A loop with too little of `max_tokens` left after the cut for a
-    /// continuation to be worth one is only logged (`no_room`), and one
-    /// token more is rewound.
+    /// continuation to be worth one (`min_continuation`, 512 by default) is
+    /// only logged (`no_room`), and one token more is rewound.
     #[tokio::test]
     async fn a_loop_with_no_room_left_to_continue_is_only_logged() {
         let reasoning = prose(5000) + &looping(6000);
         let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
         drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
         let used = 40_000 - ops.submitted.lock().unwrap()[0].params.max_tokens.unwrap();
-        for (max_tokens, rewound) in [(used + MIN_CONTINUATION_TOKENS - 1, false), (used + MIN_CONTINUATION_TOKENS, true)] {
-            let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
-            let (text, done) =
-                drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", max_tokens), 1, scripted(1, &reasoning, true))).await;
-            assert!(done.is_some());
-            match rewound {
-                false => assert_passed_through(&ops, &text, &reasoning),
-                true => assert_eq!(ops.submitted.lock().unwrap()[0].params.max_tokens, Some(MIN_CONTINUATION_TOKENS)),
+        for room in [DEFAULT_MIN_CONTINUATION_TOKENS, 2000] {
+            let p = LoopGuardParams { min_continuation_tokens: room, ..params(LoopGuardMode::Rewind) };
+            for (max_tokens, rewound) in [(used + room - 1, false), (used + room, true)] {
+                let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+                let (text, done) = drain(guard(p, ops.clone(), input("P", max_tokens), 1, scripted(1, &reasoning, true))).await;
+                assert!(done.is_some());
+                match rewound {
+                    false => assert_passed_through(&ops, &text, &reasoning),
+                    true => assert_eq!(ops.submitted.lock().unwrap()[0].params.max_tokens, Some(room)),
+                }
             }
         }
+    }
+
+    /// The continuation may wait `submit_wait` for room: 60 s by default, 0
+    /// tried once.
+    #[tokio::test]
+    async fn the_continuation_waits_for_room_as_long_as_submit_wait_says() {
+        let reasoning = prose(5000) + &looping(6000);
+        for secs in [DEFAULT_SUBMIT_WAIT_SECS, 0] {
+            let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+            let p = LoopGuardParams { submit_wait_secs: secs, ..params(LoopGuardMode::Rewind) };
+            drain(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+            assert_eq!(*ops.waits.lock().unwrap(), [Duration::from_secs(u64::from(secs))]);
+        }
+    }
+
+    /// A request the stand-in model generates `max_tokens` tokens for.
+    fn plain(max_tokens: u32) -> RequestInput {
+        RequestInput { params: DecodeParams { max_tokens: Some(max_tokens), ..DecodeParams::default() }, ..input("P", 40_000) }
+    }
+
+    /// [`EngineOps`] on a real engine with one place, which a request that
+    /// runs until it is cancelled holds: a continuation finds it full.
+    async fn full_engine() -> (EngineOps, RequestId, EventStream) {
+        let scheduler = ignis_core::ConcreteScheduler::with_config(
+            ignis_core::SchedulerConfig {
+                model: "m".into(),
+                max_in_flight: 1,
+                max_sequence_tokens: 2 << 20,
+                kv_capacity_pages: (2 << 20) / 16 * 2,
+                ..ignis_core::SchedulerConfig::default()
+            },
+            Arc::new(ignis_core::MockCompute::new()),
+        );
+        let engine = Engine::new(Box::new(scheduler));
+        let (holder, stream) = engine.submit(plain(1_000_000), RequestClass::Interactive).await.expect("the one place");
+        (EngineOps::new(engine, RequestClass::Interactive, Arc::new(crate::template::SimpleTemplateProvider)), holder, stream)
+    }
+
+    /// On the live engine, a continuation refused as full is tried again
+    /// until `submit_wait` runs out: with 0, once; with more, no longer than
+    /// that (not the five seconds a retry waits for a request to leave), and
+    /// admitted as soon as one leaves within it.
+    #[tokio::test]
+    async fn a_continuation_the_engine_finds_full_is_retried_within_the_submit_wait() {
+        let (ops, holder, _stream) = full_engine().await;
+        let bounded = |wait: Duration| tokio::time::timeout(Duration::from_secs(4), ops.submit(plain(4), wait));
+        assert!(bounded(Duration::ZERO).await.expect("tried once, at once").is_none());
+        let started = std::time::Instant::now();
+        assert!(bounded(Duration::from_millis(300)).await.expect("given up when the wait ran out").is_none());
+        assert!(started.elapsed() >= Duration::from_millis(300), "it waited: {:?}", started.elapsed());
+
+        let engine = ops.engine().clone();
+        let leave = async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            engine.cancel(holder);
+        };
+        let (admitted, ()) = tokio::join!(bounded(Duration::from_secs(60)), leave);
+        let (_, mut stream) = admitted.expect("admitted when the place freed").expect("admitted");
+        assert!(stream.recv().await.is_some(), "it runs");
+    }
+
+    /// An engine whose model thread is gone frees no place: the wait ends
+    /// at once instead of trying again until `submit_wait` runs out.
+    #[tokio::test]
+    async fn a_continuation_on_a_shut_down_engine_is_given_up_at_once() {
+        let (ops, _, _stream) = full_engine().await;
+        ops.engine().shutdown();
+        let given_up = tokio::time::timeout(Duration::from_secs(4), ops.submit(plain(4), Duration::from_secs(60))).await;
+        assert!(given_up.expect("given up before the wait ran out").is_none());
     }
 
     /// [`FakeOps`] with no tokenizer: `encode` gives nothing.
@@ -2296,8 +2414,8 @@ mod tests {
         fn cancel(&self, request: RequestId) {
             self.0.cancel(request);
         }
-        fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
-            self.0.submit(input)
+        fn submit(&self, input: RequestInput, wait: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+            self.0.submit(input, wait)
         }
         fn decoder(&self) -> OutputDecoder {
             self.0.decoder()

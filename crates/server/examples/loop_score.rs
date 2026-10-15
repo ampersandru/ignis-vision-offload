@@ -20,16 +20,18 @@
 //!   `[at, start, ratio, raw ratio]`, and `fire_ungated` the first with no
 //!   gate; `cut`: where a rewind at `fire` takes the reasoning back to (floor
 //!   0), with `clean`, the clean score it went back to, `[at, start]`;
-//! - `offline`: the whole text's scored form, windows every 250 scored
-//!   characters as `.scratch/loop-rewind/check.py` takes them, the worst as
-//!   `[ratio, end]`; with `scored_len` and `scored_hash` of that whole form.
+//! - `offline`: the whole text's scored form, windows every `check_every`
+//!   scored characters as the offline research scorer takes them (the
+//!   parity of `docs/findings/2026-10-14-reasoning-loop-guard.md`), the worst
+//!   as `[ratio, end]`; with `scored_len` and `scored_hash` of that whole
+//!   form.
 //!
 //! The hash is FNV-1a 64 of the UTF-8 bytes, so another implementation can
 //! check it has the same text without the text being written out.
 
 use std::io::{BufRead, BufWriter, Write};
 
-use ignis_server::loop_guard::{compress_ratio, LoopGuardParams, Normalized, Score, Watch, CHECK_EVERY_CHARS};
+use ignis_server::loop_guard::{compress_ratio, LoopGuardParams, Normalized, Score, Watch};
 use serde_json::{json, Value};
 
 fn fire(score: &Score) -> Value {
@@ -107,7 +109,7 @@ fn main() {
 
         let whole: Vec<char> = scored.text().to_vec();
         let mut offline: Option<(f64, usize)> = None;
-        for end in (window..=whole.len()).step_by(CHECK_EVERY_CHARS) {
+        for end in (window..=whole.len()).step_by(params.check_every_chars as usize) {
             let ratio = compress_ratio(&whole[end - window..end].iter().collect::<String>());
             if offline.is_none_or(|(worst, _)| ratio < worst) {
                 offline = Some((ratio, end));

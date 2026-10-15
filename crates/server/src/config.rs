@@ -296,7 +296,7 @@ pub struct Config {
     /// [`DEFAULT_THINKING_BUDGET`]): the reasoning tokens a request may spend
     /// before the model's close is forced. `None` = no budget (`off`).
     pub thinking_budget: Option<u32>,
-    /// The loop guard (`--model-loop-guard` and its knobs, exploration).
+    /// The loop guard (`--model-loop-guard` and its knobs, ADR 0052).
     pub loop_guard: crate::loop_guard::LoopGuardParams,
     /// The prefill chunk width, in tokens (a nonzero multiple of
     /// [`PREFILL_CHUNK_ALIGNMENT`]).
@@ -1040,6 +1040,10 @@ fn derive(
             margin_chars: s.model.loop_guard_margin,
             retries: s.model.loop_guard_retries,
             holdback_chars: s.model.loop_guard_holdback,
+            check_every_chars: s.model.loop_guard_check_every,
+            snap_chars: s.model.loop_guard_snap,
+            min_continuation_tokens: s.model.loop_guard_min_continuation,
+            submit_wait_secs: s.model.loop_guard_submit_wait,
         },
         prefill_chunk: s.model.prefill_chunk,
         decode_share_percent: s.model.decode_share,

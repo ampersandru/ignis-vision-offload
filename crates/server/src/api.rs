@@ -2666,15 +2666,12 @@ impl Usage {
     /// The tokens the loop guard took back, when it took any; and the ones
     /// of them its holdback never sent, which the stream did not carry but
     /// the model generated.
-    fn with_rewound(mut self, rewound: &crate::loop_guard::Rewound) -> Self {
-        self.completion_tokens = self.completion_tokens.saturating_add(rewound.unsent());
-        self.total_tokens = self.prompt_tokens.saturating_add(self.completion_tokens);
-        self.completion_tokens_details = Self::rewound_details(rewound.taken());
+    fn with_rewound(mut self, rewound: &crate::loop_guard::RewoundTokens) -> Self {
+        let (completion_tokens, rewound_tokens) = rewound.usage(self.completion_tokens);
+        self.completion_tokens = completion_tokens;
+        self.total_tokens = self.prompt_tokens.saturating_add(completion_tokens);
+        self.completion_tokens_details = rewound_tokens.map(|rewound_tokens| CompletionTokensDetails { rewound_tokens });
         self
-    }
-
-    fn rewound_details(rewound_tokens: u32) -> Option<CompletionTokensDetails> {
-        (rewound_tokens > 0).then_some(CompletionTokensDetails { rewound_tokens })
     }
 }
 
@@ -2787,8 +2784,9 @@ struct ChunkStream {
     /// The prompt tokens the request did not prefill, as its reuse reports
     /// arrive ([`crate::engine::reused_prompt_tokens`]).
     cached_tokens: u32,
-    /// The tokens the loop guard struck, when it is on for this request.
-    rewound: Option<crate::loop_guard::Rewound>,
+    /// The tokens the loop guard struck: none when it is off for this
+    /// request.
+    rewound: crate::loop_guard::Rewound,
     /// `stream_options.include_usage` — gates the trailing usage chunk
     /// (OpenAI only sends it when the client opts in).
     include_usage: bool,
@@ -2882,7 +2880,7 @@ impl ChunkStream {
             pipeline,
             prompt_tokens,
             cached_tokens: 0,
-            rewound: None,
+            rewound: crate::loop_guard::Rewound::default(),
             include_usage,
             pending: VecDeque::new(),
             done_sent: false,
@@ -2895,7 +2893,7 @@ impl ChunkStream {
 
     /// The loop guard's count of struck tokens, for the usage chunk.
     fn with_rewound(mut self, rewound: crate::loop_guard::Rewound) -> Self {
-        self.rewound = Some(rewound);
+        self.rewound = rewound;
         self
     }
 
@@ -3001,10 +2999,7 @@ impl ChunkStream {
             created: self.created,
             model: self.model.clone(),
             choices: vec![],
-            usage: Some(match &self.rewound {
-                Some(rewound) => Usage::new(self.prompt_tokens, completion_tokens, self.cached_tokens).with_rewound(rewound),
-                None => Usage::new(self.prompt_tokens, completion_tokens, self.cached_tokens),
-            }),
+            usage: Some(Usage::new(self.prompt_tokens, completion_tokens, self.cached_tokens).with_rewound(&self.rewound)),
         };
         Event::default().data(serde_json::to_string(&chunk).expect("chunk serializes"))
     }

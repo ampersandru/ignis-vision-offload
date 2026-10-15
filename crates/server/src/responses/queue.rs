@@ -16,6 +16,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tokio::sync::watch;
 
@@ -189,18 +190,17 @@ impl AdmissionQueue {
 
 /// The loop guard's engine for a socket request (ADR 0052): a continuation
 /// is admitted as the socket's requests are, through the server-wide queue
-/// and behind whatever already waits in it; the rest is [`EngineOps`].
+/// and behind whatever already waits in it, for as long as they wait (the
+/// guard's `submit_wait` is for a request with no queue); the rest is
+/// [`EngineOps`].
 pub(crate) struct QueuedOps {
     queue: Arc<AdmissionQueue>,
-    engine: Engine,
-    class: RequestClass,
     ops: EngineOps,
 }
 
 impl QueuedOps {
     pub(crate) fn new(queue: Arc<AdmissionQueue>, engine: Engine, class: RequestClass, template: Arc<dyn TemplateProvider>) -> Self {
-        let ops = EngineOps::new(engine.clone(), class, template);
-        Self { queue, engine, class, ops }
+        Self { queue, ops: EngineOps::new(engine, class, template) }
     }
 }
 
@@ -209,12 +209,12 @@ impl GuardOps for QueuedOps {
         self.ops.cancel(request);
     }
 
-    fn submit(&self, input: RequestInput) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
+    fn submit(&self, input: RequestInput, _: Duration) -> Pin<Box<dyn Future<Output = Option<(RequestId, EventStream)>> + Send + '_>> {
         Box::pin(async move {
-            let notes = RequestNotes::default();
-            let refused = match self.queue.submit(&self.engine, &input, self.class, notes).await {
+            let (engine, class, notes) = (self.ops.engine(), self.ops.class(), RequestNotes::default());
+            let refused = match self.queue.submit(engine, &input, class, notes).await {
                 Admission::Admitted(request, stream) => return Some((request, stream)),
-                Admission::Queued(ticket) => match self.queue.wait(&ticket, &self.engine, &input, self.class, notes).await {
+                Admission::Queued(ticket) => match self.queue.wait(&ticket, engine, &input, class, notes).await {
                     Ok(submitted) => return Some(submitted),
                     Err(refused) => refused,
                 },

@@ -352,12 +352,27 @@ config_group! {
         /// cuts.
         loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
         /// The nudges a looping reasoning gets before the guard closes it.
-        loop_guard_retries: Times = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];
+        loop_guard_retries: Retries = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];
         /// In `rewind` mode, the characters of reasoning held back from the
         /// client: a rewind whose cut falls in them reaches it with no tag
         /// and none of the loop. 0, none; under ~2,000 it hides almost no
         /// rewind.
         loop_guard_holdback: Chars = crate::loop_guard::DEFAULT_HOLDBACK_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
+        /// The loop guard scores the window again after this many
+        /// characters of new reasoning.
+        loop_guard_check_every: Chars = crate::loop_guard::DEFAULT_CHECK_EVERY_CHARS, between(1, 100_000), ALL, [Visible, Patchable];
+        /// A rewind's cut moves back to the line break before it when one
+        /// is within this many characters. 0, never.
+        loop_guard_snap: Chars = crate::loop_guard::DEFAULT_SNAP_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
+        /// The least of a request's `max_tokens` a continuation must have
+        /// left after the cut and the nudge: with less, the loop is only
+        /// logged.
+        loop_guard_min_continuation: Tokens = crate::loop_guard::DEFAULT_MIN_CONTINUATION_TOKENS, at_least(1), ALL, [Visible, Patchable];
+        /// How long a continuation the engine refuses as full waits for
+        /// room, in seconds, before the loop is left as it is; 0 tries
+        /// once. A WebSocket request's continuation waits in the socket's
+        /// admission queue instead, as the socket's own requests do.
+        loop_guard_submit_wait: Secs = crate::loop_guard::DEFAULT_SUBMIT_WAIT_SECS, between(0, 3600), ALL, [Visible, Patchable];
         /// The text rotary table: `none` (the linear table) or
         /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
         /// trained 262,144-position envelope — what a context past it needs.

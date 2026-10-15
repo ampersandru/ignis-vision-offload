@@ -172,7 +172,7 @@ pub struct Live {
     /// it (`--model-idle-unload`, spec model-switch/02); zero never unloads.
     /// Read by the clock at every tick, so a live change needs no restart.
     pub idle_unload: Duration,
-    /// The loop guard (`--model-loop-guard`, exploration): read per request.
+    /// The loop guard (`--model-loop-guard`, ADR 0052): read per request.
     pub loop_guard: loop_guard::LoopGuardParams,
     /// The image model's serving (`image.*`, spec image-model/05): its
     /// queue, what one request may ask for, the condition budget, prompt

@@ -211,8 +211,8 @@ count_kind!(
     Permille: u32, "permille", "count of thousandths"
 );
 count_kind!(
-    /// A count of times.
-    Times: u32, "times", "count"
+    /// A count of retries.
+    Retries: u32, "retries", "retry count"
 );
 
 /// The loop guard's mode (`crate::loop_guard`): `off`, `log` or `rewind`.

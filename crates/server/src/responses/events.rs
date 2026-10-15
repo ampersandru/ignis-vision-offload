@@ -256,8 +256,9 @@ pub(crate) struct ResponseEvents {
     cached_tokens: u32,
     output_tokens: u32,
     reasoning_tokens: u32,
-    /// What the loop guard's rewinds took back, when it watches the request.
-    rewound: Option<Rewound>,
+    /// What the loop guard's rewinds took back: none when it does not watch
+    /// the request.
+    rewound: Rewound,
     /// `include: ["reasoning.encrypted_content"]`.
     encrypted_reasoning: bool,
     ending: Option<Ending>,
@@ -287,7 +288,7 @@ impl ResponseEvents {
             cached_tokens: 0,
             output_tokens: 0,
             reasoning_tokens: 0,
-            rewound: None,
+            rewound: Rewound::default(),
             encrypted_reasoning: false,
             ending: None,
         }
@@ -295,7 +296,7 @@ impl ResponseEvents {
 
     /// Count the tokens the loop guard's rewinds take back in the usage.
     pub(crate) fn with_rewound(mut self, rewound: Rewound) -> Self {
-        self.rewound = Some(rewound);
+        self.rewound = rewound;
         self
     }
 
@@ -654,16 +655,13 @@ impl ResponseEvents {
     fn end(&mut self, ending: Ending, status: &'static str) -> JsonValue {
         self.ending = Some(ending);
         self.response.status = status;
-        let (taken, unsent) = self.rewound.as_ref().map_or((0, 0), |rewound| (rewound.taken(), rewound.unsent()));
-        let output_tokens = self.output_tokens.saturating_add(unsent);
+        let (output_tokens, rewound_tokens) = self.rewound.usage(self.output_tokens);
+        let (reasoning_tokens, _) = self.rewound.usage(self.reasoning_tokens);
         self.response.usage = Some(ResponseUsage {
             input_tokens: self.prompt_tokens,
             input_tokens_details: InputTokensDetails { cached_tokens: self.cached_tokens },
             output_tokens,
-            output_tokens_details: OutputTokensDetails {
-                reasoning_tokens: self.reasoning_tokens.saturating_add(unsent),
-                rewound_tokens: (taken > 0).then_some(taken),
-            },
+            output_tokens_details: OutputTokensDetails { reasoning_tokens, rewound_tokens },
             total_tokens: self.prompt_tokens.saturating_add(output_tokens),
         });
         let kind = match ending {
