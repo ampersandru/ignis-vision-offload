@@ -1044,6 +1044,8 @@ fn derive(
             snap_chars: s.model.loop_guard_snap,
             min_continuation_tokens: s.model.loop_guard_min_continuation,
             submit_wait_secs: s.model.loop_guard_submit_wait,
+            nudge: s.model.loop_guard_nudge.clone(),
+            nudge_again: s.model.loop_guard_nudge_again.clone(),
         },
         prefill_chunk: s.model.prefill_chunk,
         decode_share_percent: s.model.decode_share,

@@ -7,6 +7,8 @@ the way: the junction rule (a nudge after a kept line break goes in without its 
 leading line breaks), `reasoning_tokens` counting what a holdback never sent, the guard
 `off` on a server built without a config, a WebSocket continuation waiting in the
 socket's queue rather than within `loop_guard_submit_wait`, and the new fields' bounds.
+Amended 2026-10-16 (owner): the two nudges are config fields, `loop_guard_nudge` and
+`loop_guard_nudge_again`, whose defaults are the sentences below.
 Proposed 2026-10-14. The design is the owner's (2026-10-13: an
 engine-level detector off the critical path, an injected sentence, a few retries before
 the reasoning is closed, a visible tag the Playground strikes through). The numbers are in
@@ -82,7 +84,8 @@ every event unchanged.
 - **The continuation.** The engine request is cancelled. The **continuation** is the same
   request input, with its prompt extended by the tokens kept before the cut and by a
   **nudge**: a sentence in the model's own voice ("Wait, I'm starting to repeat myself.
-  Let me stop and move on with what I already have."). It gets what is left of the
+  Let me stop and move on with what I already have."), `loop_guard_nudge`; every later
+  rewind writes `loop_guard_nudge_again`. It gets what is left of the
   generation cap and of the thinking budget, and a fresh seed.
 - **When there is no continuation.** A loop with fewer than
   `loop_guard_min_continuation` tokens of the generation cap left after the kept text
@@ -216,6 +219,8 @@ no reload):
 | `loop_guard_snap` | 300 characters (0 = never snaps) |
 | `loop_guard_min_continuation` | 512 tokens |
 | `loop_guard_submit_wait` | 60 seconds (0 = tried once; at most 3,600) |
+| `loop_guard_nudge` | "Wait, I'm starting to repeat myself. Let me stop and move on with what I already have." |
+| `loop_guard_nudge_again` | "I keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now." |
 
 History repair has no field: it is always on, and a tag whose hash does not match is
 never touched.

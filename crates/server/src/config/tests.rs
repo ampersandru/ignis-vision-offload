@@ -1324,6 +1324,28 @@ fn the_loop_guards_cadence_snap_room_and_submit_wait_resolve_from_flag_env_and_f
     assert_eq!((file.check_every_chars, file.snap_chars, file.min_continuation_tokens, file.submit_wait_secs), (125, 600, 256, 30));
 }
 
+/// The two nudges are the model's own words by default and config fields
+/// like the rest, from flag, env and file, visible and patchable with no
+/// reload.
+#[test]
+fn the_loop_guards_nudges_resolve_from_flag_env_and_file() {
+    use crate::loop_guard::{DEFAULT_NUDGE, DEFAULT_NUDGE_AGAIN};
+    let defaults = config(&[]).loop_guard;
+    assert_eq!((defaults.nudge.as_str(), defaults.nudge_again.as_str()), (DEFAULT_NUDGE, DEFAULT_NUDGE_AGAIN));
+    let flags = config(&["--model-loop-guard-nudge", "Wait, I'm repeating myself. Let me go on to the next step."]).loop_guard;
+    assert_eq!(flags.nudge, "Wait, I'm repeating myself. Let me go on to the next step.");
+    assert_eq!(flags.nudge_again, DEFAULT_NUDGE_AGAIN, "each has its own field");
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_NUDGE_AGAIN", "Enough. Wrap up.")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).loop_guard.nudge_again, "Enough. Wrap up.");
+    for name in ["loop_guard_nudge", "loop_guard_nudge_again"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_nudge: \"Next step.\"\n  loop_guard_nudge_again: \"Wrap up.\"\n")]);
+    let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((file.nudge.as_str(), file.nudge_again.as_str()), ("Next step.", "Wrap up."));
+}
+
 #[test]
 fn a_model_field_may_switch_models_unless_the_operator_says_otherwise() {
     assert!(config(&[]).allow_model_switch);

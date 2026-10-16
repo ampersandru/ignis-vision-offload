@@ -373,6 +373,12 @@ config_group! {
         /// once. A WebSocket request's continuation waits in the socket's
         /// admission queue instead, as the socket's own requests do.
         loop_guard_submit_wait: Secs = crate::loop_guard::DEFAULT_SUBMIT_WAIT_SECS, between(0, 3600), ALL, [Visible, Patchable];
+        /// The sentence, in the model's own voice, the loop guard's first
+        /// rewind puts after the kept reasoning, on a paragraph of its own.
+        loop_guard_nudge: Text = crate::loop_guard::DEFAULT_NUDGE.to_owned(), NO_RULE, ALL, [Visible, Patchable];
+        /// The sentence every later rewind puts there, until
+        /// `loop_guard_retries` nudges close the reasoning.
+        loop_guard_nudge_again: Text = crate::loop_guard::DEFAULT_NUDGE_AGAIN.to_owned(), NO_RULE, ALL, [Visible, Patchable];
         /// The text rotary table: `none` (the linear table) or
         /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
         /// trained 262,144-position envelope — what a context past it needs.

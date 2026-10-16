@@ -27,8 +27,9 @@
 //! **Rewind.** The engine request is cancelled and a **continuation**
 //! submitted: the same input, its prompt extended by the generated tokens
 //! kept from before the loop ([`Watch::cut_point`]: back to the start of the
-//! last window that scored clean) and a nudge sentence (after a kept text
-//! that ends in a line break, without its own: [`sentence_after`]), with
+//! last window that scored clean) and a nudge sentence (`nudge`, then
+//! `nudge_again`: [`LoopGuardParams::nudge_text`]; after a kept text that
+//! ends in a line break, without its own: [`sentence_after`]), with
 //! what is left of `max_tokens` and of the thinking budget. Only the kept
 //! tokens and the nudge prefill: the continuation's prompt starts with the
 //! request's own, whose checkpoint the cancelled request published at its
@@ -165,9 +166,17 @@ pub const DEFAULT_MIN_CONTINUATION_TOKENS: u32 = 512;
 /// `--model-loop-guard-submit-wait`'s default, in seconds a continuation the
 /// engine refuses as full waits for room.
 pub const DEFAULT_SUBMIT_WAIT_SECS: u32 = 60;
+/// `--model-loop-guard-nudge`'s default: the model's own words when it
+/// caught itself (2026-10-12 seed 109: "I'm repeating. Let me stop the
+/// repetition and just write the content directly.").
+pub const DEFAULT_NUDGE: &str = "Wait, I'm starting to repeat myself. Let me stop and move on with what I already have.";
+/// `--model-loop-guard-nudge-again`'s default: the sentence of every rewind
+/// after the first.
+pub const DEFAULT_NUDGE_AGAIN: &str =
+    "I keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now.";
 
 /// The guard's knobs, as the live config holds them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopGuardParams {
     pub mode: LoopGuardMode,
     /// A window whose zlib ratio is under this many thousandths is a loop.
@@ -202,9 +211,22 @@ pub struct LoopGuardParams {
     /// How long a continuation the engine refuses as full waits for room,
     /// in seconds, before the loop is left as it is. 0, it is tried once.
     pub submit_wait_secs: u32,
+    /// The sentence the first rewind puts after the kept reasoning.
+    pub nudge: String,
+    /// The sentence every later rewind puts there, until the close.
+    pub nudge_again: String,
 }
 
 impl LoopGuardParams {
+    /// The nudge of the rewind that follows `rewinds` earlier ones: `nudge`
+    /// for the first, `nudge_again` for every later one, as a paragraph of
+    /// its own. After a kept text that ends in a line break, it goes in
+    /// without its leading ones ([`sentence_after`]).
+    pub fn nudge_text(&self, rewinds: u32) -> String {
+        let sentence = if rewinds == 0 { &self.nudge } else { &self.nudge_again };
+        format!("\n\n{}\n\n", sentence.trim())
+    }
+
     /// Whether the guard watches `input`, which starts inside its reasoning
     /// when `starts_in_reasoning`: in `log` or `rewind` mode, on a request
     /// that reasons and generates (never a warm-up).
@@ -236,19 +258,11 @@ impl Default for LoopGuardParams {
             snap_chars: DEFAULT_SNAP_CHARS,
             min_continuation_tokens: DEFAULT_MIN_CONTINUATION_TOKENS,
             submit_wait_secs: DEFAULT_SUBMIT_WAIT_SECS,
+            nudge: DEFAULT_NUDGE.to_owned(),
+            nudge_again: DEFAULT_NUDGE_AGAIN.to_owned(),
         }
     }
 }
-
-/// The nudges, in order: the model's own words when it caught itself
-/// (2026-10-12 seed 109: "I'm repeating. Let me stop the repetition and just
-/// write the content directly."). The last one repeats when `retries` asks
-/// for more. After a kept text that ends in a line break, a nudge goes in
-/// without its leading ones ([`sentence_after`]).
-pub const NUDGES: [&str; 2] = [
-    "\n\nWait, I'm starting to repeat myself. Let me stop and move on with what I already have.\n\n",
-    "\n\nI keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now.\n\n",
-];
 
 /// The sentence a continuation's prompt carries after `kept`, the kept
 /// reasoning as the client shows it: `sentence` (a nudge, the close) as
@@ -1046,10 +1060,8 @@ impl<O: GuardOps> Guard<O> {
         let struck = (self.sent > kept)
             .then(|| shown(self.ops.decoder(), &self.view.tokens[..self.sent]).chars().skip(kept_chars).collect::<String>());
         let close = self.rewinds >= self.params.retries;
-        let sentence = sentence_after(
-            &kept_text,
-            if close { crate::thinking::THINKING_CLOSE_TEXT } else { NUDGES[(self.rewinds as usize).min(NUDGES.len() - 1)] },
-        );
+        let written = if close { crate::thinking::THINKING_CLOSE_TEXT.to_owned() } else { self.params.nudge_text(self.rewinds) };
+        let sentence = sentence_after(&kept_text, &written);
         let encoded_tag = match &struck {
             Some(struck) => self.ops.encode(&tag(self.sent - kept, struck)),
             None => Some(Vec::new()),
@@ -1179,6 +1191,8 @@ async fn run<O: GuardOps>(
 ) {
     let view = View::new(ops.decoder(), params.normalize);
     let rewindable = params.rewinds(&input);
+    let watch = Watch::from(0, &params);
+    let holdback = if rewindable { params.holdback_chars as usize } else { 0 };
     let mut guard = Guard {
         params,
         ops,
@@ -1187,11 +1201,11 @@ async fn run<O: GuardOps>(
         original: running.get(),
         current: running,
         view,
-        watch: Watch::from(0, &params),
+        watch,
         rewindable,
         rewinds: 0,
         closed: false,
-        holdback: if rewindable { params.holdback_chars as usize } else { 0 },
+        holdback,
         sent: 0,
         forwarded: 0,
         offset: 0,
@@ -1363,6 +1377,23 @@ mod tests {
         LoopGuardParams { mode, ..LoopGuardParams::default() }
     }
 
+    /// The default nudges as a continuation writes them
+    /// ([`LoopGuardParams::nudge_text`]).
+    const NUDGES: [&str; 2] = [
+        "\n\nWait, I'm starting to repeat myself. Let me stop and move on with what I already have.\n\n",
+        "\n\nI keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now.\n\n",
+    ];
+
+    /// The first rewind writes `nudge`, every later one `nudge_again`, each
+    /// trimmed and on a paragraph of its own.
+    #[test]
+    fn the_nudges_are_written_on_a_paragraph_of_their_own() {
+        let p = LoopGuardParams::default();
+        assert_eq!([p.nudge_text(0), p.nudge_text(1), p.nudge_text(5)], [NUDGES[0], NUDGES[1], NUDGES[1]]);
+        let typed = LoopGuardParams { nudge: " Next step.\n".to_owned(), nudge_again: "Wrap up.".to_owned(), ..p };
+        assert_eq!((typed.nudge_text(0).as_str(), typed.nudge_text(1).as_str()), ("\n\nNext step.\n\n", "\n\nWrap up.\n\n"));
+    }
+
     fn raw(mode: LoopGuardMode) -> LoopGuardParams {
         LoopGuardParams { normalize: false, ..params(mode) }
     }
@@ -1512,8 +1543,8 @@ mod tests {
         let text = flat(4000);
         let watch = watch_with(0, &[(1000, 0.45), (1250, 0.41), (1500, 0.38), (1750, 0.30), (2000, 0.15)]);
         assert_eq!(watch.cut_point(&text, &p), 1250);
-        assert_eq!(watch.cut_point(&text, &LoopGuardParams { margin_chars: 100, ..p }), 1150);
-        assert_eq!(watch.cut_point(&text, &LoopGuardParams { clean_permille: 420, ..p }), 1000);
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { margin_chars: 100, ..p.clone() }), 1150);
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { clean_permille: 420, ..p.clone() }), 1000);
         let lenient = LoopGuardParams { ratio_permille: 500, clean_permille: 100, ..p };
         assert_eq!(watch_with(0, &[(1000, 0.45), (1250, 0.42)]).cut_point(&text, &lenient), 1000, "the loop's own score is never the clean one");
     }
@@ -1526,7 +1557,7 @@ mod tests {
         let mut text = flat(4000);
         text[650] = '\n';
         assert_eq!(watch.cut_point(&text, &p), 1000, "the line break is 350 characters back");
-        assert_eq!(watch.cut_point(&text, &LoopGuardParams { snap_chars: 400, ..p }), 651, "within a snap of 400");
+        assert_eq!(watch.cut_point(&text, &LoopGuardParams { snap_chars: 400, ..p.clone() }), 651, "within a snap of 400");
         text[750] = '\n';
         text[800] = '\n';
         assert_eq!(watch.cut_point(&text, &p), 801, "after the last line break before it");
@@ -1577,7 +1608,7 @@ mod tests {
     #[test]
     fn a_numeric_table_is_not_a_loop_through_the_raw_gate_and_a_counting_loop_is() {
         let p = params(LoopGuardMode::Log);
-        let ungated = LoopGuardParams { raw_gate_permille: 0, ..p };
+        let ungated = LoopGuardParams { raw_gate_permille: 0, ..p.clone() };
         let table = prose(3000) + &numeric_table(4000);
         let (at, score) = first_loop(&table, 0, &ungated).expect("ungated, the folded table is a loop");
         assert!(at > 3000 && score.raw_ratio >= 0.30, "flagged at {at}: {score:?}");
@@ -2173,6 +2204,27 @@ mod tests {
         assert!(text.ends_with(&format!("{second}Roma.")));
     }
 
+    /// The configured nudges are what a rewind writes, in the
+    /// continuation's prompt and after the tag the client reads: `nudge`
+    /// first, then `nudge_again`.
+    #[tokio::test]
+    async fn a_rewind_writes_the_configured_nudges() {
+        let ops = ops_with(vec![(3, scripted(3, "Roma.", true)), (2, scripted(2, &looping(4000), false))]);
+        let reasoning = prose(5000) + &looping(6000);
+        let p = LoopGuardParams { nudge: "Next step.".to_owned(), nudge_again: "Wrap up.".to_owned(), ..params(LoopGuardMode::Rewind) };
+        let (text, _) = drain(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        let submitted = ops.submitted.lock().unwrap();
+        assert_eq!(submitted.len(), 2, "two loops, two rewinds");
+        let first = text_of(&submitted[0].tokens);
+        let (_, first_nudge) = kept_then(first.strip_prefix('P').unwrap(), "\n\nNext step.\n\n", &reasoning);
+        let second = sentence_after(&first, "\n\nWrap up.\n\n");
+        assert_eq!(text_of(&submitted[1].tokens), format!("{first}{second}"));
+        let (_, after_tag) = text.split_once(TAG_OPEN).expect("the first tag");
+        assert!(after_tag.split_once(']').unwrap().1.starts_with(first_nudge));
+        assert!(text.ends_with(&format!("{second}Roma.")));
+        assert!(!text.contains("repeat myself"), "no default sentence");
+    }
+
     /// On the normalized score: a counting loop after a code block is found,
     /// and the cut is made on the raw reasoning, after the block.
     #[tokio::test]
@@ -2333,7 +2385,7 @@ mod tests {
             let p = LoopGuardParams { min_continuation_tokens: room, ..params(LoopGuardMode::Rewind) };
             for (max_tokens, rewound) in [(used + room - 1, false), (used + room, true)] {
                 let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
-                let (text, done) = drain(guard(p, ops.clone(), input("P", max_tokens), 1, scripted(1, &reasoning, true))).await;
+                let (text, done) = drain(guard(p.clone(), ops.clone(), input("P", max_tokens), 1, scripted(1, &reasoning, true))).await;
                 assert!(done.is_some());
                 match rewound {
                     false => assert_passed_through(&ops, &text, &reasoning),
@@ -2673,7 +2725,7 @@ mod tests {
     async fn a_holdback_lets_everything_go_at_the_end_and_on_an_error() {
         let reasoning = prose(3000);
         let p = LoopGuardParams { holdback_chars: 1000, ..params(LoopGuardMode::Rewind) };
-        let (text, done) = drain(guard(p, ops_with(Vec::new()), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        let (text, done) = drain(guard(p.clone(), ops_with(Vec::new()), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
         assert_eq!((text.as_str(), done.is_none()), (reasoning.as_str(), true), "the stream ended with no Done");
         let (tx, rx) = unbounded_channel();
         for token in tokens_of(&reasoning) {

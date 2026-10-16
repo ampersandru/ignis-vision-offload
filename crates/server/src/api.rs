@@ -2164,7 +2164,7 @@ async fn chat_completions(
     let starts_in_reasoning = loaded.template.decoder_starts_in_reasoning(&thinking);
     // The loop guard (ADR 0052) builds its continuations from the request as
     // submitted.
-    let guarding = crate::loop_guard::Guarding::new(server.live().loop_guard, &input, starts_in_reasoning);
+    let guarding = crate::loop_guard::Guarding::new(server.live().loop_guard.clone(), &input, starts_in_reasoning);
     let rewound = guarding.rewound();
     let engine = loaded.text_engine();
     let (request_id, stream) = match engine.submit_with_notes(input, class, notes).await {

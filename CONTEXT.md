@@ -102,7 +102,8 @@ When output names a domain concept, use the term as defined here.
   extended by the tokens kept before the cut and a **nudge**, with what is left
   of the generation cap and of the thinking budget.
 - **Nudge** — the sentence, in the model's own voice, a continuation ends its
-  prompt with ("Wait, I'm starting to repeat myself. …"). After
+  prompt with ("Wait, I'm starting to repeat myself. …"): `loop_guard_nudge` for the
+  first rewind, `loop_guard_nudge_again` for every later one. After
   `loop_guard_retries` nudges, the thinking close takes its place and the
   reasoning ends.
 - **History repair** — on every incoming request, guard on or off, the `m`

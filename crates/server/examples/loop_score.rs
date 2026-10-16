@@ -76,7 +76,7 @@ fn main() {
         let mut record: Value = serde_json::from_str(&line).expect("a JSON object per line");
         let text = record["text"].as_str().expect("a text").to_owned();
 
-        let ungated = LoopGuardParams { raw_gate_permille: 0, ..params };
+        let ungated = LoopGuardParams { raw_gate_permille: 0, ..params.clone() };
         let mut scored = Normalized::new(params.normalize);
         let mut watch = Watch::from(0, &params);
         let mut checks = Vec::new();
