@@ -2,6 +2,7 @@ import type { ToolExtras } from "../api/request.ts";
 import { AGENT_TOOL, AGENT_TOOL_NAME, AGENTS_IGNIS_PROMPT } from "./agents/agents.ts";
 import { ASK_USER_IGNIS_PROMPT, ASK_USER_TOOL, ASK_USER_TOOL_NAME } from "./ask/ask.ts";
 import { dateTimePrompt } from "./datetime/datetime.ts";
+import { IMAGE_IGNIS_PROMPT, IMAGE_TOOL, isImageTool } from "./image/image.ts";
 import type { Attachment } from "./local/attachments.ts";
 import {
   attachmentsPrompt,
@@ -47,6 +48,8 @@ export type ToolsState = {
   plan: boolean;
   memory: boolean;
   files: boolean;
+  /** make_image: pictures from the image model, a switch there and back per reply that calls it. */
+  images: boolean;
   readFiles: boolean;
   /**
    * An option of every tool, not a tool: how many replies in a row may call
@@ -71,6 +74,7 @@ export const NO_TOOLS: ToolsState = {
   plan: false,
   memory: false,
   files: false,
+  images: false,
   readFiles: false,
   maxRounds: DEFAULT_TOOL_ROUNDS,
 };
@@ -88,11 +92,12 @@ export const ALL_TOOLS: ToolsState = {
   plan: true,
   memory: true,
   files: true,
+  images: true,
   readFiles: true,
   maxRounds: DEFAULT_TOOL_ROUNDS,
 };
 
-const CHOICES = ["agents", "web", "askUser", "dateTime", "runJs", "plan", "memory", "files", "readFiles"] as const;
+const CHOICES = ["agents", "web", "askUser", "dateTime", "runJs", "plan", "memory", "files", "images", "readFiles"] as const;
 
 /** How many tools are in use. */
 export const toolsInUse = (tools: ToolsState) => (tools.enabled ? CHOICES.filter((choice) => tools[choice]).length : 0);
@@ -112,6 +117,7 @@ function inUse(tools: ToolsState, attachments: Attachment[]) {
     plan: on("plan"),
     memory: on("memory"),
     files: on("files"),
+    images: on("images"),
     readFiles: on("readFiles") && attachments.length > 0,
   };
 }
@@ -129,6 +135,7 @@ export function ignisPrompt(tools: ToolsState, context: PromptContext = {}): str
     on.plan ? PLAN_PROMPT : "",
     on.memory ? memoryPrompt(context.notes ?? browserMemory.list()) : "",
     on.files ? FILES_PROMPT : "",
+    on.images ? IMAGE_IGNIS_PROMPT : "",
     on.readFiles ? attachmentsPrompt(attachments) : "",
   ]
     .filter((part) => part !== "")
@@ -158,6 +165,7 @@ export function toolExtras(tools: ToolsState, context: PromptContext = {}): Tool
       ...(on.plan ? [UPDATE_PLAN_TOOL] : []),
       ...(on.memory ? [MEMORY_SAVE_TOOL, MEMORY_READ_TOOL, MEMORY_DELETE_TOOL] : []),
       ...(on.files ? [CREATE_FILE_TOOL] : []),
+      ...(on.images ? [IMAGE_TOOL] : []),
       ...(on.readFiles ? [READ_FILE_TOOL] : []),
     ],
   };
@@ -165,8 +173,10 @@ export function toolExtras(tools: ToolsState, context: PromptContext = {}): Tool
 
 /**
  * What an agent's requests carry: the session's tools less `agent` (agents
- * do not start agents), `ask_user` (only the conversation asks the user)
- * and `update_plan` (the plan is the conversation's).
+ * do not start agents), `ask_user` (only the conversation asks the user),
+ * `update_plan` (the plan is the conversation's) and `make_image` (a switch
+ * of the model would pull the text model from under the agents and the
+ * conversation alike).
  *
  * An agent answers one prompt and is gone, so it has no history to put a
  * developer message after: with the date and time tool on it always takes the
@@ -174,7 +184,7 @@ export function toolExtras(tools: ToolsState, context: PromptContext = {}): Tool
  * is also what keeps every agent of a session opening with the same tokens.
  */
 export function agentExtras(tools: ToolsState, context: PromptContext = {}): ToolExtras {
-  return toolExtras({ ...tools, agents: false, askUser: false, plan: false, dateTimeLive: false }, context);
+  return toolExtras({ ...tools, agents: false, askUser: false, plan: false, images: false, dateTimeLive: false }, context);
 }
 
 /**
@@ -189,12 +199,14 @@ export function setAllTools(tools: ToolsState, enabled: boolean): ToolsState {
 
 /**
  * Which runner answers a call, given the tool names the request declared:
- * agents, web, ask or local for a declared tool; unknown for anything else —
- * a tool the model made up never runs, and gets the list of the ones it has.
+ * agents, web, ask, image or local for a declared tool; unknown for anything
+ * else — a tool the model made up never runs, and gets the list of the ones
+ * it has.
  */
-export function routeCall(name: string, available: string[]): "agent" | "web" | "ask" | "local" | "unknown" {
+export function routeCall(name: string, available: string[]): "agent" | "web" | "ask" | "image" | "local" | "unknown" {
   if (!available.includes(name)) return "unknown";
   if (isWebTool(name)) return "web";
+  if (isImageTool(name)) return "image";
   if (isLocalTool(name)) return "local";
   if (name === ASK_USER_TOOL_NAME) return "ask";
   return name === AGENT_TOOL_NAME ? "agent" : "unknown";

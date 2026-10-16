@@ -263,6 +263,17 @@ When output names a domain concept, use the term as defined here.
 - **Condition image** — an input image an image job is conditioned on (an
   edit's source or one of its references).
   _Avoid_: reference image (**Reference** is the ninfer stack).
+- **Image session** — the Playground's line of work on pictures (spec
+  playground/06): an **image pool** and its steps, each step a prompt, the
+  **image inputs** it was sent with and the pictures it made. Kept in the
+  page's image store.
+- **Image pool** — every picture of an image session — uploaded, made by a
+  step, marked, or brought from the chat — each named `#N` for good.
+- **Image input** — a picture of the image pool chosen for the next step;
+  the prompt calls the inputs image 1, image 2… in order. One input is one
+  condition image, or two when it is marked as a mask (the picture, then its
+  mask). The Image view labels them "Inputs".
+  _Avoid_: reference, reference image.
 - **Condition prefix** — the prompt and the condition images as the DiT sees
   them before the target image; computed once per image job and reused by
   every denoising step of every image the job makes.

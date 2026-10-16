@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AGENT_TOOL, AGENTS_IGNIS_PROMPT } from "./agents/agents.ts";
 import { ASK_USER_IGNIS_PROMPT, ASK_USER_TOOL } from "./ask/ask.ts";
 import { dateTimePrompt } from "./datetime/datetime.ts";
+import { IMAGE_IGNIS_PROMPT, IMAGE_TOOL } from "./image/image.ts";
 import {
   agentExtras,
   ALL_TOOLS,
@@ -46,6 +47,7 @@ const all = {
   plan: true,
   memory: true,
   files: true,
+  images: true,
   readFiles: true,
   maxRounds: DEFAULT_TOOL_ROUNDS,
 };
@@ -102,6 +104,7 @@ describe("tools", () => {
         PLAN_PROMPT,
         memoryPrompt([]),
         FILES_PROMPT,
+        IMAGE_IGNIS_PROMPT,
         attachmentsPrompt([doc]),
       ].join("\n\n"),
       tools: [
@@ -115,10 +118,11 @@ describe("tools", () => {
         MEMORY_READ_TOOL,
         MEMORY_DELETE_TOOL,
         CREATE_FILE_TOOL,
+        IMAGE_TOOL,
         READ_FILE_TOOL,
       ],
     });
-    expect(toolsInUse(all)).toBe(9);
+    expect(toolsInUse(all)).toBe(10);
   });
 
   it("declares read_file only once a file is attached, and tells run_js about the safety check", () => {
@@ -134,7 +138,7 @@ describe("tools", () => {
     expect(toolsInUse({ ...all, enabled: false })).toBe(0);
   });
 
-  it("gives agents every tool but agent, ask_user and update_plan", () => {
+  it("gives agents every tool but agent, ask_user, update_plan and make_image", () => {
     expect(names(agentExtras(all, { ...ctx, attachments: [doc] }))).toEqual([
       "web_search",
       "web_fetch",
@@ -145,7 +149,7 @@ describe("tools", () => {
       "create_file",
       "read_file",
     ]);
-    expect(agentExtras({ ...NO_TOOLS, agents: true, askUser: true, plan: true }, ctx)).toEqual({ ignisPrompt: "", tools: [] });
+    expect(agentExtras({ ...NO_TOOLS, agents: true, askUser: true, plan: true, images: true }, ctx)).toEqual({ ignisPrompt: "", tools: [] });
   });
 
   it("keeps each tool's choice under the switch for all, and turns all on when none was chosen", () => {
@@ -171,6 +175,8 @@ describe("tools", () => {
     expect(routeCall("web_search", every)).toBe("web");
     expect(routeCall("agent", every)).toBe("agent");
     expect(routeCall("ask_user", every)).toBe("ask");
+    expect(routeCall("make_image", every)).toBe("image");
+    expect(routeCall("make_image", names(toolExtras({ ...all, images: false }, ctx)))).toBe("unknown");
     for (const local of ["run_js", "update_plan", "memory_save", "memory_read", "memory_delete", "create_file", "read_file"]) {
       expect(routeCall(local, every)).toBe("local");
     }

@@ -14,11 +14,11 @@ describe("EmptyState", () => {
     expect(renderToStaticMarkup(<EmptyState model={{ state: "error", message: "down" }} />)).toContain("Start ignis-server");
   });
 
-  it("points at the Image view while the image model is loaded, or unloaded while idle: the chat never loads it (spec image-model/05)", () => {
+  it("with the image model loaded, or unloaded while idle, says a prompt goes to the text model named under the box", () => {
     for (const state of ["ready", "unloaded"] as const) {
       const html = renderToStaticMarkup(<EmptyState model={{ state, id: "ignis-image-2.1-turbo", contextLimit: null, kind: "image" }} />);
-      expect(html).toContain("makes images, not replies. Make them in the Image view");
-      expect(html).not.toContain("Send a prompt");
+      expect(html).toContain("makes images, not replies. Send a prompt: it goes to the text model");
+      expect(html).toContain("Pictures are made in the Image view");
     }
     const unloaded = renderToStaticMarkup(<EmptyState model={{ state: "unloaded", id: "qwen3.8-27b", contextLimit: 786432, kind: "text" }} />);
     expect(unloaded).toContain("was unloaded while idle. Send a prompt: it loads");

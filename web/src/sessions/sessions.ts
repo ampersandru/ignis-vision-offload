@@ -2,6 +2,7 @@ import type { Figures } from "../metrics/figures.ts";
 import type { LaneTag, ReasoningEffort } from "../api/request.ts";
 import type { ToolCall } from "../api/sse.ts";
 import type { AgentRun } from "../tools/agents/agents.ts";
+import type { ImageRun } from "../tools/image/image.ts";
 import type { Question } from "../tools/ask/ask.ts";
 import type { UnknownCall } from "../tools/errors.ts";
 import type { PromptImage } from "../conversation/images.ts";
@@ -47,6 +48,10 @@ export type Message = {
   questions?: Question[];
   /** The local tool calls an assistant reply made: code, plan, memory, files. */
   local?: LocalRun[];
+  /** The pictures an assistant reply's make_image calls asked for, as they are made. */
+  imageRuns?: ImageRun[];
+  /** The switch a turn made before its first request, shown on the prompt it answered. */
+  switch?: TurnSwitch;
   /**
    * The moment this turn was sent, as the date and time tool writes it, while
    * the tool updates every prompt. Kept with the turn rather than written
@@ -55,6 +60,9 @@ export type Message = {
    */
   dateTime?: string;
 };
+
+/** A switch to another model before a turn's first request: the owner's choice of model, or the way back from the image model. */
+export type TurnSwitch = { to: string; from?: string; status: "switching" | "switched" | "stopped" | "failed"; error?: string };
 
 export type LogRow = {
   n: number;

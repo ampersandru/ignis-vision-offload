@@ -1,21 +1,24 @@
-import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { ContextUsage } from "../metrics/context.ts";
 import { ContextMeter } from "../metrics/ContextMeter.tsx";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { IconClose, IconImage, IconPaperclip, IconPlus } from "../ui/icons.tsx";
+import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
+import { IconBrush, IconClose, IconImage, IconPaperclip, IconPlus } from "../ui/icons.tsx";
 import { dataUriBytes, type PromptImage } from "./images.ts";
 
 /**
  * The prompt box under the conversation: Send, or Stop while this session
  * streams, the session's attached files, the images this prompt will carry,
- * and the context bar.
+ * the model the next message goes to, and the context bar.
  */
 export function Composer(props: {
   value: string;
   onChange: (value: string) => void;
-  /** The model is known. */
+  /** A model can take the next message: the one loaded, or the one it switches to first. */
   ready: boolean;
+  /** The picker of the model the next message goes to. */
+  modelPicker?: ReactNode;
   /** A reply streams in some session. */
   busy: boolean;
   /** A reply streams in this session. */
@@ -34,6 +37,8 @@ export function Composer(props: {
   imageError: string | null;
   onAddImages: (files: File[]) => void;
   onRemoveImage: (index: number) => void;
+  /** Opens a picture of the box in the markup editor. */
+  onMarkImage?: (index: number) => void;
 }) {
   const { busy, streamingHere } = props;
   const picker = useRef<HTMLInputElement>(null);
@@ -91,6 +96,17 @@ export function Composer(props: {
               >
                 <IconClose />
               </button>
+              {props.onMarkImage && (
+                <button
+                  type="button"
+                  aria-label={`${image.markup ? "Change the marks on" : "Mark"} ${image.name}`}
+                  title="Mark the area to change: the model sees the marks"
+                  onClick={() => props.onMarkImage?.(index)}
+                  className={`cut absolute top-1 left-1 grid size-6 place-items-center bg-surface [--cut-size:4px] hover:text-ink ${image.markup ? "text-ember" : "text-ash"}`}
+                >
+                  <IconBrush />
+                </button>
+              )}
             </span>
           ))}
           {props.imageError && <span className="pb-2 text-xs leading-snug text-fault">{props.imageError}</span>}
@@ -171,11 +187,14 @@ export function Composer(props: {
         )}
       </div>
       <div className="mx-auto mt-2 flex w-full max-w-3xl items-center justify-between gap-4 px-1">
-        <p className="min-w-0 text-xs text-ash">
-          {busy && !streamingHere
-            ? "A reply is streaming in another session. Send works again once it ends."
-            : "Enter sends. Shift+Enter starts a new line."}
-        </p>
+        <div className="flex min-w-0 items-center gap-4">
+          {props.modelPicker}
+          {busy && !streamingHere ? (
+            <p className="min-w-0 text-xs text-ash">A reply is streaming in another session. Send works again once it ends.</p>
+          ) : (
+            !props.modelPicker && <p className="min-w-0 text-xs text-ash">Enter sends. Shift+Enter starts a new line.</p>
+          )}
+        </div>
         <ContextMeter usage={props.usage} />
       </div>
     </div>
@@ -189,70 +208,32 @@ export function Composer(props: {
  * on a choice, on Escape, or on a click anywhere else.
  */
 function AddMenu({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const [at, setAt] = useState({ left: 0, bottom: 0 });
-  const button = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-
-  /**
-   * The menu goes in a portal and is placed by hand. It cannot live beside
-   * the button: the prompt box is a `.cut`, and a clip-path cuts its
-   * descendants too, so a menu standing above the box is clipped away
-   * entirely — it opens and nothing is on screen.
-   */
-  function place() {
-    const box = button.current?.getBoundingClientRect();
-    if (box) setAt({ left: box.left, bottom: window.innerHeight - box.top + 8 });
-  }
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      // The menu is not inside the button's subtree any more, so it has to be asked as well:
-      // closing on its own mousedown would take the item away before its click could land.
-      if (!button.current?.contains(target) && !menu.current?.contains(target)) setOpen(false);
-    };
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("resize", place);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", place);
-    };
-  }, [open]);
-
+  // A portal placed by hand: the prompt box is a `.cut` (useAnchoredMenu says why).
+  const menu = useAnchoredMenu();
   return (
     <div className="shrink-0">
       <button
-        ref={button}
+        ref={menu.button}
         type="button"
         aria-label="Add to this prompt"
         title="Add a file or an image"
         aria-haspopup="menu"
-        aria-expanded={open}
-        className={`grid size-10 place-items-center hover:text-ink [&>svg]:size-[18px] ${open ? "text-ink" : "text-ash"}`}
-        onClick={() => {
-          place();
-          setOpen((o) => !o);
-        }}
+        aria-expanded={menu.open}
+        className={`grid size-10 place-items-center hover:text-ink [&>svg]:size-[18px] ${menu.open ? "text-ink" : "text-ash"}`}
+        onClick={menu.toggle}
       >
         <IconPlus />
       </button>
-      {open &&
+      {menu.open &&
         createPortal(
           // The click that chose an item is what closes the menu, so the choice
           // is handled on the way out and never lands on a dismissed menu.
           <div
-            ref={menu}
+            ref={menu.menu}
             role="menu"
-            style={{ left: at.left, bottom: at.bottom }}
+            style={{ left: menu.at.left, bottom: menu.at.bottom }}
             className="cut fixed z-40 flex w-56 flex-col bg-surface py-1 shadow-[0_8px_24px_rgba(28,32,38,0.28)] [--cut-size:10px]"
-            onClick={() => setOpen(false)}
+            onClick={menu.close}
           >
             {children}
           </div>,

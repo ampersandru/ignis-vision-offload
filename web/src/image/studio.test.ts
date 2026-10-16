@@ -3,21 +3,33 @@ import type { ImageParams } from "../api/images.ts";
 import type { LastSwitch, ModelState } from "../api/model.ts";
 import type { CatalogRow } from "../server/routes.ts";
 import {
+  bareRgbaPrompt,
   DEFAULT_LIMITS,
   downloadImage,
   downloadName,
+  EMPTY_DRAFT,
+  fileFromDataUrl,
   type GalleryItem,
+  galleryItem,
+  glyphOf,
   imageModelRow,
   limitsOf,
+  paramsOf,
   parseSeed,
   performRun,
+  pickReferences,
   progressLine,
   progressShare,
   refusalLine,
+  RGBA_LEAD,
+  RGBA_TAIL,
   runPlan,
   type RunSink,
   settleSwitch,
+  shapeOf,
+  sidesOf,
   switchToImageModel,
+  transparentPrompt,
 } from "./studio.ts";
 
 // The image view's behaviour over a mocked server (spec image-model/05 AC 12):
@@ -79,8 +91,8 @@ describe("performRun", () => {
     await performRun(params, false, s, nextId, undefined, fetcher);
     expect(calls.map((c) => c.path)).toEqual(["/v1/images/generations"]);
     expect(log.items.map((i) => [i.url, i.seed, i.size, i.revisedPrompt, i.edit])).toEqual([
-      ["data:image/png;base64,AAA", 10, "2048x2048", "a brass lantern", false],
-      ["data:image/png;base64,BBB", 11, "2048x2048", undefined, false],
+      ["data:image/png;base64,AAA", "10", "2048x2048", "a brass lantern", false],
+      ["data:image/png;base64,BBB", "11", "2048x2048", undefined, false],
     ]);
     expect(log.end).toEqual({ notes: ["w"], error: null, reread: false });
   });
@@ -274,9 +286,14 @@ describe("what Generate and Edit do (GitHub #324)", () => {
   const text: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786432, kind: "text" };
   const image: ModelState = { state: "ready", id: "ignis-image-2.1-turbo", contextLimit: null, kind: "image" };
 
-  it("runs on the image model as it is, naming none", () => {
-    expect(runPlan(image, DEFAULT_LIMITS, row, true, false)).toEqual({ label: "Generate", note: null, ready: true });
+  it("runs on the image model as it is, naming none, and says the visit to the enhancer when enhancement is on", () => {
+    expect(runPlan(image, DEFAULT_LIMITS, row, false, false)).toEqual({ label: "Generate", note: null, ready: true });
     expect(runPlan({ ...image, state: "unloaded" }, DEFAULT_LIMITS, row, false, true)).toEqual({ label: "Edit", note: null, ready: true });
+    expect(runPlan(image, DEFAULT_LIMITS, row, true, false)).toEqual({
+      label: "Generate",
+      note: "qwen3.8-27b rewrites the prompt first: the server loads it and then the image model again.",
+      ready: true,
+    });
   });
 
   it("with a text model loaded, names the image model and says the switch", () => {
@@ -324,7 +341,7 @@ describe("what Generate and Edit do (GitHub #324)", () => {
 });
 
 describe("the gallery's download", () => {
-  const item: GalleryItem = { id: 3, url: "data:image/png;base64,AAA", prompt: "a lantern", size: "1024x1024", seed: 12, edit: false };
+  const item: GalleryItem = { id: 3, url: "data:image/png;base64,AAA", prompt: "a lantern", size: "1024x1024", seed: "12", edit: false };
 
   it("saves a PNG named for the seed and the size, from the picture's data URL", () => {
     const made: { href?: string; download?: string; clicked: boolean }[] = [];
@@ -380,7 +397,10 @@ describe("the form's limits and words", () => {
   });
 
   it("reads a seed: blank is the server's draw, a whole number is itself, anything else is refused", () => {
-    expect([parseSeed(""), parseSeed(" 42 "), parseSeed("-1"), parseSeed("1.5"), parseSeed("x")]).toEqual([null, 42, undefined, undefined, undefined]);
+    expect([parseSeed(""), parseSeed(" 42 "), parseSeed("-1"), parseSeed("1.5"), parseSeed("x")]).toEqual([null, "42", undefined, undefined, undefined]);
+    // The server's seeds are u64: one past 2^53 is a seed too, kept exactly.
+    expect(parseSeed("5936113633719656123")).toBe("5936113633719656123");
+    expect(parseSeed("18446744073709551616")).toBeUndefined();
   });
 
   it("says the phase, the image and the step", () => {
@@ -397,5 +417,59 @@ describe("the form's limits and words", () => {
       "A model switch is under way: switching Try again in 1 s.",
     );
     expect(refusalLine({ ...base, status: 400, message: "size must be one of 1024x1024" })).toBe("size must be one of 1024x1024");
+  });
+});
+
+describe("the request the draft makes", () => {
+  it("wraps a transparent picture's prompt in the card's wording once, and the gallery shows the owner's words", () => {
+    const wrapped = transparentPrompt("A cute cartoon dragon sticker");
+    expect(wrapped).toBe(`${RGBA_LEAD} A cute cartoon dragon sticker. ${RGBA_TAIL}`);
+    expect(transparentPrompt(wrapped)).toBe(wrapped);
+    expect(bareRgbaPrompt(wrapped)).toBe("A cute cartoon dragon sticker.");
+    const item = galleryItem({ b64: "AAA", index: 0 }, { id: 1, prompt: wrapped, size: "1024x1024", edit: false, background: "transparent" });
+    expect(item.prompt).toBe("A cute cartoon dragon sticker.");
+    expect(item.background).toBe("transparent");
+    expect(galleryItem({ b64: "AAA", index: 0 }, { id: 1, prompt: "x", size: "1024x1024", edit: false, background: "auto" })).not.toHaveProperty("background");
+  });
+
+  it("builds the params from the draft: the count held to the server's, the enhancement the server's until touched", () => {
+    const draft = { ...EMPTY_DRAFT, prompt: "  a lantern ", count: 40, seedText: "7" };
+    expect(paramsOf(draft, [], DEFAULT_LIMITS)).toEqual({ prompt: "a lantern", n: 10, size: "auto", seed: "7", enhance: false, images: [] });
+    expect(paramsOf({ ...draft, enhance: true, background: "opaque" }, [], DEFAULT_LIMITS, "ignis-image-2.1-turbo")).toMatchObject({
+      enhance: true,
+      background: "opaque",
+      model: "ignis-image-2.1-turbo",
+    });
+    expect(paramsOf({ ...draft, background: "transparent" }, [], DEFAULT_LIMITS)?.prompt).toContain(RGBA_TAIL);
+    expect(paramsOf({ ...draft, prompt: " " }, [], DEFAULT_LIMITS)).toBeNull();
+    expect(paramsOf({ ...draft, seedText: "seven" }, [], DEFAULT_LIMITS)).toBeNull();
+  });
+
+  it("takes the pictures a request has room for, and says what it left out", () => {
+    const text = new File(["x"], "notes.txt", { type: "text/plain" });
+    expect(pickReferences([png("a.png"), text], 0, 10)).toEqual({ taken: [expect.any(File)], notice: "1 file is not PNG, JPEG or WebP." });
+    expect(pickReferences([png("a.png"), png("b.png")], 9, 10).taken).toHaveLength(1);
+    expect(pickReferences([png("a.png"), png("b.png")], 9, 10).notice).toBe("A request takes at most 10 references.");
+    expect(pickReferences([png("a.png")], 0, 10).notice).toBeNull();
+  });
+
+  it("takes a gallery picture back as a PNG file", async () => {
+    const file = fileFromDataUrl("data:image/png;base64,AQID", "x.png");
+    expect(file.type).toBe("image/png");
+    expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([1, 2, 3]);
+    expect(() => fileFromDataUrl("blob:nope", "x.png")).toThrow();
+  });
+});
+
+describe("the shapes", () => {
+  it("reads each preset as the ratio a person knows, auto as none", () => {
+    expect(DEFAULT_LIMITS.sizes.map((s) => shapeOf(s)?.ratio)).toEqual(["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "1:1"]);
+    expect(shapeOf("auto")).toBeNull();
+    expect(sidesOf("2400x1792")).toBe("2400 × 1792");
+  });
+
+  it("draws a shape inside its box, the long side filling it", () => {
+    expect(glyphOf({ width: 2752, height: 1536 }, 18)).toEqual({ width: 18, height: 10 });
+    expect(glyphOf({ width: 1536, height: 2752 }, 18)).toEqual({ width: 10, height: 18 });
   });
 });

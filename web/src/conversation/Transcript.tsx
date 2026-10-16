@@ -1,6 +1,7 @@
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import type { ModelState } from "../api/model.ts";
 import type { Session } from "../sessions/sessions.ts";
+import type { ChatPicture, PictureAction } from "./images.ts";
 import { isAtBottom } from "../ui/scroll.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import { Reply } from "./Reply.tsx";
@@ -26,6 +27,8 @@ export function Transcript(props: {
   onSave: (messageId: number, text: string) => void;
   onFork: (messageId: number) => void;
   onAnswer: (messageId: number, callId: string, text: string) => void;
+  /** A picture of the conversation marked into the prompt box, or opened in the Image view. */
+  onPicture?: (picture: ChatPicture, action: PictureAction) => void;
 }) {
   const { session: active, following, openAgent } = props;
   const transcript = useRef<HTMLDivElement>(null);
@@ -61,7 +64,13 @@ export function Transcript(props: {
             // Keyed by session too: a fork shares message ids with its source.
             const key = `${active.id}:${m.id}`;
             return m.role === "user" ? (
-              <UserTurn key={key} message={m} actions={actions} onResend={(text) => latest.current.onRerun(m.id, text)} />
+              <UserTurn
+                key={key}
+                message={m}
+                actions={actions}
+                onResend={(text) => latest.current.onRerun(m.id, text)}
+                onPicture={(picture, action) => latest.current.onPicture?.(picture, action)}
+              />
             ) : (
               <Reply
                 key={key}
@@ -73,6 +82,7 @@ export function Transcript(props: {
                 openCallId={openAgent?.messageId === m.id ? openAgent.callId : null}
                 onOpenAgent={(callId) => latest.current.onOpenAgent({ messageId: m.id, callId })}
                 onAnswer={(callId, text) => latest.current.onAnswer(m.id, callId, text)}
+                onPicture={(picture, action) => latest.current.onPicture?.(picture, action)}
               />
             );
           })}

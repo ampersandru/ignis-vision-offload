@@ -21,8 +21,8 @@ export function EmptyState({ model }: { model: ModelState }) {
         <p className="text-sm text-ash">
           {(model.state === "ready" || model.state === "unloaded") && model.kind === "image" && (
             <>
-              <span className="font-display text-ink">{model.id}</span> makes images, not replies. Make them in the Image view; a chat model
-              loads from the Server view.
+              <span className="font-display text-ink">{model.id}</span> makes images, not replies. Send a prompt: it goes to the text model
+              named under the box, which loads first. Pictures are made in the Image view.
             </>
           )}
           {model.state === "ready" && model.kind !== "image" && (

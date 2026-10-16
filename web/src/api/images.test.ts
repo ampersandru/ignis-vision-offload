@@ -6,7 +6,7 @@ import { EDITS_PATH, editForm, generate, generateStreaming, GENERATIONS_PATH, ge
 // fetch. No request carries a `model` but one whose run names the image
 // model (GitHub #324).
 
-const params: ImageParams = { prompt: "a lantern", n: 2, size: "1024x1024", seed: 7, enhance: false, images: [] };
+const params: ImageParams = { prompt: "a lantern", n: 2, size: "1024x1024", seed: "7", enhance: false, images: [] };
 const png = (name: string) => new File([new Uint8Array([137, 80, 78, 71])], name, { type: "image/png" });
 
 type Call = { path: string; init: RequestInit };
@@ -31,7 +31,7 @@ const json = (body: object, status = 200, headers: Record<string, string> = {}) 
 
 describe("the request bodies", () => {
   it("writes a generation as JSON with no model, the seed only when given, and stream only when asked", () => {
-    expect(generationBody(params, false)).toEqual({ prompt: "a lantern", n: 2, size: "1024x1024", seed: 7, prompt_enhancement: false });
+    expect(generationBody(params, false)).toEqual({ prompt: "a lantern", n: 2, size: "1024x1024", seed: "7", prompt_enhancement: false });
     expect(generationBody({ ...params, seed: null, enhance: true }, true)).toEqual({
       prompt: "a lantern",
       n: 2,
@@ -57,6 +57,39 @@ describe("the request bodies", () => {
     expect(generationBody(named, true)).toMatchObject({ model: "ignis-image-2.1-turbo", prompt: "a lantern", stream: true });
     expect(editForm({ ...named, images: [png("a.png")] }, false).get("model")).toBe("ignis-image-2.1-turbo");
   });
+
+  it("sends the background only when the params choose one, in either shape", () => {
+    expect(generationBody(params, false)).not.toHaveProperty("background");
+    expect(editForm({ ...params, images: [png("a.png")] }, false).has("background")).toBe(false);
+    expect(generationBody({ ...params, background: "transparent" }, false)).toMatchObject({ background: "transparent" });
+    expect(editForm({ ...params, background: "opaque", images: [png("a.png")] }, false).get("background")).toBe("opaque");
+  });
+});
+
+describe("a seed past 2^53", () => {
+  const BIG = "5936113633719656123";
+
+  it("goes to the server as the number it is, in the JSON body and in the multipart form", async () => {
+    const bodies: (string | FormData)[] = [];
+    const fetcher = (async (_path: string, init: RequestInit) => {
+      bodies.push(init.body as string | FormData);
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+    await generate({ ...params, seed: BIG }, undefined, fetcher);
+    await generate({ ...params, seed: BIG, images: [png("a.png")] }, undefined, fetcher);
+    expect(bodies[0]).toContain(`"seed":${BIG}`);
+    expect((bodies[1] as FormData).get("seed")).toBe(BIG);
+  });
+
+  it("comes back whole from an answer and from a stream", async () => {
+    const whole = (async () => new Response(`{"data":[{"b64_json":"AAA"}],"seed":${BIG}}`, { status: 200 })) as unknown as typeof fetch;
+    expect(await generate(params, undefined, whole)).toMatchObject({ ok: true, images: [{ seed: BIG }], extras: { seed: BIG } });
+    const streamed = (async () =>
+      new Response(`data: {"type":"image_generation.completed","image":0,"b64_json":"AAA","seed":${BIG}}\n\n`, { status: 200 })) as unknown as typeof fetch;
+    const seen: string[] = [];
+    await generateStreaming(params, { onProgress: () => {}, onImage: (image) => seen.push(image.seed ?? "") }, undefined, streamed);
+    expect(seen).toEqual([BIG]);
+  });
 });
 
 describe("generate (answered whole)", () => {
@@ -78,10 +111,10 @@ describe("generate (answered whole)", () => {
     expect(outcome).toEqual({
       ok: true,
       images: [
-        { b64: "AAA", index: 0, seed: 7, size: "1024x1024", revisedPrompt: "a brass lantern" },
-        { b64: "BBB", index: 1, seed: 7, size: "1024x1024" },
+        { b64: "AAA", index: 0, seed: "7", size: "1024x1024", revisedPrompt: "a brass lantern" },
+        { b64: "BBB", index: 1, seed: "7", size: "1024x1024" },
       ],
-      extras: { seed: 7, size: "1024x1024", warnings: ["the enhancer could not be had"], conditionSizes: [] },
+      extras: { seed: "7", size: "1024x1024", warnings: ["the enhancer could not be had"], conditionSizes: [] },
     });
   });
 
@@ -138,7 +171,7 @@ describe("generateStreaming", () => {
     expect(body).not.toHaveProperty("model");
     expect(progress.map((p) => `${p.phase} ${p.step}/${p.total}`)).toEqual(["enhancing 1/1", "encoding 1/1", "denoising 3/8"]);
     expect(seen).toEqual(["AAA", "BBB"]);
-    expect(outcome).toMatchObject({ ok: true, extras: { seed: 7, warnings: ["w"] } });
+    expect(outcome).toMatchObject({ ok: true, extras: { seed: "7", warnings: ["w"] } });
     expect(outcome.ok && outcome.images[0].revisedPrompt).toBe("a brass lantern");
   });
 

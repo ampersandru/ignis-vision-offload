@@ -158,6 +158,10 @@ meets one anyway uses its prompt as sent, with a warning.
 
 ### Playground
 
+Superseded by spec playground/06 (the image studio): the view is now image
+sessions of steps, with marks, transparent pictures and the chat's picture
+tool. What follows is the view #322 built.
+
 A new `image` view (`web/src/app/Header.tsx`'s `View`). It has:
 - prompt, size preset, `n` and seed;
 - up to 10 condition images by drop or pick, with their alpha shown;

@@ -25,13 +25,13 @@ describe("Header", () => {
     expect(withMetrics).toContain(">Monitor<");
   });
 
-  it("offers the Image view, and marks it current without the chat drawers", () => {
+  it("offers the Image view, and marks it current with drawers of its own: its sessions and its settings", () => {
     const plain = renderToStaticMarkup(<Header {...base} view="chat" onView={() => {}} />);
     expect(plain).toContain(">Image<");
     const image = renderToStaticMarkup(<Header {...base} view="image" onView={() => {}} />);
     expect(image).toMatch(/aria-current="page"[^>]*>Image</);
-    expect(image).not.toContain('aria-label="Sessions"');
-    expect(image).not.toContain('aria-label="Settings"');
+    expect(image).toContain('aria-label="Sessions"');
+    expect(image).toContain('aria-label="Settings"');
   });
 
   it("marks the current view and hides the chat drawers outside the chat", () => {

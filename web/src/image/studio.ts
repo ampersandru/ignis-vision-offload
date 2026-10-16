@@ -1,16 +1,76 @@
-import { generate, generateStreaming, type ImageOutcome, type ImageParams, type ImageProgress, isEdit, type MadeImage, STOPPED } from "../api/images.ts";
+import {
+  generate,
+  generateStreaming,
+  type ImageBackground,
+  type ImageOutcome,
+  type ImageParams,
+  type ImageProgress,
+  isEdit,
+  type MadeImage,
+  STOPPED,
+} from "../api/images.ts";
 import { canSend, imageLoaded, type LastSwitch, type ModelState } from "../api/model.ts";
+import { nthSeed, type Seed, seedOf } from "../api/seed.ts";
 import { lastSwitchLine } from "../server/outcome.ts";
 import { type CatalogRow, type ConfigDocument, switchTo } from "../server/routes.ts";
 
-// The image view's pure parts (spec image-model/05 §Playground, GitHub #322):
+// The pure parts of making a picture (spec image-model/05 §Playground, GitHub
+// #322), shared by the image view's sessions and the chat's picture tool:
 // what the server's configuration allows, which catalog row is the image
-// model, what Generate does with the model loaded now (GitHub #324), how
-// progress and refusals read, and the gallery's download. The view and its
-// hook only compose these.
+// model, what Generate does with the model loaded now (GitHub #324), a draft
+// as a request, one request run to its pictures, how progress and refusals
+// read, the card's wording for a transparent picture, and the sizes as shapes.
 
 /** `auto` first, then the server's `image.sizes`: the form offers exactly what the server will accept. */
 export const AUTO_SIZE = "auto";
+
+/** The request as the owner is writing it. `enhance` is null until touched: it follows the server's setting till then. */
+export type Draft = {
+  prompt: string;
+  size: string;
+  count: number;
+  seedText: string;
+  background: ImageBackground;
+  enhance: boolean | null;
+  stream: boolean;
+};
+
+export const EMPTY_DRAFT: Draft = { prompt: "", size: AUTO_SIZE, count: 1, seedText: "", background: "auto", enhance: null, stream: true };
+
+/** The kinds of picture the edits route decodes. */
+export const ACCEPTED_IMAGES = ["image/png", "image/jpeg", "image/webp"];
+
+/** Of `files`, the pictures a request still has room for beside the `have` chosen, and what was left out, in words. */
+export function pickReferences(files: File[], have: number, max: number): { taken: File[]; notice: string | null } {
+  const images = files.filter((f) => ACCEPTED_IMAGES.includes(f.type));
+  const skipped = files.length - images.length;
+  const room = Math.max(0, max - have);
+  const notes = [
+    skipped > 0 ? `${skipped} ${skipped === 1 ? "file is" : "files are"} not PNG, JPEG or WebP.` : "",
+    images.length > room ? `A request takes at most ${max} references.` : "",
+  ].filter(Boolean);
+  return { taken: images.slice(0, room), notice: notes.length > 0 ? notes.join(" ") : null };
+}
+
+/**
+ * The draft as a request, or `null` while it cannot be sent: no prompt, or a seed the server would refuse. The
+ * count is held to the server's limit, and a transparent background carries the card's wording.
+ */
+export function paramsOf(draft: Draft, files: File[], limits: Limits, model?: string): ImageParams | null {
+  const prompt = draft.prompt.trim();
+  const seed = parseSeed(draft.seedText);
+  if (prompt === "" || seed === undefined) return null;
+  return {
+    prompt: draft.background === "transparent" ? transparentPrompt(prompt) : prompt,
+    n: Math.min(limits.maxN, Math.max(1, Math.floor(draft.count) || 1)),
+    size: draft.size,
+    seed,
+    enhance: draft.enhance ?? limits.enhance,
+    images: files,
+    ...(draft.background !== "auto" ? { background: draft.background } : {}),
+    ...(model ? { model } : {}),
+  };
+}
 
 /**
  * What the form may ask for, from the running configuration; the server's own defaults while it is unread. `enhancer`
@@ -60,7 +120,11 @@ export type RunPlan = { label: string; note: string | null; model?: string; read
 export function runPlan(model: ModelState, limits: Limits, imageModel: CatalogRow | null, enhance: boolean, edit: boolean, running = false): RunPlan {
   const verb = edit ? "edit" : "generate";
   const plain = edit ? "Edit" : "Generate";
-  if (imageLoaded(model)) return { label: plain, note: null, ready: true };
+  if (imageLoaded(model)) {
+    // With the image model loaded, enhancement is a visit to the enhancer and back (spec image-model/05).
+    const note = enhance ? `${limits.enhancer} rewrites the prompt first: the server loads it and then the image model again.` : null;
+    return { label: plain, note, ready: true };
+  }
   if (!canSend(model) || !imageModel) return { label: plain, note: running ? null : "Needs the image model.", ready: false };
   if (!limits.allowImplicit) {
     return { label: plain, note: "switch.allow_implicit is off, so a request does not switch: switch to the image model first.", ready: false };
@@ -136,28 +200,104 @@ export type GalleryItem = {
   id: number;
   /** The PNG as a data URL, built once when the picture arrives: the gallery re-renders on every progress event. */
   url: string;
+  /** The owner's words: a transparent picture's without the wording `transparentPrompt` added. */
   prompt: string;
   revisedPrompt?: string;
   size: string;
   /** The image's own seed (the job's seed plus its index), when the server said. */
-  seed?: number;
+  seed?: Seed;
   edit: boolean;
+  /** The background the request chose, when it chose one other than the model's own. */
+  background?: Exclude<ImageBackground, "auto">;
+  /** Laid over the original through the marked area: outside it, the original's pixels. */
+  kept?: true;
 };
 
 export const dataUrl = (b64: string) => `data:image/png;base64,${b64}`;
 
 /** A made image as a gallery picture; `size` is what was asked, used when the server did not say what it made. */
-export function galleryItem(image: MadeImage, meta: { id: number; prompt: string; size: string; edit: boolean }): GalleryItem {
+export function galleryItem(
+  image: MadeImage,
+  meta: { id: number; prompt: string; size: string; edit: boolean; background?: ImageBackground },
+): GalleryItem {
+  const background = meta.background === "transparent" || meta.background === "opaque" ? meta.background : undefined;
   return {
     id: meta.id,
     url: dataUrl(image.b64),
-    prompt: meta.prompt,
+    prompt: background === "transparent" ? bareRgbaPrompt(meta.prompt) : meta.prompt,
     ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
     size: image.size ?? meta.size,
-    ...(image.seed !== undefined ? { seed: image.seed + image.index } : {}),
+    ...(image.seed !== undefined ? { seed: nthSeed(image.seed, image.index) } : {}),
     edit: meta.edit,
+    ...(background ? { background } : {}),
   };
 }
+
+/** A data URL's bytes as a file: a gallery picture taken back as a condition image. */
+export function fileFromDataUrl(url: string, name: string): File {
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(url);
+  if (!match) throw new Error("not a data URL");
+  const type = match[1] || "application/octet-stream";
+  const bytes = match[2] ? Uint8Array.from(atob(match[3]), (c) => c.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(match[3]));
+  return new File([bytes], name, { type });
+}
+
+// Qwen-Image-2.1's card asks for a transparent picture in its own words: the
+// lead ahead of the description, the tail after it. The form adds them when
+// the owner picks a transparent background; the gallery shows the
+// description alone.
+export const RGBA_LEAD = "This is an RGBA image with transparency.";
+export const RGBA_TAIL = "The image has alpha channel and the background is transparent.";
+
+/** The prompt in the card's wording for a transparent picture; a prompt that has it already is left as it is. */
+export function transparentPrompt(prompt: string): string {
+  const bare = bareRgbaPrompt(prompt);
+  return `${RGBA_LEAD} ${bare}${/[.!?]$/.test(bare) || bare === "" ? "" : "."} ${RGBA_TAIL}`.replace(/\s+/g, " ").trim();
+}
+
+/** The prompt without the card's transparent wording around it. */
+export function bareRgbaPrompt(prompt: string): string {
+  let p = prompt.trim();
+  if (p.startsWith(RGBA_LEAD)) p = p.slice(RGBA_LEAD.length).trim();
+  if (p.endsWith(RGBA_TAIL)) p = p.slice(0, -RGBA_TAIL.length).trim();
+  return p;
+}
+
+/** A size as a person reads it: its sides and the nearest common ratio. */
+export type Shape = { width: number; height: number; ratio: string };
+
+const RATIOS: [number, number][] = [
+  [1, 1],
+  [4, 3],
+  [3, 4],
+  [3, 2],
+  [2, 3],
+  [16, 9],
+  [9, 16],
+  [21, 9],
+  [9, 21],
+];
+
+/** `2400x1792` as 4:3: the presets are multiples of 32, so none is an exact ratio. `null` for `auto` or anything not `WxH`. */
+export function shapeOf(size: string): Shape | null {
+  const match = /^(\d+)x(\d+)$/.exec(size);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width === 0 || height === 0) return null;
+  const off = ([a, b]: [number, number]) => Math.abs(Math.log(a / b / (width / height)));
+  const [a, b] = RATIOS.reduce((best, r) => (off(r) < off(best) ? r : best));
+  return { width, height, ratio: `${a}:${b}` };
+}
+
+/** A shape drawn inside a `box`-sided square: the long side fills it. */
+export function glyphOf(shape: Pick<Shape, "width" | "height">, box: number): { width: number; height: number } {
+  const scale = box / Math.max(shape.width, shape.height);
+  return { width: Math.max(2, Math.round(shape.width * scale)), height: Math.max(2, Math.round(shape.height * scale)) };
+}
+
+/** `2400 × 1792`. */
+export const sidesOf = (size: string) => size.replace(/^(\d+)x(\d+)$/, "$1 × $2");
 
 export const downloadName = (item: GalleryItem) => `ignis-${item.seed ?? `image-${item.id}`}-${item.size}.png`;
 
@@ -169,14 +309,8 @@ export function downloadImage(item: GalleryItem, doc: Pick<Document, "createElem
   anchor.click();
 }
 
-/** The seed field's text as a seed: blank leaves it to the server; otherwise a whole number the server accepts, else `undefined`. */
-export function parseSeed(text: string): number | null | undefined {
-  const t = text.trim();
-  if (t === "") return null;
-  if (!/^\d+$/.test(t)) return undefined;
-  const n = Number(t);
-  return Number.isSafeInteger(n) ? n : undefined;
-}
+/** The seed field's text as a seed: blank leaves it to the server; otherwise digits the server's u64 takes, else `undefined`. */
+export const parseSeed = (text: string): Seed | null | undefined => seedOf(text);
 
 /** What a run reports as it goes; the view's hook turns each into state. */
 export type RunSink = {
@@ -200,7 +334,8 @@ export async function performRun(
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
   const edit = isEdit(params);
-  const add = (image: MadeImage) => sink.image(galleryItem(image, { id: nextId(), prompt: params.prompt, size: params.size, edit }));
+  const add = (image: MadeImage) =>
+    sink.image(galleryItem(image, { id: nextId(), prompt: params.prompt, size: params.size, edit, background: params.background }));
   const outcome = stream
     ? await generateStreaming(params, { onProgress: sink.progress, onImage: add }, signal, fetcher)
     : await generate(params, signal, fetcher);

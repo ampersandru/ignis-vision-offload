@@ -1,4 +1,5 @@
 import { authHeaders, keyRequired } from "./auth.ts";
+import { parseKeepingSeeds, type Seed, seedFrom, stringifyWithSeed } from "./seed.ts";
 import { createSseParser } from "./sse.ts";
 
 /** The message of a request the owner stopped. */
@@ -26,23 +27,27 @@ export type ImageParams = {
   n: number;
   /** One of the server's sizes, or `auto`. */
   size: string;
-  /** `null` leaves the seed to the server, which returns the one it drew. */
-  seed: number | null;
+  /** `null` leaves the seed to the server, which returns the one it drew. Digits: a u64 (api/seed.ts). */
+  seed: Seed | null;
   /** Sent as written: the toggle starts at what `image.prompt_enhancement` says, and the request repeats it. */
   enhance: boolean;
   /** Condition images: any makes the request an edit. */
   images: File[];
   /** The image model's id when the run is the owner's switch to it (GitHub #324); absent, the loaded model answers. */
   model?: string;
+  /** What the pictures' alpha is: as generated (`auto`, `transparent`) or composited on white (`opaque`). Absent: the server's `auto`. */
+  background?: ImageBackground;
 };
 
+export type ImageBackground = "auto" | "transparent" | "opaque";
+
 /** One finished image, base64 PNG. `seed` is the job's: this image started from `seed + index`. */
-export type MadeImage = { b64: string; index: number; seed?: number; size?: string; revisedPrompt?: string };
+export type MadeImage = { b64: string; index: number; seed?: Seed; size?: string; revisedPrompt?: string };
 
 export type ImageProgress = { phase: ImagePhase; image: number; step: number; total: number };
 
 /** What came back besides the pictures. */
-export type ImageExtras = { seed?: number; size?: string; warnings: string[]; conditionSizes: string[] };
+export type ImageExtras = { seed?: Seed; size?: string; warnings: string[]; conditionSizes: string[] };
 
 export type ImageOutcome =
   | { ok: true; images: MadeImage[]; extras: ImageExtras }
@@ -51,7 +56,7 @@ export type ImageOutcome =
 
 export const isEdit = (params: ImageParams) => params.images.length > 0;
 
-/** The JSON body of a generation; a `model` only when the params name one. */
+/** The JSON body of a generation, its seed as digits (stringifyWithSeed writes it as a number); a `model` only when the params name one. */
 export function generationBody(params: ImageParams, stream: boolean): object {
   return {
     ...(params.model ? { model: params.model } : {}),
@@ -60,6 +65,7 @@ export function generationBody(params: ImageParams, stream: boolean): object {
     size: params.size,
     ...(params.seed !== null ? { seed: params.seed } : {}),
     prompt_enhancement: params.enhance,
+    ...(params.background ? { background: params.background } : {}),
     ...(stream ? { stream: true } : {}),
   };
 }
@@ -72,8 +78,9 @@ export function editForm(params: ImageParams, stream: boolean): FormData {
   form.append("prompt", params.prompt);
   form.append("n", String(params.n));
   form.append("size", params.size);
-  if (params.seed !== null) form.append("seed", String(params.seed));
+  if (params.seed !== null) form.append("seed", params.seed);
   form.append("prompt_enhancement", String(params.enhance));
+  if (params.background) form.append("background", params.background);
   if (stream) form.append("stream", "true");
   return form;
 }
@@ -83,7 +90,7 @@ function requestOf(params: ImageParams, stream: boolean): [string, RequestInit] 
   if (isEdit(params)) return [EDITS_PATH, { method: "POST", headers, body: editForm(params, stream) }];
   return [
     GENERATIONS_PATH,
-    { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(generationBody(params, stream)) },
+    { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: stringifyWithSeed(generationBody(params, stream)) },
   ];
 }
 
@@ -91,7 +98,8 @@ const empty = (): ImageExtras => ({ warnings: [], conditionSizes: [] });
 
 type Wire = {
   data?: { b64_json?: string; revised_prompt?: string }[];
-  seed?: number;
+  /** Digits: read with parseKeepingSeeds. */
+  seed?: Seed;
   size?: string;
   warnings?: string[];
   condition_sizes?: string[];
@@ -99,7 +107,7 @@ type Wire = {
 
 function extrasOf(body: Wire, into: ImageExtras = empty()): ImageExtras {
   return {
-    seed: body.seed ?? into.seed,
+    seed: seedFrom(body.seed) ?? into.seed,
     size: body.size ?? into.size,
     warnings: [...new Set([...into.warnings, ...(body.warnings ?? [])])],
     conditionSizes: body.condition_sizes ?? into.conditionSizes,
@@ -137,14 +145,14 @@ export async function generate(params: ImageParams, signal?: AbortSignal, fetche
     const [path, init] = requestOf(params, false);
     const res = await fetcher(path, { ...init, signal });
     if (!res.ok) return await refusal(res);
-    const body = (await res.json()) as Wire;
+    const body = parseKeepingSeeds(await res.text()) as Wire;
     const images = (body.data ?? []).flatMap((d, index): MadeImage[] =>
       d.b64_json
         ? [
             {
               b64: d.b64_json,
               index,
-              ...(body.seed !== undefined ? { seed: body.seed } : {}),
+              ...(seedFrom(body.seed) !== undefined ? { seed: seedFrom(body.seed) } : {}),
               ...(body.size ? { size: body.size } : {}),
               ...(d.revised_prompt ? { revisedPrompt: d.revised_prompt } : {}),
             },
@@ -186,7 +194,7 @@ export async function generateStreaming(
       for (const data of events) {
         let event: Record<string, unknown>;
         try {
-          event = JSON.parse(data) as Record<string, unknown>;
+          event = parseKeepingSeeds(data) as Record<string, unknown>;
         } catch {
           continue;
         }
@@ -213,7 +221,7 @@ export async function generateStreaming(
           const image: MadeImage = {
             b64: event.b64_json,
             index: Number(event.image ?? images.length),
-            ...(typeof event.seed === "number" ? { seed: event.seed } : {}),
+            ...(seedFrom(event.seed) !== undefined ? { seed: seedFrom(event.seed) } : {}),
             ...(typeof event.size === "string" ? { size: event.size } : {}),
             ...(typeof event.revised_prompt === "string" ? { revisedPrompt: event.revised_prompt } : {}),
           };

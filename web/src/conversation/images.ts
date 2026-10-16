@@ -9,6 +9,8 @@
 // then fixed for the life of the message — a resend repeats the same data
 // URI, which is what leaves the engine a media prefix to reuse.
 
+import type { Mark } from "../markup/markup.ts";
+
 /** An image attached to one prompt, as the wire carries it. */
 export type PromptImage = {
   name: string;
@@ -17,7 +19,20 @@ export type PromptImage = {
   /** After the redraw. */
   width: number;
   height: number;
+  /**
+   * The picture as it was picked, at its own size, where the chat keeps it: the picture tool edits this one, not
+   * the redraw for the vision tower. In memory only; it reaches the page's store when sent to the Image view.
+   */
+  full?: Blob;
+  /** The marks it was drawn with, over `source`, the picture before them; `region` is the area they mark. */
+  markup?: { source: Blob; marks: Mark[]; keepOutside: boolean; region: Blob };
 };
+
+/** A picture of the conversation as its actions take it: the user's, or one the picture tool made. */
+export type ChatPicture = { name: string; url: string; full?: Blob };
+
+/** What can be done with a picture of the conversation: mark it into the prompt box, or open it in the Image view. */
+export type PictureAction = "mark" | "image";
 
 /** The longest side an attached image keeps: enough detail for the vision tower, small on the wire. */
 export const MAX_EDGE = 1568;
@@ -40,6 +55,13 @@ const MAX_FILE_BYTES = 32 << 20;
  */
 export const imageMime = (declared: string | undefined, fallback: string): string =>
   declared?.startsWith("image/") ? declared : fallback;
+
+/** A picked file as a prompt image of the chat: the redraw for the wire, and the file itself beside it. */
+export async function chatImageFromFile(file: Blob, name?: string): Promise<{ ok: true; image: PromptImage } | { ok: false; error: string }> {
+  const named = file instanceof File ? file : new File([file], name ?? "picture.png", { type: file.type || "image/png" });
+  const read = await imageFromFile(named);
+  return read.ok ? { ok: true, image: { ...read.image, full: named } } : read;
+}
 
 /** A picked file as a prompt image, or why it cannot be one. */
 export async function imageFromFile(file: File): Promise<{ ok: true; image: PromptImage } | { ok: false; error: string }> {
