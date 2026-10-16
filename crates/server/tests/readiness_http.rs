@@ -1,6 +1,7 @@
 //! GitHub #129: a server built `with_warm_up` answers every `/v1` route 503
 //! `server_not_ready` until its first traversal has run; then it admits
-//! requests as before. One built without it is ready as constructed.
+//! requests as before. One built without it is ready as constructed, and
+//! one whose warm-up the engine ends with an error stays not ready.
 
 use std::sync::Arc;
 
@@ -12,6 +13,10 @@ use ignis_server::Server;
 use ignis_server::engine::Engine;
 use ignis_server::template::SimpleTemplateProvider;
 use tower::ServiceExt;
+
+#[path = "support/switch.rs"]
+mod switch_support;
+use switch_support::MockLoader;
 
 fn server() -> Server {
     let scheduler = ConcreteScheduler::with_config(
@@ -55,6 +60,22 @@ async fn the_api_answers_503_until_the_warm_up_has_run() {
     server.warm_up().await.expect("the mock warms up");
     assert!(server.is_ready());
     assert_eq!(send(&app, Method::GET, "/v1/models").await.status(), StatusCode::OK);
+}
+
+/// The engine ended the warm-up's request (`FinishReason::Error`, as a leaf
+/// failing it would): a request that is done, but a traversal that never
+/// ran — so not a warm-up, and the API stays held back.
+#[tokio::test]
+async fn a_warm_up_the_engine_ended_with_an_error_leaves_the_server_not_ready() {
+    let loader = MockLoader::new();
+    loader.fail_requests("mock-a");
+    let server = Server::from_active(loader.model("mock-a")).with_warm_up();
+    let app = server.app();
+
+    let failed = server.warm_up().await.expect_err("an ended request is not a warm-up");
+    assert!(failed.contains("ended with an error"), "{failed}");
+    assert!(!server.is_ready());
+    assert_eq!(send(&app, Method::GET, "/v1/models").await.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

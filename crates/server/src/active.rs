@@ -275,6 +275,16 @@ impl ActiveModel {
             }
         }
     }
+
+    /// Whether this model still holds its model thread's handle
+    /// ([`ActiveModel::with_driver`]): `false` once [`ActiveModel::shut_down`]
+    /// has taken it to join it — the join may still be running — and for a
+    /// model built without one (`Engine::new`, most unit tests). A test seam:
+    /// nothing in the server reads it, `tests/serve_joins_model_thread.rs`
+    /// does.
+    pub fn holds_driver(&self) -> bool {
+        self.driver.lock().expect("driver lock").is_some()
+    }
 }
 
 /// Whether the `/v1` routes admit requests, and why not when they do not

@@ -27,7 +27,10 @@ use std::time::{Duration, Instant};
 use ignis_core::compute::ModelFamily;
 use ignis_core::image::{ConditionId, FakeImageRunner, ImageCondition, ImageError, ImagePlan, ImageRunner, ImageSize, RgbaImage, TargetLatents};
 use ignis_core::mock::{GateController, GatedCompute, MockCompute};
-use ignis_core::{Compute, ConcreteScheduler, SchedulerConfig};
+use ignis_core::{
+    Compute, ConcreteScheduler, EngineMode, FinishReason, Occupancy, RequestClass, RequestId, RequestInput, SchedEvent,
+    Scheduler, SchedulerConfig, SubmitError,
+};
 use ignis_server::config_http::ConfigState;
 use ignis_server::engine::Engine;
 use ignis_server::images::ImageModel;
@@ -59,6 +62,8 @@ struct State {
     broken: Mutex<HashSet<String>>,
     /// Ids whose load Flash-Next's host plan refuses ([`starved_plan`]).
     starved: Mutex<HashSet<String>>,
+    /// Ids whose every request ends in an error ([`MockLoader::fail_requests`]).
+    failing: Mutex<HashSet<String>>,
     /// Each load takes the first of these and waits for a message on it
     /// before it builds: how a test holds a switch inside its load step (a
     /// second one holds the reload that follows a failed load).
@@ -147,6 +152,13 @@ impl MockLoader {
     /// ([`starved_plan`]), the refusal kept whole as the real loader keeps it.
     pub fn starve(&self, id: &str) {
         self.state.starved.lock().unwrap().insert(id.to_owned());
+    }
+
+    /// End every request on a model `id` builds — its warm-up first — with
+    /// [`FinishReason::Error`] at its first step, as a leaf failing every
+    /// traversal would. The model loads; it never runs anything.
+    pub fn fail_requests(&self, id: &str) {
+        self.state.failing.lock().unwrap().insert(id.to_owned());
     }
 
     /// Let `id` load again ([`MockLoader::break_load`] undone): the way a
@@ -259,8 +271,66 @@ fn build(state: &State, id: &str, compute: Arc<dyn Compute>) -> ActiveModel {
     state.built.lock().unwrap().push(Arc::downgrade(&compute));
     let scheduler =
         ConcreteScheduler::with_config(SchedulerConfig { model: id.into(), ..SchedulerConfig::default() }, compute);
-    let (engine, driver) = Engine::with_clock_and_driver(Box::new(scheduler), Arc::new(SystemClock));
+    let scheduler: Box<dyn Scheduler> = if state.failing.lock().unwrap().contains(id) {
+        Box::new(Failing { inner: scheduler, taken: Vec::new() })
+    } else {
+        Box::new(scheduler)
+    };
+    let (engine, driver) = Engine::with_clock_and_driver(scheduler, Arc::new(SystemClock));
     ActiveModel::new(engine, Arc::new(SimpleTemplateProvider)).with_driver(driver).with_source(source(id))
+}
+
+/// The mock's scheduler, except that every request it takes ends with
+/// [`FinishReason::Error`] at the next step ([`MockLoader::fail_requests`]).
+struct Failing {
+    inner: ConcreteScheduler,
+    taken: Vec<RequestId>,
+}
+
+impl Scheduler for Failing {
+    fn submit(&mut self, input: RequestInput, class: RequestClass) -> Result<RequestId, SubmitError> {
+        let request = self.inner.submit(input, class)?;
+        self.taken.push(request);
+        Ok(request)
+    }
+    fn cancel(&mut self, request: RequestId) -> bool {
+        self.taken.retain(|taken| *taken != request);
+        self.inner.cancel(request)
+    }
+    fn advance(&mut self) -> Vec<SchedEvent> {
+        std::mem::take(&mut self.taken)
+            .into_iter()
+            .map(|request| {
+                self.inner.cancel(request);
+                SchedEvent::Done {
+                    request,
+                    tokens: 0,
+                    reason: FinishReason::Error,
+                    spec: None,
+                    readout: None,
+                    attention: None,
+                    drawn: None,
+                    thinking: None,
+                    reasoning_redirected_at: None,
+                }
+            })
+            .collect()
+    }
+    fn is_idle(&self) -> bool {
+        self.taken.is_empty()
+    }
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn max_sequence_tokens(&self) -> u32 {
+        self.inner.max_sequence_tokens()
+    }
+    fn mode(&self) -> EngineMode {
+        self.inner.mode()
+    }
+    fn occupancy(&self) -> Occupancy {
+        self.inner.occupancy()
+    }
 }
 
 impl ModelLoader for MockLoader {

@@ -206,6 +206,27 @@ async fn a_load_that_fails_after_the_teardown_reloads_the_previous_model() {
     serves(&server).await;
 }
 
+/// A target whose warm-up the engine ends with an error loaded but never ran
+/// its first traversal: the switch fails as a failed load does, the target is
+/// torn down, and the previous model is loaded again — the cold one is never
+/// published as serving.
+#[tokio::test]
+async fn a_warm_up_the_engine_ended_with_an_error_fails_the_switch_and_reloads_the_previous_model() {
+    let loader = MockLoader::new();
+    loader.fail_requests("mock-cold");
+    let server = server_on(&loader, loader.model("mock-a"), PATIENT);
+
+    let (_, task) = begin(&server, source("mock-cold")).expect("begins");
+    let outcome = task.await.expect("the switch task");
+    let SwitchOutcome::Restored { reason } = outcome else { panic!("restored, got {outcome:?}") };
+    assert!(reason.contains("warm-up request ended with an error"), "{reason}");
+    assert_eq!(server.active().model_id(), "mock-a");
+    assert_eq!(*server.status(), ModelStatus::Serving);
+    assert_eq!(loader.loads(), ["mock-cold", "mock-a"]);
+    assert_eq!(loader.resident_at_load(), [0, 0], "the cold target was torn down before the reload");
+    serves(&server).await;
+}
+
 /// With nothing to reload, a failed switch leaves `Failed` standing — and a
 /// refused switch from there must not reopen the gate over the dead engine —
 /// until a switch that loads succeeds.

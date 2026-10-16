@@ -258,9 +258,14 @@ pub async fn warm_up_engine(engine: &Engine) -> Result<Duration, String> {
         )
         .await
         .map_err(|err| format!("the warm-up request was refused: {err:?}"))?;
-    engine::collect_completion(&mut events, WARM_UP_TIMEOUT)
+    let completion = engine::collect_completion(&mut events, WARM_UP_TIMEOUT)
         .await
         .map_err(|err| format!("the warm-up request did not complete: {err:?}"))?;
+    // A request the engine ended — a leaf error, a shutdown under it — is
+    // done too, but its traversal never ran: not a warm-up.
+    if completion.reason == ignis_core::FinishReason::Error {
+        return Err("the warm-up request ended with an error".into());
+    }
     Ok(started.elapsed())
 }
 
@@ -417,17 +422,19 @@ impl Server {
     }
 
     /// Run [`Server::warm_up`] now if the API is held back for it, on its
-    /// own task so the listener is already answering (503) meanwhile.
-    fn spawn_warm_up(&self) {
+    /// own task so the listener is already answering (503) meanwhile. The
+    /// task's handle, so a serve that ends before the warm-up does can
+    /// cancel it.
+    fn spawn_warm_up(&self) -> Option<tokio::task::JoinHandle<()>> {
         if !matches!(*self.status(), ModelStatus::WarmingUp) {
-            return;
+            return None;
         }
         let server = self.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             if let Err(error) = server.warm_up().await {
                 tracing::error!(name: "ignis.process.warm_up_failed", %error, "still not ready");
             }
-        });
+        }))
     }
 
     /// Serve `family` (see [`ActiveModel::family`]).
@@ -682,6 +689,14 @@ impl Server {
     /// (tests). A metrics listener without metrics on
     /// ([`Server::with_metrics`]) is refused with `InvalidInput` before
     /// anything is served.
+    ///
+    /// After the HTTP drain, a switch or an unload still holding the switch's
+    /// slot runs to its end, then the loaded model is shut down and its
+    /// driver thread is joined ([`ActiveModel::shut_down`]) before this
+    /// returns. Dropping the `JoinHandle` without joining would detach
+    /// `ignis-model`; on Linux that thread can hang in CUDA teardown and
+    /// leave the process a VRAM-holding zombie under init — so serve exit
+    /// must join, the same way a model switch does.
     pub async fn serve_on_until(
         self,
         listener: tokio::net::TcpListener,
@@ -690,36 +705,61 @@ impl Server {
     ) -> std::io::Result<()> {
         use std::future::IntoFuture;
 
-        let app = self.app();
-        self.spawn_warm_up();
-        // Spec model-switch/02: an unused model leaves the card while this
-        // serves; the clock stops when serving does.
-        let _idle_clock = self.spawn_idle_clock(idle::IDLE_TICK);
-        let (metrics_listener, metrics_app) = match (metrics_listener, self.metrics_app()) {
-            (None, _) => {
-                return axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
-            }
-            (Some(metrics_listener), Some(metrics_app)) => (metrics_listener, metrics_app),
+        let metrics = match (metrics_listener, self.metrics_app()) {
+            (None, _) => None,
+            (Some(metrics_listener), Some(metrics_app)) => Some((metrics_listener, metrics_app)),
             (Some(_), None) => {
+                // Refused before anything is served, but the model is loaded:
+                // it leaves the card the way it does after a serve.
+                model_switch::shut_down(&self.active()).await;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "a metrics listener needs metrics on (Server::with_metrics)",
                 ));
             }
         };
-        // One shutdown, fanned out to both listeners.
-        let (stop, stopped) = tokio::sync::watch::channel(());
-        let signal = async move {
-            shutdown.await;
-            let _ = stop.send(());
-            Ok::<(), std::io::Error>(())
+        let app = self.app();
+        let warm_up = self.spawn_warm_up();
+        // Spec model-switch/02: an unused model leaves the card while this
+        // serves; the clock stops when serving does.
+        let idle_clock = self.spawn_idle_clock(idle::IDLE_TICK);
+        let serve_result = match metrics {
+            None => axum::serve(listener, app).with_graceful_shutdown(shutdown).await,
+            Some((metrics_listener, metrics_app)) => {
+                // One shutdown, fanned out to both listeners.
+                let (stop, stopped) = tokio::sync::watch::channel(());
+                let signal = async move {
+                    shutdown.await;
+                    let _ = stop.send(());
+                    Ok::<(), std::io::Error>(())
+                };
+                let wait = |mut stopped: tokio::sync::watch::Receiver<()>| async move {
+                    let _ = stopped.changed().await;
+                };
+                let api = axum::serve(listener, app).with_graceful_shutdown(wait(stopped.clone()));
+                let metrics =
+                    axum::serve(metrics_listener, metrics_app).with_graceful_shutdown(wait(stopped));
+                tokio::try_join!(signal, api.into_future(), metrics.into_future()).map(|_| ())
+            }
         };
-        let wait = |mut stopped: tokio::sync::watch::Receiver<()>| async move {
-            let _ = stopped.changed().await;
-        };
-        let api = axum::serve(listener, app).with_graceful_shutdown(wait(stopped.clone()));
-        let metrics = axum::serve(metrics_listener, metrics_app).with_graceful_shutdown(wait(stopped));
-        tokio::try_join!(signal, api.into_future(), metrics.into_future()).map(|_| ())
+        // Nothing starts on the model once serving has ended. A warm-up still
+        // running would be ended by the teardown below and report its failure
+        // on its own task, racing `ignis.process.stopped`; the idle clock
+        // could begin an unload in the middle of it. Both are stopped before
+        // the teardown begins, the warm-up awaited so no poll of it is left.
+        if let Some(warm_up) = warm_up {
+            warm_up.abort();
+            let _ = warm_up.await;
+        }
+        drop(idle_clock);
+        // A switch whose `202` was answered, or an unload under way, outlives
+        // the drain: it runs to its end first, and the model it leaves loaded
+        // is the one torn down below — never one it would leave detached.
+        model_switch::slot_freed(&self).await;
+        // Join before returning to `main`: `ignis.process.stopped` must stay
+        // the last log line (spec §28), and that is emitted after this returns.
+        model_switch::shut_down(&self.active()).await;
+        serve_result
     }
 }
 

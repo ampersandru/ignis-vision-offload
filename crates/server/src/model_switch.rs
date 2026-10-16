@@ -1619,11 +1619,29 @@ async fn drain(model: &ActiveModel, timeout: Duration) -> Result<(), InFlight> {
 }
 
 /// Step 4: stop `model` and wait until its thread has dropped everything it
-/// held ([`ActiveModel::shut_down`]), off the async workers.
-async fn shut_down(model: &Arc<ActiveModel>) {
+/// held ([`ActiveModel::shut_down`]), off the async workers. Serve exit
+/// tears the loaded model down the same way ([`Server::serve_on_until`]).
+pub(crate) async fn shut_down(model: &Arc<ActiveModel>) {
     let model = Arc::clone(model);
     if let Err(panicked) = tokio::task::spawn_blocking(move || model.shut_down()).await {
-        tracing::error!(name: "ignis.model.teardown_panicked", error = %panicked, "tearing the old model down panicked");
+        tracing::error!(name: "ignis.model.teardown_panicked", error = %panicked, "tearing the model down panicked");
+    }
+}
+
+/// Wait until nothing holds the switch's slot ([`Switcher::running`]): a
+/// switch, a reload or a load has run to its end — its model published, or
+/// torn down — and an unload's teardown is done, its line logged. The serve
+/// exit waits on it before it tears the loaded model down
+/// ([`Server::serve_on_until`]): a switch whose `202` was answered still
+/// runs after the HTTP drain, and the model it publishes is the one to join.
+/// A server without a switcher has no slot to wait on.
+pub(crate) async fn slot_freed(server: &Server) {
+    let Some(switcher) = &server.switcher else { return };
+    let mut changed = server.status.subscribe();
+    while switcher.running().is_some() {
+        if changed.changed().await.is_err() {
+            return;
+        }
     }
 }
 
