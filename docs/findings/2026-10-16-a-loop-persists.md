@@ -135,15 +135,48 @@ Inferred:
   tuned to 3 decimals between two texts 0.017 apart.
 - Harmful durations are censored by the forced close. Only first rewinds were simulated.
 - The agentic loop or legitimate calls are one reader's.
-- Recall on new Rome seeds: see the held-out run below.
+- The held-out run is one prompt again, and its harmful runs are labelled by outcome, not by
+  reading. A breathing run's later cut keeps part of the episode the model escaped from: whether
+  the continuation relapses more often was not measured.
 
 ## Held-out run
 
-(Filled after the GPU run.)
+**Setup.** 40 new seeds (301-340) of the same Rome body, 2026-10-16.
+- The owner's serving build (main `6b5b9d30`) at its serving flags: `yarn:2`, 524,288,
+  `hq-e8-2b`, DFlash2 k=7.
+- The guard in `log` mode, so the reasoning is natural.
+- Both rules then applied offline on the Rust checks (`examples/loop_score.rs`).
+- A run is *harmful* when the reasoning hit the forced close or the turn ended with no answer
+  and no tool call.
+
+**Results.**
+
+| | today (0.20, first check) | new (0.265, 4 in a row, keeps something) |
+|---|---:|---:|
+| harmful runs that are loops (7) caught | 6 | 6, same runs and same cuts |
+| fires on text that is no loop | 0 | 0 |
+| fires on loops that ended on their own | 3 | 0 |
+| fires in all | 13 | 10 |
+
+- **Harmful runs.** Of the 9:
+  - 6 are persistent loops, caught by both rules with the same cut, the new one 500-750
+    characters later;
+  - 1 is a numeric loop (`235–284 (235–284, 235–284, …`) whose raw ratio stays over the 0.30
+    gate, missed by both (the known limit, as run 124 of the confirm run);
+  - 2 are long legitimate planning that reached the budget with no loop at all.
+- **Fires dropped by the new rule.** 3 short loops of 2-3 checks the model left by itself ("OK,
+  let me just get to writing…"). All 3 runs answered.
+- **Cuts that moved.** Two runs (321 and 329) breathe: an early episode the model escapes, then
+  a later loop.
+  - The new rule leaves the first episode alone and acts on the second.
+  - Its cut goes back to the last clean window, which starts inside the tail of the first
+    episode, so the kept text carries some of it.
+  - Both runs answered.
+
+So on new seeds the new rule keeps today's recall, fires on no text that is not a loop, and
+leaves alone the loops that end by themselves. Its cost is a later cut on breathing runs.
 
 ## Follow-ups
 
 - A detector for indecision loops (a decision sentence repeated between reconsiderations).
 - A/B of the first nudge on Rome, now that it is a config field.
-- `.scratch` research tooling: `common.py`'s run path points at a removed worktree and silently
-  drops two arms.

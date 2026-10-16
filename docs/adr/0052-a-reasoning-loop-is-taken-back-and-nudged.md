@@ -298,7 +298,7 @@ live `PATCH`) rewinds, so no test meets a rewind it did not ask for.
   texts are at 0.257 (Rome) and 0.273 (agentic coding), so no threshold change recovers
   them.
 - **Observability.** The log carries `ignis.loop_guard.detected`, `rewound`, `no_room`,
-  `no_tokenizer` and `submit_refused`, each with its scores and offsets. `log` mode
+  `no_tokenizer`, `submit_refused` and (ADR 0053) `too_little_kept`, each with its scores and offsets. `log` mode
   reports the cut a rewind would have made, without acting.
 - **Wiring.** Implementing this ADR means:
   - wiring `/v1/responses`, HTTP and WebSocket, with its own count field, cancel by

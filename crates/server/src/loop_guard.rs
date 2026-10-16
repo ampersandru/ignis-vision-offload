@@ -24,6 +24,13 @@
 //! written: on 47M characters of qwen-code reasoning it takes 5 of 7 such
 //! fires away and no harmful loop (the same finding).
 //!
+//! **Persistence** (ADR 0053). The guard acts on the `persist_checks`-th loop
+//! score in a row: a loop persists, a list or a log the reasoning transcribes
+//! ends with its content. And it acts only when the cut would keep at least
+//! `min_kept_chars` of the reasoning: a reasoning that opens in a loop, or in
+//! an enumeration scored as one, has no clean window to go back to, so that
+//! run of loop scores is only logged and held ([`Watch::hold`]).
+//!
 //! **Rewind.** The engine request is cancelled and a **continuation**
 //! submitted: the same input, its prompt extended by the generated tokens
 //! kept from before the loop ([`Watch::cut_point`]: back to the start of the
@@ -675,6 +682,7 @@ impl Watch {
             return None;
         }
         self.loop_run += 1;
+        // `max(1)`: a configured value is at least 1, a hand-built one may be 0.
         (self.loop_run >= params.persist_checks.max(1) && !self.held).then_some(score)
     }
 
@@ -1076,34 +1084,14 @@ impl<O: GuardOps> Guard<O> {
         }
         let score = self.watch.check(&self.view.scored, &self.params)?;
         let at = self.view.text().len();
-        if !self.rewindable {
-            tracing::info!(
-                name: "ignis.loop_guard.detected",
-                request = self.original, engine_request = self.current.get(), at_chars = at, ratio = score.ratio,
-                raw_ratio = score.raw_ratio, window_start_chars = score.start,
-                cut_chars = self.watch.cut_point(self.view.text(), &self.params),
-                "loop in the reasoning (log only)"
-            );
-            self.watch = Watch::from(at, &self.params);
-            return None;
-        }
-        self.rewind(at, score).await
-    }
-
-    async fn rewind(&mut self, at: usize, score: Score) -> Option<Continuation> {
-        let ratio = score.ratio;
+        // The cut in the reasoning the model reads: a line break the
+        // decoder still holds at the start is not reasoning kept.
         let cut = self.watch.cut_point(self.view.text(), &self.params);
-        let kept = self.view.tokens_before(cut);
-        let generated = self.view.tokens.len();
-        // The kept text and what the client received, as the client shows
-        // them: a decoder holds back a trailing line break until the text
-        // after it arrives, and the tag is that text.
-        let kept_text = shown(self.ops.decoder(), &self.view.tokens[..kept]);
-        let kept_chars = kept_text.chars().count();
-        if kept_chars < self.params.min_kept_chars as usize {
+        if cut < self.params.min_kept_chars as usize {
             tracing::info!(
                 name: "ignis.loop_guard.too_little_kept",
-                request = self.original, at_chars = at, ratio = ratio, raw_ratio = score.raw_ratio, kept_chars,
+                request = self.original, engine_request = self.current.get(), at_chars = at, ratio = score.ratio,
+                raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = cut,
                 "loop with too little reasoning before it to keep: log only"
             );
             // The watch goes on: a clean window later gives a later loop
@@ -1111,11 +1099,35 @@ impl<O: GuardOps> Guard<O> {
             self.watch.hold();
             return None;
         }
+        if !self.rewindable {
+            tracing::info!(
+                name: "ignis.loop_guard.detected",
+                request = self.original, engine_request = self.current.get(), at_chars = at, ratio = score.ratio,
+                raw_ratio = score.raw_ratio, window_start_chars = score.start,
+                cut_chars = cut,
+                "loop in the reasoning (log only)"
+            );
+            self.watch = Watch::from(at, &self.params);
+            return None;
+        }
+        self.rewind(at, score, cut).await
+    }
+
+    async fn rewind(&mut self, at: usize, score: Score, cut: usize) -> Option<Continuation> {
+        let ratio = score.ratio;
+        let kept = self.view.tokens_before(cut);
+        let generated = self.view.tokens.len();
+        // The kept text and what the client received, as the client shows
+        // them: a decoder holds back a trailing line break until the text
+        // after it arrives, and the tag is that text.
+        let kept_text = shown(self.ops.decoder(), &self.view.tokens[..kept]);
+        let kept_chars = kept_text.chars().count();
         let struck = (self.sent > kept)
             .then(|| shown(self.ops.decoder(), &self.view.tokens[..self.sent]).chars().skip(kept_chars).collect::<String>());
         let close = self.rewinds >= self.params.retries;
-        let written = if close { crate::thinking::THINKING_CLOSE_TEXT.to_owned() } else { self.params.nudge_text(self.rewinds) };
-        let sentence = sentence_after(&kept_text, &written);
+        let full_sentence: Cow<str> =
+            if close { Cow::Borrowed(crate::thinking::THINKING_CLOSE_TEXT) } else { Cow::Owned(self.params.nudge_text(self.rewinds)) };
+        let sentence = sentence_after(&kept_text, &full_sentence);
         let encoded_tag = match &struck {
             Some(struck) => self.ops.encode(&tag(self.sent - kept, struck)),
             None => Some(Vec::new()),
@@ -1534,6 +1546,33 @@ mod tests {
         assert_eq!(first_loop(&short, 0, &eight), None);
         let twice = prose(3000) + &looping(1200) + &prose(2000) + &looping(1200) + &prose(3000);
         assert_eq!(first_loop(&twice, 0, &eight), None, "the prose between starts the count over");
+    }
+
+    /// A held run of loop scores fires no more; a score that is not a loop
+    /// ends the hold, and the next run fires after its `persist_checks`.
+    #[test]
+    fn a_held_run_fires_no_more_until_a_score_that_is_not_a_loop() {
+        let p = LoopGuardParams { persist_checks: 2, ..params(LoopGuardMode::Log) };
+        let text: Vec<char> = (looping(3000) + &prose(3000) + &looping(3000)).chars().collect();
+        let fires = |hold: bool| {
+            let mut scored = Normalized::new(p.normalize);
+            let mut watch = Watch::from(0, &p);
+            let mut fires = Vec::new();
+            for (i, &c) in text.iter().enumerate() {
+                scored.push(c);
+                if watch.check(&scored, &p).is_some() {
+                    fires.push(i + 1);
+                    if hold {
+                        watch.hold();
+                    }
+                }
+            }
+            fires
+        };
+        let held = fires(true);
+        assert_eq!(held.len(), 2, "one per run of loop scores: {held:?}");
+        assert!(held[0] <= 3000 && held[1] > 6000, "{held:?}");
+        assert!(fires(false).len() > 4, "unheld, every loop score from the second on fires");
     }
 
     #[test]
@@ -2318,6 +2357,14 @@ mod tests {
         assert_eq!(text, reasoning, "passed through untouched");
         assert!(done.is_some());
         assert!(ops.cancelled.lock().unwrap().is_empty() && ops.submitted.lock().unwrap().is_empty(), "never rewound");
+
+        // Line breaks the decoder holds at the start are not reasoning kept.
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let opened = format!("\n\n{reasoning}");
+        let (_, done) =
+            drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &opened, true))).await;
+        assert!(done.is_some());
+        assert!(ops.submitted.lock().unwrap().is_empty(), "a held line break is not something to keep");
 
         let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
         let p = LoopGuardParams { min_kept_chars: 0, ..params(LoopGuardMode::Rewind) };

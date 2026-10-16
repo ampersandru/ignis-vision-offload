@@ -27,18 +27,24 @@ fold makes log lines with different numbers identical. What separates the two is
 
 **A loop must persist.** The guard acts on a loop score only when it is the
 `loop_guard_persist`-th in a row (4). A score that is not a loop starts the count over. The cut is
-computed as before: back to the last clean window, which a run of loop scores never is.
+computed as before: back to the last clean window, which a run of loop scores never is while
+`loop_guard_clean` is above `loop_guard_ratio`, as at the defaults (400 and 265).
 
 **The threshold rises to 0.265** (`loop_guard_ratio` 265). Under persistence the old 0.20 misses a
 slow harmful template. Between the highest threshold any harmful loop needs (0.257) and the lowest
 at which legitimate agentic text fires (0.274), 0.265 is the middle. The raw gate stays at 0.30:
 lowering it to 0.28 loses 2 harmful loops.
 
-**A rewind keeps something.** A rewind whose cut would keep fewer than `loop_guard_min_kept`
-characters of reasoning (1) is only logged (`ignis.loop_guard.too_little_kept`). The run of loop
-scores is then held: the guard does not act on it again until a score that is not a loop. The
-watch keeps its scores, so a clean window later gives a later loop a cut. A second rewind always
-keeps the first one's text and nudge, so the rule never stops it.
+**A rewind keeps something.** A loop whose cut would keep fewer than `loop_guard_min_kept`
+characters of reasoning (1) is only logged (`ignis.loop_guard.too_little_kept`), in `rewind` and
+in `log` mode alike, so `log` still reports what a rewind would do.
+- The characters are counted in the reasoning the model reads: a line break the decoder still
+  holds at the start is not reasoning kept.
+- The run of loop scores is then held: the guard does not act on it again until a score that is
+  not a loop.
+- The watch keeps its scores, so a clean window later gives a later loop a cut.
+- At the default, a second rewind always keeps the first one's text and nudge, so the rule never
+  stops it. A `loop_guard_min_kept` larger than that text can.
 
 | field | default | |
 |---|---|---|
@@ -65,9 +71,14 @@ All three are live config fields (Visible, Patchable, no reload), with the new k
 - **A reasoning that opens in a loop** and never reaches a clean window is never rewound. It runs
   to the thinking budget's forced close, which ADR 0048 and the budget already provide. None was
   observed.
-- **The margins are thin and in-sample:** one prompt, 25 harmful runs, two texts 0.017 apart. A
-  held-out GPU run is recorded in the finding; a false rewind or a missed harmful loop found
-  later reopens these defaults.
+- **The margins are thin and in-sample:** one prompt, 25 harmful runs, two texts 0.017 apart.
+  The held-out run in the finding (40 new seeds) agrees:
+  - 6 of the 7 harmful loops caught, as by ADR 0052's rule, with the same cuts;
+  - no fire on text that is no loop;
+  - the 3 short loops the model left by itself left alone;
+  - two breathing runs cut later.
+
+  A false rewind or a missed harmful loop found later reopens these defaults.
 - **Still not seen:** indecision loops whose text varies between repeats (a decision sentence
   between reconsiderations) do not compress. The only harmful agentic loop observed, the
   2026-10-12 deferral loop, is of that kind.
