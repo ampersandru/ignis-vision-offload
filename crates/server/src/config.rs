@@ -81,7 +81,9 @@ pub const DEFAULT_THINKING_BUDGET: u32 = 32_768;
 pub const DEFAULT_MAX_TOKENS: u32 = 38_912;
 
 /// The default non-streaming completion timeout, in seconds (GitHub #95).
-pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 30;
+/// 120 since GitHub #327: at 30 an agent's longer reasoning steps (a few
+/// thousand tokens) never reached the client, and were generated again.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 120;
 
 /// Whether the Playground is served without anyone saying so (GitHub #163,
 /// ADR 0026). On: a route, and no cost to a server nobody opens in a browser.

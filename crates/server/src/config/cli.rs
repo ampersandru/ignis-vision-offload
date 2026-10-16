@@ -510,7 +510,7 @@ mod tests {
         assert!(!text.contains("sk-secret") && text.contains("not shown"), "{text}");
         assert!(files.written.lock().unwrap().is_empty());
         let none = printed(run(&["config", "print", "--file", "absent.yaml"], &[], &files).unwrap());
-        assert_eq!(yaml(&none)["server"]["request_timeout"], 30, "no file is not an error");
+        assert_eq!(yaml(&none)["server"]["request_timeout"], 120, "no file is not an error");
     }
 
     /// Spec config-v2/02, Testing: `config patch` refuses a file that is not

@@ -115,7 +115,7 @@ async fn get_shows_the_visible_fields_and_never_the_key() {
     assert!(document["server"].get("api_key").is_none(), "{document}");
     assert!(!document.to_string().contains("sk-secret"));
     assert_eq!(document["server"]["bind"], "127.0.0.1:7777");
-    assert_eq!(document["server"]["request_timeout"], 30);
+    assert_eq!(document["server"]["request_timeout"], 120);
 }
 
 #[tokio::test]
@@ -438,7 +438,7 @@ async fn a_pinned_request_keeps_the_live_knobs_it_began_with() {
     let app = server.app();
     let (status, _) = send(&app, Method::PATCH, "/v1/config", Some(json!({ "server": { "request_timeout": 61 } }))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(pinned.live().request_timeout, Duration::from_secs(30), "the request in flight keeps its own");
+    assert_eq!(pinned.live().request_timeout, Duration::from_secs(120), "the request in flight keeps its own");
     assert_eq!(server.live().request_timeout, Duration::from_secs(61), "the next one gets the change");
 }
 
