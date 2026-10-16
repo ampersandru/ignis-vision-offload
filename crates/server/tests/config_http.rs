@@ -462,7 +462,7 @@ async fn a_loop_guard_patch_applies_live() {
         "loop_guard": "log", "loop_guard_normalize": "off", "loop_guard_window": 3000, "loop_guard_ratio": 120,
         "loop_guard_raw_gate": 0, "loop_guard_clean": 350, "loop_guard_margin": 1000, "loop_guard_holdback": 3000,
         "loop_guard_check_every": 500, "loop_guard_snap": 0, "loop_guard_min_continuation": 1024, "loop_guard_submit_wait": 10,
-        "loop_guard_nudge": "Next step.", "loop_guard_nudge_again": "Wrap up.",
+        "loop_guard_nudge": "Next step.", "loop_guard_nudge_again": "Wrap up.", "loop_guard_persist": 6, "loop_guard_min_kept": 0,
     } });
     let (status, applied) = send(&app, Method::PATCH, "/v1/config", Some(body)).await;
     assert_eq!(status, StatusCode::OK, "{applied}");
@@ -473,6 +473,7 @@ async fn a_loop_guard_patch_applies_live() {
     assert_eq!(applied["config"]["model"]["loop_guard_nudge"], "Next step.");
     let guard = server.live().loop_guard.clone();
     assert_eq!((guard.nudge.as_str(), guard.nudge_again.as_str()), ("Next step.", "Wrap up."), "the nudges");
+    assert_eq!((guard.persist_checks, guard.min_kept_chars), (6, 0), "the persistence and the room to keep");
     assert_eq!(
         (guard.mode, guard.normalize, guard.window_chars, guard.ratio_permille),
         (ignis_server::loop_guard::LoopGuardMode::Log, false, 3000, 120)

@@ -132,8 +132,12 @@ impl LoopGuardMode {
     }
 }
 
-/// `--model-loop-guard-ratio`'s default, in thousandths: 0.20.
-pub const DEFAULT_RATIO_PERMILLE: u32 = 200;
+/// `--model-loop-guard-ratio`'s default, in thousandths: 0.265. With 4
+/// checks in a row ([`DEFAULT_PERSIST_CHECKS`]) the harmful Rome loops fire
+/// under 0.257 at the latest and no legitimate agentic reasoning under 0.274
+/// (the Rust scorer, `docs/findings/2026-10-16-a-loop-persists.md`); 0.20 was
+/// the threshold of a guard that acted at the first check.
+pub const DEFAULT_RATIO_PERMILLE: u32 = 265;
 /// `--model-loop-guard-window`'s default, in characters of scored reasoning.
 pub const DEFAULT_WINDOW_CHARS: u32 = 1000;
 /// `--model-loop-guard-normalize`'s default: the reasoning is scored
@@ -166,6 +170,18 @@ pub const DEFAULT_MIN_CONTINUATION_TOKENS: u32 = 512;
 /// `--model-loop-guard-submit-wait`'s default, in seconds a continuation the
 /// engine refuses as full waits for room.
 pub const DEFAULT_SUBMIT_WAIT_SECS: u32 = 60;
+/// `--model-loop-guard-persist`'s default: consecutive loop checks before
+/// the guard acts. A loop is absorbing and a legitimate enumeration ends
+/// with its content: no list, log or table in the opencode and qwen-code
+/// reasoning stays under the ratio for more than 6 checks in a row, while
+/// 23 of the 25 harmful Rome loops stay for 9 or more
+/// (`docs/findings/2026-10-16-a-loop-persists.md`).
+pub const DEFAULT_PERSIST_CHECKS: u32 = 4;
+/// `--model-loop-guard-min-kept`'s default, in characters: a rewind must keep
+/// at least one, or it is only logged. A reasoning that opens in a loop, or
+/// in an enumeration the score takes for one, has no clean window to go back
+/// to, and a rewind there would drop all of it.
+pub const DEFAULT_MIN_KEPT_CHARS: u32 = 1;
 /// `--model-loop-guard-nudge`'s default: the model's own words when it
 /// caught itself (2026-10-12 seed 109: "I'm repeating. Let me stop the
 /// repetition and just write the content directly.").
@@ -195,6 +211,12 @@ pub struct LoopGuardParams {
     pub margin_chars: u32,
     /// The nudges a looping reasoning gets before it is closed.
     pub retries: u32,
+    /// How many checks in a row must score a loop before the guard acts;
+    /// 1, the first.
+    pub persist_checks: u32,
+    /// A rewind that would keep fewer characters of reasoning than this is
+    /// only logged; 0, never.
+    pub min_kept_chars: u32,
     /// In `rewind` mode, how many characters of reasoning the client is
     /// kept behind the model: a rewind whose cut falls in them reaches the
     /// client with no tag. 0, none.
@@ -253,6 +275,8 @@ impl Default for LoopGuardParams {
             clean_permille: DEFAULT_CLEAN_PERMILLE,
             margin_chars: DEFAULT_MARGIN_CHARS,
             retries: DEFAULT_RETRIES,
+            persist_checks: DEFAULT_PERSIST_CHECKS,
+            min_kept_chars: DEFAULT_MIN_KEPT_CHARS,
             holdback_chars: DEFAULT_HOLDBACK_CHARS,
             check_every_chars: DEFAULT_CHECK_EVERY_CHARS,
             snap_chars: DEFAULT_SNAP_CHARS,
@@ -603,12 +627,16 @@ pub struct Watch {
     next_check: usize,
     /// Every score taken since the floor, in order.
     history: Vec<Score>,
+    /// How many of the last scores in a row were a loop.
+    loop_run: u32,
+    /// The run of loop scores in progress is not acted on ([`Watch::hold`]).
+    held: bool,
 }
 
 impl Watch {
     /// A watch whose first score is the first full window after `floor`.
     pub fn from(floor: usize, params: &LoopGuardParams) -> Self {
-        Self { floor, next_check: floor + params.window_chars as usize, history: Vec::new() }
+        Self { floor, next_check: floor + params.window_chars as usize, history: Vec::new(), loop_run: 0, held: false }
     }
 
     /// The window's score when the reasoning has grown enough to score it
@@ -637,9 +665,24 @@ impl Watch {
         Some(score)
     }
 
-    /// [`Watch::score`], when it is a loop.
+    /// [`Watch::score`], when it is a loop and the `persist_checks`-th in a
+    /// row or later (every one, at 1), unless the run is held. A score that
+    /// is not a loop starts the count over and ends the hold.
     fn check(&mut self, scored: &Normalized, params: &LoopGuardParams) -> Option<Score> {
-        self.score(scored, params).filter(|score| score.is_loop(params))
+        let score = self.score(scored, params)?;
+        if !score.is_loop(params) {
+            (self.loop_run, self.held) = (0, false);
+            return None;
+        }
+        self.loop_run += 1;
+        (self.loop_run >= params.persist_checks.max(1) && !self.held).then_some(score)
+    }
+
+    /// Act on no more loop scores until one that is not a loop: the run in
+    /// progress is left as it is, and the scores taken so far stay for a
+    /// later cut.
+    fn hold(&mut self) {
+        self.held = true;
     }
 
     /// Where to take the raw reasoning `text` back to, for the loop the last
@@ -1057,6 +1100,17 @@ impl<O: GuardOps> Guard<O> {
         // after it arrives, and the tag is that text.
         let kept_text = shown(self.ops.decoder(), &self.view.tokens[..kept]);
         let kept_chars = kept_text.chars().count();
+        if kept_chars < self.params.min_kept_chars as usize {
+            tracing::info!(
+                name: "ignis.loop_guard.too_little_kept",
+                request = self.original, at_chars = at, ratio = ratio, raw_ratio = score.raw_ratio, kept_chars,
+                "loop with too little reasoning before it to keep: log only"
+            );
+            // The watch goes on: a clean window later gives a later loop
+            // something to keep, and this run of loop scores fires no more.
+            self.watch.hold();
+            return None;
+        }
         let struck = (self.sent > kept)
             .then(|| shown(self.ops.decoder(), &self.view.tokens[..self.sent]).chars().skip(kept_chars).collect::<String>());
         let close = self.rewinds >= self.params.retries;
@@ -1447,12 +1501,39 @@ mod tests {
     /// the last one the loop.
     fn watch_with(floor: usize, checks: &[(usize, f64)]) -> Watch {
         let history = checks.iter().map(|&(start, ratio)| Score { ratio, raw_ratio: ratio, start, end: start + 1000 }).collect();
-        Watch { floor, next_check: 0, history }
+        Watch { floor, next_check: 0, history, loop_run: 0, held: false }
     }
 
     /// Text for the cut to read: no line break, no backtick.
     fn flat(chars: usize) -> Vec<char> {
         vec!['x'; chars]
+    }
+
+    /// A loop must score as one on `persist_checks` checks in a row: it is
+    /// found that many checks later, and cut at the same place.
+    #[test]
+    fn a_loop_is_found_once_it_persists() {
+        let text = prose(3000) + &looping(6000);
+        let chars: Vec<char> = text.chars().collect();
+        let once = LoopGuardParams { persist_checks: 1, ..params(LoopGuardMode::Log) };
+        let four = LoopGuardParams { persist_checks: 4, ..params(LoopGuardMode::Log) };
+        let (at_once, _) = first_loop(&text, 0, &once).expect("a loop at the first check");
+        let (at_four, _) = first_loop(&text, 0, &four).expect("a loop that persists");
+        assert_eq!(at_four - at_once, 3 * 250, "three checks later");
+        assert_eq!(watch_to_loop(&text, &once).cut_point(&chars, &once), watch_to_loop(&text, &four).cut_point(&chars, &four));
+    }
+
+    /// A run of loop scores shorter than the persistence, the length of a
+    /// list, is no loop; a score that is not one starts the count over.
+    #[test]
+    fn a_run_of_loop_scores_shorter_than_the_persistence_is_no_loop() {
+        let once = LoopGuardParams { persist_checks: 1, ..params(LoopGuardMode::Log) };
+        let eight = LoopGuardParams { persist_checks: 8, ..params(LoopGuardMode::Log) };
+        let short = prose(3000) + &looping(1200) + &prose(3000);
+        assert!(first_loop(&short, 0, &once).is_some(), "a loop at the first check");
+        assert_eq!(first_loop(&short, 0, &eight), None);
+        let twice = prose(3000) + &looping(1200) + &prose(2000) + &looping(1200) + &prose(3000);
+        assert_eq!(first_loop(&twice, 0, &eight), None, "the prose between starts the count over");
     }
 
     #[test]
@@ -1469,7 +1550,7 @@ mod tests {
     #[test]
     fn the_window_is_scored_only_once_it_is_full_and_every_step_after() {
         for step in [DEFAULT_CHECK_EVERY_CHARS as usize, 500] {
-            let p = LoopGuardParams { check_every_chars: step as u32, ..params(LoopGuardMode::Log) };
+            let p = LoopGuardParams { check_every_chars: step as u32, persist_checks: 1, ..params(LoopGuardMode::Log) };
             let text: Vec<char> = looping(2000).chars().collect();
             let mut scored = Normalized::new(p.normalize);
             let mut watch = Watch::from(0, &p);
@@ -1488,7 +1569,7 @@ mod tests {
     /// of what is, however many raw characters that takes.
     #[test]
     fn the_first_score_waits_for_a_whole_window_of_scored_text() {
-        let p = params(LoopGuardMode::Log);
+        let p = LoopGuardParams { persist_checks: 1, ..params(LoopGuardMode::Log) };
         let block = format!("```rust\n{}```", code(2000));
         let text = block.clone() + &looping(2000);
         let (at, score) = first_loop(&text, 0, &p).expect("the loop after the block");
@@ -1499,7 +1580,7 @@ mod tests {
 
     #[test]
     fn nothing_before_the_floor_is_scored() {
-        let p = params(LoopGuardMode::Log);
+        let p = LoopGuardParams { persist_checks: 1, ..params(LoopGuardMode::Log) };
         let text: Vec<char> = (prose(1000) + &looping(3000)).chars().collect();
         let mut scored = Normalized::new(p.normalize);
         let mut watch = Watch::from(1000, &p);
@@ -1513,7 +1594,7 @@ mod tests {
     /// whose first character comes after it, not `window` raw characters.
     #[test]
     fn a_window_reaching_back_past_the_floor_through_code_is_not_scored() {
-        let p = params(LoopGuardMode::Log);
+        let p = LoopGuardParams { persist_checks: 1, ..params(LoopGuardMode::Log) };
         let after = format!("```\n{}```", code(500)) + &looping(3000);
         let text = prose(1000) + &after;
         let (at, score) = first_loop(&text, 1000, &p).expect("found after the floor");
@@ -2223,6 +2304,42 @@ mod tests {
         assert!(after_tag.split_once(']').unwrap().1.starts_with(first_nudge));
         assert!(text.ends_with(&format!("{second}Roma.")));
         assert!(!text.contains("repeat myself"), "no default sentence");
+    }
+
+    /// A reasoning that opens in a loop has no clean window to go back to:
+    /// the rewind would keep nothing, so the loop is only logged and passes
+    /// through, once. At `min_kept_chars` 0 it is rewound from nothing.
+    #[tokio::test]
+    async fn a_rewind_that_would_keep_nothing_is_only_logged() {
+        let reasoning = looping(8000);
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let (text, done) =
+            drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, true))).await;
+        assert_eq!(text, reasoning, "passed through untouched");
+        assert!(done.is_some());
+        assert!(ops.cancelled.lock().unwrap().is_empty() && ops.submitted.lock().unwrap().is_empty(), "never rewound");
+
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        let p = LoopGuardParams { min_kept_chars: 0, ..params(LoopGuardMode::Rewind) };
+        let (text, _) = drain(guard(p, ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        assert_eq!(*ops.cancelled.lock().unwrap(), vec![1]);
+        assert_eq!(text_of(&ops.submitted.lock().unwrap()[0].tokens), format!("P{}", NUDGES[0]), "nothing kept, the nudge alone");
+        assert!(text.ends_with("Roma."));
+    }
+
+    /// After a loop with nothing to keep, a clean window gives the next
+    /// loop a cut: it is rewound to there, the first loop kept.
+    #[tokio::test]
+    async fn after_a_loop_with_nothing_to_keep_a_later_loop_is_rewound_to_a_clean_window() {
+        let head = looping(3000) + &prose(4000);
+        let reasoning = head.clone() + &looping(6000);
+        let ops = ops_with(vec![(2, scripted(2, "Roma.", true))]);
+        drain(guard(params(LoopGuardMode::Rewind), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        let submitted = ops.submitted.lock().unwrap();
+        assert_eq!(submitted.len(), 1, "one rewind, the second loop's");
+        let continued = text_of(&submitted[0].tokens);
+        let (kept, _) = kept_then(continued.strip_prefix('P').unwrap(), NUDGES[0], &reasoning);
+        assert!(kept.len() > 3000 && head.starts_with(kept), "kept the first loop and some prose: {} chars", kept.len());
     }
 
     /// On the normalized score: a counting loop after a code block is found,

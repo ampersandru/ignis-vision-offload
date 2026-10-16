@@ -13,7 +13,8 @@
 //!
 //! - `online`: the worst score the guard sees, `[ratio, at, start]` (raw
 //!   characters pushed when it was taken, raw character its window starts at);
-//! - `checks`: every score, `[at, scored length, ratio, window hash]`;
+//! - `checks`: every score, `[at, scored length, ratio, window hash, window
+//!   start]` (the raw character its window starts at);
 //! - `raw_ratios`: every score's raw-gate ratio (the last window of raw
 //!   characters), in the order of `checks`;
 //! - `fire`: the first score that is a loop with the default raw gate,
@@ -88,7 +89,7 @@ fn main() {
             if let Some(score) = watch.score(&scored, &params) {
                 let len = scored.text().len();
                 let hash = fnv1a(&scored.text()[len - window..].iter().collect::<String>());
-                checks.push(json!([scored.raw_len(), len, score.ratio, hash]));
+                checks.push(json!([scored.raw_len(), len, score.ratio, hash, score.start]));
                 if online.is_none_or(|(worst, _, _)| score.ratio < worst) {
                     online = Some((score.ratio, scored.raw_len(), score.start));
                 }

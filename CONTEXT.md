@@ -90,7 +90,10 @@ When output names a domain concept, use the term as defined here.
   `loop_guard_check_every` raw characters (250 by default), fires when the
   reasoning's last window compresses too well once
   code is removed and digit runs are folded, and its raw text compresses well
-  too. In `log` mode it only logs; in `rewind` mode it **rewinds**.
+  too; the guard acts once `loop_guard_persist` checks in a row have fired
+  (ADR 0053: a loop persists, a list ends). In `log` mode it only logs; in
+  `rewind` mode it **rewinds**, unless the rewind would keep less than
+  `loop_guard_min_kept` characters of reasoning, which is only logged.
 - **Rewind** — the loop guard's action: the engine request is cancelled and a
   **continuation** submitted. The client keeps what it received and gets the
   tag `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]` in the reasoning,

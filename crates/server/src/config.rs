@@ -1039,6 +1039,8 @@ fn derive(
             clean_permille: s.model.loop_guard_clean,
             margin_chars: s.model.loop_guard_margin,
             retries: s.model.loop_guard_retries,
+            persist_checks: s.model.loop_guard_persist,
+            min_kept_chars: s.model.loop_guard_min_kept,
             holdback_chars: s.model.loop_guard_holdback,
             check_every_chars: s.model.loop_guard_check_every,
             snap_chars: s.model.loop_guard_snap,

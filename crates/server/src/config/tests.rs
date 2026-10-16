@@ -1214,13 +1214,13 @@ fn the_idle_unload_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
 
 // ── loop guard (ADR 0052) ────────────────────────────────────────────────
 
-/// The loop guard scores normalized reasoning at 1,000 characters and 0.20
+/// The loop guard scores normalized reasoning at 1,000 characters and 0.265
 /// by default; `model.loop_guard_normalize` resolves from flag, env and
 /// file, and the scoring knobs are visible and patchable with no reload.
 #[test]
 fn the_loop_guard_scores_normalized_by_default_and_off_scores_the_text_as_written() {
     let defaults = config(&[]).loop_guard;
-    assert_eq!((defaults.normalize, defaults.window_chars, defaults.ratio_permille), (true, 1000, 200));
+    assert_eq!((defaults.normalize, defaults.window_chars, defaults.ratio_permille), (true, 1000, 265));
     assert_eq!(defaults, crate::loop_guard::LoopGuardParams::default());
     assert!(!config(&["--model-loop-guard-normalize", "off"]).loop_guard.normalize);
     let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_NORMALIZE", "false")]);
@@ -1322,6 +1322,29 @@ fn the_loop_guards_cadence_snap_room_and_submit_wait_resolve_from_flag_env_and_f
     )]);
     let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
     assert_eq!((file.check_every_chars, file.snap_chars, file.min_continuation_tokens, file.submit_wait_secs), (125, 600, 256, 30));
+}
+
+/// A loop must persist 4 checks before the guard acts, and a rewind must
+/// keep a character of reasoning, by default; both resolve from flag, env
+/// and file, visible and patchable with no reload, and are bounded.
+#[test]
+fn the_loop_guards_persistence_and_minimum_kept_resolve_from_flag_env_and_file() {
+    let defaults = config(&[]).loop_guard;
+    assert_eq!((defaults.persist_checks, defaults.min_kept_chars), (4, 1));
+    let flags = config(&["--model-loop-guard-persist", "1", "--model-loop-guard-min-kept", "0"]).loop_guard;
+    assert_eq!((flags.persist_checks, flags.min_kept_chars), (1, 0), "today's first check, and rewinds from nothing");
+    let env = env_map(&[("IGNIS_MODEL_LOOP_GUARD_PERSIST", "6"), ("IGNIS_MODEL_LOOP_GUARD_MIN_KEPT", "500")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve")).loop_guard;
+    assert_eq!((from_env.persist_checks, from_env.min_kept_chars), (6, 500));
+    assert!(refused(&["--model-loop-guard-persist", "0"]).contains("--model-loop-guard-persist"));
+    assert!(refused(&["--model-loop-guard-min-kept", "100001"]).contains("--model-loop-guard-min-kept"));
+    for name in ["loop_guard_persist", "loop_guard_min_kept"] {
+        let field = schema::field("model", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "model:\n  loop_guard_persist: 3\n  loop_guard_min_kept: 200\n")]);
+    let file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap().loop_guard;
+    assert_eq!((file.persist_checks, file.min_kept_chars), (3, 200));
 }
 
 /// The two nudges are the model's own words by default and config fields

@@ -9,6 +9,9 @@ leading line breaks), `reasoning_tokens` counting what a holdback never sent, th
 socket's queue rather than within `loop_guard_submit_wait`, and the new fields' bounds.
 Amended 2026-10-16 (owner): the two nudges are config fields, `loop_guard_nudge` and
 `loop_guard_nudge_again`, whose defaults are the sentences below.
+Amended 2026-10-16 by [ADR 0053](0053-a-loop-is-acted-on-once-it-persists.md): the guard acts
+once a loop persists (`loop_guard_persist` 4 checks in a row), the ratio is 265, and a rewind
+that would keep no reasoning is only logged (`loop_guard_min_kept`).
 Proposed 2026-10-14. The design is the owner's (2026-10-13: an
 engine-level detector off the critical path, an injected sentence, a few retries before
 the reasoning is closed, a visible tag the Playground strikes through). The numbers are in
@@ -209,11 +212,13 @@ no reload):
 | `loop_guard` | `rewind` (also `log`, `off`) |
 | `loop_guard_normalize` | on |
 | `loop_guard_window` | 1,000 characters |
-| `loop_guard_ratio` | 200 permille |
+| `loop_guard_ratio` | 200 permille; 265 since ADR 0053 |
 | `loop_guard_raw_gate` | 300 permille (0 = off) |
 | `loop_guard_clean` | 400 permille |
 | `loop_guard_margin` | 0 characters |
 | `loop_guard_retries` | 2 |
+| `loop_guard_persist` | 4 checks (ADR 0053) |
+| `loop_guard_min_kept` | 1 character (ADR 0053) |
 | `loop_guard_holdback` | 0 characters (off) |
 | `loop_guard_check_every` | 250 characters |
 | `loop_guard_snap` | 300 characters (0 = never snaps) |
