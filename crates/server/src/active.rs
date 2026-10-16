@@ -283,7 +283,8 @@ impl ActiveModel {
 
     /// Whether the driver handle has already been taken and joined
     /// ([`ActiveModel::shut_down`]). `true` also for a model built without a
-    /// driver (`Engine::new`, most unit tests).
+    /// driver (`Engine::new`, most unit tests). A test seam: nothing in the
+    /// server reads it, `tests/serve_joins_model_thread.rs` does.
     pub fn driver_joined(&self) -> bool {
         self.driver.lock().expect("driver lock").is_none()
     }

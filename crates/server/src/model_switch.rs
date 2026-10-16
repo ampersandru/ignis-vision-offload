@@ -1619,11 +1619,12 @@ async fn drain(model: &ActiveModel, timeout: Duration) -> Result<(), InFlight> {
 }
 
 /// Step 4: stop `model` and wait until its thread has dropped everything it
-/// held ([`ActiveModel::shut_down`]), off the async workers.
-async fn shut_down(model: &Arc<ActiveModel>) {
+/// held ([`ActiveModel::shut_down`]), off the async workers. Serve exit
+/// tears the loaded model down the same way ([`Server::serve_on_until`]).
+pub(crate) async fn shut_down(model: &Arc<ActiveModel>) {
     let model = Arc::clone(model);
     if let Err(panicked) = tokio::task::spawn_blocking(move || model.shut_down()).await {
-        tracing::error!(name: "ignis.model.teardown_panicked", error = %panicked, "tearing the old model down panicked");
+        tracing::error!(name: "ignis.model.teardown_panicked", error = %panicked, "tearing the model down panicked");
     }
 }
 

@@ -417,17 +417,19 @@ impl Server {
     }
 
     /// Run [`Server::warm_up`] now if the API is held back for it, on its
-    /// own task so the listener is already answering (503) meanwhile.
-    fn spawn_warm_up(&self) {
+    /// own task so the listener is already answering (503) meanwhile. The
+    /// task's handle, so a serve that ends before the warm-up does can
+    /// cancel it.
+    fn spawn_warm_up(&self) -> Option<tokio::task::JoinHandle<()>> {
         if !matches!(*self.status(), ModelStatus::WarmingUp) {
-            return;
+            return None;
         }
         let server = self.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             if let Err(error) = server.warm_up().await {
                 tracing::error!(name: "ignis.process.warm_up_failed", %error, "still not ready");
             }
-        });
+        }))
     }
 
     /// Serve `family` (see [`ActiveModel::family`]).
@@ -697,14 +699,27 @@ impl Server {
     ) -> std::io::Result<()> {
         use std::future::IntoFuture;
 
+        let metrics = match (metrics_listener, self.metrics_app()) {
+            (None, _) => None,
+            (Some(metrics_listener), Some(metrics_app)) => Some((metrics_listener, metrics_app)),
+            (Some(_), None) => {
+                // Refused before anything is served, but the model is loaded:
+                // it leaves the card the way it does after a serve.
+                model_switch::shut_down(&self.active()).await;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "a metrics listener needs metrics on (Server::with_metrics)",
+                ));
+            }
+        };
         let app = self.app();
-        self.spawn_warm_up();
+        let warm_up = self.spawn_warm_up();
         // Spec model-switch/02: an unused model leaves the card while this
         // serves; the clock stops when serving does.
-        let _idle_clock = self.spawn_idle_clock(idle::IDLE_TICK);
-        let serve_result = match (metrics_listener, self.metrics_app()) {
-            (None, _) => axum::serve(listener, app).with_graceful_shutdown(shutdown).await,
-            (Some(metrics_listener), Some(metrics_app)) => {
+        let idle_clock = self.spawn_idle_clock(idle::IDLE_TICK);
+        let serve_result = match metrics {
+            None => axum::serve(listener, app).with_graceful_shutdown(shutdown).await,
+            Some((metrics_listener, metrics_app)) => {
                 // One shutdown, fanned out to both listeners.
                 let (stop, stopped) = tokio::sync::watch::channel(());
                 let signal = async move {
@@ -720,30 +735,21 @@ impl Server {
                     axum::serve(metrics_listener, metrics_app).with_graceful_shutdown(wait(stopped));
                 tokio::try_join!(signal, api.into_future(), metrics.into_future()).map(|_| ())
             }
-            (Some(_), None) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "a metrics listener needs metrics on (Server::with_metrics)",
-                ));
-            }
         };
+        // Nothing starts on the model once serving has ended. A warm-up still
+        // running would be ended by the teardown below and report it on its
+        // own task — `ignis.process.ready`, even, since an ended request
+        // still completes — racing `ignis.process.stopped`; the idle clock
+        // could begin an unload in the middle of it. Both are stopped before
+        // the teardown begins.
+        if let Some(warm_up) = warm_up {
+            warm_up.abort();
+        }
+        drop(idle_clock);
         // Join before returning to `main`: `ignis.process.stopped` must stay
         // the last log line (spec §28), and that is emitted after this returns.
-        self.join_active_model().await;
+        model_switch::shut_down(&self.active()).await;
         serve_result
-    }
-
-    /// Stop the loaded model and join its driver thread off the async
-    /// workers (same path as a model switch's teardown).
-    async fn join_active_model(&self) {
-        let model = self.active();
-        if let Err(panicked) = tokio::task::spawn_blocking(move || model.shut_down()).await {
-            tracing::error!(
-                name: "ignis.model.teardown_panicked",
-                error = %panicked,
-                "joining the model thread after serve panicked"
-            );
-        }
     }
 }
 
