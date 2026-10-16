@@ -90,6 +90,15 @@ describe("an image session", () => {
     expect(s.steps[0]).toMatchObject({ status: "done", notes: ["scaled"], revised: "a red fox" });
   });
 
+  it("with the same seed chosen, keeps the last picture's seed in the field after each step", () => {
+    let s = setDraft(newSession("s", 0), { sameSeed: true }, 0);
+    let step: number;
+    [s, step] = startStep(s, "a fox", [], settings, 1);
+    [s] = landOutput(s, step, { ...pic("o1"), seed: "41" }, 2);
+    expect(endStep(s, step, { status: "done" }, 3).draft).toMatchObject({ seedText: "41", sameSeed: true });
+    expect(newSession("n", 0).draft.sameSeed).toBe(false);
+  });
+
   it("never sends, for an edit, a seed behind its inputs: the picture's own, or one it was made or marked from", () => {
     // #1 made with seed 7; #2 made from #1 with seed 8; #3 #2 marked; #4 an upload.
     let s = newSession("s", 0);
@@ -119,12 +128,18 @@ describe("an image session", () => {
     expect(fromStore(typed, 1).draft.seedText).toBe("41");
   });
 
-  it("leaves the draft as it was sent when the step made nothing", () => {
+  it("empties the prompt box when a step is sent, and gives the prompt back when the step made nothing", () => {
     let s = setDraft(newSession("s", 0), { prompt: "a fox", inputs: [] }, 0);
     let step: number;
     [s, step] = startStep(s, "a fox", [], settings, 1);
+    expect(s.draft.prompt).toBe("");
     s = endStep(s, step, { status: "failed", error: "The queue is full" }, 2);
     expect(s.draft.prompt).toBe("a fox");
+    // Not over what the owner has typed since.
+    let t = setDraft(newSession("t", 0), { prompt: "a fox" }, 0);
+    [t, step] = startStep(t, "a fox", [], settings, 1);
+    t = setDraft(t, { prompt: "a wolf" }, 1);
+    expect(endStep(t, step, { status: "stopped" }, 2).draft.prompt).toBe("a wolf");
     expect(s.steps[0]).toMatchObject({ status: "failed", error: "The queue is full" });
   });
 

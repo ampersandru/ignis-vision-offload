@@ -15,6 +15,8 @@ export const STORED_FLAGS = {
   parallel: "ignis.parallelSessions",
   /** Talk to ignis over HTTP chat completions rather than its Responses WebSocket (GitHub #283). */
   httpTransport: "ignis.httpTransport",
+  /** The Image view's "Enhance the prompt", as last set: what a session that never touched it uses. Off at first. */
+  imageEnhance: "ignis.imageEnhance",
 } as const;
 
 /**

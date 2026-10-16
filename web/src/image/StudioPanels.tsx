@@ -82,6 +82,7 @@ export function StudioSettings({ open, state, actions }: { open: boolean; state:
   const { limits } = state;
   const enhanceLabel = useId();
   const streamLabel = useId();
+  const sameSeedLabel = useId();
   const seed = parseSeed(draft.seedText);
   const edit = wireImages(state.active, draft.inputs).length > 0;
   return (
@@ -120,10 +121,30 @@ export function StudioSettings({ open, state, actions }: { open: boolean; state:
       {seed === undefined ? (
         <p className="-mt-3 text-sm text-fault">A seed is a whole number, or blank for a random one.</p>
       ) : (
-        <p className="-mt-3 text-[13px] text-ash">
-          Blank after each step. An edit never reuses the seed behind its inputs: the same noise again builds up into grain.
-        </p>
+        !draft.sameSeed && (
+          <p className="-mt-3 text-[13px] text-ash">
+            Blank after each step. An edit never reuses the seed behind its inputs: the same noise again builds up into grain.
+          </p>
+        )
       )}
+      <div className={`-mt-2 flex flex-col gap-2 ${draft.sameSeed ? "border-l-2 border-fault bg-fault/10 py-2.5 pr-3 pl-3" : ""}`}>
+        <div className="flex items-start gap-3">
+          <Switch on={draft.sameSeed} onChange={(sameSeed) => actions.setDraft({ sameSeed })} labelledBy={sameSeedLabel} />
+          <div className="flex flex-col gap-0.5 text-sm">
+            <span id={sameSeedLabel} className="font-display font-medium">
+              Same seed between edits
+            </span>
+            {!draft.sameSeed && <span className="text-ash">Off: each edit starts from fresh noise.</span>}
+          </div>
+        </div>
+        {draft.sameSeed && (
+          <p role="alert" className="text-[13px] leading-snug text-fault">
+            <span className="font-display font-semibold">Not advised.</span> Each step keeps the last picture's seed, and an edit is sent the seed
+            that made its own input. The model finds that noise's faint imprint in the picture and reinforces it: after two or three edits the
+            picture turns to grain, and asking to remove the noise makes it worse. Use it only to reproduce a picture, or to see this happen.
+          </p>
+        )}
+      </div>
 
       <div className="flex flex-col gap-1.5">
         <Segmented legend="Background" name="background" value={draft.background} options={BACKGROUNDS} onChange={(background) => actions.setDraft({ background })} />
@@ -131,12 +152,15 @@ export function StudioSettings({ open, state, actions }: { open: boolean; state:
       </div>
 
       <div className="flex items-start gap-3">
-        <Switch on={draft.enhance ?? limits.enhance} onChange={(enhance) => actions.setDraft({ enhance })} labelledBy={enhanceLabel} />
+        <Switch on={draft.enhance ?? state.enhanceDefault} onChange={(enhance) => actions.setDraft({ enhance })} labelledBy={enhanceLabel} />
         <div className="flex flex-col gap-0.5 text-sm">
           <span id={enhanceLabel} className="font-display font-medium">
             Enhance the prompt
           </span>
-          <span className="text-ash">A text model rewrites it first. The server may visit it, so the first request takes longer.</span>
+          <span className="text-ash">
+            {limits.enhancer} rewrites it first. With the image model loaded that is a visit there and back: two model loads before each step.
+            Remembered for the next session.
+          </span>
         </div>
       </div>
       <div className="flex items-start gap-3">

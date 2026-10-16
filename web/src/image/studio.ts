@@ -120,7 +120,11 @@ export type RunPlan = { label: string; note: string | null; model?: string; read
 export function runPlan(model: ModelState, limits: Limits, imageModel: CatalogRow | null, enhance: boolean, edit: boolean, running = false): RunPlan {
   const verb = edit ? "edit" : "generate";
   const plain = edit ? "Edit" : "Generate";
-  if (imageLoaded(model)) return { label: plain, note: null, ready: true };
+  if (imageLoaded(model)) {
+    // With the image model loaded, enhancement is a visit to the enhancer and back (spec image-model/05).
+    const note = enhance ? `${limits.enhancer} rewrites the prompt first: the server loads it and then the image model again.` : null;
+    return { label: plain, note, ready: true };
+  }
   if (!canSend(model) || !imageModel) return { label: plain, note: running ? null : "Needs the image model.", ready: false };
   if (!limits.allowImplicit) {
     return { label: plain, note: "switch.allow_implicit is off, so a request does not switch: switch to the image model first.", ready: false };

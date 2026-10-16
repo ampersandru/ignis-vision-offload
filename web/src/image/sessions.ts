@@ -84,6 +84,11 @@ export type SessionDraft = {
   count: number;
   /** Blank after each step: the next step edits its picture, and must not start from the noise that made it (seedClash). */
   seedText: string;
+  /**
+   * The owner's choice against that: each step's seed is the last picture's, and an edit is sent the seed behind its
+   * inputs. Not advised — it builds the noise up into grain — and off unless chosen; for reproducing a picture.
+   */
+  sameSeed: boolean;
   background: ImageBackground;
   enhance: boolean | null;
   stream: boolean;
@@ -109,6 +114,7 @@ export const EMPTY_SESSION_DRAFT: SessionDraft = {
   size: AUTO_SIZE,
   count: 1,
   seedText: "",
+  sameSeed: false,
   background: "auto",
   enhance: null,
   stream: true,
@@ -172,12 +178,15 @@ export function unmark(s: ImageSession, n: number, now: number): ImageSession {
   return setDraft(s, { inputs: s.draft.inputs.map((x) => (x === n ? source : x)) }, now);
 }
 
-/** A step under way, from the draft as it was sent; the first one names the session. */
+/**
+ * A step under way, from the draft as it was sent; the first one names the session. The prompt box empties, as the
+ * chat's does: the prompt is the step's now, and comes back if the step makes nothing (endStep).
+ */
 export function startStep(s: ImageSession, prompt: string, inputs: number[], settings: StepSettings, now: number): [ImageSession, number] {
   const n = s.steps.length + 1;
   const step: Step = { n, prompt, inputs, settings, outputs: [], status: "running", at: now };
   const title = s.steps.length === 0 && s.title === UNTITLED ? titleOf(prompt) : s.title;
-  return [touched({ ...s, title, steps: [...s.steps, step] }, now), n];
+  return [touched({ ...s, title, steps: [...s.steps, step], draft: { ...s.draft, prompt: "" } }, now), n];
 }
 
 /** A picture the step made, into the pool and onto the step. */
@@ -187,9 +196,10 @@ export function landOutput(s: ImageSession, stepN: number, entry: Omit<PoolImage
 }
 
 /**
- * The step ended. One that made pictures hands the next step its first one as the only input and clears the prompt
- * for the next instruction, and the seed with it: an edit that starts again from the noise that made its input builds
- * that noise up into grain (seedClash). One that made none leaves the draft as it was sent.
+ * The step ended. One that made pictures hands the next step its first one as the only input, and clears the seed:
+ * an edit that starts again from the noise that made its input builds that noise up into grain (seedClash) — unless
+ * the owner chose the same seed, when the field takes that picture's. One that made none gives its prompt back to an
+ * empty prompt box, to send again or change.
  */
 export function endStep(
   s: ImageSession,
@@ -210,8 +220,12 @@ export function endStep(
   );
   const step = steps.find((st) => st.n === stepN);
   const first = step?.outputs[0];
-  if (first === undefined) return touched({ ...s, steps }, now);
-  const draft: SessionDraft = { ...s.draft, prompt: "", inputs: [first], seedText: "" };
+  if (first === undefined) {
+    const back = step && s.draft.prompt.trim() === "" ? { draft: { ...s.draft, prompt: step.prompt } } : {};
+    return touched({ ...s, steps, ...back }, now);
+  }
+  const seed = s.draft.sameSeed ? pictureOf(s, first)?.seed : undefined;
+  const draft: SessionDraft = { ...s.draft, prompt: "", inputs: [first], seedText: seed ?? "" };
   return touched({ ...s, steps, draft }, now);
 }
 
@@ -222,7 +236,7 @@ export function endStep(
  */
 export function fromStore(stored: ImageSession, now: number): ImageSession {
   const { keepSeed, ...draft } = stored.draft as SessionDraft & { keepSeed?: boolean };
-  const s: ImageSession = { ...stored, draft: keepSeed ? { ...draft, seedText: "" } : draft };
+  const s: ImageSession = { ...stored, draft: { ...draft, sameSeed: draft.sameSeed ?? false, ...(keepSeed ? { seedText: "" } : {}) } };
   // As the page showed it: a u64 prints without an exponent.
   const digits = (seed: unknown) => (typeof seed === "number" ? String(Math.trunc(Math.abs(seed))) : seed);
   const pool = s.pool.map((p) => (typeof p.seed === "number" ? { ...p, seed: digits(p.seed) as Seed } : p));

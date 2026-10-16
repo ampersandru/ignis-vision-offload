@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ImageProgress } from "../api/images.ts";
+import { STORED_FLAGS, useStoredFlag } from "../app/storedFlag.ts";
 import { imageLoaded, type LastSwitch, type ModelState } from "../api/model.ts";
 import { keepOutside, type MarkedPicture, promptStub } from "../markup/markup.ts";
 import { afterSwitch } from "../server/outcome.ts";
@@ -94,6 +95,8 @@ export type ImageSessionsState = {
   viewing: number | null;
   usage: StoreUsage | null;
   storeKind: ImageStore["kind"];
+  /** "Enhance the prompt" for a session that never set it: the last value set anywhere, off at first. */
+  enhanceDefault: boolean;
   switching: boolean;
   switchRefusal: string | null;
 };
@@ -129,6 +132,9 @@ export function useImageSessions(
   options: { store?: ImageStore; live?: () => Iterable<ImageId> } = {},
 ): [ImageSessionsState, ImageSessionsActions] {
   const store = options.store ?? pageStore();
+  const [enhanceDefault, rememberEnhance] = useStoredFlag(STORED_FLAGS.imageEnhance, false);
+  const enhanceNow = useRef(enhanceDefault);
+  enhanceNow.current = enhanceDefault;
   const [config, setConfig] = useState<ConfigDocument | null>(null);
   const [catalog, setCatalog] = useState<CatalogRow[] | null>(null);
   const first = useRef<ImageSession | null>(null);
@@ -263,10 +269,11 @@ export function useImageSessions(
     if (abort.current) return;
     const s = find(activeNow.current);
     if (!s) return;
-    const { draft } = s;
+    // A session that never set "Enhance the prompt" takes the value last set.
+    const draft = { ...s.draft, enhance: s.draft.enhance ?? enhanceNow.current };
     const limitsAt = limitsNow.current;
     const wire = wireImages(s, draft.inputs);
-    const plan = runPlan(modelNow.current, limitsAt, imageModelNow.current, draft.enhance ?? limitsAt.enhance, wire.length > 0, false);
+    const plan = runPlan(modelNow.current, limitsAt, imageModelNow.current, draft.enhance, wire.length > 0, false);
     if (!plan.ready) return;
     const controller = new AbortController();
     abort.current = controller;
@@ -295,11 +302,16 @@ export function useImageSessions(
       abort.current = null;
       return;
     }
-    // A seed behind an input is left to the server: the same noise again builds up into grain (seedClash).
+    // A seed behind an input is left to the server — the same noise again builds up into grain (seedClash) — unless
+    // the owner chose the same seed, which the step then says.
     const clash = seedClash(s, draft.inputs, asked.seed);
-    const params = clash === undefined ? asked : { ...asked, seed: null };
+    const params = clash === undefined || draft.sameSeed ? asked : { ...asked, seed: null };
     const ownNotes =
-      clash === undefined ? [] : [`The seed was not reused: it is behind #${clash}, and an edit that starts again from its input's noise builds it up into grain.`];
+      clash === undefined
+        ? []
+        : draft.sameSeed
+          ? [`Sent with the seed behind #${clash}, as chosen: an edit from its input's own noise builds that noise up into grain.`]
+          : [`The seed was not reused: it is behind #${clash}, and an edit that starts again from its input's noise builds it up into grain.`];
     const settings: StepSettings = { size: params.size, count: params.n, seed: params.seed, background: draft.background, enhance: params.enhance };
     const stepN = apply(s.id, (x) => startStep(x, draft.prompt.trim(), [...draft.inputs], settings, Date.now()), true);
     if (stepN === undefined) {
@@ -477,6 +489,7 @@ export function useImageSessions(
     viewing,
     usage,
     storeKind: store.kind,
+    enhanceDefault,
     switching: following !== null,
     switchRefusal,
   };
@@ -490,7 +503,11 @@ export function useImageSessions(
       setNotice(null);
     },
     remove: (id) => void remove(id),
-    setDraft: (change) => update(activeNow.current, (s) => setDraft(s, change, now())),
+    setDraft: (change) => {
+      // The switch is remembered: the next session, or the next page, starts where it was left.
+      if (change.enhance !== undefined && change.enhance !== null) rememberEnhance(change.enhance);
+      update(activeNow.current, (s) => setDraft(s, change, now()));
+    },
     addFiles: (files) => void addFiles(files),
     toggleInput: (n) => {
       const s = find(activeNow.current);

@@ -22,7 +22,7 @@ export function StudioComposer({ model, state, actions }: { model: ModelState; s
   const [over, setOver] = useState(false);
   const busy = state.run !== null;
   const edit = wireImages(s, draft.inputs).length > 0;
-  const plan = runPlan(model, limits, state.imageModel, draft.enhance ?? limits.enhance, edit, busy);
+  const plan = runPlan(model, limits, state.imageModel, draft.enhance ?? state.enhanceDefault, edit, busy);
   // Only whether it can be sent: the files are read from the store when it is.
   const sendable = paramsOf(draft, [], limits) !== null;
   const canRun = state.loaded && plan.ready && !busy && sendable;
@@ -85,12 +85,23 @@ export function StudioComposer({ model, state, actions }: { model: ModelState; s
             placeholder={edit ? (draft.inputs.length > 1 ? "Put the jacket from image 2 on the person in image 1" : "What should change in image 1") : "Describe the picture"}
             className="max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-normal text-ink [field-sizing:content] placeholder:text-ash focus:outline-none"
           />
+          {/* Two buttons, never one changing type: the run ends while Stop's click is still being dispatched, and a
+              button that is a submit by then would send the form again — the step would start over. */}
           {runningHere ? (
-            <button type="button" className="cut bg-[#c8161d] px-5 py-2.5 font-display text-sm font-semibold text-white hover:bg-[#a8121a]" onClick={actions.stop}>
+            <button
+              key="stop"
+              type="button"
+              className="cut bg-[#c8161d] px-5 py-2.5 font-display text-sm font-semibold text-white hover:bg-[#a8121a]"
+              onClick={(e) => {
+                e.preventDefault();
+                actions.stop();
+              }}
+            >
               Stop
             </button>
           ) : (
             <button
+              key="send"
               type="submit"
               disabled={!canRun}
               className="cut bg-[#ff5a1f] px-5 py-2.5 font-display text-sm font-semibold text-[#1c2026] hover:bg-[#ff7a45] disabled:cursor-default disabled:bg-line disabled:text-ash"
@@ -102,6 +113,8 @@ export function StudioComposer({ model, state, actions }: { model: ModelState; s
         <p className="min-h-4 px-1 text-xs text-ash [overflow-wrap:anywhere]">
           {state.notice ? (
             <span className="text-warn">{state.notice}</span>
+          ) : draft.sameSeed && edit ? (
+            <span className="font-medium text-fault">Same seed between edits is on: not advised, the picture builds up grain. Turn it off in the settings.</span>
           ) : seedBad ? (
             <span className="text-fault">The seed in the settings is not a whole number.</span>
           ) : busy && !runningHere ? (

@@ -286,9 +286,14 @@ describe("what Generate and Edit do (GitHub #324)", () => {
   const text: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786432, kind: "text" };
   const image: ModelState = { state: "ready", id: "ignis-image-2.1-turbo", contextLimit: null, kind: "image" };
 
-  it("runs on the image model as it is, naming none", () => {
-    expect(runPlan(image, DEFAULT_LIMITS, row, true, false)).toEqual({ label: "Generate", note: null, ready: true });
+  it("runs on the image model as it is, naming none, and says the visit to the enhancer when enhancement is on", () => {
+    expect(runPlan(image, DEFAULT_LIMITS, row, false, false)).toEqual({ label: "Generate", note: null, ready: true });
     expect(runPlan({ ...image, state: "unloaded" }, DEFAULT_LIMITS, row, false, true)).toEqual({ label: "Edit", note: null, ready: true });
+    expect(runPlan(image, DEFAULT_LIMITS, row, true, false)).toEqual({
+      label: "Generate",
+      note: "qwen3.8-27b rewrites the prompt first: the server loads it and then the image model again.",
+      ready: true,
+    });
   });
 
   it("with a text model loaded, names the image model and says the switch", () => {

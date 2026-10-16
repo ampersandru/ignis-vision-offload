@@ -58,6 +58,7 @@ function state(change: Partial<ImageSessionsState> = {}): ImageSessionsState {
     viewing: null,
     usage: { bytes: 12_400_000, images: 3 },
     storeKind: "indexeddb",
+    enhanceDefault: false,
     switching: false,
     switchRefusal: null,
     ...change,
@@ -139,6 +140,23 @@ describe("ImageStudio", () => {
     expect(withInput).toContain(">Golden hour<");
     expect(withInput).not.toContain(">Swap the outfit<");
     expect(render(image, state({ active: setDraft(worked(), { prompt: "make it night" }, 5) }))).not.toContain('aria-label="Ideas"');
+  });
+
+  it("keeps the same seed between edits off, and says plainly why it is not advised once it is on", () => {
+    const off = render(image, state());
+    expect(off).toContain("Same seed between edits");
+    expect(off).toContain("Off: each edit starts from fresh noise.");
+    expect(off).not.toContain("Not advised.");
+    const on = render(image, state({ active: setDraft(worked(), { sameSeed: true }, 5) }));
+    expect(on).toMatch(/role="alert"[^>]*><span[^>]*>Not advised\.<\/span>/);
+    expect(on).toContain("turns to grain");
+    expect(on).toContain("Same seed between edits is on: not advised");
+  });
+
+  it("starts with prompt enhancement off, then as last set; says the visit to the enhancer", () => {
+    expect(render(image, state())).toMatch(/role="switch" aria-checked="false" aria-labelledby="[^"]+"[^>]*>(?:(?!<\/button>).)*<\/button><div[^>]*><span[^>]*>Enhance the prompt/);
+    const on = render(image, state({ enhanceDefault: true, active: setDraft(newSession("e", 0), { prompt: "a fox" }, 1) }));
+    expect(on).toContain("rewrites the prompt first: the server loads it and then the image model again.");
   });
 
   it("says a failed step's error on the step, and waits for the store before anything else", () => {

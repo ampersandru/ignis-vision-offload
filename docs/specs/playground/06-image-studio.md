@@ -36,7 +36,15 @@ prompt box at the foot (CONTEXT.md: image session, image pool, image input).
 - The settings (shape, count, seed, background, enhancement, progress) belong
   to the session's draft. The seed field clears after each step, and an edit
   is never sent a seed behind its inputs: the same noise again builds up into
-  grain (finding 2026-10-16-image-edit-same-seed-grain).
+  grain (finding 2026-10-16-image-edit-same-seed-grain). "Same seed between
+  edits" turns that off on purpose, to reproduce a picture: off by default,
+  and while on the settings and the prompt box say plainly that it is not
+  advised and why.
+- "Enhance the prompt" starts off, and a session that never set it takes the
+  value last set in any session (stored in the browser). With the image model
+  loaded it is a visit to the enhancer and back, which the prompt box says.
+- Sending a step empties the prompt box, as the chat's does; a step that makes
+  nothing gives its prompt back.
 - With a text model loaded, Generate and Edit switch to the image model on
   their own (#324). The explicit switch band is not shown for now (owner's
   call); `image/SwitchBand.tsx` keeps it, tested.
@@ -140,9 +148,11 @@ again, so no chat request ever names a model (#305's ping-pong).
    reuses an empty one. (Studio.test, sessions.test)
 2. A step records its prompt, inputs and settings, and its pictures land in
    the pool and on the step in the order they come. (sessions.test)
-3. After a step that made pictures, its first is the only input and the prompt
-   and the seed are empty; a step that made none leaves the draft as it was
-   sent. (sessions.test)
+3. Sending a step empties the prompt box; after a step that made pictures,
+   its first is the only input and the seed is empty (with "Same seed between
+   edits", the picture's); a step that made none gives its prompt back to an
+   empty box. Stop ends the step and starts nothing. (sessions.test; Stop
+   checked live, 2026-10-16)
 4. Inputs are shown as the prompt names them; a mask-mode input shows its
    mask's number, and the count against `image.max_condition_images` counts
    masks. (Studio.test)
@@ -192,7 +202,11 @@ again, so no chat request ever names a model (#305's ping-pong).
     the step says so; "Reuse prompt and seed" brings back the step that made
     the picture, its inputs included; `make_image` drops a seed that made one
     of its references and tells the model. A draft kept with the old "Keep the
-    last seed" reads with a blank seed. (sessions.test, image.test)
+    last seed" reads with a blank seed. "Same seed between edits" sends it
+    anyway, says so on the step, and shows a warning while on; it is off in a
+    new session. (sessions.test, image.test, Studio.test)
+19. "Enhance the prompt" is off in a new browser, and otherwise starts at the
+    value last set. (Studio.test)
 
 ## As built (2026-10-16, branch `playground-image-studio`)
 
@@ -209,5 +223,11 @@ again, so no chat request ever names a model (#305's ping-pong).
   "Keep the last seed", turned the picture to grain; reproduced from a clean
   picture in three steps with a fixed seed and not with fresh ones (finding
   2026-10-16-image-edit-same-seed-grain). The option is gone; AC 18 guards.
+- Stop (2026-10-16, owner's report): Stop and Generate were one button that
+  changed type; the run ended while Stop's click was still being dispatched,
+  and the button, a submit again by then, sent the form: a new step started at
+  once (and, mid enhancement visit, failed on "a model switch is under way").
+  Two buttons now, and Stop prevents the click's default. Reproduced and
+  checked live.
 - `fake-indexeddb` joined the web dev dependencies (the IndexedDB contract
   tests); `make build` runs `npm ci` once for it.
