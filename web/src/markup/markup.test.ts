@@ -39,5 +39,6 @@ describe("the prompt's first words for the marks", () => {
     expect(promptStub("drawn", { picture: 2 }, "#ff2a2a")).toBe("In image 2, change what is marked in red: ");
     expect(promptStub("mask", { picture: 1, mask: 2 }, "#ff2a2a")).toBe("In image 1, change only the area that is white in image 2: ");
     expect(colorName("#123456")).toBe("the marked colour");
+    expect(promptStub("drawn", { picture: 1 }, "#000000")).toBe("In image 1, change what is marked in black: ");
   });
 });

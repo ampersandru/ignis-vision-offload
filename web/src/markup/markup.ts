@@ -28,12 +28,16 @@ export type MarkTool = Mark["kind"];
 /** How the marks reach the model: drawn on the picture, or as a mask image after it. */
 export type MarkMode = "drawn" | "mask";
 
-/** The colours a mark can take; red first, as an edit request usually circles in red. */
+/**
+ * The colours a mark can take; red first, as an edit request usually circles in red. Black and white for pictures
+ * where red would not stand out, or where the prompt wants a plain outline.
+ */
 export const MARK_COLORS = [
   { value: "#ff2a2a", name: "red" },
   { value: "#ffd400", name: "yellow" },
   { value: "#21d07a", name: "green" },
   { value: "#ffffff", name: "white" },
+  { value: "#000000", name: "black" },
 ] as const;
 
 export const colorName = (color: string) => MARK_COLORS.find((c) => c.value === color)?.name ?? "the marked colour";

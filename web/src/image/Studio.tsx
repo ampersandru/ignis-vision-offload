@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { ModelState } from "../api/model.ts";
 import { MarkupEditor } from "../markup/MarkupEditor.tsx";
 import { IconBrush, IconDownload, IconExpand, IconReference, IconRegenerate } from "../ui/icons.tsx";
-import { Frame, RunLine } from "./controls.tsx";
+import { Frame, RunLine, ShapeGlyph } from "./controls.tsx";
+import { exampleDraft, PICTURE_EXAMPLES } from "./examples.ts";
 import { Picture, usePictureUrl } from "./pictures.tsx";
 import { type ImageSession, inputNumbers, pictureName, type PoolImage, pictureOf, type Step, wireImages } from "./sessions.ts";
 import { StudioComposer } from "./StudioComposer.tsx";
@@ -76,7 +77,7 @@ function Timeline({ state, actions }: { state: ImageSessionsState; actions: Imag
   if (!state.loaded) {
     return <p className="m-auto font-display text-sm text-ash">Opening your sessions…</p>;
   }
-  if (s.steps.length === 0) return <EmptyStudio session={s} />;
+  if (s.steps.length === 0) return <EmptyStudio state={state} actions={actions} />;
   return (
     <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
       <ol className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-4 py-6 md:px-8">
@@ -88,15 +89,51 @@ function Timeline({ state, actions }: { state: ImageSessionsState; actions: Imag
   );
 }
 
-function EmptyStudio({ session: s }: { session: ImageSession }) {
+/**
+ * A session with no steps: what to do, and — with no inputs yet — pictures to start from, each a kind the model is
+ * good at, shown by its shape. Picking one fills the prompt box and the settings; nothing is sent.
+ */
+function EmptyStudio({ state, actions }: { state: ImageSessionsState; actions: ImageSessionsActions }) {
+  const s = state.active;
+  const editing = s.draft.inputs.length > 0;
   return (
-    <div className="m-auto flex max-w-md flex-col items-center gap-3 px-6 py-10 text-center">
-      <p className="font-display text-3xl font-semibold tracking-tight text-ink">Start a picture</p>
-      <p className="text-sm text-ash">
-        {s.pool.length > 0
-          ? "Say below what should change in the inputs, or drop them to start from nothing."
-          : "Describe it below, or drop pictures on the prompt box to edit them. Each step stays in this session, and the last picture is the next step's input."}
-      </p>
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 py-10 md:px-8">
+        <div className="flex flex-col gap-2">
+          <p className="font-display text-3xl font-semibold tracking-tight text-ink">Start a picture</p>
+          <p className="max-w-xl text-sm text-ash">
+            {editing
+              ? "Say below what should change in the inputs, or pick one of the ideas over the prompt box."
+              : "Describe it below, or drop pictures on the prompt box to edit them. Each step stays in this session, and its last picture is the next step's input. Or start from one of these:"}
+          </p>
+        </div>
+        {!editing && (
+          <ul aria-label="Examples" className="grid gap-x-8 sm:grid-cols-2">
+            {PICTURE_EXAMPLES.map((example) => (
+              <li key={example.id}>
+                <button
+                  type="button"
+                  title={example.prompt}
+                  className="group flex w-full items-start gap-3.5 border-b border-line py-3 text-left hover:bg-surface"
+                  onClick={() => actions.setDraft(exampleDraft(example, state.limits.sizes))}
+                >
+                  <span className={`mt-1 grid size-9 shrink-0 place-items-center text-ash group-hover:text-ember [&>span]:scale-150 ${example.background ? "checker" : ""}`}>
+                    <ShapeGlyph size={example.size} />
+                  </span>
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="font-display text-xs text-ash">
+                      {example.kind}
+                      {example.background ? ", transparent" : ""}
+                    </span>
+                    <span className="font-display text-[15px] font-semibold text-ink group-hover:text-ember">{example.title}</span>
+                    <span className="line-clamp-2 text-[13px] leading-snug text-ash">{example.prompt}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

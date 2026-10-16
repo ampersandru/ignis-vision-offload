@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { ModelState } from "../api/model.ts";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconBrush, IconClose, IconImage, IconPlus } from "../ui/icons.tsx";
+import { ideasFor } from "./examples.ts";
 import { Picture } from "./pictures.tsx";
 import { inputNumbers, type ImageSession, pictureOf, wireImages } from "./sessions.ts";
 import { ACCEPTED_IMAGES, paramsOf, parseSeed, runPlan } from "./studio.ts";
@@ -44,6 +45,22 @@ export function StudioComposer({ model, state, actions }: { model: ModelState; s
     >
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-2">
         <Inputs session={s} max={limits.maxImages} actions={actions} />
+        {draft.prompt.trim() === "" && ideasFor(draft.inputs.length).length > 0 && (
+          <div aria-label="Ideas" className="flex flex-wrap items-center gap-1.5">
+            <span className="pr-1 font-display text-xs text-ash">Ideas</span>
+            {ideasFor(draft.inputs.length).map((idea) => (
+              <button
+                key={idea.id}
+                type="button"
+                title={idea.prompt}
+                className="cut bg-surface px-2.5 py-1 font-display text-xs font-medium text-ink [--cut-size:5px] hover:bg-line hover:text-ember"
+                onClick={() => actions.setDraft({ prompt: idea.prompt, ...(idea.background ? { background: idea.background } : {}) })}
+              >
+                {idea.label}
+              </button>
+            ))}
+          </div>
+        )}
         <form
           aria-label="Next step"
           className={`cut flex items-end gap-2 bg-surface p-2 shadow-[inset_0_-2px_0_var(--line)] [--cut-size:14px] focus-within:shadow-[inset_0_-2px_0_var(--ember)] ${over ? "outline-2 outline-ember outline-dashed" : ""}`}

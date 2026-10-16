@@ -138,7 +138,7 @@ export function MarkupEditor({
               role="radio"
               aria-checked={color === c.value}
               aria-label={c.name}
-              className={`size-6 border-2 ${color === c.value ? "border-[#eae8e4]" : "border-transparent"}`}
+              className={`size-6 border-2 ${color === c.value ? "border-[#eae8e4]" : "border-[#3e454f]"}`}
               style={{ background: c.value }}
               onClick={() => setColor(c.value)}
             />

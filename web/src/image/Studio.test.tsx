@@ -127,6 +127,20 @@ describe("ImageStudio", () => {
     expect(html).toContain("Making");
   });
 
+  it("offers pictures to start from on a new session, each a kind by its shape, and edit ideas once there are inputs", () => {
+    const empty = render(image, state({ active: newSession("e", 0) }));
+    expect(empty).toContain('aria-label="Examples"');
+    expect(empty).toContain("Vintage travel poster");
+    expect(empty).toContain("Infographic");
+    expect(empty).toContain("Sticker, transparent");
+    expect(empty).not.toContain('aria-label="Ideas"');
+    const withInput = render(image, state());
+    expect(withInput).toContain('aria-label="Ideas"');
+    expect(withInput).toContain(">Golden hour<");
+    expect(withInput).not.toContain(">Swap the outfit<");
+    expect(render(image, state({ active: setDraft(worked(), { prompt: "make it night" }, 5) }))).not.toContain('aria-label="Ideas"');
+  });
+
   it("says a failed step's error on the step, and waits for the store before anything else", () => {
     let s = worked();
     let step: number;
