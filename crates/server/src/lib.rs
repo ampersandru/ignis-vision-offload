@@ -258,9 +258,14 @@ pub async fn warm_up_engine(engine: &Engine) -> Result<Duration, String> {
         )
         .await
         .map_err(|err| format!("the warm-up request was refused: {err:?}"))?;
-    engine::collect_completion(&mut events, WARM_UP_TIMEOUT)
+    let completion = engine::collect_completion(&mut events, WARM_UP_TIMEOUT)
         .await
         .map_err(|err| format!("the warm-up request did not complete: {err:?}"))?;
+    // A request the engine ended — a leaf error, a shutdown under it — is
+    // done too, but its traversal never ran: not a warm-up.
+    if completion.reason == ignis_core::FinishReason::Error {
+        return Err("the warm-up request ended with an error".into());
+    }
     Ok(started.elapsed())
 }
 
@@ -737,9 +742,8 @@ impl Server {
             }
         };
         // Nothing starts on the model once serving has ended. A warm-up still
-        // running would be ended by the teardown below and report it on its
-        // own task — `ignis.process.ready`, even, since an ended request
-        // still completes — racing `ignis.process.stopped`; the idle clock
+        // running would be ended by the teardown below and report its failure
+        // on its own task, racing `ignis.process.stopped`; the idle clock
         // could begin an unload in the middle of it. Both are stopped before
         // the teardown begins.
         if let Some(warm_up) = warm_up {

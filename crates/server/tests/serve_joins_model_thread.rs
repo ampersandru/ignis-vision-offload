@@ -130,11 +130,10 @@ async fn a_warm_up_still_running_when_serving_ends_is_cancelled_and_reports_noth
         .serve_on_until(listener().await, None, std::future::ready(()))
         .await
         .expect("serve");
-    // A warm-up left running is ended by the teardown and reports it on its
-    // own task, after serve has returned: `ignis.process.ready` when its
-    // request was ended in flight (an ended request still completes),
-    // `warm_up_failed` when the thread was gone before it got there. Give it
-    // the time to say either.
+    // A warm-up left running is ended by the teardown and reports its
+    // failure on its own task, after serve has returned. Give it the time to
+    // say so; `ignis.process.ready` is looked for too, so a warm-up that
+    // ever took an ended request for a traversal is caught here as well.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let reported: Vec<String> = log
