@@ -125,7 +125,9 @@ Inferred:
 ## Implications
 
 - ADR 0053 adopts `loop_guard_persist` 4, `loop_guard_ratio` 265 and `loop_guard_min_kept` 1.
-- The nudge wording is a separate, measurable question: `loop_guard_nudge` is a config field.
+- The nudge wording stays. Measured live, today's sentence beats one without the claim of
+  sufficiency on every column. On Rome the claim is what moves the model from planning to
+  writing. On agents the new trigger removed the fires the claim was dangerous after.
 - A loop guard on compression cannot see indecision loops whose text varies between repeats. The
   only harmful agentic loop observed (the 2026-10-12 incident's deferral loop) is of that kind.
 
@@ -176,7 +178,39 @@ Inferred:
 So on new seeds the new rule keeps today's recall, fires on no text that is not a loop, and
 leaves alone the loops that end by themselves. Its cost is a later cut on breathing runs.
 
+## The first nudge, live (A/B)
+
+**Setup.** This branch's release build, the owner's serving flags, the guard in `rewind` at the
+new defaults. 40 seeds (401-440) per arm, the same seeds in both. Only `loop_guard_nudge`
+differs, set with a `PATCH` between the arms:
+- **A**, today's: "Wait, I'm starting to repeat myself. Let me stop and move on with what I
+  already have."
+- **B**, with no claim of sufficiency: "Wait, I'm starting to repeat myself. Let me stop
+  repeating and move on to the next point."
+
+**Results.**
+
+| | A | B |
+|---|---:|---:|
+| runs rewound | 12 | 10 |
+| relapsed after the first nudge | 1/12 | 2/10 |
+| rewound runs that ended harmful (budget close, no answer) | 0/12 | 2/10 |
+| answer after a rewind, median characters | 11,656 | 2,939 |
+| harmful runs in all (incl. runs never rewound) | 1 | 4 |
+
+- **Live check of the new code.** The server log carries 13 `rewound` events in arm A, and no
+  `too_little_kept`, `no_room` or `submit_refused`.
+- **A's one harmful run (411)** was never rewound: a slow numeric template hovering at
+  0.21-0.23, which no rule tested catches.
+- **What B does.** After B's sentence the model takes "the next point" literally: in seed 409
+  it went on enumerating the outline (the Empire, the Flavians, the Severans…) until the forced
+  close, with no answer. With A on the same seed it closed its plan and wrote 18,874 characters.
+- **Caveat.** Same seeds are not the same reasoning: batching changes the draw, so which seeds
+  loop differs between the arms. n is small: the harmful counts are not significant, but every
+  column points the same way.
+
 ## Follow-ups
 
 - A detector for indecision loops (a decision sentence repeated between reconsiderations).
-- A/B of the first nudge on Rome, now that it is a config field.
+- The nudge on agentic turns: with the new trigger no agentic text fires, so it was not
+  measured there.

@@ -86,8 +86,11 @@ All three are live config fields (Visible, Patchable, no reload), with the new k
 ## Alternatives rejected
 
 - **Only reword the nudge.** The nudge acted on legitimate work because the trigger put it there.
-  With the new trigger it acts on persisted loops, where an exit is the measured remedy. Its
-  wording is a config field (`loop_guard_nudge`) and a separate, measurable question.
+  With the new trigger it acts on persisted loops, where an exit is the measured remedy.
+- **A nudge without the claim of sufficiency** ("…move on to the next point"). Measured live
+  against today's (finding, 40 seeds each), it is worse on every column: harmful rewound runs
+  2/10 against 0/12, median answer after a rewind 2,939 characters against 11,656. The model
+  takes "the next point" as the next item of its outline and keeps enumerating.
 - **Persistence without a higher threshold.** At 0.20, K 2 already loses a harmful loop that
   hovers around the threshold.
 - **A lower raw gate**, to keep numeric tables out: it loses harmful loops.
