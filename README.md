@@ -5,7 +5,7 @@
 <h1 align="center">Ignis</h1>
 
 <p align="center">
-  <b>A single-GPU inference engine for Qwen3.8 (the 27B and the 125B Flash-Next MoE), built for the load an agent makes.</b>
+  <b>A single-GPU inference engine for Qwen3.8 (the 27B and the 125B Flash-Next MoE) and Qwen-Image-2.1, built for the load an agent makes.</b>
 </p>
 
 <p align="center">
@@ -15,12 +15,13 @@
 <p align="center">
   <img alt="license Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-d94b1f?style=flat-square">
   <img alt="target SM120a" src="https://img.shields.io/badge/target-SM120a%20%2F%20RTX%205090%20%7C%20RTX%20PRO%206000-d94b1f?style=flat-square">
-  <img alt="models Qwen3.8-27B NVFP4 and Qwen3.8-Flash-Next" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%7C%20Flash--Next%20125B%20MoE-d94b1f?style=flat-square">
+  <img alt="models Qwen3.8-27B NVFP4, Qwen3.8-Flash-Next and Qwen-Image-2.1-Turbo" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%7C%20Flash--Next%20125B%20MoE%20%7C%20Qwen--Image--2.1-d94b1f?style=flat-square">
   <img alt="API OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-d94b1f?style=flat-square">
   <br>
   <a href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer"><img alt="weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--27B%20NVFP4%20%2B%20DFlash2-ffb000?style=flat-square"></a>
   <a href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer"><img alt="uncensored weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-uncensored%20(abliterated)-ffb000?style=flat-square"></a>
   <a href="https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis"><img alt="Flash-Next weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--Flash--Next%20trellis%202.5%20bpw-ffb000?style=flat-square"></a>
+  <a href="https://huggingface.co/gpillon/ignis-image-2.1-turbo"><img alt="image model weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen--Image--2.1--Turbo%20(non--commercial)-ffb000?style=flat-square"></a>
 </p>
 
 <table align="center">
@@ -31,6 +32,7 @@
     <td align="center"><b>7.11x</b><br><sub>KV capacity of BF16</sub></td>
     <td align="center"><b>~36 ms</b><br><sub>a decision, zero tokens decoded</sub></td>
     <td align="center"><b>512K</b><br><sub>context, YaRN x2</sub></td>
+    <td align="center"><b>~7.9 s</b><br><sub>a 2048² image, end to end</sub></td>
   </tr>
 </table>
 
@@ -46,7 +48,8 @@ completions over the OpenAI v1 API, and is shaped around the workload a
 developer actually produces — *one main agent plus a handful of subagents
 hitting the same card at once*. Eight resident decode lanes run as one
 batch-wide round; the paged KV cache is budgeted in bytes rather than in
-sequences; conversation state survives the request that built it; images are
+sequences; conversation state survives the request that built it; a loop in
+the model's reasoning is caught while it streams and taken back; images are
 evidence, not an afterthought; and a decision can be answered without
 generating a single token. A Playground, a live Monitor and Prometheus
 metrics ship in the binary.
@@ -57,9 +60,17 @@ bits per weight on average (2 to 4 bits per expert, from calibration error); a
 VRAM cache holds the hot ones and the rest stream from pinned host RAM, about
 **100 tok/s at one lane on a PCIe 3.0 board**
 ([weights and numbers](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis)).
-The server switches between the two models without a restart, and unloads an
-idle one after five minutes so the card is free for other work; the next
-request loads it again.
+And it makes pictures: **Qwen-Image-2.1-Turbo**, on FP8 GEMM and 8-bit
+attention kernels for the 5090, serves OpenAI's image generation and edit routes — a
+2048x2048 image in about 7.9 s end to end, an edit from up to ten input images,
+the prompt optionally rewritten first by the 27B
+([Images made](#images-made-on-the-same-card)). Its weights are for
+non-commercial use only.
+
+The server switches between these models without a restart — a request that
+names another model is held and answered by it — and unloads an idle one after
+five minutes so the card is free for other work; the next request loads it
+again.
 
 Rust owns everything above the *step* — scheduling, admission, KV accounting,
 serving. The forward pass and all GPU compute live in a C++/CUDA static
@@ -87,6 +98,9 @@ already gets DFlash2 and image input from the built-in `rtx5090` profile, with
 a 768K context (YaRN x4). Flash-Next is `--model-id
 qwen3.8-flash-next`; the flags `make` serves it with are on its
 [weights card](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis).
+The image model is `ignis-image-2.1-turbo`: once `ignis-server model download
+ignis-image-2.1-turbo` has fetched it, a request to `/v1/images/generations`
+naming it switches the running server to it.
 
 Then the OpenAI API is on <http://127.0.0.1:8000/v1>, the Playground and its
 Monitor on <http://127.0.0.1:8000/ui/>, and Prometheus on
@@ -155,7 +169,8 @@ Every number below is a measurement on a 5090.
   2.0 µs of memory. **Our row-split replacement does it in 44 µs at a
   bit-identical answer: 17.6% of a decode round, +21% decode throughput at one
   lane**. A vendored kernel *measured* as the bottleneck may be replaced — that
-  is the one exemption to verbatim vendoring.
+  is the exemption to verbatim vendoring that
+  [ADR 0031](docs/adr/0031-vendored-kernel-bottleneck-exemption.md) records.
 
 ### KV that costs bytes, not sequences
 
@@ -177,6 +192,17 @@ Every number below is a measurement on a 5090.
   PCIe round trip and ~8,000x cheaper than re-prefilling the head**; a
   full-context snapshot/restore round trip is ~90 ms, about 100x cheaper than
   the re-prefill it replaces.
+- The retained checkpoints and prefixes live in **pinned host memory**, not in
+  VRAM, so the KV pool gets that room: **475K -> ~680K tokens at the default
+  load, at level throughput**
+  ([retained slots on the host](docs/findings/2026-09-28-retained-slots-on-the-host.md)).
+- Below KV-RAM, a **KV-disk** tier takes the state of an evicted sequence and
+  gives it back where it stopped: a ~1 GB spill takes ~0.63 s beside two
+  decoding Flash-Next lanes, costing their inter-token p50 3-8%
+  ([KV-disk contention](docs/findings/2026-10-08-kv-disk-contention-on-the-volume.md);
+  on by default for Flash-Next).
+- What a request resumed is reported, not guessed: `cached_tokens` on the
+  usage, and the done line names the tier and the kind of reuse it came from.
 
 ### A VRAM plan, decided at load
 
@@ -199,18 +225,66 @@ Every number below is a measurement on a 5090.
 - Admission is a full state machine: protection, backfill class, temporal
   credit, frontier distance.
 
+### The Responses API, over a WebSocket
+
+- `/v1/responses` is OpenAI's Responses API — the wire Codex CLI, the OpenAI
+  SDKs and the Agents SDK speak: streaming events, function tools,
+  `tool_choice` (`required` and a named function force the call), reasoning
+  items passed back and forth.
+- **WebSocket mode** on `GET /v1/responses`: one connection per agent,
+  `previous_response_id` plus only the new items on each turn instead of the
+  whole history, a `generate: false` prewarm that really prefills and keeps
+  the prompt state, and several streams multiplexed on one socket.
+- **A full engine queues the request** on the socket, in one first-in
+  first-out order across every connection, where HTTP would answer `503` and
+  leave the retry to the client. Closing the socket cancels what it had
+  running.
+- The Playground talks to the server over that socket, so parallel agents
+  are not held to the browser's six connections per host.
+
+### Reasoning that finishes
+
+- **A loop in the reasoning is taken back while it streams.** About a third of
+  first turns on a long enumeration loop, at the model card's sampling — on
+  NInfer with the same weights too, so the loop is the model's
+  ([reasoning loops](docs/findings/2026-10-12-reasoning-loops-are-the-models.md)).
+  The guard scores the reasoning as it is written; once a loop persists, it
+  cuts back to the last clean window, puts a nudge in the model's own words,
+  and the generation goes on in the same response. The client sees a tag where
+  the loop was and `rewound_tokens` in the usage; the reasoning sent back on
+  the next turn is repaired to what the model saw.
+- Scored on recorded runs, it catches **25 of 25 harmful loops** (6 of 7 on
+  40 fresh seeds), with **no fire on the reasoning of real opencode and qwen-code
+  sessions**; on 79K- and 138K-token agent contexts a rewind restores the
+  prompt in 0.08-0.10 s
+  ([a loop persists](docs/findings/2026-10-16-a-loop-persists.md),
+  [the guard](docs/findings/2026-10-14-reasoning-loop-guard.md)).
+- **An end of turn drawn inside the reasoning closes it** — it becomes
+  `</think>`, and the model goes on to the answer or the tool call it was
+  writing instead of returning reasoning and nothing else
+  ([ADR 0048](docs/adr/0048-an-end-of-turn-inside-the-reasoning-closes-it.md)).
+- **A thinking budget whose close answers**: past the budget the reasoning is
+  closed with a sentence that tells the model to answer from what it has,
+  without one more tool call — the deferral that kept two agent sessions
+  looping for 15 and 32 turns ([a close that answers](docs/findings/2026-10-01-a-close-that-answers.md)).
+
 ### Jev-like decisions, answered without generating (`/v1/decide`)
 
 - A **classification is not a completion**. `POST /v1/decide` prefills the
   evidence once and reads the answer out of the logits at a single position.
-- Six primitives: **`noul`** (yes/no), **`choice`**, **`score`**, and — one
-  constrained digit per step — **`number`**, **`point`**, **`box`**.
+- Seven primitives: **`noul`** (yes/no), **`choice`** and **`score`**; one
+  constrained digit per step, **`number`**, **`point`** and **`box`**; and
+  **`locate`**, which finds a line in a log or a passage in a text from the
+  attention heads and a labelled choice, generating nothing.
 - On 144 authored decisions the declared options hold a median **99.8%** of the
   model's distribution, and the readout costs **~36.5 ms and zero decoded
   tokens** at 0.934 balanced accuracy on the layout first measured; moving the
   evidence into the system block takes it to **0.963**.
 - `point` reads a click target off a 4096px screenshot to within 84 px worst
   case, inside the button on every scene tested.
+- `locate` finds the line on fresh cluster logs of **100K to 1M tokens 21 times
+  out of 23, median 2.6 s**, with no long prefill and no token decoded
+  ([zero-decode locate](docs/findings/2026-09-28-zero-decode-locate-very-long-logs-and-prose.md)).
 - The same handler is served as **`/v1/systemone`**, so a Jev client reaches
   this engine by changing the URL and nothing else.
 
@@ -227,6 +301,46 @@ Every number below is a measurement on a 5090.
   0.1% device idle, so 3.67 s is the worst case per image — and the only lever
   is sending a smaller one.
 
+### Images made, on the same card
+
+- **Qwen-Image-2.1-Turbo** (`ignis-image-2.1-turbo`) is served on OpenAI's
+  routes, `POST /v1/images/generations` and `POST /v1/images/edits`: the
+  checkpoint's seven presets (2048x2048 to 2752x1536) and 1024x1024, 1 to 10
+  input images per edit, transparent backgrounds, progress streamed as
+  server-sent events
+  ([ADR 0050](docs/adr/0050-ignis-serves-an-image-model.md)).
+- The 8-step denoising loop is **1.20 s at 1024x1024 and 6.11 s at
+  2048x2048**, its FP8 GEMM at 67-73% of the published bar for the card and
+  its 8-bit attention at 88-93% ([the image leaf](docs/findings/2026-10-14-image-model-on-the-5090.md)).
+  Served end to end, a 2048x2048 generation is **7.87 s** and a two-image
+  edit 9.48 s ([spec 05, live run](docs/specs/image-model/05-image-serving.md)).
+- `prompt_enhancement` has the 27B rewrite the prompt with Qwen's own system
+  prompts before the image model reads it; with the 27B loaded, the rewrite
+  runs first and the server switches once.
+- In the Playground, the Image view keeps **image sessions** — every step,
+  marks drawn on a picture or sent as a mask, "change only the marked area" —
+  and the chat has a `make_image` tool: the page switches to the image model,
+  makes the pictures, and switches back.
+- **The weights are under the Qwen Research License, non-commercial use
+  only**: do not serve the image model in a commercial product.
+
+### Models that come and go
+
+- **One card, one model at a time, no restart.** `POST /v1/models/switch`
+  moves the server between the 27B, Flash-Next and the image model; a request
+  whose `model` names another known model triggers the same switch and is
+  held until that model serves — no retry loop in the client. On the 5090 the
+  27B to the image model is 10.0 s, and back 11.3 s.
+- **Idle unload**: after five minutes with no request the model is unloaded
+  — VRAM, pinned host memory and KV-RAM all freed for other programs — and the
+  server stays up; the next request loads it again and is answered
+  ([ADR 0049](docs/adr/0049-an-idle-model-is-unloaded-and-loads-again-on-demand.md)).
+  Polling `/v1/models` or `/metrics` neither keeps it loaded nor loads it.
+- **A catalog it fetches from**: `ignis-server model download <id>`, every
+  file pinned at a revision and its size and SHA-256 checked before use; an
+  operator catalog file and a mirror endpoint for private or air-gapped
+  machines ([ADR 0047](docs/adr/0047-a-catalog-the-operator-can-extend.md)).
+
 ### A context you can rescale
 
 - The checkpoint is trained to **262,144 positions**; `--model-rope-scaling yarn:F`
@@ -238,8 +352,16 @@ Every number below is a measurement on a 5090.
 ### Batteries in the binary
 
 - **The Playground** at `/ui/` — chat with tools and subagents, parallel
-  sessions, image input, a Decide tab and a live Monitor. Built into the
-  server, not a separate service.
+  sessions, image input, an Image studio, a Decide tab, a live Monitor and a
+  Server view that loads models and edits the running configuration. Built
+  into the server, not a separate service.
+- **One declaration per setting**: every option is a flag, an `IGNIS_*`
+  variable and a key in a YAML or JSON config file, with per-model values and
+  a measured `rtx5090` profile applied by default; `GET`/`PATCH /v1/config`
+  reads and changes the running server, reloading the model only for a field
+  that needs it ([ADR 0046](docs/adr/0046-one-declaration-per-config-field.md)).
+- **`POST /v1/tokenize`** counts a chat body's prompt exactly as it would be
+  served — template, tools, thinking controls — without serving it.
 - **Prometheus** on its own loopback listener, on by default (`--server-metrics false` turns it off), with the VRAM plan, retained
   state, KV pool occupancy, decision counters and request lifecycle.
 - **It fetches its own model.** Started with no artifact, a GPU build asks, then
@@ -275,28 +397,50 @@ latency quantiles:
 
 ![The VRAM plan and retained state](docs/user/images/metrcs_2.png)
 
+The Image view, a studio of image sessions: the prompt as the 27B rewrote it,
+a transparent 2048x2048 picture, and the next step's edit already pointed at
+it. Every step is kept in the browser, and a picture can be marked before it is
+edited again:
+
+![An image session in the Image view](docs/user/images/image_generation.png)
+
+The Server view: the model serving and the switch that brought it, every model
+the catalog knows with what is on disk and a **Load** button, and the running
+configuration, for all models or one family, field by field with where each
+value comes from ([docs/user](docs/user/README.md#the-playground)):
+
+![The Server view, after a switch to the image model](docs/user/images/server_config.png)
+
+A model the idle clock unloaded is not an error: the header says so, and the
+next message loads it again before it is answered. The picker under the prompt
+box says what sending will do first:
+
+![The chat after an idle unload](docs/user/images/playground.png)
+
 ## Quick start
 
 ### The weights
 
-Three images on Hugging Face: two of the 27B, both 18.07 GiB, both carrying
-the DFlash2 drafter, and Flash-Next:
+Four artifacts on Hugging Face: two of the 27B, both 18.07 GiB, both carrying
+the DFlash2 drafter, Flash-Next, and the image model:
 
 | | Hugging Face | file |
 |---|---|---|
 | **Standard** | [`gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer`](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer) | `qwen3_8_27b_nvfp4full-v2.ninfer` |
 | **Uncensored** | [`gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer`](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer) | `qwen3_8_27b_nvfp4full-v2-huihui-abliterated.ninfer` |
 | **Flash-Next** (125B MoE, 67.8 GiB with its MTP companion) | [`gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis`](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis) | `qwen3_8_flash_next_trellis_a25-v2.ninfer` |
+| **Image** (Qwen-Image-2.1-Turbo, 15.57 GiB, **non-commercial use only**) | [`gpillon/ignis-image-2.1-turbo`](https://huggingface.co/gpillon/ignis-image-2.1-turbo) | `ignis_image_2_1_turbo-v2.ninfer` |
 
 The server fetches the standard one by itself the first time it starts without
 a model, and checks every file's size and SHA-256 before using it. To download
-either one ahead of time — no GPU needed, `--out <dir>` for a machine with no
+any of them ahead of time — no GPU needed, `--out <dir>` for a machine with no
 network:
 
 ```
 ignis-server model download qwen3.8-27b
 ignis-server model download qwen3.8-27b-abliterated
 ignis-server model download qwen3.8-flash-next
+ignis-server model download ignis-image-2.1-turbo
 ```
 
 The uncensored image is the standard one with the
@@ -366,8 +510,9 @@ Choices, not gaps — so nobody goes looking for them:
 - **Audio, in or out.** The model has no audio tower and no audio head.
 - **LoRA adapters.** They are trained against BF16 weights, and the checkpoint
   is NVFP4: merge the adapter and re-export the checkpoint instead.
-- **More than one loaded model.** One model family, one card: the VRAM plan is
-  decided at load, for one.
+- **More than one model loaded at once.** The VRAM plan is decided at load,
+  for one: the server [switches](#models-that-come-and-go) between models by
+  a full reload instead.
 
 ## Building it
 
@@ -429,7 +574,10 @@ and the kernel leaf **vendors NInfer's CUDA ops verbatim** under a manifest that
 pins the reference commit and every file's content hash — a port claim you can
 diff. What is ours is the layer above them: the forward pass, the sequence
 state, the step ABI, the scheduler, and by now the kernels that measurement
-asked us to rewrite.
+asked us to rewrite. The kernels added for Flash-Next and the image model,
+which have no NInfer reference, are our own, or adapted or vendored from a
+named, permissively licensed source recorded in `kernel/NOTICE`
+([ADR 0051](docs/adr/0051-kernel-code-is-ours-adapted-or-vendored.md)).
 
 Ignis is **not** a port of NInfer. It is a different architecture that starts
 from proven kernel work.

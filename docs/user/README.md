@@ -5,8 +5,9 @@ it serves, and what it reports. The project overview is the
 [root README](../../README.md); the reasons behind these behaviours are in
 [`docs/adr/`](../adr/).
 
-> The API section below is written by hand for now. An OpenAPI description of
-> the HTTP surface is planned and will supersede it.
+> The API section below is written by hand. The OpenAPI description of the
+> HTTP surface, generated from the handlers, is served at `/v1/openapi.json`
+> and browsable at `/v1/docs/` ([ADR 0036](../adr/0036-the-v1-surface-documents-itself.md)).
 
 - [Getting the engine](#getting-the-engine)
 - [The model](#the-model)
@@ -136,7 +137,7 @@ an explicit `--switch-known-models` entry wins for its id). A request naming a
 catalog id that is not on disk is refused as an unknown model — a switch never
 starts a download.
 
-A client configured with two known models reloads the server back and forth: opencode sends its `small_model` requests (titles, summaries) to the id named by `small_model`, so a `model` and a `small_model` naming different ignis ids switch the server on alternate requests, 13-33 s each. Point both at the same id, or start with `--switch-allow-implicit false`. The Playground's chat and Decide never cause a switch: their requests name no model, so the server serves the one loaded, and the header and the context limit follow it, read again from `GET /v1/models` when a turn starts. The Playground switches only when pressed to: **Load** on its Server view, and on its Image view the switch button, or **Generate** and **Edit** with a text model loaded ([in the Playground](#image-generation)).
+A client configured with two known models reloads the server back and forth: opencode sends its `small_model` requests (titles, summaries) to the id named by `small_model`, so a `model` and a `small_model` naming different ignis ids switch the server on alternate requests, 13-33 s each. Point both at the same id, or start with `--switch-allow-implicit false`. The Playground's chat and Decide never cause a switch: their requests name no model, so the server serves the one loaded, and the header and the context limit follow it, read again from `GET /v1/models` when a turn starts. The Playground switches only when asked to: **Load** on its Server view, **Generate** and **Edit** on its Image view with a text model loaded ([in the Playground](#image-generation)), the chat's `make_image` tool (to the image model and back), and the chat's picker for the next message's model ([the Playground](#the-playground)); each of these switches with `POST /v1/models/switch` or by naming the image model, never by a chat request naming a model.
 
 ### Letting the server fetch it
 
@@ -372,7 +373,9 @@ change does not reach and a `null` removes.
 | `--model-thinking-budget <n\|off>` | `IGNIS_MODEL_THINKING_BUDGET` | `32768` | The server-wide thinking budget: after `n` reasoning tokens with the block still open, or 2,048 tokens before the request's `max_tokens` if that comes first, a close (`My thinking time is over. I must now write the complete final answer from what I already have, without calling any more tools.\n</think>`) is forced and the model answers. `off` = no default budget. A request's `thinking_budget` overrides it, and `reasoning_effort: max` runs without one. Set with a tokenizer that has no single-token `</think>`, the server refuses to start. |
 | `--model-loop-guard <off\|log\|rewind>` | `IGNIS_MODEL_LOOP_GUARD` | `rewind` | The reasoning-loop guard ([ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md)), on chat completions and `/v1/responses`. `rewind`: a loop in a request's reasoning is taken back, the model is nudged in its own words and the generation goes on in the same response; after `--model-loop-guard-retries` nudges the next loop closes the reasoning instead. The reasoning shows a tag, `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]`, after the `m` characters taken back (the Playground strikes them through), and the usage reports them as `rewound_tokens`. A reasoning sent back with its tags is repaired before the next prompt, whatever this flag says. `log` only logs a loop; `off` is no guard, what a measurement runs. A request with images is never rewound. Patchable live. (`make` knob `LOOP_GUARD`.) |
 | `--model-loop-guard-holdback <chars>` | `IGNIS_MODEL_LOOP_GUARD_HOLDBACK` | `0` (max `100000`) | In `rewind` mode, the characters of reasoning held back from the client: a rewind whose cut falls in them reaches it with no tag and none of the loop. The client sees the reasoning that much later; under about 2,000 it hides almost no rewind. `0` holds nothing back. Patchable live. |
-| `--model-loop-guard-ratio`, `-window`, `-normalize`, `-raw-gate`, `-clean`, `-margin`, `-retries` | `IGNIS_MODEL_LOOP_GUARD_*` | `200`, `1000`, on, `300`, `400`, `0`, `2` | The detector: every `check-every` characters of reasoning, a window of the last `window` characters, with code taken out and digit runs folded when `normalize` is on, is a loop when it compresses under `ratio` thousandths and its raw text under `raw-gate` (`0` = no gate). A rewind goes back to the start of the last window at or over `clean`, `margin` characters earlier, and `retries` nudges come before a close. Each is patchable live. |
+| `--model-loop-guard-ratio`, `-window`, `-normalize`, `-raw-gate`, `-clean`, `-margin`, `-retries` | `IGNIS_MODEL_LOOP_GUARD_*` | `265`, `1000`, on, `300`, `400`, `0`, `2` | The detector: every `check-every` characters of reasoning, a window of the last `window` characters, with code taken out and digit runs folded when `normalize` is on, is a loop when it compresses under `ratio` thousandths and its raw text under `raw-gate` (`0` = no gate). A rewind goes back to the start of the last window at or over `clean`, `margin` characters earlier, and `retries` nudges come before a close. Each is patchable live. |
+| `--model-loop-guard-persist`, `-min-kept` | `IGNIS_MODEL_LOOP_GUARD_*` | `4`, `1` | When the guard acts ([ADR 0053](../adr/0053-a-loop-is-acted-on-once-it-persists.md)): only after `persist` checks in a row score a loop (`1` = at the first), since a loop persists and a list or a log transcribed into the reasoning ends with its content; and a rewind that would keep fewer than `min-kept` characters of reasoning is only logged, so a reasoning that opens in a loop is never dropped whole (`0` = always rewind). Each is patchable live. |
+| `--model-loop-guard-nudge`, `-nudge-again` | `IGNIS_MODEL_LOOP_GUARD_NUDGE`, `_NUDGE_AGAIN` | the model's own words | The sentence a rewind puts in the reasoning before it goes on: `nudge` on the first rewind ("Wait, I'm starting to repeat myself. Let me stop and move on with what I already have."), `nudge-again` on each one after it. Patchable live. |
 | `--model-loop-guard-check-every`, `-snap`, `-min-continuation`, `-submit-wait` | `IGNIS_MODEL_LOOP_GUARD_*` | `250`, `300`, `512`, `60` | The guard's cadence and limits: the window is scored every `check-every` characters of reasoning (at least `1`); a rewind's cut moves back to a line break within `snap` characters (`0` = never); a loop with fewer than `min-continuation` tokens of `max_tokens` left after the cut is only logged; a continuation the engine finds full waits up to `submit-wait` seconds for room (`0` = tried once, max `3600`), then the loop is left as it is. On the Responses WebSocket a continuation waits in the socket's queue instead, as its requests do. Each is patchable live. |
 | `--server-system-message-policy <p>` | `IGNIS_SERVER_SYSTEM_MESSAGE_POLICY` | `merge` | `merge`: a leading run of system messages joins the system prompt, a later one is its own block in place. `strict`: a system message that is not first is a 400. |
 | `--server-developer-message-policy <p>` | `IGNIS_SERVER_DEVELOPER_MESSAGE_POLICY` | `inplace` | One of `inplace`, `into-system`, `after-system`, `one-after-system`, `reject`. A leading developer message is the system prompt except under `reject`. |
@@ -649,7 +652,7 @@ not.
 
 | Endpoint | Method | Notes |
 |---|---|---|
-| `/v1/models` | GET | The loaded model, and `status`: `serving`, `switching` or `failed` ([below](#switching-models)). |
+| `/v1/models` | GET | The loaded model, and `status`: `serving`, `switching`, `failed` ([below](#switching-models)), `unloaded` or `loading` ([idle unload](#idle-unload)). |
 | `/v1/models/switch` | POST | Replace the loaded model on the running process ([below](#switching-models)). |
 | `/v1/models/catalog` | GET | Every model the server can switch to or fetch, with its state on disk ([below](#switching-models)). |
 | `/v1/images/generations` | POST | Generate images with the image model ([below](#image-generation)). |
@@ -658,7 +661,8 @@ not.
 | `/v1/config/fields` | GET | What each visible configuration field is: kind, default, rule, families, whether a change reloads. |
 | `/v1/config/origins` | GET | Where each visible value in force comes from, shared and per model family: default, profile, file, env, flag or live. |
 | `/v1/chat/completions` | POST | Chat completions — streaming (`stream: true`, SSE) and non-streaming. |
-| `/v1/responses` | POST | The OpenAI responses API (non-streaming; `stream: true` is a 400). |
+| `/v1/responses` | POST | The OpenAI Responses API, streaming (`stream: true`, SSE) and non-streaming ([below](#the-responses-api)). |
+| `/v1/responses` | GET | Its WebSocket mode: the upgrade, then `response.create` events ([below](#the-responses-api)). |
 | `/v1/tokenize` | POST | A body's prompt-token count without serving it ([below](#counting-a-prompt)). |
 | `/v1/detokenize` | POST | Token ids back to text, through the same tokenizer. |
 | `/v1/decide` | POST | The decision endpoint ([below](#decisions)). |
@@ -666,8 +670,8 @@ not.
 | `/v1` | GET | The API reference — a 307 to `/v1/docs/` (ADR 0036). |
 | `/v1/docs/` | GET | Swagger UI over the document, from assets compiled into the binary: no CDN, nothing fetched. Open even with an API key set — it publishes the API's shape, not its load — and *Authorize* is how you drive the keyed routes from the page. |
 | `/v1/openapi.json` | GET | The OpenAPI 3.1 document, generated from the handlers themselves. Monitoring is not in it. |
-| `/ui/` | GET | The Playground — only with `--server-ui`. |
-| `/ui/metrics` | GET | Prometheus text format 0.0.4 for the Playground — with `--server-ui`, unless `--server-metrics false`. Behind the API key, like `/v1`. |
+| `/ui/` | GET | The Playground — unless `--server-ui false`. |
+| `/ui/metrics` | GET | Prometheus text format 0.0.4 for the Playground — with the Playground, unless `--server-metrics false`. Behind the API key, like `/v1`. |
 
 Every `/v1` route answers a CORS preflight. Prometheus itself scrapes
 `GET /metrics` on the metrics listener (`--server-metrics-bind`), not on the API's
@@ -898,9 +902,69 @@ Accepts `messages` (role + content), `model`, `stream`, `max_tokens`,
   with a 400 `unsupported_value` naming it in `param` otherwise. The full
   table is in the API reference at `/v1/docs/`; a field outside it is ignored.
 
-The responses API accepts `input` (a string or a message list), `model`,
-`max_output_tokens`, `temperature` and `seed`, and returns the responses shape
-with the text in an `output_text` part.
+### The Responses API
+
+`/v1/responses` is OpenAI's Responses API on the same engine path as chat
+completions (GitHub #282): the wire Codex CLI, the OpenAI SDKs'
+`responses.create` / `responses.connect` and the Agents SDK speak.
+
+- **Over HTTP**, `POST /v1/responses` answers the response object, or with
+  `stream: true` the standard server-sent events (`response.created`,
+  `response.output_item.added`, `response.output_text.delta`, ...,
+  `response.completed`), each with a `sequence_number`. The thinking comes
+  back as a `reasoning` item (`response.reasoning_text.*` when streaming),
+  the answer as a `message` item, each tool call as a `function_call` item.
+- **Requests** carry `input` (a string, or `message`, `function_call`,
+  `function_call_output` and `reasoning` items), `instructions`, function
+  `tools`, `tool_choice`, `parallel_tool_calls`, `max_output_tokens`,
+  `temperature`, `top_p`, `reasoning.effort` and the ignis sampling and
+  thinking extensions. A conversation renders the same prompt tokens as the
+  same conversation through chat completions, so prompt reuse hits across
+  both endpoints.
+- **What it cannot do is refused**, with OpenAI's error and a `param`, never
+  ignored where ignoring it would change the answer: tools that are not
+  functions, `text.format` other than `text` (no structured output),
+  `background: true`, and an input item of another type. `store`,
+  `metadata`, `prompt_cache_key`, `service_tier` and the like are accepted
+  and change nothing; `include: ["reasoning.encrypted_content"]` adds the
+  reasoning as the model saw it ([above](#chat-completions)). ignis stores no response, so `previous_response_id` on
+  HTTP is a `400 previous_response_not_found`.
+- A length stop ends `incomplete` (`max_output_tokens`), an engine error
+  `failed`; `usage` carries `input_tokens_details.cached_tokens` and
+  `output_tokens_details.reasoning_tokens`.
+
+**WebSocket mode.** `GET /v1/responses` upgrades to a WebSocket, keyed like
+HTTP: `Authorization: Bearer <key>` on the upgrade, or a
+`Sec-WebSocket-Protocol` entry `openai-insecure-api-key.<key>` (never echoed,
+never logged). The client sends `response.create` events carrying the HTTP
+body's fields; the server answers with the same events as the HTTP stream,
+one per text frame. On the socket:
+
+- **`previous_response_id`** continues from the connection's latest response
+  on that stream with only the new items, so an agent loop does not re-send
+  its whole history on every tool call. An id the connection does not hold is
+  `previous_response_not_found`, and the client resends the full input.
+- **`generate: false`** is a real prewarm: the prompt is prefilled, nothing
+  is generated, and the retained state an ordinary request would publish is
+  kept, so the first real turn starts from it.
+- **Streams**: a `stream_id` (1–256 characters of `[A-Za-z0-9_.-]`, up to 32
+  per connection) runs requests in order within a stream and concurrently
+  across streams, up to 16 active per connection; events of a named stream
+  carry its `stream_id`. A `previous_response_id` from another stream on a
+  new `stream_id` forks a conversation.
+- **A full engine queues instead of refusing**: the request gets
+  `response.queued` and waits in one server-wide first-in first-out queue
+  shared by every connection, where HTTP would answer `503`.
+  A queued request's timeout counts from its admission, not from its wait.
+- `response.cancel` (`{type, response_id?}`, an ignis extension in the shape
+  of OpenAI's Realtime API) cancels one running or queued response; closing
+  the socket cancels everything it had running or queued. `response.steer` is
+  `steering_not_supported`. A bad frame is an `error` event and the socket
+  stays open; a connection has no idle timeout and no time limit.
+
+The Playground's chat talks to the server over this socket, so its parallel
+agents are not held to the browser's six connections per host. The open
+sockets and the queued socket requests are gauges on `/metrics`.
 
 ### Examples
 
@@ -1091,8 +1155,8 @@ The button says what will happen:
 With **Show progress** on, the phases stream as they happen: `enhancing`,
 `switching`, `loading`, then the job's. With `--switch-allow-implicit false`
 the button stays disabled and says so, and a refusal the server gives at run
-time (`404 model_not_found`) is shown as it is. **Switch to the image model**
-stays beside, for a switch on its own. The view's requests on the image model,
+time (`404 model_not_found`) is shown as it is. A switch on its own is
+**Load** on the Server view. The view's requests on the image model,
 and the chat's and Decide's on a text model, name no model.
 
 ### Canary check
@@ -1293,6 +1357,29 @@ every field `GET /v1/config` shows is a form (`GET /v1/config/fields` says
 which can change and which reload the model); **Apply** sends the changed
 fields as one `PATCH /v1/config`, which writes them to the config file in use,
 and reads **Apply and reload** when one of them reloads the model.
+
+The **Image** view is a studio of **image sessions** (GitHub #326; web only,
+the server is unchanged). A session keeps every picture uploaded into it, made
+by it or marked in it, each named `#N`, and its steps: the prompt, the input
+images it was sent with and the pictures it made. The next step's input
+defaults to the last step's first picture, so a picture is edited step after
+step; no input makes a new one. A picture can be **marked** — circles and
+brush strokes drawn on it, or sent as a mask image — and "Change only the
+marked area" lays each result over the original through the marked area, so
+nothing outside it changes. **Transparent** pictures use the card's own
+wording. Sessions are stored in the browser (IndexedDB) and survive a reload.
+An edit is never sent the seed behind its inputs unless "Same seed between
+edits" is on: the same noise again builds up into grain
+([finding](../findings/2026-10-16-image-edit-same-seed-grain.md)).
+
+In the **chat**, the `make_image` tool (on by default, not for agents) lets the
+model make pictures: the page switches to the image model, makes them, and
+switches back to the text model before the next request. The pictures the
+user sent and the ones the tool made can be referenced, marked, and opened in
+an image session. A picker under the prompt box names the model the next
+message goes to and what sending does first (nothing, a load or a switch);
+with the image model loaded, the next message goes back to a text model on
+its own.
 
 A model [unloaded while idle](#idle-unload) shows as **unloaded** under its id
 — in the header and the Server view, not as an error — and the page does not
