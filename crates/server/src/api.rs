@@ -2212,6 +2212,11 @@ async fn chat_completions(
             request_timeout_message(server.live().request_timeout),
         )
     };
+    // GitHub #327: an answer nobody waits for any more — past the request
+    // timeout, or its client gone — is cancelled, as on the streaming path
+    // and on `/v1/responses`. Left running it holds its lane to `max_tokens`,
+    // and with one lane the client's retry of the 504 meets `engine_full`.
+    let mut cancel = CancelOnDrop::following(engine.clone(), running.clone());
     if !stop.is_empty() {
         // Non-streaming with `stop`: the tokens go through the streaming
         // path's pipeline as they arrive, so the request ends at the token
@@ -2222,7 +2227,11 @@ async fn chat_completions(
             schemas,
             stop,
         );
-        return match collect_answer(engine, &running, &mut stream, server.live().request_timeout, pipeline).await {
+        let answer = collect_answer(engine, &running, &mut stream, server.live().request_timeout, pipeline).await;
+        if answer.is_ok() {
+            cancel.completed();
+        }
+        return match answer {
             Ok(Answer { ending: AnswerEnding::Done(FinishReason::Error), .. }) => engine_error_response(),
             Ok(answer) => {
                 let (reasoning, content, calls) = answer.parts();
@@ -2238,7 +2247,11 @@ async fn chat_completions(
     }
     // Non-streaming: collect the request's tokens to its completion (a
     // timeout guards a wedged engine from hanging the client).
-    match collect_completion(&mut stream, server.live().request_timeout).await {
+    let completion = collect_completion(&mut stream, server.live().request_timeout).await;
+    if completion.is_ok() {
+        cancel.completed();
+    }
+    match completion {
         Ok(Completion { reason: FinishReason::Error, .. }) => engine_error_response(),
         Ok(Completion { tokens, reason, thinking: budget, cached_tokens }) => {
             let (reasoning_content, content, tool_calls) =
@@ -2813,8 +2826,9 @@ struct ChunkStream {
 }
 
 /// Cancels its request when dropped before the request has completed. An SSE
-/// client that hangs up mid-generation would otherwise leave its lane and KV
-/// reservation generating to `max_tokens` for nobody.
+/// client that hangs up mid-generation, or a non-streaming answer past its
+/// timeout or with its client gone (GitHub #327), would otherwise leave its
+/// lane and KV reservation generating to `max_tokens` for nobody.
 pub(crate) struct CancelOnDrop {
     engine: Engine,
     /// The engine request to cancel: under the loop guard, whichever one

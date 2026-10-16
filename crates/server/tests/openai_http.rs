@@ -549,8 +549,10 @@ async fn chat_completions_streaming_with_include_usage_appends_a_usage_chunk() {
     );
 }
 
-#[tokio::test]
-async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot() {
+/// A one-lane engine (`max_in_flight` 1) behind a gated compute that reports
+/// each request the scheduler releases: what a test needs to prove a request
+/// it stopped reading gives its lane back.
+fn one_lane_gated(timeout: Duration) -> (axum::Router, Arc<GatedCompute>, GateController, std::sync::mpsc::Receiver<RequestId>) {
     let (released_tx, released_rx) = std::sync::mpsc::sync_channel(1);
     let observed = Arc::new(ReleaseObservedCompute {
         inner: MockCompute::new(),
@@ -569,8 +571,46 @@ async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot
         Engine::new(Box::new(scheduler)),
         Box::new(SimpleTemplateProvider),
     )
+    .with_request_timeout(timeout)
     .with_seedless_seed(0);
-    let app = server.app();
+    (server.app(), gated, controller, released_rx)
+}
+
+/// On a [`one_lane_gated`] engine whose first request was released: a
+/// second submission is admitted, so the first no longer occupies the only
+/// in-flight slot. Leaves the gate passed.
+async fn the_only_lane_admits_a_new_request(app: &axum::Router, controller: &GateController) {
+    let second = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "model": MODEL,
+                "messages": [{ "role": "user", "content": "replacement" }],
+                "max_tokens": 1,
+                "stream": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let second_response = app.clone().oneshot(second).await.unwrap();
+    assert_eq!(second_response.status(), 200);
+    // The body lives until the gate is passed: dropping it cancels the
+    // request, and a cancel the model thread reads before the request's
+    // first advance releases it with no decode step at all — the gate is
+    // never entered and `wait_entered` waits forever. A Windows CI run hung
+    // four hours on exactly that.
+    let second_body = second_response.into_body();
+    controller.wait_entered();
+    controller.release();
+    drop(second_body);
+}
+
+#[tokio::test]
+async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot() {
+    // The streaming path has no deadline of its own: any timeout serves.
+    let (app, gated, controller, released_rx) = one_lane_gated(Duration::from_secs(60));
 
     gated.arm();
     let first = Request::builder()
@@ -604,33 +644,91 @@ async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot
         .recv_timeout(Duration::from_secs(5))
         .expect("disconnecting the SSE client must release its scheduler request");
 
-    // With max_in_flight=1, a successful second submission proves the first
-    // request no longer occupies the only in-flight slot.
-    let second = Request::builder()
-        .method("POST")
-        .uri("/v1/chat/completions")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({
-                "model": MODEL,
-                "messages": [{ "role": "user", "content": "replacement" }],
-                "max_tokens": 1,
-                "stream": true
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let second_response = app.clone().oneshot(second).await.unwrap();
-    assert_eq!(second_response.status(), 200);
-    // The body lives until the gate is passed: dropping it cancels the
-    // request, and a cancel the model thread reads before the request's
-    // first advance releases it with no decode step at all — the gate is
-    // never entered and `wait_entered` waits forever. A Windows CI run hung
-    // four hours on exactly that.
-    let second_body = second_response.into_body();
+    the_only_lane_admits_a_new_request(&app, &controller).await;
+}
+
+/// How the client of a non-streaming completion stops waiting for it.
+#[derive(Clone, Copy, Debug)]
+enum Abandon {
+    /// The completion outlives `--server-request-timeout`: the client gets a 504.
+    Timeout,
+    /// The client goes away before the answer: its handler is dropped.
+    Disconnect,
+}
+
+/// GitHub #327: a non-streaming completion nobody waits for any more is
+/// cancelled in the engine, as a dropped streaming response is
+/// ([`dropping_a_streaming_response_cancels_the_request_and_releases_its_slot`]).
+/// Left running, it holds its lane to its last token: with one lane, the
+/// client's retry of the 504 meets `503 engine_full` until the orphan ends —
+/// how a single sequential agent client logged 24 retries in an external
+/// SWE run (fakoli/anvil-serving#660).
+async fn check_an_abandoned_completion_releases_its_lane(abandon: Abandon, stop: Option<&str>) {
+    // A disconnect gets a deadline it cannot race: the abort, not a 504,
+    // must be what leaves the request.
+    let timeout = match abandon {
+        Abandon::Timeout => Duration::from_secs(1),
+        Abandon::Disconnect => Duration::from_secs(600),
+    };
+    let (app, gated, controller, released_rx) = one_lane_gated(timeout);
+
+    gated.arm();
+    let mut first = serde_json::json!({
+        "model": MODEL,
+        "messages": [{ "role": "user", "content": "keep decoding" }],
+        "max_tokens": 4096,
+        "stream": false
+    });
+    if let Some(stop) = stop {
+        // Never produced: the request runs the stop-sequence pipeline
+        // (`collect_answer`) without ending at one.
+        first["stop"] = serde_json::json!([stop]);
+    }
+    let client = {
+        let app = app.clone();
+        tokio::spawn(async move { call(&app, "POST", "/v1/chat/completions", Some(first)).await })
+    };
     controller.wait_entered();
+    // Left running, the request's next decode step enters this second gate
+    // and never reaches its release.
+    gated.arm();
+    match abandon {
+        Abandon::Timeout => {
+            let (status, body) = client.await.unwrap();
+            assert_eq!(status, 504, "the held completion must time out: {body}");
+        }
+        Abandon::Disconnect => {
+            client.abort();
+            assert!(client.await.unwrap_err().is_cancelled(), "the client must have gone before the answer");
+        }
+    }
     controller.release();
-    drop(second_body);
+    released_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| {
+        panic!("{abandon:?}, stop {stop:?}: the completion nobody waits for still holds its lane")
+    });
+
+    // The client's retry no longer meets `engine_full`.
+    the_only_lane_admits_a_new_request(&app, &controller).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_completion_releases_its_lane() {
+    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout, None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_completion_with_a_stop_sequence_releases_its_lane() {
+    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout, Some("zzz")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_completion_releases_its_lane() {
+    check_an_abandoned_completion_releases_its_lane(Abandon::Disconnect, None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_completion_with_a_stop_sequence_releases_its_lane() {
+    check_an_abandoned_completion_releases_its_lane(Abandon::Disconnect, Some("zzz")).await;
 }
 
 // ── POST /v1/responses ────────────────────────────────────────────────────
@@ -740,8 +838,9 @@ async fn ignore_eos_reaches_the_decode_params_the_scheduler_deals() {
 #[tokio::test]
 async fn ignore_eos_without_a_token_cap_is_a_400() {
     let h = harness();
-    // Nothing else would bound such a request: no EOS, no cap, and the
-    // non-streaming path has no client-disconnect cancellation.
+    // Nothing in the request would bound it: no EOS, no cap. Only the
+    // request timeout would end it (GitHub #327), so it is refused up front
+    // rather than run to that deadline.
     let req = serde_json::json!({
         "model": MODEL,
         "messages": [{ "role": "user", "content": "hi" }],
