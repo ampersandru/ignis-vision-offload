@@ -259,11 +259,6 @@ impl ActiveModel {
     ///
     /// A model with no driver handle is told to shut down and not waited
     /// for — nothing was kept to wait on. Calling this twice is harmless.
-    ///
-    /// Serve exit ([`crate::Server::serve_on_until`]) must call this before
-    /// the process returns from `main`: dropping the [`std::thread::JoinHandle`]
-    /// without joining detaches `ignis-model`, and on Linux a detached CUDA
-    /// teardown can leave a VRAM-holding zombie.
     pub fn shut_down(&self) {
         self.stop();
         if let Runner::Image(image) = &self.runner {
@@ -281,12 +276,14 @@ impl ActiveModel {
         }
     }
 
-    /// Whether the driver handle has already been taken and joined
-    /// ([`ActiveModel::shut_down`]). `true` also for a model built without a
-    /// driver (`Engine::new`, most unit tests). A test seam: nothing in the
-    /// server reads it, `tests/serve_joins_model_thread.rs` does.
-    pub fn driver_joined(&self) -> bool {
-        self.driver.lock().expect("driver lock").is_none()
+    /// Whether this model still holds its model thread's handle
+    /// ([`ActiveModel::with_driver`]): `false` once [`ActiveModel::shut_down`]
+    /// has taken it to join it — the join may still be running — and for a
+    /// model built without one (`Engine::new`, most unit tests). A test seam:
+    /// nothing in the server reads it, `tests/serve_joins_model_thread.rs`
+    /// does.
+    pub fn holds_driver(&self) -> bool {
+        self.driver.lock().expect("driver lock").is_some()
     }
 }
 

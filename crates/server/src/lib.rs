@@ -690,12 +690,13 @@ impl Server {
     /// ([`Server::with_metrics`]) is refused with `InvalidInput` before
     /// anything is served.
     ///
-    /// After the HTTP drain, the loaded model is shut down and its driver
-    /// thread is joined ([`ActiveModel::shut_down`]) before this returns.
-    /// Dropping the `JoinHandle` without joining would detach `ignis-model`;
-    /// on Linux that thread can hang in CUDA teardown and leave the process
-    /// a VRAM-holding zombie under init — so serve exit must join, the same
-    /// way a model switch does.
+    /// After the HTTP drain, a switch or an unload still holding the switch's
+    /// slot runs to its end, then the loaded model is shut down and its
+    /// driver thread is joined ([`ActiveModel::shut_down`]) before this
+    /// returns. Dropping the `JoinHandle` without joining would detach
+    /// `ignis-model`; on Linux that thread can hang in CUDA teardown and
+    /// leave the process a VRAM-holding zombie under init — so serve exit
+    /// must join, the same way a model switch does.
     pub async fn serve_on_until(
         self,
         listener: tokio::net::TcpListener,
@@ -745,11 +746,16 @@ impl Server {
         // running would be ended by the teardown below and report its failure
         // on its own task, racing `ignis.process.stopped`; the idle clock
         // could begin an unload in the middle of it. Both are stopped before
-        // the teardown begins.
+        // the teardown begins, the warm-up awaited so no poll of it is left.
         if let Some(warm_up) = warm_up {
             warm_up.abort();
+            let _ = warm_up.await;
         }
         drop(idle_clock);
+        // A switch whose `202` was answered, or an unload under way, outlives
+        // the drain: it runs to its end first, and the model it leaves loaded
+        // is the one torn down below — never one it would leave detached.
+        model_switch::slot_freed(&self).await;
         // Join before returning to `main`: `ignis.process.stopped` must stay
         // the last log line (spec §28), and that is emitted after this returns.
         model_switch::shut_down(&self.active()).await;

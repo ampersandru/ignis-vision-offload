@@ -528,8 +528,8 @@ async fn main() {
         exposed = exposure.as_ref().map_or("no", |_| "yes"),
         "OpenAI API at /v1"
     );
-    // `serve_on` drains HTTP, then joins the model thread (CUDA teardown)
-    // before returning — so we do not detach `ignis-model` on process exit.
+    // `serve_on` drains HTTP, then joins the model thread before returning
+    // (`Server::serve_on_until`): `ignis-model` is never left detached.
     let serve_result = server.serve_on(listener, metrics_listener).await;
 
     // The tunnel outlives the drain above, so in-flight remote requests

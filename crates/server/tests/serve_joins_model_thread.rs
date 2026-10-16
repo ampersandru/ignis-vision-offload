@@ -5,71 +5,37 @@
 //! leave the process a zombie still holding VRAM. `Server::serve_on_until`
 //! therefore calls [`ignis_server::ActiveModel::shut_down`] after the HTTP
 //! drain — these tests prove the driver handle is gone once serve returns,
-//! a refused metrics listener included, and that a warm-up still running
-//! then is cancelled, not ended by that teardown and reported after it.
+//! a refused metrics listener included, and that a switch still running then
+//! is waited for, so the model it publishes is the one joined. What a warm-up
+//! left running logs is `serve_exit_warm_up_log.rs`'s.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use ignis_core::{
-    mock::MockCompute, ConcreteScheduler, RequestClass, RequestId, RequestInput, SchedEvent, Scheduler,
-    SchedulerConfig, SubmitError,
-};
+use ignis_core::{mock::MockCompute, ConcreteScheduler, SchedulerConfig};
 use ignis_server::engine::Engine;
+use ignis_server::model_switch::{begin, SwitchOutcome, Switcher};
 use ignis_server::telemetry::SystemClock;
 use ignis_server::template::SimpleTemplateProvider;
 use ignis_server::{ActiveModel, Server};
 
-fn scheduler() -> ConcreteScheduler {
+#[path = "support/switch.rs"]
+mod switch_support;
+use switch_support::{source, MockLoader};
+
+/// A model on the CPU mock that keeps its model thread's handle, as a load does.
+fn model() -> ActiveModel {
     let compute = Arc::new(MockCompute::new());
-    ConcreteScheduler::with_config(
+    let scheduler = ConcreteScheduler::with_config(
         SchedulerConfig {
             model: "qwen3.8-flash-next".into(),
             ..SchedulerConfig::default()
         },
         compute,
-    )
-}
-
-/// A model on `scheduler` that keeps its model thread's handle, as a load does.
-fn model_on(scheduler: Box<dyn Scheduler>) -> ActiveModel {
-    let (engine, driver) = Engine::with_clock_and_driver(scheduler, Arc::new(SystemClock));
+    );
+    let (engine, driver) =
+        Engine::with_clock_and_driver(Box::new(scheduler), Arc::new(SystemClock));
     ActiveModel::new(engine, Arc::new(SimpleTemplateProvider)).with_driver(driver)
-}
-
-fn model() -> ActiveModel {
-    model_on(Box::new(scheduler()))
-}
-
-/// The mock's scheduler, except that it never runs what it takes: a warm-up
-/// on it is still running whenever serving ends. Idle to the model thread,
-/// so the thread waits on its next command instead of spinning.
-struct Stalled(ConcreteScheduler);
-
-impl Scheduler for Stalled {
-    fn submit(&mut self, input: RequestInput, class: RequestClass) -> Result<RequestId, SubmitError> {
-        self.0.submit(input, class)
-    }
-    fn cancel(&mut self, request: RequestId) -> bool {
-        self.0.cancel(request)
-    }
-    fn advance(&mut self) -> Vec<SchedEvent> {
-        Vec::new()
-    }
-    fn is_idle(&self) -> bool {
-        true
-    }
-    fn model_id(&self) -> &str {
-        self.0.model_id()
-    }
-    fn max_sequence_tokens(&self) -> u32 {
-        self.0.max_sequence_tokens()
-    }
-    fn mode(&self) -> ignis_core::EngineMode {
-        self.0.mode()
-    }
-    fn occupancy(&self) -> ignis_core::Occupancy {
-        self.0.occupancy()
-    }
 }
 
 async fn listener() -> tokio::net::TcpListener {
@@ -82,20 +48,20 @@ async fn listener() -> tokio::net::TcpListener {
 async fn serve_on_until_joins_the_model_thread_before_returning() {
     let model = model();
     assert!(
-        !model.driver_joined(),
+        model.holds_driver(),
         "a model built with_driver keeps its JoinHandle until shut_down"
     );
 
     let server = Server::from_active(model);
     let active = server.active();
-    // Resolve immediately: we only care about the post-drain join.
+    // Resolve immediately: only the join after the drain is looked at.
     server
         .serve_on_until(listener().await, None, std::future::ready(()))
         .await
         .expect("serve");
 
     assert!(
-        active.driver_joined(),
+        !active.holds_driver(),
         "serve_on_until must shut_down/join the model thread before returning"
     );
 }
@@ -112,41 +78,36 @@ async fn a_metrics_listener_refused_still_joins_the_model_thread() {
 
     assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
     assert!(
-        active.driver_joined(),
+        !active.holds_driver(),
         "the refusal must not detach the loaded model's thread"
     );
 }
 
+/// A switch begun before serving ended — its `202` answered, its load still
+/// running — outlives the drain. The exit waits for it, then joins the model
+/// it published: nothing is left resident, nothing detached.
 #[tokio::test]
-async fn a_warm_up_still_running_when_serving_ends_is_cancelled_and_reports_nothing() {
-    use tracing_subscriber::layer::SubscriberExt;
-    let log = Arc::new(ignis_logging::MemorySink::new());
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(log.clone())),
-    );
+async fn a_switch_still_running_when_serving_ends_is_waited_for_and_its_model_joined() {
+    let loader = MockLoader::new();
+    let server = Server::from_active(loader.model("mock-a"))
+        .with_switcher(Switcher::new(Arc::clone(&loader) as _, Duration::from_secs(30)));
+    let load = loader.hold_next_load();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let mut serving = tokio::spawn(server.clone().serve_on_until(listener().await, None, async {
+        let _ = stopped.await;
+    }));
+    let (_, switch) = begin(&server, source("mock-b")).expect("begins");
+    stop.send(()).expect("serving");
 
-    let server = Server::from_active(model_on(Box::new(Stalled(scheduler())))).with_warm_up();
-    server
-        .serve_on_until(listener().await, None, std::future::ready(()))
-        .await
-        .expect("serve");
-    // A warm-up left running is ended by the teardown and reports its
-    // failure on its own task, after serve has returned. Give it the time to
-    // say so; `ignis.process.ready` is looked for too, so a warm-up that
-    // ever took an ended request for a traversal is caught here as well.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let reported: Vec<String> = log
-        .lines()
-        .iter()
-        .map(|l| {
-            let line: serde_json::Value = serde_json::from_str(l).unwrap();
-            line["event_name"].as_str().unwrap_or_default().to_owned()
-        })
-        .filter(|name| name == "ignis.process.ready" || name == "ignis.process.warm_up_failed")
-        .collect();
     assert!(
-        reported.is_empty(),
-        "a warm-up the serve left running must not report once serving ended: {reported:?}"
+        tokio::time::timeout(Duration::from_millis(200), &mut serving).await.is_err(),
+        "serve returned while the switch was still loading its target"
     );
+    load.send(()).expect("the load is held");
+    serving.await.expect("the serve task").expect("serve");
+
+    assert_eq!(switch.await.expect("the switch task"), SwitchOutcome::Switched);
+    assert_eq!(server.active().model_id(), "mock-b");
+    assert!(!server.active().holds_driver(), "the switched-to model's thread was joined");
+    assert_eq!(loader.resident(), 0, "no model is left resident once serve returns");
 }

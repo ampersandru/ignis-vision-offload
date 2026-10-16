@@ -1628,6 +1628,23 @@ pub(crate) async fn shut_down(model: &Arc<ActiveModel>) {
     }
 }
 
+/// Wait until nothing holds the switch's slot ([`Switcher::running`]): a
+/// switch, a reload or a load has run to its end — its model published, or
+/// torn down — and an unload's teardown is done, its line logged. The serve
+/// exit waits on it before it tears the loaded model down
+/// ([`Server::serve_on_until`]): a switch whose `202` was answered still
+/// runs after the HTTP drain, and the model it publishes is the one to join.
+/// A server without a switcher has no slot to wait on.
+pub(crate) async fn slot_freed(server: &Server) {
+    let Some(switcher) = &server.switcher else { return };
+    let mut changed = server.status.subscribe();
+    while switcher.running().is_some() {
+        if changed.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Step 5 up to publishing: load `prepared`, run its first traversal, and
 /// point `--server-metrics` at it. A model whose warm-up fails is torn down again
 /// and reported as a failed load: better refused than silently cold. Returns
