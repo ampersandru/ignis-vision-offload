@@ -134,6 +134,9 @@ pub fn router(state: Arc<Server>) -> Router {
     // bare 401 it has no way to answer. Always served: the reference is
     // part of the `/v1` surface, not of the opt-in Playground.
     router = router.merge(crate::openapi::router(document));
+    // The liveness probe (GitHub #327), past every `/v1` layer above: no
+    // key, no use counted, none of the gate's per-model answers.
+    router = router.route("/health", axum::routing::get(health));
     router
         .layer(middleware::from_fn(cors_headers))
         .layer(TraceLayer::new_for_http().make_span_with(RootSpanMaker))
@@ -324,6 +327,23 @@ fn unavailable(code: &str, message: impl Into<String>) -> Response {
     let mut res = error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", code, message);
     res.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from_static("1"));
     res
+}
+
+/// `GET /health` (GitHub #327): whether the process has started serving.
+/// `503 server_not_ready`, with `Retry-After: 1`, until the first warm-up has
+/// run, then `200 {"status": "ok"}` for the life of the process: only
+/// [`ModelStatus::WarmingUp`] comes before it, and nothing returns to it, so
+/// a model switch, an idle unload or a failed switch leave the probe green —
+/// `GET /v1/models` is what says what the model is doing. Outside `/v1`: no
+/// key, and a probe is not a use of the model (idle unload never sees it).
+async fn health(State(server): State<Arc<Server>>) -> Response {
+    if matches!(*server.status(), ModelStatus::WarmingUp) {
+        return unavailable(
+            "server_not_ready",
+            "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly",
+        );
+    }
+    Json(serde_json::json!({ "status": "ok" })).into_response()
 }
 
 /// What a request is told while a switch from `from` to `to` runs: by the

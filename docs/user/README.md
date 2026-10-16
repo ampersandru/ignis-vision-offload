@@ -695,6 +695,14 @@ the moment it admits requests; `make start` waits for it, since it waits for
 `/v1/models` to answer. The warm-up is one request in the counters, and the
 CPU mock, which has nothing to capture, is ready at once.
 
+**Health probe.** `GET /health` answers `503 server_not_ready` with
+`Retry-After: 1` until that first warm-up has run, then `200
+{"status": "ok"}` for the life of the process. A model switch, an idle
+unload or a failed switch do not change it. It is a liveness probe for a
+container runtime or a load balancer: it sits outside `/v1`, so it asks for
+no API key and never counts as a use of the model (idle unload does not see
+it). What the model itself is doing is `GET /v1/models`'s `status`.
+
 ### Switching models
 
 `POST /v1/models/switch` with `{"artifact": "<path>", "model": "<id>"}` — or
