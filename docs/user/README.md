@@ -61,6 +61,30 @@ podman run --rm --device nvidia.com/gpu=all -p 8000:8000 \
   ghcr.io/gpillon/ignis:latest --download-path /models
 ```
 
+**The image's user.** The server runs as `ignis` (uid 10001), never as root,
+so whatever it reads under a mount must be readable by uid 10001. A model
+directory or Hugging Face cache that root wrote with `0700` directories is
+not readable, and the load fails on it. Two Flash-Next features also *write*
+next to the artifact by default (`model`): the n-gram cache
+(`--ngram-persist-path`) and the [KV-disk](#kv-disk) tier (`--kv-disk-path`).
+On a read-only mount, like the `:ro` one above, or one uid 10001 cannot write,
+the server still starts, with two costs:
+- every start rebuilds the n-gram hot rows from the artifact, with the WARN
+  `n-gram cache not writable; reading the artifact`;
+- the load runs without KV-disk, with the WARN `ignis.kv_disk.off`.
+
+To keep both, give them a directory uid 10001 can write (rootless podman maps
+uids: there, `podman unshare chown 10001 /path/to/ignis-cache`):
+
+```
+mkdir -p /path/to/ignis-cache && sudo chown 10001 /path/to/ignis-cache
+podman run --rm --device nvidia.com/gpu=all -p 8000:8000 \
+  -v /path/to/models:/models:ro -v /path/to/ignis-cache:/cache \
+  -e IGNIS_MODEL_ARTIFACT=/models/qwen3_8_flash_next_trellis_a25-v2.ninfer \
+  -e IGNIS_NGRAM_PERSIST_PATH=/cache -e IGNIS_KV_DISK_PATH=/cache \
+  ghcr.io/gpillon/ignis:latest
+```
+
 To smoke-test the image with no GPU and no model — the deterministic CPU mock
 ([ADR 0006](../adr/0006-exclusive-gpu-testing.md)) — say so:
 
