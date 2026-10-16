@@ -58,10 +58,12 @@ been measured.
 
 ## Consequence
 
-- The Playground never sends, for an edit, a seed behind its inputs — the
-  seed of an input or of any picture it was made or marked from — and blanks
-  the seed field after each step (`seedClash`, spec playground/06 AC 18).
-  "Keep the last seed" is gone.
+- By default the Playground never sends, for an edit, a seed behind its
+  inputs — the seed of an input or of any picture it was made or marked
+  from — and blanks the seed field after each step (`seedClash`, spec
+  playground/06 AC 18). "Keep the last seed" is gone; in its place an opt-in
+  "Same seed between edits", off by default, sends that seed with a warning
+  that says why it is not advised (AC 18).
 - `make_image` drops a seed that made one of its references and tells the
   model so; its prompt tells the model not to pass one.
 - Other API clients get no such guard from the server.
