@@ -353,6 +353,15 @@ config_group! {
         loop_guard_margin: Chars = crate::loop_guard::DEFAULT_MARGIN_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
         /// The nudges a looping reasoning gets before the guard closes it.
         loop_guard_retries: Retries = crate::loop_guard::DEFAULT_RETRIES, between(0, 10), ALL, [Visible, Patchable];
+        /// How many checks in a row must score a loop before the guard
+        /// acts: a loop persists, a list or a log transcribed into the
+        /// reasoning ends with its content. 1, at the first.
+        loop_guard_persist: Checks = crate::loop_guard::DEFAULT_PERSIST_CHECKS, between(1, 100), ALL, [Visible, Patchable];
+        /// A rewind that would keep fewer characters of reasoning than this
+        /// is only logged, and that run of loop scores is not acted on: a
+        /// reasoning that opens in a loop, or in an enumeration scored as
+        /// one, would otherwise be dropped whole. 0, always rewind.
+        loop_guard_min_kept: Chars = crate::loop_guard::DEFAULT_MIN_KEPT_CHARS, between(0, 100_000), ALL, [Visible, Patchable];
         /// In `rewind` mode, the characters of reasoning held back from the
         /// client: a rewind whose cut falls in them reaches it with no tag
         /// and none of the loop. 0, none; under ~2,000 it hides almost no
@@ -373,6 +382,12 @@ config_group! {
         /// once. A WebSocket request's continuation waits in the socket's
         /// admission queue instead, as the socket's own requests do.
         loop_guard_submit_wait: Secs = crate::loop_guard::DEFAULT_SUBMIT_WAIT_SECS, between(0, 3600), ALL, [Visible, Patchable];
+        /// The sentence, in the model's own voice, the loop guard's first
+        /// rewind puts after the kept reasoning, on a paragraph of its own.
+        loop_guard_nudge: Text = crate::loop_guard::DEFAULT_NUDGE.to_owned(), NO_RULE, ALL, [Visible, Patchable];
+        /// The sentence every later rewind puts there, until
+        /// `loop_guard_retries` nudges close the reasoning.
+        loop_guard_nudge_again: Text = crate::loop_guard::DEFAULT_NUDGE_AGAIN.to_owned(), NO_RULE, ALL, [Visible, Patchable];
         /// The text rotary table: `none` (the linear table) or
         /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
         /// trained 262,144-position envelope — what a context past it needs.

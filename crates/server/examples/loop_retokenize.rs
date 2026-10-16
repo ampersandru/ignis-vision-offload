@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ignis_server::artifact_template::ArtifactTemplateProvider;
-use ignis_server::loop_guard::{sentence_after, NUDGES, TAG_PREFIX};
+use ignis_server::loop_guard::{sentence_after, LoopGuardParams, TAG_PREFIX};
 use ignis_server::template::TemplateProvider;
 use ignis_server::thinking::THINKING_CLOSE_TEXT;
 use serde_json::Value;
@@ -65,7 +65,9 @@ fn main() {
     let reader = ignis_artifact::Reader::open(Path::new(&args[0])).expect("open the artifact");
     let template = ArtifactTemplateProvider::new(ignis_artifact::FrontendSet::from_reader(&reader).expect("its frontend"));
     let encode = |text: &str| template.encode_literal(text).expect("encode");
-    let sentences = [("nudge 1", NUDGES[0]), ("nudge 2", NUDGES[1]), ("close", THINKING_CLOSE_TEXT)];
+    let guard = LoopGuardParams::default();
+    let (first, again) = (guard.nudge_text(0), guard.nudge_text(1));
+    let sentences = [("nudge 1", first.as_str()), ("nudge 2", again.as_str()), ("close", THINKING_CLOSE_TEXT)];
     let rules = [("as written", false), ("joined", true)];
 
     // (rule, sentence, real cut?) -> (cuts, identical, first divergences relative to the cut)

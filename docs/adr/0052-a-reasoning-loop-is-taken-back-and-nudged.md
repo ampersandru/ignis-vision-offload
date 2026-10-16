@@ -7,6 +7,11 @@ the way: the junction rule (a nudge after a kept line break goes in without its 
 leading line breaks), `reasoning_tokens` counting what a holdback never sent, the guard
 `off` on a server built without a config, a WebSocket continuation waiting in the
 socket's queue rather than within `loop_guard_submit_wait`, and the new fields' bounds.
+Amended 2026-10-16 (owner): the two nudges are config fields, `loop_guard_nudge` and
+`loop_guard_nudge_again`, whose defaults are the sentences below.
+Amended 2026-10-16 by [ADR 0053](0053-a-loop-is-acted-on-once-it-persists.md): the guard acts
+once a loop persists (`loop_guard_persist` 4 checks in a row), the ratio is 265, and a rewind
+that would keep no reasoning is only logged (`loop_guard_min_kept`).
 Proposed 2026-10-14. The design is the owner's (2026-10-13: an
 engine-level detector off the critical path, an injected sentence, a few retries before
 the reasoning is closed, a visible tag the Playground strikes through). The numbers are in
@@ -82,7 +87,8 @@ every event unchanged.
 - **The continuation.** The engine request is cancelled. The **continuation** is the same
   request input, with its prompt extended by the tokens kept before the cut and by a
   **nudge**: a sentence in the model's own voice ("Wait, I'm starting to repeat myself.
-  Let me stop and move on with what I already have."). It gets what is left of the
+  Let me stop and move on with what I already have."), `loop_guard_nudge`; every later
+  rewind writes `loop_guard_nudge_again`. It gets what is left of the
   generation cap and of the thinking budget, and a fresh seed.
 - **When there is no continuation.** A loop with fewer than
   `loop_guard_min_continuation` tokens of the generation cap left after the kept text
@@ -206,16 +212,20 @@ no reload):
 | `loop_guard` | `rewind` (also `log`, `off`) |
 | `loop_guard_normalize` | on |
 | `loop_guard_window` | 1,000 characters |
-| `loop_guard_ratio` | 200 permille |
+| `loop_guard_ratio` | 200 permille; 265 since ADR 0053 |
 | `loop_guard_raw_gate` | 300 permille (0 = off) |
 | `loop_guard_clean` | 400 permille |
 | `loop_guard_margin` | 0 characters |
 | `loop_guard_retries` | 2 |
+| `loop_guard_persist` | 4 checks (ADR 0053) |
+| `loop_guard_min_kept` | 1 character (ADR 0053) |
 | `loop_guard_holdback` | 0 characters (off) |
 | `loop_guard_check_every` | 250 characters |
 | `loop_guard_snap` | 300 characters (0 = never snaps) |
 | `loop_guard_min_continuation` | 512 tokens |
 | `loop_guard_submit_wait` | 60 seconds (0 = tried once; at most 3,600) |
+| `loop_guard_nudge` | "Wait, I'm starting to repeat myself. Let me stop and move on with what I already have." |
+| `loop_guard_nudge_again` | "I keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now." |
 
 History repair has no field: it is always on, and a tag whose hash does not match is
 never touched.
@@ -288,7 +298,7 @@ live `PATCH`) rewinds, so no test meets a rewind it did not ask for.
   texts are at 0.257 (Rome) and 0.273 (agentic coding), so no threshold change recovers
   them.
 - **Observability.** The log carries `ignis.loop_guard.detected`, `rewound`, `no_room`,
-  `no_tokenizer` and `submit_refused`, each with its scores and offsets. `log` mode
+  `no_tokenizer`, `submit_refused` and (ADR 0053) `too_little_kept`, each with its scores and offsets. `log` mode
   reports the cut a rewind would have made, without acting.
 - **Wiring.** Implementing this ADR means:
   - wiring `/v1/responses`, HTTP and WebSocket, with its own count field, cancel by

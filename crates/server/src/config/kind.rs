@@ -214,6 +214,10 @@ count_kind!(
     /// A count of retries.
     Retries: u32, "retries", "retry count"
 );
+count_kind!(
+    /// A count of checks in a row.
+    Checks: u32, "checks", "check count"
+);
 
 /// The loop guard's mode (`crate::loop_guard`): `off`, `log` or `rewind`.
 pub struct LoopGuard;

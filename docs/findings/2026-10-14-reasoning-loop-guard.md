@@ -5,7 +5,7 @@
 - Observed: 2026-10-14
 - Last verified: 2026-10-15
 - Scope: server / reasoning-loop guard on chat completions and `/v1/responses`, HTTP and WebSocket (`crates/server/src/loop_guard.rs`, config v2 `model.loop_guard*`); serving / sampled reasoning on qwen3.8-27b, agentic contexts of 79k and 138k tokens, cross-turn prompt reuse; Playground reasoning view and Responses WebSocket transport
-- Related: [ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md), [Reasoning loops are the model's](2026-10-12-reasoning-loops-are-the-models.md), [ADR 0048](../adr/0048-an-end-of-turn-inside-the-reasoning-closes-it.md), [ADR 0046](../adr/0046-one-declaration-per-config-field.md), [#288](https://github.com/gpillon/ignis/issues/288)
+- Related: [A loop persists](2026-10-16-a-loop-persists.md) (the trigger and the cut it led to, ADR 0053), [ADR 0052](../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md), [Reasoning loops are the model's](2026-10-12-reasoning-loops-are-the-models.md), [ADR 0048](../adr/0048-an-end-of-turn-inside-the-reasoning-closes-it.md), [ADR 0046](../adr/0046-one-declaration-per-config-field.md), [#288](https://github.com/gpillon/ignis/issues/288)
 - Superseded by: none
 
 ## Question

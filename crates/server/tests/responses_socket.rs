@@ -970,7 +970,7 @@ async fn a_rewound_response_is_continued_from_the_models_view() {
 /// client had received nothing.
 #[tokio::test]
 async fn a_cancel_or_a_timeout_lets_what_the_holdback_held_reach_the_response() {
-    let nudge = ignis_server::loop_guard::NUDGES[0].trim();
+    let nudge = ignis_server::loop_guard::DEFAULT_NUDGE;
     for timeout in [false, true] {
         let mock = Arc::new(MockCompute::new());
         let (server, script) = looping_server(&mock, hog_config(2), 6000);

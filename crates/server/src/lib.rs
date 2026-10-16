@@ -211,7 +211,7 @@ impl Live {
             default_thinking_budget: config.thinking_budget,
             instruction_policy: config.instruction_policy,
             idle_unload: Duration::from_secs(u64::from(config.idle_unload_secs)),
-            loop_guard: config.loop_guard,
+            loop_guard: config.loop_guard.clone(),
             image: config.settings().image.clone(),
         }
     }
