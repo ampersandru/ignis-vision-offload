@@ -82,9 +82,8 @@ export type SessionDraft = {
   inputs: number[];
   size: string;
   count: number;
+  /** Blank after each step: the next step edits its picture, and must not start from the noise that made it (seedClash). */
   seedText: string;
-  /** After each step, the seed field takes the seed of the step's first picture. */
-  keepSeed: boolean;
   background: ImageBackground;
   enhance: boolean | null;
   stream: boolean;
@@ -110,7 +109,6 @@ export const EMPTY_SESSION_DRAFT: SessionDraft = {
   size: AUTO_SIZE,
   count: 1,
   seedText: "",
-  keepSeed: false,
   background: "auto",
   enhance: null,
   stream: true,
@@ -189,8 +187,9 @@ export function landOutput(s: ImageSession, stepN: number, entry: Omit<PoolImage
 }
 
 /**
- * The step ended. One that made pictures hands the next step its first one as the only input, keeps the seed when
- * asked to, and clears the prompt for the next instruction; one that made none leaves the draft as it was sent.
+ * The step ended. One that made pictures hands the next step its first one as the only input and clears the prompt
+ * for the next instruction, and the seed with it: an edit that starts again from the noise that made its input builds
+ * that noise up into grain (seedClash). One that made none leaves the draft as it was sent.
  */
 export function endStep(
   s: ImageSession,
@@ -212,21 +211,18 @@ export function endStep(
   const step = steps.find((st) => st.n === stepN);
   const first = step?.outputs[0];
   if (first === undefined) return touched({ ...s, steps }, now);
-  const seed = pictureOf(s, first)?.seed;
-  const draft: SessionDraft = {
-    ...s.draft,
-    prompt: "",
-    inputs: [first],
-    ...(s.draft.keepSeed && seed !== undefined ? { seedText: seed } : {}),
-  };
+  const draft: SessionDraft = { ...s.draft, prompt: "", inputs: [first], seedText: "" };
   return touched({ ...s, steps, draft }, now);
 }
 
 /**
  * A session as the store had it, made current: a step left running by a page that went away ended there, stopped;
- * a seed kept as a number (before seeds were digits, already rounded past 2^53) is read as digits.
+ * a seed kept as a number (before seeds were digits, already rounded past 2^53) is read as digits; and a draft from
+ * when "Keep the last seed" filled the seed field gets the field back blank (seedClash says why).
  */
-export function fromStore(s: ImageSession, now: number): ImageSession {
+export function fromStore(stored: ImageSession, now: number): ImageSession {
+  const { keepSeed, ...draft } = stored.draft as SessionDraft & { keepSeed?: boolean };
+  const s: ImageSession = { ...stored, draft: keepSeed ? { ...draft, seedText: "" } : draft };
   // As the page showed it: a u64 prints without an exponent.
   const digits = (seed: unknown) => (typeof seed === "number" ? String(Math.trunc(Math.abs(seed))) : seed);
   const pool = s.pool.map((p) => (typeof p.seed === "number" ? { ...p, seed: digits(p.seed) as Seed } : p));
@@ -258,7 +254,10 @@ export function reuseStep(s: ImageSession, stepN: number, now: number): ImageSes
   );
 }
 
-/** A picture's own seed and size into the draft, the rest as it is. */
+/**
+ * The step that made a picture again, with the picture's own seed: its prompt, its inputs and its settings, one
+ * picture. Not the picture as an input with its own seed, which would build its noise up (seedClash).
+ */
 export function reusePicture(s: ImageSession, n: number, now: number): ImageSession {
   const p = pictureOf(s, n);
   if (!p) return s;
@@ -266,11 +265,36 @@ export function reusePicture(s: ImageSession, n: number, now: number): ImageSess
   return setDraft(
     s,
     {
-      ...(step ? { prompt: step.prompt, size: step.settings.size, background: step.settings.background } : {}),
+      ...(step
+        ? { prompt: step.prompt, inputs: step.inputs.filter((x) => pictureOf(s, x)), size: step.settings.size, background: step.settings.background, count: 1 }
+        : {}),
       ...(p.seed !== undefined ? { seedText: p.seed } : {}),
     },
     now,
   );
+}
+
+/** The seeds behind a pool picture: its own, and those of every picture it was made or marked from. */
+export function seedsBehind(s: ImageSession, n: number, seen = new Set<number>()): Set<Seed> {
+  const seeds = new Set<Seed>();
+  if (seen.has(n)) return seeds;
+  seen.add(n);
+  const p = pictureOf(s, n);
+  if (!p) return seeds;
+  if (p.seed !== undefined) seeds.add(p.seed);
+  const from = [...(p.markup ? [p.markup.source] : []), ...(p.step !== undefined ? (s.steps.find((st) => st.n === p.step)?.inputs ?? []) : [])];
+  for (const m of from) for (const seed of seedsBehind(s, m, seen)) seeds.add(seed);
+  return seeds;
+}
+
+/**
+ * The input a seed is behind, if any. An edit that starts again from the noise that made its input — or a picture
+ * that input came from — finds that noise's faint imprint in the picture and builds it up: two or three such steps
+ * and the picture is grain (docs/findings/2026-10-16-image-edit-same-seed-grain.md). Such a seed is not sent.
+ */
+export function seedClash(s: ImageSession, inputs: number[], seed: Seed | null): number | undefined {
+  if (seed === null) return undefined;
+  return inputs.find((n) => seedsBehind(s, n).has(seed));
 }
 
 /** What a request sends for the inputs, in order: a mask-mode marked picture sends its source, then its mask. */

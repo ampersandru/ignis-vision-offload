@@ -210,6 +210,18 @@ describe("a reply's visit to the image model", () => {
     expect(plain.runs[0].made?.[0].kept).toBeUndefined();
   });
 
+  it("does not send, for an edit, the seed that made a picture it edits, and says so", async () => {
+    const s = server();
+    const made = { ...task(), status: "done" as const, made: [{ name: "made-1", url: "data:image/png;base64,AQ==", size: "2048x2048", seed: "41" }] };
+    const { runs } = await run([task({ references: ["made-1"], seed: "41" })], s, [{ role: "assistant", imageRuns: [made] }]);
+    expect((s.bodies[0] as FormData).has("seed")).toBe(false);
+    expect(runs[0].seedDropped).toBe(true);
+    expect(imageToolResult(runs[0])).toContain("The seed was not reused");
+    const other = server();
+    await run([task({ references: ["made-1"], seed: "99" })], other, [{ role: "assistant", imageRuns: [made] }]);
+    expect((other.bodies[0] as FormData).get("seed")).toBe("99");
+  });
+
   it("fails a call that names a picture nobody sent or made, and still goes back", async () => {
     const s = server();
     const { runs } = await run([task({ references: ["user-1"] })], s);

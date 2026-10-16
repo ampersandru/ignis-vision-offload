@@ -23,6 +23,7 @@ import {
   pictureOf,
   reusePicture,
   reuseStep,
+  seedClash,
   type SessionDraft,
   SESSIONS,
   setDraft,
@@ -289,11 +290,16 @@ export function useImageSessions(
       setNotice(err instanceof Error ? err.message : String(err));
       return;
     }
-    const params = paramsOf(draft, files, limitsAt, plan.model);
-    if (!params) {
+    const asked = paramsOf(draft, files, limitsAt, plan.model);
+    if (!asked) {
       abort.current = null;
       return;
     }
+    // A seed behind an input is left to the server: the same noise again builds up into grain (seedClash).
+    const clash = seedClash(s, draft.inputs, asked.seed);
+    const params = clash === undefined ? asked : { ...asked, seed: null };
+    const ownNotes =
+      clash === undefined ? [] : [`The seed was not reused: it is behind #${clash}, and an edit that starts again from its input's noise builds it up into grain.`];
     const settings: StepSettings = { size: params.size, count: params.n, seed: params.seed, background: draft.background, enhance: params.enhance };
     const stepN = apply(s.id, (x) => startStep(x, draft.prompt.trim(), [...draft.inputs], settings, Date.now()), true);
     if (stepN === undefined) {
@@ -364,7 +370,8 @@ export function useImageSessions(
               const status = end.error ? "failed" : controller.signal.aborted ? "stopped" : "done";
               update(
                 s.id,
-                (x) => endStep(x, stepN, { status, ...(end.error ? { error: end.error } : {}), notes: end.notes, ...(revised ? { revised } : {}) }, Date.now()),
+                (x) =>
+                  endStep(x, stepN, { status, ...(end.error ? { error: end.error } : {}), notes: [...ownNotes, ...end.notes], ...(revised ? { revised } : {}) }, Date.now()),
                 true,
               );
               setRun(null);

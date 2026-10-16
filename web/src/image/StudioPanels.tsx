@@ -82,7 +82,6 @@ export function StudioSettings({ open, state, actions }: { open: boolean; state:
   const { limits } = state;
   const enhanceLabel = useId();
   const streamLabel = useId();
-  const keepLabel = useId();
   const seed = parseSeed(draft.seedText);
   const edit = wireImages(state.active, draft.inputs).length > 0;
   return (
@@ -118,16 +117,13 @@ export function StudioSettings({ open, state, actions }: { open: boolean; state:
           />
         </label>
       </div>
-      {seed === undefined && <p className="-mt-3 text-sm text-fault">A seed is a whole number, or blank for a random one.</p>}
-      <div className="-mt-2 flex items-start gap-3">
-        <Switch on={draft.keepSeed} onChange={(keepSeed) => actions.setDraft({ keepSeed })} labelledBy={keepLabel} />
-        <div className="flex flex-col gap-0.5 text-sm">
-          <span id={keepLabel} className="font-display font-medium">
-            Keep the last seed
-          </span>
-          <span className="text-ash">After each step the seed is the last picture's, so the next one changes less.</span>
-        </div>
-      </div>
+      {seed === undefined ? (
+        <p className="-mt-3 text-sm text-fault">A seed is a whole number, or blank for a random one.</p>
+      ) : (
+        <p className="-mt-3 text-[13px] text-ash">
+          Blank after each step. An edit never reuses the seed behind its inputs: the same noise again builds up into grain.
+        </p>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <Segmented legend="Background" name="background" value={draft.background} options={BACKGROUNDS} onChange={(background) => actions.setDraft({ background })} />

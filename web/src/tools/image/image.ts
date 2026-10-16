@@ -52,7 +52,11 @@ export const IMAGE_TOOL: ToolDefinition = {
         aspect: { type: "string", enum: [...ASPECTS], description: "The shape. Omitted: square for a new picture, the last reference's for an edit." },
         transparent: { type: "boolean", description: "A transparent background, for a sticker, an icon or a cut-out." },
         count: { type: "integer", minimum: 1, maximum: MAX_COUNT, description: "How many variants. Default 1." },
-        seed: { type: "integer", minimum: 0, description: "Repeats a picture's seed, to vary the prompt and keep the rest." },
+        seed: {
+          type: "integer",
+          minimum: 0,
+          description: "For a new picture: repeats a picture's seed, to vary the prompt and keep the rest. Not with references: an edit never reuses the seed of a picture it edits.",
+        },
       },
       required: ["prompt"],
     },
@@ -67,6 +71,7 @@ You can make and edit pictures with \`make_image\`. The user sees each picture i
 - To change pictures, or to keep a person or a product the same across pictures, list them in \`references\` by name: the user's are user-1, user-2… in the order they sent them; yours are made-1, made-2… as the results name them. The prompt calls them image 1, image 2… in the order you list them.
 - A picture the user marked — a circle, strokes in a colour — asks for a change there: pass it in \`references\` and say in the prompt what the marked part becomes, naming the colour of the marks.
 - Call it once for several variants (\`count\`), not several times.
+- Do not pass the seed of a picture you are editing: the same noise again builds up into grain. Leave \`seed\` out of edits.
 - Afterwards, say in a sentence what you made. Do not describe it as if you could see it.`;
 
 export type ImageStatus = "queued" | "switching" | "making" | "returning" | "done" | "failed" | "stopped";
@@ -87,7 +92,7 @@ export type MadePicture = {
  * redraw for the vision tower is smaller); and, for one marked to change only its marked area, that area and the
  * original to keep around it.
  */
-export type NamedPicture = { url: string; full?: Blob; keep?: { source: Blob; region: Blob } };
+export type NamedPicture = { url: string; full?: Blob; keep?: { source: Blob; region: Blob }; seed?: Seed };
 
 type SessionPicture = { url: string; full?: Blob; markup?: { source: Blob; keepOutside: boolean; region: Blob } };
 
@@ -106,9 +111,11 @@ export type ImageRun = {
   progress?: ImageProgress;
   made?: MadePicture[];
   error?: string;
+  /** The seed asked made one of the references, so it was left to the server. */
+  seedDropped?: true;
 };
 
-export type ImageTask = Omit<ImageRun, "status" | "line" | "progress" | "made" | "error">;
+export type ImageTask = Omit<ImageRun, "status" | "line" | "progress" | "made" | "error" | "seedDropped">;
 
 export const isImageTool = (name: string) => name === IMAGE_TOOL_NAME;
 
@@ -173,7 +180,7 @@ export function picturesByName(messages: { role: string; images?: SessionPicture
         names.set(`user-${++user}`, { url: image.url, ...(image.full ? { full: image.full } : {}), ...(keep ? { keep } : {}) });
       }
     }
-    for (const run of m.imageRuns ?? []) for (const made of run.made ?? []) names.set(made.name, { url: made.url });
+    for (const run of m.imageRuns ?? []) for (const made of run.made ?? []) names.set(made.name, { url: made.url, ...(made.seed !== undefined ? { seed: made.seed } : {}) });
   }
   return names;
 }
@@ -201,6 +208,7 @@ export const madeSoFar = (messages: { imageRuns?: ImageRun[] }[]) => messages.re
 export function imageToolResult(run: ImageRun): string {
   if (run.status === "stopped") return "The make_image call was stopped before it finished.";
   const made = run.made ?? [];
+  const dropped = run.seedDropped ? ["The seed was not reused: it made a picture this call edits, and the same noise again builds up into grain."] : [];
   const lines = made.map(
     (p) =>
       `Made ${p.name}: ${p.size}${p.seed !== undefined ? `, seed ${p.seed}` : ""}.${p.revisedPrompt ? ` The prompt was rewritten as: ${p.revisedPrompt}` : ""}`,
@@ -209,7 +217,7 @@ export function imageToolResult(run: ImageRun): string {
     return [`The make_image call failed: ${run.error ?? "unknown error"}`, ...(made.length ? ["Before it failed:", ...lines] : [])].join("\n");
   }
   if (made.length === 0) return "The make_image call made no picture.";
-  return [...lines, "The user sees the pictures in the conversation."].join("\n");
+  return [...dropped, ...lines, "The user sees the pictures in the conversation."].join("\n");
 }
 
 /** `2 pictures: 1 making, 1 done`. */
@@ -301,12 +309,14 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
         });
         continue;
       }
-      update(i, { status: "making", line: "Sending the request…" });
+      // An edit that starts again from the noise that made a picture it edits builds that noise up into grain.
+      const seedDropped = task.seed !== undefined && task.references.some((name) => pictures.get(name)?.seed === task.seed);
+      update(i, { status: "making", line: "Sending the request…", ...(seedDropped ? { seedDropped: true as const } : {}) });
       const params: ImageParams = {
         prompt: task.transparent ? transparentPrompt(task.prompt) : task.prompt,
         n: Math.min(task.count, limits.maxN),
         size: sizeForAspect(task.aspect, limits.sizes),
-        seed: task.seed ?? null,
+        seed: seedDropped ? null : (task.seed ?? null),
         enhance: false,
         images: task.references.map((name, k) => fileOfPicture(pictures.get(name)!, `${name}-${k + 1}.png`)),
         ...(task.transparent ? { background: "transparent" as const } : {}),
@@ -342,7 +352,7 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
                 ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
                 ...(kept ? { kept: true as const } : {}),
               };
-              pictures.set(name, { url });
+              pictures.set(name, { url, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) });
               pictureList.push(picture);
               update(i, { made: [...pictureList] });
             });

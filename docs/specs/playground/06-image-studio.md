@@ -34,8 +34,9 @@ prompt box at the foot (CONTEXT.md: image session, image pool, image input).
   opens full-size in the viewer (arrows walk the pool), with "Use as input",
   "Mark", "Reuse prompt and seed", "Download PNG" and "Send to the chat".
 - The settings (shape, count, seed, background, enhancement, progress) belong
-  to the session's draft. "Keep the last seed" makes each step's first
-  picture's seed the next step's.
+  to the session's draft. The seed field clears after each step, and an edit
+  is never sent a seed behind its inputs: the same noise again builds up into
+  grain (finding 2026-10-16-image-edit-same-seed-grain).
 - With a text model loaded, Generate and Edit switch to the image model on
   their own (#324). The explicit switch band is not shown for now (owner's
   call); `image/SwitchBand.tsx` keeps it, tested.
@@ -139,9 +140,9 @@ again, so no chat request ever names a model (#305's ping-pong).
    reuses an empty one. (Studio.test, sessions.test)
 2. A step records its prompt, inputs and settings, and its pictures land in
    the pool and on the step in the order they come. (sessions.test)
-3. After a step that made pictures, its first is the only input, the prompt is
-   empty, and with "Keep the last seed" the seed is that picture's; a step
-   that made none leaves the draft as it was sent. (sessions.test)
+3. After a step that made pictures, its first is the only input and the prompt
+   and the seed are empty; a step that made none leaves the draft as it was
+   sent. (sessions.test)
 4. Inputs are shown as the prompt names them; a mask-mode input shows its
    mask's number, and the count against `image.max_condition_images` counts
    masks. (Studio.test)
@@ -186,6 +187,12 @@ again, so no chat request ever names a model (#305's ping-pong).
     back as numbers of any size, and adds an image's index as the server does
     (wrapping); a session kept with numeric seeds reads them as digits.
     (seed.test, images.test, studio.test, sessions.test, image.test)
+18. An edit is never sent a seed behind its inputs — an input's own, or that of
+    a picture it was made or marked from: the seed is left to the server and
+    the step says so; "Reuse prompt and seed" brings back the step that made
+    the picture, its inputs included; `make_image` drops a seed that made one
+    of its references and tells the model. A draft kept with the old "Keep the
+    last seed" reads with a blank seed. (sessions.test, image.test)
 
 ## As built (2026-10-16, branch `playground-image-studio`)
 
@@ -198,5 +205,9 @@ again, so no chat request ever names a model (#305's ping-pong).
   5936113633719656123 came back as …656000 from `JSON.parse` and the seed field
   refused it. Seeds are now digits end to end (`web/src/api/seed.ts`); the
   seeds of pictures made before the fix stay as they were shown, rounded.
+- Grain (2026-10-16, owner's report): ten chained edits, the last five with
+  "Keep the last seed", turned the picture to grain; reproduced from a clean
+  picture in three steps with a fixed seed and not with fresh ones (finding
+  2026-10-16-image-edit-same-seed-grain). The option is gone; AC 18 guards.
 - `fake-indexeddb` joined the web dev dependencies (the IndexedDB contract
   tests); `make build` runs `npm ci` once for it.

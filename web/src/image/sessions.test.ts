@@ -5,6 +5,9 @@ import {
   coverOf,
   endStep,
   fromStore,
+  type ImageSession,
+  seedClash,
+  seedsBehind,
   imagesOf,
   inputNumbers,
   keepFor,
@@ -76,15 +79,44 @@ describe("an image session", () => {
     expect(s.title).toBe("a fox in the snow, dusk");
   });
 
-  it("goes on from the step's first picture: it becomes the only input, the prompt clears, the seed stays when asked", () => {
-    let s = setDraft(newSession("s", 0), { prompt: "a fox", keepSeed: true, inputs: [] }, 0);
+  it("goes on from the step's first picture: it becomes the only input, and the prompt and the seed clear", () => {
+    let s = setDraft(newSession("s", 0), { prompt: "a fox", seedText: "41", inputs: [] }, 0);
     let step: number;
-    [s, step] = startStep(s, "a fox", [], settings, 1);
+    [s, step] = startStep(s, "a fox", [], { ...settings, seed: "41" }, 1);
     [s] = landOutput(s, step, { ...pic("o1"), seed: "41" }, 2);
     [s] = landOutput(s, step, { ...pic("o2"), seed: "42" }, 2);
     s = endStep(s, step, { status: "done", notes: ["scaled"], revised: "a red fox" }, 3);
-    expect(s.draft).toMatchObject({ prompt: "", inputs: [1], seedText: "41" });
+    expect(s.draft).toMatchObject({ prompt: "", inputs: [1], seedText: "" });
     expect(s.steps[0]).toMatchObject({ status: "done", notes: ["scaled"], revised: "a red fox" });
+  });
+
+  it("never sends, for an edit, a seed behind its inputs: the picture's own, or one it was made or marked from", () => {
+    // #1 made with seed 7; #2 made from #1 with seed 8; #3 #2 marked; #4 an upload.
+    let s = newSession("s", 0);
+    let step: number;
+    [s, step] = startStep(s, "a fox", [], { ...settings, seed: "7" }, 1);
+    [s] = landOutput(s, step, { ...pic("o1"), seed: "7" }, 1);
+    s = endStep(s, step, { status: "done" }, 1);
+    [s, step] = startStep(s, "at night", [1], { ...settings, seed: "8" }, 2);
+    [s] = landOutput(s, step, { ...pic("o2"), seed: "8" }, 2);
+    s = endStep(s, step, { status: "done" }, 2);
+    [s] = addMarked(s, 2, pic("o2-drawn"), { marks: [], mode: "drawn", keepOutside: false, mask: "m", region: "r" }, 3);
+    [s] = addToPool(s, [{ ...pic("up"), origin: "upload" }], 4);
+    expect([...seedsBehind(s, 3)].sort()).toEqual(["7", "8"]);
+    expect(seedClash(s, [3], "8")).toBe(3);
+    expect(seedClash(s, [4, 2], "7")).toBe(2);
+    expect(seedClash(s, [4], "7")).toBeUndefined();
+    expect(seedClash(s, [2], "9")).toBeUndefined();
+    expect(seedClash(s, [2], null)).toBeUndefined();
+  });
+
+  it("blanks a seed field that the old 'Keep the last seed' filled, and forgets the option", () => {
+    const old = { ...newSession("s", 0), draft: { ...newSession("s", 0).draft, seedText: "41", keepSeed: true } } as ImageSession;
+    const read = fromStore(old, 1);
+    expect(read.draft.seedText).toBe("");
+    expect(read.draft).not.toHaveProperty("keepSeed");
+    const typed = setDraft(newSession("t", 0), { seedText: "41" }, 0);
+    expect(fromStore(typed, 1).draft.seedText).toBe("41");
   });
 
   it("leaves the draft as it was sent when the step made nothing", () => {
@@ -118,7 +150,7 @@ describe("an image session", () => {
     [s] = landOutput(s, step, { ...pic("o1"), seed: "9" }, 1);
     s = endStep(s, step, { status: "done" }, 2);
     expect(reuseStep(s, 1, 3).draft).toMatchObject({ prompt: "a fox", size: "2752x1536", seedText: "7", background: "transparent" });
-    expect(reusePicture(s, 1, 3).draft).toMatchObject({ prompt: "a fox", seedText: "9", size: "2752x1536" });
+    expect(reusePicture(s, 1, 3).draft).toMatchObject({ prompt: "a fox", seedText: "9", size: "2752x1536", inputs: [], count: 1 });
   });
 });
 
