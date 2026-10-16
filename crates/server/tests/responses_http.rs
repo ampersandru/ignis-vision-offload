@@ -671,20 +671,32 @@ async fn a_reasoning_blob_this_server_cannot_read_falls_back_to_the_visible_text
 /// looping request the rewind replaced is cancelled. Chat completions,
 /// streamed and not. With no retries the rewind closes the reasoning, and
 /// the continuation answers at once.
+///
+/// The looping request must still be running when the rewind cancels it, or
+/// it completes and the counts below say nothing: at 4,000 tokens the mock
+/// finished it first on a loaded 4-core runner (the v0.7.0 release run). It
+/// gets a budget the mock takes seconds to spend, which the guard's cancel
+/// never lags behind.
 #[tokio::test]
 async fn a_stop_sequence_after_a_rewind_stops_the_continuation_by_its_own_id() {
+    const MAX_TOKENS: u32 = 1 << 20;
+    let room = || SchedulerConfig {
+        max_sequence_tokens: MAX_TOKENS + 1024,
+        kv_capacity_pages: (ignis_core::N_DECODE_LANES as u32) * ((MAX_TOKENS + 1024) / 16),
+        ..SchedulerConfig::default()
+    };
     for stream in [false, true] {
         let mock = Arc::new(MockCompute::new());
         // Every token the continuation draws reads as this.
         let script = Script::encoding_or(responses::scripted_text(&mock, 0, &looping_reasoning()), "Fine! STOP ");
         let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, retries: 0, ..LoopGuardParams::default() };
-        let server = server(&script, SchedulerConfig::default(), mock).with_loop_guard(guard).with_metrics();
+        let server = server(&script, room(), mock).with_loop_guard(guard).with_metrics();
         let metrics = Arc::clone(server.metrics.as_ref().unwrap());
         let app = server.app();
         let body = json!({
             "model": MODEL,
             "messages": [{ "role": "user", "content": "the whole history of Rome" }],
-            "max_tokens": 4000,
+            "max_tokens": MAX_TOKENS,
             "stop": ["STOP"],
             "stream": stream,
         });
