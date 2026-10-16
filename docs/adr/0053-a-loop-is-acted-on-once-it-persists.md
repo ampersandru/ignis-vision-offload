@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (2026-10-16). Amends [ADR 0052](0052-a-reasoning-loop-is-taken-back-and-nudged.md)'s
+Accepted (2026-10-16, owner: "portarlo su main" after the held-out run and the live A/B).
+Proposed the same day. Amends [ADR 0052](0052-a-reasoning-loop-is-taken-back-and-nudged.md)'s
 detection and action; the rest of 0052 stands. The numbers are in the finding
 [`docs/findings/2026-10-16-a-loop-persists.md`](../findings/2026-10-16-a-loop-persists.md). ADR
 0052 says a false rewind found later reopens its default: two were found on agentic reasoning.
@@ -32,14 +33,16 @@ computed as before: back to the last clean window, which a run of loop scores ne
 
 **The threshold rises to 0.265** (`loop_guard_ratio` 265). Under persistence the old 0.20 misses a
 slow harmful template. Between the highest threshold any harmful loop needs (0.257) and the lowest
-at which legitimate agentic text fires (0.274), 0.265 is the middle. The raw gate stays at 0.30:
+at which legitimate agentic text fires once the rule below has taken out what opens in an
+enumeration (0.274), 0.265 is the middle: the margin assumes `loop_guard_min_kept` is at least 1. The raw gate stays at 0.30:
 lowering it to 0.28 loses 2 harmful loops.
 
 **A rewind keeps something.** A loop whose cut would keep fewer than `loop_guard_min_kept`
 characters of reasoning (1) is only logged (`ignis.loop_guard.too_little_kept`), in `rewind` and
 in `log` mode alike, so `log` still reports what a rewind would do.
-- The characters are counted in the reasoning the model reads: a line break the decoder still
-  holds at the start is not reasoning kept.
+- The characters are counted in the reasoning the model reads, over the whole tokens a rewind
+  keeps: a line break the decoder still holds at the start is not reasoning kept, nor is a token
+  the cut falls inside.
 - The run of loop scores is then held: the guard does not act on it again until a score that is
   not a loop.
 - The watch keeps its scores, so a clean window later gives a later loop a cut.

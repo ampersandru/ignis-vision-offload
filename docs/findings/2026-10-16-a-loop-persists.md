@@ -105,43 +105,7 @@ Fibonacci table computed by hand (5).
   presence_penalty 0.0: the Playground's settings. So the measured loop rate is at the
   producer's recommendation.
 
-## Finding
-
-Observed:
-- On these corpora, duration separates harmful loops from legitimate enumerations where depth
-  does not. Legitimate text stays at most 6 consecutive low checks; harmful loops mostly 9 and
-  more, and most never leave.
-- Today's trigger fires on a 17-item list because 17 items fill the 1,000-character window.
-- A rewind with no clean window since the floor drops the whole reasoning. It happens on text
-  that opens in an enumeration, which agentic reasoning does and the Rome runs do not.
-- T 0.265, G 0.30, K 4, with "a rewind keeps something", beats today's rule on every column:
-  25/25 harmful and 34/38 acute against 24 and 33, and 0 agentic fires against 2.
-
-Inferred:
-- The first nudge's "move on with what I already have" was not the agentic risk itself. The
-  trigger put it after legitimate work. With the new trigger, the nudge acts on Rome only after
-  a loop has persisted, where an exit is the measured remedy (9 of 16 escaped for good after one).
-
-## Implications
-
-- ADR 0053 adopts `loop_guard_persist` 4, `loop_guard_ratio` 265 and `loop_guard_min_kept` 1.
-- The nudge wording stays. Measured live, today's sentence beats one without the claim of
-  sufficiency on every column. On Rome the claim is what moves the model from planning to
-  writing. On agents the new trigger removed the fires the claim was dangerous after.
-- A loop guard on compression cannot see indecision loops whose text varies between repeats. The
-  only harmful agentic loop observed (the 2026-10-12 incident's deferral loop) is of that kind.
-
-## Limits and unknowns
-
-- The Rome numbers are in-sample: one prompt, one labeller, the grid chosen on them. 0.265 is
-  tuned to 3 decimals between two texts 0.017 apart.
-- Harmful durations are censored by the forced close. Only first rewinds were simulated.
-- The agentic loop or legitimate calls are one reader's.
-- The held-out run is one prompt again, and its harmful runs are labelled by outcome, not by
-  reading. A breathing run's later cut keeps part of the episode the model escaped from: whether
-  the continuation relapses more often was not measured.
-
-## Held-out run
+### Held-out run
 
 **Setup.** 40 new seeds (301-340) of the same Rome body, 2026-10-16.
 - The owner's serving build (main `6b5b9d30`) at its serving flags: `yarn:2`, 524,288,
@@ -178,7 +142,7 @@ Inferred:
 So on new seeds the new rule keeps today's recall, fires on no text that is not a loop, and
 leaves alone the loops that end by themselves. Its cost is a later cut on breathing runs.
 
-## The first nudge, live (A/B)
+### The first nudge, live (A/B)
 
 **Setup.** This branch's release build, the owner's serving flags, the guard in `rewind` at the
 new defaults. 40 seeds (401-440) per arm, the same seeds in both. Only `loop_guard_nudge`
@@ -208,6 +172,42 @@ differs, set with a `PATCH` between the arms:
 - **Caveat.** Same seeds are not the same reasoning: batching changes the draw, so which seeds
   loop differs between the arms. n is small: the harmful counts are not significant, but every
   column points the same way.
+
+## Finding
+
+Observed:
+- On these corpora, duration separates harmful loops from legitimate enumerations where depth
+  does not. Legitimate text stays at most 6 consecutive low checks; harmful loops mostly 9 and
+  more, and most never leave.
+- Today's trigger fires on a 17-item list because 17 items fill the 1,000-character window.
+- A rewind with no clean window since the floor drops the whole reasoning. It happens on text
+  that opens in an enumeration, which agentic reasoning does and the Rome runs do not.
+- T 0.265, G 0.30, K 4, with "a rewind keeps something", beats today's rule on every column:
+  25/25 harmful and 34/38 acute against 24 and 33, and 0 agentic fires against 2.
+
+Inferred:
+- The first nudge's "move on with what I already have" was not the agentic risk itself. The
+  trigger put it after legitimate work. With the new trigger, the nudge acts on Rome only after
+  a loop has persisted, where an exit is the measured remedy (9 of 16 escaped for good after one).
+
+## Implications
+
+- ADR 0053 adopts `loop_guard_persist` 4, `loop_guard_ratio` 265 and `loop_guard_min_kept` 1.
+- The nudge wording stays. Measured live, today's sentence beats one without the claim of
+  sufficiency on every column. On Rome the claim is what moves the model from planning to
+  writing. On agents the new trigger removed the fires the claim was dangerous after.
+- A loop guard on compression cannot see indecision loops whose text varies between repeats. The
+  only harmful agentic loop observed (the 2026-10-12 incident's deferral loop) is of that kind.
+
+## Limits and unknowns
+
+- The Rome numbers are in-sample: one prompt, one labeller, the grid chosen on them. 0.265 is
+  tuned to 3 decimals between two texts 0.017 apart.
+- Harmful durations are censored by the forced close. Only first rewinds were simulated.
+- The agentic loop or legitimate calls are one reader's.
+- The held-out run is one prompt again, and its harmful runs are labelled by outcome, not by
+  reading. A breathing run's later cut keeps part of the episode the model escaped from: whether
+  the continuation relapses more often was not measured.
 
 ## Follow-ups
 

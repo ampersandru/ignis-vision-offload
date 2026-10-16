@@ -141,7 +141,8 @@ impl LoopGuardMode {
 
 /// `--model-loop-guard-ratio`'s default, in thousandths: 0.265. With 4
 /// checks in a row ([`DEFAULT_PERSIST_CHECKS`]) the harmful Rome loops fire
-/// under 0.257 at the latest and no legitimate agentic reasoning under 0.274
+/// under 0.257 at the latest, and no legitimate agentic reasoning under 0.274
+/// once [`DEFAULT_MIN_KEPT_CHARS`] has taken out what opens in an enumeration
 /// (the Rust scorer, `docs/findings/2026-10-16-a-loop-persists.md`); 0.20 was
 /// the threshold of a guard that acted at the first check.
 pub const DEFAULT_RATIO_PERMILLE: u32 = 265;
@@ -761,6 +762,13 @@ impl View {
     fn tokens_before(&self, cut: usize) -> usize {
         self.chars_after.partition_point(|&chars| chars <= cut)
     }
+
+    /// The characters of reasoning the first `tokens` tokens decoded to, as
+    /// the model reads them: a line break the decoder still holds at the
+    /// start counts for nothing.
+    fn chars_through(&self, tokens: usize) -> usize {
+        tokens.checked_sub(1).map_or(0, |last| self.chars_after[last])
+    }
 }
 
 /// What the guard needs from the engine and the template: cancel and submit
@@ -1084,14 +1092,16 @@ impl<O: GuardOps> Guard<O> {
         }
         let score = self.watch.check(&self.view.scored, &self.params)?;
         let at = self.view.text().len();
-        // The cut in the reasoning the model reads: a line break the
-        // decoder still holds at the start is not reasoning kept.
+        // What a rewind keeps: the whole tokens before the cut, counted in
+        // the reasoning the model reads.
         let cut = self.watch.cut_point(self.view.text(), &self.params);
-        if cut < self.params.min_kept_chars as usize {
+        let kept = self.view.tokens_before(cut);
+        let kept_chars = self.view.chars_through(kept);
+        if kept_chars < self.params.min_kept_chars as usize {
             tracing::info!(
                 name: "ignis.loop_guard.too_little_kept",
                 request = self.original, engine_request = self.current.get(), at_chars = at, ratio = score.ratio,
-                raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = cut,
+                raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = cut, kept_chars,
                 "loop with too little reasoning before it to keep: log only"
             );
             // The watch goes on: a clean window later gives a later loop
@@ -1110,12 +1120,11 @@ impl<O: GuardOps> Guard<O> {
             self.watch = Watch::from(at, &self.params);
             return None;
         }
-        self.rewind(at, score, cut).await
+        self.rewind(at, score, kept).await
     }
 
-    async fn rewind(&mut self, at: usize, score: Score, cut: usize) -> Option<Continuation> {
+    async fn rewind(&mut self, at: usize, score: Score, kept: usize) -> Option<Continuation> {
         let ratio = score.ratio;
-        let kept = self.view.tokens_before(cut);
         let generated = self.view.tokens.len();
         // The kept text and what the client received, as the client shows
         // them: a decoder holds back a trailing line break until the text
@@ -1546,6 +1555,16 @@ mod tests {
         assert_eq!(first_loop(&short, 0, &eight), None);
         let twice = prose(3000) + &looping(1200) + &prose(2000) + &looping(1200) + &prose(3000);
         assert_eq!(first_loop(&twice, 0, &eight), None, "the prose between starts the count over");
+    }
+
+    /// What a rewind keeps is counted in whole tokens, as the model reads
+    /// them: line breaks the decoder holds at the start count for nothing.
+    #[test]
+    fn the_kept_reasoning_is_counted_as_the_model_reads_it() {
+        let mut view = View::new(OutputDecoder::new(Box::new(CharDecoder), true), true);
+        tokens_of("\n\nab").into_iter().for_each(|token| view.push(token));
+        assert_eq!(view.tokens_before(0), 2, "the held line breaks end at character 0");
+        assert_eq!((view.chars_through(0), view.chars_through(2), view.chars_through(3)), (0, 0, 1));
     }
 
     /// A held run of loop scores fires no more; a score that is not a loop
