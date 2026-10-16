@@ -3,9 +3,12 @@ import { authHeaders, keyRequired, useAuth } from "./auth.ts";
 
 // The model ignis serves, asked from GET /v1/models when the page opens,
 // whenever the API key changes, and when a turn starts: another client may
-// have switched the server since. The Playground only follows it — its
-// requests name no model, so none of them can switch it. The one switch it
-// makes is the Server view's explicit "Load" (spec playground/05).
+// have switched the server since. The chat's requests name no model, so none
+// of them can switch it. The switches the Playground makes are the owner's:
+// the Server view's explicit "Load" (spec playground/05), the Image view's
+// switch and its Generate with a text model loaded (GitHub #324), and the
+// chat's make_image tool, which goes to the image model and back to the text
+// model inside a turn (tools/image/image.ts).
 //
 // While a switch runs, GET /v1/models says so (`status: switching`, both
 // ids) and every other /v1 route answers 503; the page reads it again each

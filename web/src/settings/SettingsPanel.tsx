@@ -266,6 +266,13 @@ export function ToolsSetting({
             description="The model can hand you a text file to download."
           />
           <ToolRow
+            id="images"
+            label="Pictures"
+            on={tools.images}
+            onChange={(images) => onChange({ ...tools, images })}
+            description="The model can make and edit pictures with the image model. Each reply that does unloads the text model for about half a minute: there, and back."
+          />
+          <ToolRow
             id="read-files"
             label="Attachments"
             on={tools.readFiles}

@@ -131,3 +131,31 @@ export function IconHealth({ level }: { level: "idle" | "healthy" | "busy" | "sa
     </svg>
   );
 }
+
+/** Save the picture as a file. */
+export function IconDownload() {
+  return (
+    <svg {...icon} width={14} height={14}>
+      <path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10" />
+    </svg>
+  );
+}
+
+/** Paint on a picture. */
+export function IconBrush() {
+  return (
+    <svg {...icon} width={14} height={14}>
+      <path d="M13.5 2.5l-6 6M9 9.5c-.4 2.2-2 4-5.5 4 .3-1.5.2-2.9 1.4-4.1 1.1-1.1 2.6-1.2 3.6-.4" />
+    </svg>
+  );
+}
+
+/** Take a picture into the request as a reference. */
+export function IconReference() {
+  return (
+    <svg {...icon} width={14} height={14}>
+      <rect x="2.5" y="4.5" width="8" height="9" />
+      <path d="M5.5 2.5h8v9" />
+    </svg>
+  );
+}

@@ -4,6 +4,8 @@ import { Readout } from "../metrics/Readout.tsx";
 import type { Message } from "../sessions/sessions.ts";
 import { AgentStrip } from "../tools/agents/AgentStrip.tsx";
 import { Questions } from "../tools/ask/Questions.tsx";
+import { ImageStrip } from "../tools/image/ImageStrip.tsx";
+import type { ChatPicture, PictureAction } from "./images.ts";
 import { LocalStrip } from "../tools/local/LocalStrip.tsx";
 import { UnknownCalls } from "../tools/UnknownCalls.tsx";
 import { WebStrip } from "../tools/web/WebStrip.tsx";
@@ -26,6 +28,7 @@ function ReplyTurn(props: {
   openCallId: string | null;
   onOpenAgent: (callId: string) => void;
   onAnswer: (callId: string, text: string) => void;
+  onPicture?: (picture: ChatPicture, action: PictureAction) => void;
 }) {
   const { message: m, markdown, actions } = props;
   const [editing, setEditing] = useState(false);
@@ -92,6 +95,7 @@ function ReplyTurn(props: {
       )}
       {m.web && m.web.length > 0 && <WebStrip runs={m.web} />}
       {m.local && m.local.length > 0 && <LocalStrip runs={m.local} />}
+      {m.imageRuns && m.imageRuns.length > 0 && <ImageStrip runs={m.imageRuns} onPicture={props.onPicture} />}
       {m.questions && m.questions.length > 0 && <Questions questions={m.questions} onAnswer={props.onAnswer} />}
       {m.unknownTools && m.unknownTools.length > 0 && <UnknownCalls calls={m.unknownTools} />}
       {m.error && (

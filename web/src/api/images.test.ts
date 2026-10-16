@@ -57,6 +57,13 @@ describe("the request bodies", () => {
     expect(generationBody(named, true)).toMatchObject({ model: "ignis-image-2.1-turbo", prompt: "a lantern", stream: true });
     expect(editForm({ ...named, images: [png("a.png")] }, false).get("model")).toBe("ignis-image-2.1-turbo");
   });
+
+  it("sends the background only when the params choose one, in either shape", () => {
+    expect(generationBody(params, false)).not.toHaveProperty("background");
+    expect(editForm({ ...params, images: [png("a.png")] }, false).has("background")).toBe(false);
+    expect(generationBody({ ...params, background: "transparent" }, false)).toMatchObject({ background: "transparent" });
+    expect(editForm({ ...params, background: "opaque", images: [png("a.png")] }, false).get("background")).toBe("opaque");
+  });
 });
 
 describe("generate (answered whole)", () => {

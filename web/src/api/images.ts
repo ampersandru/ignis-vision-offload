@@ -34,7 +34,11 @@ export type ImageParams = {
   images: File[];
   /** The image model's id when the run is the owner's switch to it (GitHub #324); absent, the loaded model answers. */
   model?: string;
+  /** What the pictures' alpha is: as generated (`auto`, `transparent`) or composited on white (`opaque`). Absent: the server's `auto`. */
+  background?: ImageBackground;
 };
+
+export type ImageBackground = "auto" | "transparent" | "opaque";
 
 /** One finished image, base64 PNG. `seed` is the job's: this image started from `seed + index`. */
 export type MadeImage = { b64: string; index: number; seed?: number; size?: string; revisedPrompt?: string };
@@ -60,6 +64,7 @@ export function generationBody(params: ImageParams, stream: boolean): object {
     size: params.size,
     ...(params.seed !== null ? { seed: params.seed } : {}),
     prompt_enhancement: params.enhance,
+    ...(params.background ? { background: params.background } : {}),
     ...(stream ? { stream: true } : {}),
   };
 }
@@ -74,6 +79,7 @@ export function editForm(params: ImageParams, stream: boolean): FormData {
   form.append("size", params.size);
   if (params.seed !== null) form.append("seed", String(params.seed));
   form.append("prompt_enhancement", String(params.enhance));
+  if (params.background) form.append("background", params.background);
   if (stream) form.append("stream", "true");
   return form;
 }

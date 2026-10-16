@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { forgetKey, useAuth } from "../api/auth.ts";
-import { canChat, loadUnderWay, type ModelState, useModel } from "../api/model.ts";
+import { canChat, canSend, loadUnderWay, type ModelState, useModel } from "../api/model.ts";
 import { Composer } from "../conversation/Composer.tsx";
-import { imageFromFile, type PromptImage } from "../conversation/images.ts";
+import { type ChatPicture, chatImageFromFile, type PictureAction, type PromptImage } from "../conversation/images.ts";
+import { ModelPicker } from "../conversation/ModelPicker.tsx";
+import { useNextModel } from "../conversation/useNextModel.ts";
 import { DecideView, type Drawer as DecideDrawer } from "../decide/DecideView.tsx";
 import { type OpenAgent, Transcript } from "../conversation/Transcript.tsx";
 import { contextUsage } from "../metrics/context.ts";
@@ -11,11 +13,17 @@ import { MonitorView } from "../monitor/MonitorView.tsx";
 import { useMonitor, useMonitorVisible } from "../monitor/useMonitor.ts";
 import { SessionLog } from "../sessions/SessionLog.tsx";
 import { SessionsPanel } from "../sessions/SessionsPanel.tsx";
-import { ImageView } from "../image/ImageView.tsx";
-import { useStudio } from "../image/useStudio.ts";
+import { StorePictures } from "../image/pictures.tsx";
+import { pictureName, type PoolImage } from "../image/sessions.ts";
+import { fileFromDataUrl } from "../image/studio.ts";
+import type { Mark, MarkedPicture } from "../markup/markup.ts";
+import { MarkupEditor } from "../markup/MarkupEditor.tsx";
+import { ImageStudio, type StudioDrawer } from "../image/Studio.tsx";
+import { useImageSessions } from "../image/useImageSessions.ts";
 import { ServerView } from "../server/ServerView.tsx";
 import { useServer, useTick } from "../server/useServer.ts";
 import { DEFAULT_SETTINGS, type PlaygroundSettings } from "../settings/defaults.ts";
+import { pageStore } from "../store/index.ts";
 import { SettingsPanel } from "../settings/SettingsPanel.tsx";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
@@ -39,6 +47,14 @@ import { useConversation } from "./useConversation.ts";
 // a streaming reply carries on.
 
 type Drawer = "sessions" | "settings" | null;
+
+/** A picture of the chat open in the markup editor, and what saving the marks does with them. */
+type ChatMarking = { url: string; title: string; marks?: Mark[]; keepOutside?: boolean; apply: (marked: MarkedPicture | null) => Promise<void> };
+
+/** A picture of the chat at its own size: the one kept beside the redraw, else the redraw itself. */
+const blobOf = (picture: { full?: Blob; url: string }, name: string): Blob => picture.full ?? fileFromDataUrl(picture.url, name);
+
+const stem = (name: string) => name.replace(/\.[^.]+$/, "");
 
 export function App() {
   const auth = useAuth();
@@ -65,7 +81,9 @@ export function App() {
   // The bench has its own two drawers below `lg`; the header's buttons open
   // whichever view is showing.
   const [decideDrawer, setDecideDrawer] = useState<DecideDrawer>(null);
-  const chat = useConversation({ model, refreshModel, settings, tools, parallel });
+  // The model the next message goes to: the one loaded, unless the owner picks another or the image model is loaded.
+  const nextModel = useNextModel(model);
+  const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel });
   const { active } = chat;
   const monitoring = view === "monitor" && monitorVisible;
   const deciding = view === "decide";
@@ -74,8 +92,12 @@ export function App() {
   // Mounted from its first visit on, like the Decide tab: a draft of changes
   // and a reload being followed survive a look at the chat.
   const [serverOpened, setServerOpened] = useState(false);
-  // The Image view the same: its prompt, its condition images and its gallery outlive a look at the chat.
+  // The Image view the same: its sessions are read once, and a step under way outlives a look at the chat.
   const [imageOpened, setImageOpened] = useState(false);
+  const [imageDrawer, setImageDrawer] = useState<StudioDrawer>(null);
+  // Held here, not in the view: the chat hands pictures to it.
+  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging);
+  const [chatMarking, setChatMarking] = useState<ChatMarking | null>(null);
   // A switch or a load runs the header's flame and heat bar as a reply does (spec playground/05).
   const busy = chat.busy || loadUnderWay(model);
 
@@ -119,11 +141,88 @@ export function App() {
 
   /** Picked or pasted files as prompt images; the ones that cannot be read are named instead. */
   async function addImages(files: File[]) {
-    const results = await Promise.all(files.map(imageFromFile));
+    // The chat keeps each picture at its own size too: the picture tool edits that one.
+    const results = await Promise.all(files.map((file) => chatImageFromFile(file)));
     const errors = results.flatMap((r) => (r.ok ? [] : [r.error]));
     setImageError(errors.length > 0 ? errors.join(" ") : null);
     const added = results.flatMap((r) => (r.ok ? [r.image] : []));
     if (added.length > 0) setImages((current) => [...current, ...added]);
+  }
+
+  /** The marked picture as a prompt image of the chat: the drawn version on the wire, the marks and the original beside. */
+  async function markedImage(source: Blob, name: string, marked: MarkedPicture): Promise<PromptImage | null> {
+    const read = await chatImageFromFile(marked.drawn, `${stem(name)}-marked.png`);
+    if (!read.ok) {
+      setImageError(read.error);
+      return null;
+    }
+    return { ...read.image, markup: { source, marks: marked.marks, keepOutside: marked.keepOutside, region: marked.region } };
+  }
+
+  /** Opens `source` in the markup editor; `apply` gets what was saved. */
+  function openMarking(source: Blob, title: string, apply: ChatMarking["apply"], earlier?: PromptImage["markup"]) {
+    setChatMarking({
+      url: URL.createObjectURL(source),
+      title,
+      ...(earlier ? { marks: earlier.marks, keepOutside: earlier.keepOutside } : {}),
+      apply,
+    });
+  }
+
+  function closeMarking() {
+    if (chatMarking) URL.revokeObjectURL(chatMarking.url);
+    setChatMarking(null);
+  }
+
+  /** A picture of the prompt box marked again from its original; it keeps its place in the box. */
+  function markBoxImage(index: number) {
+    const image = images[index];
+    if (!image) return;
+    const source = image.markup?.source ?? blobOf(image, image.name);
+    openMarking(
+      source,
+      `Mark ${image.name}`,
+      async (marked) => {
+        const next = marked ? await markedImage(source, image.name, marked) : image.markup ? await clean(source, image.name) : null;
+        if (next) setImages((current) => current.map((x) => (x === image ? next : x)));
+      },
+      image.markup,
+    );
+  }
+
+  async function clean(source: Blob, name: string): Promise<PromptImage | null> {
+    const read = await chatImageFromFile(source, name);
+    if (read.ok) return read.image;
+    setImageError(read.error);
+    return null;
+  }
+
+  /** A picture of the conversation: marked into the prompt box, or opened in a new session of the Image view. */
+  function onPicture(picture: ChatPicture, action: PictureAction) {
+    const source = blobOf(picture, picture.name);
+    if (action === "image") {
+      void studioActions.importPictures([{ blob: source, name: picture.name }], "new");
+      setImageOpened(true);
+      setView("image");
+      return;
+    }
+    openMarking(source, `Mark ${picture.name}`, async (marked) => {
+      const image = marked && (await markedImage(source, picture.name, marked));
+      if (image) setImages((current) => [...current, image]);
+    });
+  }
+
+  /** A picture of the Image view into the chat's prompt box. */
+  function sendToChat(picture: PoolImage) {
+    void pageStore()
+      .getImage(picture.id)
+      .then(async (blob) => {
+        if (!blob) return;
+        const read = await chatImageFromFile(blob, pictureName(picture));
+        if (read.ok) setImages((current) => [...current, read.image]);
+        else setImageError(read.error);
+        setView("chat");
+      });
   }
 
   const set = <K extends keyof PlaygroundSettings>(key: K, value: PlaygroundSettings[K]) =>
@@ -134,11 +233,13 @@ export function App() {
   if (auth.needsKey) return <KeyPage rejected={auth.rejected} />;
 
   return (
+    // Stored pictures are shown by URLs read once from the page's store: the Image view's, and the chat's.
+    <StorePictures store={pageStore()}>
     <div className="flex h-dvh flex-col overflow-hidden">
       <Header
         model={model}
         busy={busy}
-        onOpen={(which) => (deciding ? setDecideDrawer(which) : setDrawer(which))}
+        onOpen={(which) => (deciding ? setDecideDrawer(which) : imaging ? setImageDrawer(which) : setDrawer(which))}
         onForgetKey={auth.key ? forgetKey : undefined}
         onOpenMemory={() => setMemoryOpen(true)}
         view={monitoring ? "monitor" : deciding ? "decide" : serving ? "server" : imaging ? "image" : "chat"}
@@ -169,7 +270,7 @@ export function App() {
 
       {imageOpened && (
         <div className={imaging ? "contents" : "hidden"}>
-          <Image model={model} refreshModel={refreshModel} visible={imaging} />
+          <ImageStudio model={model} state={studio} actions={studioActions} drawer={imageDrawer} onDrawer={setImageDrawer} onSendToChat={sendToChat} />
         </div>
       )}
 
@@ -202,11 +303,13 @@ export function App() {
               onSave={chat.saveEdit}
               onFork={chat.fork}
               onAnswer={chat.answer}
+              onPicture={onPicture}
             />
             <Composer
               value={input}
               onChange={setInput}
-              ready={canChat(model)}
+              ready={canSend(model) && nextModel.next.id !== null}
+              modelPicker={<ModelPicker model={model} next={nextModel.next} rows={nextModel.rows} onChoose={nextModel.choose} />}
               busy={chat.sendBlocked}
               streamingHere={chat.streamingHere}
               usage={contextUsage(active.log, settings.maxTokens, canChat(model) ? model.contextLimit : null)}
@@ -221,6 +324,7 @@ export function App() {
               imageError={imageError}
               onAddImages={(files) => void addImages(files)}
               onRemoveImage={(index) => setImages((current) => current.filter((_, i) => i !== index))}
+              onMarkImage={markBoxImage}
             />
           </main>
 
@@ -244,6 +348,20 @@ export function App() {
 
       {memoryOpen && <MemoryManager onClose={closeMemory} />}
 
+      {chatMarking && (
+        <MarkupEditor
+          source={{ url: chatMarking.url, ...(chatMarking.marks ? { marks: chatMarking.marks, mode: "drawn" as const, keepOutside: chatMarking.keepOutside } : {}) }}
+          title={chatMarking.title}
+          modes={["drawn"]}
+          onSave={(marked) => {
+            const apply = chatMarking.apply;
+            closeMarking();
+            void apply(marked);
+          }}
+          onClose={closeMarking}
+        />
+      )}
+
       {readerRun && (
         <>
           <div className="fixed inset-0 z-40 bg-[#1c2026]/40" onClick={closeReader} aria-hidden />
@@ -258,6 +376,7 @@ export function App() {
         </>
       )}
     </div>
+    </StorePictures>
   );
 }
 
@@ -273,8 +392,3 @@ function Server({ model, refreshModel, streaming, visible }: { model: ModelState
   return <ServerView model={model} state={state} actions={actions} streaming={streaming} now={now} />;
 }
 
-/** The Image view's state lives here, so the form and the gallery stay while the chat shows. */
-function Image({ model, refreshModel, visible }: { model: ModelState; refreshModel: () => void; visible: boolean }) {
-  const [state, actions] = useStudio(model, refreshModel, visible);
-  return <ImageView model={model} state={state} actions={actions} />;
-}

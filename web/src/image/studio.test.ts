@@ -3,21 +3,33 @@ import type { ImageParams } from "../api/images.ts";
 import type { LastSwitch, ModelState } from "../api/model.ts";
 import type { CatalogRow } from "../server/routes.ts";
 import {
+  bareRgbaPrompt,
   DEFAULT_LIMITS,
   downloadImage,
   downloadName,
+  EMPTY_DRAFT,
+  fileFromDataUrl,
   type GalleryItem,
+  galleryItem,
+  glyphOf,
   imageModelRow,
   limitsOf,
+  paramsOf,
   parseSeed,
   performRun,
+  pickReferences,
   progressLine,
   progressShare,
   refusalLine,
+  RGBA_LEAD,
+  RGBA_TAIL,
   runPlan,
   type RunSink,
   settleSwitch,
+  shapeOf,
+  sidesOf,
   switchToImageModel,
+  transparentPrompt,
 } from "./studio.ts";
 
 // The image view's behaviour over a mocked server (spec image-model/05 AC 12):
@@ -397,5 +409,59 @@ describe("the form's limits and words", () => {
       "A model switch is under way: switching Try again in 1 s.",
     );
     expect(refusalLine({ ...base, status: 400, message: "size must be one of 1024x1024" })).toBe("size must be one of 1024x1024");
+  });
+});
+
+describe("the request the draft makes", () => {
+  it("wraps a transparent picture's prompt in the card's wording once, and the gallery shows the owner's words", () => {
+    const wrapped = transparentPrompt("A cute cartoon dragon sticker");
+    expect(wrapped).toBe(`${RGBA_LEAD} A cute cartoon dragon sticker. ${RGBA_TAIL}`);
+    expect(transparentPrompt(wrapped)).toBe(wrapped);
+    expect(bareRgbaPrompt(wrapped)).toBe("A cute cartoon dragon sticker.");
+    const item = galleryItem({ b64: "AAA", index: 0 }, { id: 1, prompt: wrapped, size: "1024x1024", edit: false, background: "transparent" });
+    expect(item.prompt).toBe("A cute cartoon dragon sticker.");
+    expect(item.background).toBe("transparent");
+    expect(galleryItem({ b64: "AAA", index: 0 }, { id: 1, prompt: "x", size: "1024x1024", edit: false, background: "auto" })).not.toHaveProperty("background");
+  });
+
+  it("builds the params from the draft: the count held to the server's, the enhancement the server's until touched", () => {
+    const draft = { ...EMPTY_DRAFT, prompt: "  a lantern ", count: 40, seedText: "7" };
+    expect(paramsOf(draft, [], DEFAULT_LIMITS)).toEqual({ prompt: "a lantern", n: 10, size: "auto", seed: 7, enhance: false, images: [] });
+    expect(paramsOf({ ...draft, enhance: true, background: "opaque" }, [], DEFAULT_LIMITS, "ignis-image-2.1-turbo")).toMatchObject({
+      enhance: true,
+      background: "opaque",
+      model: "ignis-image-2.1-turbo",
+    });
+    expect(paramsOf({ ...draft, background: "transparent" }, [], DEFAULT_LIMITS)?.prompt).toContain(RGBA_TAIL);
+    expect(paramsOf({ ...draft, prompt: " " }, [], DEFAULT_LIMITS)).toBeNull();
+    expect(paramsOf({ ...draft, seedText: "seven" }, [], DEFAULT_LIMITS)).toBeNull();
+  });
+
+  it("takes the pictures a request has room for, and says what it left out", () => {
+    const text = new File(["x"], "notes.txt", { type: "text/plain" });
+    expect(pickReferences([png("a.png"), text], 0, 10)).toEqual({ taken: [expect.any(File)], notice: "1 file is not PNG, JPEG or WebP." });
+    expect(pickReferences([png("a.png"), png("b.png")], 9, 10).taken).toHaveLength(1);
+    expect(pickReferences([png("a.png"), png("b.png")], 9, 10).notice).toBe("A request takes at most 10 references.");
+    expect(pickReferences([png("a.png")], 0, 10).notice).toBeNull();
+  });
+
+  it("takes a gallery picture back as a PNG file", async () => {
+    const file = fileFromDataUrl("data:image/png;base64,AQID", "x.png");
+    expect(file.type).toBe("image/png");
+    expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([1, 2, 3]);
+    expect(() => fileFromDataUrl("blob:nope", "x.png")).toThrow();
+  });
+});
+
+describe("the shapes", () => {
+  it("reads each preset as the ratio a person knows, auto as none", () => {
+    expect(DEFAULT_LIMITS.sizes.map((s) => shapeOf(s)?.ratio)).toEqual(["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "1:1"]);
+    expect(shapeOf("auto")).toBeNull();
+    expect(sidesOf("2400x1792")).toBe("2400 × 1792");
+  });
+
+  it("draws a shape inside its box, the long side filling it", () => {
+    expect(glyphOf({ width: 2752, height: 1536 }, 18)).toEqual({ width: 18, height: 10 });
+    expect(glyphOf({ width: 1536, height: 2752 }, 18)).toEqual({ width: 10, height: 18 });
   });
 });

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { canChat, loadAwaited, type ModelState } from "../api/model.ts";
+import { canSend, loadAwaited, type ModelState } from "../api/model.ts";
 import { conversationTurns, type Exchange, type Settings, thinkingBudgetOf, type ToolExtras } from "../api/request.ts";
 import type { ToolCall } from "../api/sse.ts";
 import { streamChat } from "../api/stream.ts";
+import { switchAndWait } from "../api/switching.ts";
+import type { NextModel } from "../conversation/nextModel.ts";
 import type { PromptImage } from "../conversation/images.ts";
 import { computeFigures } from "../metrics/figures.ts";
 import { createFrameBatch, type FrameBatch } from "./frameBatch.ts";
@@ -20,12 +22,14 @@ import {
   removeSession,
   type SessionList,
   truncateFrom,
+  type TurnSwitch,
   updateMessage,
 } from "../sessions/sessions.ts";
 import type { PlaygroundSettings } from "../settings/defaults.ts";
 import { type AgentRun, parseAgentCall, runAgents, toolResult } from "../tools/agents/agents.ts";
 import { askToolResult, parseAskCall } from "../tools/ask/ask.ts";
 import { unknownCall } from "../tools/errors.ts";
+import { type ImageRun, imageToolResult, parseImageCall, runImages } from "../tools/image/image.ts";
 import { type Attachment, attachmentFromFile } from "../tools/local/attachments.ts";
 import { type LocalContext, type LocalRun, localToolResult, runLocalCalls, startedRun } from "../tools/local/local.ts";
 import { agentExtras, routeCall, toolExtras, type ToolsState, turnDateTime } from "../tools/index.ts";
@@ -68,12 +72,15 @@ const exchangeOf = (m: Message): Exchange => ({
 
 export function useConversation({
   model,
+  next,
   refreshModel,
   settings,
   tools,
   parallel,
 }: {
   model: ModelState;
+  /** The model the next turn goes to, and whether it switches there first (the composer's model picker). */
+  next: NextModel;
   /** Reads which model is loaded now. */
   refreshModel: () => void;
   settings: PlaygroundSettings;
@@ -114,8 +121,10 @@ export function useConversation({
   /** Anything at all is streaming: what the header's pulse and the model dot show. */
   const busy = streaming.size > 0;
   const streamingHere = streaming.has(active.id);
-  /** A new turn can start in the session on screen, and the model is known. */
-  const canRun = canStartTurn(streaming, active.id, parallel) && canChat(model);
+  /** A model can take the next turn: the one loaded, or the one the turn switches to first. */
+  const canTake = canSend(model) && next.id !== null;
+  /** A new turn can start in the session on screen, and a model can take it. */
+  const canRun = canStartTurn(streaming, active.id, parallel) && canTake;
   /** Send waits: this session streams, or another one does and turns are not parallel. */
   const sendBlocked = !canStartTurn(streaming, active.id, parallel);
 
@@ -157,7 +166,10 @@ export function useConversation({
    * ends the whole turn, agents included.
    */
   async function exchange(sessionId: number, history: Message[], prompt: string | null, images: PromptImage[] = []) {
-    if (!canStartTurn(running(), sessionId, parallel) || !canChat(model)) return;
+    if (!canStartTurn(running(), sessionId, parallel) || !canTake) return;
+    // The model the turn goes to, when it is not the one loaded: the owner's choice in the picker, or the way back
+    // from the image model. The page switches there before the first request, which names no model either way.
+    const target = next.switches && next.id !== null ? { to: next.id, ...(next.from ? { from: next.from } : {}) } : null;
     // A request names no model: the server serves the one it has loaded, and a name could only switch it. The
     // page asks again which that is, so the header follows a switch another client made.
     refreshModel();
@@ -189,6 +201,8 @@ export function useConversation({
     setStreaming((s) => new Set(s).add(sessionId));
 
     let conversation = history;
+    // The prompt the switch is shown on: the new one, or the one a regenerate answers again.
+    let switchOn = [...history].reverse().find((m) => m.role === "user")?.id;
     if (prompt !== null) {
       const stamp = turnDateTime(tools, new Date());
       const user: Message = {
@@ -202,10 +216,31 @@ export function useConversation({
       };
       setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, [user]) }));
       conversation = [...conversation, user];
+      switchOn = user.id;
     }
+    const markSwitch = (state: TurnSwitch) => {
+      if (switchOn === undefined) return;
+      const id = switchOn;
+      setList((l) => ({ ...l, sessions: updateMessage(l.sessions, sessionId, id, (m) => ({ ...m, switch: state })) }));
+    };
     // Calls of the latest reply still without a result, if the loop breaks while they run.
     let unanswered: ToolCall[] = [];
+    // The pictures this turn's calls made, by the round that made them: `made-N` counts on across rounds.
+    const turnImages: ImageRun[] = [];
     try {
+      if (target) {
+        markSwitch({ ...target, status: "switching" });
+        const failed = await switchAndWait(target.to, { signal: abort.signal, onModelChange: refreshModel });
+        if (failed === "stopped") {
+          markSwitch({ ...target, status: "stopped" });
+          return;
+        }
+        if (failed) {
+          markSwitch({ ...target, status: "failed", error: failed });
+          return;
+        }
+        markSwitch({ ...target, status: "switched" });
+      }
       for (let round = 0; ; round++) {
         const reply = await streamReply(sessionId, conversation, requestSettings, extras, abort.signal);
         conversation = [...conversation, reply];
@@ -220,7 +255,10 @@ export function useConversation({
           break;
         }
         unanswered = calls;
-        conversation = [...conversation, ...(await runToolCalls(sessionId, reply, requestSettings, extras, agentTools, local, maxRounds, abort.signal))];
+        conversation = [
+          ...conversation,
+          ...(await runToolCalls(sessionId, conversation, turnImages, reply, requestSettings, extras, agentTools, local, maxRounds, abort.signal)),
+        ];
         unanswered = [];
         if (abort.signal.aborted) break;
       }
@@ -300,10 +338,15 @@ export function useConversation({
 
   /**
    * Runs a reply's calls — agents and web calls at once — shown on the reply
-   * as they go; resolves with the tool results in call order.
+   * as they go; resolves with the tool results in call order. Picture calls
+   * come last, on one visit to the image model: the others need the text
+   * model loaded, and a switch would take it from under them.
    */
   async function runToolCalls(
     sessionId: number,
+    conversation: Message[],
+    /** The picture calls of this turn's earlier rounds: their replies in `conversation` do not carry them. */
+    turnImages: ImageRun[],
     reply: Message,
     requestSettings: Settings,
     extras: ToolExtras,
@@ -324,11 +367,15 @@ export function useConversation({
     let questions = calls.filter((c) => routeCall(c.name, available) === "ask").map(parseAskCall);
     const localCalls = calls.filter((c) => routeCall(c.name, available) === "local");
     let localRuns: LocalRun[] = localCalls.map(startedRun);
+    const imageParsed = calls.filter((c) => routeCall(c.name, available) === "image").map((c) => parseImageCall(c, available));
+    const imageTasks = imageParsed.flatMap((p) => (p.ok ? [p.task] : []));
+    let imageRuns: ImageRun[] = imageParsed.map((p) => (p.ok ? { ...p.task, status: "queued" } : p.run));
     const show = () => {
       const agents = runs;
       const web = webRuns;
       const asked = questions;
       const localNow = localRuns;
+      const pictures = imageRuns;
       setSoon(`${sessionId}:${reply.id}:tools`, (l) => ({
         ...l,
         sessions: updateMessage(l.sessions, sessionId, reply.id, (m) => ({
@@ -338,6 +385,7 @@ export function useConversation({
           unknownTools,
           questions: asked,
           local: localNow,
+          ...(pictures.length > 0 ? { imageRuns: pictures } : {}),
         })),
       }));
     };
@@ -392,6 +440,16 @@ export function useConversation({
       }),
       ...asking,
     ]);
+    const pictured = await runImages(imageTasks, {
+      messages: [...conversation, { role: "assistant", imageRuns: turnImages }],
+      signal,
+      onModelChange: refreshModel,
+      onUpdate: (run) => {
+        imageRuns = imageRuns.map((r) => (r.callId === run.callId ? run : r));
+        show();
+      },
+    });
+    turnImages.push(...pictured);
     // A row per request an agent made; a run that failed adds one for its error.
     for (const run of runs) {
       if (!tasks.some((t) => t.callId === run.callId)) continue;
@@ -411,6 +469,7 @@ export function useConversation({
       ...unknownTools.map((call) => [call.callId, call.error] as const),
       ...questions.map((q) => [q.callId, askToolResult(q)] as const),
       ...localRuns.map((run) => [run.callId, localToolResult(run)] as const),
+      ...imageRuns.map((run) => [run.callId, imageToolResult(run)] as const),
     ]);
     return addToolResults(sessionId, calls.map((c) => ({ callId: c.id, content: results.get(c.id) ?? "" })));
   }
@@ -440,7 +499,7 @@ export function useConversation({
    */
   function rerun(messageId: number, prompt: string | null) {
     const index = active.messages.findIndex((m) => m.id === messageId);
-    if (index === -1 || !canStartTurn(running(), active.id, parallel) || !canChat(model)) return;
+    if (index === -1 || !canStartTurn(running(), active.id, parallel) || !canTake) return;
     const sessionId = active.id;
     const images = active.messages[index].images ?? [];
     setList((l) => ({ ...l, sessions: truncateFrom(l.sessions, sessionId, messageId) }));
