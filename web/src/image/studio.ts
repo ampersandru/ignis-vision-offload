@@ -10,6 +10,7 @@ import {
   STOPPED,
 } from "../api/images.ts";
 import { canSend, imageLoaded, type LastSwitch, type ModelState } from "../api/model.ts";
+import { nthSeed, type Seed, seedOf } from "../api/seed.ts";
 import { lastSwitchLine } from "../server/outcome.ts";
 import { type CatalogRow, type ConfigDocument, switchTo } from "../server/routes.ts";
 
@@ -200,7 +201,7 @@ export type GalleryItem = {
   revisedPrompt?: string;
   size: string;
   /** The image's own seed (the job's seed plus its index), when the server said. */
-  seed?: number;
+  seed?: Seed;
   edit: boolean;
   /** The background the request chose, when it chose one other than the model's own. */
   background?: Exclude<ImageBackground, "auto">;
@@ -222,7 +223,7 @@ export function galleryItem(
     prompt: background === "transparent" ? bareRgbaPrompt(meta.prompt) : meta.prompt,
     ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
     size: image.size ?? meta.size,
-    ...(image.seed !== undefined ? { seed: image.seed + image.index } : {}),
+    ...(image.seed !== undefined ? { seed: nthSeed(image.seed, image.index) } : {}),
     edit: meta.edit,
     ...(background ? { background } : {}),
   };
@@ -304,14 +305,8 @@ export function downloadImage(item: GalleryItem, doc: Pick<Document, "createElem
   anchor.click();
 }
 
-/** The seed field's text as a seed: blank leaves it to the server; otherwise a whole number the server accepts, else `undefined`. */
-export function parseSeed(text: string): number | null | undefined {
-  const t = text.trim();
-  if (t === "") return null;
-  if (!/^\d+$/.test(t)) return undefined;
-  const n = Number(t);
-  return Number.isSafeInteger(n) ? n : undefined;
-}
+/** The seed field's text as a seed: blank leaves it to the server; otherwise digits the server's u64 takes, else `undefined`. */
+export const parseSeed = (text: string): Seed | null | undefined => seedOf(text);
 
 /** What a run reports as it goes; the view's hook turns each into state. */
 export type RunSink = {

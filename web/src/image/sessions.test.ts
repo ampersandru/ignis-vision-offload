@@ -4,6 +4,7 @@ import {
   addToPool,
   coverOf,
   endStep,
+  fromStore,
   imagesOf,
   inputNumbers,
   keepFor,
@@ -63,8 +64,8 @@ describe("an image session", () => {
     expect(s.title).toBe("a fox in the snow, dusk");
     expect(s.steps[0].status).toBe("running");
     let n: number;
-    [s, n] = landOutput(s, step, { ...pic("out1"), seed: 41 }, 2);
-    [s] = landOutput(s, step, { ...pic("out2"), seed: 42 }, 2);
+    [s, n] = landOutput(s, step, { ...pic("out1"), seed: "41" }, 2);
+    [s] = landOutput(s, step, { ...pic("out2"), seed: "42" }, 2);
     expect(n).toBe(1);
     expect(s.steps[0].outputs).toEqual([1, 2]);
     expect(s.pool.map((p) => [p.n, p.origin, p.step])).toEqual([
@@ -79,8 +80,8 @@ describe("an image session", () => {
     let s = setDraft(newSession("s", 0), { prompt: "a fox", keepSeed: true, inputs: [] }, 0);
     let step: number;
     [s, step] = startStep(s, "a fox", [], settings, 1);
-    [s] = landOutput(s, step, { ...pic("o1"), seed: 41 }, 2);
-    [s] = landOutput(s, step, { ...pic("o2"), seed: 42 }, 2);
+    [s] = landOutput(s, step, { ...pic("o1"), seed: "41" }, 2);
+    [s] = landOutput(s, step, { ...pic("o2"), seed: "42" }, 2);
     s = endStep(s, step, { status: "done", notes: ["scaled"], revised: "a red fox" }, 3);
     expect(s.draft).toMatchObject({ prompt: "", inputs: [1], seedText: "41" });
     expect(s.steps[0]).toMatchObject({ status: "done", notes: ["scaled"], revised: "a red fox" });
@@ -95,6 +96,14 @@ describe("an image session", () => {
     expect(s.steps[0]).toMatchObject({ status: "failed", error: "The queue is full" });
   });
 
+  it("reads a session the store kept from before seeds were digits: its seeds as digits, a running step stopped", () => {
+    let [s, step] = startStep(newSession("s", 0), "x", [], { ...settings, seed: 7 as unknown as string }, 1);
+    [s] = landOutput(s, step, { ...pic("o"), seed: 5936113633719656000 as unknown as string }, 1);
+    const read = fromStore(s, 2);
+    expect(read.steps[0]).toMatchObject({ status: "stopped", settings: { seed: "7" } });
+    expect(read.pool[0].seed).toBe("5936113633719656000");
+  });
+
   it("ends a step a page left running as stopped", () => {
     let [s] = startStep(newSession("s", 0), "x", [], settings, 1);
     s = settleRunning(s, 5);
@@ -105,8 +114,8 @@ describe("an image session", () => {
   it("puts a step, or a picture's making, back in the draft", () => {
     let s = newSession("s", 0);
     let step: number;
-    [s, step] = startStep(s, "a fox", [], { ...settings, size: "2752x1536", seed: 7, background: "transparent" }, 1);
-    [s] = landOutput(s, step, { ...pic("o1"), seed: 9 }, 1);
+    [s, step] = startStep(s, "a fox", [], { ...settings, size: "2752x1536", seed: "7", background: "transparent" }, 1);
+    [s] = landOutput(s, step, { ...pic("o1"), seed: "9" }, 1);
     s = endStep(s, step, { status: "done" }, 2);
     expect(reuseStep(s, 1, 3).draft).toMatchObject({ prompt: "a fox", size: "2752x1536", seedText: "7", background: "transparent" });
     expect(reusePicture(s, 1, 3).draft).toMatchObject({ prompt: "a fox", seedText: "9", size: "2752x1536" });

@@ -40,7 +40,7 @@ function worked(): ImageSession {
   [s] = addToPool(s, [{ id: "up", width: 800, height: 600, origin: "upload", name: "fox.png" }], 1, true);
   let step: number;
   [s, step] = startStep(s, "a fox in the snow at dusk", [1], settings, 2);
-  [s] = landOutput(s, step, { id: "made", width: 2752, height: 1536, seed: 41 }, 3);
+  [s] = landOutput(s, step, { id: "made", width: 2752, height: 1536, seed: "41" }, 3);
   return endStep(s, step, { status: "done" }, 4);
 }
 

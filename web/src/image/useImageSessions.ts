@@ -26,7 +26,7 @@ import {
   type SessionDraft,
   SESSIONS,
   setDraft,
-  settleRunning,
+  fromStore,
   startStep,
   type StepSettings,
   toggleInput,
@@ -164,7 +164,7 @@ export function useImageSessions(
     void store.listDocs<ImageSession>(SESSIONS).then(
       (stored) => {
         if (!live) return;
-        const settled = stored.map((s) => settleRunning(s, Date.now())).sort(byRecent);
+        const settled = stored.map((s) => fromStore(s, Date.now())).sort(byRecent);
         if (settled.length > 0) {
           list.current = settled;
           setSessions(settled);

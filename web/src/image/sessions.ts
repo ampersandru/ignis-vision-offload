@@ -1,4 +1,5 @@
 import type { ImageBackground } from "../api/images.ts";
+import type { Seed } from "../api/seed.ts";
 import type { ImageId, ImageStore, StoreUsage } from "../store/imageStore.ts";
 import type { Mark, MarkMode } from "../markup/markup.ts";
 import { AUTO_SIZE } from "./studio.ts";
@@ -47,7 +48,7 @@ export type PoolImage = {
   name?: string;
   /** The step that made it. */
   step?: number;
-  seed?: number;
+  seed?: Seed;
   revisedPrompt?: string;
   background?: Exclude<ImageBackground, "auto">;
   /** Laid over its input through the marked area. */
@@ -56,7 +57,7 @@ export type PoolImage = {
 };
 
 /** What a step was sent with besides its prompt and inputs. */
-export type StepSettings = { size: string; count: number; seed: number | null; background: ImageBackground; enhance: boolean };
+export type StepSettings = { size: string; count: number; seed: Seed | null; background: ImageBackground; enhance: boolean };
 
 export type Step = {
   n: number;
@@ -216,9 +217,21 @@ export function endStep(
     ...s.draft,
     prompt: "",
     inputs: [first],
-    ...(s.draft.keepSeed && seed !== undefined ? { seedText: String(seed) } : {}),
+    ...(s.draft.keepSeed && seed !== undefined ? { seedText: seed } : {}),
   };
   return touched({ ...s, steps, draft }, now);
+}
+
+/**
+ * A session as the store had it, made current: a step left running by a page that went away ended there, stopped;
+ * a seed kept as a number (before seeds were digits, already rounded past 2^53) is read as digits.
+ */
+export function fromStore(s: ImageSession, now: number): ImageSession {
+  // As the page showed it: a u64 prints without an exponent.
+  const digits = (seed: unknown) => (typeof seed === "number" ? String(Math.trunc(Math.abs(seed))) : seed);
+  const pool = s.pool.map((p) => (typeof p.seed === "number" ? { ...p, seed: digits(p.seed) as Seed } : p));
+  const steps = s.steps.map((st) => (typeof st.settings.seed === "number" ? { ...st, settings: { ...st.settings, seed: digits(st.settings.seed) as Seed } } : st));
+  return settleRunning({ ...s, pool, steps }, now);
 }
 
 /** A step left running by a page that went away: it ended there, stopped. */
@@ -238,7 +251,7 @@ export function reuseStep(s: ImageSession, stepN: number, now: number): ImageSes
       inputs: step.inputs.filter((n) => pictureOf(s, n)),
       size: step.settings.size,
       count: step.settings.count,
-      seedText: step.settings.seed !== null ? String(step.settings.seed) : "",
+      seedText: step.settings.seed ?? "",
       background: step.settings.background,
     },
     now,
@@ -254,7 +267,7 @@ export function reusePicture(s: ImageSession, n: number, now: number): ImageSess
     s,
     {
       ...(step ? { prompt: step.prompt, size: step.settings.size, background: step.settings.background } : {}),
-      ...(p.seed !== undefined ? { seedText: String(p.seed) } : {}),
+      ...(p.seed !== undefined ? { seedText: p.seed } : {}),
     },
     now,
   );

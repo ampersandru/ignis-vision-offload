@@ -91,8 +91,8 @@ describe("performRun", () => {
     await performRun(params, false, s, nextId, undefined, fetcher);
     expect(calls.map((c) => c.path)).toEqual(["/v1/images/generations"]);
     expect(log.items.map((i) => [i.url, i.seed, i.size, i.revisedPrompt, i.edit])).toEqual([
-      ["data:image/png;base64,AAA", 10, "2048x2048", "a brass lantern", false],
-      ["data:image/png;base64,BBB", 11, "2048x2048", undefined, false],
+      ["data:image/png;base64,AAA", "10", "2048x2048", "a brass lantern", false],
+      ["data:image/png;base64,BBB", "11", "2048x2048", undefined, false],
     ]);
     expect(log.end).toEqual({ notes: ["w"], error: null, reread: false });
   });
@@ -336,7 +336,7 @@ describe("what Generate and Edit do (GitHub #324)", () => {
 });
 
 describe("the gallery's download", () => {
-  const item: GalleryItem = { id: 3, url: "data:image/png;base64,AAA", prompt: "a lantern", size: "1024x1024", seed: 12, edit: false };
+  const item: GalleryItem = { id: 3, url: "data:image/png;base64,AAA", prompt: "a lantern", size: "1024x1024", seed: "12", edit: false };
 
   it("saves a PNG named for the seed and the size, from the picture's data URL", () => {
     const made: { href?: string; download?: string; clicked: boolean }[] = [];
@@ -392,7 +392,10 @@ describe("the form's limits and words", () => {
   });
 
   it("reads a seed: blank is the server's draw, a whole number is itself, anything else is refused", () => {
-    expect([parseSeed(""), parseSeed(" 42 "), parseSeed("-1"), parseSeed("1.5"), parseSeed("x")]).toEqual([null, 42, undefined, undefined, undefined]);
+    expect([parseSeed(""), parseSeed(" 42 "), parseSeed("-1"), parseSeed("1.5"), parseSeed("x")]).toEqual([null, "42", undefined, undefined, undefined]);
+    // The server's seeds are u64: one past 2^53 is a seed too, kept exactly.
+    expect(parseSeed("5936113633719656123")).toBe("5936113633719656123");
+    expect(parseSeed("18446744073709551616")).toBeUndefined();
   });
 
   it("says the phase, the image and the step", () => {
@@ -426,7 +429,7 @@ describe("the request the draft makes", () => {
 
   it("builds the params from the draft: the count held to the server's, the enhancement the server's until touched", () => {
     const draft = { ...EMPTY_DRAFT, prompt: "  a lantern ", count: 40, seedText: "7" };
-    expect(paramsOf(draft, [], DEFAULT_LIMITS)).toEqual({ prompt: "a lantern", n: 10, size: "auto", seed: 7, enhance: false, images: [] });
+    expect(paramsOf(draft, [], DEFAULT_LIMITS)).toEqual({ prompt: "a lantern", n: 10, size: "auto", seed: "7", enhance: false, images: [] });
     expect(paramsOf({ ...draft, enhance: true, background: "opaque" }, [], DEFAULT_LIMITS, "ignis-image-2.1-turbo")).toMatchObject({
       enhance: true,
       background: "opaque",

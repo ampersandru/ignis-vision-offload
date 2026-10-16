@@ -181,6 +181,11 @@ again, so no chat request ever names a model (#305's ping-pong).
     on the prompt; the turn itself, in useConversation, is the owner's to see)
 16. `cargo test` is untouched (no Rust); `npm run typecheck` and the web
     suite pass.
+17. A seed is the server's u64 whole: the page keeps seeds as digits, reads
+    them from the server's JSON and the stream without rounding, sends them
+    back as numbers of any size, and adds an image's index as the server does
+    (wrapping); a session kept with numeric seeds reads them as digits.
+    (seed.test, images.test, studio.test, sessions.test, image.test)
 
 ## As built (2026-10-16, branch `playground-image-studio`)
 
@@ -189,5 +194,9 @@ again, so no chat request ever names a model (#305's ping-pong).
   rendered, laid over, thumbnails). The owner watched the page on :5173; the
   console stayed clean on the Image view and the model picker.
 - The explicit switch band is hidden, not removed.
+- Seeds (2026-10-16, owner's report): a drawn seed such as
+  5936113633719656123 came back as …656000 from `JSON.parse` and the seed field
+  refused it. Seeds are now digits end to end (`web/src/api/seed.ts`); the
+  seeds of pictures made before the fix stay as they were shown, rounded.
 - `fake-indexeddb` joined the web dev dependencies (the IndexedDB contract
   tests); `make build` runs `npm ci` once for it.

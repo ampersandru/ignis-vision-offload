@@ -32,7 +32,12 @@ describe("a make_image call", () => {
     });
     expect(parseImageCall(call({ prompt: "a hat", references: ["user-1", "made-2"], aspect: "16:9", transparent: true, count: 2, seed: 7 }))).toEqual({
       ok: true,
-      task: { callId: "c1", prompt: "a hat", references: ["user-1", "made-2"], aspect: "16:9", transparent: true, count: 2, seed: 7 },
+      task: { callId: "c1", prompt: "a hat", references: ["user-1", "made-2"], aspect: "16:9", transparent: true, count: 2, seed: "7" },
+    });
+    // The model repeats a drawn u64 seed: kept exactly, not rounded by JSON.parse.
+    expect(parseImageCall({ id: "c1", name: IMAGE_TOOL_NAME, arguments: '{"prompt":"a hat","seed":5936113633719656123}' })).toMatchObject({
+      ok: true,
+      task: { seed: "5936113633719656123" },
     });
   });
 
@@ -94,7 +99,7 @@ describe("the pictures and the presets", () => {
       transparent: false,
       count: 1,
       status: "done",
-      made: [{ name: "made-4", url: "data:x", size: "2048x2048", seed: 9 }],
+      made: [{ name: "made-4", url: "data:x", size: "2048x2048", seed: "9" }],
     };
     expect(imageToolResult(run)).toBe("Made made-4: 2048x2048, seed 9.\nThe user sees the pictures in the conversation.");
     expect(imageToolResult({ ...run, status: "failed", error: "the queue is full" })).toContain("failed: the queue is full\nBefore it failed:\nMade made-4");
@@ -149,7 +154,7 @@ describe("a reply's visit to the image model", () => {
     const s = server();
     const { runs, updates } = await run([task({ aspect: "16:9", transparent: true })], s, [{ role: "assistant", imageRuns: [{ ...task(), status: "done", made: [{ name: "made-1", url: "data:x", size: "1x1" }] }] }]);
     expect(runs[0].status).toBe("done");
-    expect(runs[0].made).toEqual([{ name: "made-2", url: "data:image/png;base64,AAA", size: "2752x1536", seed: 41 }]);
+    expect(runs[0].made).toEqual([{ name: "made-2", url: "data:image/png;base64,AAA", size: "2752x1536", seed: "41" }]);
     expect(s.loaded()).toBe("qwen3.8-27b");
     const switches = s.log.filter((l) => l === "POST /v1/models/switch");
     expect(switches).toHaveLength(2);
@@ -267,7 +272,7 @@ describe("the strip", () => {
     expect(working).toContain("Switching to ignis-image-2.1-turbo…");
     expect(working).toContain("a fox");
     const done = renderToStaticMarkup(
-      <ImageStrip runs={[{ ...task({ references: ["user-1"] }), status: "done", made: [{ name: "made-1", url: "data:image/png;base64,AAA", size: "2752x1536", seed: 41 }] }]} />,
+      <ImageStrip runs={[{ ...task({ references: ["user-1"] }), status: "done", made: [{ name: "made-1", url: "data:image/png;base64,AAA", size: "2752x1536", seed: "41" }] }]} />,
     );
     expect(done).toContain('src="data:image/png;base64,AAA"');
     expect(done).toContain("made-1");

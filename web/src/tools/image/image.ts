@@ -2,6 +2,7 @@ import { generateStreaming, type ImageParams, type ImageProgress } from "../../a
 import { readModel } from "../../api/model.ts";
 import type { ToolDefinition } from "../../api/request.ts";
 import type { ToolCall } from "../../api/sse.ts";
+import { nthSeed, parseKeepingSeeds, type Seed, seedFrom } from "../../api/seed.ts";
 import { switchAndWait } from "../../api/switching.ts";
 import { fileFromDataUrl, imageModelRow, limitsOf, progressLine, refusalLine, shapeOf, transparentPrompt } from "../../image/studio.ts";
 import { keepOutside } from "../../markup/markup.ts";
@@ -75,7 +76,7 @@ export type MadePicture = {
   name: string;
   url: string;
   size: string;
-  seed?: number;
+  seed?: Seed;
   revisedPrompt?: string;
   /** Laid over the marked picture it edits, through the marked area. */
   kept?: true;
@@ -98,7 +99,7 @@ export type ImageRun = {
   aspect?: (typeof ASPECTS)[number];
   transparent: boolean;
   count: number;
-  seed?: number;
+  seed?: Seed;
   status: ImageStatus;
   /** What the call is waiting on, in words: the switch, a phase, a step. */
   line?: string;
@@ -120,7 +121,8 @@ export function parseImageCall(call: ToolCall, available: string[] = [IMAGE_TOOL
   if (!isImageTool(call.name) || !available.includes(call.name)) return fail(unknownToolError(call.name, available));
   let args: Record<string, unknown>;
   try {
-    const parsed: unknown = JSON.parse(call.arguments);
+    // A seed past 2^53 written as a number would be rounded by JSON.parse: kept as its digits.
+    const parsed: unknown = parseKeepingSeeds(call.arguments);
     if (typeof parsed !== "object" || parsed === null) return fail("The call's arguments are not an object.");
     args = parsed as Record<string, unknown>;
   } catch {
@@ -135,8 +137,8 @@ export function parseImageCall(call: ToolCall, available: string[] = [IMAGE_TOOL
   if (aspect !== undefined && !ASPECTS.includes(aspect as (typeof ASPECTS)[number])) return fail(`"aspect" is one of ${ASPECTS.join(", ")}.`, prompt);
   const count = args.count === undefined ? 1 : Number(args.count);
   if (!Number.isInteger(count) || count < 1 || count > MAX_COUNT) return fail(`"count" is a whole number from 1 to ${MAX_COUNT}.`, prompt);
-  const seed = args.seed;
-  if (seed !== undefined && !(typeof seed === "number" && Number.isSafeInteger(seed) && seed >= 0)) return fail('"seed" is a whole number.', prompt);
+  const seed = args.seed === undefined ? undefined : seedFrom(args.seed);
+  if (args.seed !== undefined && seed === undefined) return fail('"seed" is a whole number from 0 to 2^64 - 1.', prompt);
   return {
     ok: true,
     task: {
@@ -146,7 +148,7 @@ export function parseImageCall(call: ToolCall, available: string[] = [IMAGE_TOOL
       ...(aspect !== undefined ? { aspect: aspect as (typeof ASPECTS)[number] } : {}),
       transparent: args.transparent === true,
       count,
-      ...(seed !== undefined ? { seed: seed as number } : {}),
+      ...(seed !== undefined ? { seed } : {}),
     },
   };
 }
@@ -336,7 +338,7 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
                 name,
                 url,
                 size: image.size ?? params.size,
-                ...(image.seed !== undefined ? { seed: image.seed + image.index } : {}),
+                ...(image.seed !== undefined ? { seed: nthSeed(image.seed, image.index) } : {}),
                 ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
                 ...(kept ? { kept: true as const } : {}),
               };
