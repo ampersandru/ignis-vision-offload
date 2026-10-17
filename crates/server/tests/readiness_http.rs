@@ -48,7 +48,8 @@ async fn the_api_answers_503_until_the_warm_up_has_run() {
 
     let held = send(&app, Method::GET, "/v1/models").await;
     assert_eq!(held.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(held.headers()[header::RETRY_AFTER], "1");
+    // GitHub #327: before the first warm-up, a few seconds rather than one.
+    assert_eq!(held.headers()[header::RETRY_AFTER], "5");
     assert_eq!(held.headers()["access-control-allow-origin"], "*");
     let body: serde_json::Value =
         serde_json::from_slice(&held.into_body().collect().await.unwrap().to_bytes()).unwrap();
@@ -153,39 +154,51 @@ async fn the_warm_up_is_not_a_request_in_the_metrics_or_the_log() {
     assert_eq!(done, 1, "the warm-up logs no request line");
 }
 
-// ── GET /health (GitHub #327) ────────────────────────────────────────────
+// ── GET /health and GET /ready (GitHub #327) ─────────────────────────────
 
-async fn health(app: &axum::Router) -> (StatusCode, Option<String>, serde_json::Value) {
-    let response = send(app, Method::GET, "/health").await;
+async fn probe(app: &axum::Router, path: &str) -> (StatusCode, Option<String>, serde_json::Value) {
+    let response = send(app, Method::GET, path).await;
     let status = response.status();
     let retry_after = response.headers().get(header::RETRY_AFTER).map(|v| v.to_str().unwrap().to_owned());
     let body = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     (status, retry_after, body)
 }
 
+/// Liveness: the process answers, so it is alive — while the model loads
+/// too, or a probe that restarts what fails it would restart a loading
+/// server in a loop.
 #[tokio::test]
-async fn the_health_probe_answers_503_until_the_first_warm_up_then_200() {
+async fn the_liveness_probe_answers_200_from_the_start() {
     let server = server().with_warm_up();
     let app = server.app();
-    let (status, retry_after, body) = health(&app).await;
+    assert_eq!(probe(&app, "/health").await, (StatusCode::OK, None, serde_json::json!({ "status": "ok" })));
+    server.warm_up().await.expect("the mock warms up");
+    assert_eq!(probe(&app, "/health").await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_readiness_probe_answers_503_until_the_first_warm_up_then_200() {
+    let server = server().with_warm_up();
+    let app = server.app();
+    let (status, retry_after, body) = probe(&app, "/ready").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(retry_after.as_deref(), Some("1"));
+    assert_eq!(retry_after.as_deref(), Some("5"));
     assert_eq!(body["error"]["code"], "server_not_ready");
 
     server.warm_up().await.expect("the mock warms up");
-    let (status, retry_after, body) = health(&app).await;
+    let (status, retry_after, body) = probe(&app, "/ready").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(retry_after, None);
     assert_eq!(body, serde_json::json!({ "status": "ok" }));
 }
 
-/// Once the process has served, the probe stays green while a model is on
+/// Once the process has served, readiness stays green while a model is on
 /// its way: a switch, an idle unload, the load after it, and that load
 /// failing (the next request tries it again). `/v1` answers each of those on
 /// its own (here, a switch is a 503). The one 503 after the warm-up, a
 /// failed switch with nothing left to load, is `model_switch_http.rs`'s.
 #[tokio::test]
-async fn the_health_probe_stays_200_whatever_the_model_does_after_it() {
+async fn the_readiness_probe_stays_200_while_a_model_is_on_its_way() {
     use ignis_server::ModelStatus;
     let server = server();
     let app = server.app();
@@ -194,7 +207,7 @@ async fn the_health_probe_stays_200_whatever_the_model_does_after_it() {
     for model in [switching, failed, ModelStatus::Unloaded, ModelStatus::Loading, ModelStatus::Serving] {
         let name = model.as_str();
         server.status.store(Arc::new(model));
-        let (status, _, body) = health(&app).await;
+        let (status, _, body) = probe(&app, "/ready").await;
         assert_eq!((status, &body), (StatusCode::OK, &serde_json::json!({ "status": "ok" })), "{name}");
     }
     let switching = ModelStatus::Switching { from: "test-model".into(), to: "other".into() };
@@ -202,23 +215,26 @@ async fn the_health_probe_stays_200_whatever_the_model_does_after_it() {
     assert_eq!(send(&app, Method::POST, "/v1/chat/completions").await.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
-/// The probe sits outside `/v1`: a keyed server answers it without the key.
+/// Both probes sit outside `/v1`: a keyed server answers them without the
+/// key.
 #[tokio::test]
-async fn the_health_probe_asks_for_no_key() {
+async fn the_probes_ask_for_no_key() {
     let server = server().with_api_key(ignis_server::config::ApiKey::new("sk-test"));
     let app = server.app();
-    assert_eq!(health(&app).await.0, StatusCode::OK);
+    assert_eq!(probe(&app, "/health").await.0, StatusCode::OK);
+    assert_eq!(probe(&app, "/ready").await.0, StatusCode::OK);
     assert_eq!(send(&app, Method::GET, "/v1/models").await.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// A warm-up that never completed is a process that never served: the probe
-/// stays 503.
+/// A warm-up that never completed is a process that never served: not
+/// ready, though alive.
 #[tokio::test]
-async fn the_health_probe_stays_503_after_a_failed_warm_up() {
+async fn after_a_failed_warm_up_the_server_is_alive_but_not_ready() {
     let loader = MockLoader::new();
     loader.fail_requests("mock-a");
     let server = Server::from_active(loader.model("mock-a")).with_warm_up();
     let app = server.app();
     server.warm_up().await.expect_err("an ended request is not a warm-up");
-    assert_eq!(health(&app).await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(probe(&app, "/ready").await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(probe(&app, "/health").await.0, StatusCode::OK);
 }

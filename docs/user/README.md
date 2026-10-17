@@ -726,24 +726,31 @@ hit the 504 or its client went away.
 **Readiness.** A loaded model is not served the moment it is on the GPU: the
 server first runs one two-token request through the scheduler so the decode
 graphs are captured, and until that is done every `/v1` route answers `503`
-with code `server_not_ready` and `Retry-After: 1` (a preflight and `/v1/docs`
+with code `server_not_ready` and `Retry-After: 5` (a preflight and `/v1/docs`
 still answer). The `ignis.process.ready` log event, with `warm_up_ms`, marks
 the moment it admits requests; `make start` waits for it, since it waits for
 `/v1/models` to answer. The warm-up is one request in the counters, and the
 CPU mock, which has nothing to capture, is ready at once.
 
-**Health probe.** `GET /health` answers `503 server_not_ready` with
-`Retry-After: 1` until that first warm-up has run, then `200
-{"status": "ok"}` while a model serves or is on its way: through a switch,
-an idle unload and the load after it (failed too, since the next request
-tries it again), and a failed switch that is reloading the old model. The
-one exception is a failed switch that could reload nothing, which leaves no
-model serving and none loading until another switch succeeds. That answers
-`503 server_not_ready` with no `Retry-After`, since asking again does not
-help and a switch does. It is a probe for a container runtime or a load
-balancer: it sits outside `/v1`, so it asks for no API key and never counts
-as a use of the model (idle unload does not see it). What the model itself is
-doing is `GET /v1/models`'s `status`.
+**Probes.** Two, both outside `/v1`: neither asks for an API key, and neither
+counts as a use of the model (idle unload does not see them).
+- `GET /health` is **liveness**: `200 {"status": "ok"}` whenever the process
+  answers, including while the model loads. Point a restarting probe here
+  (Kubernetes `livenessProbe`), never at `/ready`: a loading server is
+  alive, and restarting it would restart the load in a loop.
+- `GET /ready` is **readiness**: whether to send it requests. It answers
+  `503 server_not_ready` with `Retry-After: 5` until that first warm-up has
+  run. After that it answers `200 {"status": "ok"}` while a model serves or
+  is on its way: through a switch, an idle unload and the load after it
+  (failed too, since the next request tries it again), and a failed switch
+  that is reloading the old model. The one exception is a failed switch
+  that could reload nothing, which leaves no model serving and none loading
+  until another switch succeeds. There it answers `503 server_not_ready`
+  with no `Retry-After`, since asking again does not help and a switch does.
+  Point a load balancer, or a Kubernetes `readinessProbe` or `startupProbe`,
+  here.
+
+What the model itself is doing is `GET /v1/models`'s `status`.
 
 ### Switching models
 

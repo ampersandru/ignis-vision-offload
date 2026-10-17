@@ -134,9 +134,10 @@ pub fn router(state: Arc<Server>) -> Router {
     // bare 401 it has no way to answer. Always served: the reference is
     // part of the `/v1` surface, not of the opt-in Playground.
     router = router.merge(crate::openapi::router(document));
-    // The liveness probe (GitHub #327), past every `/v1` layer above: no
-    // key, no use counted, none of the gate's per-model answers.
-    router = router.route("/health", axum::routing::get(health));
+    // The liveness and readiness probes (GitHub #327), past every `/v1`
+    // layer above: no key, no use counted, none of the gate's per-model
+    // answers.
+    router = router.route("/health", axum::routing::get(health)).route("/ready", axum::routing::get(ready));
     router
         .layer(middleware::from_fn(cors_headers))
         .layer(TraceLayer::new_for_http().make_span_with(RootSpanMaker))
@@ -318,6 +319,9 @@ async fn require_serving(State(server): State<Arc<Server>>, req: Request, next: 
                 .to_owned()
         }
     };
+    if matches!(*status, ModelStatus::WarmingUp) {
+        return not_warmed_up(message);
+    }
     unavailable(code, message)
 }
 
@@ -329,23 +333,42 @@ fn unavailable(code: &str, message: impl Into<String>) -> Response {
     res
 }
 
-/// `GET /health` (GitHub #327): whether the process can serve.
-/// `503 server_not_ready`, with `Retry-After: 1`, until the first warm-up has
-/// run ([`ModelStatus::WarmingUp`], which nothing returns to); then `200
-/// {"status": "ok"}` through a switch, an idle unload, the load after it,
-/// and a failed switch that is reloading the old model, since a model is on
-/// its way in each. The one exception: a failed switch with nothing serving
-/// and nothing loading (`Failed`, not out of `unloaded`, the switch's slot
-/// free), which only another switch ends, is `503 server_not_ready` with no
-/// `Retry-After`. `GET /v1/models` says what the model is doing. Outside
-/// `/v1`: no key, and a probe is not a use of the model (idle unload never
-/// sees it).
-async fn health(State(server): State<Arc<Server>>) -> Response {
+/// How long a request is told to wait before the first warm-up has run
+/// (GitHub #327): a load and a graph capture take seconds, so asking every
+/// second only adds refusals.
+const WARM_UP_RETRY_AFTER: &str = "5";
+
+/// The `503 server_not_ready` before the first warm-up, with
+/// [`WARM_UP_RETRY_AFTER`]: the `/v1` gate's, a switch's and `/ready`'s.
+fn not_warmed_up(message: impl Into<String>) -> Response {
+    let mut res = error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", "server_not_ready", message);
+    res.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from_static(WARM_UP_RETRY_AFTER));
+    res
+}
+
+/// `GET /health` (GitHub #327), the liveness probe: `200 {"status": "ok"}`
+/// whenever the process answers, while the model loads too. A probe that
+/// restarts what fails it must not restart a server for loading.
+async fn health() -> Response {
+    Json(serde_json::json!({ "status": "ok" })).into_response()
+}
+
+/// `GET /ready` (GitHub #327), the readiness probe: whether to send this
+/// process requests. `503 server_not_ready`, with `Retry-After: 5`, until
+/// the first warm-up has run ([`ModelStatus::WarmingUp`], which nothing
+/// returns to); then `200 {"status": "ok"}` through a switch, an idle
+/// unload, the load after it, and a failed switch that is reloading the old
+/// model, since a model is on its way in each. The one exception: a failed
+/// switch with nothing serving and nothing loading (`Failed`, not out of
+/// `unloaded`, the switch's slot free), which only another switch ends, is
+/// `503 server_not_ready` with no `Retry-After`. `GET /v1/models` says what
+/// the model is doing. Both probes are outside `/v1`: no key, and a probe is
+/// not a use of the model (idle unload never sees it).
+async fn ready(State(server): State<Arc<Server>>) -> Response {
     match &*server.status() {
-        ModelStatus::WarmingUp => unavailable(
-            "server_not_ready",
-            "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly",
-        ),
+        ModelStatus::WarmingUp => {
+            not_warmed_up("the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly")
+        }
         ModelStatus::Failed { reason, from_unloaded: false }
             if !server.switcher.as_ref().is_some_and(|switcher| switcher.running().is_some()) =>
         {
@@ -1968,7 +1991,7 @@ pub(crate) fn switch_refused(refusal: crate::model_switch::SwitchRefusal) -> Res
             "this server was built without a model loader and cannot switch or reload models",
         ),
         crate::model_switch::SwitchRefusal::WarmingUp => {
-            unavailable("server_not_ready", "the loaded model's first traversal has not finished; retry shortly")
+            not_warmed_up("the loaded model's first traversal has not finished; retry shortly")
         }
         // Only the load a request begins and a visit are refused so, and
         // neither refusal is answered: the request goes on without them.
