@@ -96,7 +96,8 @@ async fn a_switch_is_accepted_reported_while_it_runs_and_serves_the_new_model_af
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(refused["error"]["code"], "model_switching", "{refused}");
     assert!(refused["error"]["message"].as_str().unwrap().contains("mock-b"), "{refused}");
-    assert_eq!(headers[header::RETRY_AFTER], "1");
+    // GitHub #327: a switch is a load, which takes seconds.
+    assert_eq!(headers[header::RETRY_AFTER], "5");
     assert_eq!(headers["access-control-allow-origin"], "*");
 
     let (status, _, conflict) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-c"))).await;
@@ -340,7 +341,7 @@ async fn while_a_requests_switch_runs_everything_else_is_refused_and_it_is_held_
         let (status, headers, refused) = send(&app, Method::POST, uri, Some(body)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}: {refused}");
         assert_eq!(refused["error"]["code"], "model_switching", "{uri}: {refused}");
-        assert_eq!(headers[header::RETRY_AFTER], "1");
+        assert_eq!(headers[header::RETRY_AFTER], "5");
     }
     assert!(!trigger.is_finished(), "the triggering request is held until the switch ends");
 

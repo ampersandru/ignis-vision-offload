@@ -255,7 +255,7 @@ async fn a_visit_goes_to_the_visited_model_and_back_with_the_gate_closed_through
     assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("model_switching")), "{refused}");
     let response = app.clone().oneshot(generation(json!({ "prompt": "x", "size": "1024x1024" }))).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    assert_eq!(response.headers()[header::RETRY_AFTER], "5");
     let explicit = ignis_server::model_switch::begin(&server, source("mock-b")).map(|(started, _)| started);
     assert_eq!(explicit, Err(SwitchRefusal::InProgress(SwitchStarted { from: "mock-a".into(), to: IMAGE.into() })));
 
@@ -552,7 +552,7 @@ async fn during_a_visit_other_requests_are_answered_model_switching() {
     let (status, refused) = send_chat(&app).await;
     assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("model_switching")), "{refused}");
     let response = app.clone().oneshot(generation(json!({ "prompt": "another" }))).await.unwrap();
-    assert_eq!((response.status(), response.headers()[header::RETRY_AFTER].to_str().unwrap()), (StatusCode::SERVICE_UNAVAILABLE, "1"));
+    assert_eq!((response.status(), response.headers()[header::RETRY_AFTER].to_str().unwrap()), (StatusCode::SERVICE_UNAVAILABLE, "5"));
     assert!(!enhanced.is_finished());
     back.send(()).unwrap();
     let (status, answer) = enhanced.await.unwrap();

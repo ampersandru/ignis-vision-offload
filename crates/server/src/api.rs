@@ -319,30 +319,20 @@ async fn require_serving(State(server): State<Arc<Server>>, req: Request, next: 
                 .to_owned()
         }
     };
-    if matches!(*status, ModelStatus::WarmingUp) {
-        return not_warmed_up(message);
-    }
     unavailable(code, message)
 }
 
-/// A `503` with `code`, and `Retry-After: 1`: the answer while the API is not
-/// serving ([`require_serving`]).
+/// How long a request is told to wait while a model is on its way — the
+/// first warm-up, a switch, the reload after a failed one (GitHub #327): a
+/// load takes seconds, so asking every second only adds refusals.
+const LOADING_RETRY_AFTER: &str = "5";
+
+/// A `503` with `code`, and `Retry-After` [`LOADING_RETRY_AFTER`]: the
+/// answer while the API is not serving ([`require_serving`]), and a switch's
+/// or `/ready`'s for the same states.
 fn unavailable(code: &str, message: impl Into<String>) -> Response {
     let mut res = error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", code, message);
-    res.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from_static("1"));
-    res
-}
-
-/// How long a request is told to wait before the first warm-up has run
-/// (GitHub #327): a load and a graph capture take seconds, so asking every
-/// second only adds refusals.
-const WARM_UP_RETRY_AFTER: &str = "5";
-
-/// The `503 server_not_ready` before the first warm-up, with
-/// [`WARM_UP_RETRY_AFTER`]: the `/v1` gate's, a switch's and `/ready`'s.
-fn not_warmed_up(message: impl Into<String>) -> Response {
-    let mut res = error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", "server_not_ready", message);
-    res.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from_static(WARM_UP_RETRY_AFTER));
+    res.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from_static(LOADING_RETRY_AFTER));
     res
 }
 
@@ -366,9 +356,10 @@ async fn health() -> Response {
 /// not a use of the model (idle unload never sees it).
 async fn ready(State(server): State<Arc<Server>>) -> Response {
     match &*server.status() {
-        ModelStatus::WarmingUp => {
-            not_warmed_up("the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly")
-        }
+        ModelStatus::WarmingUp => unavailable(
+            "server_not_ready",
+            "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly",
+        ),
         ModelStatus::Failed { reason, from_unloaded: false }
             if !server.switcher.as_ref().is_some_and(|switcher| switcher.running().is_some()) =>
         {
@@ -1991,7 +1982,7 @@ pub(crate) fn switch_refused(refusal: crate::model_switch::SwitchRefusal) -> Res
             "this server was built without a model loader and cannot switch or reload models",
         ),
         crate::model_switch::SwitchRefusal::WarmingUp => {
-            not_warmed_up("the loaded model's first traversal has not finished; retry shortly")
+            unavailable("server_not_ready", "the loaded model's first traversal has not finished; retry shortly")
         }
         // Only the load a request begins and a visit are refused so, and
         // neither refusal is answered: the request goes on without them.
