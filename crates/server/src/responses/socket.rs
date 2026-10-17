@@ -645,6 +645,11 @@ async fn serve(
         driven = drive(&mut events, &mut scheduled, deadline, emit) => Some(driven),
         () = &mut cancel => None,
     };
+    if matches!(driven, Some(Driven::TimedOut)) {
+        // Cancelled for its deadline before the guard is stopped, whose own
+        // cancel would log its consumer letting it go.
+        guard.timed_out();
+    }
     if !matches!(driven, Some(Driven::Ended)) {
         // Cut short: what the loop guard held back still reaches the
         // response (ADR 0052).
@@ -654,7 +659,6 @@ async fn serve(
     match driven {
         Some(Driven::Ended) => guard.completed(),
         Some(Driven::TimedOut) => {
-            guard.timed_out();
             let message = api::request_timeout_message(server.live().request_timeout);
             events.failed("request_timeout", message).into_iter().for_each(emit);
         }

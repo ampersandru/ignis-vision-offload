@@ -592,6 +592,9 @@ fn end_in_flight(
     facts: &UnboundedSender<TelemetryFact>,
 ) {
     for (request, route) in streams.drain() {
+        // Before the `Done`: a caller that ends on it cannot cancel first,
+        // as its consumer letting it go.
+        let _ = facts.send(TelemetryFact::Cancelled(request, CancelCause::Shutdown));
         let _ = route.send(SchedEvent::Done {
             request,
             tokens: 0,
@@ -604,7 +607,6 @@ fn end_in_flight(
             reasoning_redirected_at: None,
         });
         scheduler.cancel(request);
-        let _ = facts.send(TelemetryFact::Cancelled(request, CancelCause::Shutdown));
     }
 }
 

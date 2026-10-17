@@ -865,8 +865,9 @@ async fn an_overdue_request_puts_the_lane_one_hold_from_now() {
 }
 
 /// Request A holds a lane `held_ms`, B comes in at `b_at_ms` and stays; at
-/// each `(now_ms, retry_after)` a refused request is told `retry_after`.
-async fn check_retry_after(held_ms: u64, b_at_ms: u64, expected: &[(u64, &str)]) {
+/// each `(now_ms, retry_after)` of `refusals` a refused request is told
+/// `retry_after`.
+async fn check_retry_after(held_ms: u64, b_at_ms: u64, refusals: &[(u64, &str)]) {
     let clock = ignis_server::telemetry::ManualClock::at(0);
     let scheduler = ConcreteScheduler::with_config(
         SchedulerConfig { model: MODEL.into(), max_in_flight: 2, ..SchedulerConfig::default() },
@@ -897,7 +898,7 @@ async fn check_retry_after(held_ms: u64, b_at_ms: u64, expected: &[(u64, &str)])
     assert_eq!(b.status(), 200);
     in_flight_seen(&engine, 1).await;
 
-    for &(now_ms, expected) in expected {
+    for &(now_ms, expected) in refusals {
         clock.set(now_ms);
         let refused = app.clone().oneshot(streaming("refused")).await.unwrap();
         assert_eq!(refused.status(), 503, "at {now_ms} ms");

@@ -266,13 +266,14 @@ impl Stream for EventSse {
             }
             // First, for the reason `drive` checks it first.
             if !this.stopping && this.deadline.as_mut().poll(cx).is_ready() {
+                // Cancelled now, for its deadline: before a guard is stopped,
+                // whose own cancel would log its consumer letting it go.
+                this.cancel.timed_out();
                 // A guard sends what it held back, then ends the stream.
                 if this.running.stop() {
                     this.stopping = true;
                     continue;
                 }
-                // Left unfinished: cancelled now, for its deadline.
-                this.cancel.timed_out();
                 this.pending.extend(this.events.failed("request_timeout", api::request_timeout_message(this.timeout)));
                 this.ended = true;
                 continue;

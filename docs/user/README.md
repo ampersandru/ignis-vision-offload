@@ -1479,9 +1479,10 @@ Everything goes through one structured log on stdout, in the format
   `done`), with the request id doubling as the OTel trace id
   ([ADR 0012](../adr/0012-request-id-as-trace-id.md)). A cancelled request
   ends with `cancelled` instead of `done`: its `cause` is `timeout` (past
-  `--server-request-timeout`), `consumer` (its client hung up, or a loop-guard
-  rewind replaced it) or `shutdown` (a model switch stopped it), beside how
-  long it ran, whether it had a lane and the tokens it generated.
+  `--server-request-timeout`), `consumer` (its client hung up, its queued
+  response was cancelled, or a loop-guard rewind replaced it) or `shutdown`
+  (a model switch stopped it), beside how long it ran, whether it had a lane
+  and the tokens it generated.
 - The scheduler counters are the DEBUG event `ignis.scheduler.interval`, emitted
   whenever `waiting`, `running` or `kv_evictions` change
   ([ADR 0025](../adr/0025-scheduler-interval-as-a-log-event.md)):

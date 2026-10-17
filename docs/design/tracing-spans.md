@@ -22,7 +22,8 @@ ignis.http.request                 (crates/server/src/api.rs, tower-http TraceLa
   ├── ignis.completion              (concrete.rs, mark_done)
   └── ignis.telemetry.emit          (server/src/telemetry.rs, emit_request —
                                       backs the `ignis.request.admitted` /
-                                      `ttft` / `done` events, GitHub #79)
+                                      `ttft` / `done` events, GitHub #79,
+                                      and `cancelled`, GitHub #327)
 ```
 
 Every span above carries a `request_id` field (`u64`, `ignis_core::RequestId`

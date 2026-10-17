@@ -180,9 +180,10 @@ pub async fn rewrite(server: &Server, prompt: &str, images: &[RgbaImage], seed: 
         .map_err(|refused| format!("{enhancer} did not take the rewrite: {refused:?}"))?;
     // A rewrite whose request goes away mid-way is cancelled on the engine.
     let mut cancel = crate::api::CancelOnDrop::new(engine.clone(), request);
-    let completion = crate::engine::collect_completion(&mut events, limits.request_timeout)
-        .await
-        .map_err(|_| format!("{enhancer} did not finish the rewrite within server.request_timeout"))?;
+    let completion = crate::engine::collect_completion(&mut events, limits.request_timeout).await.map_err(|_| {
+        cancel.timed_out();
+        format!("{enhancer} did not finish the rewrite within server.request_timeout")
+    })?;
     cancel.completed();
     if completion.reason == FinishReason::Error {
         return Err(format!("{enhancer}'s engine failed the rewrite"));

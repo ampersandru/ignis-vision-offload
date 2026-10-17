@@ -2268,7 +2268,9 @@ async fn chat_completions(
         .with_rewound(rewound))
         .into_response();
     }
-    let timed_out = || {
+    // Cancelled for its deadline (GitHub #327), then answered 504.
+    let timed_out = |cancel: &mut CancelOnDrop| {
+        cancel.timed_out();
         error_response(
             StatusCode::GATEWAY_TIMEOUT,
             "request_timeout",
@@ -2306,10 +2308,7 @@ async fn chat_completions(
                 let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens).with_rewound(&rewound);
                 completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage)
             }
-            Err(_) => {
-                cancel.timed_out();
-                timed_out()
-            }
+            Err(_) => timed_out(&mut cancel),
         };
     }
     // Non-streaming: collect the request's tokens to its completion (a
@@ -2338,10 +2337,7 @@ async fn chat_completions(
                 usage,
             )
         }
-        Err(_) => {
-            cancel.timed_out();
-            timed_out()
-        }
+        Err(_) => timed_out(&mut cancel),
     }
 }
 

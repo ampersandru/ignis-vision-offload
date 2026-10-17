@@ -3741,10 +3741,13 @@ async fn ask(
                             "the engine finished this `locate` without the heads' rows over the state: the keys were not where an armed layer's attention materialized them, or the prefill itself failed".to_owned(),
                         ))
                     }
-                    Err(_) => Err(failed(
-                        "not_completed",
-                        "the engine did not answer this question in time".to_owned(),
-                    )),
+                    Err(_) => {
+                        guard.timed_out();
+                        Err(failed(
+                            "not_completed",
+                            "the engine did not answer this question in time".to_owned(),
+                        ))
+                    }
                 },
             ));
         }
@@ -3775,10 +3778,13 @@ async fn ask(
                         "the engine finished this question without the heads' attention over the image: the keys were not where an armed layer's attention materialized them, or the prefill itself failed".to_owned(),
                     )
                 }
-                Err(_) => failed(
-                    "not_completed",
-                    "the engine did not answer this question in time".to_owned(),
-                ),
+                Err(_) => {
+                    guard.timed_out();
+                    failed(
+                        "not_completed",
+                        "the engine did not answer this question in time".to_owned(),
+                    )
+                }
             },
         ));
     }
@@ -3800,10 +3806,13 @@ async fn ask(
                     }
                     constrained_answer_for(question, &drawn, pixels)
                 }
-                Err(_) => failed(
-                    "not_completed",
-                    "the engine did not answer this question in time".to_owned(),
-                ),
+                Err(_) => {
+                    guard.timed_out();
+                    failed(
+                        "not_completed",
+                        "the engine did not answer this question in time".to_owned(),
+                    )
+                }
             },
         ));
     }
@@ -3821,10 +3830,13 @@ async fn ask(
                 }
                 answer_for(question, &readout)
             }
-            Err(_) => failed(
-                "not_completed",
-                "the engine did not answer this question in time".to_owned(),
-            ),
+            Err(_) => {
+                guard.timed_out();
+                failed(
+                    "not_completed",
+                    "the engine did not answer this question in time".to_owned(),
+                )
+            }
         },
     ))
 }
