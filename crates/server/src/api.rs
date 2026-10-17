@@ -1458,12 +1458,19 @@ pub(crate) fn submit_error(server: &Server, err: SubmitError) -> Response {
             "request_too_large",
             "request exceeds the engine's KV pool (prompt + max_tokens exceeds the pool)",
         ),
-        SubmitError::Full => error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "engine_full",
-            "engine_full",
-            "the engine cannot admit the request right now (all lanes in use); retry",
-        ),
+        SubmitError::Full => {
+            // GitHub #327: the refusal says when to ask again, as the gate's
+            // 503s do. HTTP never queues (only the Responses WebSocket mode
+            // does, #282): the client's retry is the admission.
+            let mut res = error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "engine_full",
+                "engine_full",
+                "the engine cannot admit the request right now (all lanes in use); retry",
+            );
+            res.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from_static("1"));
+            res
+        }
     }
 }
 

@@ -731,6 +731,74 @@ async fn an_abandoned_completion_with_a_stop_sequence_releases_its_lane() {
     check_an_abandoned_completion_releases_its_lane(Abandon::Disconnect, Some("zzz")).await;
 }
 
+/// The mock's scheduler with no room: every submission is refused `Full`,
+/// as one with every lane in use is — without holding a lane, so the model
+/// thread stays free to answer.
+struct NoRoom(ConcreteScheduler);
+
+impl ignis_core::Scheduler for NoRoom {
+    fn submit(&mut self, _: ignis_core::RequestInput, _: ignis_core::RequestClass) -> Result<RequestId, ignis_core::SubmitError> {
+        Err(ignis_core::SubmitError::Full)
+    }
+    fn cancel(&mut self, request: RequestId) -> bool {
+        self.0.cancel(request)
+    }
+    fn advance(&mut self) -> Vec<ignis_core::SchedEvent> {
+        self.0.advance()
+    }
+    fn is_idle(&self) -> bool {
+        self.0.is_idle()
+    }
+    fn model_id(&self) -> &str {
+        self.0.model_id()
+    }
+    fn max_sequence_tokens(&self) -> u32 {
+        self.0.max_sequence_tokens()
+    }
+    fn mode(&self) -> ignis_core::EngineMode {
+        self.0.mode()
+    }
+    fn occupancy(&self) -> ignis_core::Occupancy {
+        self.0.occupancy()
+    }
+}
+
+/// GitHub #327: with every lane in use, HTTP refuses at once (only the
+/// Responses WebSocket mode queues) and says when to ask again — on chat
+/// completions and on `/v1/responses` alike.
+#[tokio::test]
+async fn a_full_engine_answers_503_engine_full_with_retry_after() {
+    let scheduler = ConcreteScheduler::with_config(
+        SchedulerConfig { model: MODEL.into(), ..SchedulerConfig::default() },
+        Arc::new(MockCompute::new()),
+    );
+    let server = Server::new(Engine::new(Box::new(NoRoom(scheduler))), Box::new(SimpleTemplateProvider)).with_seedless_seed(0);
+    let app = server.app();
+    let refused = [
+        ("/v1/chat/completions", serde_json::json!({ "model": MODEL, "messages": [{ "role": "user", "content": "hi" }], "max_tokens": 1 })),
+        ("/v1/chat/completions", serde_json::json!({ "model": MODEL, "messages": [{ "role": "user", "content": "hi" }], "max_tokens": 1, "stream": true })),
+        ("/v1/responses", serde_json::json!({ "model": MODEL, "input": "hi", "max_output_tokens": 1 })),
+    ];
+    for (path, body) in refused {
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 503, "{path} {body}");
+        assert_eq!(response.headers()[axum::http::header::RETRY_AFTER], "1", "{path} {body}");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            (&error["error"]["type"], &error["error"]["code"]),
+            (&serde_json::json!("engine_full"), &serde_json::json!("engine_full")),
+            "{path} {body}"
+        );
+    }
+}
+
 // ── POST /v1/responses ────────────────────────────────────────────────────
 
 #[tokio::test]
