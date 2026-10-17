@@ -331,8 +331,16 @@ ignis-server config patch --model-max-context 131072   # change the file in plac
 
 **Profiles.** `--profile <name>` / `IGNIS_PROFILE` / the file's `profile:`
 names a bundle of hardware-shaped defaults, below the file and above the
-built-in defaults. `rtx5090` (the built-in default) restates today's numbers;
-a file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
+built-in defaults. Two are built in:
+- `rtx5090` (the default) holds numbers measured on that card.
+- `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
+  Server Edition, 96 GB each). Both models get 1,048,576 tokens of context
+  (`yarn:4`), and Flash-Next gets 8 decode lanes. Everything else is as on
+  the 5090, except that the 27B's VRAM headroom stays at its default. These
+  numbers are **derived, not yet measured** on the card: start it with
+  `--profile rtxpro6000`, and expect them to change once they are.
+
+A file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
 card.
 
 **At runtime.** `GET /v1/config` shows the running configuration (fields
@@ -384,7 +392,7 @@ change does not reach and a `null` removes.
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is. `POST /v1/models/switch` is not affected. |
 | `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
 | `--config <path>` | `IGNIS_CONFIG` | discovered | The config file ([above](#configuration)). |
-| `--profile <name>` | `IGNIS_PROFILE` | `rtx5090` | The hardware profile ([above](#configuration)). |
+| `--profile <name>` | `IGNIS_PROFILE` | `rtx5090` | The hardware profile ([above](#configuration)): `rtx5090`, `rtxpro6000`, one a config file defines, or `none`. |
 | `help` / `-h`, `--help` | — | — | Print the usage and the field list and exit; `help --fields` prints every field in full. |
 | `version` / `-V`, `--version` | — | — | Print the version and exit. |
 

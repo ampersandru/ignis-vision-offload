@@ -40,10 +40,22 @@ pub const NONE_PROFILE: &str = "none";
 /// `model.rope_scaling yarn:4` to reach past the checkpoint's trained
 /// 262,144-position envelope. `vram.headroom_bytes`'s 1536 MiB hardcoded
 /// default (finding 2026-10-09-vram-headroom-wddm-paging) still holds for
-/// Flash-Next, which never needed to trade it down. No other card ships a
-/// profile yet: its numbers have to be measured on it, the way these were,
-/// and a guessed one would be worse than none. A config file's `profiles:`
-/// defines one for any other card.
+/// Flash-Next, which never needed to trade it down.
+///
+/// `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
+/// Server Edition: 96 GB each, sm_120, the 5090's architecture). It is
+/// derived, not measured (2026-10-17, at the owner's request ahead of a card
+/// to measure on). Its numbers are the 5090's wherever three times the memory
+/// changes nothing, and the most the models take where it does. Both
+/// families run at 1,048,576 tokens of context, `yarn:4` over the 262,144
+/// trained positions and the 27B's whole hq-e8-2b attention envelope. The
+/// 27B leaves its headroom at the hardcoded default, since nothing has to be
+/// traded for vision any more. Flash-Next runs 8 decode lanes, the most it
+/// takes: on 96 GB its experts stay nearly all resident, so a lane costs its
+/// state and its share of the KV pool. The VRAM plan sizes the rest, the
+/// KV pool among it. Measured on the card, these numbers are to be replaced
+/// by what the measurement finds, as the 5090's were. No other card ships a
+/// profile; a config file's `profiles:` defines one for any other card.
 const BUILT_IN: &str = r#"{
     "rtx5090": {
         "vram": {
@@ -59,6 +71,18 @@ const BUILT_IN: &str = r#"{
         "spec": {
             "qwen38": { "backend": "dflash2", "draft_tokens": 7 },
             "decode_lanes": 3
+        }
+    },
+    "rtxpro6000": {
+        "model": {
+            "rope_scaling": "yarn:4",
+            "qwen38": { "max_context": 1048576 },
+            "qwen38flashnext": { "max_context": 1048576 }
+        },
+        "vision": { "enabled": true },
+        "spec": {
+            "qwen38": { "backend": "dflash2", "draft_tokens": 7 },
+            "decode_lanes": 8
         }
     }
 }"#;
@@ -121,6 +145,40 @@ mod tests {
 
         let lanes = field("spec", "decode_lanes").unwrap();
         assert_eq!(rtx5090.get(lanes, None).unwrap().raw, "3", "Flash-Next-only; the 27B passes it over");
+    }
+
+    /// The RTX PRO 6000 Blackwell series (Workstation, Max-Q, Server Edition:
+    /// 96 GB each, sm_120), derived and not yet measured on one (2026-10-17).
+    #[test]
+    fn the_rtxpro6000_profile_gives_both_models_their_whole_context_and_flash_next_every_lane() {
+        use ignis_core::compute::ModelFamily;
+
+        let profiles = built_in();
+        let pro = &profiles["rtxpro6000"];
+        let max_context = field("model", "max_context").unwrap();
+        // yarn:4 over the checkpoints' 262,144 trained positions: the most
+        // either model can be asked for.
+        assert_eq!(pro.get(max_context, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "1048576");
+        assert_eq!(pro.get(max_context, Some(ModelFamily::FlashNext)).unwrap().raw, "1048576");
+        let rope = field("model", "rope_scaling").unwrap();
+        assert_eq!(pro.get(rope, None).unwrap().raw, "yarn:4");
+
+        let lanes = field("spec", "decode_lanes").unwrap();
+        assert_eq!(pro.get(lanes, None).unwrap().raw, "8", "every lane: on 96 GB a lane costs its state");
+
+        // The 5090's choices the card's memory does not change.
+        let vision = field("vision", "enabled").unwrap();
+        assert_eq!(pro.get(vision, None).unwrap().raw, "true");
+        let backend = field("spec", "backend").unwrap();
+        assert_eq!(pro.get(backend, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "dflash2");
+        assert!(pro.get(backend, Some(ModelFamily::FlashNext)).is_none(), "Flash-Next keeps speculation off");
+        let draft = field("spec", "draft_tokens").unwrap();
+        assert_eq!(pro.get(draft, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "7");
+
+        // No headroom traded down: the hardcoded default, for both families.
+        let headroom = field("vram", "headroom_bytes").unwrap();
+        assert!(pro.get(headroom, None).is_none());
+        assert!(pro.get(headroom, Some(ModelFamily::Qwen38_27b)).is_none());
     }
 
     #[test]
