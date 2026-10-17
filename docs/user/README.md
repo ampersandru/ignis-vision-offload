@@ -732,8 +732,9 @@ admission. The header is an estimate of when a lane frees: the oldest request
 in flight plus how long requests have been holding a lane (a running average
 of the ones that finished, were cancelled or stopped, each moving it 1/8 of
 the way). It is whole seconds rounded up, clamped to 1..59, plus a one-second
-margin, so 2 to 60 (60 being the most the OpenAI SDK honours). It is `1` before
-any request has finished, or once the expected time has passed. Only the
+margin, so 2 to 60 (60 being the most the OpenAI SDK honours). Once that time
+has passed the oldest request is overdue, and a lane is expected one average
+hold after the refusal instead. It is `1` before any request has finished. Only the
 Responses API's [WebSocket mode](#the-responses-api) queues a request instead.
 A request that stops being waited for gives its lane back at once, whether it
 hit the 504 or its client went away.

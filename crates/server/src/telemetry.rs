@@ -268,8 +268,9 @@ pub struct Telemetry {
     /// flight, since a lane's place in `max_in_flight` frees only when its
     /// request leaves. `None` until one has left. A loop-guard rewind cancels
     /// a request and submits its continuation (ADR 0052), which this sees as
-    /// two shorter stays: the estimate then comes early, never late, which
-    /// costs a client one more refusal at most.
+    /// two shorter stays: the estimate then comes early, which costs a client
+    /// one more refusal at most. Past the estimate a lane is expected one
+    /// hold from the refusal, so it comes late by at most one hold.
     lane_held_ms: Option<u64>,
 }
 
@@ -339,6 +340,13 @@ impl Telemetry {
         let held = self.lane_held_ms?;
         let oldest = self.requests.values().map(|rt| rt.submitted_ms).min()?;
         Some(oldest + held)
+    }
+
+    /// How long requests have held a lane (GitHub #327): once the oldest
+    /// request in flight is past [`Telemetry::lane_free_at_ms`], a lane is
+    /// expected this long after a refusal asks. `None` until one has left.
+    pub fn lane_held_ms(&self) -> Option<u64> {
+        self.lane_held_ms
     }
 
     /// A request held its lane `ms` before it left: the expected hold moves

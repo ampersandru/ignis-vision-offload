@@ -175,12 +175,17 @@ pub struct Engine {
 
 /// When a lane is expected to free, on the telemetry clock (GitHub #327):
 /// published by the telemetry consumer whenever a request comes or goes
-/// ([`Telemetry::lane_free_at_ms`]), read by a refusal. Off the model
-/// thread on both sides: an estimate, never a cost to a step.
+/// ([`Telemetry::lane_free_at_ms`], [`Telemetry::lane_held_ms`]), read by a
+/// refusal. Off the model thread on both sides: an estimate, never a cost to
+/// a step. The two values are stored one after the other, so a refusal may
+/// read one of them a publication behind: for an estimate, harmless.
 #[derive(Clone)]
 struct LaneFree {
     /// Milliseconds on `clock`; 0 for no estimate.
     at_ms: Arc<AtomicU64>,
+    /// How long requests have held a lane, in milliseconds: how far past a
+    /// refusal a lane is expected once `at_ms` has passed.
+    held_ms: Arc<AtomicU64>,
     clock: Arc<dyn TelemetryClock>,
 }
 
@@ -194,19 +199,21 @@ const RETRY_AFTER_MARGIN_SECS: u64 = 1;
 
 impl LaneFree {
     fn new(clock: Arc<dyn TelemetryClock>) -> Self {
-        Self { at_ms: Arc::new(AtomicU64::new(0)), clock }
+        Self { at_ms: Arc::new(AtomicU64::new(0)), held_ms: Arc::new(AtomicU64::new(0)), clock }
     }
 
-    /// The seconds to wait: to the expected time, whole seconds rounded up
-    /// and clamped to `1..=RETRY_AFTER_MAX_SECS`, plus the margin; `1`, with
-    /// no margin, when there is no estimate or its time has come.
+    /// The seconds to wait: to the expected time, or one hold from now once
+    /// that time has passed (the oldest request is overdue), whole seconds
+    /// rounded up and clamped to `1..=RETRY_AFTER_MAX_SECS`, plus the margin;
+    /// `1`, with no margin, when there is no estimate.
     fn retry_after_secs(&self) -> u64 {
         let at = self.at_ms.load(Ordering::Acquire);
-        let now = self.clock.now_ms();
-        if at <= now {
+        if at == 0 {
             return 1;
         }
-        (at - now).div_ceil(1000).clamp(1, RETRY_AFTER_MAX_SECS) + RETRY_AFTER_MARGIN_SECS
+        let now = self.clock.now_ms();
+        let wait = if at > now { at - now } else { self.held_ms.load(Ordering::Acquire) };
+        wait.div_ceil(1000).clamp(1, RETRY_AFTER_MAX_SECS) + RETRY_AFTER_MARGIN_SECS
     }
 }
 
@@ -279,7 +286,7 @@ impl Engine {
         // does all counter math / event emission off the model thread.
         let lane_free = LaneFree::new(Arc::clone(&clock));
         let telemetry = Telemetry::new(clock);
-        tokio::spawn(telemetry_task(telemetry, facts_rx, Arc::clone(&counters), Arc::clone(&lane_free.at_ms)));
+        tokio::spawn(telemetry_task(telemetry, facts_rx, Arc::clone(&counters), lane_free.clone()));
 
         (
             Self {
@@ -721,7 +728,7 @@ async fn telemetry_task(
     mut telemetry: Telemetry,
     mut facts: UnboundedReceiver<TelemetryFact>,
     counters: Arc<ArcSwap<IntervalCounters>>,
-    lane_free_at: Arc<AtomicU64>,
+    lane_free: LaneFree,
 ) {
     // GitHub #129: the requests the server made for itself, until their `Done`.
     let mut internal: std::collections::HashSet<RequestId> = std::collections::HashSet::new();
@@ -843,7 +850,8 @@ async fn telemetry_task(
         }
         if moves_in_flight {
             // Before the counters: whoever sees them moved sees this too.
-            lane_free_at.store(telemetry.lane_free_at_ms().unwrap_or(0), Ordering::Release);
+            lane_free.held_ms.store(telemetry.lane_held_ms().unwrap_or(0), Ordering::Release);
+            lane_free.at_ms.store(telemetry.lane_free_at_ms().unwrap_or(0), Ordering::Release);
             counters.store(Arc::new(telemetry.counters()));
         }
     }
@@ -1657,7 +1665,7 @@ mod tests {
             Telemetry::new(Arc::new(crate::telemetry::FixedClock::new(0))),
             consumer_rx,
             Arc::clone(&counters),
-            Arc::clone(&lane_free.at_ms),
+            lane_free.clone(),
         ));
         let engine = Engine {
             model_id: "test-model".into(),
@@ -1736,7 +1744,7 @@ mod tests {
             Telemetry::new(clock),
             consumer_rx,
             Arc::clone(&counters),
-            Arc::clone(&lane_free.at_ms),
+            lane_free.clone(),
         ));
         let engine = Engine {
             model_id: "test-model".into(),

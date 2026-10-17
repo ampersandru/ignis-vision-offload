@@ -846,12 +846,27 @@ async fn in_flight_seen(engine: &Engine, n: u32) {
 
 /// GitHub #327: `Retry-After` is when a lane is expected to free — the
 /// oldest request in flight plus how long requests have held a lane — in
-/// whole seconds, clamped to 1..=59, plus a one-second margin; `1` when
-/// that time has come already. Request A holds a lane 200 s (then is
-/// cancelled, its slot kept: nothing runs), B is in since 210 s, so a lane
-/// is expected free at 410 s.
+/// whole seconds, clamped to 1..=59, plus a one-second margin. Request A
+/// holds a lane 200 s (then is cancelled, its slot kept: nothing runs), B is
+/// in since 210 s, so a lane is expected free at 410 s; past it, B is
+/// overdue and a lane is expected one more hold from now (200 s, clamped).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_engine_says_when_a_lane_is_expected_free() {
+    check_retry_after(200_000, 210_000, &[(211_000, "60"), (405_500, "6"), (409_999, "2"), (410_000, "60"), (500_000, "60")]).await;
+}
+
+/// A request in flight longer than requests have held a lane is overdue:
+/// the lane is expected one hold from now, not now (the 5090's smoke run of
+/// 2026-10-17 said `1` to a stream with 6.5 s still to go). A holds 4 s, B
+/// is in since 10 s: free at 14 s, then 4 s from whenever a refusal asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overdue_request_puts_the_lane_one_hold_from_now() {
+    check_retry_after(4_000, 10_000, &[(13_500, "2"), (14_000, "5"), (60_000, "5")]).await;
+}
+
+/// Request A holds a lane `held_ms`, B comes in at `b_at_ms` and stays; at
+/// each `(now_ms, retry_after)` a refused request is told `retry_after`.
+async fn check_retry_after(held_ms: u64, b_at_ms: u64, expected: &[(u64, &str)]) {
     let clock = ignis_server::telemetry::ManualClock::at(0);
     let scheduler = ConcreteScheduler::with_config(
         SchedulerConfig { model: MODEL.into(), max_in_flight: 2, ..SchedulerConfig::default() },
@@ -874,15 +889,15 @@ async fn a_full_engine_says_when_a_lane_is_expected_free() {
     let a = app.clone().oneshot(streaming("a")).await.unwrap();
     assert_eq!(a.status(), 200);
     in_flight_seen(&engine, 1).await;
-    clock.set(200_000);
+    clock.set(held_ms);
     drop(a);
     in_flight_seen(&engine, 0).await;
-    clock.set(210_000);
+    clock.set(b_at_ms);
     let b = app.clone().oneshot(streaming("b")).await.unwrap();
     assert_eq!(b.status(), 200);
     in_flight_seen(&engine, 1).await;
 
-    for (now_ms, expected) in [(211_000, "60"), (405_500, "6"), (409_999, "2"), (410_000, "1"), (500_000, "1")] {
+    for &(now_ms, expected) in expected {
         clock.set(now_ms);
         let refused = app.clone().oneshot(streaming("refused")).await.unwrap();
         assert_eq!(refused.status(), 503, "at {now_ms} ms");
