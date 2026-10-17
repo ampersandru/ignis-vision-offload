@@ -849,16 +849,18 @@ async fn in_flight_seen(engine: &Engine, n: u32) {
 /// whole seconds, clamped to 1..=59, plus a one-second margin. Request A
 /// holds a lane 200 s (then is cancelled, its slot kept: nothing runs), B is
 /// in since 210 s, so a lane is expected free at 410 s; past it, B is
-/// overdue and a lane is expected one more hold from now (200 s, clamped).
+/// overdue and a lane is expected one more hold from now, but at most 15 s
+/// (the 200 s hold already proved wrong for B).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_engine_says_when_a_lane_is_expected_free() {
-    check_retry_after(200_000, 210_000, &[(211_000, "60"), (405_500, "6"), (409_999, "2"), (410_000, "60"), (500_000, "60")]).await;
+    check_retry_after(200_000, 210_000, &[(211_000, "60"), (405_500, "6"), (409_999, "2"), (410_000, "16"), (500_000, "16")]).await;
 }
 
 /// A request in flight longer than requests have held a lane is overdue:
 /// the lane is expected one hold from now, not now (the 5090's smoke run of
 /// 2026-10-17 said `1` to a stream with 6.5 s still to go). A holds 4 s, B
-/// is in since 10 s: free at 14 s, then 4 s from whenever a refusal asks.
+/// is in since 10 s: free at 14 s, then 4 s from whenever a refusal asks,
+/// a hold under the 15 s an overdue estimate is capped at.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_overdue_request_puts_the_lane_one_hold_from_now() {
     check_retry_after(4_000, 10_000, &[(13_500, "2"), (14_000, "5"), (60_000, "5")]).await;

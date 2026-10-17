@@ -298,7 +298,7 @@ pub struct Telemetry {
     /// a request and submits its continuation (ADR 0052), which this sees as
     /// two shorter stays: the estimate then comes early, which costs a client
     /// one more refusal at most. Past the estimate a lane is expected one
-    /// hold from the refusal, so it comes late by at most one hold.
+    /// hold from the refusal, at most 15 s, so it comes late by at most that.
     lane_held_ms: Option<u64>,
 }
 

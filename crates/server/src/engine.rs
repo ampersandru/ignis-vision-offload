@@ -193,6 +193,11 @@ struct LaneFree {
 /// 60, the most the OpenAI SDK honours (past it, it backs off on its own).
 const RETRY_AFTER_MAX_SECS: u64 = 59;
 
+/// The longest wait, before the margin, once the oldest request is overdue:
+/// the average hold has already proved wrong for it, so a client polls
+/// sooner rather than leave a freed lane idle for up to a whole hold.
+const RETRY_AFTER_OVERDUE_MAX_SECS: u64 = 15;
+
 /// What an estimate's `Retry-After` adds past its clamp, so the retry lands
 /// just after the lane frees rather than just before.
 const RETRY_AFTER_MARGIN_SECS: u64 = 1;
@@ -202,18 +207,23 @@ impl LaneFree {
         Self { at_ms: Arc::new(AtomicU64::new(0)), held_ms: Arc::new(AtomicU64::new(0)), clock }
     }
 
-    /// The seconds to wait: to the expected time, or one hold from now once
-    /// that time has passed (the oldest request is overdue), whole seconds
-    /// rounded up and clamped to `1..=RETRY_AFTER_MAX_SECS`, plus the margin;
-    /// `1`, with no margin, when there is no estimate.
+    /// The seconds to wait: to the expected time, clamped to
+    /// `1..=RETRY_AFTER_MAX_SECS`, or one hold from now once that time has
+    /// passed (the oldest request is overdue), clamped to
+    /// `1..=RETRY_AFTER_OVERDUE_MAX_SECS`; whole seconds rounded up, plus the
+    /// margin. `1`, with no margin, when there is no estimate.
     fn retry_after_secs(&self) -> u64 {
         let at = self.at_ms.load(Ordering::Acquire);
         if at == 0 {
             return 1;
         }
         let now = self.clock.now_ms();
-        let wait = if at > now { at - now } else { self.held_ms.load(Ordering::Acquire) };
-        wait.div_ceil(1000).clamp(1, RETRY_AFTER_MAX_SECS) + RETRY_AFTER_MARGIN_SECS
+        let (wait, max) = if at > now {
+            (at - now, RETRY_AFTER_MAX_SECS)
+        } else {
+            (self.held_ms.load(Ordering::Acquire), RETRY_AFTER_OVERDUE_MAX_SECS)
+        };
+        wait.div_ceil(1000).clamp(1, max) + RETRY_AFTER_MARGIN_SECS
     }
 }
 

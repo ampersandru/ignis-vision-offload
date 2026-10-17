@@ -734,7 +734,9 @@ of the ones that finished, were cancelled or stopped, each moving it 1/8 of
 the way). It is whole seconds rounded up, clamped to 1..59, plus a one-second
 margin, so 2 to 60 (60 being the most the OpenAI SDK honours). Once that time
 has passed the oldest request is overdue, and a lane is expected one average
-hold after the refusal instead. It is `1` before any request has finished. Only the
+hold after the refusal instead, at most 15 s (so 2 to 16): the average has
+already proved wrong for that request, and a client that polls sooner leaves a
+freed lane idle for less. It is `1` before any request has finished. Only the
 Responses API's [WebSocket mode](#the-responses-api) queues a request instead.
 A request that stops being waited for gives its lane back at once, whether it
 hit the 504 or its client went away.
