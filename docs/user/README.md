@@ -335,8 +335,9 @@ built-in defaults. Two are built in:
 - `rtx5090` (the default) holds numbers measured on that card.
 - `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
   Server Edition, 96 GB each). Both models get 1,048,576 tokens of context
-  (`yarn:4`), and Flash-Next gets 8 decode lanes. Everything else is as on
-  the 5090, except that the 27B's VRAM headroom stays at its default. These
+  (`yarn:4`), and Flash-Next gets 8 decode lanes and MTP speculation with 3
+  draft tokens ([below](#flash-next-speculation-mtp)). Everything else is as
+  on the 5090, except that the 27B's VRAM headroom stays at its default. These
   numbers are **derived, not yet measured** on the card: start it with
   `--profile rtxpro6000`, and expect them to change once they are.
 
@@ -434,7 +435,8 @@ change does not reach and a `null` removes.
 
 Qwen3.8-Flash-Next can draft with its own multi-token-prediction head
 (`--spec-backend mtp`, `make MODEL=flash-next SPEC=mtp`). It is **off by default**, and
-on a 5090 that is the better setting for most uses. Before turning it on:
+on a 5090 that is the better setting for most uses; the `rtxpro6000` profile
+turns it on (below). Before turning it on:
 
 - **It needs its companion container** beside the artifact
   (`qwen3_8_flash_next_mtp_3p0-v2.ninfer`, ~1 GB). `--spec-backend mtp` without it
@@ -459,7 +461,12 @@ on a 5090 that is the better setting for most uses. Before turning it on:
   LANES=1 SPEC=mtp`), which also gives the expert cache the ~1 GiB the shared
   pool holds beyond one lane's context. **Leave it off** when several agents decode together.
 - A card that holds every expert in VRAM (96 GB) copies none over PCIe,
-  which is where MTP should pay most. It is not measured there yet.
+  which is where MTP should pay most. The `rtxpro6000` profile turns it on
+  there with 3 draft tokens and the whole row budget: a verify round carries
+  at most 8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two active
+  lanes, 1 at three or four, and none from five on. It is not measured there
+  yet. A file's `spec: { qwen38flashnext: { backend: off } }` turns it off
+  alone; `--spec-backend off` turns off the 27B's DFlash2 with it.
 
 ### VRAM budget and retained state
 

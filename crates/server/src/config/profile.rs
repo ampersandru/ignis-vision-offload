@@ -52,8 +52,13 @@ pub const NONE_PROFILE: &str = "none";
 /// 27B leaves its headroom at the hardcoded default, since nothing has to be
 /// traded for vision any more. Flash-Next runs 8 decode lanes, the most it
 /// takes: on 96 GB its experts stay nearly all resident, so a lane costs its
-/// state and its share of the KV pool. The VRAM plan sizes the rest, the
-/// KV pool among it. Measured on the card, these numbers are to be replaced
+/// state and its share of the KV pool. For the same reason Flash-Next drafts
+/// with its MTP head, 3 tokens a lane, which the 5090 leaves off because
+/// decode there is bound by the experts it copies over PCIe (finding
+/// 2026-10-07-flash-next-mtp-speculation-is-pcie-bound): the row budget stays
+/// the verify round's whole 8, so 3 drafts at one or two lanes, 1 at three or
+/// four, none from five on. The VRAM plan sizes the rest, the KV pool among
+/// it. Measured on the card, these numbers are to be replaced
 /// by what the measurement finds, as the 5090's were. No other card ships a
 /// profile; a config file's `profiles:` defines one for any other card.
 const BUILT_IN: &str = r#"{
@@ -82,6 +87,7 @@ const BUILT_IN: &str = r#"{
         "vision": { "enabled": true },
         "spec": {
             "qwen38": { "backend": "dflash2", "draft_tokens": 7 },
+            "qwen38flashnext": { "backend": "mtp", "draft_tokens": 3 },
             "decode_lanes": 8
         }
     }
@@ -171,9 +177,16 @@ mod tests {
         assert_eq!(pro.get(vision, None).unwrap().raw, "true");
         let backend = field("spec", "backend").unwrap();
         assert_eq!(pro.get(backend, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "dflash2");
-        assert!(pro.get(backend, Some(ModelFamily::FlashNext)).is_none(), "Flash-Next keeps speculation off");
         let draft = field("spec", "draft_tokens").unwrap();
         assert_eq!(pro.get(draft, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "7");
+
+        // Flash-Next drafts with its MTP head, 3 tokens a lane, cut only by
+        // the verify round's own 8 rows: on 96 GB no expert crosses PCIe,
+        // the cost that made MTP lose on the 5090.
+        assert_eq!(pro.get(backend, Some(ModelFamily::FlashNext)).unwrap().raw, "mtp");
+        assert_eq!(pro.get(draft, Some(ModelFamily::FlashNext)).unwrap().raw, "3");
+        let rows = field("spec", "draft_rows").unwrap();
+        assert!(pro.get(rows, None).is_none(), "unset: the whole row budget");
 
         // No headroom traded down: the hardcoded default, for both families.
         let headroom = field("vram", "headroom_bytes").unwrap();
