@@ -443,3 +443,62 @@ async fn a_request_whose_switch_does_not_land_is_refused_with_its_reason() {
     assert_eq!(refused["error"]["code"], "model_switch_failed");
     assert!(refused["error"]["message"].as_str().unwrap().contains("simulated kernel load error"), "{refused}");
 }
+
+// ── GET /health across a failed switch (GitHub #327) ─────────────────────
+
+/// A switch whose target fails is reloading the old model: nothing serves
+/// meanwhile, but a model is on its way back, so the probe stays green.
+#[tokio::test]
+async fn the_health_probe_stays_200_while_a_failed_switch_reloads_the_old_model() {
+    let loader = MockLoader::new();
+    loader.break_load("mock-broken");
+    drop(loader.hold_next_load()); // the target's load runs, and fails
+    let reload = loader.hold_next_load(); // the old model's reload waits
+    let app = server_on(&loader).app();
+
+    let (status, _, _) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-broken"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_status(&app, "failed").await;
+    let (status, _, body) = send(&app, Method::GET, "/health", None).await;
+    assert_eq!((status, &body), (StatusCode::OK, &json!({ "status": "ok" })), "the old model is reloading");
+
+    reload.send(()).expect("the reload is held");
+    until_serving(&app).await;
+    assert_eq!(send(&app, Method::GET, "/health", None).await.0, StatusCode::OK);
+}
+
+/// A switch that failed with nothing it could reload leaves the process
+/// with no model and none loading, until a switch succeeds: the one state
+/// after the first warm-up the probe answers 503, without `Retry-After`
+/// (asking again does not help; a switch does).
+#[tokio::test]
+async fn the_health_probe_answers_503_when_nothing_serves_and_nothing_loads() {
+    let loader = MockLoader::new();
+    loader.break_load("mock-broken");
+    let mut first = loader.model("mock-a");
+    first.source = None;
+    let server = Server::from_active(first).with_switcher(Switcher::new(Arc::clone(&loader) as _, PATIENT));
+    let app = server.app();
+
+    let (status, _, _) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-broken"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_status(&app, "failed").await;
+    // The switch's run lets go of its slot just after the status says so.
+    let mut probe = send(&app, Method::GET, "/health", None).await;
+    for _ in 0..1_000 {
+        if probe.0 == StatusCode::SERVICE_UNAVAILABLE {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        probe = send(&app, Method::GET, "/health", None).await;
+    }
+    let (status, headers, body) = probe;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["code"], "server_not_ready", "{body}");
+    assert!(headers.get(header::RETRY_AFTER).is_none(), "{headers:?}");
+
+    let (status, _, _) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-b"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_serving(&app).await;
+    assert_eq!(send(&app, Method::GET, "/health", None).await.0, StatusCode::OK);
+}

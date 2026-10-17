@@ -734,11 +734,16 @@ CPU mock, which has nothing to capture, is ready at once.
 
 **Health probe.** `GET /health` answers `503 server_not_ready` with
 `Retry-After: 1` until that first warm-up has run, then `200
-{"status": "ok"}` for the life of the process. A model switch, an idle
-unload or a failed switch do not change it. It is a liveness probe for a
-container runtime or a load balancer: it sits outside `/v1`, so it asks for
-no API key and never counts as a use of the model (idle unload does not see
-it). What the model itself is doing is `GET /v1/models`'s `status`.
+{"status": "ok"}` while a model serves or is on its way: through a switch,
+an idle unload and the load after it (failed too, since the next request
+tries it again), and a failed switch that is reloading the old model. The
+one exception is a failed switch that could reload nothing, which leaves no
+model serving and none loading until another switch succeeds. That answers
+`503 server_not_ready` with no `Retry-After`, since asking again does not
+help and a switch does. It is a probe for a container runtime or a load
+balancer: it sits outside `/v1`, so it asks for no API key and never counts
+as a use of the model (idle unload does not see it). What the model itself is
+doing is `GET /v1/models`'s `status`.
 
 ### Switching models
 

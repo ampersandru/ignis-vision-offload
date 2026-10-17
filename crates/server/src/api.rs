@@ -329,21 +329,35 @@ fn unavailable(code: &str, message: impl Into<String>) -> Response {
     res
 }
 
-/// `GET /health` (GitHub #327): whether the process has started serving.
+/// `GET /health` (GitHub #327): whether the process can serve.
 /// `503 server_not_ready`, with `Retry-After: 1`, until the first warm-up has
-/// run, then `200 {"status": "ok"}` for the life of the process: only
-/// [`ModelStatus::WarmingUp`] comes before it, and nothing returns to it, so
-/// a model switch, an idle unload or a failed switch leave the probe green —
-/// `GET /v1/models` is what says what the model is doing. Outside `/v1`: no
-/// key, and a probe is not a use of the model (idle unload never sees it).
+/// run ([`ModelStatus::WarmingUp`], which nothing returns to); then `200
+/// {"status": "ok"}` through a switch, an idle unload, the load after it,
+/// and a failed switch that is reloading the old model, since a model is on
+/// its way in each. The one exception: a failed switch with nothing serving
+/// and nothing loading (`Failed`, not out of `unloaded`, the switch's slot
+/// free), which only another switch ends, is `503 server_not_ready` with no
+/// `Retry-After`. `GET /v1/models` says what the model is doing. Outside
+/// `/v1`: no key, and a probe is not a use of the model (idle unload never
+/// sees it).
 async fn health(State(server): State<Arc<Server>>) -> Response {
-    if matches!(*server.status(), ModelStatus::WarmingUp) {
-        return unavailable(
+    match &*server.status() {
+        ModelStatus::WarmingUp => unavailable(
             "server_not_ready",
             "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly",
-        );
+        ),
+        ModelStatus::Failed { reason, from_unloaded: false }
+            if !server.switcher.as_ref().is_some_and(|switcher| switcher.running().is_some()) =>
+        {
+            error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server_error",
+                "server_not_ready",
+                format!("no model is serving and none is loading ({reason}); a switch to a model that loads is the way back"),
+            )
+        }
+        _ => Json(serde_json::json!({ "status": "ok" })).into_response(),
     }
-    Json(serde_json::json!({ "status": "ok" })).into_response()
 }
 
 /// What a request is told while a switch from `from` to `to` runs: by the

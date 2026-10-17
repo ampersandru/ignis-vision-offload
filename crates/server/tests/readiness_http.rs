@@ -179,16 +179,18 @@ async fn the_health_probe_answers_503_until_the_first_warm_up_then_200() {
     assert_eq!(body, serde_json::json!({ "status": "ok" }));
 }
 
-/// Once the process has served, the probe stays green whatever the model
-/// does: a switch, a failed switch, an idle unload, the load after it.
-/// `/v1` answers each of those on its own (here, a switch is a 503).
+/// Once the process has served, the probe stays green while a model is on
+/// its way: a switch, an idle unload, the load after it, and that load
+/// failing (the next request tries it again). `/v1` answers each of those on
+/// its own (here, a switch is a 503). The one 503 after the warm-up, a
+/// failed switch with nothing left to load, is `model_switch_http.rs`'s.
 #[tokio::test]
 async fn the_health_probe_stays_200_whatever_the_model_does_after_it() {
     use ignis_server::ModelStatus;
     let server = server();
     let app = server.app();
     let switching = ModelStatus::Switching { from: "test-model".into(), to: "other".into() };
-    let failed = ModelStatus::Failed { reason: "no such file".into(), from_unloaded: false };
+    let failed = ModelStatus::Failed { reason: "no such file".into(), from_unloaded: true };
     for model in [switching, failed, ModelStatus::Unloaded, ModelStatus::Loading, ModelStatus::Serving] {
         let name = model.as_str();
         server.status.store(Arc::new(model));
