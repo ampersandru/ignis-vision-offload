@@ -933,6 +933,26 @@ reuse_kind            checkpoint | prefix      which kind of retained state
 the `ignis_retained_*` metric families (ADR 0017), so a log line and a series
 name one thing one way. A prompt-checkpoint restore also carries `restore_ms`;
 a prefix is claimed by sharing pages, restores nothing, and carries none.
+
+A cancelled request ends with no `done` line; it logs one
+`ignis.request.cancelled` line instead (GitHub #327), under its own trace id:
+
+```text
+cause        timeout | consumer | shutdown   why it was cancelled
+duration_ms  integer                         since its submission
+admitted     bool                            whether a lane had been dealt
+lane         integer                         only when admitted
+tokens       integer                         generated before the cancel
+class        interactive | agent
+```
+
+`timeout` is `--server-request-timeout` (the 504, or a response `failed` with
+`request_timeout`); `shutdown` a model thread stopped with it in flight (a
+switch past its drain window); `consumer` whatever waited for it letting it
+go: a client that hung up, a queued response cancelled, a loop-guard rewind
+(whose `ignis.loop_guard.rewound` line names it `cancelled`). A request
+cancelled twice logs the first cause only; a `done` that raced the cancel is
+still logged, after it.
 For a prefix, `reuse_source` is `kv_ram` when that very claim brought the block back
 from KV-RAM and `device` otherwise.
 

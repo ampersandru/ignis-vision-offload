@@ -46,7 +46,7 @@ use crate::media::MediaStats;
 use crate::metrics::Metrics;
 use ignis_core::flash_next_counters::FlashNextCounterSource;
 use crate::telemetry::{
-    IntervalCounters, IntervalStatsProvider, SystemClock, Telemetry, TelemetryClock,
+    CancelCause, IntervalCounters, IntervalStatsProvider, SystemClock, Telemetry, TelemetryClock,
 };
 
 /// A per-request event stream: the `SchedEvent`s the engine routed to one
@@ -115,7 +115,7 @@ enum TelemetryFact {
     /// fields the admission machine already keeps, and is the same whatever
     /// the async side is doing with it.
     Tick(Occupancy),
-    Cancelled(RequestId),
+    Cancelled(RequestId, CancelCause),
     /// Sent by [`Engine::stop`]: released like a cancel, reported done.
     Stopped(RequestId, u32),
     SetStats(Arc<dyn IntervalStatsProvider>),
@@ -446,13 +446,22 @@ impl Engine {
     }
 
     /// Ask the model thread to abort an in-flight request. This is
-    /// fire-and-forget so an HTTP response body's `Drop` can call it.
+    /// fire-and-forget so an HTTP response body's `Drop` can call it. Its
+    /// `cancelled` line says its consumer let it go; see
+    /// [`Engine::cancel_because`].
     pub fn cancel(&self, request: RequestId) {
+        self.cancel_because(request, CancelCause::Consumer);
+    }
+
+    /// [`Engine::cancel`], for `cause` (GitHub #327): what the request's
+    /// `ignis.request.cancelled` line says, when the caller knows better than
+    /// "its consumer let it go". The first cancel's cause is the one logged.
+    pub(crate) fn cancel_because(&self, request: RequestId, cause: CancelCause) {
         let _ = self.commands.send(Command::Cancel { request });
         // The scheduler releases a cancelled request without a `Done`, so the
         // telemetry consumer hears of it from here rather than from the model
         // thread, whose loop stays unchanged (ADR 0017).
-        let _ = self.facts.send(TelemetryFact::Cancelled(request));
+        let _ = self.facts.send(TelemetryFact::Cancelled(request, cause));
     }
 
     /// End `request` at its caller's stop sequence (spec server/09) after
@@ -595,7 +604,7 @@ fn end_in_flight(
             reasoning_redirected_at: None,
         });
         scheduler.cancel(request);
-        let _ = facts.send(TelemetryFact::Cancelled(request));
+        let _ = facts.send(TelemetryFact::Cancelled(request, CancelCause::Shutdown));
     }
 }
 
@@ -627,7 +636,7 @@ fn handle_command(
             if let Err(Ok((request, _))) = reply.send(result) {
                 if scheduler.cancel(request) {
                     streams.remove(&request);
-                    let _ = facts.send(TelemetryFact::Cancelled(request));
+                    let _ = facts.send(TelemetryFact::Cancelled(request, CancelCause::Consumer));
                     return true;
                 }
             }
@@ -746,13 +755,13 @@ async fn telemetry_task(
                     continue;
                 }
             }
-            TelemetryFact::Cancelled(id) | TelemetryFact::Stopped(id, _) if internal.remove(id) => continue,
+            TelemetryFact::Cancelled(id, _) | TelemetryFact::Stopped(id, _) if internal.remove(id) => continue,
             _ => {}
         }
         let moves_in_flight = matches!(
             &fact,
             TelemetryFact::Submitted(..)
-                | TelemetryFact::Cancelled(_)
+                | TelemetryFact::Cancelled(..)
                 | TelemetryFact::Stopped(..)
                 | TelemetryFact::Routed(SchedEvent::Admitted { .. } | SchedEvent::Done { .. })
         );
@@ -842,7 +851,7 @@ async fn telemetry_task(
                 let snapshot = telemetry.emit_interval(occupancy);
                 counters.store(Arc::new(snapshot));
             }
-            TelemetryFact::Cancelled(request) => telemetry.on_cancelled(request),
+            TelemetryFact::Cancelled(request, cause) => telemetry.on_cancelled(request, cause),
             TelemetryFact::Stopped(request, tokens) => telemetry.on_stopped(request, tokens),
             TelemetryFact::SetStats(provider) => telemetry.with_stats(provider),
             TelemetryFact::SetMetrics(metrics) => telemetry.with_metrics(metrics),
@@ -1621,7 +1630,7 @@ mod tests {
             // The occupancy rides along, so the flag-off/flag-on comparison
             // is over the widened fact and not merely over its variant.
             TelemetryFact::Tick(occupancy) => format!("tick {occupancy:?}"),
-            TelemetryFact::Cancelled(_)
+            TelemetryFact::Cancelled(..)
             | TelemetryFact::Stopped(..)
             | TelemetryFact::SetStats(_)
             | TelemetryFact::SetMetrics(_)

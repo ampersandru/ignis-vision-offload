@@ -231,6 +231,33 @@ struct RequestReuse {
     kind: RetainedKind,
 }
 
+/// Why a request was cancelled: the `cause` of its `ignis.request.cancelled`
+/// line (GitHub #327).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelCause {
+    /// What waited for it let it go: a client that hung up, a queued
+    /// response cancelled, a loop-guard rewind (whose
+    /// `ignis.loop_guard.rewound` line names it `cancelled`).
+    Consumer,
+    /// Past `--server-request-timeout`: the 504, or a response `failed`
+    /// with `request_timeout`.
+    Timeout,
+    /// The model thread stopped with it in flight: a model switch past its
+    /// drain window.
+    Shutdown,
+}
+
+impl CancelCause {
+    /// The `cause` field's value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Consumer => "consumer",
+            Self::Timeout => "timeout",
+            Self::Shutdown => "shutdown",
+        }
+    }
+}
+
 /// The server's telemetry: tracks per-request state and emits the interval +
 /// request events.
 pub struct Telemetry {
@@ -404,17 +431,20 @@ impl Telemetry {
         self.emit_admitted(id, ms, lane, prompt_tokens, prefill_chunks, prefilled_tokens, class, media);
     }
 
-    /// A request was cancelled — its client went away (GitHub #89). The
-    /// scheduler releases a cancelled request without a `Done`, so it leaves
-    /// the in-flight set here, or it would count as waiting or running
-    /// forever. Events the model thread emitted for it before the cancel may
-    /// still arrive afterwards; none of them re-adds it, and a late `Done`
-    /// does not count it a second time, as completed.
-    pub fn on_cancelled(&mut self, id: RequestId) {
+    /// A request was cancelled, for `cause` (GitHub #89): emit its
+    /// `cancelled` line (GitHub #327). The scheduler releases a cancelled
+    /// request without a `Done`, so it leaves the in-flight set here, or it
+    /// would count as waiting or running forever. Events the model thread
+    /// emitted for it before the cancel may still arrive afterwards; none of
+    /// them re-adds it, and a late `Done` does not count it a second time, as
+    /// completed. A second cancel, or one after its `Done`, finds nothing.
+    pub fn on_cancelled(&mut self, id: RequestId, cause: CancelCause) {
         let Some(rt) = self.requests.remove(&id) else {
             return;
         };
-        self.note_lane_held(self.clock.now_ms().saturating_sub(rt.submitted_ms));
+        let ms = self.clock.now_ms().saturating_sub(rt.submitted_ms);
+        self.emit_cancelled(id, cause, ms, &rt);
+        self.note_lane_held(ms);
         let Some(metrics) = self.metrics.clone() else {
             return;
         };
@@ -936,6 +966,26 @@ impl Telemetry {
             tok_s = throughput(1, ms),
             class = class.as_extension_str(),
             "first token"
+        );
+    }
+
+    /// Emit the `cancelled` line (GitHub #327): why, after how long, whether
+    /// a lane had been dealt (`lane` only then) and how many tokens it had
+    /// generated. A cancel ends a request with no `done` line, so without
+    /// this one a request that hit its 504, or whose client went away, left
+    /// nothing in the request log past its `admitted`.
+    fn emit_cancelled(&self, id: RequestId, cause: CancelCause, ms: u64, rt: &RequestTelemetry) {
+        let _span = tracing::info_span!("ignis.telemetry.emit", request_id = id).entered();
+        tracing::info!(
+            name: "ignis.request.cancelled",
+            request_id = id,
+            cause = cause.as_str(),
+            duration_ms = ms,
+            admitted = rt.admitted,
+            lane = rt.admitted.then_some(rt.lane as u64),
+            tokens = if rt.ttft { 1 + rt.itl_count } else { 0 },
+            class = rt.class.as_extension_str(),
+            "request cancelled"
         );
     }
 
@@ -1822,14 +1872,14 @@ mod tests {
         telemetry.note_submit(2, 3, RequestClass::Interactive);
         telemetry.on_admitted(2, 0);
 
-        telemetry.on_cancelled(1);
+        telemetry.on_cancelled(1, CancelCause::Consumer);
         let text = metrics.render();
         assert!(text.contains("\nignis_scheduler_requests{state=\"waiting\"} 0\n"), "{text}");
         assert!(text.contains("\nignis_scheduler_requests{state=\"running\"} 1\n"), "{text}");
 
         telemetry.on_admitted(1, 1); // emitted before the cancel, routed after
-        telemetry.on_cancelled(2);
-        telemetry.on_cancelled(2); // a second cancel is a no-op
+        telemetry.on_cancelled(2, CancelCause::Consumer);
+        telemetry.on_cancelled(2, CancelCause::Consumer); // a second cancel is a no-op
         let counters = telemetry.emit_interval(Occupancy::default());
         assert_eq!((counters.waiting, counters.running), (0, 0));
         let text = metrics.render();
@@ -1847,7 +1897,7 @@ mod tests {
         telemetry.with_metrics(Arc::clone(&metrics));
         telemetry.note_submit(1, 3, RequestClass::Interactive);
         telemetry.on_admitted(1, 0);
-        telemetry.on_cancelled(1);
+        telemetry.on_cancelled(1, CancelCause::Consumer);
         telemetry.on_done(1, 4, FinishReason::Stop, None, None, None);
         // A `Done` for a request that was never cancelled still counts.
         telemetry.note_submit(2, 3, RequestClass::Interactive);
@@ -2053,7 +2103,7 @@ mod tests {
         let mut telemetry = telemetry();
         telemetry.with_metrics(Arc::clone(&metrics));
         telemetry.note_submit(1, 3, RequestClass::Interactive);
-        telemetry.on_cancelled(1);
+        telemetry.on_cancelled(1, CancelCause::Consumer);
         telemetry.on_done(1, 4, FinishReason::Stop, None, None, None);
         telemetry.on_done(99, 4, FinishReason::Stop, None, None, None);
 
@@ -2218,9 +2268,86 @@ mod tests {
         let mut telemetry = Telemetry::new(clock.clone());
         telemetry.note_submit(1, 5, RequestClass::Interactive);
         clock.set(5_000);
-        telemetry.on_cancelled(1);
+        telemetry.on_cancelled(1, CancelCause::Timeout);
         clock.set(6_000);
         telemetry.note_submit(2, 5, RequestClass::Interactive);
         assert_eq!(telemetry.lane_free_at_ms(), Some(11_000));
+    }
+
+    // ── a cancelled request's line (GitHub #327) ────────────────────────────────
+
+    /// A cancel used to leave no `ignis.request.*` line: an orphaned 504's
+    /// lane was invisible in the log. Now it says why, how long the request
+    /// was in, whether it had a lane and what it generated, under the
+    /// request's own `trace_id`, which the 504's HTTP line carries too.
+    #[test]
+    fn a_cancelled_request_logs_why_how_long_and_what_it_generated() {
+        let clock = ManualClock::at(0);
+        let mut telemetry = Telemetry::new(clock.clone());
+        let events = capture_events(|| {
+            telemetry.note_submit(4, 40, RequestClass::Interactive);
+            clock.set(300);
+            telemetry.on_admitted(4, 7);
+            for _ in 0..3 {
+                telemetry.on_token(4);
+            }
+            telemetry.note_submit(5, 10, RequestClass::Agent);
+            clock.set(20_000);
+            telemetry.on_cancelled(4, CancelCause::Timeout);
+            clock.set(25_000);
+            telemetry.on_cancelled(5, CancelCause::Consumer); // still queued
+        });
+
+        let cancelled: Vec<_> = events.iter().filter(|e| e["event_name"] == "ignis.request.cancelled").collect();
+        assert_eq!(cancelled.len(), 2, "{events:?}");
+        let running = &cancelled[0]["attributes"];
+        assert_eq!(cancelled[0]["trace_id"], "00000000000000000000000000000004");
+        assert_eq!(running["request_id"], 4);
+        assert_eq!(running["cause"], "timeout");
+        assert_eq!(running["duration_ms"], 20_000);
+        assert_eq!(running["admitted"], true);
+        assert_eq!(running["lane"], 7);
+        assert_eq!(running["tokens"], 3);
+        assert_eq!(running["class"], "interactive");
+        let queued = &cancelled[1]["attributes"];
+        assert_eq!(queued["request_id"], 5);
+        assert_eq!(queued["cause"], "consumer");
+        assert_eq!(queued["duration_ms"], 24_700, "in since 300 ms");
+        assert_eq!(queued["admitted"], false);
+        assert!(queued.get("lane").is_none(), "no lane was dealt: {queued}");
+        assert_eq!(queued["tokens"], 0);
+        assert_eq!(queued["class"], "agent");
+    }
+
+    /// One line per request: a second cancel (a loop guard and a response
+    /// both letting go) and a cancel after the request's own end log
+    /// nothing. A `Done` that raced the cancel still logs its `done` line,
+    /// after the `cancelled` one: the request finished as the cancel landed.
+    #[test]
+    fn a_request_logs_one_cancelled_line_and_a_racing_done_still_logs_done() {
+        let clock = ManualClock::at(0);
+        let mut telemetry = Telemetry::new(clock.clone());
+        let events = capture_events(|| {
+            telemetry.note_submit(1, 5, RequestClass::Interactive);
+            telemetry.on_cancelled(1, CancelCause::Timeout);
+            telemetry.on_cancelled(1, CancelCause::Consumer);
+            telemetry.on_done(1, 2, FinishReason::Stop, None, None, None);
+            telemetry.note_submit(2, 5, RequestClass::Interactive);
+            telemetry.on_done(2, 2, FinishReason::Stop, None, None, None);
+            telemetry.on_cancelled(2, CancelCause::Consumer);
+        });
+
+        let lines: Vec<(&str, u64)> = events
+            .iter()
+            .filter(|e| e["event_name"] == "ignis.request.cancelled" || e["event_name"] == "ignis.request.done")
+            .map(|e| (e["event_name"].as_str().unwrap(), e["attributes"]["request_id"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(
+            lines,
+            [("ignis.request.cancelled", 1), ("ignis.request.done", 1), ("ignis.request.done", 2)],
+            "{events:?}"
+        );
+        let cancelled = events.iter().find(|e| e["event_name"] == "ignis.request.cancelled").unwrap();
+        assert_eq!(cancelled["attributes"]["cause"], "timeout", "the first cancel's cause");
     }
 }

@@ -2306,7 +2306,10 @@ async fn chat_completions(
                 let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens).with_rewound(&rewound);
                 completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage)
             }
-            Err(_) => timed_out(),
+            Err(_) => {
+                cancel.timed_out();
+                timed_out()
+            }
         };
     }
     // Non-streaming: collect the request's tokens to its completion (a
@@ -2335,7 +2338,10 @@ async fn chat_completions(
                 usage,
             )
         }
-        Err(_) => timed_out(),
+        Err(_) => {
+            cancel.timed_out();
+            timed_out()
+        }
     }
 }
 
@@ -2915,6 +2921,14 @@ impl CancelOnDrop {
     /// The request reached its own terminal event: dropping is now a
     /// clean end of stream, not a disconnect.
     pub(crate) fn completed(&mut self) {
+        self.completed = true;
+    }
+
+    /// The request is past `--server-request-timeout`: cancelled now, its
+    /// `ignis.request.cancelled` line saying `timeout` (GitHub #327) rather
+    /// than the "its consumer let it go" a drop would.
+    pub(crate) fn timed_out(&mut self) {
+        self.engine.cancel_because(self.request.get(), crate::telemetry::CancelCause::Timeout);
         self.completed = true;
     }
 

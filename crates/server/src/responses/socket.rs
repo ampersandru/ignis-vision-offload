@@ -654,6 +654,7 @@ async fn serve(
     match driven {
         Some(Driven::Ended) => guard.completed(),
         Some(Driven::TimedOut) => {
+            guard.timed_out();
             let message = api::request_timeout_message(server.live().request_timeout);
             events.failed("request_timeout", message).into_iter().for_each(emit);
         }

@@ -216,13 +216,15 @@ pub(crate) async fn create_response(
             cancel.completed();
             Json(events.response().clone()).into_response()
         }
-        // `cancel` drops unfinished here: the engine stops the request.
-        Driven::TimedOut => api::error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "request_timeout",
-            "request_timeout",
-            api::request_timeout_message(server.live().request_timeout),
-        ),
+        Driven::TimedOut => {
+            cancel.timed_out();
+            api::error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "request_timeout",
+                "request_timeout",
+                api::request_timeout_message(server.live().request_timeout),
+            )
+        }
     }
 }
 
@@ -269,7 +271,8 @@ impl Stream for EventSse {
                     this.stopping = true;
                     continue;
                 }
-                // Left unfinished: dropping the body cancels the request.
+                // Left unfinished: cancelled now, for its deadline.
+                this.cancel.timed_out();
                 this.pending.extend(this.events.failed("request_timeout", api::request_timeout_message(this.timeout)));
                 this.ended = true;
                 continue;
