@@ -241,12 +241,21 @@ pub struct Telemetry {
     /// consumer after the cancel. It was counted once, as cancelled or as
     /// completed, and must not be counted again as completed.
     recently_cancelled: VecDeque<RequestId>,
+    /// How long a request holds its lane (GitHub #327): what
+    /// [`Telemetry::lane_free_at_ms`] adds to the oldest request in flight.
+    /// `None` until one has finished.
+    lane_held_ms: Option<u64>,
 }
 
 /// How many cancelled ids [`Telemetry`] remembers for that race. A late
 /// `Done` was emitted before the model thread handled the cancel — within one
 /// scheduler step — so this bound is far beyond any real window.
 const RECENTLY_CANCELLED: usize = 1024;
+
+/// The expected lane hold moves 1/8 of the way toward each request that
+/// leaves (GitHub #327): the weight TCP smooths its round-trip time with
+/// (RFC 6298). A constant: it only shapes an estimate.
+const LANE_HOLD_SMOOTHING: u64 = 8;
 
 impl Telemetry {
     /// Telemetry over `clock` (`ms` / `tok_s`). No live counter source is
@@ -263,6 +272,7 @@ impl Telemetry {
             metrics: None,
             counter_source: None,
             recently_cancelled: VecDeque::new(),
+            lane_held_ms: None,
         }
     }
 
@@ -294,6 +304,24 @@ impl Telemetry {
                 class,
                 ..Default::default()
             });
+    }
+
+    /// When a lane is expected to free, on this telemetry's clock (GitHub
+    /// #327): what a `503 engine_full` turns into its `Retry-After`. `None`
+    /// with nothing to go on.
+    pub fn lane_free_at_ms(&self) -> Option<u64> {
+        let held = self.lane_held_ms?;
+        let oldest = self.requests.values().map(|rt| rt.submitted_ms).min()?;
+        Some(oldest + held)
+    }
+
+    /// A request held its lane `ms` before it left: the expected hold moves
+    /// [`LANE_HOLD_SMOOTHING`]th of the way toward it.
+    fn note_lane_held(&mut self, ms: u64) {
+        self.lane_held_ms = Some(match self.lane_held_ms {
+            None => ms,
+            Some(held) => (held * (LANE_HOLD_SMOOTHING - 1) + ms) / LANE_HOLD_SMOOTHING,
+        });
     }
 
     /// A submitted request carried media (GitHub #179): its acquisition
@@ -349,9 +377,10 @@ impl Telemetry {
     /// still arrive afterwards; none of them re-adds it, and a late `Done`
     /// does not count it a second time, as completed.
     pub fn on_cancelled(&mut self, id: RequestId) {
-        if self.requests.remove(&id).is_none() {
+        let Some(rt) = self.requests.remove(&id) else {
             return;
-        }
+        };
+        self.note_lane_held(self.clock.now_ms().saturating_sub(rt.submitted_ms));
         let Some(metrics) = self.metrics.clone() else {
             return;
         };
@@ -496,6 +525,7 @@ impl Telemetry {
         // Only a request this consumer saw submitted has a real span; one
         // already counted as cancelled is not observed as completed.
         if known {
+            self.note_lane_held(ms);
             if let Some(metrics) = &self.metrics {
                 metrics.observe_duration_ms(ms);
             }
@@ -2102,5 +2132,77 @@ mod tests {
         // included; only the log event leaves them out.
         assert_eq!(returned.prefilling, 2);
         assert_eq!(returned.kv_used_pct, 62);
+    }
+
+    // ── when a lane frees (GitHub #327, `Retry-After`) ──────────────────────────
+
+    /// A clock the test sets.
+    struct SetClock(std::sync::atomic::AtomicU64);
+    impl SetClock {
+        fn at(ms: u64) -> Arc<Self> {
+            Arc::new(Self(std::sync::atomic::AtomicU64::new(ms)))
+        }
+        fn set(&self, ms: u64) {
+            self.0.store(ms, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl TelemetryClock for SetClock {
+        fn now_ms(&self) -> u64 {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn no_lane_free_estimate_before_a_request_has_finished() {
+        let clock = SetClock::at(1_000);
+        let mut telemetry = Telemetry::new(clock.clone());
+        telemetry.note_submit(1, 5, RequestClass::Interactive);
+        clock.set(4_000);
+        assert_eq!(telemetry.lane_free_at_ms(), None, "nothing has finished: nothing to go on");
+    }
+
+    #[test]
+    fn a_lane_is_expected_free_when_the_oldest_request_has_held_it_as_long_as_the_last_did() {
+        let clock = SetClock::at(0);
+        let mut telemetry = Telemetry::new(clock.clone());
+        telemetry.note_submit(1, 5, RequestClass::Interactive);
+        clock.set(3_000);
+        telemetry.on_done(1, 5, FinishReason::Stop, None, None, None);
+        clock.set(10_000);
+        telemetry.note_submit(2, 5, RequestClass::Interactive);
+        clock.set(11_000);
+        telemetry.note_submit(3, 5, RequestClass::Interactive);
+        assert_eq!(telemetry.lane_free_at_ms(), Some(13_000), "request 2, in since 10 s, held as long as 1 did (3 s)");
+    }
+
+    /// The hold is smoothed the way TCP smooths its round-trip time (RFC
+    /// 6298, alpha 1/8): each finished request moves it an eighth of the way.
+    #[test]
+    fn the_expected_hold_moves_an_eighth_of_the_way_toward_each_finished_request() {
+        let clock = SetClock::at(0);
+        let mut telemetry = Telemetry::new(clock.clone());
+        telemetry.note_submit(1, 5, RequestClass::Interactive);
+        clock.set(1_000);
+        telemetry.on_done(1, 5, FinishReason::Stop, None, None, None); // held 1 s: the first sample
+        telemetry.note_submit(2, 5, RequestClass::Interactive);
+        clock.set(10_000);
+        telemetry.on_done(2, 5, FinishReason::Stop, None, None, None); // held 9 s: 1 + (9 - 1) / 8 = 2 s
+        clock.set(20_000);
+        telemetry.note_submit(3, 5, RequestClass::Interactive);
+        assert_eq!(telemetry.lane_free_at_ms(), Some(22_000));
+    }
+
+    /// A cancelled request (its client gone, or its 504) held its lane until
+    /// the cancel: that hold counts as one that finished does.
+    #[test]
+    fn a_cancelled_request_counts_for_how_long_a_lane_is_held() {
+        let clock = SetClock::at(0);
+        let mut telemetry = Telemetry::new(clock.clone());
+        telemetry.note_submit(1, 5, RequestClass::Interactive);
+        clock.set(5_000);
+        telemetry.on_cancelled(1);
+        clock.set(6_000);
+        telemetry.note_submit(2, 5, RequestClass::Interactive);
+        assert_eq!(telemetry.lane_free_at_ms(), Some(11_000));
     }
 }

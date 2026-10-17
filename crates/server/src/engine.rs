@@ -28,6 +28,7 @@
 //!   snapshot.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -166,6 +167,46 @@ pub struct Engine {
     /// submission that found the engine full may be admitted (GitHub #282,
     /// the socket admission queue).
     freed: watch::Receiver<u64>,
+    /// When a lane is expected to free (GitHub #327), as the telemetry
+    /// consumer last published it: what a `503 engine_full` says to wait.
+    lane_free: LaneFree,
+}
+
+/// When a lane is expected to free, on the telemetry clock (GitHub #327):
+/// published by the telemetry consumer whenever a request comes or goes
+/// ([`Telemetry::lane_free_at_ms`]), read by a refusal. Off the model
+/// thread on both sides: an estimate, never a cost to a step.
+#[derive(Clone)]
+struct LaneFree {
+    /// Milliseconds on `clock`; 0 for no estimate.
+    at_ms: Arc<AtomicU64>,
+    clock: Arc<dyn TelemetryClock>,
+}
+
+/// The longest `Retry-After` an estimate gives before its margin: 59 + 1 is
+/// 60, the most the OpenAI SDK honours (past it, it backs off on its own).
+const RETRY_AFTER_MAX_SECS: u64 = 59;
+
+/// What an estimate's `Retry-After` adds past its clamp, so the retry lands
+/// just after the lane frees rather than just before.
+const RETRY_AFTER_MARGIN_SECS: u64 = 1;
+
+impl LaneFree {
+    fn new(clock: Arc<dyn TelemetryClock>) -> Self {
+        Self { at_ms: Arc::new(AtomicU64::new(0)), clock }
+    }
+
+    /// The seconds to wait: to the expected time, whole seconds rounded up
+    /// and clamped to `1..=RETRY_AFTER_MAX_SECS`, plus the margin; `1`, with
+    /// no margin, when there is no estimate or its time has come.
+    fn retry_after_secs(&self) -> u64 {
+        let at = self.at_ms.load(Ordering::Acquire);
+        let now = self.clock.now_ms();
+        if at <= now {
+            return 1;
+        }
+        (at - now).div_ceil(1000).clamp(1, RETRY_AFTER_MAX_SECS) + RETRY_AFTER_MARGIN_SECS
+    }
 }
 
 impl Clone for Engine {
@@ -178,6 +219,7 @@ impl Clone for Engine {
             facts: self.facts.clone(),
             counters: Arc::clone(&self.counters),
             freed: self.freed.clone(),
+            lane_free: self.lane_free.clone(),
         }
     }
 }
@@ -234,8 +276,9 @@ impl Engine {
 
         // The telemetry consumer: an async task that owns `Telemetry` and
         // does all counter math / event emission off the model thread.
+        let lane_free = LaneFree::new(Arc::clone(&clock));
         let telemetry = Telemetry::new(clock);
-        tokio::spawn(telemetry_task(telemetry, facts_rx, Arc::clone(&counters)));
+        tokio::spawn(telemetry_task(telemetry, facts_rx, Arc::clone(&counters), Arc::clone(&lane_free.at_ms)));
 
         (
             Self {
@@ -246,6 +289,7 @@ impl Engine {
                 facts: facts_tx,
                 counters,
                 freed,
+                lane_free,
             },
             driver,
         )
@@ -299,6 +343,13 @@ impl Engine {
     /// thread or the telemetry consumer).
     pub fn interval_counters(&self) -> IntervalCounters {
         *self.counters.load_full()
+    }
+
+    /// The `Retry-After` of a `503 engine_full` (GitHub #327), in seconds:
+    /// when a lane is expected to free, plus a second, at most 60; `1` with
+    /// nothing to go on. A read of what the telemetry consumer published.
+    pub fn retry_after_secs(&self) -> u64 {
+        self.lane_free.retry_after_secs()
     }
 
     /// Submit a request and attach its event stream. Sends a command to the
@@ -669,6 +720,7 @@ async fn telemetry_task(
     mut telemetry: Telemetry,
     mut facts: UnboundedReceiver<TelemetryFact>,
     counters: Arc<ArcSwap<IntervalCounters>>,
+    lane_free_at: Arc<AtomicU64>,
 ) {
     // GitHub #129: the requests the server made for itself, until their `Done`.
     let mut internal: std::collections::HashSet<RequestId> = std::collections::HashSet::new();
@@ -789,6 +841,8 @@ async fn telemetry_task(
             TelemetryFact::SetCounterSource(source) => telemetry.with_counter_source(source),
         }
         if moves_in_flight {
+            // Before the counters: whoever sees them moved sees this too.
+            lane_free_at.store(telemetry.lane_free_at_ms().unwrap_or(0), Ordering::Release);
             counters.store(Arc::new(telemetry.counters()));
         }
     }
@@ -1597,10 +1651,12 @@ mod tests {
         let driver = std::thread::spawn(move || {
             model_thread_loop(Box::new(scheduler), command_rx, thread_tx, freed_tx)
         });
+        let lane_free = LaneFree::new(Arc::new(crate::telemetry::FixedClock::new(0)));
         let consumer = tokio::spawn(telemetry_task(
             Telemetry::new(Arc::new(crate::telemetry::FixedClock::new(0))),
             consumer_rx,
             Arc::clone(&counters),
+            Arc::clone(&lane_free.at_ms),
         ));
         let engine = Engine {
             model_id: "test-model".into(),
@@ -1610,6 +1666,7 @@ mod tests {
             counters,
             artifact: ignis_core::ArtifactHash::UNKNOWN,
             freed,
+            lane_free,
         };
         let recorder = tokio::spawn(async move {
             let mut ticks = Vec::new();
@@ -1673,10 +1730,12 @@ mod tests {
             model_thread_loop(Box::new(scheduler), command_rx, thread_tx, freed_tx)
         });
         let clock = Arc::new(crate::telemetry::FixedClock::new(0));
+        let lane_free = LaneFree::new(clock.clone());
         let consumer = tokio::spawn(telemetry_task(
             Telemetry::new(clock),
             consumer_rx,
             Arc::clone(&counters),
+            Arc::clone(&lane_free.at_ms),
         ));
         let engine = Engine {
             model_id: "test-model".into(),
@@ -1686,6 +1745,7 @@ mod tests {
             counters,
             artifact: ignis_core::ArtifactHash::UNKNOWN,
             freed,
+            lane_free,
         };
         // With metrics on, a scraper renders the projection for as long as
         // the workload runs (GitHub #90): scraping must not change the facts

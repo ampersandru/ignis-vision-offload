@@ -711,12 +711,17 @@ matching status: 400 bad request, 404 unknown model, 413 oversized request, 503
 engine full, 504 the engine did not finish in the timeout.
 
 **A full engine** (every lane in use) answers `503` with type and code
-`engine_full` and `Retry-After: 1`, on `/v1/chat/completions` and on HTTP
+`engine_full` and a `Retry-After`, on `/v1/chat/completions` and on HTTP
 `/v1/responses` alike. Over HTTP nothing waits: the client's retry is the
-admission, and the header says to make it soon. Only the Responses API's
-[WebSocket mode](#the-responses-api) queues a request instead. A request that
-stops being waited for gives its lane back at once, whether it hit the 504 or
-its client went away.
+admission. The header is an estimate of when a lane frees: the oldest request
+in flight plus how long requests have been holding a lane (a running average
+of the ones that finished, were cancelled or stopped, each moving it 1/8 of
+the way). It is whole seconds rounded up, clamped to 1..59, plus a one-second
+margin, so 2 to 60 (60 being the most the OpenAI SDK honours). It is `1` before
+any request has finished, or once the expected time has passed. Only the
+Responses API's [WebSocket mode](#the-responses-api) queues a request instead.
+A request that stops being waited for gives its lane back at once, whether it
+hit the 504 or its client went away.
 
 **Readiness.** A loaded model is not served the moment it is on the GPU: the
 server first runs one two-token request through the scheduler so the decode

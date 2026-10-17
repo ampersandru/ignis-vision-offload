@@ -799,6 +799,107 @@ async fn a_full_engine_answers_503_engine_full_with_retry_after() {
     }
 }
 
+/// The mock's scheduler, except that it never runs what it takes: what it
+/// admits stays in flight, a cancel included (the release is the next
+/// advance's). Idle to the model thread, which stays free to refuse.
+struct NeverRuns(ConcreteScheduler);
+
+impl ignis_core::Scheduler for NeverRuns {
+    fn submit(&mut self, input: ignis_core::RequestInput, class: ignis_core::RequestClass) -> Result<RequestId, ignis_core::SubmitError> {
+        self.0.submit(input, class)
+    }
+    fn cancel(&mut self, request: RequestId) -> bool {
+        self.0.cancel(request)
+    }
+    fn advance(&mut self) -> Vec<ignis_core::SchedEvent> {
+        Vec::new()
+    }
+    fn is_idle(&self) -> bool {
+        true
+    }
+    fn model_id(&self) -> &str {
+        self.0.model_id()
+    }
+    fn max_sequence_tokens(&self) -> u32 {
+        self.0.max_sequence_tokens()
+    }
+    fn mode(&self) -> ignis_core::EngineMode {
+        self.0.mode()
+    }
+    fn occupancy(&self) -> ignis_core::Occupancy {
+        self.0.occupancy()
+    }
+}
+
+/// A telemetry clock the test sets.
+struct SetClock(std::sync::atomic::AtomicU64);
+
+impl ignis_server::telemetry::TelemetryClock for SetClock {
+    fn now_ms(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Wait until the telemetry consumer counts `n` requests in flight: it has
+/// read the clock for every fact before them.
+async fn in_flight_seen(engine: &Engine, n: u32) {
+    for _ in 0..500 {
+        let c = engine.interval_counters();
+        if c.waiting + c.prefilling + c.running == n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the telemetry consumer never counted {n} in flight");
+}
+
+/// GitHub #327: `Retry-After` is when a lane is expected to free — the
+/// oldest request in flight plus how long requests have held a lane — in
+/// whole seconds, clamped to 1..=59, plus a one-second margin; `1` when
+/// that time has come already. Request A holds a lane 200 s (then is
+/// cancelled, its slot kept: nothing runs), B is in since 210 s, so a lane
+/// is expected free at 410 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_engine_says_when_a_lane_is_expected_free() {
+    let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(0)));
+    let scheduler = ConcreteScheduler::with_config(
+        SchedulerConfig { model: MODEL.into(), max_in_flight: 2, ..SchedulerConfig::default() },
+        Arc::new(MockCompute::new()),
+    );
+    let engine = Engine::with_clock(Box::new(NeverRuns(scheduler)), clock.clone());
+    let app = Server::new(engine.clone(), Box::new(SimpleTemplateProvider)).with_seedless_seed(0).app();
+    let streaming = |content: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "model": MODEL, "messages": [{ "role": "user", "content": content }], "max_tokens": 8, "stream": true })
+                    .to_string(),
+            ))
+            .unwrap()
+    };
+
+    let a = app.clone().oneshot(streaming("a")).await.unwrap();
+    assert_eq!(a.status(), 200);
+    in_flight_seen(&engine, 1).await;
+    clock.0.store(200_000, std::sync::atomic::Ordering::SeqCst);
+    drop(a);
+    in_flight_seen(&engine, 0).await;
+    clock.0.store(210_000, std::sync::atomic::Ordering::SeqCst);
+    let b = app.clone().oneshot(streaming("b")).await.unwrap();
+    assert_eq!(b.status(), 200);
+    in_flight_seen(&engine, 1).await;
+
+    for (now_ms, expected) in [(211_000, "60"), (405_500, "6"), (409_999, "2"), (410_000, "1"), (500_000, "1")] {
+        clock.0.store(now_ms, std::sync::atomic::Ordering::SeqCst);
+        let refused = app.clone().oneshot(streaming("refused")).await.unwrap();
+        assert_eq!(refused.status(), 503, "at {now_ms} ms");
+        assert_eq!(refused.headers()[axum::http::header::RETRY_AFTER], expected, "at {now_ms} ms");
+    }
+    drop(b);
+}
+
 // ── POST /v1/responses ────────────────────────────────────────────────────
 
 #[tokio::test]
