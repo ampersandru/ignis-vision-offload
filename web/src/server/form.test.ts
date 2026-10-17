@@ -69,7 +69,7 @@ describe("controlFor", () => {
   });
 
   it("gives a text field the kind and the rule as its hint, and \"auto\" as the placeholder of an unset value", () => {
-    expect(controlFor(field("server.request_timeout"), 30)).toEqual({ kind: "text", hint: "seconds, 1..=3600", placeholder: "30" });
+    expect(controlFor(field("server.request_timeout"), 120)).toEqual({ kind: "text", hint: "seconds, 1..=3600", placeholder: "120" });
     expect(controlFor(field("model.prefill_chunk"), 1024)).toMatchObject({ hint: "tokens, nonzero multiple of 128" });
     expect(controlFor(field("model.max_context"), 786432)).toMatchObject({ hint: "tokens, >= 1" });
     expect(controlFor(field("vram.kv_pool_bytes"), null)).toEqual({ kind: "text", hint: "bytes|tokens", placeholder: "auto" });
@@ -160,7 +160,7 @@ describe("rowView", () => {
   });
 
   it("marks a field every family shares as the same for every model, in a family's scope", () => {
-    expect(view("server.request_timeout", "qwen38")).toMatchObject({ inForce: { value: 30, scope: null }, note: { kind: "every" } });
+    expect(view("server.request_timeout", "qwen38")).toMatchObject({ inForce: { value: 120, scope: null }, note: { kind: "every" } });
     expect(noteLines(view("server.request_timeout", "qwen38"), undefined)).toEqual(["Same for every model"]);
     expect(noteLines(view("server.request_timeout", null), undefined)).toEqual([]);
     // A field with no control says nothing about its sharing.
@@ -202,7 +202,7 @@ describe("the draft", () => {
     draft = edit(draft, "server.request_timeout", "60");
     expect(Object.keys(changes(draft))).toEqual(["server.request_timeout"]);
     // Typed back to the value in force, it is no change at all.
-    draft = edit(draft, "server.request_timeout", "30");
+    draft = edit(draft, "server.request_timeout", "120");
     expect(draft).toEqual({});
     // A choice is compared without case, as the server compares it.
     expect(edit({}, "server.system_message_policy", "MERGE")).toEqual({});

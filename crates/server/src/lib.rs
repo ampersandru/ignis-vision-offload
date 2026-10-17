@@ -400,8 +400,20 @@ impl Server {
     }
 
     /// Whether the `/v1` routes admit requests ([`ModelStatus::Serving`]).
+    /// Narrower than `GET /ready`, which also answers 200 while a model is on
+    /// its way (a switch, an idle unload, the load after it).
     pub fn is_ready(&self) -> bool {
         matches!(*self.status(), ModelStatus::Serving)
+    }
+
+    /// Whether no model serves and none is on its way (GitHub #327): a failed
+    /// switch that could reload nothing, [`ModelStatus::Failed`] not out of
+    /// `unloaded`, with the switch's slot free. Only another switch ends it.
+    /// While the failed switch is still reloading the old model its slot is
+    /// held, and this is false.
+    pub fn nothing_serves_or_loads(&self) -> bool {
+        matches!(*self.status(), ModelStatus::Failed { from_unloaded: false, .. })
+            && !self.switcher.as_ref().is_some_and(|switcher| switcher.running().is_some())
     }
 
     /// The first traversal (GitHub #129): one two-token request through the

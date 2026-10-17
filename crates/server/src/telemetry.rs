@@ -70,6 +70,28 @@ impl TelemetryClock for SystemClock {
     }
 }
 
+/// A clock its owner sets (deterministic tests): every read returns what
+/// was last set.
+pub struct ManualClock(std::sync::atomic::AtomicU64);
+
+impl ManualClock {
+    /// A clock reading `ms` until [`ManualClock::set`] moves it.
+    pub fn at(ms: u64) -> Arc<Self> {
+        Arc::new(Self(std::sync::atomic::AtomicU64::new(ms)))
+    }
+
+    /// Read `ms` from now on.
+    pub fn set(&self, ms: u64) {
+        self.0.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl TelemetryClock for ManualClock {
+    fn now_ms(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// A fixed (deterministic) clock: every read returns the same value.
 pub struct FixedClock {
     ms: u64,
@@ -241,9 +263,13 @@ pub struct Telemetry {
     /// consumer after the cancel. It was counted once, as cancelled or as
     /// completed, and must not be counted again as completed.
     recently_cancelled: VecDeque<RequestId>,
-    /// How long a request holds its lane (GitHub #327): what
-    /// [`Telemetry::lane_free_at_ms`] adds to the oldest request in flight.
-    /// `None` until one has finished.
+    /// How long a request stays in flight, submit to release (GitHub #327):
+    /// what [`Telemetry::lane_free_at_ms`] adds to the oldest request in
+    /// flight, since a lane's place in `max_in_flight` frees only when its
+    /// request leaves. `None` until one has left. A loop-guard rewind cancels
+    /// a request and submits its continuation (ADR 0052), which this sees as
+    /// two shorter stays: the estimate then comes early, never late, which
+    /// costs a client one more refusal at most.
     lane_held_ms: Option<u64>,
 }
 
@@ -2136,25 +2162,9 @@ mod tests {
 
     // ── when a lane frees (GitHub #327, `Retry-After`) ──────────────────────────
 
-    /// A clock the test sets.
-    struct SetClock(std::sync::atomic::AtomicU64);
-    impl SetClock {
-        fn at(ms: u64) -> Arc<Self> {
-            Arc::new(Self(std::sync::atomic::AtomicU64::new(ms)))
-        }
-        fn set(&self, ms: u64) {
-            self.0.store(ms, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    impl TelemetryClock for SetClock {
-        fn now_ms(&self) -> u64 {
-            self.0.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
     #[test]
     fn no_lane_free_estimate_before_a_request_has_finished() {
-        let clock = SetClock::at(1_000);
+        let clock = ManualClock::at(1_000);
         let mut telemetry = Telemetry::new(clock.clone());
         telemetry.note_submit(1, 5, RequestClass::Interactive);
         clock.set(4_000);
@@ -2163,7 +2173,7 @@ mod tests {
 
     #[test]
     fn a_lane_is_expected_free_when_the_oldest_request_has_held_it_as_long_as_the_last_did() {
-        let clock = SetClock::at(0);
+        let clock = ManualClock::at(0);
         let mut telemetry = Telemetry::new(clock.clone());
         telemetry.note_submit(1, 5, RequestClass::Interactive);
         clock.set(3_000);
@@ -2179,7 +2189,7 @@ mod tests {
     /// 6298, alpha 1/8): each finished request moves it an eighth of the way.
     #[test]
     fn the_expected_hold_moves_an_eighth_of_the_way_toward_each_finished_request() {
-        let clock = SetClock::at(0);
+        let clock = ManualClock::at(0);
         let mut telemetry = Telemetry::new(clock.clone());
         telemetry.note_submit(1, 5, RequestClass::Interactive);
         clock.set(1_000);
@@ -2196,7 +2206,7 @@ mod tests {
     /// the cancel: that hold counts as one that finished does.
     #[test]
     fn a_cancelled_request_counts_for_how_long_a_lane_is_held() {
-        let clock = SetClock::at(0);
+        let clock = ManualClock::at(0);
         let mut telemetry = Telemetry::new(clock.clone());
         telemetry.note_submit(1, 5, RequestClass::Interactive);
         clock.set(5_000);

@@ -228,9 +228,10 @@ async fn a_server_without_a_loader_answers_501_and_a_warming_one_503() {
     assert_eq!(refused["error"]["code"], "switch_unavailable");
 
     let warming = server_on(&loader).with_warm_up().app();
-    let (status, _, refused) = send(&warming, Method::POST, "/v1/models/switch", Some(switch_to("mock-b"))).await;
+    let (status, headers, refused) = send(&warming, Method::POST, "/v1/models/switch", Some(switch_to("mock-b"))).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(refused["error"]["code"], "server_not_ready");
+    assert_eq!(headers[header::RETRY_AFTER], "5", "GitHub #327: before the first warm-up, a few seconds");
     let (status, _, _) = send(&warming, Method::GET, "/v1/models", None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "the warm-up still holds every route, as it did");
     let (status, _, _) = send(&warming, Method::OPTIONS, "/v1/models/switch", None).await;
@@ -487,7 +488,7 @@ async fn the_readiness_probe_answers_503_when_nothing_serves_and_nothing_loads()
     until_status(&app, "failed").await;
     // The switch's run lets go of its slot just after the status says so.
     let mut probe = send(&app, Method::GET, "/ready", None).await;
-    for _ in 0..1_000 {
+    for _ in 0..10_000 {
         if probe.0 == StatusCode::SERVICE_UNAVAILABLE {
             break;
         }
@@ -499,6 +500,12 @@ async fn the_readiness_probe_answers_503_when_nothing_serves_and_nothing_loads()
     assert_eq!(body["error"]["code"], "server_not_ready", "{body}");
     assert!(headers.get(header::RETRY_AFTER).is_none(), "{headers:?}");
     assert_eq!(send(&app, Method::GET, "/health", None).await.0, StatusCode::OK, "alive, though not ready");
+    // `/v1` says the same: no model is coming, so no `Retry-After`, and the
+    // way back is a switch.
+    let (status, headers, refused) = send(&app, Method::POST, "/v1/chat/completions", Some(chat("mock-a"))).await;
+    assert_eq!((status, &refused["error"]["code"]), (StatusCode::SERVICE_UNAVAILABLE, &json!("server_not_ready")), "{refused}");
+    assert!(headers.get(header::RETRY_AFTER).is_none(), "{headers:?}");
+    assert!(refused["error"]["message"].as_str().unwrap().contains("switch to a model that loads"), "{refused}");
 
     let (status, _, _) = send(&app, Method::POST, "/v1/models/switch", Some(switch_to("mock-b"))).await;
     assert_eq!(status, StatusCode::ACCEPTED);

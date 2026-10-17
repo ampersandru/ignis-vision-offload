@@ -311,15 +311,33 @@ async fn require_serving(State(server): State<Arc<Server>>, req: Request, next: 
     }
     let message = match &*status {
         ModelStatus::Switching { from, to } => switching_message(from, to),
+        ModelStatus::Failed { reason, .. } if server.nothing_serves_or_loads() => return stranded(reason),
         ModelStatus::Failed { reason, .. } => {
             format!("a model switch failed and no model is serving ({reason}); retry shortly")
         }
         ModelStatus::WarmingUp | ModelStatus::Serving | ModelStatus::Unloaded | ModelStatus::Loading => {
-            "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly"
-                .to_owned()
+            WARMING_UP_MESSAGE.to_owned()
         }
     };
     unavailable(code, message)
+}
+
+/// What a request is told before the first warm-up has run: by the `/v1`
+/// gate, and by `/ready`.
+const WARMING_UP_MESSAGE: &str =
+    "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly";
+
+/// The `503 server_not_ready` of a server with no model coming
+/// ([`Server::nothing_serves_or_loads`]), from the `/v1` gate and `/ready`
+/// alike: no `Retry-After`, since asking again does not help and a switch
+/// does (GitHub #327).
+fn stranded(reason: &str) -> Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "server_error",
+        "server_not_ready",
+        format!("no model is serving and none is loading ({reason}); a switch to a model that loads is the way back"),
+    )
 }
 
 /// How long a request is told to wait while a model is on its way — the
@@ -351,25 +369,14 @@ async fn health() -> Response {
 /// model, since a model is on its way in each. The one exception: a failed
 /// switch with nothing serving and nothing loading (`Failed`, not out of
 /// `unloaded`, the switch's slot free), which only another switch ends, is
-/// `503 server_not_ready` with no `Retry-After`. `GET /v1/models` says what
+/// `503 server_not_ready` with no `Retry-After` ([`stranded`]). Broader than
+/// [`Server::is_ready`], which is `Serving` alone. `GET /v1/models` says what
 /// the model is doing. Both probes are outside `/v1`: no key, and a probe is
 /// not a use of the model (idle unload never sees it).
 async fn ready(State(server): State<Arc<Server>>) -> Response {
     match &*server.status() {
-        ModelStatus::WarmingUp => unavailable(
-            "server_not_ready",
-            "the model is loaded but the first traversal (decode graph capture) has not finished; retry shortly",
-        ),
-        ModelStatus::Failed { reason, from_unloaded: false }
-            if !server.switcher.as_ref().is_some_and(|switcher| switcher.running().is_some()) =>
-        {
-            error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "server_error",
-                "server_not_ready",
-                format!("no model is serving and none is loading ({reason}); a switch to a model that loads is the way back"),
-            )
-        }
+        ModelStatus::WarmingUp => unavailable("server_not_ready", WARMING_UP_MESSAGE),
+        ModelStatus::Failed { reason, .. } if server.nothing_serves_or_loads() => stranded(reason),
         _ => Json(serde_json::json!({ "status": "ok" })).into_response(),
     }
 }
@@ -2126,7 +2133,7 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
         (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
-        (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`).", body = ApiError),
+        (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`).", body = ApiError),
         (status = 504, description = "The engine did not finish the request within `--server-request-timeout`.", body = ApiError),
     ),
 )]

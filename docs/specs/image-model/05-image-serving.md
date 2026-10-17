@@ -400,7 +400,7 @@ docs and the Playground are the agents after it.
 - **OpenAPI.** An `images` tag and both routes, the edit as a multipart
   `EditForm`. `ImageStreamEvent` is oneOf progress / completed / error, and
   `Phase` lists all six phases.
-- **Not applied.** `server.request_timeout` (a text knob, 30 s by default)
+- **Not applied.** `server.request_timeout` (a text knob, 120 s by default since GitHub #327)
   does not bound an image request. `prompt_enhancement` is parsed and has no
   effect until 322c.
 - **Tests.**

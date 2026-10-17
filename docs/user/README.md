@@ -735,9 +735,12 @@ CPU mock, which has nothing to capture, is ready at once.
 **Probes.** Two, both outside `/v1`: neither asks for an API key, and neither
 counts as a use of the model (idle unload does not see them).
 - `GET /health` is **liveness**: `200 {"status": "ok"}` whenever the process
-  answers, including while the model loads. Point a restarting probe here
-  (Kubernetes `livenessProbe`), never at `/ready`: a loading server is
-  alive, and restarting it would restart the load in a loop.
+  answers: through the warm-up, every switch and reload, and an idle
+  unload's load. Point a restarting probe here (Kubernetes `livenessProbe`),
+  never at `/ready`: a loading server is alive, and restarting it would
+  restart the load in a loop. The start-up load comes before the listener
+  binds, so during it nothing answers at all: give it room with a
+  `startupProbe` (or an `initialDelaySeconds`) sized for the model's load.
 - `GET /ready` is **readiness**: whether to send it requests. It answers
   `503 server_not_ready` with `Retry-After: 5` until that first warm-up has
   run. After that it answers `200 {"status": "ok"}` while a model serves or

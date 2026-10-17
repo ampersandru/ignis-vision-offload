@@ -138,7 +138,7 @@ describe("ServerView: the configuration", () => {
     expect(rowOf(html, "model.kv_format")).toMatch(/type="radio"[^>]*name="model\.kv_format"/);
     expect(rowOf(html, "server.developer_message_policy")).toMatch(/<select[^>]*name="server\.developer_message_policy"/);
     const timeout = rowOf(html, "server.request_timeout");
-    expect(timeout).toMatch(/<input[^>]*name="server\.request_timeout"[^>]*value="30"/);
+    expect(timeout).toMatch(/<input[^>]*name="server\.request_timeout"[^>]*value="120"/);
     expect(timeout).toContain("seconds, 1..=3600");
     expect(rowOf(html, "vram.kv_pool_bytes")).toContain('placeholder="auto"');
     // An unset choice of more than four reads "auto" too.

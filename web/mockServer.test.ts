@@ -39,7 +39,7 @@ describe("createServerSim", () => {
     const plain = sim.patch({ server: { request_timeout: "90", developer_message_policy: "/error" } }, T);
     expect(plain.status).toBe(400);
     expect(JSON.stringify(plain.body)).toContain("`server.developer_message_policy`");
-    expect(sim.config(T).body.server.request_timeout).toBe(30);
+    expect(sim.config(T).body.server.request_timeout).toBe(120);
     const scoped = sim.patch({ model: { qwen38: { max_context: "/error" } } }, T);
     expect(JSON.stringify(scoped.body)).toContain("`model.qwen38.max_context`");
   });
@@ -170,7 +170,7 @@ describe("createServerSim: per-model values", () => {
     sim.patch({ server: { request_timeout: "60" } }, T);
     expect(sim.config(T).body.server.request_timeout).toBe(60);
     expect(sim.patch({ server: { request_timeout: null } }, T)).toMatchObject({ status: 200 });
-    expect(sim.config(T).body.server.request_timeout).toBe(30);
+    expect(sim.config(T).body.server.request_timeout).toBe(120);
   });
 
   it("accepts the removal of a value nobody set, and changes nothing", () => {

@@ -831,15 +831,6 @@ impl ignis_core::Scheduler for NeverRuns {
     }
 }
 
-/// A telemetry clock the test sets.
-struct SetClock(std::sync::atomic::AtomicU64);
-
-impl ignis_server::telemetry::TelemetryClock for SetClock {
-    fn now_ms(&self) -> u64 {
-        self.0.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
 /// Wait until the telemetry consumer counts `n` requests in flight: it has
 /// read the clock for every fact before them.
 async fn in_flight_seen(engine: &Engine, n: u32) {
@@ -861,7 +852,7 @@ async fn in_flight_seen(engine: &Engine, n: u32) {
 /// is expected free at 410 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_engine_says_when_a_lane_is_expected_free() {
-    let clock = Arc::new(SetClock(std::sync::atomic::AtomicU64::new(0)));
+    let clock = ignis_server::telemetry::ManualClock::at(0);
     let scheduler = ConcreteScheduler::with_config(
         SchedulerConfig { model: MODEL.into(), max_in_flight: 2, ..SchedulerConfig::default() },
         Arc::new(MockCompute::new()),
@@ -883,16 +874,16 @@ async fn a_full_engine_says_when_a_lane_is_expected_free() {
     let a = app.clone().oneshot(streaming("a")).await.unwrap();
     assert_eq!(a.status(), 200);
     in_flight_seen(&engine, 1).await;
-    clock.0.store(200_000, std::sync::atomic::Ordering::SeqCst);
+    clock.set(200_000);
     drop(a);
     in_flight_seen(&engine, 0).await;
-    clock.0.store(210_000, std::sync::atomic::Ordering::SeqCst);
+    clock.set(210_000);
     let b = app.clone().oneshot(streaming("b")).await.unwrap();
     assert_eq!(b.status(), 200);
     in_flight_seen(&engine, 1).await;
 
     for (now_ms, expected) in [(211_000, "60"), (405_500, "6"), (409_999, "2"), (410_000, "1"), (500_000, "1")] {
-        clock.0.store(now_ms, std::sync::atomic::Ordering::SeqCst);
+        clock.set(now_ms);
         let refused = app.clone().oneshot(streaming("refused")).await.unwrap();
         assert_eq!(refused.status(), 503, "at {now_ms} ms");
         assert_eq!(refused.headers()[axum::http::header::RETRY_AFTER], expected, "at {now_ms} ms");

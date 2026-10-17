@@ -25,7 +25,8 @@
 //!   unbounded channel; a separate async task owns the [`Telemetry`] value
 //!   and does all the counter math and event emission off the model thread,
 //!   then publishes the computed counters into a wait-free [`ArcSwap`]
-//!   snapshot.
+//!   snapshot, and beside them when a lane is expected to free (an atomic
+//!   a `503 engine_full` reads for its `Retry-After`, GitHub #327).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
