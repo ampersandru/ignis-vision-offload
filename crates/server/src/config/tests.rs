@@ -7,7 +7,7 @@ use super::*;
 use crate::instruction::{DeveloperMessagePolicy, SystemMessagePolicy};
 use crate::thinking::ReasoningEffort;
 use ignis_core::compute::ModelFamily;
-use ignis_core::speculation::{FLASH_NEXT_DEFAULT_DRAFT_TOKENS, FLASH_NEXT_VERIFY_ROWS};
+use ignis_core::speculation::{FLASH_NEXT_DEFAULT_DRAFT_TOKENS, FLASH_NEXT_MAX_VERIFY_ROWS, FLASH_NEXT_VERIFY_ROWS};
 
 fn no_env(_: &str) -> Option<String> {
     None
@@ -541,6 +541,7 @@ fn the_help_names_mtp_and_the_draft_row_budget() {
     let rows = help_block("--spec-draft-rows");
     assert!(rows.contains("IGNIS_SPEC_DRAFT_ROWS"), "{rows}");
     assert!(rows.contains(&format!("0 (= {FLASH_NEXT_VERIFY_ROWS})")), "{rows}");
+    assert!(rows.contains(&format!("2..={FLASH_NEXT_MAX_VERIFY_ROWS}")), "{rows}");
 }
 
 #[test]
@@ -1477,7 +1478,12 @@ fn spec_mtp_spec_off_and_draft_rows_parse() {
     assert!(off.speculation_off && off.speculation.is_none());
     let default = config(&[]);
     assert!(!default.speculation_off && default.draft_rows.is_none());
-    for raw in ["1", "9", "rows"] {
+    // GitHub #329 item 5: a budget up to the leaf's maximum, past the default's 8.
+    for rows in [9, 16, 24, FLASH_NEXT_MAX_VERIFY_ROWS] {
+        let wide = config(&["--spec-backend", "mtp", "--spec-draft-rows", &rows.to_string()]);
+        assert_eq!(wide.draft_rows, Some(rows));
+    }
+    for raw in ["1", "33", "rows"] {
         let err = refused(&["--spec-draft-rows", raw]);
         assert!(err.contains("--spec-draft-rows") && err.contains(raw), "{err}");
     }

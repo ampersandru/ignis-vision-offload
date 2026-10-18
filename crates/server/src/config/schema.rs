@@ -501,8 +501,8 @@ config_group! {
         /// drafts a lane verifies (default 2). Needs a backend.
         draft_tokens: Opt<Tokens> = None, between(1, ignis_core::MAX_DRAFT_TOKENS as i64), ALL, [Visible, Patchable, ReloadRequired, Scoped];
         /// Flash-Next's draft row budget: the rows a verify round takes across
-        /// lanes, 0 (= 8) or 2..=8; 3 drafts at one lane only.
-        draft_rows: Opt<DraftRows> = None, between(0, ignis_core::speculation::FLASH_NEXT_VERIFY_ROWS as i64), FLASH_NEXT_ONLY,
+        /// lanes, 0 (= 8) or 2..=32; past 8, five to eight lanes draft too.
+        draft_rows: Opt<DraftRows> = None, between(0, ignis_core::speculation::FLASH_NEXT_MAX_VERIFY_ROWS as i64), FLASH_NEXT_ONLY,
             [Visible, Patchable, ReloadRequired];
         /// Flash-Next's decode lanes: the sequences it decodes at once,
         /// sharing the KV pool — min(524,288 tokens, lanes x `max_context`),

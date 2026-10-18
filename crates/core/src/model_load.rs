@@ -98,8 +98,8 @@ pub(crate) mod ffi {
         /// model's life (`ignis_residency`); null on the 27B.
         pub residency: *mut std::ffi::c_void,
         /// GitHub #307: Flash-Next's draft row budget (spec flash-next/07,
-        /// [`crate::speculation::flash_next_window`]); 0 = the decode
-        /// route's 8 rows, and 0 on the 27B.
+        /// [`crate::speculation::flash_next_window`]); 0 = the default's
+        /// 8 rows, up to 32, and 0 on the 27B.
         pub draft_row_budget: u32,
         /// GitHub #307: the MTP head's expert slot table under the MTP
         /// backend (host `[512 * 2]` [`IgnisMoeSlot`]s), null otherwise.

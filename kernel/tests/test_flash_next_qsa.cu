@@ -521,7 +521,7 @@ int main() {
   Store bf16_store(IGNIS_KV_FORMAT_BF16), hq_store(IGNIS_KV_FORMAT_HQ_E8_2B);
   const qsa::Kv kv_bf16 = bf16_store.kv(dt), kv_hq = hq_store.kv(dt);
   constexpr int kMaxRows = 1200;
-  ninfer::DeviceArena arena(fn::fn_qsa_attention_scratch_bytes(g, kMaxRows));
+  ninfer::DeviceArena arena(fn::fn_qsa_attention_scratch_bytes(g, kMaxRows, qsa::kMaxDecodeLanes));
   DeviceBytes d_x(static_cast<std::size_t>(kMaxRows) * H * 2);
   DeviceBytes d_y_bf16(static_cast<std::size_t>(kMaxRows) * H * 2), d_y_hq(static_cast<std::size_t>(kMaxRows) * H * 2);
   DeviceBytes d_sel_tokens(static_cast<std::size_t>(kSparseRows) * kWidth * 4), d_sel_counts(kSparseRows * 4);
@@ -620,7 +620,7 @@ int main() {
         MOE_CUDA(cudaStreamSynchronize(stream));
         // A sparse prefill call under hq-e8-2b also decodes every visible row: S3's plan line.
         const bool s3_line = f == 1 && lists != nullptr && tokens > 1;
-        const std::size_t allowed = fn::fn_qsa_attention_scratch_bytes(g, rows) +
+        const std::size_t allowed = fn::fn_qsa_attention_scratch_bytes(g, rows, std::min(rows, qsa::kMaxDecodeLanes)) +
                                     (s3_line ? 2 * ((sparse::visible_hq_bytes(g, batch.max_visible) + 255) / 256 * 256) : 0);
         check(arena.peak_used() <= allowed, name + ": scratch peak within its plan lines");
       }
@@ -1068,6 +1068,23 @@ int main() {
     check(qsa::run(g, kv_bf16, ix_rope, wv, many, d_x.p, listed, d_y_bf16.p, arena, stream) != 0 &&
               std::strstr(fn::fn_last_error(), "decode call is at most") != nullptr,
           "a decode call of more lanes than kMaxDecodeLanes is refused by name");
+    // GitHub #329 item 5: a verify call is bounded by its records' rows, not by a decode round's
+    // lanes; its listed hq rows are the scratch's to hold (the load sizes them by its widest round).
+    fn::VerifyRecords records;
+    records.rows = 8;
+    fn::Batch wide;
+    wide.lanes = 2;
+    wide.tokens = 8;
+    wide.slots = d_slots.as<int32_t>();
+    wide.positions = d_positions.as<int32_t>();
+    wide.max_visible = 8;
+    wide.verify = &records;
+    check(qsa::run(g, kv_bf16, ix_rope, wv, wide, d_x.p, listed, d_y_bf16.p, arena, stream) != 0 &&
+              std::strstr(fn::fn_last_error(), "verify call of 16 rows overruns its records' 8") != nullptr,
+          "a verify call wider than its records is refused by name");
+    check(fn::fn_qsa_attention_scratch_bytes(g, 16, 16) >= 2 * sparse::listed_hq_bytes(g, 16) &&
+              fn::fn_qsa_attention_scratch_bytes(g, 16, 8) < 2 * sparse::listed_hq_bytes(g, 16),
+          "a verify round of 16 rows plans the listed hq rows of all 16");
   }
   MOE_CUDA(cudaStreamDestroy(stream));
 

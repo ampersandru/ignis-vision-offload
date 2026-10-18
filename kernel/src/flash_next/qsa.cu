@@ -282,8 +282,9 @@ int32_t run(const Geometry &g, const Kv &kv, const indexer::Rope &rope, const Qs
   if (batch.tokens == 1 && batch.lanes > kMaxDecodeLanes) {
     return fail("a decode call is at most " + std::to_string(kMaxDecodeLanes) + " lanes");
   }
-  if (batch.verify != nullptr && rows > kMaxDecodeLanes) {
-    return fail("a verify call is at most " + std::to_string(kMaxDecodeLanes) + " rows");
+  if (batch.verify != nullptr && rows > batch.verify->rows) {
+    return fail("a verify call of " + std::to_string(rows) + " rows overruns its records' " +
+                std::to_string(batch.verify->rows));
   }
   const bool hq = kv.kv_format == IGNIS_KV_FORMAT_HQ_E8_2B;
 
@@ -418,14 +419,14 @@ int32_t fn_qsa_attention(const Context &ctx, int32_t attn_ordinal, const QsaWeig
   return qsa::run(ctx.g, kv, indexer::rope_from(ctx.rope), w, batch, x, selection, y, scratch, stream);
 }
 
-// The activations, the widest hq decode a dense or decode call makes (dense_threshold() visible
-// rows, or the listed rows of at most kMaxDecodeLanes lanes), and the sparse route's partials. A
+// The activations, the widest hq decode a dense, decode or verify call makes (dense_threshold()
+// visible rows, or the listed rows of `listed_rows` rows), and the sparse route's partials. A
 // sparse PREFILL call under hq-e8-2b also decodes every visible row (S3's decode_visible_hq,
 // 2 * visible_hq_bytes(g, max_visible)): that scales with max_visible, so it is S3's plan line,
 // not this one (coordinator, 2026-10-05).
-std::size_t fn_qsa_attention_scratch_bytes(const Geometry &g, int32_t rows) {
+std::size_t fn_qsa_attention_scratch_bytes(const Geometry &g, int32_t rows, int32_t listed_rows) {
   if (rows <= 0) return 0;
-  const std::size_t decoded = std::max(sparse::listed_hq_bytes(g, std::min(rows, qsa::kMaxDecodeLanes)),
+  const std::size_t decoded = std::max(sparse::listed_hq_bytes(g, std::min(rows, listed_rows)),
                                        sparse::visible_hq_bytes(g, g.dense_threshold()));
   return qsa::activation_bytes(rows) + 2 * qsa::aligned(decoded) + qsa::aligned(sparse::partial_bytes(g, rows));
 }

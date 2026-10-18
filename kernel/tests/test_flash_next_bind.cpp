@@ -11,6 +11,7 @@
 // Host-only. ADR 0006: no SKIP_RETURN_CODE.
 
 #include "flash_next/bind.h"
+#include "flash_next/verify.h"
 
 #include "ignis_model.h"
 #include "ignis_seq.h"
@@ -338,6 +339,59 @@ int main() {
     const std::string narrow = plan(&verify_only);
     check(narrow.find("row budget of 1") != std::string::npos,
           "a row budget that leaves one lane no draft is refused by name: got \"" + narrow + "\"");
+    // GitHub #329 item 5: a budget past the default's 8 rows, up to verify::kMaxRows. Its windows
+    // are crates/core's flash_next_window; 0 and 8 plan alike; a wider budget grows the verify
+    // round's, the sampling and the decode round's lines, and only as far as the load's rounds
+    // reach.
+    {
+      namespace verify = ignis::flash_next::verify;
+      const auto widths = [](uint32_t draft, uint32_t budget) {
+        std::vector<uint32_t> w;
+        for (uint32_t lanes = 1; lanes <= 8; ++lanes) w.push_back(verify::window_for(draft, budget, lanes));
+        return w;
+      };
+      check(widths(3, 16) == std::vector<uint32_t>{3, 3, 3, 3, 2, 1, 1, 1}, "3 drafts at 16 rows: every width drafts");
+      check(widths(3, 24) == std::vector<uint32_t>{3, 3, 3, 3, 3, 3, 2, 2}, "3 drafts at 24 rows");
+      check(widths(7, 32) == std::vector<uint32_t>{7, 7, 7, 7, 5, 4, 3, 3}, "7 drafts at 32 rows");
+      check(widths(3, 0) == widths(3, 8) && verify::kMaxRows == 32, "0 is the default's 8 rows; the maximum is 32");
+      const auto planned = [&](uint32_t lanes, uint32_t budget, ignis_model_reservations *lines) {
+        ignis_model_load_options o = verify_only;
+        o.decode_lanes = lanes;
+        o.draft_row_budget = budget;
+        const std::string why = plan(&o);
+        *lines = out;
+        return why;
+      };
+      const auto same = [](const ignis_model_reservations &a, const ignis_model_reservations &b) {
+        return a.workspace_bytes == b.workspace_bytes && a.sampling_bytes == b.sampling_bytes &&
+               a.decode_graph_bytes == b.decode_graph_bytes && a.activation_bytes == b.activation_bytes &&
+               a.verify_round_bytes == b.verify_round_bytes;
+      };
+      ignis_model_reservations zero{}, eight{}, sixteen{}, twelve{}, maximum{};
+      check(planned(4, 0, &zero) == "(planned)" && planned(4, 8, &eight) == "(planned)" && same(zero, eight),
+            "a budget of 8 plans exactly what the default does");
+      const std::string wide = planned(4, 16, &sixteen);
+      check(wide == "(planned)", "a budget of 16 rows is planned: got \"" + wide + "\"");
+      check(sixteen.verify_round_bytes > eight.verify_round_bytes && sixteen.sampling_bytes > eight.sampling_bytes &&
+                sixteen.decode_graph_bytes > eight.decode_graph_bytes && sixteen.workspace_bytes == eight.workspace_bytes &&
+                sixteen.activation_bytes == eight.activation_bytes,
+            "16 rows grow the verify round's, the sampling and the decode round's lines, not the prefill's");
+      std::printf("flash-next bind: 4 lanes x 3 drafts, budget 8 -> 16: verify %llu -> %llu, sampling %llu -> %llu, "
+                  "decode graph %llu -> %llu bytes\n",
+                  static_cast<unsigned long long>(eight.verify_round_bytes),
+                  static_cast<unsigned long long>(sixteen.verify_round_bytes),
+                  static_cast<unsigned long long>(eight.sampling_bytes),
+                  static_cast<unsigned long long>(sixteen.sampling_bytes),
+                  static_cast<unsigned long long>(eight.decode_graph_bytes),
+                  static_cast<unsigned long long>(sixteen.decode_graph_bytes));
+      // Three lanes of 3 drafts reach 12 rows: the maximum's budget reserves what 12 does.
+      check(planned(3, 12, &twelve) == "(planned)" && planned(3, 32, &maximum) == "(planned)" && same(twelve, maximum),
+            "a budget no round reaches reserves nothing past the rows the load's rounds take");
+      ignis_model_reservations ignored{};
+      const std::string past = planned(4, 33, &ignored);
+      check(past.find("row budget of 33") != std::string::npos && past.find("2..32") != std::string::npos,
+            "a budget past the maximum is refused by name: got \"" + past + "\"");
+    }
     tensors.pop_back();
     const std::string missing = plan(nullptr);
     check(missing.find("bind_flash_next: missing bound tensor") != std::string::npos,
