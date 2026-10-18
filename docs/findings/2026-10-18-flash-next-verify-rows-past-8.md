@@ -4,8 +4,8 @@
 - Status: current
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
-- Scope: kernel / the Flash-Next verify round's row budget (`verify::kMaxRows`, `--spec-draft-rows`), MTP speculation's losslessness seam (`crates/core/tests/flash_next_speculative_gpu.rs`)
-- Related: https://github.com/gpillon/ignis/issues/329 (item 5), [spec flash-next/07](../specs/flash-next/07-mtp-speculation.md), [the rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), [batched decode width drift](2026-09-14-batched-decode-width-drift.md), `.scratch/verify-rows/` (branch `verify-rows`)
+- Scope: kernel / the Flash-Next verify round's row budget (`verify::kMaxRows`, `--spec-draft-rows`), MTP speculation's losslessness seam (`crates/core/tests/flash_next_speculative_gpu.rs`, `crates/core/tests/support/logit_drift.rs`)
+- Related: https://github.com/gpillon/ignis/issues/329 (item 5), [ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md), [spec flash-next/07](../specs/flash-next/07-mtp-speculation.md), [the rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), [batched decode width drift](2026-09-14-batched-decode-width-drift.md), `.scratch/verify-rows/` (branch `verify-rows`)
 - Superseded by: none
 
 ## Question
@@ -79,6 +79,59 @@ equal speculation off trivially. The BF16 5-lane divergence at lane 4 token
 route's pick there, passing only because the rule takes the prefill route's
 side.
 
+**Teacher-forced against spec-off** (after the owner's decision, ADR 0056;
+`a_*_row_budget_is_numerically_equivalent_to_speculation_off` and
+`the_default_budgets_rounds_keep_the_wide_budgets_rules`, the rules in
+`crates/core/tests/support/logit_drift.rs`). A load of 8 decode lanes at the
+budget, the same eight prompts, 40 tokens a lane. Spec-off's one-token rounds
+are run with their logits read back (`ignis_decode_options::out_logits`); then
+verify rounds are offered spec-off's own text as drafts, so each drafted
+column holds spec-off's token while the lane's committed text is spec-off's,
+and each such row is compared with spec-off's row at the same text index. A
+lane whose pick moved leaves the comparison after that round. Drift is the
+largest |on - off| over the vocabulary in BF16 ulps at the spec-off row's
+largest magnitude; a moved pick's gap is the spec-off row's lead of its pick
+over the wide one's, in the same ulps; log-prob is the mean log-probability of
+spec-off's next token, wide minus spec-off; acceptance is the head's
+first-draft acceptance in its own run.
+
+| budget | format | lanes x columns | rows | drift max / p99 / median | picks moved (lane@index: gap) | log-prob | acceptance |
+|---:|---|---|---:|---|---|---:|---:|
+| 8 | BF16 | 2 x 4 | 44 | 35.3 / 35.3 / 3.0 | 1@1: 1 | +0.0077 | 0.875 |
+| 8 | BF16 | 4 x 2 | 160 | 9.7 / 8.1 / 0 | -- | +0.0012 | 0.937 |
+| 8 | hq-e8-2b | 2 x 4 | 80 | 38.0 / 38.0 / 3.4 | -- | +0.0058 | 0.875 |
+| 8 | hq-e8-2b | 4 x 2 | 160 | 40.2 / 39.6 / 3.0 | -- | -0.0026 | 0.937 |
+| 16 | BF16 | 4 x 4 | 160 | 39.2 / 36.0 / 2.9 | -- | +0.0014 | 0.870 |
+| 16 | BF16 | 5 x 3 | 199 | 39.2 / 36.0 / 3.5 | 4@37: 2 | -0.0031 | 0.867 |
+| 16 | BF16 | 8 x 2 | 250 | 39.2 / 26.3 / 4.3 | 7@2: 8; 5@6: 1; 4@37: 4 | -0.0029 | 0.822 |
+| 16 | hq-e8-2b | 4 x 4 | 152 | 36.0 / 33.1 / 3.0 | 3@28: 1 | -0.0047 | 0.891 |
+| 16 | hq-e8-2b | 5 x 3 | 169 | 54.0 / 35.6 / 3.0 | 4@6: 4 | -0.0077 | 0.878 |
+| 16 | hq-e8-2b | 8 x 2 | 250 | 46.0 / 35.6 / 4.7 | 5@6: 1; 4@16: 2; 6@22: 1; 6@23: 1 | -0.0103 | 0.760 |
+| 24 | BF16 | 6 x 4 | 208 | 39.2 / 24.4 / 3.7 | 5@6: 1; 4@37: 2 | -0.0039 | 0.787 |
+| 24 | BF16 | 8 x 3 | 251 | 39.2 / 26.3 / 4.3 | 7@2: 8; 5@6: 1; 4@37: 4 | -0.0042 | 0.797 |
+| 24 | hq-e8-2b | 6 x 4 | 196 | 36.0 / 33.1 / 3.6 | 5@6: 1; 5@7: 0; 3@28: 1; 4@33: 2 | -0.0117 | 0.744 |
+| 24 | hq-e8-2b | 8 x 3 | 211 | 54.0 / 29.0 / 3.4 | 4@6: 4; 5@6: 1; 5@7: 0; 7@7: 4; 6@22: 5 | -0.0058 | 0.806 |
+| 32 | BF16 | 8 x 4 | 252 | 39.2 / 26.3 / 4.3 | 7@2: 8; 5@6: 1; 4@37: 4 | -0.0031 | 0.766 |
+| 32 | hq-e8-2b | 8 x 4 | 260 | 58.3 / 36.0 / 5.6 | 5@6: 1; 5@7: 0; 6@22: 2; 3@28: 1; 4@33: 3 | -0.0108 | 0.750 |
+
+The widest rows move a tail logit: 32 rows hq-e8-2b, lane 6 at 9, id 142890
+from 0.71 to 8.0 where the pick stands at 23.5 (7.3 logits, 58.3 ulps at
+scale 23.5). A gap of 0 is an exact tie on spec-off's row (it picks the
+lower id). The BF16 cells' 39.2 is one row (lane 0 at 25) shared by every
+wide budget. In every cell, at every budget, the exact checks held: reject
+left none's text and probe bit for bit, the BF16 oracle (none's text as
+drafts) every draft accepted and none's text and probe, every lane of every
+round of the teacher-forced run and of the head's run committed its own
+rows' picks (accepted the longest prefix of drafts each the pick after the
+column before it, and stood pending on the pick after its run), and the
+head's run repeated its text, rounds, drafts, rows (hashed) and probes.
+
+For scale: the rows of the 8-row BF16 two-lane cell's lane 1 after its pick
+moved at index 1 -- a text one token off spec-off's, compared at the same
+indices anyway, what a row read on another context looks like -- drift
+33-202 ulps (median 104; 89% past 64, 59% past 96), most of it on the top
+logits (a pick at 21.5 read at -0.9).
+
 **VRAM** (plan lines, `flash_next_bind` at 131,072 tokens hq-e8-2b, 4 lanes x 3
 drafts, budget 8 -> 16): verify round 13.2 -> 24.0 MB, sampling 4.6 -> 8.6 MB
 (the head's logits, one row a column), decode graph 40.8 -> 75.3 MB (the QSA
@@ -107,14 +160,21 @@ tensor-core routes move its logits further from speculation off's decode
 routes than any round of 8 rows or fewer does: at 16 rows three checks out of
 the cells above exceed the near-tie rule (4 to 21 BF16 ulps), where the
 default's 8 rows show no divergence at all on the same prompts. A budget past
-8 is therefore not held lossless by the repository's seam yet. On the 5090 it
-is also slower (0.74-0.80x), as a PCIe-bound card predicts.
+8 is therefore not held lossless by the repository's seam. Teacher-forced,
+the gap is smaller than the free-running texts suggest: the default's own
+8-row rounds already move logits up to 40 ulps from spec-off, and 16-32 rows
+up to 58, with picks moving only at gaps of 0-8 ulps and the mean
+log-probability within 0.012 nats a token -- the same class of drift, about
+1.5x wider at its widest, not a new one. On the 5090 a budget past 8 is also
+slower (0.74-0.80x), as a PCIe-bound card predicts.
 
 ## Implications
 
 The knob ships with its default unchanged; a load that names no budget plans
-and runs as before. Before a budget past 8 is recommended (on the RTX PRO
-6000, where decode is not PCIe-bound), one of these has to be chosen:
+and runs as before. The owner chose option 3 (2026-10-18, ADR 0056): a
+budget past 8 is held numerically equivalent to speculation off -- the table
+above's checks, at a tolerance of 64 ulps, 0.02 nats and a 0.5 first-draft
+acceptance -- not to its text. The options as they were put:
 
 1. **Launches of 8 rows everywhere a route switches at 8**: the linears
    (`fn_linear`, under a decode-phase flag, since a prefill chunk of 9..32
@@ -134,20 +194,27 @@ and runs as before. Before a budget past 8 is recommended (on the RTX PRO
 
 ## Limits and unknowns
 
-- One prompt set, 40 tokens a lane, 4/5/8 lanes, one card. Three refusals
+- One prompt set, 40 tokens a lane, 2-8 lanes, one card. Three refusals
   over about 1,400 compared tokens (the head's and the oracle's); their rate
-  on longer texts is unmeasured.
+  on longer texts is unmeasured. The teacher-forced tolerance is measured on
+  the same prompts on the 5090; another card's tensor-core tiling may move it.
+- The teacher-forced text is spec-off's own greedy text, so the
+  log-probability check favours spec-off: it bounds how much worse the wide
+  route reads, not a perplexity on human text.
 - Self-consistency cannot exclude a deterministic error specific to one
-  wide shape (for example 8 lanes x 2 columns); the 4-lane x 16-row cell
-  being clean in BF16 argues against one. The discriminator is a per-round
-  logit comparison: the first column of a 16-row verify pass against a plain
-  decode round from the same state.
+  wide shape (for example 8 lanes x 2 columns); the teacher-forced
+  comparison above is the per-round logit discriminator, every column of
+  every wide shape against spec-off's row, and it puts each shape inside the
+  default's drift class. A subtler error (one that moves logits by tens of
+  ulps) would pass it.
 - The RTX PRO 6000 numbers (MTP 3 at 4 lanes 1.12-1.19x, at 8 lanes 0.97x)
   predate this change; what a 16-row budget pays there is unmeasured.
 
 ## Follow-ups
 
-- The owner chooses among the three options above.
-- After that: on the RTX PRO 6000, `flash_next_mtp_bench mtp --draft-tokens 3
+- On the RTX PRO 6000, `flash_next_mtp_bench mtp --draft-tokens 3
   --lanes 8 --draft-rows 8|16|24`, then the profile campaign's 4- and 8-lane
-  cells at `spec.draft_rows` 16 against 8.
+  cells at `spec.draft_rows` 16 against 8: whether a profile takes a budget
+  past 8.
+- A change of the wide routes (a GEMM tiling, option 2) re-measures the
+  tolerance: rerun the four budget tests and read the drift column.
