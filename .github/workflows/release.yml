@@ -357,13 +357,15 @@ jobs:
       #   crt        bin/crt, its link stubs
       #   nvvm       cicc, the device compiler nvcc drives -- a component of
       #              its own on Windows, not part of nvcc
-      #   cudart     the runtime: headers, cudart.lib, cuda.lib, and the
-      #              cudart64_*.dll the release zip carries
+      #   cudart     the runtime: headers (cuda.h among them), cudart.lib,
+      #              and the cudart64_*.dll the release zip carries
       #   thrust     CUB/Thrust/libcu++. Still spelled `thrust` in the
       #              installer even though CUDA 13 lays it down under
       #              include/cccl, which is where sampling_device.cuh's
       #              <cub/block/block_merge_sort.cuh> resolves
-      #   nvml_dev   nvml.lib, for ignis_device_nvml_mem_info (GitHub #210)
+      #   nvml_dev   nvml.h, for ignis_device_nvml_mem_info (GitHub #210),
+      #              which opens nvml.dll at run time (#329), and nvml.lib,
+      #              which the kernel's image benches link
       #   nvtx       nvtx3/nvToolsExt.h, which the vendored core/nvtx.h
       #              includes
       #   the rest   the small tools nvcc and CMake's compiler probe shell
@@ -407,7 +409,7 @@ jobs:
                    include/cooperative_groups.h include/math_constants.h \
                    include/nvml.h include/nvtx3/nvToolsExt.h \
                    include/cccl/cub/block/block_merge_sort.cuh \
-                   lib/x64/cudart.lib lib/x64/cuda.lib lib/x64/nvml.lib; do
+                   lib/x64/cudart.lib lib/x64/nvml.lib; do
             if [ -e "$cuda/$f" ]; then echo "  ok      $f"; else echo "  MISSING $f"; missing=1; fi
           done
           # The redistributable the zip carries; its name follows the major.

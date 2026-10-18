@@ -179,7 +179,10 @@ their launchers), and the large-T W4A4 route in full —
 `nvfp4_w4a4_plan.h`, `nvfp4_w4a4_mma.cuh` / `nvfp4_w4a4.cu` (the tensor-core
 MMA route) and `nvfp4_w4a4_tma.{cuh,cu}` / `nvfp4_w4a4_tma_launch.h` (the
 warp-specialized SM120 TMA route, which needs the CUDA driver API directly for
-`cuTensorMapEncodeTiled`; `ignis_vendor` links `CUDA::cuda_driver` for it). Two
+`cuTensorMapEncodeTiled`; since GitHub #329 that call, and its
+`cuGetErrorName`, resolve to our `kernel/src/cuda_driver_shim.cu`, which
+forwards them to the driver through the CUDA runtime, so nothing links the
+driver's library and the vendored file is unchanged). Two
 small epilogue/output headers from *other* op families are vendored alongside
 it because `nvfp4_w4a4_tma.cu` is the shared W4A4 GEMM kernel those families
 reuse: `ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_output.cuh` and

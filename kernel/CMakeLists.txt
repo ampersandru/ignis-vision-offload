@@ -285,8 +285,14 @@ target_link_libraries(ignis_vendor PUBLIC CUDA::cudart)
 # CUDA_SEPARABLE_COMPILATION OFF) because RDC makes ptxas discard that
 # contract; ignis has no target anywhere with CUDA_SEPARABLE_COMPILATION ON
 # (the default is already OFF), so that constraint already holds here without
-# a second library — only the driver-API link dependency needs adding.
-target_link_libraries(ignis_vendor PUBLIC CUDA::cuda_driver)
+# a second library.
+#
+# Its two driver calls (cuTensorMapEncodeTiled, cuGetErrorName) resolve to
+# kernel/src/cuda_driver_shim.cu in ignis_kernel, which forwards them to the
+# driver the CUDA runtime loaded -- never to CUDA::cuda_driver (GitHub #329):
+# libcuda.so.1 / nvcuda.dll ship with the driver, and a binary that names one
+# on its link line does not start on a machine without it, even for a command
+# that never touches the GPU. Nothing here links the driver's libraries.
 
 # --- the leaf's own C ABI surface ------------------------------------------
 #
@@ -315,8 +321,11 @@ target_link_libraries(ignis_kernel PUBLIC ignis_vendor)
 # the test executables that name only ignis_vendor.
 target_link_libraries(ignis_vendor PUBLIC ignis_kernel)
 # GitHub #210: device memory as NVML reports it, read before a context exists
-# (ignis_device_nvml_mem_info). nvml.dll ships with the driver.
-target_link_libraries(ignis_kernel PUBLIC CUDA::nvml)
+# (ignis_device_nvml_mem_info). NVML ships with the driver, so device.cu opens
+# it at run time (kernel/src/shared_library.cu) rather than linking CUDA::nvml
+# (GitHub #329); CMAKE_DL_LIBS is dlopen's library (`dl` on Linux, nothing on
+# Windows).
+target_link_libraries(ignis_kernel PUBLIC ${CMAKE_DL_LIBS})
 
 # NOTE: ignis_kernel itself still does not resolve cudart here — a static
 # archive carries unresolved cudart symbols, which the final Rust binary

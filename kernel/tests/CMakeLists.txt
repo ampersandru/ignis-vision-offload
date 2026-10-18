@@ -275,6 +275,18 @@ add_executable(ignis_kernel_paged_kv_budget_test test_paged_kv_page_budget.cpp)
 target_link_libraries(ignis_kernel_paged_kv_budget_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_paged_kv_budget_test COMMAND ignis_kernel_paged_kv_budget_test)
 
+# GitHub #329: OURS -- the driver's libraries reached at run time, never
+# linked: the forwarded driver API (kernel/src/cuda_driver_shim.cu), NVML
+# opened by device.cu (kernel/src/shared_library.cu) and the driver probe. On
+# this host it needs the driver; `--expect-no-driver` turns it into the check
+# for a machine without one, which is how the Linux no-GPU proof runs it. It
+# launches and allocates nothing, so it runs while another process holds the
+# card.
+add_executable(ignis_kernel_driver_libraries_test test_driver_libraries.cu)
+target_include_directories(ignis_kernel_driver_libraries_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_driver_libraries_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_driver_libraries_test COMMAND ignis_kernel_driver_libraries_test)
+
 # --- P1-19 (GitHub #55): the sequence handle ABI ----------------------------
 #
 # Ours, not vendored: exercises ignis_seq_alloc/release through the public

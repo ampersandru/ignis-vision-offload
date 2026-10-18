@@ -69,10 +69,12 @@ before building anything. A tag's run is never cancelled by the concurrency
 group.
 
 **Nothing is run on a runner.** No runner has an NVIDIA GPU. The kernel is
-compiled for SM120a and linked against the toolkit's driver stubs
-(`lib64/stubs`), which carry the real SONAMEs, so the binary loads the host's
-own `libcuda.so.1` and `libnvidia-ml.so.1` at run time. Correctness stays on
-the machine with the 5090 (`docs/agents/testing.md`).
+compiled for SM120a and links no driver library: the binary reaches the
+host's own `libcuda.so.1` through the CUDA runtime and opens
+`libnvidia-ml.so.1` at run time (GitHub #329 — until then it was linked
+against the toolkit's driver stubs, which kept it from starting at all where
+there is no driver). Correctness stays on the machine with the 5090
+(`docs/agents/testing.md`).
 
 **The image carries no model and no driver.** A `.ninfer` container is tens of
 GB, so it is mounted; the driver is injected by the container runtime.

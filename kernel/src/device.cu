@@ -15,6 +15,7 @@
 
 #include "ignis_device.h"
 #include "ignis_seq.h"
+#include "shared_library.h"
 
 #include <cuda_runtime.h>
 #include <nvml.h>
@@ -30,6 +31,54 @@ struct ignis_device {
 };
 
 namespace {
+
+// NVML ships with the driver, not the toolkit, so it is opened when first
+// asked for rather than linked: a binary that names it on its link line does
+// not start where there is no driver (GitHub #329). nvml.h is here for the
+// entry points' types; they are looked up by their exported names.
+#ifdef _WIN32
+constexpr const char *kNvmlLibrary = "nvml.dll";
+#else
+constexpr const char *kNvmlLibrary = "libnvidia-ml.so.1";
+#endif
+
+struct Nvml {
+  decltype(&nvmlInit_v2) init;
+  decltype(&nvmlShutdown) shutdown;
+  decltype(&nvmlErrorString) error_string;
+  decltype(&nvmlDeviceGetHandleByPciBusId_v2) handle_by_pci_bus_id;
+  decltype(&nvmlDeviceGetMemoryInfo) memory_info;
+};
+
+template <typename Fn>
+bool resolve_nvml(void *library, const char *symbol, Fn *out) {
+  *out = reinterpret_cast<Fn>(ignis::shared_library_symbol(library, symbol));
+  if (*out == nullptr) {
+    std::fprintf(stderr, "[ignis-device] NVML: %s has no %s\n", kNvmlLibrary, symbol);
+  }
+  return *out != nullptr;
+}
+
+// The NVML entry points, opened once; nullptr (said once, on stderr) when the
+// library does not load or lacks one of them.
+const Nvml *nvml() {
+  static const Nvml *const api = []() -> const Nvml * {
+    void *library = ignis::open_shared_library(kNvmlLibrary);
+    if (library == nullptr) {
+      std::fprintf(stderr, "[ignis-device] NVML: %s does not load\n", kNvmlLibrary);
+      return nullptr;
+    }
+    static Nvml table{};
+    const bool resolved = resolve_nvml(library, "nvmlInit_v2", &table.init) &&
+                          resolve_nvml(library, "nvmlShutdown", &table.shutdown) &&
+                          resolve_nvml(library, "nvmlErrorString", &table.error_string) &&
+                          resolve_nvml(library, "nvmlDeviceGetHandleByPciBusId_v2",
+                                       &table.handle_by_pci_bus_id) &&
+                          resolve_nvml(library, "nvmlDeviceGetMemoryInfo", &table.memory_info);
+    return resolved ? &table : nullptr;
+  }();
+  return api;
+}
 
 // Log a CUDA error (never aborts from a leaf: the caller decides the -1/NULL
 // path). Returns the caller's own return value (kept separate from logging).
@@ -185,6 +234,21 @@ extern "C" int32_t ignis_device_sync(struct ignis_device *d) {
   return 0;
 }
 
+extern "C" int32_t ignis_device_driver_version(int32_t *version) {
+  if (version == nullptr) {
+    return -1;
+  }
+  // The runtime loads the driver's library here, if there is one; with none
+  // it reports version 0 (GitHub #329). No context is created.
+  int driver_version = 0;
+  cudaError_t err = cudaDriverGetVersion(&driver_version);
+  if (err != cudaSuccess) {
+    return log_cuda_error(-1, "cudaDriverGetVersion", err);
+  }
+  *version = driver_version;
+  return 0;
+}
+
 extern "C" int32_t ignis_device_nvml_mem_info(int device_id, uint64_t *free_bytes,
                                               uint64_t *total_bytes) {
   if (free_bytes == nullptr || total_bytes == nullptr) {
@@ -197,23 +261,27 @@ extern "C" int32_t ignis_device_nvml_mem_info(int device_id, uint64_t *free_byte
   if (err != cudaSuccess) {
     return log_cuda_error(-1, "cudaDeviceGetPCIBusId", err);
   }
-  nvmlReturn_t rc = nvmlInit_v2();
+  const Nvml *api = nvml();
+  if (api == nullptr) {
+    return -1;
+  }
+  nvmlReturn_t rc = api->init();
   if (rc != NVML_SUCCESS) {
-    std::fprintf(stderr, "[ignis-device] NVML error in nvmlInit_v2: %s\n", nvmlErrorString(rc));
+    std::fprintf(stderr, "[ignis-device] NVML error in nvmlInit_v2: %s\n", api->error_string(rc));
     return -1;
   }
   nvmlDevice_t device = nullptr;
   nvmlMemory_t memory{};
-  rc = nvmlDeviceGetHandleByPciBusId_v2(bus_id, &device);
+  rc = api->handle_by_pci_bus_id(bus_id, &device);
   const char *op = "nvmlDeviceGetHandleByPciBusId_v2";
   if (rc == NVML_SUCCESS) {
-    rc = nvmlDeviceGetMemoryInfo(device, &memory);
+    rc = api->memory_info(device, &memory);
     op = "nvmlDeviceGetMemoryInfo";
   }
   if (rc != NVML_SUCCESS) {
-    std::fprintf(stderr, "[ignis-device] NVML error in %s: %s\n", op, nvmlErrorString(rc));
+    std::fprintf(stderr, "[ignis-device] NVML error in %s: %s\n", op, api->error_string(rc));
   }
-  nvmlShutdown();
+  api->shutdown();
   if (rc != NVML_SUCCESS) {
     return -1;
   }

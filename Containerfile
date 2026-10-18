@@ -9,8 +9,11 @@
 # (docker: `--gpus all` in place of `--device`.) The image carries the CUDA
 # runtime, never a driver: the host's NVIDIA driver is injected by the
 # container runtime, which is also where libcuda.so.1 and libnvidia-ml.so.1
-# come from at run time -- the build links the toolkit's stubs for them
-# (crates/artifact/build.rs).
+# come from at run time. The binaries link neither (crates/artifact/build.rs,
+# GitHub #329) -- the CUDA runtime loads the driver, NVML is opened when a
+# load reads it -- so the image also runs where there is no driver at all:
+# `ignis-server model download` on a CPU node, or the CPU mock below. A GPU
+# load there is refused naming the missing driver.
 #
 # The kernel leaf is compiled for SM120a (RTX 5090 / Blackwell consumer),
 # the one architecture kernel/CMakeLists.txt targets. The image will not run
