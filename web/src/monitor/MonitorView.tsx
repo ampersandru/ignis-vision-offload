@@ -1152,7 +1152,7 @@ const LOOP_OUTCOME_LABEL: Record<(typeof LOOP_OUTCOMES)[number], string> = {
   too_little_kept: "Held, too little kept",
   no_room: "No room",
   no_tokenizer: "No tokenizer",
-  submit_refused: "Resubmit refused",
+  submit_refused: "Continuation refused",
 };
 
 /**
@@ -1202,8 +1202,9 @@ function ReasoningCard({ reasoning, win }: { reasoning: Reasoning; win: string }
             ) : null}
           </div>
           <p className="text-[11px] text-ash">
-            A turn that scores under the guard's ratio has looped: the lower the bar, the closer to a rewind. A turn too short to fill one window is watched
-            but never scored. The budget's closes are the thinking budget's own, not the guard's.
+            Each turn's lowest loop score. The guard reads a window under its ratio (0.265 by default) as a loop and acts once one persists, so a turn
+            that never looped sits well above it. A turn too short to fill one window is watched but never scored. The budget's closes are the thinking
+            budget's own, not the guard's.
           </p>
         </>
       )}
