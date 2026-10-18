@@ -155,12 +155,13 @@ Eight vCPUs instead of sixteen cost nothing measurable.
   32-34 GiB driver ceiling would refuse, is gone.
 - **Both builds share one thing that is not about residency:** an MTP
   decode error. The ~73 tok/s first cells after a load were not slow decode:
-  their reps lost a lane mid-generation to `ignis.runtime.leaf_error`
+  a request in those reps ended with `ignis.runtime.leaf_error`
   (`speculative_window 2 is not the window a round of 1 lanes runs on this
-  load (3)`, `finish_reason: error`), as did every warm-up's second rep, at
-  token 86 of 256 on every load. The compared cells (`fn-base2-*`,
-  `fn-donly2-*`) have no errored lane; their warm-ups do. Under fix on
-  branch `fn-mtp-window` (#329, items 4 and 6).
+  load (3)`, `finish_reason: error`) a few tokens before its cap, and the
+  client, given no usage on an error, counted it in chunks. Every warm-up's
+  second rep hit it (255 of 256 tokens). The compared cells (`fn-base2-*`,
+  `fn-donly2-*`) have none; their warm-ups do. Fixed on branch
+  `fn-mtp-window` (4c0ce315; #329, items 4 and 6).
 
 ## Implications
 
