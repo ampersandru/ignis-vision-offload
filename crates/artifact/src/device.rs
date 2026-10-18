@@ -204,7 +204,7 @@ fn driver_check(rc: i32, version: i32, runtime: i32) -> Result<()> {
     if version / 1000 < runtime / 1000 {
         let cuda = |v: i32| format!("{}.{}", v / 1000, (v % 1000) / 10);
         return Err(fail(format!(
-            "the NVIDIA driver on this machine supports CUDA {} but this build's CUDA runtime is {}:              update the NVIDIA driver to one that supports CUDA {} or newer",
+            "the NVIDIA driver on this machine supports CUDA {} but this build's CUDA runtime is {}: update the NVIDIA driver to one that supports CUDA {} or newer",
             cuda(version),
             cuda(runtime),
             runtime / 1000
@@ -444,6 +444,7 @@ mod tests {
         let message = driver_check(0, 12040, 13010).unwrap_err().to_string();
         assert!(message.contains("12.4") && message.contains("13.1"), "{message}");
         assert!(message.contains("update the NVIDIA driver"), "{message}");
+        assert!(!message.contains("  "), "one space between words: {message}");
         // Minor-version compatibility: same major, older minor is accepted.
         assert!(driver_check(0, 13000, 13010).is_ok());
         // A newer driver is accepted.
