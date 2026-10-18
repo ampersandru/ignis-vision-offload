@@ -1056,3 +1056,130 @@ async fn a_socket_continuation_waits_in_the_queue_behind_what_already_waits() {
     let rewound = ended["response"]["usage"]["output_tokens_details"]["rewound_tokens"].as_u64().expect("rewound tokens");
     metric_reaches(&metrics, &format!("ignis_loop_guard_rewound_tokens_total {rewound}")).await;
 }
+
+// ── the idle close (GitHub #329) ──────────────────────────────────────────
+
+/// The idle close these tests configure.
+const IDLE: Duration = Duration::from_millis(300);
+
+/// The next frame that is not a ping or a pong — a text frame or the close —
+/// or `None` when nothing came within `within`.
+async fn next_message(socket: &mut Socket, within: Duration) -> Option<Message> {
+    use futures_util::StreamExt;
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match tokio::time::timeout_at(deadline, socket.next()).await {
+            Err(_) => return None,
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
+            Ok(Some(Ok(message))) => return Some(message),
+            Ok(other) => panic!("the socket ended without a close frame: {other:?}"),
+        }
+    }
+}
+
+/// The server's close frame, within a generous bound: its code and reason.
+async fn closed(socket: &mut Socket) -> (tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode, String) {
+    match next_message(socket, Duration::from_secs(10)).await {
+        Some(Message::Close(Some(frame))) => (frame.code, frame.reason.to_string()),
+        other => panic!("expected the server's close frame, got {other:?}"),
+    }
+}
+
+/// A socket nobody uses for `server.socket_idle_close` is closed by the
+/// server, with a normal close frame whose reason says why — so a tab left
+/// open no longer holds a Knative pod, whose drain waits on every open
+/// socket — and it leaves the open-socket gauge.
+#[tokio::test]
+async fn an_idle_socket_is_closed_with_a_normal_close_frame_saying_why() {
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let server = server(&Script::new(HashMap::new()), SchedulerConfig::default(), plain()).with_metrics().with_socket_idle_close(IDLE);
+    let metrics = Arc::clone(server.metrics.as_ref().unwrap());
+    let live = live(server).await;
+    let opened = std::time::Instant::now();
+    let mut socket = socket(&live).await;
+    let (code, reason) = closed(&mut socket).await;
+    assert!(opened.elapsed() >= IDLE, "closed after {:?}", opened.elapsed());
+    assert_eq!(code, CloseCode::Normal);
+    assert!(reason.contains("idle") && reason.contains("server.socket_idle_close"), "{reason}");
+    metric_reaches(&metrics, "ignis_responses_sockets 0").await;
+}
+
+/// A response running or queued keeps its socket open however long it
+/// takes, and the idle time counts from its end: here a hog runs out a
+/// request timeout of three idle times while a second socket's request
+/// waits for its lane, and each socket closes only after its own response
+/// has ended.
+#[tokio::test]
+async fn a_response_running_or_queued_keeps_its_socket_open_and_the_idle_time_counts_from_its_end() {
+    let timeout = IDLE * 3;
+    let server = server(&Script::silent(), hog_config(1), plain()).with_request_timeout(timeout).with_socket_idle_close(IDLE);
+    let live = live(server).await;
+    let mut running = socket(&live).await;
+    let mut queued = socket(&live).await;
+    let sent = std::time::Instant::now();
+    send(&mut running, create(&hog(), None)).await;
+    next_of(&mut running, None, "response.in_progress").await;
+    send(&mut queued, create(&short("after"), None)).await;
+    next_of(&mut queued, None, "response.queued").await;
+    // A close frame here panics `next_event`: neither socket may close
+    // before its response ends.
+    let hog = stream_until_terminal(&mut running, None).await;
+    assert_eq!(hog.last().unwrap()["response"]["error"]["code"], "request_timeout", "{:?}", hog.last());
+    let after = stream_until_terminal(&mut queued, None).await;
+    assert_eq!(after.last().unwrap()["type"], "response.incomplete", "{:?}", after.last());
+    closed(&mut running).await;
+    closed(&mut queued).await;
+    // The hog ended a whole timeout after it was sent, and the clock started
+    // there, not at the socket's last frame.
+    assert!(sent.elapsed() >= timeout + IDLE, "closed {:?} after the hog was sent", sent.elapsed());
+}
+
+/// A keep-alive ping proves the connection, not a user: a client that
+/// pings (the Python `websockets` library does, every 20 s by default) is
+/// still closed once nothing else comes.
+#[tokio::test]
+async fn pings_do_not_keep_an_idle_socket_open() {
+    let live = live(server(&Script::new(HashMap::new()), SchedulerConfig::default(), plain()).with_socket_idle_close(IDLE)).await;
+    let mut socket = socket(&live).await;
+    let opened = std::time::Instant::now();
+    let frame = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            socket.send(Message::Ping(Default::default())).await.expect("ping");
+            if let Some(message) = next_message(&mut socket, IDLE / 3).await {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("closed within 10 s, pings or not");
+    assert!(matches!(frame, Message::Close(Some(_))), "{frame:?}");
+    assert!(opened.elapsed() >= IDLE);
+}
+
+/// A client's text frame restarts the idle time, whatever it carries.
+#[tokio::test]
+async fn a_client_frame_restarts_the_idle_time() {
+    let live = live(server(&Script::new(HashMap::new()), SchedulerConfig::default(), plain()).with_socket_idle_close(IDLE)).await;
+    let mut socket = socket(&live).await;
+    tokio::time::sleep(IDLE * 2 / 3).await;
+    let spoke = std::time::Instant::now();
+    send(&mut socket, json!({ "type": "response.unknown" })).await;
+    assert_eq!(next_event(&mut socket).await["type"], "error");
+    closed(&mut socket).await;
+    assert!(spoke.elapsed() >= IDLE, "closed {:?} after the client's frame", spoke.elapsed());
+}
+
+/// Zero never closes, and a live change (`PATCH /v1/config`) reaches the
+/// sockets already open: the knob is read at least once a second.
+#[tokio::test]
+async fn zero_never_closes_and_a_live_change_reaches_an_open_socket() {
+    let server = server(&Script::new(HashMap::new()), SchedulerConfig::default(), plain());
+    assert_eq!(server.live().socket_idle_close, Duration::ZERO, "a server built without a config never closes");
+    let handle = server.clone();
+    let live = live(server).await;
+    let mut socket = socket(&live).await;
+    assert!(next_message(&mut socket, IDLE * 4).await.is_none(), "zero never closes");
+    handle.update_live(|live| live.socket_idle_close = IDLE);
+    closed(&mut socket).await;
+}

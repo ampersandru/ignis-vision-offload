@@ -1132,6 +1132,12 @@ When output names a domain concept, use the term as defined here.
   Responses WebSocket request waits in when the engine is full, told so with
   `response.queued`, instead of being refused with a 503 as an HTTP request
   is. Only its head retries, each time a request leaves the scheduler.
+- **Idle socket** — a Responses WebSocket with nothing running, queued or
+  waiting on it and no text or binary frame from its client since its last
+  response ended; a ping does not make it busy. One idle for
+  `server.socket_idle_close` is closed by the server (GitHub #329), since an
+  open socket holds a Knative pod. Not **idle unload**, which counts use of
+  the model, never of a connection.
 
 ## Configuration (ADR 0046, specs `config-v2/01-02`)
 

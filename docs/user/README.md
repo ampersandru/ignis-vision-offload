@@ -97,6 +97,20 @@ Its `artifacts` stage is what CI exports the Linux tarball from, so the release
 binaries and the image binaries are the same build
 ([ADR 0032](../adr/0032-release-through-the-container-build.md)).
 
+#### Behind Knative
+
+Behind Knative, or any proxy that drains connections before it stops a
+container, an open Responses WebSocket is a connection in flight. Knative's
+queue-proxy waits for it to drain before the server even gets its SIGTERM, up
+to the revision's `timeoutSeconds`, and counts it as concurrency, so the
+service does not scale to zero while one is open. The server closes a socket
+left idle for `--server-socket-idle-close` seconds (default `600`,
+[WebSocket mode](#the-responses-api)), and the Playground closes its own a
+minute after its tab is hidden, so a tab left open holds the pod, and its GPU,
+for minutes rather than for the revision's timeout. Lower it
+(`-e IGNIS_SERVER_SOCKET_IDLE_CLOSE=120`) to release the pod sooner; a
+client's next request opens a new socket either way.
+
 ### Release archives
 
 A `v*` tag also publishes a Windows `.zip` and a Linux `.tar.gz`, each with its
@@ -389,6 +403,7 @@ change does not reach and a `null` removes.
 | `--server-request-timeout <secs>` | `IGNIS_SERVER_REQUEST_TIMEOUT` | `120` (max `3600`) | The deadline for a non-streaming completion; expiry is a 504 `request_timeout`. |
 | `--switch-drain-timeout <secs>` | `IGNIS_SWITCH_DRAIN_TIMEOUT` | `30` (max `3600`) | How long a model switch lets the old model's running requests finish before it cancels them (`0` cancels at once). |
 | `--model-idle-unload <secs>` | `IGNIS_MODEL_IDLE_UNLOAD` | `300` (max `604800`) | Seconds with no request using the model before it is unloaded, the server staying up; the next request loads it again ([below](#idle-unload)). `0` never unloads. Patchable live. |
+| `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `600` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
 | `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What Flash-Next's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next)). Per family as `--qwen38flashnext-model-host-margin-bytes`, which a 27B or image-model start takes for a later switch; neither makes a host plan. (`make` knob `HOST_MARGIN_BYTES`.) |
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is. `POST /v1/models/switch` is not affected. |
 | `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
@@ -1038,10 +1053,20 @@ one per text frame. On the socket:
   of OpenAI's Realtime API) cancels one running or queued response; closing
   the socket cancels everything it had running or queued. `response.steer` is
   `steering_not_supported`. A bad frame is an `error` event and the socket
-  stays open; a connection has no idle timeout and no time limit.
+  stays open; a connection has no time limit.
+- **An idle socket is closed.** A socket with nothing running or queued on it
+  and no text or binary frame from its client (a ping does not count) for
+  `--server-socket-idle-close` seconds (file key `server.socket_idle_close`,
+  default `600`) is closed by the server with a normal close frame (`1000`)
+  whose reason says so. The client's next request opens a new socket; a
+  `previous_response_id` from the old one is `previous_response_not_found`
+  there, so it sends the full input. `0` never closes. The value is patchable
+  live and reaches the sockets already open within a second.
 
 The Playground's chat talks to the server over this socket, so its parallel
-agents are not held to the browser's six connections per host. The open
+agents are not held to the browser's six connections per host. It opens the
+socket for the turn that needs it and opens another after any close; while
+its tab is hidden it closes a socket no turn is using after a minute. The open
 sockets and the queued socket requests are gauges on `/metrics`.
 
 ### Examples
