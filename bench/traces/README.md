@@ -52,3 +52,33 @@ which trace a given verdict replayed.
    — exits 0 only when the v1 verdict passes (≥ 99% of the reference's
    speed per class **and** self-consistent canaries). A performance-only
    comparison (no canary section) is `ignis-bench report`.
+## Replaying an agentic trace faithfully (opt-in)
+
+A trace line's `prompt` may be the raw JSON request body a real agent client
+sent (messages + tools), as in a trace recorded from a live coding session.
+The default replay wraps that text as **one flat user message**, so two
+servers answer a JSON blob and their outputs diverge: the work is not the
+same. Every baseline in this directory was recorded that way, so the default
+stays; two flags, both off unless given, change it for a study such as "with
+parallel agents, does MTP pay?" (GitHub #329 item 14):
+
+- `--as-recorded` sends a line whose `prompt` parses as a chat body (an
+  object with `messages`) as that body: messages, `tools`, `tool_choice` and
+  every other recorded field. The harness still sets `max_tokens` (the
+  line's), `stream`/`stream_options`, `temperature: 0`, `seed: 0`, the
+  `class` extension and `enable_thinking` where set, and drops the recorded
+  `model`. Any other line is sent flat, as before. Compare an as-recorded
+  run only with another as-recorded run, never with a flat baseline.
+- `--retry-engine-full` waits out a `503` `engine_full` (more concurrent
+  requests than the server has lanes) and resends instead of recording a
+  failure: it waits the `Retry-After` seconds (1 s without the header),
+  bounded to `--retry-max-wait S` (default 30), at most `--retry-max N`
+  resends (default 5) per request. The run file then carries `retries` and
+  `retry_wait_ms` on the requests that queued (omitted when zero);
+  `ttft_ms` and `total_ms` time the admitted attempt, so queueing is the
+  waiting and service is the rest.
+
+```
+ignis-bench replay --trace bench/traces/<load>-trace.jsonl --endpoint <url> --conc 11 \
+  --as-recorded --retry-engine-full --label ignis --out <run>.json
+```

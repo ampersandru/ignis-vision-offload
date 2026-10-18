@@ -159,12 +159,67 @@ impl Outcome {
     }
 }
 
+/// How much of a request's life went to waiting for the engine to admit it
+/// (GitHub #329 item 14), as opposed to being served: the `engine_full`
+/// refusals it was resent after, and the time spent waiting between them.
+/// An [`Outcome`]'s own timings start at the attempt that was admitted, so
+/// a report can tell queueing from service.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Queueing {
+    /// How many times the request was refused with `engine_full` and resent.
+    pub retries: u32,
+    /// The wall time slept waiting to resend, summed over the retries (ms).
+    pub wait_ms: f64,
+}
+
+/// Opt-in retry of a `503` `engine_full` refusal (`--retry-engine-full`).
+/// The HTTP front end never queues a request it cannot admit: the client's
+/// retry, after the `Retry-After` it was told, is the admission.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RetryPolicy {
+    /// The most times one request is resent after a refusal.
+    pub max_retries: u32,
+    /// The longest a single wait may be: the `Retry-After` header's seconds
+    /// are bounded to this, so a stale estimate cannot park the run.
+    pub max_wait: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self { max_retries: 5, max_wait: Duration::from_secs(30) }
+    }
+}
+
+/// How long to wait before resending a refused request: the response's
+/// `Retry-After` (whole seconds; 1 s when it is absent or not a number),
+/// bounded to `max_wait`.
+fn retry_wait(retry_after: Option<&str>, max_wait: Duration) -> Duration {
+    let secs = retry_after.and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(1);
+    Duration::from_secs(secs).min(max_wait)
+}
+
+/// Whether a refusal's JSON body names the `engine_full` code (the server's
+/// `{"error": {"code": "engine_full"}}` shape).
+fn is_engine_full(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.pointer("/error/code").and_then(|c| c.as_str()).map(|c| c == "engine_full"))
+        .unwrap_or(false)
+}
+
 /// An endpoint the replay driver can send requests to. `Send + Sync` so a
 /// single shared endpoint can be used by the driver's worker threads.
 pub trait Endpoint: Send + Sync {
     /// Send one request and return its outcome. Returns a human-readable error
     /// string on failure (the driver records a failed request, not a panic).
     fn complete(&self, req: &Request) -> Result<Outcome, String>;
+
+    /// [`Endpoint::complete`], plus the [`Queueing`] the request went
+    /// through to be admitted (reported even when it finally failed). An
+    /// endpoint that never retries needs no override.
+    fn complete_queued(&self, req: &Request) -> (Result<Outcome, String>, Queueing) {
+        (self.complete(req), Queueing::default())
+    }
 
     /// Complete a request while reporting each generated-token arrival, with
     /// no way to stop early. A convenience wrapper over
@@ -409,6 +464,12 @@ pub struct HttpEndpoint {
     /// The deadline `client` was built with (`None`: no deadline) — kept so
     /// a caller can report what the run is actually configured for.
     request_timeout: Option<Duration>,
+    /// Send a trace line whose prompt is a recorded chat request body as
+    /// that body (`--as-recorded`), not as one flat user message.
+    as_recorded: bool,
+    /// Resend a `503` `engine_full` (`--retry-engine-full`); `None`: record
+    /// the refusal as a failure.
+    retry: Option<RetryPolicy>,
 }
 
 impl HttpEndpoint {
@@ -433,7 +494,25 @@ impl HttpEndpoint {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client,
             request_timeout,
+            as_recorded: false,
+            retry: None,
         }
+    }
+
+    /// Replay a line whose prompt parses as a chat request body (an object
+    /// with `messages`) as that body — see [`as_recorded_body`]. Any other
+    /// line is sent as before. Off by default: a baseline recorded with the
+    /// flat message is only comparable to a replay that sends it.
+    pub fn as_recorded(mut self, on: bool) -> Self {
+        self.as_recorded = on;
+        self
+    }
+
+    /// Wait out and resend a `503` `engine_full` per `policy` instead of
+    /// recording it as a failure.
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = Some(policy);
+        self
     }
 
     /// The per-request deadline this endpoint drives the engine with
@@ -505,8 +584,50 @@ fn request_body(req: &Request) -> serde_json::Value {
     body
 }
 
+/// The body of a trace line whose `prompt` is a recorded chat request body
+/// (`--as-recorded`): the JSON a real client sent, so the engine sees the
+/// conversation, the tools and the other request fields it saw then.
+/// `None` when the prompt is not an object with a `messages` array.
+///
+/// Everything the recorded body carries is kept except what the harness
+/// owns, which it sets as [`request_body`] does: `max_tokens` (the trace
+/// line's; the recorded `max_completion_tokens` is dropped so the two cannot
+/// disagree), `stream` and `stream_options`, `temperature: 0` and `seed: 0`
+/// (the greedy contract of the gate), the `class` extension and
+/// `enable_thinking` when the request sets it. The recorded `model` is
+/// dropped: which model answers is the server's configuration, not the
+/// trace's.
+fn as_recorded_body(req: &Request) -> Option<serde_json::Value> {
+    let mut body: serde_json::Value = serde_json::from_str(&req.prompt).ok()?;
+    let object = body.as_object_mut()?;
+    if !object.get("messages").is_some_and(serde_json::Value::is_array) {
+        return None;
+    }
+    object.remove("model");
+    object.remove("max_completion_tokens");
+    object.remove("stream_options");
+    object.insert("max_tokens".into(), serde_json::json!(req.max_tokens));
+    object.insert("temperature".into(), serde_json::json!(0));
+    object.insert("seed".into(), serde_json::json!(0));
+    object.insert("stream".into(), serde_json::json!(req.stream));
+    object.insert("class".into(), serde_json::json!(req.class.as_ignis_extension_str()));
+    if let Some(enable_thinking) = req.enable_thinking {
+        object.insert("enable_thinking".into(), serde_json::json!(enable_thinking));
+    }
+    if req.include_usage && req.stream {
+        object.insert("stream_options".into(), serde_json::json!({ "include_usage": true }));
+    }
+    Some(body)
+}
+
+#[cfg(test)]
 fn request_body_suppressing_eos(req: &Request, eos: &[u32]) -> serde_json::Value {
-    let mut body = request_body(req);
+    suppress_eos_in(request_body(req), eos)
+}
+
+/// `body` with the end-of-sequence tokens in `eos` suppressed (both the
+/// `ignore_eos` control and the `logit_bias` one).
+fn suppress_eos_in(mut body: serde_json::Value, eos: &[u32]) -> serde_json::Value {
     if !eos.is_empty() {
         body["ignore_eos"] = serde_json::json!(true);
         body["logit_bias"] = serde_json::Value::Object(
@@ -547,41 +668,90 @@ impl Endpoint for HttpEndpoint {
         self.complete_observed(req, &mut |_| {})
     }
 
+    fn complete_queued(&self, req: &Request) -> (Result<Outcome, String>, Queueing) {
+        self.complete_counting(req, &mut |_| true, &[])
+    }
+
     fn complete_observed_while(
         &self,
         req: &Request,
         observer: &mut dyn FnMut(f64) -> bool,
         suppress_eos: &[u32],
     ) -> Result<Outcome, String> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        self.complete_counting(req, observer, suppress_eos).0
+    }
+}
+
+impl HttpEndpoint {
+    /// The request body this endpoint sends for `req`.
+    fn wire_body(&self, req: &Request, suppress_eos: &[u32]) -> serde_json::Value {
         // The trace line's prompt becomes a single user message (the trace
         // format is prompt-based; the shared "system + tools" prefix is
-        // carried inside the prompt text). `temperature: 0` + `seed: 0` pin
+        // carried inside the prompt text) — unless `--as-recorded` and the
+        // prompt is a recorded chat body. `temperature: 0` + `seed: 0` pin
         // the greedy + fixed-seed contract of the v1 gate (ADR 0007 — the
         // server's defaults, sent explicitly).
-        let body = request_body_suppressing_eos(req, suppress_eos);
-        let start = Instant::now();
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .map_err(|e| {
-                if e.is_timeout() {
-                    deadline_elapsed(&url, "send")
-                } else {
-                    format!("POST {url} failed: {e}")
+        let base = self
+            .as_recorded
+            .then(|| as_recorded_body(req))
+            .flatten()
+            .unwrap_or_else(|| request_body(req));
+        suppress_eos_in(base, suppress_eos)
+    }
+
+    /// One request through to its outcome, resending an `engine_full`
+    /// refusal when [`HttpEndpoint::with_retry`] asked for it. The
+    /// [`Outcome`]'s timings start at the attempt that was admitted.
+    fn complete_counting(
+        &self,
+        req: &Request,
+        observer: &mut dyn FnMut(f64) -> bool,
+        suppress_eos: &[u32],
+    ) -> (Result<Outcome, String>, Queueing) {
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let body = self.wire_body(req, suppress_eos);
+        let mut queueing = Queueing::default();
+        loop {
+            let start = Instant::now();
+            let resp = match self.client.post(&url).json(&body).send() {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let msg = if e.is_timeout() {
+                        deadline_elapsed(&url, "send")
+                    } else {
+                        format!("POST {url} failed: {e}")
+                    };
+                    return (Err(msg), queueing);
                 }
-            })?;
-        let status = resp.status();
-        if !status.is_success() {
+            };
+            let status = resp.status();
+            if status.is_success() {
+                let outcome = if req.stream {
+                    self.read_sse(resp, start, observer)
+                } else {
+                    self.read_json(resp, start)
+                };
+                return (outcome, queueing);
+            }
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             let detail = resp.text().unwrap_or_default();
-            return Err(format!("POST {url} -> {status}: {detail}"));
-        }
-        if req.stream {
-            self.read_sse(resp, start, observer)
-        } else {
-            self.read_json(resp, start)
+            match self.retry {
+                Some(policy)
+                    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        && is_engine_full(&detail)
+                        && queueing.retries < policy.max_retries =>
+                {
+                    let slept = Instant::now();
+                    std::thread::sleep(retry_wait(retry_after.as_deref(), policy.max_wait));
+                    queueing.retries += 1;
+                    queueing.wait_ms += ms_since(slept);
+                }
+                _ => return (Err(format!("POST {url} -> {status}: {detail}")), queueing),
+            }
         }
     }
 }
@@ -867,8 +1037,11 @@ pub fn replay(ep: Arc<dyn Endpoint>, trace: &Trace, cfg: &ReplayConfig) -> Vec<R
                 if target > now {
                     std::thread::sleep(target - now);
                 }
-                let metrics = match ep.complete(&req) {
+                let (result, queueing) = ep.complete_queued(&req);
+                let metrics = match result {
                     Ok(o) => RequestMetrics {
+                        retries: queueing.retries,
+                        retry_wait_ms: queueing.wait_ms,
                         id: req.id,
                         class: req.class,
                         ttft_ms: o.ttft_ms,
@@ -880,6 +1053,8 @@ pub fn replay(ep: Arc<dyn Endpoint>, trace: &Trace, cfg: &ReplayConfig) -> Vec<R
                         ok: o.n_tokens > 0,
                     },
                     Err(_e) => RequestMetrics {
+                        retries: queueing.retries,
+                        retry_wait_ms: queueing.wait_ms,
                         id: req.id,
                         class: req.class,
                         ttft_ms: 0.0,
@@ -1037,6 +1212,94 @@ mod tests {
         // Replay traffic never asks for it.
         let plain = Request { include_usage: false, ..base };
         assert!(request_body(&plain).get("stream_options").is_none());
+    }
+
+    fn recorded_request(prompt: &str) -> Request {
+        Request {
+            id: "r".into(),
+            class: RequestClass::Sub,
+            prompt: prompt.into(),
+            max_tokens: 7,
+            stream: false,
+            include_usage: true,
+            enable_thinking: None,
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn as_recorded_body_keeps_the_recorded_fields_and_overrides_the_harness_owned_ones() {
+        let prompt = serde_json::json!({
+            "model": "m", "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{ "type": "function" }], "parallel_tool_calls": false,
+            "max_completion_tokens": 5000, "temperature": 1.0, "seed": 9, "stream": true,
+            "stream_options": { "include_usage": false, "other": 1 },
+        })
+        .to_string();
+        let body = as_recorded_body(&recorded_request(&prompt)).expect("a chat body");
+        assert_eq!(body["messages"][0]["content"], "hi");
+        assert_eq!(body["tools"], serde_json::json!([{ "type": "function" }]));
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["max_tokens"], 7);
+        assert!(body.get("max_completion_tokens").is_none());
+        assert!(body.get("model").is_none());
+        assert_eq!(body["temperature"], 0);
+        assert_eq!(body["seed"], 0);
+        assert_eq!(body["stream"], false, "the trace line decides streaming");
+        assert!(body.get("stream_options").is_none(), "meaningless on a non-streaming request");
+        assert_eq!(body["class"], "agent");
+        let streaming = Request { stream: true, enable_thinking: Some(false), ..recorded_request(&prompt) };
+        let body = as_recorded_body(&streaming).unwrap();
+        assert_eq!(body["stream_options"], serde_json::json!({ "include_usage": true }));
+        assert_eq!(body["enable_thinking"], false);
+    }
+
+    #[test]
+    fn as_recorded_body_is_none_for_a_prompt_that_is_not_a_chat_body() {
+        for prompt in ["plain text", "[1,2]", "{\"messages\": \"x\"}", "{\"input\": []}", "", "{\"messages\": ["] {
+            assert!(as_recorded_body(&recorded_request(prompt)).is_none(), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn the_wait_is_retry_after_bounded_and_one_second_without_it() {
+        let cap = Duration::from_secs(30);
+        assert_eq!(retry_wait(Some("7"), cap), Duration::from_secs(7));
+        assert_eq!(retry_wait(Some(" 60 "), cap), cap, "bounded");
+        assert_eq!(retry_wait(None, cap), Duration::from_secs(1));
+        assert_eq!(retry_wait(Some("Wed, 21 Oct"), cap), Duration::from_secs(1));
+        assert_eq!(retry_wait(Some("0"), cap), Duration::ZERO);
+    }
+
+    #[test]
+    fn only_the_engine_full_code_is_a_refusal_to_wait_out() {
+        assert!(is_engine_full(r#"{"error":{"code":"engine_full","message":"m"}}"#));
+        assert!(!is_engine_full(r#"{"error":{"code":"model_switching"}}"#));
+        assert!(!is_engine_full("engine_full"));
+    }
+
+    #[test]
+    fn the_driver_records_the_queueing_an_endpoint_reports() {
+        struct Queued;
+        impl Endpoint for Queued {
+            fn complete(&self, _: &Request) -> Result<Outcome, String> {
+                unreachable!("the driver asks for the queueing")
+            }
+            fn complete_queued(&self, req: &Request) -> (Result<Outcome, String>, Queueing) {
+                let q = Queueing { retries: 2, wait_ms: 1500.0 };
+                match req.id.as_str() {
+                    "main" => (Ok(outcome(100.0, 1000.0, 10)), q),
+                    _ => (Err("engine_full".into()), q),
+                }
+            }
+        }
+        let trace = Trace::from_jsonl(&trace_jsonl()).expect("valid trace");
+        let results = replay(Arc::new(Queued), &trace, &ReplayConfig { max_concurrency: 2, time_scale: 0.0 });
+        for m in &results {
+            assert_eq!((m.retries, m.retry_wait_ms), (2, 1500.0), "{}", m.id);
+        }
+        assert!(results.iter().find(|m| m.id == "main").unwrap().ok);
+        assert!(!results.iter().find(|m| m.id == "s1").unwrap().ok, "a failure keeps its queueing too");
     }
 
     #[test]
@@ -1266,6 +1529,8 @@ mod tests {
         };
         let o = MockEndpoint::fallback_for(&req);
         let m = RequestMetrics {
+            retries: 0,
+            retry_wait_ms: 0.0,
             id: "r".into(),
             class: RequestClass::Sub,
             ttft_ms: o.ttft_ms,

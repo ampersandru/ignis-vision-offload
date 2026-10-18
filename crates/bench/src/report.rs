@@ -145,6 +145,8 @@ mod tests {
 
     fn m(id: &str, class: RequestClass, ttft: f64, n: u32, total: f64) -> RequestMetrics {
         RequestMetrics {
+            retries: 0,
+            retry_wait_ms: 0.0,
             id: id.into(),
             class,
             ttft_ms: ttft,

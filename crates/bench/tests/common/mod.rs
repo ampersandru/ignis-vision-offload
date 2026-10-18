@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -67,6 +67,14 @@ struct Inner {
     model: String,
     /// When set, completions return a 503 (the engine's `engine_full` shape).
     fail_503: AtomicBool,
+    /// How many of the next completions answer 503 `engine_full` before the
+    /// mock admits requests again (a lane that frees up).
+    fail_503_budget: AtomicU64,
+    /// The `Retry-After` (seconds) a 503 carries, or -1 for no header.
+    retry_after_secs: AtomicI64,
+    /// The raw JSON body of every completion request received, 503s
+    /// included, in arrival order.
+    bodies: Mutex<Vec<serde_json::Value>>,
     /// Requests currently in flight (requests admitted, not yet finished).
     in_flight: AtomicUsize,
     /// The max in-flight observed so far (the peak of the load profile).
@@ -110,6 +118,9 @@ impl MockState {
             inner: Arc::new(Inner {
                 model: model.into(),
                 fail_503: AtomicBool::new(false),
+                fail_503_budget: AtomicU64::new(0),
+                retry_after_secs: AtomicI64::new(-1),
+                bodies: Mutex::new(Vec::new()),
                 thinking: AtomicBool::new(false),
                 in_flight: AtomicUsize::new(0),
                 peak_in_flight: AtomicUsize::new(0),
@@ -133,6 +144,21 @@ impl MockState {
     /// engine's "cannot admit right now" shape).
     pub fn set_fail_503(&self, flag: bool) {
         self.inner.fail_503.store(flag, Ordering::Relaxed);
+    }
+
+    /// Answer the next `n` completions with a 503 `engine_full` carrying
+    /// `Retry-After: retry_after_secs` (none when `None`), then admit again.
+    pub fn set_fail_503_times(&self, n: u64, retry_after_secs: Option<u64>) {
+        self.inner
+            .retry_after_secs
+            .store(retry_after_secs.map_or(-1, |s| s as i64), Ordering::Relaxed);
+        self.inner.fail_503_budget.store(n, Ordering::Relaxed);
+    }
+
+    /// The raw JSON body of every completion request received so far
+    /// (503-refused ones included), in arrival order.
+    pub fn bodies(&self) -> Vec<serde_json::Value> {
+        self.inner.bodies.lock().unwrap().clone()
     }
 
     /// Generate on the thinking channel from now on: every token goes out
@@ -345,8 +371,15 @@ impl ChatMessage {
 /// the server's shapes and error bodies.
 async fn completions(
     State(state): State<MockState>,
-    Json(req): Json<CompletionsRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> Response {
+    state.inner.bodies.lock().unwrap().push(raw.clone());
+    let req: CompletionsRequest = match serde_json::from_value(raw) {
+        Ok(req) => req,
+        Err(e) => {
+            return error_response(StatusCode::BAD_REQUEST, "invalid_request_error", &e.to_string())
+        }
+    };
     if req.messages.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -354,12 +387,23 @@ async fn completions(
             "messages must not be empty",
         );
     }
-    if state.inner.fail_503.load(Ordering::Relaxed) {
-        return error_response(
+    let refused_once = state
+        .inner
+        .fail_503_budget
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+        .is_ok();
+    if refused_once || state.inner.fail_503.load(Ordering::Relaxed) {
+        let mut res = error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "engine_full",
             "the engine cannot admit the request right now (all lanes in use); retry",
         );
+        let wait = state.inner.retry_after_secs.load(Ordering::Relaxed);
+        if wait >= 0 {
+            res.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, axum::http::HeaderValue::from(wait as u64));
+        }
+        return res;
     }
     // The mock's "prompt tokens": the last message's whitespace word count
     // (the server's real figure is the templated token count).

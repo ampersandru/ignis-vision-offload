@@ -35,6 +35,24 @@ pub struct RequestMetrics {
     /// token (false on an error, and on a response that delivered nothing —
     /// GitHub #147).
     pub ok: bool,
+    /// How many times the engine refused the request with `engine_full` and
+    /// the harness resent it (`replay --retry-engine-full`). `ttft_ms` and
+    /// `total_ms` time the attempt that was admitted, so a report tells
+    /// queueing (this and `retry_wait_ms`) from service. Absent in a run
+    /// recorded without the retry, and not written when zero.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retries: u32,
+    /// The wall time spent waiting between those attempts (ms).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub retry_wait_ms: f64,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl RequestMetrics {
@@ -180,6 +198,8 @@ mod tests {
 
     fn m(id: &str, class: RequestClass, ttft: f64, n: u32, total: f64) -> RequestMetrics {
         RequestMetrics {
+            retries: 0,
+            retry_wait_ms: 0.0,
             id: id.into(),
             class,
             ttft_ms: ttft,
@@ -187,6 +207,19 @@ mod tests {
             total_ms: total,
             ok: true,
         }
+    }
+
+    #[test]
+    fn retries_are_not_written_when_zero_so_recorded_baselines_read_and_write_unchanged() {
+        let old = r#"{"id":"r","class":"sub","ttft_ms":1.0,"n_tokens":2,"total_ms":3.0,"ok":true}"#;
+        let read: RequestMetrics = serde_json::from_str(old).expect("a pre-retry record");
+        assert_eq!((read.retries, read.retry_wait_ms), (0, 0.0));
+        assert!(!serde_json::to_string(&read).unwrap().contains("retr"));
+        let mut queued = read;
+        queued.retries = 1;
+        queued.retry_wait_ms = 250.0;
+        let json = serde_json::to_string(&queued).unwrap();
+        assert_eq!(serde_json::from_str::<RequestMetrics>(&json).unwrap(), queued);
     }
 
     #[test]
