@@ -362,7 +362,13 @@ so the group's value applies to that model again; at a group key, so the
 profile's or the built-in default applies — a flag or an env var that sets the
 field still outranks the file, and the answer names it. A field only one
 model takes (`spec.decode_lanes`) is set and removed in that model's section,
-whichever key names it. Either way it is
+whichever key names it. Turning speculation off takes one step: a patch
+with `spec.backend: off` that names no `spec.draft_tokens` or
+`spec.draft_head` beside it removes the ones the file or an earlier patch holds
+at that same key, as if it said `null` for each, so
+`{"spec":{"qwen38flashnext":{"backend":"off"}}}` is enough; naming a count
+beside `off` in the same patch is still refused, and so is a count a flag or an
+env var sets (a patch cannot remove those). Either way it is
 written to the config file in use once it has taken, a removed key and the
 section it empties taken out. `GET /v1/config/fields` says what each of those fields
 is: its key, kind, default, rule, the model families that take it, and whether

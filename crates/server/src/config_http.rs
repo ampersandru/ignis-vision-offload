@@ -510,7 +510,8 @@ pub fn read_patch(body: &Value) -> Result<Layer, (&'static str, String)> {
     if !body.is_object() {
         return Err(("config_invalid", "the body must be a config document: `{ <group>: { <field>: value } }`".to_owned()));
     }
-    let patch = file::read_merge_patch(body, "the request body").map_err(|e| ("config_invalid", e.0))?;
+    let mut patch = file::read_merge_patch(body, "the request body").map_err(|e| ("config_invalid", e.0))?;
+    drop_draft_options_under_off(&mut patch).map_err(|e| ("config_invalid", e.0))?;
     if patch.is_empty() {
         return Err(("config_invalid", "the patch names no field".to_owned()));
     }
@@ -526,6 +527,38 @@ pub fn read_patch(body: &Value) -> Result<Layer, (&'static str, String)> {
         ));
     }
     Ok(patch)
+}
+
+/// A patch that sets `spec.backend` to `off` and names no draft option beside
+/// it removes the ones the same scope holds — in the patches before it and in
+/// the config file — as it would if it said `null` for each (GitHub #329 item
+/// 15). Speculation off has nothing to configure, and the draft count an
+/// operator turns it off from is whatever an earlier layer left (a profile
+/// value never refuses it; a file or live one would, without this): turning it
+/// off is one step whichever layer set the count. A count the patch names in
+/// the same scope, value or `null`, is the operator's own word and is judged
+/// as written — `off` beside a count stays a refusal. A flag's or an env
+/// var's count is outside a patch's reach and still refuses.
+fn drop_draft_options_under_off(patch: &mut Layer) -> Result<(), ConfigError> {
+    let backend = schema::field("spec", "backend").expect("a declared field");
+    let off: Vec<Option<ModelFamily>> = patch
+        .entries()
+        .filter(|(meta, _, candidate)| {
+            meta.name == backend.name && meta.group == backend.group && matches!(<crate::config::kind::SpecBackend as FieldKind>::parse(candidate.raw.trim()), Ok(crate::config::SpecChoice::Off))
+        })
+        .map(|(_, family, _)| family)
+        .collect();
+    for family in off {
+        for name in ["draft_tokens", "draft_head"] {
+            let meta = schema::field("spec", name).expect("a declared field");
+            if patch.named().any(|(named, scoped)| std::ptr::eq(named, meta) && scoped == family) {
+                continue;
+            }
+            let spelling = family.map_or_else(|| meta.file_key(), |family| meta.scoped_file_key(family));
+            patch.remove(meta, family, spelling)?;
+        }
+    }
+    Ok(())
 }
 
 /// A patch naming `switch.known_models` adds to the models already known
@@ -820,6 +853,53 @@ mod tests {
         let mut document = json!({ "throwaway": { "plain": true, "shown": true, "qwen38": { "plain": true, "shown": true } } });
         remove_invisible(&mut document, Throwaway::FIELDS.iter());
         assert_eq!(document, json!({ "throwaway": { "shown": true, "qwen38": { "shown": true } } }));
+    }
+
+    /// GitHub #329 item 15: turning speculation off by `PATCH` is one step
+    /// whichever layer set the draft count — the config file, or a patch
+    /// before it. The count a patch inherits is dropped with the backend (and
+    /// from the file, so a restart resolves the same); one the same patch
+    /// names beside `off` is still refused, and so is one a flag sets.
+    #[test]
+    fn a_patch_turning_speculation_off_drops_the_draft_count_it_does_not_name() {
+        let files = MemFiles::with(&[(
+            "c.yaml",
+            "spec:
+  qwen38flashnext:
+    backend: mtp
+    draft_tokens: 3
+",
+        )]);
+        let running = on_file(&files, &["--config", "c.yaml"], &[]).for_family(ModelFamily::FlashNext).unwrap();
+        assert!(running.speculation.is_some());
+        let off = json!({ "spec": { "qwen38flashnext": { "backend": "off" } } });
+
+        // Set by the file.
+        let patch = read_patch(&off).unwrap();
+        let next = running.with_patch(&patch).unwrap();
+        assert!(next.speculation.is_none() && next.speculation_off);
+        assert!(patch.removals().any(|(meta, family, _)| meta.name == "draft_tokens" && family == Some(ModelFamily::FlashNext)));
+
+        // Set by an earlier patch, on a start with no file value.
+        let bare = config(&[]).for_family(ModelFamily::FlashNext).unwrap();
+        let on = read_patch(&json!({ "spec": { "qwen38flashnext": { "backend": "mtp", "draft_tokens": 3 } } })).unwrap();
+        let live = bare.with_patch(&on).unwrap();
+        assert!(live.speculation.is_some());
+        assert!(live.with_patch(&read_patch(&off).unwrap()).unwrap().speculation.is_none());
+
+        // Named beside `off` in the same patch: still a refusal.
+        let both = json!({ "spec": { "qwen38flashnext": { "backend": "off", "draft_tokens": 3 } } });
+        let err = running.with_patch(&read_patch(&both).unwrap()).unwrap_err().0;
+        assert!(err.contains("draft_tokens") && err.contains("off"), "{err}");
+
+        // A flag's count is not the patch's to drop.
+        let flagged = config(&["--spec-backend", "mtp", "--spec-draft-tokens", "3"]).for_family(ModelFamily::FlashNext).unwrap();
+        let err = flagged.with_patch(&read_patch(&off).unwrap()).unwrap_err().0;
+        assert!(err.contains("--spec-draft-tokens 3") && err.contains("off"), "{err}");
+        // At the group key, the group's count goes with it.
+        let group_on = read_patch(&json!({ "spec": { "backend": "mtp", "draft_tokens": 3 } })).unwrap();
+        let group_off = read_patch(&json!({ "spec": { "backend": "off" } })).unwrap();
+        assert!(bare.with_patch(&group_on).unwrap().with_patch(&group_off).unwrap().speculation.is_none());
     }
 
     #[test]
