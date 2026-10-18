@@ -53,9 +53,16 @@ struct ignis_seq_pool;
 
 namespace ignis::flash_next::verify {
 
-// The most rows a verify call carries (lanes * (k + 1)): the MoE decode route's, the GDN replay
-// record's batch and the QSA listed hq decode's bound.
-inline constexpr uint32_t kMaxRows = 8;
+// The rows a verify call carries (lanes * (k + 1)) when the load names no row budget (0): the MoE
+// decode route's one launch (IGNIS_MOE_DECODE_MAX_TOKENS), the GEMV width of the linears.
+inline constexpr uint32_t kDefaultRows = 8;
+// The widest row budget a load takes (GitHub #329 item 5). Past kDefaultRows a round's MoE runs the
+// decode route in launches of IGNIS_MOE_DECODE_MAX_TOKENS rows (fn_moe_experts_decode) and its
+// linears and mixes their tensor-core routes, each row-independent at the round's shape; the GDN
+// replay record bounds lanes (kMaxLanes) and columns (kMaxWindow + 1), not rows; the QSA listed hq
+// decode and the head's logits are sized by the load's widest round. Nothing is sized by this
+// maximum: a load reserves for the rows its own rounds take.
+inline constexpr uint32_t kMaxRows = 32;
 // The widest window a load names (the 27B's draft-token range, spec 05).
 inline constexpr uint32_t kMaxWindow = 7;
 // The lanes a round serves (IGNIS_DECODE_MAX_BATCH).
@@ -66,8 +73,8 @@ inline constexpr int32_t kMaxAttentionLayers = 16;
 inline constexpr int32_t kMaxGdnLayers = 48;
 
 // The window a round of `lanes` lanes runs at: the load's draft tokens, cut so that lanes * (k + 1)
-// stays within the row budget (0 or more than kMaxRows: kMaxRows). 0: that width runs today's
-// one-token round.
+// stays within the row budget (0: kDefaultRows; more than kMaxRows: kMaxRows). 0: that width runs
+// today's one-token round.
 uint32_t window_for(uint32_t draft_tokens, uint32_t row_budget, uint32_t lanes);
 
 // The decode route's widest call on a load: its plain rounds' lanes, or a verify round's rows.

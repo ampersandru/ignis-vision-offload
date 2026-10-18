@@ -560,6 +560,18 @@ struct ignis_decode_options {
    * drawn stop id, which the lane's next round emits first -- else 0. Written
    * for every lane; NULL asks for nothing. */
   int32_t *out_reasoning_redirected; /* [batch_size], or NULL */
+  /* A measurement's copy of the round's logits (GitHub #329 item 5, ADR
+   * 0056) -- not a readout: the round still samples. When non-NULL, the
+   * BF16 logits of every row the round's head produced, host, before the
+   * draw or the accept reads them. A one-token round's are `[batch_size]
+   * [vocab]` (row i: lane i's successor's distribution); a verify round's
+   * `[batch_size][speculative_window + 1][vocab]` (row i * (k + 1) + j: the
+   * distribution after lane i's column j -- its anchor at j = 0, its draft j
+   * after, and past its extent the padding column, the anchor again).
+   * Flash-Next loads only: the 27B refuses it, and so does a round with a
+   * permitted set (its mask writes into the rows). No serving path sets it:
+   * NULL costs nothing, a set one costs one copy before the round's synchronize. */
+  uint16_t *out_logits;
 };
 
 /* Complete one decode round for a batch of sequence handles.  Each output is

@@ -402,7 +402,7 @@ pub struct Config {
     pub speculation_off: bool,
     /// Flash-Next's draft row budget (`--spec-draft-rows`, GitHub #307): a
     /// round of w lanes verifies min(draft tokens, rows / w - 1) drafts per
-    /// lane. `None`: the decode route's 8 rows.
+    /// lane. `None`: the default's 8 rows; up to 32 (GitHub #329).
     pub draft_rows: Option<u32>,
     /// Flash-Next's decode lanes (`--spec-decode-lanes`, GitHub #306),
     /// 1..=[`ignis_core::N_DECODE_LANES`]. `None`: the engine's default of 3.

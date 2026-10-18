@@ -187,9 +187,9 @@ int32_t layer(const Context &ctx, int32_t attention_ordinal, const MtpWeights &w
                        stream) != 0) {
     return fail("router", ignis_moe_last_error());
   }
-  const bool decode = static_cast<uint32_t>(rows) <= b.workspace.decode_tokens;
-  const int32_t rc = decode ? ignis_moe_experts_decode(b.x, static_cast<uint32_t>(rows), b.router_ids, b.router_weights,
-                                                       experts, &b.workspace, b.acc, stream)
+  const bool decode = static_cast<uint32_t>(rows) <= b.decode_rows;
+  const int32_t rc = decode ? fn_moe_experts_decode(b.x, static_cast<uint32_t>(rows), b.router_ids, b.router_weights,
+                                                    experts, b.workspace, b.acc, stream)
                             : ignis_moe_experts_prefill(b.x, static_cast<uint32_t>(rows), b.router_ids,
                                                         b.router_weights, experts, &b.workspace, b.acc, stream);
   // The routed accumulator must be zero on every op's entry (ignis_moe.h).

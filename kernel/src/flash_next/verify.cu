@@ -460,7 +460,7 @@ uint32_t written_positions(uint32_t window, bool mtp) { return mtp ? 2 * window 
 
 uint32_t window_for(uint32_t draft_tokens, uint32_t row_budget, uint32_t lanes) {
   if (draft_tokens == 0 || lanes == 0) return 0;
-  const uint32_t budget = row_budget == 0 || row_budget > kMaxRows ? kMaxRows : row_budget;
+  const uint32_t budget = row_budget == 0 ? kDefaultRows : std::min(row_budget, kMaxRows);
   const uint32_t columns = budget / lanes;
   return columns <= 1 ? 0 : std::min(draft_tokens, columns - 1);
 }
@@ -529,8 +529,8 @@ std::string refusal(const Geometry &g, uint32_t lanes, uint32_t draft_tokens, ui
     return std::to_string(lanes) + " decode lanes for the verify round (1.." + std::to_string(kMaxLanes) + ")";
   }
   if (row_budget > kMaxRows || window_for(draft_tokens, row_budget, 1) == 0) {
-    return "a draft row budget of " + std::to_string(row_budget) + " (0 for the decode route's " +
-           std::to_string(kMaxRows) + ", or 2.." + std::to_string(kMaxRows) + ")";
+    return "a draft row budget of " + std::to_string(row_budget) + " (0 for the default's " +
+           std::to_string(kDefaultRows) + ", or 2.." + std::to_string(kMaxRows) + ")";
   }
   if (attention_layers <= 0 || attention_layers > kMaxAttentionLayers || gdn_layers <= 0 ||
       gdn_layers > kMaxGdnLayers) {

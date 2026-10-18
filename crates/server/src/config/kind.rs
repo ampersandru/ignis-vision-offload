@@ -582,10 +582,11 @@ impl FieldKind for DraftHead {
     }
 }
 
-/// Flash-Next's draft row budget (GitHub #307): `0` (the decode route's
-/// rows) or `2..=`[`ignis_core::speculation::FLASH_NEXT_VERIFY_ROWS`]. One
-/// row is refused, not a range end: a round needs a row for the token it
-/// verifies and one for a draft.
+/// Flash-Next's draft row budget (GitHub #307, #329): `0` (the default's
+/// [`ignis_core::speculation::FLASH_NEXT_DEFAULT_VERIFY_ROWS`]) or
+/// `2..=`[`ignis_core::speculation::FLASH_NEXT_MAX_VERIFY_ROWS`]. One row is
+/// refused, not a range end: a round needs a row for the token it verifies
+/// and one for a draft.
 pub struct DraftRows;
 
 impl FieldKind for DraftRows {
@@ -593,7 +594,7 @@ impl FieldKind for DraftRows {
     const TAG: &'static str = "rows";
 
     fn parse(raw: &str) -> Result<u32, String> {
-        let max = ignis_core::speculation::FLASH_NEXT_VERIFY_ROWS;
+        let max = ignis_core::speculation::FLASH_NEXT_MAX_VERIFY_ROWS;
         raw.parse::<u32>()
             .ok()
             .filter(|&rows| rows <= max && rows != 1)
@@ -886,9 +887,11 @@ mod tests {
     fn draft_rows_are_zero_or_two_to_the_verify_rows() {
         assert_eq!(DraftRows::parse("0"), Ok(0));
         assert_eq!(DraftRows::parse("6"), Ok(6));
-        for bad in ["1", "9", "rows"] {
+        assert_eq!(DraftRows::parse("16"), Ok(16));
+        assert_eq!(DraftRows::parse("32"), Ok(32));
+        for bad in ["1", "33", "rows"] {
             let err = DraftRows::parse(bad).unwrap_err();
-            assert!(err.contains("2..=8") && err.contains(bad), "{err}");
+            assert!(err.contains("2..=32") && err.contains(bad), "{err}");
         }
     }
 

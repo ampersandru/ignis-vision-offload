@@ -311,7 +311,7 @@ struct ignis_model_load_options {
    * of w lanes verifies at k = min(draft_tokens, budget / w - 1) drafts per
    * lane -- its `speculative_window` -- and a width whose k is 0 runs today's
    * one-token round; one verify graph pair per width is captured at its k.
-   * 0 = the decode route's 8 rows, else 2..8. 0 on the 27B. */
+   * 0 = the default's 8 rows, else 2..32 (GitHub #329). 0 on the 27B. */
   uint32_t draft_row_budget;
   /* GitHub #307: under IGNIS_SPECULATIVE_MTP, the MTP head's expert slot
    * table -- host [512 * 2] entries indexed expert * 2 + projection

@@ -116,10 +116,15 @@ impl SpeculativeBackend {
     }
 }
 
-/// The most rows a Flash-Next verify round carries (`lanes * (k + 1)`): the
-/// MoE decode route's, the GDN replay record's and the QSA listed decode's
-/// bound (`verify::kMaxRows`, `kernel/src/flash_next/verify.h`).
-pub const FLASH_NEXT_VERIFY_ROWS: u32 = 8;
+/// The rows a Flash-Next verify round carries (`lanes * (k + 1)`) when the
+/// operator names no row budget (0): the decode route's one-launch width
+/// (`verify::kDefaultRows`, `kernel/src/flash_next/verify.h`).
+pub const FLASH_NEXT_DEFAULT_VERIFY_ROWS: u32 = 8;
+
+/// The widest row budget a Flash-Next load takes (`verify::kMaxRows`): past
+/// the default's 8 rows a round's MoE runs the decode route in launches of
+/// 8 and its linears on tensor cores (GitHub #329 item 5).
+pub const FLASH_NEXT_MAX_VERIFY_ROWS: u32 = 32;
 
 /// The draft tokens a Flash-Next MTP load verifies per lane at most when
 /// the operator names none (`--spec-backend mtp` alone): phase A's best one-lane
@@ -129,14 +134,16 @@ pub const FLASH_NEXT_DEFAULT_DRAFT_TOKENS: u32 = 2;
 
 /// The window a Flash-Next round of `lanes` lanes verifies at (spec
 /// flash-next/07): the load's draft tokens, cut so that `lanes * (k + 1)`
-/// stays within the row budget (0, or past [`FLASH_NEXT_VERIFY_ROWS`]: that
-/// bound). 0 means that width runs a one-token round. The leaf's
-/// `verify::window_for` is the same rule; a round asks it for this window.
+/// stays within the row budget (0: [`FLASH_NEXT_DEFAULT_VERIFY_ROWS`]; past
+/// [`FLASH_NEXT_MAX_VERIFY_ROWS`]: that maximum). 0 means that width runs a
+/// one-token round. The leaf's `verify::window_for` is the same rule; a
+/// round asks it for this window.
 pub fn flash_next_window(draft_tokens: u32, row_budget: u32, lanes: u32) -> u32 {
     if draft_tokens == 0 || lanes == 0 {
         return 0;
     }
-    let budget = if row_budget == 0 || row_budget > FLASH_NEXT_VERIFY_ROWS { FLASH_NEXT_VERIFY_ROWS } else { row_budget };
+    let budget =
+        if row_budget == 0 { FLASH_NEXT_DEFAULT_VERIFY_ROWS } else { row_budget.min(FLASH_NEXT_MAX_VERIFY_ROWS) };
     let columns = budget / lanes;
     if columns <= 1 {
         0
@@ -187,7 +194,8 @@ pub struct FlashNextSpeculation {
 
 impl FlashNextSpeculation {
     /// `draft_tokens` in `1..=MAX_DRAFT_TOKENS`, a row budget of 0 (the
-    /// bound) or 2..=bound; DFlash2 is the 27B's.
+    /// default's [`FLASH_NEXT_DEFAULT_VERIFY_ROWS`]) or
+    /// 2..=[`FLASH_NEXT_MAX_VERIFY_ROWS`]; DFlash2 is the 27B's.
     pub fn new(backend: SpeculativeBackend, draft_tokens: u32, row_budget: u32) -> Result<Self, String> {
         if backend == SpeculativeBackend::Dflash2 {
             return Err("DFlash2 is the 27B's drafter; Qwen3.8-Flash-Next drafts with mtp".to_string());
@@ -195,9 +203,9 @@ impl FlashNextSpeculation {
         if !(1..=MAX_DRAFT_TOKENS).contains(&draft_tokens) {
             return Err(format!("draft tokens must be in 1..{MAX_DRAFT_TOKENS}, got {draft_tokens}"));
         }
-        if row_budget > FLASH_NEXT_VERIFY_ROWS || row_budget == 1 {
+        if row_budget > FLASH_NEXT_MAX_VERIFY_ROWS || row_budget == 1 {
             return Err(format!(
-                "a draft row budget of {row_budget}: 0 (the decode route's {FLASH_NEXT_VERIFY_ROWS}) or 2..{FLASH_NEXT_VERIFY_ROWS}"
+                "a draft row budget of {row_budget}: 0 (= {FLASH_NEXT_DEFAULT_VERIFY_ROWS}) or 2..{FLASH_NEXT_MAX_VERIFY_ROWS}"
             ));
         }
         Ok(Self { backend, draft_tokens, row_budget })
@@ -493,7 +501,7 @@ mod tests {
     }
 
     /// Spec flash-next/07: k adapts to the row budget as lanes join -- the
-    /// decode route's 8 rows give a 2-draft load k = 2 at one and two lanes
+    /// default's 8 rows give a 2-draft load k = 2 at one and two lanes
     /// and k = 1 at three (phase A's widths), and no draft past four lanes.
     #[test]
     fn the_flash_next_window_fits_the_row_budget() {
@@ -505,12 +513,24 @@ mod tests {
         assert_eq!(widths(7, 6), [5, 2, 1, 0, 0, 0, 0, 0]);
         assert_eq!(widths(1, 2), [1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(flash_next_window(0, 8, 1), 0, "no draft tokens, no window");
-        // Every window fits the bound.
+        // GitHub #329 item 5: a budget past the default's lets five to eight
+        // lanes draft; 0 stays the default's 8 rows.
+        assert_eq!(widths(3, 16), [3, 3, 3, 3, 2, 1, 1, 1]);
+        assert_eq!(widths(2, 16), [2, 2, 2, 2, 2, 1, 1, 1]);
+        assert_eq!(widths(1, 16), [1; 8]);
+        assert_eq!(widths(3, 24), [3, 3, 3, 3, 3, 3, 2, 2]);
+        assert_eq!(widths(7, FLASH_NEXT_MAX_VERIFY_ROWS), [7, 7, 7, 7, 5, 4, 3, 3]);
         for draft in 1..=MAX_DRAFT_TOKENS {
-            for budget in 0..=FLASH_NEXT_VERIFY_ROWS {
+            assert_eq!(widths(draft, 0), widths(draft, FLASH_NEXT_DEFAULT_VERIFY_ROWS), "0 is the default budget");
+        }
+        // Every window fits its budget, and none goes past the maximum.
+        for draft in 1..=MAX_DRAFT_TOKENS {
+            for budget in 0..=FLASH_NEXT_MAX_VERIFY_ROWS + 1 {
+                let rows =
+                    if budget == 0 { FLASH_NEXT_DEFAULT_VERIFY_ROWS } else { budget.min(FLASH_NEXT_MAX_VERIFY_ROWS) };
                 for lanes in 1..=8 {
                     let k = flash_next_window(draft, budget, lanes);
-                    assert!(k <= draft && (k == 0 || lanes * (k + 1) <= FLASH_NEXT_VERIFY_ROWS), "{draft} {budget} {lanes}");
+                    assert!(k <= draft && (k == 0 || lanes * (k + 1) <= rows), "{draft} {budget} {lanes}");
                 }
             }
         }
@@ -532,7 +552,7 @@ mod tests {
         let spec = FlashNextSpeculation::new(SpeculativeBackend::Mtp, 2, 0).expect("valid");
         assert_eq!(spec.decode_rows(3), 6);
         for draft in 1..=MAX_DRAFT_TOKENS {
-            for budget in 0..=FLASH_NEXT_VERIFY_ROWS {
+            for budget in 0..=FLASH_NEXT_MAX_VERIFY_ROWS {
                 for lanes in 1..=8 {
                     let widest = (1..=lanes)
                         .map(|w| w * (flash_next_window(draft, budget, w) + 1))
@@ -555,9 +575,13 @@ mod tests {
             let err = FlashNextSpeculation::new(SpeculativeBackend::Mtp, draft, 0).expect_err("out of range");
             assert!(err.contains("1..7"), "{err}");
         }
-        for budget in [1, 9] {
+        for budget in [1, FLASH_NEXT_MAX_VERIFY_ROWS + 1] {
             let err = FlashNextSpeculation::new(SpeculativeBackend::VerifyOnly, 2, budget).expect_err("bad budget");
-            assert!(err.contains(&budget.to_string()) && err.contains("2..8"), "{err}");
+            assert!(err.contains(&budget.to_string()) && err.contains("0 (= 8)") && err.contains("2..32"), "{err}");
+        }
+        for budget in [9, 16, 24, FLASH_NEXT_MAX_VERIFY_ROWS] {
+            let spec = FlashNextSpeculation::new(SpeculativeBackend::Mtp, 3, budget).expect("a budget up to the maximum");
+            assert_eq!(spec.window(8), flash_next_window(3, budget, 8), "{budget}");
         }
     }
 

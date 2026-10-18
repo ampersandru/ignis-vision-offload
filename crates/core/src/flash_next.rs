@@ -744,6 +744,17 @@ impl FlashNextEngine {
         self.generate_timed(prompts, count).map(|(tokens, _)| tokens)
     }
 
+    /// [`generate`](Self::generate), handing every round's logits to
+    /// `on_round` (GitHub #329 item 5): one row a lane, as its draw read it.
+    pub fn generate_with_logits(
+        &mut self,
+        prompts: &[Vec<u32>],
+        count: usize,
+        on_round: &mut dyn FnMut(RoundLogits<'_>),
+    ) -> Result<Vec<Vec<u32>>, String> {
+        self.generate_rounds(prompts, count, Some(on_round)).map(|(tokens, _)| tokens)
+    }
+
     /// [`generate`](Self::generate), with each round's wall time: the host's
     /// n-gram staging of the round's tokens plus the round itself, as a
     /// serving loop pays it (spec flash-next/07 phase A's cost per row).
@@ -751,6 +762,15 @@ impl FlashNextEngine {
         &mut self,
         prompts: &[Vec<u32>],
         count: usize,
+    ) -> Result<(Vec<Vec<u32>>, Vec<std::time::Duration>), String> {
+        self.generate_rounds(prompts, count, None)
+    }
+
+    fn generate_rounds(
+        &mut self,
+        prompts: &[Vec<u32>],
+        count: usize,
+        on_round: Option<&mut dyn FnMut(RoundLogits<'_>)>,
     ) -> Result<(Vec<Vec<u32>>, Vec<std::time::Duration>), String> {
         if prompts.is_empty() || prompts.len() > self.options.decode_lanes as usize {
             return Err(format!("{} prompts on {} lanes", prompts.len(), self.options.decode_lanes));
@@ -770,6 +790,8 @@ impl FlashNextEngine {
         let mut out = vec![Vec::with_capacity(count); prompts.len()];
         let mut times = Vec::with_capacity(count);
         let mut rows = vec![0u8; prompts.len() * self.table.token_bytes()];
+        let all: Vec<usize> = (0..prompts.len()).collect();
+        let mut logits = LogitsSink::new(on_round, self.vocab());
         for _ in 0..count {
             let began = std::time::Instant::now();
             let pending: Vec<[u32; 1]> = seqs
@@ -781,11 +803,13 @@ impl FlashNextEngine {
             self.table.begin_batch(&mut lanes)?.finish(&mut rows)?;
             let mut handles: Vec<_> = seqs.iter_mut().collect();
             let greedy = vec![(SamplingParams::greedy(), &[][..]); handles.len()];
-            let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows)?;
+            let read = logits.round(all.len());
+            let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows, read)?;
             times.push(began.elapsed());
             for (lane, (token, _)) in emitted.into_iter().enumerate() {
                 out[lane].push(token as u32);
             }
+            logits.hand(&all, 1);
         }
         Ok((out, times))
     }
@@ -802,7 +826,21 @@ impl FlashNextEngine {
         &self,
         prompts: &[Vec<u32>],
         count: usize,
+        drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>,
+    ) -> Result<SpeculativeRun<'_>, String> {
+        self.generate_speculative_with_logits(prompts, count, drafter, None)
+    }
+
+    /// [`generate_speculative`](Self::generate_speculative), handing every
+    /// round's logits to `on_round` (GitHub #329 item 5): a one-token round's
+    /// row a lane, a verify round's every column of every lane -- drafted or
+    /// padding -- as the accept read them.
+    pub fn generate_speculative_with_logits(
+        &self,
+        prompts: &[Vec<u32>],
+        count: usize,
         mut drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>,
+        on_round: Option<&mut dyn FnMut(RoundLogits<'_>)>,
     ) -> Result<SpeculativeRun<'_>, String> {
         let speculation = self.options.speculation.ok_or("this engine was loaded without speculation")?;
         if prompts.is_empty() || prompts.len() > self.options.decode_lanes as usize {
@@ -828,6 +866,7 @@ impl FlashNextEngine {
         let mtp = speculation.backend() == SpeculativeBackend::Mtp;
         // An MTP load's drafts for each lane's next round: none after a prefill or a one-token round.
         let mut head_drafts: Vec<Vec<u32>> = vec![Vec::new(); prompts.len()];
+        let mut logits = LogitsSink::new(on_round, self.vocab());
         loop {
             let active: Vec<usize> = (0..prompts.len()).filter(|&i| out[i].len() < count).collect();
             if active.is_empty() {
@@ -859,7 +898,9 @@ impl FlashNextEngine {
                 let mut handles: Vec<_> =
                     seqs.iter_mut().enumerate().filter(|(i, _)| active.contains(i)).map(|(_, s)| s).collect();
                 let greedy = vec![(SamplingParams::greedy(), &[][..]); handles.len()];
-                let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows)?;
+                let read = logits.round(active.len());
+                let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows, read)?;
+                logits.hand(&active, 1);
                 for ((&lane, (token, _)), context) in active.iter().zip(emitted).zip(lane_contexts) {
                     out[lane].push(token as u32);
                     contexts[lane] = context;
@@ -910,7 +951,9 @@ impl FlashNextEngine {
                     .collect();
                 let mut handles: Vec<_> =
                     seqs.iter_mut().enumerate().filter(|(i, _)| active.contains(i)).map(|(_, s)| s).collect();
-                let runs = decode_flash_next_verify(&self.model, &self.pool, &mut handles, &lanes, window, &rows)?;
+                let read = logits.round(active.len() * columns);
+                let runs = decode_flash_next_verify(&self.model, &self.pool, &mut handles, &lanes, window, &rows, read)?;
+                logits.hand(&active, columns);
                 for (&lane, run) in active.iter().zip(runs) {
                     let committed: Vec<u32> = run.tokens.iter().map(|&t| t as u32).collect();
                     // The context after the run: its last tokens.
@@ -955,6 +998,72 @@ impl FlashNextEngine {
         )?;
         Ok(logits)
     }
+
+    /// One plain round over sequences [`generate_speculative`](Self::generate_speculative)
+    /// left standing (`contexts` theirs), each lane drawn under its own
+    /// sampling and permitted set, its logits copied to `out_logits` if `Some`
+    /// ([`decode_flash_next`]): a round no generate path runs, for a test of
+    /// what the leaf refuses (GitHub #329 item 5). Moves each sequence and
+    /// its context one token on, or neither when the round is refused.
+    ///
+    /// Test-only: public because its one caller,
+    /// `a_permitted_set_refuses_the_logits_copy` in
+    /// `tests/flash_next_speculative_gpu.rs`, is an integration test outside
+    /// the crate, and it reads the engine's private model, pool and n-gram
+    /// table. No serving path calls it.
+    #[doc(hidden)]
+    pub fn decode_standing(
+        &self,
+        sequences: &mut [crate::seq::Seq<'_>],
+        contexts: &mut [NgramContext],
+        lanes: &[(SamplingParams, &[i32])],
+        out_logits: Option<&mut [u16]>,
+    ) -> Result<Vec<(i32, f32)>, String> {
+        let pending: Vec<u32> = sequences
+            .iter()
+            .map(|seq| seq.pending_token().map(|t| t as u32).ok_or("a lane has no pending token"))
+            .collect::<Result<_, _>>()?;
+        let mut rows = vec![0u8; sequences.len() * self.table.token_bytes()];
+        let mut staged = contexts.to_vec();
+        {
+            let mut batch: Vec<(&mut NgramContext, &[u32])> =
+                staged.iter_mut().zip(&pending).map(|(c, t)| (c, std::slice::from_ref(t))).collect();
+            self.table.begin_batch(&mut batch)?.finish(&mut rows)?;
+        }
+        let mut handles: Vec<_> = sequences.iter_mut().collect();
+        let drawn = decode_flash_next(&self.model, &self.pool, &mut handles, lanes, &rows, out_logits)?;
+        contexts.clone_from_slice(&staged);
+        Ok(drawn)
+    }
+}
+
+/// A run's `on_round` callback and the buffer its rounds copy their logits
+/// into: a round asks for the buffer only when someone listens.
+struct LogitsSink<'r> {
+    on_round: Option<&'r mut dyn FnMut(RoundLogits<'_>)>,
+    vocab: usize,
+    rows: Vec<u16>,
+}
+
+impl<'r> LogitsSink<'r> {
+    fn new(on_round: Option<&'r mut dyn FnMut(RoundLogits<'_>)>, vocab: usize) -> Self {
+        Self { on_round, vocab, rows: Vec::new() }
+    }
+
+    /// The buffer a round of `rows` rows copies its logits into, or None.
+    fn round(&mut self, rows: usize) -> Option<&mut [u16]> {
+        self.on_round.as_ref()?;
+        self.rows.resize(rows * self.vocab, 0);
+        Some(&mut self.rows[..])
+    }
+
+    /// Hands the round just copied -- `lanes` (prompt indices), `columns` a
+    /// lane -- to the callback.
+    fn hand(&mut self, lanes: &[usize], columns: usize) {
+        if let Some(on_round) = self.on_round.as_mut() {
+            on_round(RoundLogits { lanes, columns, rows: &self.rows });
+        }
+    }
 }
 
 /// One lane's share of a speculative round ([`FlashNextEngine::generate_speculative`]):
@@ -964,6 +1073,20 @@ impl FlashNextEngine {
 pub struct LaneRound {
     pub extent: u32,
     pub committed: u32,
+}
+
+/// One round's logits, as a run hands them to its `on_round`
+/// ([`FlashNextEngine::generate_with_logits`],
+/// [`FlashNextEngine::generate_speculative_with_logits`]): the prompt indices
+/// of the lanes that ran it, in order, its columns a lane (1 in a one-token
+/// round, the window + 1 in a verify round) and its BF16 rows,
+/// `[lanes][columns][vocab]`. Every row the round's head produced, copied
+/// while the round still samples -- not a **readout**, which reads named
+/// tokens and draws nothing (CONTEXT.md).
+pub struct RoundLogits<'a> {
+    pub lanes: &'a [usize],
+    pub columns: usize,
+    pub rows: &'a [u16],
 }
 
 /// What [`FlashNextEngine::generate_speculative`] produced: each lane's

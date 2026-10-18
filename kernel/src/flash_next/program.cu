@@ -78,6 +78,17 @@ uint32_t moe_decode_route() {
 // time, their logits in the chunk's scratch, then copied out.
 constexpr int32_t kSpanLogitRows = 32;
 
+// The MoE workspace's decode regions: the decode route's one launch at the load's widest decode
+// call. A verify round past it runs that route in launches of this many rows
+// (fn_moe_experts_decode), so the regions (quadratic in it) stay the default's.
+uint32_t moe_decode_tokens(const FlashNextModel &fn) {
+  return std::min<uint32_t>(fn.decode_rows, IGNIS_MOE_DECODE_MAX_TOKENS);
+}
+
+ignis_moe_workspace moe_workspace(const FlashNextModel &fn) {
+  return ignis_moe_workspace{fn.moe_workspace->p, moe_decode_tokens(fn), fn.prefill_chunk_tokens, moe_decode_route()};
+}
+
 }  // namespace
 
 // The KV positions a decode round's indexer and attention are sized for: the context, past the
@@ -97,7 +108,10 @@ std::size_t call_scratch_bytes(const Geometry &g, int32_t kv_format, int32_t row
   const std::size_t selection =
       aligned(static_cast<std::size_t>(rows) * g.selection_width() * sizeof(int32_t)) +
       aligned(static_cast<std::size_t>(rows) * sizeof(int32_t));
-  std::size_t attention = fn_qsa_attention_scratch_bytes(g, rows);
+  // A decode call's listed hq rows are all its rows (a verify round's columns among them); a
+  // prefill call decodes its visible rows instead (below), its listed line kept at a round's lanes.
+  const int32_t listed = tokens == 1 ? rows : std::min(rows, qsa::kMaxDecodeLanes);
+  std::size_t attention = fn_qsa_attention_scratch_bytes(g, rows, listed);
   if (kv_format == IGNIS_KV_FORMAT_HQ_E8_2B && tokens > 1) {
     // A sparse prefill call decodes every visible row of the lane (S3's plan line).
     attention += 2 * aligned(sparse::visible_hq_bytes(g, max_visible));
@@ -145,10 +159,12 @@ Sizes plan_sizes(const FlashNextModel &fn) {
   const std::size_t router = aligned(rows * g.experts_per_token * sizeof(int32_t)) +
                              aligned(rows * g.experts_per_token * sizeof(float)) +
                              aligned(rows * g.experts * sizeof(float));
-  s.moe = aligned(ignis_moe_workspace_bytes(fn.decode_rows, fn.prefill_chunk_tokens)) +
+  s.moe = aligned(ignis_moe_workspace_bytes(moe_decode_tokens(fn), fn.prefill_chunk_tokens)) +
           aligned(rows * g.hidden * sizeof(int64_t)) + 2 * router +
           aligned(rows * g.shared_intermediate * sizeof(__nv_bfloat16)) + aligned(rows * g.hidden * sizeof(float));
-  s.sampling_logits = static_cast<std::size_t>(g.vocab) * IGNIS_DECODE_MAX_BATCH * sizeof(std::uint16_t);
+  // A round's logits, or a verify pass's: one row per column (the head writes them here).
+  s.sampling_logits = static_cast<std::size_t>(g.vocab) * std::max<uint32_t>(IGNIS_DECODE_MAX_BATCH, fn.decode_rows) *
+                      sizeof(std::uint16_t);
   s.sampling_workspace =
       std::max<std::size_t>(ninfer::ops::sampling_workspace_capacity_bytes(g.vocab, 1, IGNIS_DECODE_MAX_BATCH), 256);
   if (fn.speculative_backend != IGNIS_SPECULATIVE_NONE) {
@@ -414,10 +430,10 @@ int32_t forward(FlashNextModel &fn, const Context &ctx, const Batch &batch, uint
       }
     }
     const ignis_moe_slot *slots = ignis_residency_slot_table(fn.residency, static_cast<uint32_t>(l));
-    ignis_moe_workspace workspace{fn.moe_workspace->p, fn.decode_rows, fn.prefill_chunk_tokens, moe_decode_route()};
+    const ignis_moe_workspace workspace = moe_workspace(fn);
     const int32_t experts =
         phase == IGNIS_RESIDENCY_DECODE
-            ? ignis_moe_experts_decode(x, static_cast<uint32_t>(rows), ids, weights, slots, &workspace, acc, stream)
+            ? fn_moe_experts_decode(x, static_cast<uint32_t>(rows), ids, weights, slots, workspace, acc, stream)
             : ignis_moe_experts_prefill(x, static_cast<uint32_t>(rows), ids, weights, slots, &workspace, acc, stream);
     // The routed accumulator must be zero on every op's entry (ignis_moe.h); a failure before
     // the combine re-zeroes what the experts added, or the next call would add into it.
@@ -459,6 +475,25 @@ void advance_frontiers(ignis_seq *seq, uint32_t tokens) {
   for (auto &frontier : seq->gdn_positions) frontier += tokens;
 }
 
+int32_t fn_moe_experts_decode(const void *x, uint32_t rows, const int32_t *ids, const float *weights,
+                              const ignis_moe_slot *slots, const ignis_moe_workspace &workspace, int64_t *acc,
+                              cudaStream_t stream) {
+  const uint32_t launch = workspace.decode_tokens;
+  if (rows <= launch || launch == 0) {
+    return ignis_moe_experts_decode(x, rows, ids, weights, slots, &workspace, acc, stream);
+  }
+  for (uint32_t first = 0; first < rows; first += launch) {
+    const auto at = static_cast<std::size_t>(first);
+    if (ignis_moe_experts_decode(static_cast<const __nv_bfloat16 *>(x) + at * IGNIS_MOE_HIDDEN,
+                                 std::min(launch, rows - first), ids + at * IGNIS_MOE_TOP_K,
+                                 weights + at * IGNIS_MOE_TOP_K, slots, &workspace, acc + at * IGNIS_MOE_HIDDEN,
+                                 stream) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 int32_t mtp_entries(FlashNextModel &fn, const Context &ctx, const Batch &batch, const int32_t *tokens,
                     ninfer::DeviceArena &scratch, cudaStream_t stream, std::string *error) {
   mtp::Buffers b;
@@ -466,7 +501,8 @@ int32_t mtp_entries(FlashNextModel &fn, const Context &ctx, const Batch &batch, 
   b.x = fn.x->p;
   b.y = fn.y->p;
   b.inj = static_cast<float *>(fn.injections->p);
-  b.workspace = ignis_moe_workspace{fn.moe_workspace->p, fn.decode_rows, fn.prefill_chunk_tokens, moe_decode_route()};
+  b.workspace = moe_workspace(fn);
+  b.decode_rows = fn.decode_rows;
   b.acc = static_cast<int64_t *>(fn.moe_acc->p);
   b.router_ids = static_cast<int32_t *>(fn.router_ids->p);
   b.router_weights = static_cast<float *>(fn.router_weights->p);
@@ -715,7 +751,7 @@ int32_t finish_load(ignis_model &model, std::string *error) {
     fn.slots = buffer(lanes * sizeof(int32_t));
     fn.positions = buffer(lanes * sizeof(int32_t));
     fn.ngram_rows = buffer(rows * g.ngram_heads * g.ngram_row_bytes());
-    fn.moe_workspace = buffer(ignis_moe_workspace_bytes(fn.decode_rows, fn.prefill_chunk_tokens));
+    fn.moe_workspace = buffer(ignis_moe_workspace_bytes(moe_decode_tokens(fn), fn.prefill_chunk_tokens));
     fn.moe_acc = buffer(rows * g.hidden * sizeof(int64_t));
     fn.router_ids = buffer(rows * g.experts_per_token * sizeof(int32_t));
     fn.router_weights = buffer(rows * g.experts_per_token * sizeof(float));
@@ -766,7 +802,7 @@ int32_t finish_load(ignis_model &model, std::string *error) {
       return -1;
     }
   }
-  ignis_moe_workspace workspace{fn.moe_workspace->p, fn.decode_rows, fn.prefill_chunk_tokens, moe_decode_route()};
+  const ignis_moe_workspace workspace = moe_workspace(fn);
   if (ignis_moe_workspace_init(&workspace, static_cast<int64_t *>(fn.moe_acc->p), model.stream) != 0) {
     *error = std::string("ignis_moe_workspace_init: ") + ignis_moe_last_error();
     return -1;
@@ -1089,6 +1125,9 @@ int32_t program_decode(ignis_model *model, ignis_seq_pool *pool, ignis_seq *cons
     slots[i] = seq->slot;
     positions[i] = static_cast<int32_t>(seq->position);
   }
+  if (constrained && options->out_logits != nullptr) {
+    return refuse("out_logits cannot ride a round with a permitted set: its mask writes into the rows");
+  }
 
   const auto began = std::chrono::steady_clock::now();
   cudaStream_t stream = model->stream;
@@ -1174,6 +1213,12 @@ int32_t program_decode(ignis_model *model, ignis_seq_pool *pool, ignis_seq *cons
                                     batch_size * sizeof(float), cudaMemcpyDeviceToHost, stream),
                     "copying the permitted probabilities", &error);
   }
+  // The round's logits copy (GitHub #329 item 5): the draw only reads the rows.
+  ok = ok && (options->out_logits == nullptr ||
+              check_cuda(cudaMemcpyAsync(options->out_logits, model->sampling_decode_logits->p,
+                                         batch_size * static_cast<std::size_t>(vocab) * sizeof(uint16_t),
+                                         cudaMemcpyDeviceToHost, stream),
+                         "copying the logits", &error));
   std::vector<int32_t> successors(batch_size, -1);
   ok = ok &&
        check_cuda(cudaMemcpyAsync(successors.data(), model->sampling_decode_out->p, batch_size * sizeof(int32_t),

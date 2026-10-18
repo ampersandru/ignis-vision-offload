@@ -217,13 +217,14 @@ mod tests {
         let draft = field("spec", "draft_tokens").unwrap();
         assert_eq!(pro.get(draft, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "7");
 
-        // Flash-Next drafts with its MTP head, 3 tokens a lane, cut only by
-        // the verify round's own 8 rows: on 96 GB no expert crosses PCIe,
-        // the cost that made MTP lose on the 5090.
+        // Flash-Next drafts with its MTP head, 3 tokens a lane, cut by the
+        // default row budget's 8 rows (GitHub #329 item 5: a wider budget
+        // waits on this card's measurement): on 96 GB no expert crosses
+        // PCIe, the cost that made MTP lose on the 5090.
         assert_eq!(pro.get(backend, Some(ModelFamily::FlashNext)).unwrap().raw, "mtp");
         assert_eq!(pro.get(draft, Some(ModelFamily::FlashNext)).unwrap().raw, "3");
         let rows = field("spec", "draft_rows").unwrap();
-        assert!(pro.get(rows, None).is_none(), "unset: the whole row budget");
+        assert!(pro.get(rows, None).is_none(), "unset: the default row budget, 8 of 32");
 
         // No headroom traded down: the hardcoded default, for both families.
         let headroom = field("vram", "headroom_bytes").unwrap();

@@ -11,6 +11,7 @@
 // Host-only. ADR 0006: no SKIP_RETURN_CODE.
 
 #include "flash_next/bind.h"
+#include "flash_next/verify.h"
 
 #include "ignis_model.h"
 #include "ignis_seq.h"
@@ -338,6 +339,131 @@ int main() {
     const std::string narrow = plan(&verify_only);
     check(narrow.find("row budget of 1") != std::string::npos,
           "a row budget that leaves one lane no draft is refused by name: got \"" + narrow + "\"");
+    // GitHub #329 item 5: a budget past the default's 8 rows, up to verify::kMaxRows. Its windows
+    // are crates/core's flash_next_window; 0 and 8 plan alike; a wider budget grows the verify
+    // round's, the sampling and the decode round's lines, and only as far as the load's rounds
+    // reach.
+    {
+      namespace verify = ignis::flash_next::verify;
+      const auto widths = [](uint32_t draft, uint32_t budget) {
+        std::vector<uint32_t> w;
+        for (uint32_t lanes = 1; lanes <= 8; ++lanes) w.push_back(verify::window_for(draft, budget, lanes));
+        return w;
+      };
+      check(widths(3, 16) == std::vector<uint32_t>{3, 3, 3, 3, 2, 1, 1, 1}, "3 drafts at 16 rows: every width drafts");
+      check(widths(3, 24) == std::vector<uint32_t>{3, 3, 3, 3, 3, 3, 2, 2}, "3 drafts at 24 rows");
+      check(widths(7, 32) == std::vector<uint32_t>{7, 7, 7, 7, 5, 4, 3, 3}, "7 drafts at 32 rows");
+      check(widths(3, 0) == widths(3, 8) && verify::kMaxRows == 32, "0 is the default's 8 rows; the maximum is 32");
+      const auto planned = [&](uint32_t lanes, uint32_t budget, ignis_model_reservations *lines) {
+        ignis_model_load_options o = verify_only;
+        o.decode_lanes = lanes;
+        o.draft_row_budget = budget;
+        const std::string why = plan(&o);
+        *lines = out;
+        return why;
+      };
+      const auto same = [](const ignis_model_reservations &a, const ignis_model_reservations &b) {
+        return a.workspace_bytes == b.workspace_bytes && a.sampling_bytes == b.sampling_bytes &&
+               a.decode_graph_bytes == b.decode_graph_bytes && a.activation_bytes == b.activation_bytes &&
+               a.verify_round_bytes == b.verify_round_bytes;
+      };
+      ignis_model_reservations zero{}, eight{}, sixteen{}, twelve{}, maximum{};
+      check(planned(4, 0, &zero) == "(planned)" && planned(4, 8, &eight) == "(planned)" && same(zero, eight),
+            "a budget of 8 plans exactly what the default does");
+      const std::string wide = planned(4, 16, &sixteen);
+      check(wide == "(planned)", "a budget of 16 rows is planned: got \"" + wide + "\"");
+      check(sixteen.verify_round_bytes > eight.verify_round_bytes && sixteen.sampling_bytes > eight.sampling_bytes &&
+                sixteen.decode_graph_bytes > eight.decode_graph_bytes && sixteen.workspace_bytes == eight.workspace_bytes &&
+                sixteen.activation_bytes == eight.activation_bytes,
+            "16 rows grow the verify round's, the sampling and the decode round's lines, not the prefill's");
+      std::printf("flash-next bind: 4 lanes x 3 drafts, budget 8 -> 16: verify %llu -> %llu, sampling %llu -> %llu, "
+                  "decode graph %llu -> %llu bytes\n",
+                  static_cast<unsigned long long>(eight.verify_round_bytes),
+                  static_cast<unsigned long long>(sixteen.verify_round_bytes),
+                  static_cast<unsigned long long>(eight.sampling_bytes),
+                  static_cast<unsigned long long>(sixteen.sampling_bytes),
+                  static_cast<unsigned long long>(eight.decode_graph_bytes),
+                  static_cast<unsigned long long>(sixteen.decode_graph_bytes));
+      // Three lanes of 3 drafts reach 12 rows: the maximum's budget reserves what 12 does.
+      check(planned(3, 12, &twelve) == "(planned)" && planned(3, 32, &maximum) == "(planned)" && same(twelve, maximum),
+            "a budget no round reaches reserves nothing past the rows the load's rounds take");
+      ignis_model_reservations ignored{};
+      const std::string past = planned(4, 33, &ignored);
+      check(past.find("row budget of 33") != std::string::npos && past.find("2..32") != std::string::npos,
+            "a budget past the maximum is refused by name: got \"" + past + "\"");
+
+      // The default is main's (0a810c0b), not only 0 == 8 here: its windows, and its plan lines
+      // as main's own build planned them (the same descriptors, 8192-token chunks, 131072
+      // tokens), with no speculation, verify-only at budgets 0, 2, 6 and 8, both KV formats.
+      check(widths(3, 8) == std::vector<uint32_t>{3, 3, 1, 1, 0, 0, 0, 0} &&
+                widths(2, 0) == std::vector<uint32_t>{2, 2, 1, 1, 0, 0, 0, 0} &&
+                widths(7, 0) == std::vector<uint32_t>{7, 3, 1, 1, 0, 0, 0, 0},
+            "the default's windows are main's");
+      struct MainPlan {
+        int32_t format;
+        uint32_t backend, drafts, lanes, budget;
+        uint64_t decode_graph, verify_round, activation;
+      };
+      constexpr int32_t kHq = IGNIS_KV_FORMAT_HQ_E8_2B, kBf16 = IGNIS_KV_FORMAT_BF16;
+      constexpr uint32_t kNone = IGNIS_SPECULATIVE_NONE, kVerify = IGNIS_SPECULATIVE_VERIFY_ONLY;
+      const MainPlan mains[] = {
+          {kHq, kNone, 0, 0, 0, 17772032, 0, 772235264},
+          {kHq, kNone, 0, 8, 0, 40844288, 0, 779275264},
+          {kHq, kVerify, 3, 1, 0, 23594752, 5996032, 773131264},
+          {kHq, kVerify, 3, 2, 8, 40844288, 11988992, 779275264},
+          {kHq, kVerify, 3, 4, 0, 40844288, 13222912, 779275264},
+          {kHq, kVerify, 3, 4, 6, 32269312, 10534912, 775691264},
+          {kHq, kVerify, 3, 5, 8, 40844288, 13840128, 779275264},
+          {kHq, kVerify, 3, 8, 0, 40844288, 15691008, 779275264},
+          {kHq, kVerify, 3, 8, 2, 40844288, 7233792, 779275264},
+          {kHq, kVerify, 7, 1, 0, 40844288, 11793920, 779275264},
+          {kHq, kVerify, 2, 0, 0, 32269312, 9600000, 775691264},
+          {kBf16, kNone, 0, 0, 0, 17772032, 0, 772235264},
+          {kBf16, kVerify, 3, 1, 8, 23594752, 5897472, 773131264},
+          {kBf16, kVerify, 3, 4, 8, 40844288, 12829440, 779275264},
+          {kBf16, kVerify, 3, 8, 0, 40844288, 14904064, 779275264},
+      };
+      for (const MainPlan &m : mains) {
+        ignis_model_load_options o{};
+        o.size = sizeof(o);
+        o.speculative_backend = m.backend;
+        o.draft_tokens = m.drafts;
+        o.decode_lanes = m.lanes;
+        o.draft_row_budget = m.budget;
+        ignis_model_reservations r{};
+        const int32_t rc = ignis_model_plan_reservations(tensors.data(), tensors.size(), &topology, 8192, 131072,
+                                                         m.format, &o, &r);
+        check(rc == 0 && r.workspace_bytes == 1016074496 && r.sampling_bytes == 4623344 &&
+                  r.decode_graph_bytes == m.decode_graph && r.verify_round_bytes == m.verify_round &&
+                  r.activation_bytes == m.activation && r.drafter_round_bytes == 0 && r.media_embedding_bytes == 0,
+              "format " + std::to_string(m.format) + " backend " + std::to_string(m.backend) + ", " +
+                  std::to_string(m.drafts) + " drafts, " + std::to_string(m.lanes) + " lanes, budget " +
+                  std::to_string(m.budget) + " plans main's lines: got decode graph " +
+                  std::to_string(r.decode_graph_bytes) + ", verify round " + std::to_string(r.verify_round_bytes) +
+                  ", activations " + std::to_string(r.activation_bytes) + ", sampling " +
+                  std::to_string(r.sampling_bytes) + ", workspace " + std::to_string(r.workspace_bytes));
+      }
+
+      // Eight lanes of 3 drafts at budgets 8, 16, 24 and 32 (8 lanes x 4 columns = 32 rows): the
+      // three lines a wide round grows, plan figures (the finding's VRAM table).
+      ignis_model_reservations previous{};
+      for (const uint32_t budget : {8u, 16u, 24u, 32u}) {
+        ignis_model_reservations lines{};
+        check(planned(8, budget, &lines) == "(planned)", "8 lanes at a budget of " + std::to_string(budget));
+        check(budget == 8 || (lines.verify_round_bytes > previous.verify_round_bytes &&
+                              lines.sampling_bytes > previous.sampling_bytes &&
+                              lines.decode_graph_bytes > previous.decode_graph_bytes &&
+                              lines.workspace_bytes == previous.workspace_bytes &&
+                              lines.activation_bytes == previous.activation_bytes),
+              "8 lanes: budget " + std::to_string(budget) + " grows the verify, sampling and decode lines only");
+        std::printf("flash-next bind: 8 lanes x 3 drafts, budget %u: verify %llu, sampling %llu, decode graph %llu "
+                    "bytes\n",
+                    budget, static_cast<unsigned long long>(lines.verify_round_bytes),
+                    static_cast<unsigned long long>(lines.sampling_bytes),
+                    static_cast<unsigned long long>(lines.decode_graph_bytes));
+        previous = lines;
+      }
+    }
     tensors.pop_back();
     const std::string missing = plan(nullptr);
     check(missing.find("bind_flash_next: missing bound tensor") != std::string::npos,

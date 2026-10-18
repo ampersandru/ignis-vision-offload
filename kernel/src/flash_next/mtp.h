@@ -39,6 +39,7 @@ struct Buffers {
   float *inj = nullptr;          // fp32 [rows][streams]
   // The MoE block's (ignis_moe.h).
   ignis_moe_workspace workspace{};
+  uint32_t decode_rows = 0;      // the widest call the decode route takes (fn_moe_experts_decode)
   int64_t *acc = nullptr;
   int32_t *router_ids = nullptr;
   float *router_weights = nullptr;
@@ -58,7 +59,7 @@ int32_t combine(const Geometry &g, const MtpWeights &w, const Linear &embed, con
 
 // The head's layer over X in `b.residual`, in place, on attention section `attention_ordinal`.
 // `experts`: DEVICE [experts * 2] slots, every projection resident. Decode route up to the
-// workspace's decode tokens, the prefill route past them.
+// load's decode rows (b.decode_rows), the prefill route past them.
 int32_t layer(const Context &ctx, int32_t attention_ordinal, const MtpWeights &w, const ignis_moe_slot *experts,
               const Batch &batch, const Buffers &b, ninfer::DeviceArena &scratch, cudaStream_t stream);
 

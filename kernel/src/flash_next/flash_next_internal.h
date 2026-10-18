@@ -410,7 +410,9 @@ std::size_t fn_indexer_select_scratch_bytes(const Geometry &g, int32_t rows, int
 int32_t fn_qsa_attention(const Context &ctx, int32_t attn_ordinal, const QsaWeights &w,
                          const Batch &batch, const void *x, const Selection &selection, void *y,
                          ninfer::DeviceArena &scratch, cudaStream_t stream);
-std::size_t fn_qsa_attention_scratch_bytes(const Geometry &g, int32_t rows);
+// `listed_rows`: the rows a decode or verify call decodes its listed hq rows for (at most `rows`):
+// a decode round's lanes or a verify round's columns, the load's widest.
+std::size_t fn_qsa_attention_scratch_bytes(const Geometry &g, int32_t rows, int32_t listed_rows);
 
 // [S4] Adds the n-gram embedding to every stream of `hidden` (BF16
 // [rows][streams * hidden], before layer ngram_layer's attention mix):
@@ -422,6 +424,16 @@ int32_t fn_ngram_add(const Context &ctx, const NgramWeights &w, const Batch &bat
                      const void *rows_int4, void *hidden, ninfer::DeviceArena &scratch,
                      cudaStream_t stream);
 std::size_t fn_ngram_add_scratch_bytes(const Geometry &g, int32_t rows);
+
+// The routed experts of a decode-phase call of any `rows` -- a round's lanes, or a verify round's
+// columns past the decode route's one launch (GitHub #329 item 5) -- on kern's decode route, in
+// launches of at most workspace.decode_tokens rows, each adding its rows into `acc` (int64
+// [rows][hidden]). A row's sums do not depend on the rows sharing its launch (a unit's fp32 chain
+// runs per token, the cross-unit sums are exact fixed point: ignis_moe.h), so a wide call adds
+// exactly what its rows' own launches would. 0, or -1 with ignis_moe_last_error().
+int32_t fn_moe_experts_decode(const void *x, uint32_t rows, const int32_t *ids, const float *weights,
+                              const ignis_moe_slot *slots, const ignis_moe_workspace &workspace, int64_t *acc,
+                              cudaStream_t stream);
 
 // ---------------------------------------------------------------------------
 // Expert residency (spec 03, resid) is a leaf object of its own, declared in

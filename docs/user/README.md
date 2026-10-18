@@ -484,7 +484,7 @@ change does not reach and a `null` removes.
 | `--reuse-kv-host-pool-bytes <bytes>` | `IGNIS_REUSE_KV_HOST_POOL_BYTES` | `2G` | The KV-RAM host tier. Page-locked whole at start and held for the life of the load, so it is RAM the process holds even idle — and the figure Windows reports as shared GPU memory. `0` disables the host tier. (`make` sets `8G`, and Flash-Next's own `2G` as `--qwen38flashnext-reuse-kv-host-pool-bytes`: knob `FN_KV_HOST_POOL_BYTES`.) |
 | `--spec-backend <backend>` | `IGNIS_SPEC_BACKEND` | unset | Speculative decoding backend: `dflash2` (Qwen3.8-27B), `mtp` (Qwen3.8-Flash-Next, see [below](#flash-next-speculation-mtp)), `off`, or unset for none. |
 | `--spec-draft-tokens <n>` | `IGNIS_SPEC_DRAFT_TOKENS` | — | 1..7. Required with `--spec-backend dflash2`; with `--spec-backend mtp` the most drafts a lane verifies per round (default 2). |
-| `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..8. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only. (`make` knob `DRAFT_ROWS`.) |
+| `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..32. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only, and past 8 five to eight lanes draft too (`16`: 3 drafts up to four lanes, 2 at five, 1 from six to eight). A budget past 8 reserves the wider rounds' VRAM, taken from the expert cache: about 50 MB at 16 rows. Past 8 the round is held numerically equivalent to speculation off, not token for token: greedy output may differ from it where two tokens are nearly tied ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)). (`make` knob `DRAFT_ROWS`.) |
 | `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head) or `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, +356 MB of VRAM). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
 | `--model-rope-scaling <spec>` | `IGNIS_MODEL_ROPE_SCALING` | none | `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]` rescales the checkpoint's trained 262,144-position envelope. `F` in (1, 64]. |
 
@@ -499,7 +499,9 @@ turns it on (below). Before turning it on:
   (`qwen3_8_flash_next_mtp_3p0-v2.ninfer`, ~1 GB). `--spec-backend mtp` without it
   refuses the start.
 - **It keeps the text.** Greedy output is the same as without it, up to
-  near-ties, and sampling keeps its distribution.
+  near-ties, and sampling keeps its distribution. Past the default row budget
+  (`--spec-draft-rows` above 8) a near-tie can go the other way more often:
+  the output is numerically equivalent, not token for token (below).
 - **It costs ~1.1 GB of VRAM, taken from the expert cache, not from the
   context.** The KV pool, and so `--model-max-context`, is unchanged. The cost is
   reserved at load and stays the same whatever the number of drafts: a
@@ -519,9 +521,17 @@ turns it on (below). Before turning it on:
   pool holds beyond one lane's context. **Leave it off** when several agents decode together.
 - A card whose cache holds nearly every expert (96 GB) copies few over PCIe,
   and there MTP pays wherever it drafts. The `rtxpro6000` profile turns it on
-  with 3 draft tokens and the whole row budget: a verify round carries at most
-  8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two active lanes, 1
-  at three or four, and none from five on. On an RTX PRO 6000 Server Edition
+  with 3 draft tokens and the default row budget: a verify round carries at
+  most 8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two active
+  lanes, 1 at three or four, and none from five on. `--spec-draft-rows 16`
+  (up to 32) lets five to eight lanes draft too. Past 8 rows the verify
+  round's linears run on tensor cores, whose sums run in another order, so
+  its output may differ from speculation off's where two tokens are nearly
+  tied: the round is held to speculation off's logits within a tolerance,
+  not to its text token for token
+  ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md),
+  [finding](../findings/2026-10-18-flash-next-verify-rows-past-8.md)); what it
+  pays on this card is not measured. On an RTX PRO 6000 Server Edition
   ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)):
   - with every lane decoding at once (greedy, the 1 GiB n-gram default), one
     lane runs 1.85x speculation off on code and 1.44x on prose, two lanes

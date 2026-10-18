@@ -315,7 +315,7 @@ impl FlashNextLeaf {
             })
             .collect();
         let mut seqs: Vec<&mut Seq<'static>> = sequences.iter_mut().map(|s| &mut s.seq).collect();
-        let runs = step::decode_flash_next_verify(&model.model, &model.pool, &mut seqs, &verify, window, &rows)
+        let runs = step::decode_flash_next_verify(&model.model, &model.pool, &mut seqs, &verify, window, &rows, None)
             .map_err(|e| leaf_error("decode", e))?;
         let context_tokens = self.table.new_context().recent().len();
         let mut out = Vec::with_capacity(runs.len());

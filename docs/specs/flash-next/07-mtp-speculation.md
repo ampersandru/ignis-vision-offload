@@ -113,9 +113,14 @@ Four phases in one ticket, each gated by the previous one's numbers
 - **D. Draft with MTP inside the round's graph,** at a fixed k chosen at load.
   An adaptive width is a measured follow-up.
 
-Greedy speculation is lossless by construction. "Spec on equals spec off,
-token for token, up to the documented near-tie rule" is the correctness
-oracle for the whole of C and D.
+Greedy speculation is lossless by construction for a verify round of up
+to 8 rows (the default budget). "Spec on equals spec off, token for token,
+up to the documented near-tie rule" is the correctness oracle for the whole
+of C and D there. Past 8 rows (GitHub #329 item 5) a round's linears take
+their tensor-core routes, so it is numerically equivalent to spec off, not
+lossless: the oracle is spec-off's logits within a tolerance,
+teacher-forced, with the commit, the state and the run exact
+([ADR 0056](../../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)).
 
 ## The MTP head
 
@@ -620,9 +625,20 @@ Where the build departs from the text above:
 
 - **k adapts to a row budget by width, not per round.** A round of w lanes
   verifies `k = min(draft_tokens, budget / w - 1)` drafts per lane
-  (`draft_row_budget`, 0 = the decode route's 8; `flash_next_window`); a
+  (`draft_row_budget`, 0 = the default's 8; `flash_next_window`); a
   width whose k is 0 runs the one-token round. One pass graph and one commit
-  graph per width. `--spec mtp` defaults to 2 draft tokens (phase A's
+  graph per width. Since GitHub #329 item 5 the budget goes up to 32
+  (`verify::kMaxRows`): past 8 a round's MoE runs the decode route in
+  launches of 8 rows (`fn_moe_experts_decode`, each row the bits of its own
+  launch), its linears and mixes their tensor-core routes, and the head's
+  logits and the QSA listed hq rows are sized by the load's widest round;
+  the GDN replay record bounds lanes and columns, not rows. Past 8 rows the
+  round agrees with itself bit for bit but drifts from spec-off past the
+  near-tie rule (finding `2026-10-18-flash-next-verify-rows-past-8.md`), so
+  a budget past 8 is held numerically equivalent to spec-off, not token for
+  token (ADR 0056): its teacher-forced logits within 64 BF16 ulps of
+  spec-off's, a moved pick only at a near tie of 16, its commit, state and
+  run exact. `--spec mtp` defaults to 2 draft tokens (phase A's
   projection), `--draft-tokens` forces at most k, `--draft-rows` names the
   budget, `--spec off` turns it off. MTP is off unless `--spec mtp` names it
   (owner, 2026-10-07), and a named head without its companion refuses the

@@ -701,7 +701,9 @@ add_test(NAME ignis_kernel_flash_next_embed_head_test COMMAND ignis_kernel_flash
 # before the join, and a failed op on it still leaves a capture that ends once joined. GPU.
 # GitHub #307 (spec flash-next/07 phase C): the verify round's GDN half -- the replay record and our fold of
 # the first c records against c one-token rounds over the same columns, bit for bit. GPU.
-foreach(name IN ITEMS gdn qsa side_branch verify)
+# GitHub #329 item 5: a verify round's MoE past the decode route's one launch -- each row the bits
+# of its own launch. GPU.
+foreach(name IN ITEMS gdn qsa side_branch verify moe_rows)
   add_executable(ignis_kernel_flash_next_${name}_test test_flash_next_${name}.cu)
   target_include_directories(ignis_kernel_flash_next_${name}_test
                              PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

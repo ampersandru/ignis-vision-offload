@@ -84,7 +84,7 @@ pub struct EngineShape {
     /// `--spec-backend off` (GitHub #307): no speculation, the default one included.
     pub speculation_off: bool,
     /// Flash-Next's draft row budget (`--spec-draft-rows`, GitHub #307); 0 = the
-    /// decode route's 8 rows.
+    /// default's 8 rows.
     pub draft_rows: u32,
     /// Flash-Next's decode lanes (`--spec-decode-lanes`, GitHub #306); 0 = the
     /// engine's default.
