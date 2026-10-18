@@ -153,9 +153,14 @@ Eight vCPUs instead of sixteen cost nothing measurable.
   n-gram table** (36.8 GB of lines and the 4 GiB margin), and from ~46 GB to
   ~13 GB with the 1 GiB default. The pinned single allocation, the one a
   32-34 GiB driver ceiling would refuse, is gone.
-- **Both builds share one thing that is not about residency:** the first one
-  or two requests after a load decode at ~73 tok/s, against ~250 after them.
-  Unexplained; the phase-7 cells run a warm-up cell first.
+- **Both builds share one thing that is not about residency:** an MTP
+  decode error. The ~73 tok/s first cells after a load were not slow decode:
+  their reps lost a lane mid-generation to `ignis.runtime.leaf_error`
+  (`speculative_window 2 is not the window a round of 1 lanes runs on this
+  load (3)`, `finish_reason: error`), as did every warm-up's second rep, at
+  token 86 of 256 on every load. The compared cells (`fn-base2-*`,
+  `fn-donly2-*`) have no errored lane; their warm-ups do. Under fix on
+  branch `fn-mtp-window` (#329, items 4 and 6).
 
 ## Implications
 
@@ -198,6 +203,6 @@ Eight vCPUs instead of sixteen cost nothing measurable.
 Noted in https://github.com/gpillon/ignis/issues/329:
 - the prefill staging ring on a device-only load;
 - the staging line charged beside the n-gram line;
-- the slow first requests after a load;
+- the MTP decode error that killed the first requests after a load;
 - the residency phase's load time with the page cache warm, and admitting a
   layer in fewer, larger copies.
