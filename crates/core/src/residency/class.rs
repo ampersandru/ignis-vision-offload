@@ -246,7 +246,8 @@ impl ExpertCatalog {
         counts
     }
 
-    /// Every projection's bytes: the pinned host expert pool's size.
+    /// Every projection's bytes: the pinned host expert pool's size, and the
+    /// VRAM cache that holds every expert (a device-only load, ADR 0054).
     pub fn total_bytes(&self) -> u64 {
         self.class_counts()
             .iter()

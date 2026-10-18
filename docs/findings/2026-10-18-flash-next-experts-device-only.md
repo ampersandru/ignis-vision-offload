@@ -5,7 +5,7 @@
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
 - Scope: expert residency on ADR 0045's resident load (`kernel/src/residency.cu` device-only mode, `crates/core/src/residency/{plan,load,device}.rs`, `crates/core/src/flash_next.rs` `build_residency`, the host plan in `crates/server/src/runtime.rs`)
-- Related: [ADR 0045](../adr/0045-the-kv-pool-follows-residency-and-state-goes-down-to-disk.md), [rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), spec [flash-next/03](../specs/flash-next/03-expert-residency.md)
+- Related: [ADR 0045](../adr/0045-the-kv-pool-follows-residency-and-state-goes-down-to-disk.md), [ADR 0054](../adr/0054-a-resident-load-keeps-its-experts-only-in-vram.md), the finding 2026-10-18-rtxpro6000-profile-measured (on its own branch), spec [flash-next/03](../specs/flash-next/03-expert-residency.md), https://github.com/gpillon/ignis/issues/329, `.scratch/rtxpro6000-profile/`
 - Superseded by: none
 
 ## Question
@@ -35,8 +35,9 @@ Both hit rates are the ones the served plans logged: 0.99983 in
 anvil-serving's report, 0.99436 in the rtxpro6000 campaign. The split models
 one LRU of the calibration traffic: it holds no never-selected projection and
 floors each class's share. The warm start admits selected experts only
-(`warm_start_order`). So those projections came from the host pool on every
-use: 455-4,245 misses per measured cell.
+(`warm_start_order`). So those projections came from the host pool on a miss:
+455-4,245 misses per measured cell, 0.04-0.05% of its selections (455 of
+1.165M, 634 of 1.48M, 4,245 of 9.01M).
 
 **The change.** A residency whose desc has `host_pool_bytes` 0 is
 device-only:
@@ -64,9 +65,18 @@ there, and its staging line carries the layer buffers.
     record's bytes;
   - random decode and prefill steps with either lookahead, and a captured
     decode round, all hits, no copy, no stall.
+
+  After the review it also runs the split step (demand, or routed from the
+  router's logits, then either prefetch half) at the router's 512 experts,
+  every input uploaded on the step's stream, and a split step's out-of-range
+  lookahead, still reported `STATUS_INVALID`. That version, with the kernel's
+  matching fix, passed on the RTX 5090 only.
 - The existing residency CTests (trace in its four modes, routed) pass
   unchanged on both cards.
-- `expert_residency_plan.rs` gains the cache-equals-catalog case.
+- `expert_residency_plan.rs` gains the cache-equals-catalog case;
+  `expert_residency_load.rs` checks the streamed layers against the pool fill
+  byte for byte and a refused layer ending the stream; `vram.rs` checks that
+  only a resident load's cache holds every expert.
 
 **On the card** (RTX PRO 6000 Server Edition, g7e.4xlarge, Linux, driver
 595.91.07). The develop image (main 851100c7, host pool) was compared with
@@ -79,7 +89,6 @@ prompts, greedy, 512 tokens, 3 reps after a warm-up cell:
 | `expected_hit_rate` | 0.994 | 1.0 |
 | host plan `planned_bytes` | 69.9 GB | 36.8 GB |
 | pinned memory (cgroup `shmem`) | 41.1 GB | 3.3 GB |
-| residency load phase (page cache warm) | 12.8 s | 5.7 s |
 | 1 lane code / prose, tok/s | 262 / 197 | 263 / 198 |
 | 8 lanes code, tok/s | 428 | 430 |
 | expert misses in those cells | 455 / 634 / 4,245 | 0 / 0 / 0 |
@@ -87,13 +96,25 @@ prompts, greedy, 512 tokens, 3 reps after a warm-up cell:
 | greedy text, 32 lanes | — | identical, every lane |
 
 Every one of the 32 lanes (1-lane code and prose, 8-lane code, all reps)
-produced the same text byte for byte.
+produced the same text byte for byte. The two `shmem` figures were read in
+the pods with `oc exec` (transcribed in
+`.scratch/rtxpro6000-profile/observed-values-not-in-logs.md`).
+
+**The residency load phase** is not compared: the logs saved hold develop's
+51.3 s cold and 12.8 s with the page cache warm, but only one load of the
+branch on the 4xlarge, 38.1 s, whose page cache state was not recorded. On
+the 2xlarge, whose 64 GiB cannot cache the artifact beside the whole n-gram
+table, every load of the branch took 24-33 s (`ignis-2x-test-current.log`).
 
 **On a g7e.2xlarge** (8 vCPU / 64 GiB, the same RTX PRO 6000): the branch
 loaded Flash-Next with the whole n-gram table. Host plan: 61.0 GB available,
 36.8 GB planned, 24.2 GB left. The develop image's plan, 69.9 GB, does not fit
 there. A cold load (fresh node, artifact off the EBS volume) took 2 min:
-device weights 7.6 s, residency 67 s, n-gram 46 s. The same cells as above:
+device weights 7.6 s, residency 67 s, n-gram 46 s. That first boot's log was
+not saved; its plan and phases are transcribed in
+`.scratch/rtxpro6000-profile/observed-values-not-in-logs.md`, and the later
+loads of the same Deployment (62.2 and 61.5 GB available) are in
+`ignis-2x-test-current.log`. The same cells as above:
 - 1 lane code / prose: 263.6 / 197.8 tok/s;
 - 8 lanes code: 430.2 tok/s;
 - TTFT 32K: 7.25 s;
@@ -103,8 +124,9 @@ Eight vCPUs instead of sixteen cost nothing measurable.
 
 ## Finding
 
-- **On the resident load the host pool was 38 GB of RAM for ~0.6% of
-  selections.** It served only the projections the cache split left slotless.
+- **On the resident load the host pool was 38 GB of RAM for 0.04-0.05% of
+  selections** (measured; the plan's model put it at 0.6% at eight lanes). It
+  served only the misses on the projections the cache split left slotless.
   Giving every projection its slot and dropping the pool costs nothing
   measurable:
   - decode equal or slightly faster, no miss left to wait on;
@@ -138,11 +160,18 @@ Eight vCPUs instead of sixteen cost nothing measurable.
   (a 32 GB card is never resident).
 - The staging line (4.7 GB) is charged for the whole plan, though the load
   frees it before serving.
+- Whether the device-only residency phase loads faster or slower than the
+  pool fill with the page cache warm is not settled (above). Its admission
+  makes one synchronous copy per record, from pageable buffers.
 - The prefill staging ring (~1.5 GB of VRAM) is still reserved on a
   device-only load, where no step can stage. Giving it to the KV pool is a
   follow-up.
 
 ## Follow-ups
 
-- The prefill staging ring on a device-only load.
-- The slow first requests after a load.
+Noted in https://github.com/gpillon/ignis/issues/329:
+- the prefill staging ring on a device-only load;
+- the staging line charged beside the n-gram line;
+- the slow first requests after a load;
+- the residency phase's load time with the page cache warm, and admitting a
+  layer in fewer, larger copies.

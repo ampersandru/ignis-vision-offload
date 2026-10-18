@@ -217,7 +217,11 @@ When output names a domain concept, use the term as defined here.
 - **K class** — expert projections of one shape and one K, hence one byte
   size: eight classes, each with its own slot pool in the expert cache.
 - **Expert pool** — every expert projection, in pinned host RAM for the life of
-  the load.
+  the load. Only an offloaded load has one; a **device-only** load has none.
+- **Device-only residency** — a resident load's expert residency (ADR 0054):
+  the expert cache holds every projection, so there is no expert pool. At
+  load each record is **admitted** from the artifact straight to its slot, a
+  layer at a time, and no step misses.
 - **Expert cache** — the fixed-size VRAM slot pools that hold the projections
   in use, replaced least-recently-used; a plan line at load. It takes what the
   **KV pool policy** leaves. Below its 12 GiB floor the start is refused,

@@ -266,7 +266,7 @@ fn the_refusal_reads_in_binary_units_with_the_shortfall() {
     assert_eq!((err.needed_bytes(), err.short_bytes()), (46_418_864_128, 4_786_333_696));
     assert_eq!(
         err.to_string(),
-        "not enough RAM: the load pins 39.2 GiB and keeps 4 GiB free for the system, so it needs 43.2 GiB \
+        "not enough RAM: the load holds 39.2 GiB and keeps 4 GiB free for the system, so it needs 43.2 GiB \
          available, but only 38.8 GiB is (4.5 GiB short). Even the experts alone (35.2 GiB) do not fit: close \
          other applications. Plan: experts 35.2 GiB, n-gram hot rows 1 GiB, staging 64 MiB, retained host slots \
          992 MiB, KV-RAM arena 2 GiB; margin 4 GiB (--qwen38flashnext-model-host-margin-bytes)."

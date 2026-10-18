@@ -341,7 +341,7 @@ defines.
 
 ## Acceptance
 
-1. All expert projections are loaded into one pinned host pool at load and freed on model drop. The host plan is printed, and the load refuses when RAM is short by the 6 GB margin.
+1. All expert projections are loaded into one pinned host pool at load and freed on model drop. The host plan is printed, and the load refuses when RAM is short by the 6 GB margin. (A resident load, whose cache holds every projection, has no host pool: ADR 0054.)
 2. The VRAM expert cache is a plan line computed at load, split into eight K-class pools by the sidecar's traffic shares. Floor 12 GB, with a clear failure below it. Nothing is allocated while serving.
 3. The miss-path measurement is recorded, and the chosen design (device-resident or host-orchestrated) follows the stated 80% rule. Decode residency is graph-capturable if device-resident.
 4. Replacement is per-class LRU with current-step pinning. Router lookahead prefetch of width 16 (configurable) on the next layer's router. The GPU's hit/miss sequence on recorded traces equals the CPU policy model's.

@@ -641,15 +641,16 @@ step ever copies an expert in, so the plan's `expert_pool` line is 0 and its
 staging line carries the layer buffers of the load instead (~4.7 GB, given
 back once the model is loaded). The same load then needs about **13 GB
 available** (~9 GB of lines and the 4 GiB margin), and the whole n-gram table
-(28.8 GB, `--ngram-hot-bytes auto`) fits beside it on a 64 GB machine. Measured on an RTX PRO 6000 (2026-10-18): the pinned memory went from
-41.1 to 3.3 GB, decode and greedy text unchanged, the expert cache's hit rate
-1.0 instead of 0.994.
+(28.8 GB, `--ngram-hot-bytes auto`) fits beside it on a 64 GB machine.
+Measured on an RTX PRO 6000 (2026-10-18): the pinned memory went from 41.1 to
+3.3 GB, decode and greedy text unchanged, the expert cache's hit rate 1.0
+instead of 0.994.
 
 A load below that is refused
 in GiB, with how far short it fell and the plan line to shrink:
 
 ```
-not enough RAM: the load pins 39.2 GiB and keeps 4 GiB free for the system, so it needs 43.2 GiB
+not enough RAM: the load holds 39.2 GiB and keeps 4 GiB free for the system, so it needs 43.2 GiB
 available, but only 38.8 GiB is (4.5 GiB short). Even the experts alone (35.2 GiB) do not fit: close
 other applications. Plan: experts 35.2 GiB, n-gram hot rows 1 GiB, staging 64 MiB, retained host slots
 992 MiB, KV-RAM arena 2 GiB; margin 4 GiB (--qwen38flashnext-model-host-margin-bytes).

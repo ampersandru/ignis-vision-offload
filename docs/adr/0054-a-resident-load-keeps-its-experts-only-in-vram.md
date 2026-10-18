@@ -19,8 +19,8 @@ the rest. The host pool stayed whole: ~38 GB pinned, in one `cudaHostAlloc`.
 On an RTX PRO 6000 the cache split, which models one LRU of the calibration traffic, gave no
 slot to 244 projections at one lane and to 1,944 at eight. It holds no never-selected projection
 and floors each class's share, so 1.2 GB of the cache stayed unassigned, and the warm start
-admits selected experts only. The 38 GB pool served those projections alone: ~0.6% of
-selections.
+admits selected experts only. The 38 GB pool served the misses on those projections alone:
+0.04-0.05% of selections measured (the plan's model put it at 0.6% at eight lanes).
 
 ## Decision
 
@@ -55,8 +55,9 @@ no host copy of any expert.**
 - A machine with a 96 GB card serves Flash-Next with ~13 GB of RAM available instead of ~46, and
   the whole n-gram table fits beside it on 64 GB.
 - Decode, TTFT and greedy text are unchanged or better (no miss left), measured on the card.
-- The load reads the artifact as before; the residency phase is shorter (no second copy, pool to
-  VRAM).
+- The load reads the artifact as before. Whether the residency phase is shorter (no second copy,
+  pool to VRAM) or longer (one synchronous copy per record from pageable buffers) was not
+  settled: no load of each with the page cache warm was compared.
 - The offloaded path (cache below the catalog) is untouched.
 - The prefill staging ring is still reserved on a device-only load, where nothing stages:
   ~1.5 GB of VRAM the KV pool could take (a follow-up).

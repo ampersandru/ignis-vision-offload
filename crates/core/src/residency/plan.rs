@@ -36,11 +36,13 @@ pub struct HostPlanRequest {
     /// measured before the first pinned allocation.
     pub available_physical_bytes: u64,
     /// Every expert projection, pinned for the life of the load: the
-    /// [`ExpertCatalog::total_bytes`] of the artifact.
+    /// [`ExpertCatalog::total_bytes`] of the artifact. 0 on a device-only
+    /// load (ADR 0054), whose experts live only in VRAM.
     pub expert_pool_bytes: u64,
     /// The n-gram table's hot rows held in RAM (spec flash-next/04).
     pub ngram_hot_rows_bytes: u64,
-    /// Host staging buffers: the artifact read buffers and the like.
+    /// Host staging buffers: KV-disk's, and a device-only load's expert
+    /// layer buffers (ADR 0054), freed once the experts are admitted.
     pub staging_bytes: u64,
     /// Prompt reuse's host retained slots (`--reuse-retained-host`, spec
     /// flash-next/05): one pinned block of a state image per slot.
@@ -132,7 +134,7 @@ impl std::fmt::Display for HostPlanError {
         } = self;
         write!(
             f,
-            "not enough RAM: the load pins {} and keeps {} free for the system, so it needs {} \
+            "not enough RAM: the load holds {} and keeps {} free for the system, so it needs {} \
              available, but only {} is ({} short). ",
             human_bytes(*planned_bytes),
             human_bytes(*margin_bytes),
@@ -146,8 +148,9 @@ impl std::fmt::Display for HostPlanError {
                 "The experts fit, the n-gram hot rows do not: hold fewer (--ngram-hot-bytes) or close other applications",
             ),
             "staging" => f.write_str(
-                "The experts and the n-gram hot rows fit, KV-disk's staging buffers do not: \
-                 --qwen38flashnext-kv-disk-bytes 0 drops them, or close other applications",
+                "The experts and the n-gram hot rows fit, the staging buffers do not (KV-disk's, and a \
+                 device-only load's expert layer buffers): --qwen38flashnext-kv-disk-bytes 0 drops \
+                 KV-disk's, or close other applications",
             ),
             "retained_host_slots" => f.write_str(
                 "The model fits, prompt reuse's retained host slots do not: fewer of them \
@@ -506,7 +509,7 @@ pub fn plan_expert_cache(
     // calibration traffic, which holds no never-selected projection and
     // floors each class's share: at exactly the catalog's bytes it left 244
     // projections slotless at one lane and 1,944 at eight (1.2 GB unused) on
-    // the trellis-a25 artifact, so those were copied from RAM on every use.
+    // the trellis-a25 artifact, so those were copied from RAM on a miss.
     if cache >= catalog.total_bytes() {
         let pools = std::array::from_fn(|i| ClassPool { slots: projections[i] as u32, bytes: projections[i] * slot_bytes[i] });
         return Ok(ExpertCachePlan {

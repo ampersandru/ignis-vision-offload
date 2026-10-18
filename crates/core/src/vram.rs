@@ -974,6 +974,25 @@ mod tests {
         assert!(held + fn_arena(plan.kv_page_count + 1) > card);
     }
 
+    /// ADR 0054: a load keeps its experts only in VRAM exactly when its cache
+    /// holds every one (`flash_next::device_only`). Only the resident branch
+    /// gives the cache that; the offloaded one gives it the budget less a pool
+    /// at least the floor the resident test failed at, so always less.
+    #[test]
+    fn only_a_resident_load_gets_a_cache_that_holds_every_expert() {
+        let threshold = fn_lines().total() + FN_RESIDENCY + FN_EXPERTS + fn_arena(FN_FLOOR);
+        for lanes in [1, 3, 8] {
+            for budget in [FN_BUDGET, threshold - 1, threshold, threshold + GIB, 96_000_000_000] {
+                let plan = plan_vram(&flash_next_at(budget, lanes)).expect("fits");
+                let at = format!("{lanes} lanes, {budget} bytes");
+                match plan.kv_pool_policy {
+                    KvPoolPolicy::Resident => assert_eq!(plan.expert_cache_bytes, FN_EXPERTS, "{at}"),
+                    KvPoolPolicy::Offloaded => assert!(plan.expert_cache_bytes < FN_EXPERTS, "{at}"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_named_pool_below_one_context_refuses_naming_the_knobs_and_the_bytes_per_token() {
         // AC 4, on either model: a whole context, but no page for the

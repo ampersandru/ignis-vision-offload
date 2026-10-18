@@ -97,7 +97,7 @@ fn a_host_plan_below_the_margin_refuses_naming_the_line_that_crosses_it() {
     // would make room; the exact bytes are the error's fields.
     let message = err.to_string();
     for needle in [
-        "not enough RAM: the load pins 41 GiB and keeps 4 GiB free for the system",
+        "not enough RAM: the load holds 41 GiB and keeps 4 GiB free for the system",
         "needs 45 GiB available, but only 43 GiB is (2 GiB short)",
         "the n-gram hot rows do not: hold fewer (--ngram-hot-bytes)",
         "Plan: experts 38 GiB, n-gram hot rows 2 GiB, staging 1 GiB",
@@ -141,7 +141,8 @@ fn the_staging_line_crossing_names_staging_and_its_own_remedy() {
     assert_eq!(crossing_line, "staging");
     // Flash-Next's own flag, as every other remedy names: a 27B start's
     // general `--kv-disk-bytes` cannot shadow it.
-    assert!(message.contains("KV-disk's staging buffers do not: --qwen38flashnext-kv-disk-bytes 0 drops them"), "{message}");
+    assert!(message.contains("the staging buffers do not"), "{message}");
+    assert!(message.contains("--qwen38flashnext-kv-disk-bytes 0 drops KV-disk's"), "{message}");
     assert!(!message.contains("--ngram-hot-bytes"), "{message}");
 }
 

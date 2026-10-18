@@ -1090,7 +1090,10 @@ pub(crate) fn flash_next_load(
             retained_host_slots = options.retained_host_slots,
             retained_host_bytes = pool_plan.retained_host_bytes,
             kv_ram_arena_bytes = options.kv_ram_arena_bytes,
+            expert_pool_bytes = request.expert_pool_bytes,
+            staging_bytes = request.staging_bytes,
             kv_disk_staging_bytes,
+            expert_staging_bytes,
             "flash-next host plan"
         );
     }

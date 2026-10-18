@@ -231,6 +231,7 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
     })
     .map_err(|e| e.to_string())?;
     let (one_row, per_row) = budget_words(Some(default_prefetch_budget()));
+    let no_host_pool = device_only(options, &cat);
     let desc = ResidencyDesc {
         layers: layers as u32,
         experts: experts as u32,
@@ -242,11 +243,11 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
         prefetch_budget_one_row_bytes: one_row,
         prefetch_budget_per_row_bytes: per_row,
         staging_half_bytes: staging_ring / 2,
-        host_pool_bytes: if device_only(options, &cat) { 0 } else { layout.bytes },
+        host_pool_bytes: if no_host_pool { 0 } else { layout.bytes },
         copy_blocks: 16,
         report: 0,
     };
-    if desc.host_pool_bytes == 0 {
+    if no_host_pool {
         let mut residency = DeviceResidency::new(&desc, &layout.k2, &[])?;
         stream_expert_layers(path, index, |layer| residency.admit(&layer.keys, &layer.bytes, &layer.offsets))
             .map_err(|e| format!("admit the experts: {e}"))?;

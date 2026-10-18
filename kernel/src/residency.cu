@@ -523,8 +523,7 @@ __global__ void __launch_bounds__(kThreads)
   const uint32_t E = d.experts, nk = 2 * E;
   const bool decode = phase == IGNIS_RESIDENCY_DECODE;
   State *st = d.st;
-  // A device-only residency holds every projection: nothing to prefetch, nowhere to fetch from.
-  if (st->step_status != 0 || d.host == nullptr) return;
+  if (st->step_status != 0) return;
   Report *report = d.report != nullptr ? d.report + layer : nullptr;
   uint32_t *entries =
       d.report_entries != nullptr ? d.report_entries + layer * kLists * 4 * d.experts : nullptr;
@@ -553,6 +552,8 @@ __global__ void __launch_bounds__(kThreads)
     if (t == 0 && report != nullptr) report->status = s_status;
     return;
   }
+  // A device-only residency holds every projection: nothing to prefetch, nowhere to fetch from.
+  if (d.host == nullptr) return;
 
   const unsigned long long now = st->clock;  // the demand half's commit
   uint32_t count[kLists];

@@ -9,11 +9,16 @@
 //     while any projection is missing, and succeeds once all are;
 //   - every slot-table entry then points at a slot of its own class holding its record's bytes,
 //     its K, and no two entries share a slot; occupancy is every projection;
-//   - random decode and prefill steps, with and without a lookahead (logits or ranked), and a
-//     captured decode round, all hit: status 0, no miss, eviction or prefetch, no byte moved,
-//     no stall;
+//   - random decode and prefill steps, with and without a lookahead (logits or ranked), the split
+//     step (demand, or routed from the router's logits, then either prefetch half on the forked
+//     stream) and a captured decode round, all hit: status 0, no miss, eviction or prefetch, no
+//     byte moved, no stall;
+//   - a split step's ranked lookahead with an id outside the catalog still reports
+//     IGNIS_RESIDENCY_STATUS_INVALID over its demand half's hits;
 //   - the counters agree at the end.
-// Same no-SKIP_RETURN_CODE rule as every GPU test here (ADR 0006).
+// What a step reads goes up on the step's stream (GitHub #324, item 7: a pageable cudaMemcpy on
+// the legacy stream may land after a cudaStreamNonBlocking stream's step reads it). Same
+// no-SKIP_RETURN_CODE rule as every GPU test here (ADR 0006).
 
 #include "ignis_residency.h"
 
@@ -66,6 +71,12 @@ void refused(int32_t rc, const std::string &what, const char *needle) {
   }
 }
 
+// A step's input, up on the stream the step runs on. A pageable source is staged before the call
+// returns, so the vector may go out of scope after it.
+void upload(void *dst, const void *src, size_t bytes, cudaStream_t stream) {
+  CUDA_OK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream));
+}
+
 struct Rng {
   uint64_t s;
   uint64_t next() {
@@ -79,7 +90,8 @@ struct Rng {
 };
 
 constexpr uint32_t kLayers = 3;
-constexpr uint32_t kExperts = 32;
+// The router's width: the routed step selects over every expert of IGNIS_MOE_EXPERTS.
+constexpr uint32_t kExperts = IGNIS_MOE_EXPERTS;
 constexpr uint32_t kKeys = kLayers * kExperts * 2;
 constexpr uint32_t kMaxRows = 8;
 constexpr uint32_t kWidth = 3;
@@ -150,17 +162,23 @@ int main() {
   if (r == nullptr) return 1;
   check(ignis_residency_host_pool(r) == nullptr, "no host pool");
 
+  cudaStream_t stream;
+  CUDA_OK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   int32_t *ids = nullptr;
+  float *weights = nullptr;
   float *logits = nullptr;
+  float *router_logits = nullptr;
   int32_t *ranked = nullptr;
   CUDA_OK(cudaMalloc(&ids, kMaxRows * IGNIS_MOE_TOP_K * 4));
+  CUDA_OK(cudaMalloc(&weights, kMaxRows * IGNIS_MOE_TOP_K * 4));
   CUDA_OK(cudaMalloc(&logits, kMaxRows * kExperts * 4));
+  CUDA_OK(cudaMalloc(&router_logits, kMaxRows * kExperts * 4));
   CUDA_OK(cudaMalloc(&ranked, kMaxRows * (kWidth + 1) * 4));
   std::vector<int32_t> host_ids(kMaxRows * IGNIS_MOE_TOP_K);
   for (uint32_t i = 0; i < host_ids.size(); ++i) host_ids[i] = static_cast<int32_t>(i % kExperts);
-  CUDA_OK(cudaMemcpy(ids, host_ids.data(), host_ids.size() * 4, cudaMemcpyHostToDevice));
+  upload(ids, host_ids.data(), host_ids.size() * 4, stream);
 
-  refused(ignis_residency_step(r, 0, IGNIS_RESIDENCY_DECODE, ids, 1, nullptr, nullptr), "a step before admission",
+  refused(ignis_residency_step(r, 0, IGNIS_RESIDENCY_DECODE, ids, 1, nullptr, stream), "a step before admission",
           "admitted");
   uint32_t warmed = 0;
   const uint32_t one = 0;
@@ -197,7 +215,7 @@ int main() {
   const uint32_t again = 5;
   refused(ignis_residency_admit(r, &again, 1, src.data(), &offset[again]), "a key admitted twice", "twice");
   refused(ignis_residency_admit_finish(r), "a finish with a projection missing", "never admitted");
-  refused(ignis_residency_step(r, 0, IGNIS_RESIDENCY_DECODE, ids, 1, nullptr, nullptr),
+  refused(ignis_residency_step(r, 0, IGNIS_RESIDENCY_DECODE, ids, 1, nullptr, stream),
           "a step after a refused finish", "admitted");
   ok(ignis_residency_admit(r, &held_back, 1, src.data(), &offset[held_back]), "admit the last key");
   ok(ignis_residency_admit_finish(r), "finish");
@@ -233,59 +251,136 @@ int main() {
   ok(ignis_residency_read_occupancy(r, used), "occupancy");
   for (uint32_t c = 0; c < IGNIS_RESIDENCY_CLASSES; ++c) check(used[c] == count[c], "class " + std::to_string(c) + " full");
 
-  // Steps: everything hits, nothing moves.
-  cudaStream_t stream;
-  CUDA_OK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   uint64_t selections = 0;
   std::vector<uint32_t> entries(IGNIS_RESIDENCY_LISTS * 4 * kExperts);
+  // `rows` rows of distinct random ids, uploaded; the distinct experts they name.
+  const auto random_ids = [&](uint32_t rows) {
+    std::set<uint32_t> distinct;
+    for (uint32_t row = 0; row < rows; ++row) {
+      std::set<int32_t> picked;
+      while (picked.size() < IGNIS_MOE_TOP_K) picked.insert(static_cast<int32_t>(rng.below(kExperts)));
+      uint32_t j = 0;
+      for (int32_t e : picked) {
+        host_ids[row * IGNIS_MOE_TOP_K + j++] = e;
+        distinct.insert(static_cast<uint32_t>(e));
+      }
+    }
+    upload(ids, host_ids.data(), rows * IGNIS_MOE_TOP_K * 4, stream);
+    return distinct;
+  };
+  const auto random_logits = [&](float *dst, uint32_t rows) {
+    std::vector<float> lg(rows * kExperts);
+    for (auto &v : lg) v = static_cast<float>(rng.below(9)) - 4.0f;
+    upload(dst, lg.data(), lg.size() * 4, stream);
+  };
+  const auto random_ranked = [&](uint32_t rows) {
+    std::vector<int32_t> rk(rows * (kWidth + 1));
+    for (auto &v : rk) v = rng.below(5) == 0 ? -1 : static_cast<int32_t>(rng.below(kExperts));
+    upload(ranked, rk.data(), rk.size() * 4, stream);
+  };
+  // The layer's report after its step: every one of the `distinct` experts' projections hit, and
+  // nothing else happened.
+  const auto all_hit = [&](uint32_t layer, size_t distinct, uint32_t status, const std::string &at) {
+    ignis_residency_report head{};
+    ok(ignis_residency_last_report(r, layer, &head, entries.data(), 4 * kExperts), at + " report");
+    check(head.status == status, at + " status " + std::to_string(head.status));
+    check(head.count[0] == 2 * distinct, at + " every selected projection hits");
+    check(head.count[2] == 0 && head.count[3] == 0 && head.count[4] == 0, at + " no miss, eviction or prefetch");
+    check(head.bytes_moved == 0, at + " no byte moved");
+    selections += 2 * distinct;
+  };
+
+  // Whole steps: everything hits, nothing moves.
   for (uint32_t round = 0; round < 40; ++round) {
     const bool prefill = round % 4 == 3;
     const uint32_t rows = prefill ? 4 + rng.below(5) : 1 + rng.below(3);
     for (uint32_t layer = 0; layer < kLayers; ++layer) {
-      std::set<uint32_t> distinct;
-      for (uint32_t row = 0; row < rows; ++row) {
-        std::set<int32_t> picked;
-        while (picked.size() < IGNIS_MOE_TOP_K) picked.insert(static_cast<int32_t>(rng.below(kExperts)));
-        uint32_t j = 0;
-        for (int32_t e : picked) {
-          host_ids[row * IGNIS_MOE_TOP_K + j++] = e;
-          distinct.insert(static_cast<uint32_t>(e));
-        }
-      }
-      CUDA_OK(cudaMemcpy(ids, host_ids.data(), rows * IGNIS_MOE_TOP_K * 4, cudaMemcpyHostToDevice));
+      const std::set<uint32_t> distinct = random_ids(rows);
       const uint32_t phase = prefill ? IGNIS_RESIDENCY_PREFILL : IGNIS_RESIDENCY_DECODE;
       const uint32_t look = rng.below(3);
       int32_t rc;
       if (look == 0) {
         rc = ignis_residency_step(r, layer, phase, ids, rows, nullptr, stream);
       } else if (look == 1) {
-        std::vector<float> lg(rows * kExperts);
-        for (auto &v : lg) v = static_cast<float>(rng.below(9)) - 4.0f;
-        CUDA_OK(cudaMemcpy(logits, lg.data(), lg.size() * 4, cudaMemcpyHostToDevice));
+        random_logits(logits, rows);
         rc = ignis_residency_step(r, layer, phase, ids, rows, logits, stream);
       } else {
-        std::vector<int32_t> rk(rows * (kWidth + 1));
-        for (auto &v : rk) v = rng.below(5) == 0 ? -1 : static_cast<int32_t>(rng.below(kExperts));
-        CUDA_OK(cudaMemcpy(ranked, rk.data(), rk.size() * 4, cudaMemcpyHostToDevice));
+        random_ranked(rows);
         rc = ignis_residency_step_ranked(r, layer, phase, ids, rows, ranked, rows, kWidth + 1, stream);
       }
       const std::string at = "round " + std::to_string(round) + " layer " + std::to_string(layer);
       ok(rc, at + " step");
       CUDA_OK(cudaStreamSynchronize(stream));
-      ignis_residency_report head{};
-      ok(ignis_residency_last_report(r, layer, &head, entries.data(), 4 * kExperts), at + " report");
-      check(head.status == 0, at + " status 0");
-      check(head.count[0] == 2 * distinct.size(), at + " every selected projection hits");
-      check(head.count[2] == 0 && head.count[3] == 0 && head.count[4] == 0, at + " no miss, eviction or prefetch");
-      check(head.bytes_moved == 0, at + " no byte moved");
-      selections += 2 * distinct.size();
+      all_hit(layer, distinct.size(), 0, at);
     }
   }
+
+  // Split steps, as a forward runs them: the demand half (from ids, or routed from the router's
+  // logits), then a prefetch half on the forked stream. Everything hits; a prefetch places nothing.
+  for (uint32_t round = 0; round < 24; ++round) {
+    const bool prefill = round % 4 == 3;
+    const uint32_t rows = prefill ? 4 + rng.below(5) : 1 + rng.below(3);
+    const uint32_t phase = prefill ? IGNIS_RESIDENCY_PREFILL : IGNIS_RESIDENCY_DECODE;
+    const bool routed = round % 2 == 1;
+    for (uint32_t layer = 0; layer < kLayers; ++layer) {
+      std::set<uint32_t> distinct;
+      const bool ranked_look = rng.below(2) == 0;
+      if (ranked_look) {
+        random_ranked(rows);
+      } else {
+        random_logits(logits, rows);
+      }
+      void *look = nullptr;
+      int32_t rc;
+      if (routed) {
+        random_logits(router_logits, rows);
+        rc = ignis_residency_step_demand_routed(r, layer, phase, router_logits, ids, weights, rows, stream, &look);
+      } else {
+        distinct = random_ids(rows);
+        rc = ignis_residency_step_demand(r, layer, phase, ids, rows, stream, &look);
+      }
+      const std::string at = std::string(routed ? "routed" : "split") + " round " + std::to_string(round) +
+                             " layer " + std::to_string(layer);
+      ok(rc, at + " demand");
+      check((look != nullptr) == (layer + 1 < kLayers), at + " forks only with a next layer");
+      if (look != nullptr) {
+        ok(ranked_look ? ignis_residency_step_prefetch_ranked(r, ranked, rows, kWidth + 1)
+                       : ignis_residency_step_prefetch(r, logits, rows),
+           at + " prefetch");
+      }
+      ok(ignis_residency_join(r, stream), at + " join");
+      CUDA_OK(cudaStreamSynchronize(stream));
+      if (routed) {
+        std::vector<int32_t> selected(rows * IGNIS_MOE_TOP_K);
+        CUDA_OK(cudaMemcpy(selected.data(), ids, selected.size() * 4, cudaMemcpyDeviceToHost));
+        for (int32_t e : selected) distinct.insert(static_cast<uint32_t>(e));
+      }
+      all_hit(layer, distinct.size(), 0, at);
+    }
+  }
+
+  // A split step's ranked lookahead naming an expert outside the catalog: the demand half stands,
+  // its hits reported under IGNIS_RESIDENCY_STATUS_INVALID, nothing prefetched.
+  {
+    const std::set<uint32_t> distinct = random_ids(2);
+    std::vector<int32_t> rk(2 * (kWidth + 1), 1);
+    rk[0] = static_cast<int32_t>(kExperts + 7);  // row 0's best: inside the width
+    upload(ranked, rk.data(), rk.size() * 4, stream);
+    void *look = nullptr;
+    ok(ignis_residency_step_demand(r, 0, IGNIS_RESIDENCY_DECODE, ids, 2, stream, &look), "invalid lookahead demand");
+    check(look != nullptr, "invalid lookahead: forked");
+    ok(ignis_residency_step_prefetch_ranked(r, ranked, 2, kWidth + 1), "invalid lookahead prefetch");
+    ok(ignis_residency_join(r, stream), "invalid lookahead join");
+    CUDA_OK(cudaStreamSynchronize(stream));
+    all_hit(0, distinct.size(), IGNIS_RESIDENCY_STATUS_INVALID, "invalid lookahead");
+  }
+
   // A captured decode round, replayed: the graph path hits as well.
   {
     ok(ignis_residency_join(r, stream), "join before capture");
     for (uint32_t i = 0; i < IGNIS_MOE_TOP_K; ++i) host_ids[i] = static_cast<int32_t>(i);
-    CUDA_OK(cudaMemcpy(ids, host_ids.data(), IGNIS_MOE_TOP_K * 4, cudaMemcpyHostToDevice));
+    upload(ids, host_ids.data(), IGNIS_MOE_TOP_K * 4, stream);
+    CUDA_OK(cudaStreamSynchronize(stream));
     cudaGraph_t graph;
     CUDA_OK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
     for (uint32_t layer = 0; layer < kLayers; ++layer) {
@@ -322,7 +417,9 @@ int main() {
 
   CUDA_OK(cudaStreamDestroy(stream));
   CUDA_OK(cudaFree(ids));
+  CUDA_OK(cudaFree(weights));
   CUDA_OK(cudaFree(logits));
+  CUDA_OK(cudaFree(router_logits));
   CUDA_OK(cudaFree(ranked));
   ignis_residency_free(r);
   if (g_failures != 0) {

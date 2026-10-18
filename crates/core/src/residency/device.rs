@@ -18,7 +18,7 @@ use std::os::raw::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use super::class::{ExpertCatalog, KClass, Projection, ProjectionId};
+use super::class::{ExpertCatalog, KBits, KClass, Projection, ProjectionId};
 use super::counters::{ResidencyCounters, ResidencyMirror, MIRROR_BYTES};
 use super::policy::{Admission, Phase, PrefetchBudget};
 use crate::moe::MoeSlot;
@@ -301,11 +301,6 @@ impl DeviceResidency {
         self.raw.as_ptr().cast()
     }
 
-    /// Whether the residency has no host pool: every projection in VRAM.
-    pub fn device_only(&self) -> bool {
-        self.desc.host_pool_bytes == 0
-    }
-
     /// The pinned host expert pool, for the loader to fill; `None` on a
     /// device-only residency, which has none.
     pub fn host_pool_mut(&mut self) -> Option<&mut [u8]> {
@@ -347,15 +342,9 @@ impl DeviceResidency {
         if key >= keys {
             return Err(format!("residency: key {key} is outside the {keys}-key catalog"));
         }
-        let k2 = self.k2.get(key as usize).copied().ok_or("residency: no K map")?;
-        let k = match k2 {
-            4 => 0,
-            5 => 1,
-            6 => 2,
-            8 => 3,
-            other => return Err(format!("residency: k2 {other}")),
-        };
-        Ok(usize::from(key & 1 == 1) * 4 + k)
+        let k2 = self.k2[key as usize];
+        let k = KBits::from_half_bits(u32::from(k2)).ok_or_else(|| format!("residency: key {key} has k2 {k2}"))?;
+        Ok(KClass::new(Projection::ALL[(key & 1) as usize], k).index())
     }
 
     /// Layer `layer`'s device slot table, what the expert ops take.

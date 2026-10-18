@@ -257,13 +257,17 @@ pub struct LayerRecords {
     pub bytes: Vec<u8>,
 }
 
+/// The layers [`stream_expert_layers`] queues between its readers and the
+/// caller admitting them.
+const STREAM_QUEUE_LAYERS: usize = 1;
+
 /// The RAM [`stream_expert_layers`] holds at most at once: a layer for each
-/// reading worker, one waiting in the queue and one being admitted, each
-/// the size of the heaviest layer's slice of the pool layout.
+/// reading worker, [`STREAM_QUEUE_LAYERS`] waiting in the queue and one being
+/// admitted, each the size of the heaviest layer's slice of the pool layout.
 pub fn stream_staging_bytes(index: &ExpertIndex) -> std::io::Result<u64> {
     let ranges = layer_pool_ranges(index, pool_layout(index).bytes as usize)?;
     let heaviest = ranges.iter().map(|&(lo, hi)| hi - lo).max().unwrap_or(0);
-    Ok((stream_workers(ranges.len()) as u64 + 2) * heaviest)
+    Ok((stream_workers(ranges.len()) + STREAM_QUEUE_LAYERS + 1) as u64 * heaviest)
 }
 
 fn stream_workers(layers: usize) -> usize {
@@ -274,8 +278,8 @@ fn stream_workers(layers: usize) -> usize {
 /// hands each layer to `admit`, on the calling thread: what a device-only
 /// residency loads from instead of the pool [`fill_expert_pool`] fills. The
 /// layers are read as that fill reads them ([`READ_WORKERS`] handles,
-/// round-robined) but each into its own buffer, and a queue of one layer
-/// holds the RAM to [`stream_staging_bytes`]. The order layers arrive in is
+/// round-robined) but each into its own buffer, and a queue of
+/// [`STREAM_QUEUE_LAYERS`] holds the RAM to [`stream_staging_bytes`]. The order layers arrive in is
 /// not fixed. Returns the bytes read; the first read error or `admit` error
 /// ends it, the readers stopping at their next layer.
 pub fn stream_expert_layers(
@@ -286,7 +290,7 @@ pub fn stream_expert_layers(
     let ranges = layer_pool_ranges(index, pool_layout(index).bytes as usize).map_err(|e| e.to_string())?;
     let workers = stream_workers(ranges.len());
     let experts = index.experts_per_layer();
-    let (tx, rx) = mpsc::sync_channel::<std::io::Result<(u64, LayerRecords)>>(1);
+    let (tx, rx) = mpsc::sync_channel::<std::io::Result<(u64, LayerRecords)>>(STREAM_QUEUE_LAYERS);
     thread::scope(|scope| -> Result<u64, String> {
         for worker in 0..workers {
             let tx = tx.clone();
