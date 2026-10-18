@@ -912,7 +912,7 @@ is answered is `--server-timeout-reply`:
 
 | Route | `partial` (the default) | `error` |
 |---|---|---|
-| `/v1/chat/completions`, whole | `200`, the answer so far with `finish_reason: "length"` and its `usage`, and the header `x-ignis-stopped-by: request_timeout` | `504 request_timeout` |
+| `/v1/chat/completions`, whole | `200`, the answer so far with `finish_reason: "length"` and its `usage`, and the header `ignis-stopped-by: request_timeout` | `504 request_timeout` |
 | `/v1/chat/completions`, streamed | the `length` finish chunk, the usage chunk if `include_usage`, then `[DONE]` | one `{"error": {...}}` chunk, type and code `request_timeout`, then `[DONE]`, as an engine error ends a stream |
 | `/v1/responses`, whole | `200`, `status: "incomplete"`, `incomplete_details.reason: "max_output_tokens"`, the output so far, and the same header | `504 request_timeout` |
 | `/v1/responses`, streamed or WebSocket | `response.incomplete`, as above | `response.failed` with code `request_timeout` |

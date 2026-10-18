@@ -200,7 +200,7 @@ async fn every_cause(template: Box<dyn TemplateProvider>, mode: LoopGuardMode, r
         ("/v1/responses", json!({ "model": MODEL, "input": "hi", "max_output_tokens": 8 })),
     ] {
         let response = app.clone().oneshot(post(path, body)).await.unwrap();
-        let (status, stopped_by) = (response.status(), response.headers().get("x-ignis-stopped-by").cloned());
+        let (status, stopped_by) = (response.status(), response.headers().get("ignis-stopped-by").cloned());
         match reply {
             TimeoutReply::Partial => assert!(status == 200 && stopped_by.is_some_and(|v| v == "request_timeout"), "{path}: {status}"),
             TimeoutReply::Error => assert_eq!(status, 504, "{path}"),

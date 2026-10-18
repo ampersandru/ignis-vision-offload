@@ -113,11 +113,13 @@ impl Timeout {
     }
 }
 
-/// The header a non-streaming answer its deadline cut carries, spelled as
-/// `x-ignis-class` is: `x-ignis-stopped-by: request_timeout`. A streamed one
-/// sent its headers before the deadline passed, and the request log's
-/// `ignis.request.cancelled` line says `timeout` for both.
-pub const STOPPED_BY: &str = "x-ignis-stopped-by";
+/// The header a non-streaming answer its deadline cut carries:
+/// `ignis-stopped-by: request_timeout`, spelled as the server's other custom
+/// response header is, `ignis-model-status` (`/v1/config`), with no `x-`.
+/// A streamed one sent its headers before the deadline passed, and the
+/// request log's `ignis.request.cancelled` line says `timeout` for both.
+/// Exposed to a browser on another origin (`api::cors_headers`).
+pub const STOPPED_BY: &str = "ignis-stopped-by";
 
 /// `response`, marked as cut by its deadline ([`STOPPED_BY`]).
 pub fn stopped_by_timeout(mut response: Response) -> Response {

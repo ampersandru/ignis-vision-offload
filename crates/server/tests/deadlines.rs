@@ -130,10 +130,10 @@ fn post(app: &axum::Router, path: &str, body: Value) -> impl std::future::Future
     app.clone().oneshot(request).map(Result::unwrap)
 }
 
-/// A response's status, its `x-ignis-stopped-by` header, and its body.
+/// A response's status, its `ignis-stopped-by` header, and its body.
 async fn read(response: axum::response::Response) -> (u16, Option<String>, String) {
     let status = response.status().as_u16();
-    let stopped_by = response.headers().get("x-ignis-stopped-by").map(|v| v.to_str().unwrap().to_owned());
+    let stopped_by = response.headers().get("ignis-stopped-by").map(|v| v.to_str().unwrap().to_owned());
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, stopped_by, String::from_utf8(body.to_vec()).unwrap())
 }
@@ -189,6 +189,21 @@ async fn a_completion_its_deadline_cut_answers_what_it_generated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_completion_with_a_stop_sequence_its_deadline_cut_answers_what_it_generated() {
     check_a_cut_completion_answers_what_it_generated(Some("zzz")).await;
+}
+
+/// A browser on another origin reads a response header outside the CORS
+/// safelist only when the server exposes it: the one naming the deadline
+/// that cut an answer, `Retry-After` on a full engine or a load, and the
+/// model's status on `/v1/config`.
+#[tokio::test]
+async fn a_browser_on_another_origin_can_read_why_an_answer_stopped() {
+    let rig = rig(&[], |server| server);
+    let response = rig.app.clone().oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap()).await.unwrap();
+    let exposed = response.headers()["access-control-expose-headers"].to_str().unwrap().to_owned();
+    let exposed: Vec<String> = exposed.split(',').map(|header| header.trim().to_ascii_lowercase()).collect();
+    for header in ["ignis-stopped-by", "retry-after", "ignis-model-status"] {
+        assert!(exposed.iter().any(|exposed| exposed == header), "{header} in {exposed:?}");
+    }
 }
 
 /// A tool call the deadline cut mid-way is dropped whole: the content

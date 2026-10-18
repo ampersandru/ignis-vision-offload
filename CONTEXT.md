@@ -81,7 +81,7 @@ When output names a domain concept, use the term as defined here.
   `server.timeout_reply: partial`, the default: what it generated, ended as the
   **generation cap** ends one (`finish_reason: "length"`, a response
   `incomplete` with `max_output_tokens`). Not a cap: the header
-  `x-ignis-stopped-by` and the request log's `cause: timeout` say which it was.
+  `ignis-stopped-by` and the request log's `cause: timeout` say which it was.
   A decision and an image job have none; they answer an error.
 - **Reasoning redirect** — an EOS a request draws while its reasoning block is
   still open becomes the block's `</think>`, and the model goes on to answer

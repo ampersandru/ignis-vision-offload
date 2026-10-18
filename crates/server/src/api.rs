@@ -677,7 +677,11 @@ async fn cors_preflight() -> StatusCode {
 /// Adds permissive CORS headers to every response so the API is reachable
 /// from browser-based clients on other origins. `PATCH` is there for
 /// `PATCH /v1/config` (spec config-v2/02): a browser on another origin sends
-/// nothing its preflight did not allow.
+/// nothing its preflight did not allow. A browser there reads no response
+/// header outside the CORS safelist unless it is exposed: so the ones the
+/// server sets are, `ignis-stopped-by` (an answer its deadline cut, ADR
+/// 0058), `ignis-model-status` (`/v1/config`) and `Retry-After` (a full
+/// engine, a load, a switch).
 async fn cors_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
@@ -689,6 +693,10 @@ async fn cors_headers(req: Request, next: Next) -> Response {
     headers.insert(
         "Access-Control-Allow-Headers",
         HeaderValue::from_static("Content-Type, Authorization"),
+    );
+    headers.insert(
+        "Access-Control-Expose-Headers",
+        HeaderValue::from_static("ignis-stopped-by, ignis-model-status, Retry-After"),
     );
     res
 }
@@ -2156,7 +2164,7 @@ struct StreamOptions {
 
 `stream: false` answers one JSON body. `stream: true` answers `text/event-stream`: one `data:` line per chunk in the `chat.completion.chunk` shape, a final chunk carrying `finish_reason` and an empty `delta`, then a literal `data: [DONE]` line. With `stream_options.include_usage: true` a usage-only chunk (empty `choices`) precedes it. A request the engine could not run ends instead with one `{\"error\": {message, type, code}}` chunk (type and code `engine_error`) and then `[DONE]`: the status is already 200 by then.
 
-Every request has a deadline from its admission (ADR 0058): `--server-request-timeout` answered whole, `--server-stream-timeout` streamed, `0` for none. Past it the request is cancelled and, under `--server-timeout-reply partial` (the default), answered with what it generated as a completion a length limit cut: `finish_reason: \"length\"`, `usage` counting it, a tool call cut mid-way dropped, and answered whole the header `x-ignis-stopped-by: request_timeout`; streamed, the `length` finish chunk, the usage chunk when asked for, then `[DONE]`. Under `error` the answer is a `504 request_timeout`, and a stream ends with one `{\"error\": ...}` chunk (type and code `request_timeout`) and then `[DONE]`, as for an engine error.
+Every request has a deadline from its admission (ADR 0058): `--server-request-timeout` answered whole, `--server-stream-timeout` streamed, `0` for none. Past it the request is cancelled and, under `--server-timeout-reply partial` (the default), answered with what it generated as a completion a length limit cut: `finish_reason: \"length\"`, `usage` counting it, a tool call cut mid-way dropped, and answered whole the header `ignis-stopped-by: request_timeout`; streamed, the `length` finish chunk, the usage chunk when asked for, then `[DONE]`. Under `error` the answer is a `504 request_timeout`, and a stream ends with one `{\"error\": ...}` chunk (type and code `request_timeout`) and then `[DONE]`, as for an engine error.
 
 Tool calls come back whole -- one complete `tool_calls` delta per call, never a half-written fragment -- because they are parsed out of a closed block in the generated text. `tool_choice` takes `\"auto\"` (the default), `\"none\"`, `\"required\"` and a named function. The last two force the call's opening -- `<tool_call>` and the function tag, with the name when one is named -- and the model writes the rest: with thinking off the opening is the first thing generated, with thinking on the first thing after the reasoning block closes. A forced call that never closes is dropped like any other, and `finish_reason` says why.
 
@@ -2175,7 +2183,7 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
         (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
         (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
-        (status = 504, description = "The engine did not finish a non-streaming request within `--server-request-timeout`, under `--server-timeout-reply error` (`request_timeout`). Under `partial`, the default, such a request is answered `200` with what it generated, `finish_reason: \"length\"`, and the header `x-ignis-stopped-by: request_timeout`.", body = ApiError),
+        (status = 504, description = "The engine did not finish a non-streaming request within `--server-request-timeout`, under `--server-timeout-reply error` (`request_timeout`). Under `partial`, the default, such a request is answered `200` with what it generated, `finish_reason: \"length\"`, and the header `ignis-stopped-by: request_timeout`.", body = ApiError),
     ),
 )]
 async fn chat_completions(

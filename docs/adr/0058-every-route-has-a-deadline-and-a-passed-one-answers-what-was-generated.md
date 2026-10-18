@@ -50,7 +50,7 @@ The contract per route:
 
 | Route | Deadline, counted from | `partial` (default) | `error` |
 |---|---|---|---|
-| chat completions, whole | `request_timeout`, admission | `200`, the answer so far, `finish_reason: "length"`, `usage` filled, header `x-ignis-stopped-by: request_timeout` | `504 request_timeout` |
+| chat completions, whole | `request_timeout`, admission | `200`, the answer so far, `finish_reason: "length"`, `usage` filled, header `ignis-stopped-by: request_timeout` | `504 request_timeout` |
 | chat completions, streamed | `stream_timeout`, admission | its deltas, the `length` finish chunk, the usage chunk if `include_usage`, `[DONE]` | its deltas, one `{"error": {type, code: "request_timeout"}}` chunk, `[DONE]` |
 | `/v1/responses`, whole | `request_timeout`, admission | `200`, `status: "incomplete"`, `incomplete_details.reason: "max_output_tokens"`, the output so far, the same header | `504 request_timeout` |
 | `/v1/responses`, streamed | `stream_timeout`, admission | `response.incomplete`, as above | `response.failed`, `request_timeout` |
@@ -117,9 +117,13 @@ error event follows them.
   a deadline (`--server-stream-timeout`), and so does an image job. `0` is
   accepted and means none (it was refused).
 - A `length` from a deadline and one from `max_tokens` read the same in the
-  body. A whole answer carries `x-ignis-stopped-by: request_timeout` (spelled as
-  `x-ignis-class` is); a stream sent its headers before the deadline, so only
-  the request log tells them apart there.
+  body. A whole answer carries `ignis-stopped-by: request_timeout`, spelled as
+  the server's other custom response header is (`ignis-model-status`, on
+  `/v1/config`), with no `x-` prefix, and exposed to a browser on another
+  origin (`Access-Control-Expose-Headers`, with `ignis-model-status` and
+  `Retry-After`, which no browser there could read before either). A stream
+  sent its headers before the deadline, so only the request log tells them
+  apart there.
 - A Responses WebSocket keeps an `incomplete` response for `previous_response_id`,
   as it keeps one a length limit ended: the next turn continues from it.
 - A wedged engine is still bounded: a request it holds ends at its deadline,
