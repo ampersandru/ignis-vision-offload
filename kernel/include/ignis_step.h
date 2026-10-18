@@ -569,7 +569,7 @@ struct ignis_decode_options {
    * after, and past its extent the padding column, the anchor again).
    * Flash-Next loads only: the 27B refuses it, and so does a round with a
    * permitted set (its mask writes into the rows). No serving path sets it:
-   * NULL costs nothing, a set one one copy before the round's synchronize. */
+   * NULL costs nothing, a set one costs one copy before the round's synchronize. */
   uint16_t *out_logits;
 };
 

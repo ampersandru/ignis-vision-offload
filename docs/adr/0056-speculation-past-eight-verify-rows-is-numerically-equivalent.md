@@ -87,4 +87,4 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
   test's support module, measured on the RTX 5090 with these prompts. A change of the wide
   routes (a new GEMM tiling, option 2) re-measures them, as the finding records.
 - `out_logits` is appended to `ignis_decode_options` (ADR 0016's rule): a NULL costs nothing,
-  a set one one host copy before the round's synchronize.
+  a set one costs one host copy before the round's synchronize.
