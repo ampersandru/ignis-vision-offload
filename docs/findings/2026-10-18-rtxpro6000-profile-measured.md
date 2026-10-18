@@ -222,11 +222,12 @@ mid-campaign, was:
   - The 27B's DFlash2 at 7 drafts is 1.6-3.3x speculation off (1.6x on
     prose at eight requests, 3.3x on code at one). It beats 4 drafts in the
     three cells both ran except prose at eight requests (-6%).
-- **MTP as the profile sets it can kill a request.** A round whose window
+- **MTP as the profile sets it could kill a request.** A round whose window
   the host cut near the end of a request's reservation was refused by the
   leaf, and the request ended with an error a few tokens before its cap
-  (above). The profile's MTP needs that fix (branch `fn-mtp-window`) before
-  it serves; speculation off and the 27B are not affected.
+  (above). Speculation off and the 27B were not affected. The fix (branch
+  `fn-mtp-window`) is in 0a810c0b and held on the card
+  ([verified below](#verified-on-the-card-2026-10-18-develop-0a810c0b)).
 - **MTP's sign flips from the 5090 because almost no expert crosses PCIe.**
   On the 5090 a verify round copies more experts and loses at two lanes.
   Here the cache misses 0.02-0.07% of lookups and stalls at most 0.06 s a
@@ -341,10 +342,12 @@ except the decode cells.
 
 **Observed.**
 - **Start.** The listener opened at 12:14:50.517Z, the same millisecond the
-  load began; `/health` answered 200 and `/ready` 503 through the 124 s
-  cold load, with no liveness kill (`verify-startup.log`,
-  `verify-events.txt`). The Knative Service, liveness after 10 s, scaled
-  from zero on the warm node: a request through the gate's Route answered
+  load began (`ignis.server.listening`, `verify-startup.log`). Through the
+  124 s cold load the pod's events show the readiness probe's 503 and no
+  liveness event or kill (`verify-events.txt`); that `/health` answered
+  200 throughout is inferred from that, since no poll of it was saved.
+  The Knative Service, liveness after 10 s, scaled from zero on the warm
+  node: a request through the gate's Route answered
   in 129 s (container start 10 s, load 118 s), restarts 0, no liveness
   event (`ksvc-coldstart.out`, `ksvc-*-startup.jsonl`, `ksvc-*-events.txt`).
 - **Host plan (#329 item 8).** `memory.max` 60,129,542,144 (56 GiB);
@@ -400,6 +403,14 @@ except the decode cells.
   in 24-33 s on its reloads (`.scratch/rtxpro6000-profile/ignis-tuning-server.log`,
   `ignis-2x-test-current.log`). The one replacement pod of item 17 below
   that finished residency, the volume still attached, read it in 13.5 s.
+
+  Item 16's verdict: device-only residency is faster warm only when every
+  expert is in the page cache (5.0 s here, against the pinned pool's
+  12.5-12.8 s measured on the 4xlarge, a different node). A reload under
+  `auto` on this 64 GiB host, the profile's own setting, reads it in
+  ~31 s, which is **slower** than the pool path's warm reloads: the whole
+  n-gram table in anon memory leaves the page cache too small for the
+  expert range (Inferred, below).
 - **Stop during a load (#329 item 17).** Three deletions, grace 120 s:
 
   | Deleted | SIGTERM → exit | Pod gone after the delete |
