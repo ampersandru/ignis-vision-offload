@@ -30,8 +30,9 @@
 #
 # Both halves build the real GPU engine (`--features cuda`). No runner has an
 # NVIDIA GPU, so nothing here is *run* -- the kernel leaf is compiled for
-# SM120a and linked against the toolkit's driver stubs (crates/artifact/
-# build.rs).
+# SM120a and links the CUDA runtime only: the driver (libcuda/nvcuda) and NVML
+# are opened at run time (kernel/src/cuda_driver_shim.cu, shared_library.cu;
+# crates/artifact/build.rs), so no driver stub is needed at link time.
 
 name: release
 
@@ -357,13 +358,15 @@ jobs:
       #   crt        bin/crt, its link stubs
       #   nvvm       cicc, the device compiler nvcc drives -- a component of
       #              its own on Windows, not part of nvcc
-      #   cudart     the runtime: headers, cudart.lib, cuda.lib, and the
-      #              cudart64_*.dll the release zip carries
+      #   cudart     the runtime: headers (cuda.h among them), cudart.lib,
+      #              and the cudart64_*.dll the release zip carries
       #   thrust     CUB/Thrust/libcu++. Still spelled `thrust` in the
       #              installer even though CUDA 13 lays it down under
       #              include/cccl, which is where sampling_device.cuh's
       #              <cub/block/block_merge_sort.cuh> resolves
-      #   nvml_dev   nvml.lib, for ignis_device_nvml_mem_info (GitHub #210)
+      #   nvml_dev   nvml.h, for ignis_device_nvml_mem_info (GitHub #210),
+      #              which opens nvml.dll at run time (#329), and nvml.lib,
+      #              which the kernel's image benches link
       #   nvtx       nvtx3/nvToolsExt.h, which the vendored core/nvtx.h
       #              includes
       #   the rest   the small tools nvcc and CMake's compiler probe shell
@@ -405,9 +408,9 @@ jobs:
                    include/cuda_bf16.h include/cuda_fp16.h include/cuda_fp4.h \
                    include/cuda_fp8.h include/cuda_pipeline.h \
                    include/cooperative_groups.h include/math_constants.h \
-                   include/nvml.h include/nvtx3/nvToolsExt.h \
+                   include/nvml.h include/nvtx3/nvToolsExt.h include/cudaTypedefs.h \
                    include/cccl/cub/block/block_merge_sort.cuh \
-                   lib/x64/cudart.lib lib/x64/cuda.lib lib/x64/nvml.lib; do
+                   lib/x64/cudart.lib lib/x64/nvml.lib; do
             if [ -e "$cuda/$f" ]; then echo "  ok      $f"; else echo "  MISSING $f"; missing=1; fi
           done
           # The redistributable the zip carries; its name follows the major.

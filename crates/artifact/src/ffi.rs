@@ -58,6 +58,14 @@ unsafe extern "C" {
         total_bytes: *mut u64,
     ) -> i32;
 
+    /// The CUDA version the installed driver supports (`cudaDriverGetVersion`),
+    /// 0 when the machine has no driver (GitHub #329). No context, no device.
+    pub fn ignis_device_driver_version(version: *mut i32) -> i32;
+
+    /// The CUDA version this build's runtime is (`cudaRuntimeGetVersion`),
+    /// the figure the driver's version is checked against. No context.
+    pub fn ignis_device_runtime_version(version: *mut i32) -> i32;
+
     /// Free / total memory of CUDA device `device_id` as NVML reports it,
     /// read without creating a CUDA context (GitHub #210).
     pub fn ignis_device_nvml_mem_info(

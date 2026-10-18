@@ -52,13 +52,32 @@ int32_t ignis_device_sync(struct ignis_device *d);
 int32_t ignis_device_mem_info(struct ignis_device *d, uint64_t *free_bytes,
                               uint64_t *total_bytes);
 
+/* The CUDA version the installed NVIDIA driver supports, as
+ * cudaDriverGetVersion reports it (13010 for CUDA 13.1), into `*version`: 0
+ * when the machine has no driver, no libcuda.so.1 / nvcuda.dll for the CUDA
+ * runtime to load (GitHub #329). The leaf links no driver library, so the
+ * binary starts without one; this is how a GPU path asks first, and names a
+ * missing driver as such. Creates no context and needs no ignis_device.
+ * Returns 0 on success, -1 on a CUDA error (logged to stderr) or a NULL
+ * argument. */
+int32_t ignis_device_driver_version(int32_t *version);
+
+/* The CUDA version of the runtime this library was built with, as
+ * cudaRuntimeGetVersion reports it (13010 for CUDA 13.1), into `*version`:
+ * the figure a GPU path compares the driver's version against, to name a
+ * driver too old for the build. Creates no context. Returns 0 on success,
+ * -1 on a CUDA error (logged to stderr) or a NULL argument. */
+int32_t ignis_device_runtime_version(int32_t *version);
+
 /* Free / total memory of CUDA device `device_id` as NVML reports it -- the
  * figure nvidia-smi and Task Manager show -- read without creating a CUDA
  * context (GitHub #210). A VRAM budget is derived from this rather than from
  * ignis_device_mem_info: on Windows WDDM cudaMemGetInfo does not count the
  * calling process's own context and reads about 400 MiB more free memory
- * than the adapter has. Needs no ignis_device. Returns 0 on success, -1 on a
- * CUDA or NVML error (logged to stderr) or a bad argument. */
+ * than the adapter has. NVML (libnvidia-ml.so.1, nvml.dll) is opened on the
+ * first call, not linked (GitHub #329). Needs no ignis_device. Returns 0 on
+ * success, -1 on a CUDA or NVML error (logged to stderr), on NVML that does
+ * not load, or on a bad argument. */
 int32_t ignis_device_nvml_mem_info(int device_id, uint64_t *free_bytes, uint64_t *total_bytes);
 
 /* Free a device allocation returned by ignis_device_alloc. NULL device or

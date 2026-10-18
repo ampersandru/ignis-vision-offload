@@ -9,8 +9,12 @@
 # (docker: `--gpus all` in place of `--device`.) The image carries the CUDA
 # runtime, never a driver: the host's NVIDIA driver is injected by the
 # container runtime, which is also where libcuda.so.1 and libnvidia-ml.so.1
-# come from at run time -- the build links the toolkit's stubs for them
-# (crates/artifact/build.rs).
+# come from at run time. The binaries link neither (crates/artifact/build.rs,
+# GitHub #329) -- the CUDA runtime loads the driver, NVML is opened when a
+# load reads it -- so the image also runs where there is no driver at all:
+# `ignis-server model download` on a CPU node, or the CPU mock below (with
+# `--download-enabled false`, or the start fetches the configured model
+# first). A GPU load there is refused naming the missing driver.
 #
 # The kernel leaf is compiled for SM120a (RTX 5090 / Blackwell consumer),
 # the one architecture kernel/CMakeLists.txt targets. The image will not run
@@ -106,9 +110,11 @@ ENV IGNIS_SERVER_BIND=0.0.0.0:8000
 # IGNIS_MODEL_ARTIFACT is deliberately NOT defaulted. A .ninfer container is tens of
 # GB, so it is mounted rather than baked in -- and a default pointing at a path
 # that is usually absent would turn "no model given" into a load failure.
-# Left unset, the image starts on the deterministic CPU mock (ADR 0006), which
-# is what makes `docker run <image>` a useful smoke test on its own; set it to
-# the mounted artifact to serve the real model on the GPU.
+# Left unset, the server downloads its default model first (`--download-enabled`
+# is on); with `--download-enabled false` it starts on the deterministic CPU
+# mock (ADR 0006), which needs no GPU and no driver, so that is the image's
+# smoke test. Set IGNIS_MODEL_ARTIFACT to the mounted artifact to serve the real
+# model on the GPU.
 
 # The OpenAI-compatible API + the Playground, and the Prometheus listener
 # (ADR 0017). Metrics are on by default, but the listener stays on the

@@ -5,7 +5,8 @@
 //! nothing. When the `cuda` feature is enabled this links the kernel leaf's
 //! static libraries (its own C ABI surface, which carries the flat C device
 //! surface `kernel/src/device.cu`, plus the vendored reference substrate of
-//! ADR 0010) and the CUDA import libs, building the leaf first.
+//! ADR 0010) and the CUDA runtime, building the leaf first. Never the
+//! driver's own libraries (GitHub #329, below).
 //!
 //! The leaf is built on *every* run of this script, and this script re-runs
 //! whenever any kernel source below changes. Both halves matter: until
@@ -24,9 +25,9 @@
 //! where a stale archive stands in for it.
 //!
 //! Two hosts, one contract (GitHub #167): Windows runs `kernel/build.ps1`
-//! through powershell and links `ignis_*.lib` plus the import libs under
-//! `$CUDA_PATH/lib/x64`; Linux runs `kernel/build.sh` through bash and links
-//! `libignis_*.a` plus the shared libraries under `$CUDA_HOME/lib64`. Only
+//! through powershell and links `ignis_*.lib` plus the runtime's import lib
+//! under `$CUDA_PATH/lib/x64`; Linux runs `kernel/build.sh` through bash and
+//! links `libignis_*.a` plus the runtime under `$CUDA_HOME/lib64`. Only
 //! the spellings differ -- the script that runs, the archives it must
 //! produce, and the staleness rule above are the same on both.
 
@@ -143,6 +144,14 @@ fn main() {
         println!("cargo:rustc-link-lib=static={}", libraries[0]);
     }
 
+    // Only the CUDA runtime is linked, never the driver's own libraries
+    // (libcuda.so.1 / nvcuda.dll, libnvidia-ml.so.1 / nvml.dll), which ship
+    // with the NVIDIA driver rather than the toolkit: a binary that names one
+    // does not start on a machine without the driver -- on Linux the loader
+    // refuses before `main` -- not even for `--help` or `model download`
+    // (GitHub #329). The leaf reaches the driver API through the runtime
+    // (kernel/src/cuda_driver_shim.cu) and opens NVML when it first reads it
+    // (kernel/src/device.cu).
     if windows {
         // CUDA runtime (dynamic): the static library imports cudart symbols;
         // the import lib is resolved at link time, the DLL (cudart64_*.dll) at
@@ -153,10 +162,6 @@ fn main() {
         if cuda_lib.exists() {
             println!("cargo:rustc-link-search={}", cuda_lib.display());
             println!("cargo:rustc-link-lib=dylib=cudart");
-            println!("cargo:rustc-link-lib=dylib=cuda");
-            // GitHub #210: `ignis_device_nvml_mem_info`; the DLL ships with
-            // the driver.
-            println!("cargo:rustc-link-lib=dylib=nvml");
         }
     } else {
         let cuda = env::var("CUDA_HOME")
@@ -165,21 +170,11 @@ fn main() {
         let cuda_lib = PathBuf::from(&cuda).join("lib64");
         if cuda_lib.exists() {
             println!("cargo:rustc-link-search=native={}", cuda_lib.display());
-            // libcuda.so.1 and libnvidia-ml.so.1 ship with the *driver*, not
-            // the toolkit, so on a machine that builds without one (a CI
-            // runner, a container image build) the only copies present are
-            // the toolkit's link stubs. They carry the real SONAMEs, so the
-            // binary still loads the driver's own libraries at runtime.
-            let stubs = cuda_lib.join("stubs");
-            if stubs.exists() {
-                println!("cargo:rustc-link-search=native={}", stubs.display());
-            }
             println!("cargo:rustc-link-lib=dylib=cudart");
-            println!("cargo:rustc-link-lib=dylib=cuda");
-            // GitHub #210: `ignis_device_nvml_mem_info`. `nvml` on Windows,
-            // `libnvidia-ml.so` here.
-            println!("cargo:rustc-link-lib=dylib=nvidia-ml");
         }
+        // The leaf opens NVML with dlopen (kernel/src/shared_library.cu),
+        // which glibc before 2.34 keeps in libdl.
+        println!("cargo:rustc-link-lib=dylib=dl");
         // The vendored substrate is C++ (std::string, std::vector, the
         // vtables and typeinfo of its exception types). On MSVC the Rust link
         // already pulls the CRT that carries all of it; the GNU toolchain
