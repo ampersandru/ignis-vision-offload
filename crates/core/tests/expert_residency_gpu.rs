@@ -12,7 +12,9 @@
 //!   every step's outcome on the device equals `ResidencyModel::step`'s, and
 //!   the counters agree at the end. Half the steps hand the lookahead over as
 //!   the next router's logits, so the device's own ranking (BF16-rounded,
-//!   ties to the lower id) is held to the CPU's.
+//!   ties to the lower id) is held to the CPU's. The same again with a pinned
+//!   hot set beside the host pool (GitHub #329 item 12): the device's pinned
+//!   keys against `ResidencyModel::pin`.
 //!
 //! The kernel leaf's residency CTest replays the committed fixture with the
 //! copy and slot-table checks; this test covers what one fixed trace cannot.
@@ -52,6 +54,7 @@ fn the_leaf_s_tables_line_stays_within_the_cpu_plan_s_upper_bound() {
         host_pool_bytes: 38_000_000_000,
         copy_blocks: 16,
         report: 0,
+        pinned: [0; 8],
     };
     let plan = device::plan_bytes(&desc).expect("plan");
     let bound = residency_table_bytes(48, 512, 8192, 16);
@@ -81,6 +84,7 @@ fn a_prefill_width_past_the_decode_width_is_refused_by_name() {
         host_pool_bytes: 4096 * 64,
         copy_blocks: 4,
         report: 0,
+        pinned: [0; 8],
     };
     let refused = device::plan_bytes(&desc).expect_err("a prefill width past the decode width");
     assert!(refused.contains("prefill_lookahead_width exceeds lookahead_width"), "{refused}");
@@ -96,7 +100,34 @@ fn the_residency_descriptor_is_the_leaf_s_layout() {
     assert_eq!(offset_of!(ResidencyDesc, prefetch_budget_one_row_bytes), 120);
     assert_eq!(offset_of!(ResidencyDesc, prefetch_budget_per_row_bytes), 128);
     assert_eq!(offset_of!(ResidencyDesc, copy_blocks), 152);
-    assert_eq!(size_of::<ResidencyDesc>(), 160);
+    assert_eq!(offset_of!(ResidencyDesc, pinned), 160);
+    assert_eq!(size_of::<ResidencyDesc>(), 192);
+}
+
+/// GitHub #329 item 12: a class's pinned slots are pool bytes past its LRU's
+/// in the leaf's plan line.
+#[test]
+fn the_leaf_s_pools_line_holds_the_pinned_slots() {
+    let desc = ResidencyDesc {
+        layers: 2,
+        experts: 16,
+        capacity: [4; 8],
+        record_bytes: [4096; 8],
+        max_tokens: 4,
+        lookahead_width: 3,
+        prefill_lookahead_width: 3,
+        prefetch_budget_one_row_bytes: NO_BUDGET,
+        prefetch_budget_per_row_bytes: 0,
+        staging_half_bytes: 4096 * 32,
+        host_pool_bytes: 4096 * 64,
+        copy_blocks: 4,
+        report: 0,
+        pinned: [0; 8],
+    };
+    let unpinned = device::plan_bytes(&desc).expect("plan").pools;
+    let pinned = device::plan_bytes(&ResidencyDesc { pinned: [3, 0, 0, 0, 1, 0, 0, 0], ..desc }).expect("plan").pools;
+    assert_eq!(unpinned, 8 * 4 * 4096);
+    assert_eq!(pinned, unpinned + 4 * 4096);
 }
 
 #[test]
@@ -153,11 +184,29 @@ fn ptr(buf: &DeviceBuffer) -> *mut c_void {
 #[test]
 #[ignore = "GPU: run under scripts/gpu-profile.ps1"]
 fn the_device_steps_equal_the_policy_model_on_random_traces() {
+    if let Some(steps) = replay_random_traces(false) {
+        println!("{steps} steps equal on the device and in the policy model");
+    }
+}
+
+/// GitHub #329 item 12: the same with a pinned hot set beside the host pool
+/// -- the routing's favourite experts whole, and a few projections alone.
+#[test]
+#[ignore = "GPU: run under scripts/gpu-profile.ps1"]
+fn the_device_steps_equal_the_policy_model_with_pinned_keys() {
+    if let Some(steps) = replay_random_traces(true) {
+        println!("{steps} steps with pinned keys equal on the device and in the policy model");
+    }
+}
+
+/// Random traces through the device and the policy model, step for step,
+/// with a pinned hot set when `pin`. The steps run, or `None` on a skip.
+fn replay_random_traces(pin: bool) -> Option<usize> {
     let mut dev = match CudaDevice::create(0) {
         Ok(d) => d,
         Err(e) => {
             gpu_profile::skip_or_fail(&format!("no CUDA device: {e}"));
-            return;
+            return None;
         }
     };
     const LAYERS: u16 = 3;
@@ -187,7 +236,26 @@ fn the_device_steps_equal_the_policy_model_on_random_traces() {
             catalog.clone(),
             PolicyConfig { capacity, prefetch_width: WIDTH, prefill_prefetch_width: PREFILL_WIDTH, prefetch_budget: budget },
         );
-        let (k2, offsets, pool_bytes) = device::packed_layout(&catalog);
+        // The pinned hot set: the routing's favourite experts (it picks ids
+        // under 12 two times in three) whole, and a few projections alone.
+        let mut pinned = Vec::new();
+        if pin {
+            for l in 0..LAYERS {
+                for e in 0..2u16 {
+                    pinned.extend(Projection::ALL.map(|p| ProjectionId::new(l, e, p)));
+                }
+            }
+            for _ in 0..4 {
+                let layer = rng.below(u64::from(LAYERS)) as u16;
+                let expert = 2 + rng.below(u64::from(EXPERTS) - 2) as u16;
+                let id = ProjectionId::new(layer, expert, Projection::ALL[rng.below(2) as usize]);
+                if !pinned.contains(&id) {
+                    pinned.push(id);
+                }
+            }
+        }
+        assert_eq!(model.pin(&pinned), pinned.len(), "seed {seed}");
+        let (k2, offsets, pool_bytes) = device::packed_layout_without(&catalog, |id| pinned.contains(&id));
         let heaviest = (0..LAYERS).map(|l| catalog.layer_bytes(l)).max().unwrap();
         let (one_row, per_row) = device::budget_words(budget);
         let desc = ResidencyDesc {
@@ -204,16 +272,28 @@ fn the_device_steps_equal_the_policy_model_on_random_traces() {
             host_pool_bytes: pool_bytes,
             copy_blocks: 4,
             report: 1,
+            pinned: model.pinned_counts(),
         };
         let mut gpu = match DeviceResidency::new(&desc, &k2, &offsets) {
             Ok(g) => g,
             Err(e) => {
             gpu_profile::skip_or_fail(&format!("ignis_residency_create: {e}"));
-            return;
+            return None;
         }
         };
         for (i, b) in gpu.host_pool_mut().expect("host pool").iter_mut().enumerate() {
             *b = (i * 7 + 3) as u8;
+        }
+        if !pinned.is_empty() {
+            // The pinned records, from a buffer of their own: the pool has no copy.
+            let keys: Vec<u32> = pinned.iter().map(|&id| device::key(EXPERTS, id)).collect();
+            let (mut src, mut at) = (Vec::new(), Vec::new());
+            for &id in &pinned {
+                at.push(src.len() as u64);
+                src.extend((0..catalog.bytes(id)).map(|i| (i * 5 + 1) as u8));
+            }
+            gpu.admit(&keys, &src, &at).expect("admit the pinned keys");
+            gpu.admit_finish().expect("finish the pinned admission");
         }
         let warm: Vec<ProjectionId> = (0..6u16)
             .flat_map(|e| (0..LAYERS).map(move |l| (l, e)))
@@ -307,7 +387,7 @@ fn the_device_steps_equal_the_policy_model_on_random_traces() {
                 };
                 if let Err(e) = result {
                     gpu_profile::skip_or_fail(&format!("ignis_residency_step: {e}"));
-                    return;
+                    return None;
                 }
                 let report = gpu.last_report(u32::from(layer)).expect("report");
                 let lane_refs: Vec<&[u16]> = lanes.iter().map(Vec::as_slice).collect();
@@ -344,5 +424,5 @@ fn the_device_steps_equal_the_policy_model_on_random_traces() {
         assert_eq!(&counters, model.counters(), "seed {seed}: counters");
         let _ = KClass::ALL;
     }
-    println!("{steps_run} steps equal on the device and in the policy model");
+    Some(steps_run)
 }

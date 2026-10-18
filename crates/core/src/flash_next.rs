@@ -23,10 +23,14 @@ use crate::model_load::{load_flash_next, plan_flash_next_reservations, IgnisMode
 use crate::ngram::NgramContext;
 use crate::ngram_table::{NgramTable, NgramTableOptions};
 use crate::residency::device::{budget_words, DeviceResidency, ResidencyDesc};
-use crate::residency::load::{catalog, fill_expert_pool, pool_layout, stream_expert_layers};
+use crate::residency::load::{
+    catalog, fill_expert_pool, fill_expert_pool_except, pool_layout, pool_layout_without, stream_expert_layers,
+    stream_pinned_records,
+};
 use crate::residency::{
-    default_prefetch_budget, holds_every_expert, min_slots_per_class, plan_expert_cache, residency_table_bytes,
-    staging_ring_bytes_for, warm_start_order, ExpertCacheRequest, ExpertCatalog, ExpertTraffic, KClass,
+    default_prefetch_budget, holds_every_expert, min_slots_per_class, pin_hot_experts, plan_expert_cache,
+    residency_table_bytes, staging_ring_bytes_for, warm_start_order, ExpertCachePlan, ExpertCacheRequest,
+    ExpertCatalog, ExpertTraffic, KClass, PinnedExperts,
 };
 use crate::seq::{SeqPool, SeqPoolBudget};
 use crate::speculation::{FlashNextSpeculation, SpeculativeBackend};
@@ -56,6 +60,11 @@ pub struct EngineOptions {
     pub decode_lanes: u32,
     /// The VRAM expert cache, split into the eight K-class pools.
     pub expert_cache_bytes: u64,
+    /// The pinned hot set's budget (`--vram-pinned-expert-bytes`, GitHub
+    /// #329 item 12): the calibration-hottest experts held in the cache's
+    /// pools outside the LRU, with no copy in the host pool. 0 pins none; a
+    /// device-only load ignores it ([`pinned_experts`]).
+    pub pinned_expert_bytes: u64,
     /// The KV pool's pages, shared by the lanes (ADR 0045): what the server's
     /// VRAM plan gave the pool (`ignis_core::plan_vram`, 524,288 tokens when
     /// experts stream). `None` is every lane's whole context and a page per
@@ -155,6 +164,7 @@ impl Default for EngineOptions {
             kv_format: KvFormat::HqE8_2b,
             decode_lanes: DEFAULT_DECODE_LANES,
             expert_cache_bytes: 12 << 30,
+            pinned_expert_bytes: 0,
             kv_pool_pages: None,
             ngram: NgramTableOptions::default(),
             ngram_cache: crate::ngram_cache::PersistenceOptions::default(),
@@ -211,6 +221,11 @@ pub fn class_minimum_slots(lanes: u32) -> u32 {
 /// free for the rest of the host plan, the n-gram table first; and with no
 /// miss nothing stages, so it reserves no prefill staging ring (~1.6 GB of
 /// VRAM on the trellis-a25 artifact, the KV pool's on that branch).
+///
+/// With a pinned hot set ([`pinned_experts`], GitHub #329 item 12) the pool
+/// is laid out without the pinned records, which go from the file straight
+/// to their pinned slots ([`stream_pinned_records`]) before the pool is
+/// filled and the LRU warm-started around them.
 pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOptions) -> Result<DeviceResidency, String> {
     let index = &plan.experts;
     let cat = catalog(index)?;
@@ -250,12 +265,32 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
         host_pool_bytes: if no_host_pool { 0 } else { layout.bytes },
         copy_blocks: 16,
         report: 0,
+        pinned: [0; KClass::COUNT],
     };
     if no_host_pool {
         let mut residency = DeviceResidency::new(&desc, &layout.k2, &[])?;
         stream_expert_layers(path, index, |layer| residency.admit(&layer.keys, &layer.bytes, &layer.offsets))
             .map_err(|e| format!("admit the experts: {e}"))?;
         residency.admit_finish()?;
+        return Ok(residency);
+    }
+    let pinned = pinned_experts(options, &cat, &traffic, &cache);
+    if !pinned.is_empty() {
+        let by_key = pinned.by_key(&cat);
+        let layout = pool_layout_without(index, &by_key);
+        let desc = ResidencyDesc {
+            capacity: pinned.lru_capacity(cache.capacity()),
+            host_pool_bytes: layout.bytes,
+            pinned: pinned.per_class,
+            ..desc
+        };
+        let mut residency = DeviceResidency::new(&desc, &layout.k2, &layout.offsets)?;
+        stream_pinned_records(path, index, &by_key, |layer| residency.admit(&layer.keys, &layer.bytes, &layer.offsets))
+            .map_err(|e| format!("admit the pinned experts: {e}"))?;
+        residency.admit_finish()?;
+        let pool = residency.host_pool_mut().ok_or("residency: no host pool")?;
+        fill_expert_pool_except(path, index, &layout, pool).map_err(|e| format!("fill the expert pool: {e}"))?;
+        residency.warm_start(&warm_start_order(&traffic))?;
         return Ok(residency);
     }
     let mut residency = DeviceResidency::new(&desc, &layout.k2, &layout.offsets)?;
@@ -270,6 +305,24 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
 /// branch hands it exactly that).
 pub fn device_only(options: &EngineOptions, catalog: &ExpertCatalog) -> bool {
     holds_every_expert(catalog, options.expert_cache_bytes)
+}
+
+/// The pinned hot set a load of `options` keeps beside the expert cache
+/// `cache` split for it (GitHub #329 item 12): the calibration-hottest whole
+/// experts until they reach `pinned_expert_bytes`, each class keeping its
+/// decode minimum for the LRU ([`pin_hot_experts`]). None at 0, and none on a
+/// device-only load, which keeps no expert in RAM to begin with. The server's
+/// plan and [`build_residency`] both ask it, so both pin the same experts.
+pub fn pinned_experts(
+    options: &EngineOptions,
+    catalog: &ExpertCatalog,
+    traffic: &ExpertTraffic,
+    cache: &ExpertCachePlan,
+) -> PinnedExperts {
+    if options.pinned_expert_bytes == 0 || device_only(options, catalog) {
+        return PinnedExperts::default();
+    }
+    pin_hot_experts(catalog, traffic, cache.capacity(), class_minimum_slots(options.decode_lanes), options.pinned_expert_bytes)
 }
 
 /// The artifact's non-expert tensors placed on the device, and the device
@@ -880,6 +933,38 @@ mod tests {
         assert_eq!(budget.kv_page_group_count, 8_192);
         assert_eq!((budget.max_context_tokens, budget.slot_count, budget.retained_host_slot_count), (262_144, 3, 8));
         assert_eq!(planned.pool_budget_of(100).kv_page_group_count, 100);
+    }
+
+    /// GitHub #329 item 12: a load pins the plan's hottest experts at its
+    /// budget, each class keeping its decode minimum for the LRU, and none at
+    /// 0 or on a device-only load (a cache that holds every expert).
+    #[test]
+    fn a_load_pins_its_hottest_experts_only_when_asked_and_only_beside_a_host_pool() {
+        use crate::residency::{ClassPool, KBits};
+        let catalog = ExpertCatalog::new(2, 64, vec![(KBits::K2, KBits::K2); 128], [200, 250, 300, 400, 100, 125, 150, 200])
+            .expect("catalog");
+        let traffic = ExpertTraffic::new(&catalog, (0..128).map(|i| 1 + i % 7).collect()).expect("traffic");
+        let mut pools = [ClassPool::default(); KClass::COUNT];
+        (pools[0], pools[4]) = (ClassPool { slots: 40, bytes: 40 * 200 }, ClassPool { slots: 40, bytes: 40 * 100 });
+        let cache = ExpertCachePlan {
+            cache_bytes: 40 * 300,
+            pools,
+            staging_ring_bytes: 0,
+            table_bytes: 0,
+            expected_hit_rate: 0.0,
+            below_floor: false,
+        };
+        let options = EngineOptions { decode_lanes: 1, expert_cache_bytes: cache.cache_bytes, ..EngineOptions::default() };
+        assert!(pinned_experts(&options, &catalog, &traffic, &cache).is_empty(), "0 pins none");
+        let asked = EngineOptions { pinned_expert_bytes: 1_000, ..options.clone() };
+        let pinned = pinned_experts(&asked, &catalog, &traffic, &cache);
+        assert_eq!(pinned, pin_hot_experts(&catalog, &traffic, cache.capacity(), class_minimum_slots(1), 1_000));
+        assert_eq!((pinned.experts(), pinned.bytes), (4, 1_200), "whole experts until the budget is reached");
+        // Each class keeps 26 LRU slots of 40: at most 14 experts pinned.
+        let all = EngineOptions { pinned_expert_bytes: u64::MAX, ..options.clone() };
+        assert_eq!(pinned_experts(&all, &catalog, &traffic, &cache).per_class, [14, 0, 0, 0, 14, 0, 0, 0]);
+        let device_only = EngineOptions { expert_cache_bytes: catalog.total_bytes(), ..asked };
+        assert!(pinned_experts(&device_only, &catalog, &traffic, &cache).is_empty(), "nothing in RAM to save");
     }
 
     /// The sidecar's `expert_traffic`, layer after layer, as the residency's

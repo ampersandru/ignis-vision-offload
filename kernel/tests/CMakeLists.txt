@@ -740,6 +740,13 @@ set_tests_properties(ignis_kernel_residency_upload_order_test PROPERTIES
 add_executable(ignis_kernel_residency_device_only_test test_residency_device_only.cu)
 target_link_libraries(ignis_kernel_residency_device_only_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_residency_device_only_test COMMAND ignis_kernel_residency_device_only_test)
+# GitHub #329 item 12: OURS -- a pinned hot set beside a host pool: creation and admission rules,
+# every pinned record on a slot past its class's LRU, and steps -- eager, split, routed and
+# captured -- where a selected pinned key only ever hits and nothing evicts, copies or stages it.
+# GPU (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_residency_pinned_test test_residency_pinned.cu)
+target_link_libraries(ignis_kernel_residency_pinned_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_residency_pinned_test COMMAND ignis_kernel_residency_pinned_test)
 # GitHub #306 (decode fusion, step 5): OURS -- residency's routed demand step (the router's selection
 # made in the resolve's launch) against the router and the demand step it replaces, bit for bit.
 # GPU (ADR 0006: no SKIP_RETURN_CODE).

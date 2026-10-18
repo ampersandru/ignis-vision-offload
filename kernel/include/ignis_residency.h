@@ -41,6 +41,17 @@
  * run on it traps); a prefetch places nothing. Nothing stages either, so such a desc may name no
  * staging ring (`staging_half_bytes` 0, GitHub #329): none is then allocated or planned.
  *
+ * Pinned keys (GitHub #329 item 12): beside a host pool, a desc may name `pinned` slots per class,
+ * and its pool offsets then mark that many keys of each class IGNIS_RESIDENCY_NO_HOST_COPY: the
+ * load's pinned hot set, which the host pool holds no copy of. Each class's pool has its `capacity`
+ * LRU slots and then its pinned ones; the loader admits every pinned key's record to a pinned slot
+ * (`ignis_residency_admit`, then `ignis_residency_admit_finish`) before the warm start and the
+ * first step. From then on a pinned key is resident for the life of the residency: a selected one
+ * is a hit (counted as one) and nothing else -- never stamped, evicted, staged, prefetched or
+ * copied, never counted against its class's LRU, and never in the occupancy, which is the LRU's.
+ * Its pool offset is never read. With no slot pinned (every desc that predates them, `pinned` all
+ * 0) nothing here differs from a residency without them.
+ *
  * Every structure belongs to one `struct ignis_residency`, created at load and freed with the
  * model (no process-wide state; phase 2's model switch is a reload). A step allocates nothing,
  * never synchronizes the host and is capturable in a CUDA graph: the resolve kernels and the
@@ -74,6 +85,8 @@ extern "C" {
 #define IGNIS_RESIDENCY_PREFILL 1
 /* `prefetch_budget_one_row_bytes` meaning "no budget". */
 #define IGNIS_RESIDENCY_NO_BUDGET UINT64_MAX
+/* A pool offset marking a pinned key: it has no copy in the host pool. */
+#define IGNIS_RESIDENCY_NO_HOST_COPY UINT64_MAX
 
 struct ignis_residency_desc {
   uint32_t layers;
@@ -93,20 +106,24 @@ struct ignis_residency_desc {
   uint64_t host_pool_bytes;     /* the pinned expert pool; 0: device-only (above) */
   uint32_t copy_blocks;         /* the copy kernel's grid; 0 = 16 */
   uint32_t report;              /* 1: keep each step's outcome for ignis_residency_last_report */
+  uint32_t pinned[IGNIS_RESIDENCY_CLASSES]; /* pinned slots per class, past its `capacity` LRU
+                                             * slots (above); 0 with no host pool */
 };
 
 #ifdef __cplusplus
-static_assert(sizeof(struct ignis_residency_desc) == 160 &&
+static_assert(sizeof(struct ignis_residency_desc) == 192 &&
                   offsetof(struct ignis_residency_desc, prefill_lookahead_width) == 112 &&
                   offsetof(struct ignis_residency_desc, prefetch_budget_one_row_bytes) == 120 &&
                   offsetof(struct ignis_residency_desc, prefetch_budget_per_row_bytes) == 128 &&
-                  offsetof(struct ignis_residency_desc, copy_blocks) == 152,
+                  offsetof(struct ignis_residency_desc, copy_blocks) == 152 &&
+                  offsetof(struct ignis_residency_desc, pinned) == 160,
               "ignis_residency_desc drifted from crates/core/src/residency/device.rs ResidencyDesc");
 #endif
 
 /* The device bytes a residency of `desc` reserves at load (ADR 0030 plan lines), each part
- * rounded up to 256 bytes: the class pools, the staging ring, and everything else (slot tables,
- * the residency map, the LRU stamps, the copy jobs, the lookahead scratch, counters, report). */
+ * rounded up to 256 bytes: the class pools (LRU and pinned slots), the staging ring, and
+ * everything else (slot tables, the residency map, the LRU stamps, the copy jobs, the lookahead
+ * scratch, counters, report). */
 struct ignis_residency_plan {
   uint64_t pools;
   uint64_t staging;
@@ -122,9 +139,10 @@ struct ignis_residency;
  * the pinned, mapped host pool (`host_pool_bytes`), which the loader then fills. `k2` is the K
  * map, `[layers][experts][2]` (4, 5, 6 or 8), and `pool_offsets` each record's offset in the
  * host pool, same order (the binder's expert index); a record of class c is
- * `record_bytes[c]` bytes and 16-byte aligned. Device-only (`host_pool_bytes` 0): no host pool,
- * `pool_offsets` is not read (NULL is fine), and a class whose capacity is below its projections
- * is refused. */
+ * `record_bytes[c]` bytes and 16-byte aligned. An offset of IGNIS_RESIDENCY_NO_HOST_COPY marks a
+ * pinned key: each class must mark exactly its `pinned` slots' worth. Device-only
+ * (`host_pool_bytes` 0): no host pool, `pool_offsets` is not read (NULL is fine), a class whose
+ * capacity is below its projections is refused, and so is any pinned slot. */
 int32_t ignis_residency_create(const struct ignis_residency_desc *desc, const uint8_t *k2,
                                const uint64_t *pool_offsets, struct ignis_residency **out);
 
@@ -139,17 +157,20 @@ void *ignis_residency_host_pool(struct ignis_residency *r);
 const struct ignis_moe_slot *ignis_residency_slot_table(struct ignis_residency *r,
                                                         uint32_t layer);
 
-/* The optional warm start (spec 03): fills each pool from `keys`, hottest first, up to its
- * capacity, the hottest admitted the most recent. Synchronous; only before the first step.
- * Writes how many were admitted to `*admitted`. */
+/* The optional warm start (spec 03): fills each pool's LRU from `keys`, hottest first, up to its
+ * capacity, the hottest admitted the most recent; a resident key (a pinned one too) is skipped.
+ * Synchronous; only before the first step, and after the pinned keys' admission. Writes how many
+ * were admitted to `*admitted`. */
 int32_t ignis_residency_warm_start(struct ignis_residency *r, const uint32_t *keys, uint32_t n,
                                    uint32_t *admitted);
 
-/* Device-only admission (`host_pool_bytes` 0), before the first step: each of the `n` `keys` takes
- * the next free slot of its class, its record copied from `src + src_offsets[i]` (host memory,
- * pageable or pinned; `record_bytes` of its class), and its slot-table entry is set. Synchronous;
- * a key already admitted is refused. `ignis_residency_admit_finish` then checks that every
- * projection was admitted -- a step before it is refused -- and leaves the residency as a warm
+/* Admission, before the first step: device-only (`host_pool_bytes` 0), of every key; beside a
+ * host pool, of the pinned keys alone (an unpinned key is refused). Each of the `n` `keys` takes
+ * the next free slot of its class (a pinned key, the next pinned slot), its record copied from
+ * `src + src_offsets[i]` (host memory, pageable or pinned; `record_bytes` of its class), and its
+ * slot-table entry is set. Synchronous; a key already admitted is refused. A residency with
+ * neither refuses it. `ignis_residency_admit_finish` then checks that every key to admit was --
+ * a step, and a warm start, before it is refused -- and leaves a device-only residency as a warm
  * start of every key would: every slot filled, the earliest admitted the oldest. */
 int32_t ignis_residency_admit(struct ignis_residency *r, const uint32_t *keys, uint32_t n,
                               const uint8_t *src, const uint64_t *src_offsets);
@@ -227,9 +248,9 @@ struct ignis_residency_counters {
 };
 int32_t ignis_residency_read_counters(struct ignis_residency *r, struct ignis_residency_counters *out);
 
-/* Slots holding a projection, per class (`out[class]`, the order of `capacity`), warm start
- * included; a filled slot stays filled, an eviction hands it on. Waits for residency's work,
- * like ignis_residency_read_counters. */
+/* LRU slots holding a projection, per class (`out[class]`, the order of `capacity`), warm start
+ * included, pinned slots not; a filled slot stays filled, an eviction hands it on. Waits for
+ * residency's work, like ignis_residency_read_counters. */
 int32_t ignis_residency_read_occupancy(struct ignis_residency *r, uint32_t out[IGNIS_RESIDENCY_CLASSES]);
 
 /* The counters and the slots in use, mirrored in host memory a host reader reads with no CUDA

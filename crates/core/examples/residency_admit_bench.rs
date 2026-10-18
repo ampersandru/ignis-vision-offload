@@ -128,6 +128,7 @@ fn main() {
         host_pool_bytes: 0,
         copy_blocks: 16,
         report: 0,
+        pinned: [0; 8],
     };
 
     // (a) the real path.
