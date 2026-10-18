@@ -856,7 +856,9 @@ async fn prepare_input(
         return build_request(server, model, messages, params, thinking, tools, structure)
             .map_err(template_rejection);
     };
-    let deadline = std::time::Instant::now() + server.live().request_timeout;
+    // The request's own deadline (ADR 0058): at 0, none, and only each
+    // fetch's timeout bounds the acquisition.
+    let deadline = crate::deadline::after(server.live().request_timeout).into_std();
     let acquired = acquirer.acquire(messages, deadline).await.map_err(media_rejection)?;
     // A media prompt reports no text: a `locate` refuses a parts `state`
     // before it renders one.

@@ -3075,3 +3075,41 @@ async fn a_not_found_answer_names_nothing_and_keeps_its_ranking() {
         assert!(!answer["ranking"].as_array().unwrap().is_empty(), "the ranking is kept: {answer}");
     }
 }
+
+// ── the deadline (ADR 0058) ──────────────────────────────────────────────
+
+/// The mock, its every prefill taking a tenth of a second.
+struct SlowPrefill(MockCompute);
+
+impl ignis_core::Compute for SlowPrefill {
+    fn prefill_step(
+        &self,
+        jobs: &[ignis_core::PrefillJob],
+    ) -> Result<Vec<ignis_core::PrefillOutcome>, ignis_core::ComputeError> {
+        // Time passing is the point here, not a synchronization.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        self.0.prefill_step(jobs)
+    }
+
+    fn decode_step(
+        &self,
+        jobs: &[ignis_core::DecodeJob],
+    ) -> Result<Vec<ignis_core::DecodeOutcome>, ignis_core::ComputeError> {
+        self.0.decode_step(jobs)
+    }
+}
+
+/// `server.request_timeout` at 0 is no deadline for a decision's questions:
+/// one whose prefill outlasts any zero-length deadline is answered, never
+/// `not_completed`. A question past a real deadline is an error whatever
+/// `server.timeout_reply` says (`cancel_log.rs`): a decision has no partial
+/// answer.
+#[tokio::test]
+async fn a_zero_request_timeout_leaves_a_question_to_its_answer() {
+    let app = server_over(Arc::new(SlowPrefill(MockCompute::new())))
+        .with_request_timeout(std::time::Duration::ZERO)
+        .app();
+    let (status, body) = decide(&app, JEV_NOUL).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body["answers"]["is_urgent"]["noul"].is_number(), "{body}");
+}

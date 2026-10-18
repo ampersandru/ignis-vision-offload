@@ -94,6 +94,11 @@ struct Harness {
 /// The router over a recording mock engine; with `preparer`, a `--vision-enabled`
 /// load acquiring media through it.
 fn harness(preparer: Option<Arc<dyn Preparer>>, cache_bytes: u64, max_sequence_tokens: Option<u32>) -> Harness {
+    harness_timed(preparer, cache_bytes, max_sequence_tokens, Duration::from_secs(10))
+}
+
+/// [`harness`], its requests' deadline `timeout`.
+fn harness_timed(preparer: Option<Arc<dyn Preparer>>, cache_bytes: u64, max_sequence_tokens: Option<u32>, timeout: Duration) -> Harness {
     let mut config = SchedulerConfig { model: MODEL.into(), ..SchedulerConfig::default() };
     if let Some(tokens) = max_sequence_tokens {
         config.max_sequence_tokens = tokens;
@@ -104,7 +109,7 @@ fn harness(preparer: Option<Arc<dyn Preparer>>, cache_bytes: u64, max_sequence_t
         submitted: submitted.clone(),
     };
     let server = Server::new(Engine::new(Box::new(scheduler)), Box::new(SimpleTemplateProvider))
-        .with_request_timeout(Duration::from_secs(10));
+        .with_request_timeout(timeout);
     let server = match preparer {
         None => server,
         Some(preparer) => server.with_media(Arc::new(MediaAcquirer::new(
@@ -270,6 +275,29 @@ async fn a_disconnect_during_preprocessing_stops_the_work_and_submits_nothing() 
     let submitted = h.submitted.lock().unwrap();
     assert_eq!(submitted.len(), 1);
     assert!(submitted[0].multimodal.is_none());
+}
+
+// ── the deadline (ADR 0058) ─────────────────────────────────────────────────
+
+/// `server.request_timeout` at 0 is no deadline for the media acquisition
+/// either: a preparation held well past a zero-length deadline still reaches
+/// the model, where a request deadline would have answered `504`. Only a
+/// fetch's own timeout bounds it then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zero_request_timeout_leaves_media_acquisition_unbounded() {
+    let gated = Gated::new(false, processor(limits()));
+    let h = harness_timed(Some(gated.clone()), 1 << 20, None, Duration::ZERO);
+    let image = data_uri(&png(64, 64));
+    let client = tokio::spawn(h.app.clone().oneshot(request("/v1/chat/completions", chat(json!([image_message(&image)])))));
+    until("preprocessing to start", || gated.builds.load(Ordering::SeqCst) == 1).await;
+    // Time passing is the point here, not a synchronization.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    gated.open.store(true, Ordering::SeqCst);
+    let response = client.await.unwrap().unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(status, 200, "{body:?}");
+    assert_expanded(&h.submitted);
 }
 
 // ── the request body ────────────────────────────────────────────────────────
