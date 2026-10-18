@@ -167,16 +167,18 @@ times the replayed demand ratio.
 | 6 GB | +0.54 (5.5%) · 4.2% | +2.52 (9.2%) · 12.8% |
 | 8 GB | +1.11 (11.3%) · 8.6% | +4.71 (17.1%) · 23.9% |
 
-**The host plan.** One rtx5090-profile load (2026-10-13, 0.6.2) logged:
+**The host plan.** A Flash-Next load on this host (2026-10-13, 0.6.2)
+logged:
 
 - 48.4 GB available at load;
 - the 37.8 GB pool, n-gram hot rows 1 GiB, KV-RAM arena 2 GiB, retained
   host slots 1.04 GB, KV-disk staging 64 MiB;
 - 6.3 GB left, against a 4 GiB margin.
 
-Loads on 2026-10-18 (0.7.0) had 43.0-43.4 GB available. They ran with
-n-gram hot rows of 0-512 MiB, no arena and no retained slots, and left
-4.7-5.6 GB.
+Test loads on 2026-10-18 (0.7.0) had 43.0-43.4 GB available. They used
+2-3 lanes, a 32-48K-token KV pool and a 24-26 GiB VRAM budget, not the
+profile. They ran with n-gram hot rows of 0-512 MiB, no arena and no
+retained slots, and left 4.7-5.6 GB.
 
 **The pools' size is fixed per load.** `flash_next::build_residency` sets
 them once (`ResidencyDesc.capacity`), and nothing in
@@ -226,8 +228,8 @@ back for +20-70% per round (the swap report's inference).
 
 **Inferred (verdict for the rtx5090 profile).** The only point worth having
 is a pin of **1-2 GB**: under 1% of decode at either lane count. That RAM
-would double the n-gram hot rows line or pay for the 2 GiB KV-RAM arena of
-the 2026-10-13 plan (the 2026-10-18 loads ran without one). Past 2 GB, each further GB costs
+would double the 2026-10-13 load's 1 GiB n-gram hot rows line, or pay for
+its 2 GiB KV-RAM arena on a load that has less RAM available. Past 2 GB, each further GB costs
 another 1.5-6% of three-lane decode, more than it is likely to buy on a
 64 GB box. Whether 1-2 GB of RAM pays for the implementation is the owner's
 call. Nothing here makes it necessary.
@@ -263,10 +265,11 @@ What a pin needs, if built:
 - **The cost conversion is an inference.** It assumes a demand byte costs
   the same on the critical path at 18.4 GB as it did at 15.6 GB. Per byte
   that held across the headroom finding's runs (11.9-12.4 GB/s). The
-  percentages divide by the 15.6 GB rounds; at 18.4 GB the rounds are
-  shorter, so they may run slightly high. The ratio method applies a
-  15.6 GB stall share to an 18.4 GB demand ratio and over-states three
-  lanes for the same reason.
+  percentages divide by the 15.6 GB rounds. At 18.4 GB the rounds are
+  shorter, and the decode fusion since 2026-10-08 shortened the one-lane
+  round further, so these percentages run slightly low. The ratio method
+  applies a 15.6 GB stall share to an 18.4 GB demand ratio, so it runs high.
+  The two methods bracket the cost.
 - **One pin order.** Calibration selections, as the warm start orders them.
   Ranking by traffic per byte, per-class targets or re-splitting the
   remaining pools was not tried. The 1-2 GB answer is already near free.
