@@ -119,7 +119,7 @@ The prefill-only deltas the decode numbers subtract are in
    page cache), per-step pool copies. A prefill's gather is serialized on
    the same model thread too: `rows_for` (`flash_next_leaf.rs:610`)
    gathers the whole span before any chunk launches. So it adds to its own
-   TTFT (finding 2026-10-07) but never overlaps another lane's decode round.
+   TTFT ([finding 2026-10-07](2026-10-07-flash-next-prefill-chunk-decomposition.md)) but never overlaps another lane's decode round.
    Only the driver's staging of each chunk's 11.8 MB of pageable rows
    (`program.cu:829`) can run beside the previous chunk's compute.
 2. **The exposure is other DRAM traffic on the host, and it is large
@@ -192,6 +192,10 @@ Ranked proposals, with the expected gain:
    worth a ticket.
 
 ## Limits and unknowns
+
+- The quiet cells assume no other job loaded the host's memory. By the
+  coordinator's schedule no other agent built during them (a read-only
+  reviewer ran); the CPU load itself was not recorded.
 
 - One host (i9-10900K, a dual-channel platform, Gen 3 x16), one driver,
   one load shape. The 26G budget, context 16,384 and 512M hot rows are not
