@@ -582,12 +582,22 @@ async fn main() {
     let serve_result = server.serve_on_until(listener, metrics_listener, stopped).await;
 
     // The tunnel outlives the drain above, so in-flight remote requests
-    // finish through it; only then is it unregistered.
-    if let Some(exposure) = exposure {
-        if let Err(err) = exposure.shutdown().await {
-            tracing::warn!(name: "ignis.expose.close_failed", error = %err, "tunnel did not close cleanly");
+    // finish through it; only then is it unregistered. Not with a load
+    // abandoned: unregistering takes up to ~32 s (the vendored crate's 30 s
+    // grace, which it does not let a caller shorten), past a pod's grace
+    // period, and the process ends at once below. The tunnel is in-process
+    // and dies with it; the edge drops the connection, and a quick tunnel's
+    // URL is never reused. Kept, not dropped, until then: a drop starts the
+    // unregistering on detached tasks, whose lines would follow `stopped`.
+    let _tunnel = match exposure {
+        Some(exposure) if !matches!(serve_result, Ok(Served::LoadAbandoned { .. })) => {
+            if let Err(err) = exposure.shutdown().await {
+                tracing::warn!(name: "ignis.expose.close_failed", error = %err, "tunnel did not close cleanly");
+            }
+            None
         }
-    }
+        kept => kept,
+    };
 
     // `ignis.process.stopped` MUST be the last event emitted (spec §28) —
     // whichever branch below runs, nothing after it logs anything. The
@@ -608,8 +618,8 @@ async fn main() {
         // would wait for it (the runtime's drop joins its blocking thread):
         // the process ends now, as it does for a stop during the start-up
         // load, which frees the GPU.
-        Ok(Served::LoadAbandoned(load)) => {
-            ignis_server::shutdown::emit_stopped_abandoning(&load);
+        Ok(Served::LoadAbandoned { load, phase }) => {
+            ignis_server::shutdown::emit_stopped_abandoning(&load, phase);
             logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
             ignis_server::shutdown::exit_now(0)
         }

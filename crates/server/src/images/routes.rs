@@ -903,6 +903,10 @@ async fn enhance(
     let mut visit = match crate::model_switch::visit(server, via, then, Some(switch_steps(events.clone(), 2))) {
         Ok(visit) => visit,
         Err(SwitchRefusal::InProgress(running)) => return Err(implicit_switch_refused(ImplicitRefusal::Switching(running))),
+        // GitHub #329: a request whose turn came after the stop — behind a
+        // job the drain let finish — begins no visit, and is not served
+        // without the rewrite it asked for either.
+        Err(SwitchRefusal::Stopping) => return Err(implicit_switch_refused(ImplicitRefusal::Stopping { to })),
         Err(refused) => return Ok(Enhanced::without(prompt, &enhancer, &format!("a visit to it could not begin ({refused:?})"))),
     };
     // The gate is closed: what waits behind this request runs in the drain.

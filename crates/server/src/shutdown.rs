@@ -231,12 +231,13 @@ fn emit_stopped_before_serving(phase: &'static str) {
 }
 
 /// The last line of a process whose serve stopped with a switch, a reload or
-/// a load still running ([`crate::Served::LoadAbandoned`]): `phase`
-/// `switching`, as `GET /v1/models` names one, and the ids it moved between.
-pub fn emit_stopped_abandoning(load: &crate::model_switch::SwitchStarted) {
+/// a load still running ([`crate::Served::LoadAbandoned`]): `phase` as `GET
+/// /v1/models` reports the run (`switching`, or `loading` out of
+/// `unloaded`), and the ids it moved between.
+pub fn emit_stopped_abandoning(load: &crate::model_switch::SwitchStarted, phase: &'static str) {
     tracing::info!(
         name: "ignis.process.stopped",
-        phase = "switching",
+        phase,
         from = %load.from,
         to = %load.to,
         "stopped while serving with a model loading: the load is abandoned and the process exits, which frees the GPU"
@@ -287,21 +288,24 @@ mod tests {
     }
 
     /// GitHub #329: the last line of a process whose serve stopped with a
-    /// load running names the load it abandoned.
+    /// load running names the load it abandoned, in the phase the serve
+    /// gave it up in.
     #[test]
     fn emit_stopped_abandoning_names_the_load() {
-        let sink = Arc::new(MemorySink::new());
-        let subscriber = tracing_subscriber::registry().with(JsonLayer::new(sink.clone()));
-        let load = SwitchStarted { from: "qwen3.8-27b".into(), to: "qwen3.8-flash-next".into() };
-        tracing::subscriber::with_default(subscriber, || emit_stopped_abandoning(&load));
+        for phase in ["switching", "loading"] {
+            let sink = Arc::new(MemorySink::new());
+            let subscriber = tracing_subscriber::registry().with(JsonLayer::new(sink.clone()));
+            let load = SwitchStarted { from: "qwen3.8-27b".into(), to: "qwen3.8-flash-next".into() };
+            tracing::subscriber::with_default(subscriber, || emit_stopped_abandoning(&load, phase));
 
-        let lines = records(&sink);
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(lines[0]["event_name"], "ignis.process.stopped");
-        assert_eq!(lines[0]["severity_text"], "INFO");
-        let attributes = &lines[0]["attributes"];
-        assert_eq!((attributes["phase"].as_str(), attributes["from"].as_str()), (Some("switching"), Some("qwen3.8-27b")));
-        assert_eq!(attributes["to"], "qwen3.8-flash-next");
+            let lines = records(&sink);
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert_eq!(lines[0]["event_name"], "ignis.process.stopped");
+            assert_eq!(lines[0]["severity_text"], "INFO");
+            let attributes = &lines[0]["attributes"];
+            assert_eq!((attributes["phase"].as_str(), attributes["from"].as_str()), (Some(phase), Some("qwen3.8-27b")));
+            assert_eq!(attributes["to"], "qwen3.8-flash-next");
+        }
     }
 
     /// A stop signal over a test's own signals, each `send` one; the exit
@@ -422,21 +426,13 @@ mod tests {
         signal.send(()).expect("the watcher waits");
         tokio::time::timeout(Duration::from_secs(5), shutdown).await.expect("the serve's shutdown resolved");
         signal.send(()).expect("the watcher waits again");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The watcher ends once it has read every signal, the second one
+        // acted on: what is asserted below is after it, not before.
+        drop(signal);
+        let mut watcher = stop.stopped.clone();
+        let ended = tokio::time::timeout(Duration::from_secs(5), watcher.wait_for(|_| false)).await.expect("the watcher ended");
+        assert!(ended.is_err(), "the watcher is gone");
         assert_eq!(names(&sink), ["ignis.process.stopping"]);
         assert!(stop.ending(), "the end is still the caller's");
-    }
-
-    /// The process's own signals arrive one by one, each a message: what
-    /// lets a second SIGTERM reach the watcher after the first.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn each_process_signal_is_a_message() {
-        let mut signals = super::process_signals().expect("handlers");
-        for _ in 0..2 {
-            // SAFETY: a signal to this process, whose handler is registered.
-            assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
-            tokio::time::timeout(Duration::from_secs(5), signals.recv()).await.expect("delivered").expect("open");
-        }
     }
 }

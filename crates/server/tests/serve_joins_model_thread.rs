@@ -110,7 +110,7 @@ async fn a_switch_still_loading_when_serving_ends_is_returned_not_waited_for() {
         .expect("serve returned while the switch was still loading its target")
         .expect("the serve task")
         .expect("serve");
-    assert_eq!(served, Served::LoadAbandoned(SwitchStarted { from: "mock-a".into(), to: "mock-b".into() }));
+    assert_eq!(served, Served::LoadAbandoned { load: SwitchStarted { from: "mock-a".into(), to: "mock-b".into() }, phase: "switching" });
     assert!(loader.loads().is_empty(), "the load was not waited for");
 
     // Released only so the test's runtime is not left joining a held thread.

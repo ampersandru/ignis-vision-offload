@@ -668,7 +668,7 @@ fn check_enhancer(server: &Server, next: &Config, patch: &Layer) -> Result<(), S
         (status = 401, description = "The server was started with an API key and the request carried no matching bearer token.", body = ApiError),
         (status = 409, description = "A model switch is already under way (`switch_in_progress`), or the loaded model was not loaded from an artifact and cannot be reloaded (`reload_unavailable`).", body = ApiError),
         (status = 501, description = "This server has no running configuration, or no model loader to reload with.", body = ApiError),
-        (status = 503, description = "The loaded model's first traversal has not run yet, or a model switch is under way.", body = ApiError),
+        (status = 503, description = "The loaded model's first traversal has not run yet, or a model switch is under way; or a reload was needed while the server is stopping (`server_stopping`, with `Retry-After`): none begins, since the process would end under it.", body = ApiError),
     ),
 )]
 pub(crate) async fn patch_config(State(server): State<Arc<Server>>, Json(body): Json<Value>) -> Response {

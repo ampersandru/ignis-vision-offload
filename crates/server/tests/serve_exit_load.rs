@@ -110,7 +110,7 @@ async fn a_request_waiting_on_an_implicit_switch_is_answered_and_the_load_abando
     let (status, retry_after, body) = tokio::time::timeout(BOUND, waiting).await.expect("answered at the stop").expect("task");
     assert_stopping(status, retry_after.as_deref(), &body);
     let served = tokio::time::timeout(BOUND, serve).await.expect("the serve returned with the load running").expect("task").expect("serve");
-    assert_eq!(served, Served::LoadAbandoned(SwitchStarted { from: "mock-a".into(), to: "mock-b".into() }));
+    assert_eq!(served, Served::LoadAbandoned { load: SwitchStarted { from: "mock-a".into(), to: "mock-b".into() }, phase: "switching" });
     assert!(loader.loads().is_empty(), "the load was not waited for");
     load.send(()).expect("the load is held");
 }
@@ -136,7 +136,8 @@ async fn a_request_waiting_on_the_load_after_an_idle_unload_is_answered_and_the_
     let (status, retry_after, body) = tokio::time::timeout(BOUND, waiting).await.expect("answered at the stop").expect("task");
     assert_stopping(status, retry_after.as_deref(), &body);
     let served = tokio::time::timeout(BOUND, serve).await.expect("the serve returned with the load running").expect("task").expect("serve");
-    assert_eq!(served, Served::LoadAbandoned(SwitchStarted { from: "mock-a".into(), to: "mock-a".into() }));
+    // Logged as `GET /v1/models` reports it: not a switch, a load.
+    assert_eq!(served, Served::LoadAbandoned { load: SwitchStarted { from: "mock-a".into(), to: "mock-a".into() }, phase: "loading" });
     load.send(()).expect("the load is held");
 }
 
@@ -152,16 +153,65 @@ async fn once_the_serve_stops_a_request_begins_no_switch() {
     let served = tokio::time::timeout(BOUND, serve).await.expect("the serve returned").expect("task").expect("serve");
     assert_eq!(served, Served::Drained, "nothing was loading");
 
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri("/v1/chat/completions")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(chat("mock-b").to_string()))
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
-    let (status, retry_after) = (response.status().as_u16(), response.headers().get("retry-after").map(|v| v.to_str().unwrap().to_owned()));
-    let body: Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let (status, retry_after, body) = post(&app, "/v1/chat/completions", chat("mock-b")).await;
     assert_stopping(status, retry_after.as_deref(), &body);
     assert!(loader.prepared_artifacts().is_empty(), "no switch began");
     assert_eq!(server.status().as_str(), "serving");
+}
+
+/// `POST` to `uri` on `app`, in process: the status, the `Retry-After`,
+/// the body.
+async fn post(app: &axum::Router, uri: &str, body: Value) -> (u16, Option<String>, Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let (status, retry_after) = (response.status().as_u16(), response.headers().get("retry-after").map(|v| v.to_str().unwrap().to_owned()));
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    (status, retry_after, body)
+}
+
+/// `POST /v1/models/switch` after the stop is refused `503
+/// server_stopping`, not accepted with a `202` for a switch the process
+/// would end under: nothing is prepared, and the model is as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn once_the_serve_stops_an_explicit_switch_is_refused_not_accepted() {
+    let loader = MockLoader::new();
+    let server = implicit_on(&loader, "mock-a", &["mock-a", "mock-b"]);
+    let app = server.app();
+    let (_, stop, serve) = serving(server.clone()).await;
+    stop.send(()).expect("serving");
+    let served = tokio::time::timeout(BOUND, serve).await.expect("the serve returned").expect("task").expect("serve");
+    assert_eq!(served, Served::Drained, "nothing was loading");
+
+    let switch = json!({ "artifact": source("mock-b").artifact, "model": "mock-b" });
+    let (status, retry_after, body) = post(&app, "/v1/models/switch", switch).await;
+    assert_stopping(status, retry_after.as_deref(), &body);
+    assert!(loader.prepared_artifacts().is_empty(), "no switch began");
+    assert_eq!(server.status().as_str(), "serving");
+}
+
+/// The model the idle clock unloaded is not loaded again by a request that
+/// reaches it after the stop: `503 server_stopping`, and no load begins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn once_the_serve_stops_a_request_loads_no_unloaded_model() {
+    let loader = MockLoader::new();
+    let server = Server::from_active(loader.model("mock-a"))
+        .with_switcher(Switcher::new(Arc::clone(&loader) as _, PATIENT))
+        .with_idle_unload(Duration::from_secs(1));
+    let app = server.app();
+    let (_, stop, serve) = serving(server.clone()).await;
+    let switcher = Arc::clone(server.switcher.as_ref().expect("a switcher"));
+    until("the model is unloaded", || server.status().as_str() == "unloaded" && switcher.running().is_none()).await;
+    stop.send(()).expect("serving");
+    let served = tokio::time::timeout(BOUND, serve).await.expect("the serve returned").expect("task").expect("serve");
+    assert_eq!(served, Served::Drained, "nothing was loading");
+
+    let (status, retry_after, body) = post(&app, "/v1/chat/completions", chat("mock-a")).await;
+    assert_stopping(status, retry_after.as_deref(), &body);
+    assert!(loader.prepared_artifacts().is_empty(), "no load began");
+    assert_eq!(server.status().as_str(), "unloaded");
 }

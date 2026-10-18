@@ -788,8 +788,8 @@ impl Server {
         // switch, a reload or a load still running is left as it is: the
         // model it tears down or publishes is the process end's to free, and
         // `active` may be a model it is tearing down.
-        if let Some(load) = model_switch::load_left_running(&self).await {
-            return serve_result.map(|()| Served::LoadAbandoned(load));
+        if let Some((load, phase)) = model_switch::load_left_running(&self).await {
+            return serve_result.map(|()| Served::LoadAbandoned { load, phase });
         }
         // Join before returning to `main`: `ignis.process.stopped` must stay
         // the last log line (spec §28), and that is emitted after this returns.
@@ -798,7 +798,11 @@ impl Server {
     }
 }
 
-/// How a serve ended ([`Server::serve_on_until`]).
+/// How a serve ended ([`Server::serve_on_until`]). A caller must look:
+/// returning from `main` on [`Served::LoadAbandoned`] would wait for the
+/// load (the runtime's drop joins its blocking thread) and leave the model
+/// it publishes un-joined.
+#[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Served {
     /// HTTP drained, and the loaded model shut down with its thread joined:
@@ -808,5 +812,11 @@ pub enum Served {
     /// no cancel, and it is not waited for (GitHub #329). Nothing was torn
     /// down: the caller ends the process now ([`shutdown::exit_now`]), which
     /// frees the GPU, and logs nothing that waits for the load.
-    LoadAbandoned(model_switch::SwitchStarted),
+    LoadAbandoned {
+        /// The ids it moves between.
+        load: model_switch::SwitchStarted,
+        /// What `GET /v1/models` reports it as: `loading` for a load out of
+        /// `unloaded`, else `switching`.
+        phase: &'static str,
+    },
 }

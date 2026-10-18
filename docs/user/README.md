@@ -59,8 +59,11 @@ which frees the GPU, its last line `ignis.process.stopped` naming the
 `phase` it was in; once it serves it drains in-flight requests and unloads
 the model first. A load while serving (a switch, a reload, the load after an
 idle unload) is not waited for either: a request waiting for it is answered
-`503 server_stopping`, and once the drain is over the process exits under the
-load, its last line naming `phase: switching`. A second signal while the
+`503 server_stopping`, and so is one that would begin a load (`POST
+/v1/models/switch`, a `PATCH /v1/config` reload, a request naming another
+model or needing the unloaded one); once the drain is over the process exits
+under the load, its last line naming the `phase` `GET /v1/models` reports it
+in (`switching`, or `loading` after an idle unload). A second signal while the
 shutdown runs ends the process at once (`phase: shutting_down`). Its probes
 are [`/health` and `/ready`](#the-api).
 

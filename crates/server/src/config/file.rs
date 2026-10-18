@@ -170,12 +170,50 @@ impl Files for RealFiles {
     }
 
     fn write(&self, path: &Path, contents: &str) -> std::io::Result<()> {
-        std::fs::write(path, contents)
+        replace(path, contents)
     }
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
     }
+}
+
+/// Write `contents` to `path` whole or not at all: into a new file beside
+/// it, renamed over it. A config write can be the last thing a process does
+/// — a reload that lands as the serve stops, and the process ends with
+/// `_exit` (GitHub #329) — and `std::fs::write` cut there leaves the file
+/// truncated. A rename within one directory is atomic, so a reader, or the
+/// next start, finds the old text or the new one, never part of either.
+/// The file keeps its permissions (a config file may hold the API key), a
+/// read-only one is refused as a write to it is, and a symlink is written
+/// through, not replaced. Not synced: what cuts the write is the process
+/// ending, which the page cache outlives.
+fn replace(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Two writes may overlap (a live patch's, a reload's): each its own file.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let original = std::fs::metadata(&target).ok();
+    if original.as_ref().is_some_and(|meta| meta.permissions().readonly()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only"));
+    }
+    let dir = target.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dir.join(format!(".{name}.{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        if let Some(original) = &original {
+            file.set_permissions(original.permissions())?;
+        }
+        file.write_all(contents.as_bytes())?;
+        drop(file);
+        std::fs::rename(&temp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// No filesystem at all: nothing exists, nothing can be read or written.
@@ -748,5 +786,91 @@ mod tests {
         let user = if cfg!(windows) { "C:/Users/u/AppData/Roaming" } else { "/home/u/.xdg" };
         assert_eq!(candidates[2], PathBuf::from(user).join("ignis").join("config.yaml"));
         assert_eq!(discovery_candidates(&|_: &str| None).len(), 2, "no user directory known, none looked in");
+    }
+
+    /// A directory of its own for one test, under the system temp directory.
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ignis-config-file-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// GitHub #329: the config file is replaced whole, never truncated
+    /// first, so a process ended mid-write (`_exit`, as the serve's stop
+    /// ends one under a reload) leaves the old text or the new one. A reader
+    /// beside a run of rewrites only ever finds one whole text, and nothing
+    /// is left beside the file.
+    #[test]
+    fn a_write_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let dir = scratch("whole");
+        let path = dir.join("ignis.config.yaml");
+        let texts = Arc::new(["a", "b"].map(|line| format!("# {line}\n").repeat(1 << 18)));
+        RealFiles.write(&path, &texts[0]).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let reader = std::thread::spawn({
+            let (path, texts, done) = (path.clone(), Arc::clone(&texts), Arc::clone(&done));
+            move || {
+                let mut whole = 0;
+                while !done.load(Ordering::SeqCst) {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        assert!(texts.contains(&text), "a read found {} bytes of neither text", text.len());
+                        whole += 1;
+                    }
+                }
+                whole
+            }
+        });
+        for round in 0..20 {
+            RealFiles.write(&path, &texts[round % 2]).unwrap();
+        }
+        done.store(true, Ordering::SeqCst);
+        let whole = reader.join().expect("every read found a whole text");
+        assert!(whole > 0, "the reader read");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), texts[1]);
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(left, ["ignis.config.yaml"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read-only config file is refused, as a write into it was, and left
+    /// as it was.
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn a_read_only_file_is_refused_and_left_as_it_was() {
+        let dir = scratch("read-only");
+        let path = dir.join("ignis.config.yaml");
+        std::fs::write(&path, "server: {}\n").unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        let refused = RealFiles.write(&path, "changed\n").map_err(|e| e.kind());
+        let kept = std::fs::read_to_string(&path).unwrap();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert_eq!(refused, Err(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(kept, "server: {}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The file keeps its mode (a config file may hold the API key), and a
+    /// link to it stays a link, its target written.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_keeps_the_files_mode_and_writes_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("mode");
+        let path = dir.join("ignis.config.yaml");
+        std::fs::write(&path, "server: {}\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("linked.yaml");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        RealFiles.write(&link, "changed\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -161,7 +161,8 @@ Where the implementation chose what the sections above leave open.
 - **Wire.** A failed load out of `unloaded` answers its waiters `503
   model_load_failed` with the reason, no `Retry-After`. Once the serve
   stops (GitHub #329) the waiters get `503 server_stopping` with
-  `Retry-After`, and the load is abandoned with the process. `GET /v1/models`
+  `Retry-After`, and the load is abandoned with the process; a request that
+  would begin a load then gets the same, and none begins. `GET /v1/models`
   carries `switching: {from, to}` while `loading` too, naming what loads.
   The catalog lists no row as loaded while unloaded or loading, and the
   unloaded model as switchable (the Server view's "Load").

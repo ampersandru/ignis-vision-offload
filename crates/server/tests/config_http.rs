@@ -251,6 +251,34 @@ async fn a_failed_reload_leaves_the_model_the_config_and_the_file_as_they_were()
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "a failed reload writes nothing");
 }
 
+/// GitHub #329: once the serve stops, a patch that needs a reload is
+/// refused `503 server_stopping`, not accepted with a `202` for a reload the
+/// process would end under: nothing is prepared, applied or written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn once_the_serve_stops_a_patch_that_needs_a_reload_is_refused() {
+    let path = config_file("stopping", "server:\n  request_timeout: 30\n");
+    let loader = MockLoader::new();
+    let server = server_on(&loader, started(&["--config", path.to_str().unwrap()]));
+    let app = server.app();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(server.clone().serve_on_until(listener, None, async {
+        let _ = stopped.await;
+    }));
+    stop.send(()).unwrap();
+    let served = tokio::time::timeout(PATIENT, serving).await.expect("the serve returned").unwrap().expect("serve");
+    assert_eq!(served, ignis_server::Served::Drained);
+
+    let body = json!({ "server": { "request_timeout": 95 }, "reuse": { "kv_host_pool_bytes": "3G" } });
+    let (status, headers, refused) = send_with_headers(&app, Method::PATCH, "/v1/config", Some(body)).await;
+    assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("server_stopping")), "{refused}");
+    assert_eq!(headers.get("retry-after").map(|value| value.to_str().unwrap()), Some("5"));
+    assert!(loader.prepared_options().is_empty(), "no reload began");
+    assert_eq!(server.live().request_timeout, Duration::from_secs(30), "nothing of the patch applied");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "nor written");
+}
+
 /// Spec config-v2/02 §`PATCH` step 6: with no config file in use the change
 /// still applies, and the answer says why it was not written down.
 #[tokio::test]

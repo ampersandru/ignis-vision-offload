@@ -1950,7 +1950,7 @@ struct SwitchAccepted {
         (status = 404, description = "`model` was sent alone and is not a known model or a catalog entry on disk (`model_not_found`); for a catalog entry not yet fetched the message names the `model download` command.", body = ApiError),
         (status = 409, description = "A switch is already under way (`switch_in_progress`): switches are not queued.", body = ApiError),
         (status = 501, description = "This server was built without a model loader (`switch_unavailable`).", body = ApiError),
-        (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`).", body = ApiError),
+        (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`); or the server is stopping (`server_stopping`, with `Retry-After`): no switch begins, since the process would end under it.", body = ApiError),
     ),
 )]
 async fn switch_model(State(server): State<Arc<Server>>, Json(req): Json<SwitchRequest>) -> Response {
@@ -2047,6 +2047,8 @@ pub(crate) fn switch_refused(refusal: crate::model_switch::SwitchRefusal) -> Res
             "reload_unavailable",
             "the loaded model was not loaded from an artifact (the placeholder start), so it cannot be reloaded with a changed configuration",
         ),
+        // GitHub #329: a switch begun now would be abandoned with the process.
+        crate::model_switch::SwitchRefusal::Stopping => stopping("no switch or reload begins while the server stops".to_owned()),
     }
 }
 

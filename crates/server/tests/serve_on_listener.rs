@@ -59,7 +59,7 @@ async fn a_server_serves_on_a_listener_bound_before_it_and_stops_on_request() {
     assert!(served.contains("test-model"), "{served}");
 
     stop.send(()).expect("server still running");
-    serving.await.expect("join").expect("graceful stop");
+    assert_eq!(serving.await.expect("join").expect("graceful stop"), ignis_server::Served::Drained);
 }
 
 /// GitHub #89 / ADR 0017: with `--server-metrics`, the exposition is served on its
@@ -89,7 +89,7 @@ async fn metrics_are_served_on_their_own_listener_and_stop_with_the_api() {
     assert!(served.starts_with("HTTP/1.1 200"), "{served}");
 
     stop.send(()).expect("server still running");
-    serving.await.expect("join").expect("graceful stop");
+    assert_eq!(serving.await.expect("join").expect("graceful stop"), ignis_server::Served::Drained);
     assert!(
         tokio::net::TcpStream::connect(metrics_addr).await.is_err(),
         "the metrics listener closed with the API"

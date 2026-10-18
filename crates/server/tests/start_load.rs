@@ -109,7 +109,8 @@ async fn the_server_takes_the_listener_over_on_the_same_address() {
     assert!(models.starts_with("HTTP/1.1 200") && models.contains("test-model"), "{models}");
 
     stop.send(()).expect("serving");
-    tokio::time::timeout(BOUND, serving).await.expect("serve returned").expect("join").expect("serve");
+    let served = tokio::time::timeout(BOUND, serving).await.expect("serve returned").expect("join").expect("serve");
+    assert_eq!(served, ignis_server::Served::Drained);
 }
 
 #[cfg(unix)]

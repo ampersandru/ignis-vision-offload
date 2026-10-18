@@ -417,10 +417,14 @@ impl Switcher {
 
     /// The serve has begun to stop (GitHub #329): a request waiting for a
     /// switch, a reload or a load is answered `503 server_stopping` now, and
-    /// none begins one any more. A load has no cancel, and the process does
-    /// not outlive it ([`crate::Server::serve_on_until`]): waiting for it
-    /// would hold the serve's drain for as long as a cold load takes.
+    /// none begins one any more ([`SwitchRefusal::Stopping`]). A load has no
+    /// cancel, and the process does not outlive it
+    /// ([`crate::Server::serve_on_until`]): waiting for it would hold the
+    /// serve's drain for as long as a cold load takes. Set under the slot's
+    /// lock, which every begin checks it under: a run that took the slot
+    /// before this is the serve's to abandon, and none takes it after.
     pub(crate) fn stop_waiting(&self) {
+        let _slot = self.running.lock().expect("switch lock");
         self.stopping.send_replace(true);
     }
 
@@ -437,7 +441,7 @@ impl Switcher {
     }
 
     /// Whether the serve has begun to stop ([`Switcher::stop_waiting`]).
-    fn stopping(&self) -> bool {
+    pub fn stopping(&self) -> bool {
         *self.stopping.borrow()
     }
 
@@ -712,6 +716,10 @@ pub enum SwitchRefusal {
     /// no model a visit could leave and come back to. Never answered: the
     /// request goes on without it.
     NotServing,
+    /// The serve has begun to stop ([`Switcher::stop_waiting`], GitHub
+    /// #329): no switch, reload, load or visit begins, since the process
+    /// would end under it. `503 server_stopping`.
+    Stopping,
 }
 
 /// How a switch ended.
@@ -952,6 +960,10 @@ fn begin_run(
     let on_demand = matches!(asked, Run::OnDemand);
     let (started, begun) = {
         let mut running = switcher.running.lock().expect("switch lock");
+        // First, whatever holds the slot: after the stop one answer only.
+        if switcher.stopping() {
+            return Err(SwitchRefusal::Stopping);
+        }
         match running.as_ref() {
             Some(Slot::Switch(started)) => return Err(SwitchRefusal::InProgress(started.clone())),
             Some(Slot::Unload { model }) => return Err(SwitchRefusal::Unloading { model: model.clone() }),
@@ -1177,9 +1189,6 @@ pub async fn implicit_switch_telling(server: &Server, requested: Option<&str>, s
         return Ok(());
     }
     let stopping = || Err(ImplicitRefusal::Stopping { to: requested.to_owned() });
-    if switcher.stopping() {
-        return stopping();
-    }
     let target = ModelSource { artifact: artifact.clone(), model: requested.to_owned() };
     let task = match begin_with(server, target, Run::Switch, steps) {
         Ok((started, task)) => {
@@ -1192,6 +1201,7 @@ pub async fn implicit_switch_telling(server: &Server, requested: Option<&str>, s
             task
         }
         Err(SwitchRefusal::InProgress(running)) => return Err(ImplicitRefusal::Switching(running)),
+        Err(SwitchRefusal::Stopping) => return stopping(),
         // None reaches a handler: there is a switcher, the gate holds every
         // request until the warm-up has run, only a reload refuses a model
         // with no artifact, and no unload begins while this request is
@@ -1268,9 +1278,6 @@ pub async fn ensure_loaded(server: &Server, requested: Option<&str>) -> Result<(
             ModelStatus::Unloaded => true,
             _ => return Ok(()),
         };
-        if switcher.stopping() {
-            return Err(LoadRefusal::Stopping);
-        }
         if begin {
             let Some(target) = load_target(server, &switcher, requested) else {
                 // Nothing names an artifact to load (never so after an
@@ -1282,6 +1289,7 @@ pub async fn ensure_loaded(server: &Server, requested: Option<&str>) -> Result<(
                 // The slot is an unload's still tearing down, or another
                 // load or a switch got there first: its end wakes this.
                 Err(SwitchRefusal::InProgress(_) | SwitchRefusal::Unloading { .. } | SwitchRefusal::NotUnloaded) => {}
+                Err(SwitchRefusal::Stopping) => return Err(LoadRefusal::Stopping),
                 Err(SwitchRefusal::Unavailable | SwitchRefusal::WarmingUp | SwitchRefusal::NotReloadable | SwitchRefusal::NotServing) => {
                     return Ok(())
                 }
@@ -1703,15 +1711,25 @@ pub(crate) async fn shut_down(model: &Arc<ActiveModel>) {
 /// drain. An unload's teardown is waited for, its line logged: a bounded
 /// join, the one the exit itself would run. A load is not (GitHub #329): it
 /// has no cancel, a cold one outlasts a pod's grace period, and the process
-/// ending under it is what frees the card. A server without a switcher has
+/// ending under it is what frees the card. Nor is a switch's own teardown of
+/// the model it replaces, which is a step of the same run: the process ends
+/// under it too (`_exit` on unix; on Windows `exit_now` is
+/// `std::process::exit`, as it always was). A server without a switcher has
 /// no slot.
-pub(crate) async fn load_left_running(server: &Server) -> Option<SwitchStarted> {
+///
+/// With the run, the phase `GET /v1/models` reports it in: `loading` for a
+/// load out of `unloaded`, `switching` otherwise — also while a failed
+/// switch loads the old model again, which it reports as `failed`.
+pub(crate) async fn load_left_running(server: &Server) -> Option<(SwitchStarted, &'static str)> {
     let switcher = server.switcher.as_ref()?;
     let mut changed = server.status.subscribe();
     loop {
         match switcher.running() {
             None => return None,
-            Some(Slot::Switch(load)) => return Some(load),
+            Some(Slot::Switch(load)) => {
+                let phase = if matches!(*server.status(), ModelStatus::Loading) { "loading" } else { "switching" };
+                return Some((load, phase));
+            }
             Some(Slot::Unload { .. }) => {
                 if changed.changed().await.is_err() {
                     return None;
