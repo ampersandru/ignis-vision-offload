@@ -4,7 +4,7 @@
 //! verify round's marginal column cost c(w) with a fake drafter.
 //!
 //! ```text
-//! flash_next_mtp_bench off|mtp|columns [--kv-format hq-e8-2b|bf16] [--draft-tokens k] [--draft-rows r] [--sets n] [--expert-cache-gb g]
+//! flash_next_mtp_bench off|mtp|columns [--kv-format hq-e8-2b|bf16] [--draft-tokens k] [--draft-rows r] [--sets n] [--expert-cache-gb g] [--lanes n]
 //! ```
 //!
 //! - **off**: today's one-token rounds (no speculation bound).
@@ -14,6 +14,9 @@
 //!   oracle drafter proposes the lane's own spec-off text, so every round
 //!   verifies k + 1 columns and accepts them all: the round time per column
 //!   against `off`'s is c(w).
+//! - `--lanes n` (GitHub #329 item 5): a load of n decode lanes, and sets of
+//!   four lanes and of n in place of the sets below -- code and prose windows
+//!   of 1,536 tokens, the aggregate a wider `--draft-rows` is for.
 //!
 //! Prompts: the converter's reference windows (the allowlisted corpus, spec
 //! 01) -- two code and two prose windows of 1,536 tokens, and the code and
@@ -129,9 +132,11 @@ fn main() -> Result<(), String> {
         "columns" => Some(FlashNextSpeculation::new(SpeculativeBackend::VerifyOnly, draft_tokens, draft_rows)?),
         other => return Err(format!("unknown mode {other}")),
     };
+    let lanes = flag("--lanes").map(|v| v.parse::<u32>().map_err(|e| e.to_string())).transpose()?;
     let options = EngineOptions {
         max_context_tokens: 32 * 1024,
         kv_format,
+        decode_lanes: lanes.unwrap_or(EngineOptions::default().decode_lanes),
         expert_cache_bytes: flag("--expert-cache-gb")
             .and_then(|v| v.parse::<f64>().ok())
             .map_or(EXPERT_CACHE_BYTES, |gb| (gb * 1e9) as u64),
@@ -164,6 +169,19 @@ fn main() -> Result<(), String> {
     }
     if let Some(n) = flag("--sets").and_then(|v| v.parse::<usize>().ok()) {
         sets.truncate(n);
+    }
+    if let Some(n) = lanes {
+        let mut wide = Vec::new();
+        for window in [0, 2, 32, 8, 4, 6, 10, 12].into_iter().take(n as usize) {
+            wide.push(prompt("test2048", window, 1536)?);
+        }
+        sets = [4, wide.len()]
+            .into_iter()
+            .filter(|&count| count <= wide.len())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|count| (format!("{count} lanes"), wide[..count].to_vec()))
+            .collect();
     }
     for (name, prompts) in &sets {
         // The oracle drafter needs the spec-off text: a draft-free verify run of the same load.

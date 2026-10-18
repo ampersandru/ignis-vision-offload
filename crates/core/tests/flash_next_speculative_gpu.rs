@@ -112,6 +112,13 @@ fn reference(set: &str, len: usize) -> Option<Vec<u32>> {
     Some(tokens.get(..len).expect("the reference set holds the prompt").to_vec())
 }
 
+/// `len` tokens of window `window` of the test2048 reference set (windows
+/// 2,048 apart), or None with a skip.
+fn test2048_window(window: usize, len: usize) -> Option<Vec<u32>> {
+    let set = reference("test2048", (window + 1) * 2048)?;
+    Some(set[window * 2048..window * 2048 + len].to_vec())
+}
+
 /// The converter's G1 prompts (real text), or None with a skip.
 fn g1_prompts() -> Option<Vec<Vec<u32>>> {
     let refs = model_dir().join("references").join("g1_flash_next.json");
@@ -459,4 +466,138 @@ fn the_heads_drafts_never_read_a_rejected_column() {
             );
         }
     }
+}
+
+/// `on` against `off` lane by lane under `assert_near_tie`'s rule, returning
+/// a line for every divergence the rule refuses instead of panicking.
+fn near_tie_exceedances(engine: &mut FlashNextEngine, prompts: &[Vec<u32>], off: &[Vec<u32>], on: &[Vec<u32>], what: &str) -> Vec<String> {
+    let mut refused = Vec::new();
+    for (lane, ((prompt, a), b)) in prompts.iter().zip(off).zip(on).enumerate() {
+        let Some(at) = a.iter().zip(b).position(|(x, y)| x != y) else { continue };
+        let mut text = prompt.clone();
+        text.extend_from_slice(&a[..at]);
+        let logits = engine.last_logits(&text).unwrap_or_else(|e| panic!("near-tie probe: {e}"));
+        let (top, first, _) = top_two(&logits);
+        let gap = logits[a[at] as usize] - logits[b[at] as usize];
+        let line = format!(
+            "{what} lane {lane}: diverges at {at}: off {} on {} (prefill pick {top}), prefill gap off - on = {gap} (ulp {})",
+            a[at],
+            b[at],
+            bf16_ulp(first)
+        );
+        println!("{line}");
+        if gap > bf16_ulp(first) {
+            refused.push(line);
+        }
+    }
+    refused
+}
+
+/// GitHub #329 item 5: a row budget past the default's 8. At 16 rows and 3
+/// draft tokens four lanes verify 3 drafts a round, five 2 and eight 1 --
+/// rounds of 16, 15 and 16 rows, past the MoE decode route's one launch, so
+/// their MoE runs in launches of 8 rows (`fn_moe_experts_decode`) and their
+/// linears, mixes and shared expert on their tensor-core routes.
+///
+/// The wide shapes are consistent with themselves: reject commits none's
+/// text and leaves none's state bit for bit (a column's computation does not
+/// depend on its round's other columns), and so does the oracle, which
+/// commits every column of every lane each round, in BF16 KV (up to
+/// near-ties under hq-e8-2b). The head drafts and is accepted. Its text is
+/// held against spec-off (one-token rounds) by the near-tie rule; not
+/// against none: its lanes accept different counts, so they finish in
+/// different rounds and the last ones run their last rounds narrower --
+/// another round shape than none's, which runs every round at the full
+/// width (the same holds at the default's 8 rows). Every cell runs; the
+/// divergences the rule refuses are listed together at the end.
+///
+/// Measured on the RTX 5090 (2026-10-18, finding
+/// `2026-10-18-flash-next-verify-rows-past-8.md`): past 8 rows the
+/// tensor-core routes move the verify pass's logits further from spec-off
+/// than the decode routes do, and the rule refuses a divergence at eight
+/// lanes -- a budget past 8 is not held lossless yet.
+#[test]
+#[ignore = "GPU profile only: the real Flash-Next artifact and its MTP companion"]
+fn a_sixteen_row_budget_keeps_the_text_and_the_state_from_four_to_eight_lanes() {
+    const ROWS: u32 = 16;
+    let Some(mut prompts) = g1_prompts() else { return };
+    for window in [3, 9, 17, 33] {
+        let Some(prompt) = test2048_window(window, 40) else { return };
+        prompts.push(prompt);
+    }
+    assert_eq!(prompts.len(), 8, "eight prompts, one a lane");
+    let mut refused = Vec::new();
+    for kv_format in [KvFormat::Bf16, KvFormat::HqE8_2b] {
+        let dir = model_dir();
+        if !dir.join(ARTIFACT_FILE_NAME).exists() || !ignis_core::flash_next_mtp::companion_path(&dir).exists() {
+            gpu_profile::skip_or_fail(&format!("no Flash-Next artifact or MTP companion in {}", dir.display()));
+            return;
+        }
+        let speculation = FlashNextSpeculation::new(SpeculativeBackend::Mtp, DRAFT_TOKENS, ROWS).expect("valid");
+        let options = EngineOptions {
+            max_context_tokens: 8192,
+            kv_format,
+            decode_lanes: 8,
+            speculation: Some(speculation),
+            ..EngineOptions::default()
+        };
+        let mut engine = match FlashNextEngine::load(&dir, options) {
+            Ok(engine) => engine,
+            Err(e) => {
+                gpu_profile::skip_or_fail(&format!("load the Flash-Next engine at {ROWS} rows: {e}"));
+                return;
+            }
+        };
+        assert_eq!((1..=8).map(|w| speculation.window(w)).collect::<Vec<_>>(), [3, 3, 3, 3, 2, 1, 1, 1]);
+        assert_eq!(
+            engine.verify_graphs_ready(),
+            Ok(0xff),
+            "{kv_format:?}: a verify graph did not capture at {ROWS} rows: {:?}",
+            engine.graph_error()
+        );
+        for lanes in [4usize, 5, 8] {
+            let set = &prompts[..lanes];
+            let what = format!("{kv_format:?} {lanes} lanes at {ROWS} rows");
+            let none = run(&engine, set, Some(&mut |_, _, _| Vec::new()));
+            let reject = run(&engine, set, Some(&mut |_, _, w| vec![REJECTED; w as usize]));
+            assert_eq!(reject.tokens, none.tokens, "{what}: the reject drafter committed other text than none");
+            for (lane, (p, q)) in reject.probes.iter().zip(&none.probes).enumerate() {
+                assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the reject drafter's rounds is not none's");
+            }
+            let drafted: u32 = reject.rounds.iter().flatten().map(|l| l.extent).sum();
+            assert!(drafted > 0, "{what}: the reject drafter's drafts were never verified");
+
+            let reference = none.tokens.clone();
+            let oracle = run(
+                &engine,
+                set,
+                Some(&mut |lane, emitted, w| {
+                    let next = emitted.len() + 1;
+                    reference[lane][next.min(TOKENS)..(next + w as usize).min(TOKENS)].to_vec()
+                }),
+            );
+            let accepted: u32 = oracle.rounds.iter().flatten().map(|l| l.committed - 1).sum();
+            let proposed: u32 = oracle.rounds.iter().flatten().map(|l| l.extent).sum();
+            println!("{what}: oracle {} rounds, {accepted}/{proposed} drafts accepted", oracle.rounds.len());
+            if kv_format == KvFormat::Bf16 {
+                assert_eq!(accepted, proposed, "{what}: an oracle draft was rejected");
+                assert_eq!(oracle.tokens, none.tokens, "{what}: the oracle committed other text than none");
+                for (lane, (p, q)) in oracle.probes.iter().zip(&none.probes).enumerate() {
+                    assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the oracle's rounds is not none's");
+                }
+            } else {
+                refused.extend(near_tie_exceedances(&mut engine, set, &none.tokens, &oracle.tokens, &format!("{what} oracle vs none")));
+            }
+
+            let head = run(&engine, set, None);
+            let alpha = acceptance(&head.rounds);
+            let tokens: u32 = head.rounds.iter().flatten().map(|l| l.committed).sum();
+            println!("{what}: head {} rounds for {tokens} tokens, acceptance per position {alpha:?}", head.rounds.len());
+            assert!(alpha[0].0 > 0, "{what}: the head's first drafts were never accepted: {alpha:?}");
+            let off = engine.generate(set, TOKENS).unwrap_or_else(|e| panic!("{what}: spec-off generate: {e}"));
+            refused.extend(near_tie_exceedances(&mut engine, set, &off, &head.tokens, &format!("{what} spec-on vs spec-off")));
+        }
+        drop(engine);
+    }
+    assert!(refused.is_empty(), "{} divergence(s) past the near-tie rule:\n{}", refused.len(), refused.join("\n"));
 }

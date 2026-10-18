@@ -620,9 +620,17 @@ Where the build departs from the text above:
 
 - **k adapts to a row budget by width, not per round.** A round of w lanes
   verifies `k = min(draft_tokens, budget / w - 1)` drafts per lane
-  (`draft_row_budget`, 0 = the decode route's 8; `flash_next_window`); a
+  (`draft_row_budget`, 0 = the default's 8; `flash_next_window`); a
   width whose k is 0 runs the one-token round. One pass graph and one commit
-  graph per width. `--spec mtp` defaults to 2 draft tokens (phase A's
+  graph per width. Since GitHub #329 item 5 the budget goes up to 32
+  (`verify::kMaxRows`): past 8 a round's MoE runs the decode route in
+  launches of 8 rows (`fn_moe_experts_decode`, each row the bits of its own
+  launch), its linears and mixes their tensor-core routes, and the head's
+  logits and the QSA listed hq rows are sized by the load's widest round;
+  the GDN replay record bounds lanes and columns, not rows. Past 8 rows the
+  round agrees with itself bit for bit but drifts from spec-off past the
+  near-tie rule (finding `2026-10-18-flash-next-verify-rows-past-8.md`): a
+  budget past 8 is not held lossless yet. `--spec mtp` defaults to 2 draft tokens (phase A's
   projection), `--draft-tokens` forces at most k, `--draft-rows` names the
   budget, `--spec off` turns it off. MTP is off unless `--spec mtp` names it
   (owner, 2026-10-07), and a named head without its companion refuses the
