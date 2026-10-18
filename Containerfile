@@ -12,8 +12,9 @@
 # come from at run time. The binaries link neither (crates/artifact/build.rs,
 # GitHub #329) -- the CUDA runtime loads the driver, NVML is opened when a
 # load reads it -- so the image also runs where there is no driver at all:
-# `ignis-server model download` on a CPU node, or the CPU mock below. A GPU
-# load there is refused naming the missing driver.
+# `ignis-server model download` on a CPU node, or the CPU mock below (with
+# `--download-enabled false`, or the start fetches the configured model
+# first). A GPU load there is refused naming the missing driver.
 #
 # The kernel leaf is compiled for SM120a (RTX 5090 / Blackwell consumer),
 # the one architecture kernel/CMakeLists.txt targets. The image will not run
