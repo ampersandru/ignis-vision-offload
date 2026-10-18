@@ -640,7 +640,7 @@ slots, the 2 GiB KV-RAM arena and the 4 GiB margin the load refuses to dip into
 `kv_pool_policy: resident`) there are no pinned experts at all: every record is
 read from the artifact straight into its VRAM slot, a layer at a time, and no
 step ever copies an expert in, so the plan's `expert_pool` line is 0. The
-layer buffers the load reads them through are a line of their own,
+layer buffers the load reads the experts through are a line of their own,
 `load_staging` (~4.7 GB): they are freed before the n-gram hot rows are read,
 so the plan charges them only while the experts load, and holds at its peak
 the larger of that phase and the lines kept while serving. The same load then
