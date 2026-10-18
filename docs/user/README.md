@@ -782,7 +782,11 @@ mostly 4-bit, and pinning them takes most of those classes' LRU. The
 records the pin keeps reach VRAM
 through a few buffers held while the experts load (the plan's `load_staging`
 line, ~0.3-0.9 GB). The load logs `ignis.runtime.flash_next_pinned_experts`
-with what it pinned. A card that holds every expert keeps none in RAM already
+with what it pinned; the Monitor's expert slots and `ignis_expert_cache_slots`
+count the LRU's slots only. A pin the cache cannot hold while every K class
+keeps the slots of the widest decode step (a verify round's rows under MTP)
+is refused at start, naming the most it can pin and where the value was set:
+the flag, the environment, a config file or the profile. A card that holds every expert keeps none in RAM already
 and ignores the field; the 27B refuses it.
 
 A host with RAM to spare can go the other way: `--ngram-hot-bytes auto`

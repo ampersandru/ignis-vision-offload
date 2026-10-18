@@ -4,7 +4,7 @@
 - Status: current
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
-- Scope: core / Flash-Next expert residency with a pinned hot set (`vram.pinned_expert_bytes`, 1, 2 and 4 GiB): the host plan's expert pool, the process's RAM, the expert cache's decode hit rate, decode tok/s and load time on the rtx5090 profile
+- Scope: core / Flash-Next expert residency with a pinned hot set (`vram.pinned_expert_bytes`, 1, 2 and 4 GiB): the host plan's expert pool, the process's RAM, the expert cache's decode hit rate, decode tok/s and load time on the rtx5090 profile, and one load with MTP on
 - Related: [GitHub #329](https://github.com/gpillon/ignis/issues/329) (item 12),
   [ADR 0055](../adr/0055-a-pinned-hot-set-is-opt-in.md),
   [A partially exclusive expert pool on the 5090](2026-10-18-partial-exclusive-expert-pool.md),
@@ -128,6 +128,22 @@ Per launch at three lanes: `0` 140.04 / 139.26 / 140.04, `2G` 138.97 /
 equal the baseline binary's. The residency phase took 17.4-17.5 s at `0`,
 19.7-19.9 s at `2G` and 18.9-19.1 s at `4G`.
 
+**MTP on (second review, 2026-10-18 18:26), acceptance only.** One launch
+of the review's binary, the profile's `2G`, the same lean host lines plus
+`--spec-backend mtp --spec-draft-tokens 3`; one unmeasured three-lane round,
+then one rep at one lane and one at three, 320 greedy tokens. That binary's
+split gives every class the widest decode step's slots first, here an 8-row
+verify round's 208 where the lanes gave 78 (with MTP off it splits as
+before, so the figures above stand). The VRAM plan gave the cache
+16,477,948,752 B (the MTP head's lines come out of it); the load was
+accepted and pinned 912 experts, 2,149,367,808 B, the gate/up K4 LRU keeping
+352 slots and the down K4 484, and the `expert_pool` line was
+35,646,078,976 B as with MTP off. All 8 requests ended `length` (the
+measured ones at 320 tokens), with no `ignis.runtime.leaf_error` and no
+ERROR line. Log and JSON: `.scratch/pin-review2/R2-mtp-pin2G.{log,json}` in
+the `expert-pin` worktree, copied to
+`.scratch/orchestra-2026-10-18/expert-pin/review2-mtp/` in the main checkout.
+
 ## Finding
 
 **Observed.** The pin gives back exactly its bytes: the plan's expert pool
@@ -191,7 +207,8 @@ curve that rises steeply here (the study's demand +1.0-1.6% at 2 GB, +8-10% at
 - The hit rates are this workload's, higher than the replay's teacher-forced
   chunks; the deltas are what compares.
 - Only 1, 2 and 4 GiB were measured, at one cache size (18.12-18.19 GB), and
-  with MTP off. The two sessions ran about two hours apart on two binaries; their
+  with MTP off; with MTP on one `2G` load was checked (accepted, every request
+  `length`), not timed. The two sessions ran about two hours apart on two binaries; their
   `0` rows agree within 0.05%, so the rows compare within a session.
 
 ## Follow-ups

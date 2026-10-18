@@ -35,8 +35,12 @@ profile sets `2G`.**
   rest. Each class keeps for its LRU the slots of the widest decode step the
   load runs: the class minimum of its decode rows, which under MTP is a
   verify round's lanes × (drafts + 1), up to the row budget, not the lanes
-  (review 2026-10-18). A budget the walk cannot reach while keeping them is
-  refused at plan time, before anything loads, naming the most it can pin.
+  (review 2026-10-18). The split gives every class that same minimum first,
+  the plan's split and the load's alike: one rule, so no class is split
+  below it, pinned or not (second review 2026-10-18; see Consequences). A
+  budget the walk cannot reach while keeping them is refused at plan time,
+  before anything loads, naming the most it can pin and where the budget was
+  set: the flag, the environment variable, the file key or the profile.
 - **One computation.** The server's plan (the host pool's line, the event)
   and the load build the pools and the pinned set from the same call with
   the same options (`flash_next::residency_pools`).
@@ -58,8 +62,13 @@ profile sets `2G`.**
   `ignis.runtime.flash_next_pinned_experts` (bytes, experts, per class, the
   LRU's slots left). `ignis_expert_cache_slots{state="capacity"}` counts the
   LRU's slots only; the pinned slots are in that event, not in a series of
-  their own. The family's HELP text says so: that line is the one change to
-  the default `/metrics` text, whose series and values are unchanged.
+  their own. The family's HELP text says so, and the Monitor's expert table
+  heads its column "LRU slots in use". At a pin of 0 (`--profile none`, or
+  the field set to 0) the HELP line is the one change to the `/metrics` text,
+  whose series and values are unchanged. Under the `rtx5090` profile's `2G`
+  the series are the same, but a Flash-Next load's `state="capacity"` is
+  lower by the pinned slots (1,824 projections, mostly gate/up and down
+  K = 4: the gate/up K4 LRU keeps 303 of its 1,075 slots).
 
 ## Considered options
 
@@ -71,12 +80,15 @@ profile sets `2G`.**
   three-lane decode (two sessions), greedy text unchanged; `1G` cost nothing
   measurable, and `4G` 4.296 GB for 4.3% of one-lane and 5.9% of three-lane
   decode, above the study's 3.8-5.3% (the owner chooses `2G` or `4G` from
-  that). At the field's
-  default the only visible difference from before the field existed is the
+  that). At a pin of 0 (the field's default: `--profile none`, or the field
+  set to 0) the only visible difference from before the field existed is the
   field itself: `--help` lists `--vram-pinned-expert-bytes` with 0, and
   `config print` and `GET /v1/config` list it (ADR 0046: every limit is a
   field), at 0 under `--profile none` and at `2G` for Flash-Next under
-  `rtx5090`.
+  `rtx5090`. Under that profile a default Flash-Next load does differ: it
+  logs the event, its `state="capacity"` is lower by the pinned slots, its
+  host plan's `expert_pool` line is 2.149 GB smaller, and its experts take
+  ~2 s longer to load (Consequences).
 - **Pin what the LRU never evicts.** Small (0.4-0.5 GB) and still shrinking
   with the length of the trace, and not known at load.
 - **A fully exclusive pool** (RAM holds only what VRAM does not, victims
@@ -97,7 +109,15 @@ profile sets `2G`.**
   the event, its host plan's `expert_pool` line is 2.149 GB smaller and its
   `load_staging` line 0.50 GB while the experts load. At 0 (`--profile none`,
   or the field set to 0) no event and no plan line changes.
-- A load with a pin takes ~2 s longer to load its experts.
+- A load with a pin takes ~2 s longer to load its experts; under the
+  `rtx5090` profile every default Flash-Next load pays it.
+- The cache's split gives every class the widest decode step's slots first
+  (second review 2026-10-18), where it gave the lanes' before. That changes
+  the split of an MTP load at any pin, 0 included: at three lanes and 3
+  drafts a verify round is 8 rows, 208 slots a class where the lanes gave 78.
+  A correctness fix, not a tuning: the old split could leave a class below
+  what one verify round selects and looks ahead, which no pin refused. A
+  load with MTP off, the `rtx5090` profile's, splits as before.
 - No live resize of the expert cache may evict a pinned projection: it has no
   copy to come back from. Pools are fixed per load (ADR 0030), so today none
   does.

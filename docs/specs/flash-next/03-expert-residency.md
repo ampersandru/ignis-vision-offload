@@ -175,7 +175,7 @@ stall time as metrics.
 8. As the owner, I want residency to cost no VRAM beyond the expert cache and its small tables, and nothing at all when the 27B is loaded, so that the switch in phase 2 is a clean reload.
 9. As an engine developer, I want the unit residency moves to be one expert projection (fused gate/up or down) of one K class, so that every slot of a pool is interchangeable and a copy is one contiguous transfer.
 10. As an engine developer, I want slot pools per K class sized from the sidecar's measured traffic shares, so that the cache's capacity matches where routing actually goes.
-11. As an engine developer, I want replacement to be least-recently-used over all layers within a class, with projections selected in the current step pinned, so that an expert in use is never evicted under the kernel.
+11. As an engine developer, I want replacement to be least-recently-used over all layers within a class, with projections selected in the current step held, so that an expert in use is never evicted under the kernel.
 12. As the owner, I want a long prompt's prefill not to evict the experts my running conversations decode with, so that a big paste does not slow every other lane afterwards.
 13. As an engine developer, I want residency to finish before the expert kernel reads the slot table, with the ordering enforced on the device, so that the kernel never sees a non-resident projection.
 14. As an engine developer, I want the next layer's router evaluated on this layer's MoE input to prefetch its likely projections, with the width configurable (default 16), so that most misses are hidden behind compute (study: 62/77/81% recall at 10/16/20).
@@ -228,8 +228,9 @@ but nothing here may block it.
 
 **Replacement.**
 - Per-class LRU on a logical clock that advances per layer step.
-- The projections selected by the current step are pinned until its expert
-  kernel completes.
+- The projections selected by the current step are held until its expert
+  kernel completes (held, not pinned: a **pinned** expert is the pinned hot
+  set's, ADR 0055).
 - No frequency term, no static core: the simulation found a pure dynamic LRU best,
   and the hybrid with a static core no better at 1 lane and 16% worse at 3.
 - **Scan-resistant prefill admission (owner, 2026-10-04).** A prefill chunk
@@ -341,10 +342,10 @@ defines.
 
 ## Acceptance
 
-1. All expert projections are loaded into one pinned host pool at load and freed on model drop. The host plan is printed, and the load refuses when RAM is short by the 6 GB margin. (A resident load, whose cache holds every projection, has no host pool: ADR 0054. An opt-in pinned hot set keeps its experts in VRAM only: ADR 0055.)
+1. All expert projections are loaded into one pinned host pool at load and freed on model drop. The host plan is printed, and the load refuses when RAM is short by the 6 GB margin. (A resident load, whose cache holds every projection, has no host pool: ADR 0054. A pinned hot set (`vram.pinned_expert_bytes`: 0 by default, 2 GiB under the `rtx5090` profile) keeps its experts in VRAM only: ADR 0055.)
 2. The VRAM expert cache is a plan line computed at load, split into eight K-class pools by the sidecar's traffic shares. Floor 12 GB, with a clear failure below it. Nothing is allocated while serving.
 3. The miss-path measurement is recorded, and the chosen design (device-resident or host-orchestrated) follows the stated 80% rule. Decode residency is graph-capturable if device-resident.
-4. Replacement is per-class LRU with current-step pinning. Router lookahead prefetch of width 16 (configurable) on the next layer's router. The GPU's hit/miss sequence on recorded traces equals the CPU policy model's.
+4. Replacement is per-class LRU, the current step's selections held until it ends. Router lookahead prefetch of width 16 (configurable) on the next layer's router. The GPU's hit/miss sequence on recorded traces equals the CPU policy model's.
 5. Trace replay on the study's test-chunk traces, at a 21.5 GB cache, gives hit rates per domain within 3 points of the simulation (93-96%). The measured residency cost per token is within 1.3× of the simulated 3.8 ms (1 lane) and 9.1 ms (3 lanes), or the gap is explained in the finding.
 6. Prefill: transfers for layer L+1 overlap compute of layer L. A cold 2048-token chunk's residency time is within 1.25× of (bytes moved / measured host-to-device bandwidth). Prefill admission is scan-resistant: on a recorded trace of decode, then a 4K prefill, then decode again, the post-prefill decode hit rate is within 2 points of the pre-prefill one, and the staging ring is a plan line.
 7. The residency metrics are exported and on the Monitor: hits and misses per class, prefetch issued and used, bytes moved, stall time, occupancy.
