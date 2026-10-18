@@ -94,6 +94,9 @@ When output names a domain concept, use the term as defined here.
   (ADR 0053: a loop persists, a list ends). In `log` mode it only logs; in
   `rewind` mode it **rewinds**, unless the rewind would keep less than
   `loop_guard_min_kept` characters of reasoning, which is only logged.
+  `/metrics` counts what it does, `ignis_loop_guard_*` (GitHub #330): each
+  loop by its outcome, the requests watched and looped, the tokens rewinds
+  took back and each request's lowest score.
 - **Rewind** — the loop guard's action: the engine request is cancelled and a
   **continuation** submitted. The client keeps what it received and gets the
   tag `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]` in the reasoning,
