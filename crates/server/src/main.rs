@@ -555,8 +555,11 @@ async fn main() {
     };
 
     // The start's answers end here: the listener, still bound, is the
-    // server's from its first accept.
+    // server's from its first accept. From here a signal stops the serve,
+    // not the process: taken before `started` is logged, so a signal can no
+    // longer end a loaded process as if it were still starting.
     let listener = starting.finish().await;
+    let stopped = stop.serving();
     tracing::info!(
         name: "ignis.process.started",
         // The id the load is served under (`config::Config::for_family`): a
@@ -572,9 +575,8 @@ async fn main() {
         "OpenAI API at /v1"
     );
     // The serve drains HTTP, then joins the model thread before returning
-    // (`Server::serve_on_until`): `ignis-model` is never left detached. From
-    // here a signal stops the serve, not the process.
-    let serve_result = server.serve_on_until(listener, metrics_listener, stop.serving()).await;
+    // (`Server::serve_on_until`): `ignis-model` is never left detached.
+    let serve_result = server.serve_on_until(listener, metrics_listener, stopped).await;
 
     // The tunnel outlives the drain above, so in-flight remote requests
     // finish through it; only then is it unregistered.

@@ -142,10 +142,11 @@ fn process_signal() -> std::io::Result<impl Future<Output = ()> + Send + 'static
 /// call, is where a process hangs holding the card (the hang
 /// [`crate::Server::serve_on_until`] joins the model thread to avoid). The
 /// kernel frees the device memory as the process ends, as it did for the
-/// SIGKILL in the incident. Flush the log first: nothing after this does.
+/// SIGKILL in the incident. It takes no lock: the caller's bounded log flush
+/// is the last write, and stdout is line-buffered, so flushing it here would
+/// only wait on the lock a writer stalled on a stuck pipe holds -- the
+/// indefinite shutdown block spec §28 forbids.
 pub fn exit_now(code: i32) -> ! {
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
     #[cfg(unix)]
     // SAFETY: `_exit` takes any status and never returns; it runs no code of
     // this process's that could observe a broken invariant.

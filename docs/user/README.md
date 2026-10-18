@@ -52,11 +52,13 @@ own loopback. To scrape it from outside, add
 `-e IGNIS_SERVER_METRICS_BIND=0.0.0.0:9464 -p 9464:9464`.
 
 The server is the image's entrypoint, so it is the container's PID 1, and it
-needs no init in front of it: it stops on SIGTERM (or Ctrl+C) from the moment
-it starts. Before it serves — while the model downloads or loads — the
-process exits at once, which frees the GPU, its last line
-`ignis.process.stopped` naming the `phase` it was in; once it serves it
-drains in-flight requests and unloads the model first. Its probes are
+needs no init in front of it: `ignis-server` (not its `model download`
+subcommand) stops on SIGTERM (or Ctrl+C) from the moment it starts. Before it
+serves — while the model downloads or loads — the process exits at once,
+which frees the GPU, its last line `ignis.process.stopped` naming the
+`phase` it was in; once it serves it drains in-flight requests and unloads
+the model first. A load while serving (a switch, a reload after an idle
+unload) is waited for: give the pod a grace longer than a load. Its probes are
 [`/health` and `/ready`](#the-api).
 
 With no `IGNIS_MODEL_ARTIFACT` the image fetches the model into its own working
