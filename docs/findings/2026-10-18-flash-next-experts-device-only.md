@@ -113,7 +113,10 @@ Flash-Next's geometry on the RTX 5090 (12 layers, 12,288 records, 9.56 GB,
 mean record 778 KB, the artifact's eight record sizes, a K mix with K = 2 the
 most common), host RAM warm, 3 reps, median, two runs. The host is PCIe
 Gen 3 x16 (~12 GB/s pinned peak), so these are lower bounds for the card's
-Gen 5 link:
+Gen 5 link. Another agent was compiling on the same host during the bench;
+CPU memory traffic slows such copies (6-15% for one copying thread, up to
+~2x with many: finding 2026-10-18-flash-next-decode-cpu-dram-traffic), so
+they are lower bounds for this host as well:
 
 | copy, same bytes | run 1 | run 2 |
 |---|---:|---:|
@@ -159,8 +162,10 @@ Eight vCPUs instead of sixteen cost nothing measurable.
   while serving and the margin), ~9 GB with the default (the 4.7 GB of
   buffers, then the peak, and the margin).
 - **Both builds share one thing that is not about residency:** an MTP
-  decode error. The ~73 tok/s first cells after a load were not slow decode:
-  a request in those reps ended with `ignis.runtime.leaf_error`
+  decode error. The ~73 tok/s first cells after a load were not slow decode
+  (inferred from the warm-ups, whose logs show it; the server logs of those
+  two cells were not kept): a request in those reps ended with
+  `ignis.runtime.leaf_error`
   (`speculative_window 2 is not the window a round of 1 lanes runs on this
   load (3)`, `finish_reason: error`) a few tokens before its cap, and the
   client, given no usage on an error, counted it in chunks. Every warm-up's
@@ -201,7 +206,7 @@ Eight vCPUs instead of sixteen cost nothing measurable.
   record from pageable buffers and runs at ~3.5-3.7 GB/s on the 5090, so the
   37.8 GB catalog takes ~10 s to admit if the card's host sustains the same
   rate (its CPU and link were not measured), against the volume's 1,000 MiB/s (~1.05 GB/s,
-  ~38 s). On a cold page cache the load is disk-bound and admission cannot be
+  ~36 s). On a cold page cache the load is disk-bound and admission cannot be
   the bottleneck, which fits the one saved 38.1 s load; on a warm one admission would take ~10 s, and the develop image's 12.8 s warm residency
   phase leaves little room for the branch to be slower. Per-layer copies
   from a pageable buffer reached 3.9-9.6 GB/s and from a pinned one ~11-12.6
@@ -222,6 +227,7 @@ Noted in https://github.com/gpillon/ignis/issues/329:
   bytes to the KV pool, above);
 - the staging line charged beside the n-gram line (done: `load_staging`,
   above);
-- the MTP decode error that killed the first requests after a load;
+- the MTP decode error that ended requests a few tokens before their cap
+  (fixed on branch `fn-mtp-window`);
 - the residency phase's load time with the page cache warm, and admitting a
   layer in fewer, larger copies.
