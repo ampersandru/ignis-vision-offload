@@ -1,4 +1,4 @@
-# ADR 0055 — a pinned hot set of experts, opt-in and off by default
+# ADR 0055 — a pinned hot set of experts: a field off by default, 2 GiB in the rtx5090 profile
 
 ## Status
 

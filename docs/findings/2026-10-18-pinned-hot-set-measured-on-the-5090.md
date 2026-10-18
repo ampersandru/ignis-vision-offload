@@ -98,7 +98,9 @@ variable renamed). `0`, `2G` and `4G` three launches each, in three rounds
 `--vram-pinned-expert-bytes 0`, since the rtx5090 profile now sets `2G`. The
 VRAM plan gave the cache 18,185,223,504 B (70 MB more than the first session:
 the desktop held less VRAM); 48.0-48.1 GB was available before each launch,
-and no build ran during any (logged per launch). Script, raw data and
+no build was running when any launch started (checked before each, logged in
+`session2.log` for all but the first), and the GPU lock was held in timing
+mode, which asks other agents to defer builds. Script, raw data and
 `summary-session2.txt` (`summarize.py` reproduces the first session's
 figures from its JSON): `.scratch/expert-pin-4g/` in the `expert-pin`
 worktree, copied to `.scratch/orchestra-2026-10-18/expert-pin/session2-4g/`
