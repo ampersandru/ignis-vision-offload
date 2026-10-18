@@ -49,7 +49,7 @@ use ignis_core::{
 
 use crate::{ModelSource, ModelStatus, Server};
 use crate::decoder::{Channel, OutputDecoder};
-use crate::deadline::TimeoutReply;
+use crate::deadline::{StreamDeadline, TimeoutReply};
 use crate::engine::{CollectError, Completion, Engine, EventStream, RequestNotes, collect_completion, drain_tokens};
 use crate::media::{has_media, MediaRejection, MediaStats};
 use crate::openai_fields::{self, Surface};
@@ -2326,9 +2326,9 @@ async fn chat_completions(
             ),
             prompt_tokens,
             include_usage,
+            StreamDeadline::after(live.stream_timeout, running, live.timeout_reply),
         )
-        .with_rewound(rewound)
-        .with_deadline(running, live.stream_timeout, live.timeout_reply))
+        .with_rewound(rewound))
         .into_response();
     }
     // The 504 of a request its deadline cut (GitHub #327), once cancelled.
@@ -3018,15 +3018,8 @@ struct ChunkStream {
     emitted_reasoning: bool,
     /// At least one `Content` delta or tool call was ever queued.
     emitted_content_or_call: bool,
-    /// The engine request generating, which the deadline stops.
-    running: crate::loop_guard::Running,
-    deadline: Pin<Box<tokio::time::Sleep>>,
-    /// `server.stream_timeout`, for the error's message.
-    timeout: std::time::Duration,
-    reply: TimeoutReply,
-    /// The deadline passed and the loop guard sends what it held back: the
-    /// stream's end ends the answer.
-    stopping: bool,
+    /// `server.stream_timeout` from admission; none at `0`.
+    deadline: Option<StreamDeadline>,
 }
 
 /// Cancels its request when dropped before the request has completed. An SSE
@@ -3096,6 +3089,7 @@ impl ChunkStream {
         pipeline: AnswerPipeline,
         prompt_tokens: u32,
         include_usage: bool,
+        deadline: Option<StreamDeadline>,
     ) -> Self {
         Self {
             stream,
@@ -3114,11 +3108,7 @@ impl ChunkStream {
             held: None,
             emitted_reasoning: false,
             emitted_content_or_call: false,
-            running: crate::loop_guard::Running::new(0),
-            deadline: Box::pin(tokio::time::sleep_until(crate::deadline::after(std::time::Duration::ZERO))),
-            timeout: std::time::Duration::ZERO,
-            reply: TimeoutReply::default(),
-            stopping: false,
+            deadline,
         }
     }
 
@@ -3128,32 +3118,22 @@ impl ChunkStream {
         self
     }
 
-    /// End the stream `timeout` from now, `running` being the engine request
-    /// generating it, as `reply` says (ADR 0058); a zero `timeout` is none.
-    fn with_deadline(mut self, running: crate::loop_guard::Running, timeout: std::time::Duration, reply: TimeoutReply) -> Self {
-        self.running = running;
-        self.deadline = Box::pin(tokio::time::sleep_until(crate::deadline::after(timeout)));
-        self.timeout = timeout;
-        self.reply = reply;
-        self
-    }
-
     /// The deadline's end, once the request was cancelled and `owed` — what
     /// the loop guard held back, or the tokens already waiting — read: the
     /// answer's last pieces, a tool call left open dropped whole, then the
-    /// `length` finish or the `request_timeout` error chunk, then `[DONE]`.
-    /// A stop sequence the owed tokens completed ends it `stop`, as it
-    /// would have before the deadline.
-    fn end_at_deadline(&mut self, owed: &[ignis_core::TokenId]) {
+    /// `length` finish or, under `error`, the `request_timeout` error chunk
+    /// naming `timeout`, then `[DONE]`. A stop sequence the owed tokens
+    /// completed ends it `stop`, as it would have before the deadline.
+    fn end_at_deadline(&mut self, owed: &[ignis_core::TokenId], reply: TimeoutReply, timeout: std::time::Duration) {
         let pieces = self.pipeline.push(owed);
         self.queue_pieces(pieces);
         let (pieces, _) = self.pipeline.finish();
         self.queue_pieces(pieces);
         let tokens = self.pipeline.consumed();
-        match (self.pipeline.fired(), self.reply) {
+        match (self.pipeline.fired(), reply) {
             (true, _) => self.queue_finish(resolve_finish_reason(FinishReason::Stop, self.pipeline.any_calls(), false), None, tokens),
             (false, TimeoutReply::Partial) => self.queue_finish(finish_reason_str(FinishReason::Length), None, tokens),
-            (false, TimeoutReply::Error) => self.pending.push_back(timeout_error_chunk(stream_timeout_message(self.timeout))),
+            (false, TimeoutReply::Error) => self.pending.push_back(timeout_error_chunk(stream_timeout_message(timeout))),
         }
         self.stopped = true;
     }
@@ -3295,35 +3275,13 @@ impl Stream for ChunkStream {
                 }
                 return Poll::Ready(None);
             }
-            // Checked before every event, for the reason
-            // `responses::drive` checks it first.
-            if !this.stopping && this.deadline.as_mut().poll(cx).is_ready() {
-                // Cancelled now, for its deadline: before a guard is stopped,
-                // whose own cancel would log its consumer letting it go.
-                this.cancel.timed_out();
-                // A guard sends what it held back, then ends the stream.
-                if this.running.stop() {
-                    this.stopping = true;
+            let next = crate::deadline::poll_next_event(this.deadline.as_mut(), cx, &mut this.cancel, &mut this.stream, &mut this.held);
+            match next {
+                Poll::Ready(crate::deadline::Next::Passed { owed, reply, timeout }) => {
+                    this.end_at_deadline(&owed, reply, timeout);
                     continue;
                 }
-                // No guard: the tokens already waiting, never one more.
-                let mut owed = Vec::new();
-                let _ = drain_tokens(&mut this.stream, &mut owed);
-                this.held = None;
-                this.end_at_deadline(&owed);
-                continue;
-            }
-            let polled = match this.held.take() {
-                Some(event) => Poll::Ready(Some(event)),
-                None => this.stream.poll_recv(cx),
-            };
-            match polled {
-                // Everything the guard held back went out: the deadline's end.
-                Poll::Ready(None) if this.stopping => {
-                    this.end_at_deadline(&[]);
-                    continue;
-                }
-                Poll::Ready(None) => {
+                Poll::Ready(crate::deadline::Next::Closed) => {
                     // Stream closed (the request completed and the engine
                     // removed its route — or the engine stopped): the
                     // `[DONE]` marker ends the SSE stream (exactly once).
@@ -3334,7 +3292,7 @@ impl Stream for ChunkStream {
                     return Poll::Ready(None);
                 }
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(event)) => match event {
+                Poll::Ready(crate::deadline::Next::Event(event)) => match event {
                     SchedEvent::Token { token, .. } => {
                         // This token and every one already waiting behind
                         // it, as one run: a round's tokens make one chunk
@@ -3644,6 +3602,7 @@ mod tests {
             AnswerPipeline::new(OutputDecoder::new(Box::new(Words), false), ToolSchemas::from_tools(&[]), Vec::new()),
             1,
             true,
+            None,
         );
         if let Some((taken, unsent)) = rewound {
             chunks = chunks.with_rewound(Arc::new(crate::loop_guard::RewoundTokens::new(taken, unsent)));
@@ -3823,6 +3782,7 @@ mod tests {
             AnswerPipeline::new(OutputDecoder::new(Box::new(Words), false), ToolSchemas::from_tools(&[]), Vec::new()),
             1,
             false,
+            None,
         );
         let body = Sse::new(chunks).into_response().into_body();
         let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();

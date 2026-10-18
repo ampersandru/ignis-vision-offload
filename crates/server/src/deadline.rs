@@ -7,10 +7,18 @@
 //! question and an image job are answered an error either way: neither has a
 //! partial answer.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::http::{HeaderName, HeaderValue};
 use axum::response::Response;
+use ignis_core::{SchedEvent, TokenId};
+
+use crate::api::CancelOnDrop;
+use crate::engine::{drain_tokens, EventStream};
+use crate::loop_guard::Running;
 
 /// What a request past its deadline is answered (`--server-timeout-reply`,
 /// ADR 0058).
@@ -62,6 +70,94 @@ pub const STOPPED_BY: &str = "x-ignis-stopped-by";
 pub fn stopped_by_timeout(mut response: Response) -> Response {
     response.headers_mut().insert(HeaderName::from_static(STOPPED_BY), HeaderValue::from_static("request_timeout"));
     response
+}
+
+/// A streamed answer's deadline (`server.stream_timeout`), the chat
+/// completions stream's and the Responses one's: past it the request is
+/// cancelled, the loop guard sends what it held back (ADR 0052), and the
+/// answer ends after the tokens it was still owed ([`poll_next_event`]).
+pub(crate) struct StreamDeadline {
+    /// The engine request generating, which a passed deadline stops.
+    running: Running,
+    sleep: Pin<Box<tokio::time::Sleep>>,
+    timeout: Duration,
+    reply: TimeoutReply,
+    /// The deadline passed and the loop guard sends what it held back: the
+    /// stream's end ends the answer.
+    stopping: bool,
+}
+
+impl StreamDeadline {
+    /// `timeout` from now, on the engine request `running` names, answered
+    /// as `reply` says; none for a zero `timeout`.
+    pub(crate) fn after(timeout: Duration, running: Running, reply: TimeoutReply) -> Option<Self> {
+        (!timeout.is_zero()).then(|| Self { running, sleep: Box::pin(tokio::time::sleep(timeout)), timeout, reply, stopping: false })
+    }
+
+    fn passed(&self, owed: Vec<TokenId>) -> Next {
+        Next::Passed { owed, reply: self.reply, timeout: self.timeout }
+    }
+}
+
+/// What a streamed answer handles next ([`poll_next_event`]).
+pub(crate) enum Next {
+    /// One of the request's events; past the deadline, only a token.
+    Event(SchedEvent),
+    /// The request's stream closed before its deadline passed.
+    Closed,
+    /// The deadline passed and the request was cancelled: the answer ends
+    /// after `owed`, the last tokens it was owed, as `reply` says.
+    Passed { owed: Vec<TokenId>, reply: TimeoutReply, timeout: Duration },
+}
+
+/// The next of a streamed answer's events — `held` first, the event that
+/// ended the last run of tokens — held to `deadline` when it has one.
+///
+/// The deadline is checked before every event, for the reason
+/// `responses::drive` checks it first. Once it passed, the request is
+/// cancelled, then a loop guard sends what it held back and ends its stream:
+/// its tokens still come, any other event is the request's own end and no
+/// longer counts, and the stream's end is [`Next::Passed`]. With no guard,
+/// the tokens already waiting on `stream` are the last, never one more.
+pub(crate) fn poll_next_event(
+    mut deadline: Option<&mut StreamDeadline>,
+    cx: &mut Context<'_>,
+    cancel: &mut CancelOnDrop,
+    stream: &mut EventStream,
+    held: &mut Option<SchedEvent>,
+) -> Poll<Next> {
+    loop {
+        if let Some(deadline) = deadline.as_deref_mut().filter(|deadline| !deadline.stopping) {
+            if deadline.sleep.as_mut().poll(cx).is_ready() {
+                // Cancelled now, for its deadline: before a guard is stopped,
+                // whose own cancel would log its consumer letting it go.
+                cancel.timed_out();
+                if deadline.running.stop() {
+                    deadline.stopping = true;
+                } else {
+                    let mut owed = Vec::new();
+                    let _ = drain_tokens(stream, &mut owed);
+                    *held = None;
+                    return Poll::Ready(deadline.passed(owed));
+                }
+            }
+        }
+        let stopping = deadline.as_deref().filter(|deadline| deadline.stopping);
+        let polled = match held.take() {
+            Some(event) => Poll::Ready(Some(event)),
+            None => stream.poll_recv(cx),
+        };
+        return match (polled, stopping) {
+            (Poll::Pending, _) => Poll::Pending,
+            (Poll::Ready(Some(token @ SchedEvent::Token { .. })), _) => Poll::Ready(Next::Event(token)),
+            // Past the deadline only the tokens still count.
+            (Poll::Ready(Some(_)), Some(_)) => continue,
+            (Poll::Ready(Some(event)), None) => Poll::Ready(Next::Event(event)),
+            // Everything the guard held back went out: the deadline's end.
+            (Poll::Ready(None), Some(deadline)) => Poll::Ready(deadline.passed(Vec::new())),
+            (Poll::Ready(None), None) => Poll::Ready(Next::Closed),
+        };
+    }
 }
 
 #[cfg(test)]

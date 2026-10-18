@@ -34,9 +34,9 @@ use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 
 use crate::api::{self, ApiError, CancelOnDrop};
-use crate::deadline::TimeoutReply;
+use crate::deadline::{self, Next, StreamDeadline, TimeoutReply};
 use crate::engine::{drain_tokens, EventStream};
-use crate::loop_guard::{Guarding, Running};
+use crate::loop_guard::Guarding;
 use ignis_core::SchedEvent;
 use crate::Server;
 use events::{ResponseEvents, ResponseObject};
@@ -207,11 +207,7 @@ pub(crate) async fn create_response(
             cancel,
             events,
             pending,
-            deadline: Box::pin(tokio::time::sleep_until(deadline)),
-            timeout,
-            reply: live.timeout_reply,
-            running,
-            stopping: false,
+            deadline: StreamDeadline::after(timeout, running, live.timeout_reply),
             ended: false,
             held: None,
         })
@@ -251,14 +247,8 @@ struct EventSse {
     cancel: CancelOnDrop,
     events: ResponseEvents,
     pending: VecDeque<JsonValue>,
-    deadline: Pin<Box<tokio::time::Sleep>>,
-    timeout: std::time::Duration,
-    reply: TimeoutReply,
-    /// The engine request generating, which the deadline stops.
-    running: Running,
-    /// The deadline passed and the loop guard sends what it held back: the
-    /// stream's end ends the response.
-    stopping: bool,
+    /// `server.stream_timeout` from admission; none at `0`.
+    deadline: Option<StreamDeadline>,
     ended: bool,
     /// The event that ended the last run of tokens, handled next.
     held: Option<SchedEvent>,
@@ -278,40 +268,15 @@ impl Stream for EventSse {
             if this.ended {
                 return Poll::Ready(None);
             }
-            // First, for the reason `drive` checks it first.
-            if !this.stopping && this.deadline.as_mut().poll(cx).is_ready() {
-                // Cancelled now, for its deadline: before a guard is stopped,
-                // whose own cancel would log its consumer letting it go.
-                this.cancel.timed_out();
-                // A guard sends what it held back, then ends the stream.
-                if this.running.stop() {
-                    this.stopping = true;
-                    continue;
-                }
-                // No guard: the tokens already waiting, never one more.
-                let mut owed = Vec::new();
-                let _ = drain_tokens(&mut this.stream, &mut owed);
-                this.held = None;
-                this.pending.extend(this.events.on_tokens(&owed));
-                this.pending.extend(this.events.timed_out(this.reply, api::stream_timeout_message(this.timeout)));
-                this.ended = true;
-                continue;
-            }
-            let polled = match this.held.take() {
-                Some(event) => Poll::Ready(Some(event)),
-                None => this.stream.poll_recv(cx),
-            };
-            match polled {
+            match deadline::poll_next_event(this.deadline.as_mut(), cx, &mut this.cancel, &mut this.stream, &mut this.held) {
                 // A token and every one already waiting behind it, as one run.
-                Poll::Ready(Some(SchedEvent::Token { token, .. })) => {
+                Poll::Ready(Next::Event(SchedEvent::Token { token, .. })) => {
                     let mut run = vec![token];
                     this.held = drain_tokens(&mut this.stream, &mut run);
                     this.pending.extend(this.events.on_tokens(&run));
                     continue;
                 }
-                // Past the deadline only the tokens still count.
-                Poll::Ready(Some(_)) if this.stopping => continue,
-                Poll::Ready(Some(event)) => {
+                Poll::Ready(Next::Event(event)) => {
                     this.pending.extend(this.events.on_event(event));
                     if this.events.ending().is_some() {
                         this.cancel.completed();
@@ -319,13 +284,13 @@ impl Stream for EventSse {
                     }
                     continue;
                 }
-                // Everything held back went out: the deadline's end.
-                Poll::Ready(None) if this.stopping => {
-                    this.pending.extend(this.events.timed_out(this.reply, api::stream_timeout_message(this.timeout)));
+                Poll::Ready(Next::Passed { owed, reply, timeout }) => {
+                    this.pending.extend(this.events.on_tokens(&owed));
+                    this.pending.extend(this.events.timed_out(reply, api::stream_timeout_message(timeout)));
                     this.ended = true;
                     continue;
                 }
-                Poll::Ready(None) => {
+                Poll::Ready(Next::Closed) => {
                     this.cancel.completed();
                     this.pending.extend(this.events.failed("server_error", dropped_message()));
                     this.ended = true;

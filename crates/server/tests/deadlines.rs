@@ -333,8 +333,43 @@ async fn a_cut_stream_carries_what_the_loop_guard_held_back() {
     let (_, _, body) = reply.await.unwrap();
     let chunks = chunks(&body);
     assert_eq!(streamed_text(&chunks, "reasoning_content"), "Let me think", "{body}");
-    assert!(chunks.iter().any(|c| c["choices"][0]["finish_reason"] == "length"), "{body}");
+    assert_eq!(finish_reasons(&chunks), ["length"], "{body}");
+    assert_eq!(chunks.last().unwrap(), "[DONE]", "{body}");
     rig.the_lane_comes_back().await;
+}
+
+/// The `finish_reason` of each chunk that carries one.
+fn finish_reasons(chunks: &[Value]) -> Vec<&str> {
+    chunks.iter().filter_map(|chunk| chunk["choices"][0]["finish_reason"].as_str()).collect()
+}
+
+/// Past the deadline only the tokens still count: a request that finished
+/// on its own while its stream went unread, its `Done` already queued
+/// behind what the loop guard held back, ends with one finish chunk and one
+/// usage chunk, the deadline's, then `[DONE]` — never its own finish too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_its_deadline_cut_with_its_own_end_queued_ends_once() {
+    let guard = LoopGuardParams { mode: LoopGuardMode::Rewind, holdback_chars: 100_000, ..LoopGuardParams::default() };
+    let timeout = Duration::from_millis(200);
+    let rig = rig(&["Let me", " think"], |server| server.with_stream_timeout(timeout).with_loop_guard(guard));
+    let mut body = chat(true);
+    body["enable_thinking"] = json!(true);
+    body["max_tokens"] = json!(2);
+    body["stream_options"] = json!({ "include_usage": true });
+    let response = post(&rig.app, "/v1/chat/completions", body).await;
+    // Both steps run, and the request ends at its cap, before a byte of the
+    // stream is read.
+    rig.gate.wait_entered();
+    rig.gate.release();
+    rig.released.recv_timeout(Duration::from_secs(5)).expect("the request ends on its own");
+    // Time passing is the point here: the deadline passes before the first poll.
+    tokio::time::sleep(timeout * 2).await;
+    let (_, _, body) = read(response).await;
+    let chunks = chunks(&body);
+    assert_eq!(streamed_text(&chunks, "reasoning_content"), "Let me think", "{body}");
+    assert_eq!(finish_reasons(&chunks), ["length"], "one finish chunk: {body}");
+    assert_eq!(chunks.iter().filter(|c| c.get("usage").is_some_and(|u| !u.is_null())).count(), 1, "one usage chunk: {body}");
+    assert_eq!(chunks.last().unwrap(), "[DONE]", "{body}");
 }
 
 /// A stream is held to `server.stream_timeout` alone, and `0` is none: one
