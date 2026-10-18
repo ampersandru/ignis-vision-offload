@@ -646,8 +646,9 @@ impl StepLeaf for FlashNextLeaf {
             let window = speculation.window(sequences.len() as u32);
             let mtp = speculation.backend() == SpeculativeBackend::Mtp;
             // The kernel's room is the sequence's own token capacity as well as the
-            // load's context: near the end of either, the window shrinks to what
-            // the tightest lane can write (0: a plain step), never a hard error.
+            // load's context: once the tightest lane is too near the end of either
+            // for the window's writes, the round is a plain step, never a hard error
+            // and never a narrower window, which the leaf refuses (GitHub #329).
             let room = sequences
                 .iter()
                 .map(|s| {
