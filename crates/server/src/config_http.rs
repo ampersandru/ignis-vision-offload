@@ -534,7 +534,7 @@ pub fn read_patch(body: &Value) -> Result<Layer, (&'static str, String)> {
 /// the config file — as it would if it said `null` for each (GitHub #329 item
 /// 15). Speculation off has nothing to configure, and the draft count an
 /// operator turns it off from is whatever an earlier layer left (a profile
-/// or file value never refuses it; a live one would, without this): turning it
+/// value never refuses it; a file or live one would, without this): turning it
 /// off is one step whichever layer set the count. A count the patch names in
 /// the same scope, value or `null`, is the operator's own word and is judged
 /// as written — `off` beside a count stays a refusal. A flag's or an env
