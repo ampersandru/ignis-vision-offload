@@ -112,7 +112,8 @@ async fn main() {
     // GitHub #329: the stop signal is listened for from here, before
     // anything slow. A signal during the download or the load ends the
     // process at once (`shutdown::StopSignal`), one while serving stops the
-    // serve. The kernel drops a signal a PID 1 has no handler for, so with
+    // serve, and a second one during that shutdown ends the process at once
+    // too. The kernel drops a signal a PID 1 has no handler for, so with
     // the handler installed only once serving began, a container's SIGTERM
     // during the load did nothing.
     let logging_handle = Arc::new(logging_handle);
@@ -593,7 +594,11 @@ async fn main() {
     // trailing `flush` (bounded, GitHub #80) gives the queued writer thread
     // a chance to actually hand these last lines to the sink before the
     // process exits; it never blocks past its own timeout even if the sink
-    // is stuck.
+    // is stuck. A second signal that got there first logged the last line
+    // itself and is ending the process: nothing is left to do but let it.
+    if !stop.ending() {
+        std::future::pending::<()>().await;
+    }
     match serve_result {
         Ok(Served::Drained) => {
             tracing::info!(name: "ignis.process.stopped", "graceful shutdown complete");

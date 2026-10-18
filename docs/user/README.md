@@ -60,8 +60,9 @@ which frees the GPU, its last line `ignis.process.stopped` naming the
 the model first. A load while serving (a switch, a reload, the load after an
 idle unload) is not waited for either: a request waiting for it is answered
 `503 server_stopping`, and once the drain is over the process exits under the
-load, its last line naming `phase: switching`. Its probes are
-[`/health` and `/ready`](#the-api).
+load, its last line naming `phase: switching`. A second signal while the
+shutdown runs ends the process at once (`phase: shutting_down`). Its probes
+are [`/health` and `/ready`](#the-api).
 
 With no `IGNIS_MODEL_ARTIFACT` the image fetches the model into its own working
 directory (`/home/ignis/models`) and loses it with the container. Mount a
