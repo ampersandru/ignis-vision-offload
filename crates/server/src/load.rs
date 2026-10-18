@@ -251,6 +251,13 @@ pub fn prepare_model(config: &crate::config::Config, artifact: &std::path::Path)
         .unwrap_or(ModelFamily::Qwen38_27b);
     let config = fitted(config, family)?;
     let model = config.model.clone();
+    if let Some(ignored) = ignored_rope_scaling(&config, family) {
+        tracing::warn!(
+            name: "ignis.model.rope_scaling_ignored",
+            setting = %ignored,
+            "{ignored} is ignored: Qwen3.8-Flash-Next rotates at its own linear table, not a scaled one"
+        );
+    }
 
     // The thinking budget's forced close (2026-09-24), in this model's own
     // tokens. A tokenizer that splits `</think>` leaves every budget inert:
@@ -325,6 +332,21 @@ fn fitted(config: &crate::config::Config, family: ModelFamily) -> Result<crate::
     match config.basis.family() {
         Some(fitted) if fitted == family => Ok(config.clone()),
         _ => config.for_family(family).map_err(|e| LoadError::ModelMismatch(e.to_string())),
+    }
+}
+
+/// The YaRN table `model.rope_scaling` names for a Flash-Next load, with
+/// where `config` took it -- Flash-Next's own section, or a group value
+/// meant for the 27B -- which the load does not run (ADR 0057): Flash-Next
+/// rotates at its own linear table. The load says so and goes on, so a
+/// group value for the 27B never breaks it. `None` for `auto` or `none`, and
+/// on any other model, which runs the table it is given.
+fn ignored_rope_scaling(config: &crate::config::Config, family: ModelFamily) -> Option<String> {
+    match (family, config.settings().model.rope_scaling) {
+        (ModelFamily::FlashNext, ignis_core::RopeSetting::Fixed(scaling)) if scaling.is_yarn() => {
+            Some(format!("`{} {scaling}`", config.basis.resolution().spelled("model", "rope_scaling")))
+        }
+        _ => None,
     }
 }
 
@@ -532,6 +554,10 @@ fn cuda_scheduler_for(
             || "off".to_owned(),
             |v| format!("max_tokens={} item_max_tokens={}", v.max_tokens(), v.item_max_tokens())
         ),
+        // ADR 0057: the table the load runs, beside the setting it came
+        // from (`auto`, `none` or `yarn:F...`, as configured).
+        rope_scaling = %shape.rope_scaling,
+        rope_scaling_setting = %config.settings().model.rope_scaling,
         "model loaded on the GPU"
     );
     Ok((Box::new(scheduler), reserved))
@@ -590,5 +616,31 @@ mod tests {
         let flagged = message(&resolved(&["--vram-pinned-expert-bytes", "2G"]), FlashNextLoadError::PinnedExperts(refused));
         assert!(flagged.starts_with("`--vram-pinned-expert-bytes` asks for"), "{flagged}");
         assert_eq!(message(&resolved(&[]), FlashNextLoadError::from("no MTP head")), "no MTP head");
+    }
+
+    /// ADR 0057: a YaRN table `model.rope_scaling` names for Flash-Next --
+    /// in its own section, or the group's value meant for the 27B -- is not
+    /// run, and the load names it as ignored rather than refuse to start.
+    /// `auto` and `none` are what Flash-Next runs; the 27B runs any table.
+    #[test]
+    fn a_yarn_table_named_for_flash_next_is_named_as_ignored() {
+        let ignored = |args: &[&str], family| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(&args, |_| None).expect("the options resolve") else {
+                panic!("a config")
+            };
+            let fitted = config.for_family(family).expect("the start is not refused for it");
+            ignored_rope_scaling(&fitted, family)
+        };
+        let flash_next = ModelFamily::FlashNext;
+        assert_eq!(ignored(&["--model-rope-scaling", "yarn:4"], flash_next).as_deref(), Some("`--model-rope-scaling yarn:4`"));
+        assert_eq!(
+            ignored(&["--qwen38flashnext-model-rope-scaling", "yarn:2,t=0.25"], flash_next).as_deref(),
+            Some("`--qwen38flashnext-model-rope-scaling yarn:2,t=0.25`")
+        );
+        assert_eq!(ignored(&[], flash_next), None, "auto");
+        assert_eq!(ignored(&["--model-rope-scaling", "auto", "--model-max-context", "1048576"], flash_next), None);
+        assert_eq!(ignored(&["--model-rope-scaling", "none"], flash_next), None);
+        assert_eq!(ignored(&["--model-rope-scaling", "yarn:4"], ModelFamily::Qwen38_27b), None, "the 27B runs it");
     }
 }

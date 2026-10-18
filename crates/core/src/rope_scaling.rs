@@ -20,9 +20,10 @@
 //! route and anything else an FP64-reduced one, so "YaRN at factor 1" would
 //! quietly move the outputs of a server nobody asked to scale.
 
-/// The positions the checkpoints are trained over: past this a context needs
-/// a scaled table, and `auto` ([`RopeSetting::Auto`]) scales by the ratio.
-pub const TRAINED_POSITIONS: u32 = 262_144;
+/// The trained position envelope: the rotary positions the checkpoints are
+/// trained over. Past it a context needs a scaled table, and `auto`
+/// ([`RopeSetting::Auto`]) scales by the ratio.
+pub const TRAINED_POSITION_ENVELOPE: u32 = 262_144;
 
 /// The widest factor a load accepts (`kMaxYarnFactor`,
 /// `kernel/src/rope_scaling.h`). 64x the trained envelope is already past
@@ -55,9 +56,10 @@ pub struct RopeScaling {
 
 /// What `--model-rope-scaling` says: a table spelled out, or `auto`, which
 /// is decided per load from the context it serves ([`Self::resolve`]).
-/// `auto` is the default, so a server asked for 1,048,576 tokens of context
-/// runs YaRN at 4 without being told, and one at the trained 262,144 runs
-/// the linear table it always has.
+/// `auto` is the default, so the 27B asked for 1,048,576 tokens of context
+/// runs YaRN at 4 without being told, and at the trained 262,144 the linear
+/// table it always has. (Flash-Next rotates at its own linear table whatever
+/// this says: the server's config resolves its table, ADR 0057.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RopeSetting {
     #[default]
@@ -74,41 +76,40 @@ impl RopeSetting {
         RopeScaling::parse(value).map(Self::Fixed)
     }
 
+    /// Whether the table is left to the context ([`Self::resolve`]) rather
+    /// than spelled out.
     pub fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
     }
 
     /// The table a load of `max_context` tokens runs on. A spelled-out
-    /// setting is itself. `auto` is [`RopeScaling::NONE`] up to
-    /// [`TRAINED_POSITIONS`] (never "YaRN at 1": see the module doc) and
-    /// YaRN at the exact ratio past it, with the default temperature and
-    /// ramp.
-    pub fn resolve(&self, max_context: u32) -> RopeScaling {
+    /// setting is itself. `auto` is [`RopeScaling::NONE`] within
+    /// [`TRAINED_POSITION_ENVELOPE`] (never "YaRN at 1": see the module doc)
+    /// and YaRN at the exact ratio past it, with the default temperature and
+    /// ramp. A context past [`MAX_YARN_FACTOR`] times the envelope is
+    /// refused ([`RopeScalingError::Context`]), never quietly the linear
+    /// table.
+    pub fn resolve(&self, max_context: u32) -> Result<RopeScaling, RopeScalingError> {
         match self {
-            Self::Fixed(scaling) => *scaling,
-            Self::Auto if max_context <= TRAINED_POSITIONS => RopeScaling::NONE,
+            Self::Fixed(scaling) => Ok(*scaling),
+            Self::Auto if max_context <= TRAINED_POSITION_ENVELOPE => Ok(RopeScaling::NONE),
+            // In tokens, not as a factor: one token past the widest context
+            // is a ratio that rounds to the widest factor in `f32`.
+            Self::Auto if u64::from(max_context) > widest_auto_context() => {
+                Err(RopeScalingError::Context(max_context))
+            }
             Self::Auto => {
-                RopeScaling::yarn((f64::from(max_context) / f64::from(TRAINED_POSITIONS)) as f32)
-                    .unwrap_or(RopeScaling::NONE)
+                RopeScaling::yarn((f64::from(max_context) / f64::from(TRAINED_POSITION_ENVELOPE)) as f32)
             }
         }
     }
 }
 
-/// Whether a load's table came from `auto`. Only the load's log reads it, so
-/// two of these are always equal: `auto` at 1,048,576 and an explicit
-/// `yarn:4` are the same load, and an `EngineShape` carrying this must not
-/// tell them apart (the model switch's reload check, retained pages).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FromAuto(pub bool);
-
-impl PartialEq for FromAuto {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
+/// The widest context `auto` scales: [`MAX_YARN_FACTOR`] times the trained
+/// position envelope.
+fn widest_auto_context() -> u64 {
+    MAX_YARN_FACTOR as u64 * u64::from(TRAINED_POSITION_ENVELOPE)
 }
-
-impl Eq for FromAuto {}
 
 /// Round-trips through [`RopeSetting::parse`].
 impl std::fmt::Display for RopeSetting {
@@ -123,7 +124,7 @@ impl std::fmt::Display for RopeSetting {
 /// Why a `--model-rope-scaling` value is not usable.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RopeScalingError {
-    /// The value is neither `none` nor `yarn:F[,...]`.
+    /// The value is neither `auto`, `none` nor `yarn:F[,...]`.
     Shape(String),
     /// A field is not a finite number.
     Field { field: &'static str, got: String },
@@ -135,12 +136,15 @@ pub enum RopeScalingError {
     Temperature(f32),
     /// The ramp is not `beta_fast > beta_slow > 0`.
     Ramp { fast: f32, slow: f32 },
+    /// `auto` at a context, in tokens, past what [`MAX_YARN_FACTOR`] scales
+    /// the trained position envelope to.
+    Context(u32),
 }
 
 impl std::fmt::Display for RopeScalingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Shape(got) => write!(f, "expected `none` or `yarn:F[,t=..][,bf=..][,bs=..]`, got `{got}`"),
+            Self::Shape(got) => write!(f, "expected `auto`, `none` or `yarn:F[,t=..][,bf=..][,bs=..]`, got `{got}`"),
             Self::Field { field, got } => write!(f, "{field} must be a finite number, got `{got}`"),
             Self::UnknownField(got) => {
                 write!(f, "unknown or repeated field `{got}` (expected `t=`, `bf=` or `bs=`)")
@@ -155,6 +159,11 @@ impl std::fmt::Display for RopeScalingError {
             Self::Ramp { fast, slow } => {
                 write!(f, "the ramp needs bf > bs > 0, got bf={fast} and bs={slow}")
             }
+            Self::Context(got) => write!(
+                f,
+                "`auto` scales a context of at most {} tokens, {MAX_YARN_FACTOR}x the {TRAINED_POSITION_ENVELOPE} trained positions, got {got}",
+                widest_auto_context()
+            ),
         }
     }
 }
@@ -410,9 +419,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_no_scaling_up_to_the_trained_positions() {
-        for context in [1, 16_384, TRAINED_POSITIONS] {
-            let resolved = RopeSetting::Auto.resolve(context);
+    fn auto_is_no_scaling_within_the_trained_position_envelope() {
+        for context in [1, 16_384, 262_144] {
+            let resolved = RopeSetting::Auto.resolve(context).unwrap();
             // NONE exactly, not YaRN at 1: the leaf's route depends on it.
             assert_eq!(resolved, RopeScaling::NONE, "{context}");
             assert!(!resolved.is_yarn());
@@ -420,14 +429,29 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_yarn_at_the_exact_ratio_past_them() {
+    fn auto_is_yarn_at_the_exact_ratio_past_the_trained_position_envelope() {
         for (context, factor) in [(524_288, 2.0), (786_432, 3.0), (1_048_576, 4.0), (589_824, 2.25)] {
-            let resolved = RopeSetting::Auto.resolve(context);
+            let resolved = RopeSetting::Auto.resolve(context).unwrap();
             assert!(resolved.is_yarn(), "{context}");
             assert_eq!(resolved.factor(), factor, "{context}");
             assert_eq!(resolved, RopeScaling::yarn(factor).unwrap(), "default temperature and ramp");
         }
-        assert_eq!(RopeSetting::Auto.resolve(262_145).factor(), 262_145.0 / 262_144.0);
+        assert_eq!(RopeSetting::Auto.resolve(262_145).unwrap().factor(), 262_145.0 / 262_144.0);
+    }
+
+    /// Past 64x the envelope (16,777,216 tokens) `auto` has no table to give:
+    /// refused naming the context and the most it scales, never quietly the
+    /// linear one. The ratio one token past it rounds to 64.0 in `f32`, so
+    /// the boundary is the token count, not the factor.
+    #[test]
+    fn auto_past_the_widest_factor_is_refused_naming_the_context_and_the_most_it_scales() {
+        assert_eq!(RopeSetting::Auto.resolve(16_777_216).unwrap().factor(), 64.0);
+        let refused = RopeSetting::Auto.resolve(16_777_217).unwrap_err();
+        assert_eq!(refused, RopeScalingError::Context(16_777_217));
+        let message = refused.to_string();
+        assert!(message.contains("16777217") && message.contains("16777216"), "{message}");
+        // A table spelled out is not the context's to refuse.
+        assert_eq!(RopeSetting::parse("yarn:2").unwrap().resolve(u32::MAX).unwrap().factor(), 2.0);
     }
 
     #[test]
@@ -438,15 +462,10 @@ mod tests {
     #[test]
     fn an_explicit_setting_ignores_the_context() {
         let none = RopeSetting::parse("none").unwrap();
-        assert_eq!(none.resolve(1_048_576), RopeScaling::NONE);
+        assert_eq!(none.resolve(1_048_576).unwrap(), RopeScaling::NONE);
         let two = RopeSetting::parse("yarn:2").unwrap();
-        assert_eq!(two.resolve(16_384).factor(), 2.0);
+        assert_eq!(two.resolve(16_384).unwrap().factor(), 2.0);
         assert!(!two.is_auto() && !none.is_auto());
-    }
-
-    #[test]
-    fn where_the_table_came_from_never_tells_two_loads_apart() {
-        assert_eq!(FromAuto(true), FromAuto(false));
     }
 
     #[test]
@@ -459,6 +478,8 @@ mod tests {
             assert_eq!(RopeSetting::parse(text).unwrap().to_string(), text);
         }
         assert!(matches!(RopeSetting::parse("yarn:0.5"), Err(RopeScalingError::Factor(_))));
-        assert!(matches!(RopeSetting::parse("autom"), Err(RopeScalingError::Shape(_))));
+        let shape = RopeSetting::parse("autom").unwrap_err();
+        assert!(matches!(shape, RopeScalingError::Shape(_)));
+        assert!(shape.to_string().starts_with("expected `auto`, `none` or `yarn:F"), "{shape}");
     }
 }

@@ -400,7 +400,9 @@ config_group! {
         /// checkpoint's trained 262,144-position envelope — what a context
         /// past it needs. `auto` decides per model from its
         /// `model.max_context`: none up to 262,144, else YaRN at
-        /// `max_context / 262,144`.
+        /// `max_context / 262,144`. Flash-Next rotates at its own linear
+        /// table whatever this says: a YaRN table named for it is ignored,
+        /// with a warning.
         rope_scaling: Rope = RopeSetting::Auto, NO_RULE, ALL, [Visible, Patchable, ReloadRequired, Scoped];
         /// Seconds with no request using the model after which it is unloaded
         /// — VRAM, pinned host memory and KV-RAM given back — while the server

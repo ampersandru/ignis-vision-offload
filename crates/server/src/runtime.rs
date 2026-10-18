@@ -96,8 +96,6 @@ pub struct EngineShape {
     /// [`ignis_core::RopeScaling::NONE`] is the linear one, a YaRN factor
     /// rescales the checkpoint's trained position envelope.
     pub rope_scaling: ignis_core::RopeScaling,
-    /// Whether it was resolved from `auto`: logged, never compared.
-    pub rope_scaling_from_auto: ignis_core::FromAuto,
     /// Flash-Next's n-gram hot-row budget (`--ngram-hot-bytes`, GitHub
     /// #306): 1 GiB unless named; `auto` is resolved against the host plan
     /// at load.
@@ -144,7 +142,6 @@ impl Default for EngineShape {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
-            rope_scaling_from_auto: ignis_core::FromAuto(false),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::default(),
             kv_disk_bytes: None,
             transfer_pace: None,
@@ -180,7 +177,6 @@ impl From<&crate::config::Config> for EngineShape {
             decode_lanes: config.decode_lanes.unwrap_or(0),
             vision: config.vision,
             rope_scaling: config.rope_scaling,
-            rope_scaling_from_auto: ignis_core::FromAuto(config.rope_scaling_auto),
             ngram_hot_bytes: config.ngram_hot_bytes.unwrap_or_default(),
             kv_disk_bytes: config.kv_disk_bytes,
             transfer_pace: None,
@@ -638,7 +634,6 @@ fn leaf_config_for_shape(shape: EngineShape, kv_pool_bytes: u64) -> ignis_runtim
         speculation: shape.speculation,
         vision: shape.vision,
         rope_scaling: shape.rope_scaling,
-        rope_scaling_from_auto: shape.rope_scaling_from_auto,
         retained_device_slots: shape.retained_device_slots,
         retained_host_slots: shape.retained_host_slots,
         ..ignis_runtime::CudaLeafConfig::default()
@@ -1523,7 +1518,6 @@ mod tests {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
-            rope_scaling_from_auto: ignis_core::FromAuto(false),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::Auto,
             kv_disk_bytes: None,
             transfer_pace: None,

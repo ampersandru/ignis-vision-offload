@@ -102,9 +102,6 @@ pub struct CudaLeafConfig {
     /// Frozen for the life of the load, like the two above: a sequence's
     /// cached keys are rotated with it.
     pub rope_scaling: ignis_core::RopeScaling,
-    /// Whether `rope_scaling` was resolved from `auto`: the load's log says
-    /// so, nothing else reads it.
-    pub rope_scaling_from_auto: ignis_core::FromAuto,
 }
 
 impl Default for CudaLeafConfig {
@@ -136,7 +133,6 @@ impl Default for CudaLeafConfig {
             speculation: None,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
-            rope_scaling_from_auto: ignis_core::FromAuto(false),
         }
     }
 }
@@ -559,8 +555,6 @@ impl StepLeaf for CudaLeaf {
             // from -- the one place a long-context run can be checked
             // against what the operator meant to ask for.
             rope_scaling = %self.config.rope_scaling,
-            // `auto` (the default) is resolved from `max_context_tokens`.
-            rope_scaling_source = if self.config.rope_scaling_from_auto.0 { "auto" } else { "configured" },
             "kv pool"
         );
         // P3-05 (GitHub #102, ADR 0019): capture the decode graphs once,

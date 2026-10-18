@@ -1589,7 +1589,7 @@ fn help_lists_the_speculation_flags() {
 #[test]
 fn rope_scaling_is_auto_by_default_and_none_at_the_default_context() {
     let config = config(&["--profile", "none"]);
-    assert!(config.rope_scaling_auto);
+    assert!(config.settings().model.rope_scaling.is_auto());
     assert_eq!(config.rope_scaling, RopeScaling::NONE);
     assert!(!config.rope_scaling.is_yarn());
 }
@@ -1598,13 +1598,13 @@ fn rope_scaling_is_auto_by_default_and_none_at_the_default_context() {
 fn auto_follows_the_context_and_an_explicit_value_overrides_it() {
     for (context, factor) in [("524288", 2.0), ("786432", 3.0), ("1048576", 4.0), ("589824", 2.25)] {
         let auto = config(&["--profile", "none", "--model-max-context", context]);
-        assert!(auto.rope_scaling_auto && auto.rope_scaling.is_yarn(), "{context}");
+        assert!(auto.settings().model.rope_scaling.is_auto() && auto.rope_scaling.is_yarn(), "{context}");
         assert_eq!(auto.rope_scaling.factor(), factor, "{context}");
     }
     let at_trained = config(&["--profile", "none", "--model-max-context", "262144"]);
     assert_eq!(at_trained.rope_scaling, RopeScaling::NONE);
     let explicit = config(&["--profile", "none", "--model-max-context", "1048576", "--model-rope-scaling", "yarn:2"]);
-    assert!(!explicit.rope_scaling_auto);
+    assert!(!explicit.settings().model.rope_scaling.is_auto());
     assert_eq!(explicit.rope_scaling.factor(), 2.0);
     let none = config(&["--profile", "none", "--model-max-context", "1048576", "--model-rope-scaling", "none"]);
     assert_eq!(none.rope_scaling, RopeScaling::NONE);
@@ -1626,23 +1626,13 @@ fn the_rope_scaling_flag_and_env_carry_the_reference_grammar() {
 }
 
 #[test]
-fn auto_at_a_million_and_an_explicit_yarn_four_are_the_same_load() {
-    use crate::runtime::EngineShape;
-    let base = ["--profile", "none", "--model-max-context", "1048576"];
-    let auto = EngineShape::from(&config(&base));
-    let explicit = EngineShape::from(&config(&[&base[..], &["--model-rope-scaling", "yarn:4"]].concat()));
-    assert!(auto.rope_scaling_from_auto.0 && !explicit.rope_scaling_from_auto.0);
-    assert_eq!(auto, explicit, "the switch's reload check and the retained pages key on the resolved table");
-}
-
-#[test]
 fn rope_scaling_auto_is_settable_from_a_file_and_a_patch_moves_the_factor_with_the_context() {
     let files = MemFiles::with(&[("c.yaml", "model:
   rope_scaling: auto
   max_context: 786432
 ")]);
     let from_file = with_files(&["--profile", "none", "--config", "c.yaml"], no_env, &files).unwrap();
-    assert!(from_file.rope_scaling_auto);
+    assert!(from_file.settings().model.rope_scaling.is_auto());
     assert_eq!(from_file.rope_scaling.factor(), 3.0);
 
     // A context change under `auto` re-resolves; both fields are ReloadRequired.
@@ -1652,17 +1642,49 @@ fn rope_scaling_auto_is_settable_from_a_file_and_a_patch_moves_the_factor_with_t
     assert_eq!(wider.rope_scaling.factor(), 4.0);
     // An explicit factor stays put under a smaller context; `auto` takes over again.
     let pinned = from_file.with_patch(&patch_of(&[("model", "rope_scaling", "yarn:2"), ("model", "max_context", "65536")])).unwrap();
-    assert!(!pinned.rope_scaling_auto);
+    assert!(!pinned.settings().model.rope_scaling.is_auto());
     assert_eq!(pinned.rope_scaling.factor(), 2.0);
     let back = pinned.with_patch(&patch_of(&[("model", "rope_scaling", "auto")])).unwrap();
-    assert!(back.rope_scaling_auto);
-    assert_eq!(back.rope_scaling, RopeScaling::NONE, "65,536 is inside the trained positions");
+    assert!(back.settings().model.rope_scaling.is_auto());
+    assert_eq!(back.rope_scaling, RopeScaling::NONE, "65,536 is inside the trained position envelope");
 }
 
 #[test]
 fn a_bad_rope_scaling_is_a_startup_error_naming_the_flag() {
     assert!(refused(&["--model-rope-scaling", "yarn:0.5"]).contains("--model-rope-scaling"));
-    assert!(refused(&["--model-rope-scaling", "linear"]).contains("--model-rope-scaling"));
+    let shape = refused(&["--model-rope-scaling", "linear"]);
+    assert!(shape.contains("--model-rope-scaling") && shape.contains("`auto`, `none` or `yarn:F"), "{shape}");
+}
+
+/// ADR 0057: past 64x the trained position envelope `auto` has no table, and
+/// the start says so rather than run the linear one. Only a model that takes
+/// a scaled table can reach it: Flash-Next's own context is not refused.
+#[test]
+fn auto_past_the_widest_yarn_factor_is_a_startup_error_naming_the_context() {
+    let refusal = refused(&["--profile", "none", "--model-max-context", "16777217"]);
+    assert!(refusal.contains("--model-max-context 16777217") && refusal.contains("at most 16777216 tokens"), "{refusal}");
+    assert_eq!(config(&["--profile", "none", "--model-max-context", "16777216"]).rope_scaling.factor(), 64.0);
+    let flash_next = config(&["--profile", "none", "--qwen38flashnext-model-max-context", "16777217"]);
+    assert_eq!(flash_next.for_family(ModelFamily::FlashNext).unwrap().rope_scaling, RopeScaling::NONE);
+}
+
+/// ADR 0057: Flash-Next rotates at its own linear table -- its kernel
+/// refuses a scaled one -- so its load's table, and the KV-disk identity
+/// read from it, is `none` under `auto` and under an explicit value alike,
+/// its own or the group's. The 27B under the same values runs them.
+#[test]
+fn flash_next_runs_its_own_linear_table_whatever_rope_scaling_says() {
+    use crate::runtime::EngineShape;
+    let base = ["--profile", "none", "--model-max-context", "1048576", "--model-kv-format", "hq-e8-2b"];
+    for extra in [&[][..], &["--model-rope-scaling", "yarn:4"], &["--qwen38flashnext-model-rope-scaling", "yarn:2"]] {
+        let flags = [&base[..], extra].concat();
+        let flash_next = config(&flags).for_family(ModelFamily::FlashNext).unwrap();
+        assert_eq!(flash_next.rope_scaling, RopeScaling::NONE, "{extra:?}");
+        assert_eq!(EngineShape::from(&flash_next).rope_scaling, RopeScaling::NONE, "{extra:?}");
+    }
+    let qwen = |extra: &[&str]| config(&[&base[..], extra].concat()).for_family(ModelFamily::Qwen38_27b).unwrap().rope_scaling;
+    assert_eq!(qwen(&[]).factor(), 4.0);
+    assert_eq!(qwen(&["--model-rope-scaling", "yarn:2"]).factor(), 2.0);
 }
 
 // ── the loaded model's family (spec flash-next/04, GitHub #302) ──────────

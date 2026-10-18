@@ -92,7 +92,7 @@ export const FIELDS: FieldDecl[] = [
   decl("model", "thinking_budget", "tokens|off", 32768, { patchable: true },
     "The reasoning tokens a request may spend before the model's close is forced; `off` = no budget. A request's own thinking_budget overrides it."),
   decl("model", "rope_scaling", "rope scaling", "auto", { scoped: true, patchable: true, reload_required: true },
-    "The text rotary table: `auto` (the default), `none` (the linear table) or `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's trained 262,144-position envelope — what a context past it needs. `auto` decides per model from its `model.max_context`: none up to 262,144, else YaRN at `max_context / 262,144`."),
+    "The text rotary table: `auto` (the default), `none` (the linear table) or `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's trained 262,144-position envelope — what a context past it needs. `auto` decides per model from its `model.max_context`: none up to 262,144, else YaRN at `max_context / 262,144`. Flash-Next rotates at its own linear table whatever this says: a YaRN table named for it is ignored, with a warning."),
   decl("vram", "kv_pool_bytes", "bytes|tokens", null, { scoped: true, patchable: true, reload_required: true },
     "The KV pool: a byte count (K/M/G suffix read) or tokens as `<n>tok`, `<n>Ktok`, `<n>Mtok`. Unset, the KV pool policy's: the rest of the VRAM budget when every weight is on the device (the 27B); 524,288 tokens shared by the lanes when Flash-Next's experts stream, the rest to the expert cache. Refused below one `max_context` sequence and a page per retained slot."),
   decl("vram", "headroom_bytes", "bytes", "1536M", { scoped: true, patchable: true, reload_required: true },
