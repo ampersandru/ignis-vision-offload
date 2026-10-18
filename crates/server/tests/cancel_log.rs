@@ -178,8 +178,8 @@ fn post(path: &str, body: Value) -> Request<Body> {
 async fn every_cause(template: Box<dyn TemplateProvider>, mode: LoopGuardMode, reply: TimeoutReply, log: &MemorySink, seen: usize) -> usize {
     let engine = never_runs();
     let server = Server::new(engine.clone(), template)
-        .with_request_timeout(Duration::from_millis(300))
-        .with_stream_timeout(Duration::from_millis(300))
+        .with_request_timeout(Duration::from_millis(100))
+        .with_stream_timeout(Duration::from_millis(100))
         .with_timeout_reply(reply)
         .with_loop_guard(LoopGuardParams { mode, ..LoopGuardParams::default() })
         .with_seedless_seed(0);
@@ -290,7 +290,7 @@ async fn a_cancelled_request_says_why_it_was_cancelled() {
     }
 
     // A decision's question past the deadline is answered `not_completed`.
-    let app = Server::new(never_runs(), Box::new(DecidingTemplate)).with_request_timeout(Duration::from_millis(300)).app();
+    let app = Server::new(never_runs(), Box::new(DecidingTemplate)).with_request_timeout(Duration::from_millis(100)).app();
     let decide = json!({ "state": "Payouts failing for 3 days.", "model": MODEL, "questions": { "urgent": { "type": "noul", "instructions": "Urgent?" } } });
     let response = app.oneshot(post("/v1/decide", decide)).await.unwrap();
     let status = response.status();

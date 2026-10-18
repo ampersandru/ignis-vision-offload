@@ -20,6 +20,7 @@ use http_body_util::BodyExt;
 use ignis_core::image::{
     ConditionId, ConditionUnfit, FakeImageRunner, ImageCondition, ImageError, ImagePlan, ImageRunner, ImageSize, RgbaImage, TargetLatents,
 };
+use ignis_server::deadline::TimeoutReply;
 use ignis_server::images::ImageModel;
 use ignis_server::{ActiveModel, Server};
 use serde_json::{json, Value};
@@ -706,12 +707,14 @@ async fn a_disconnect_cancels_its_job_between_steps_or_before_it_starts() {
 /// released and the runner free, and its request is `504 request_timeout` —
 /// always an error, whatever `server.timeout_reply` says: a cut image is no
 /// image. The job queued behind it, whose own deadline only began with its
-/// turn, runs to its end.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs() {
+/// turn, runs to its end. The same reply under either `reply`.
+async fn check_a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs(reply: TimeoutReply) {
     let gate = Gate::shut();
     let harness = Harness::new(Arc::clone(&gate));
-    harness.server.update_live(|live| live.request_timeout = Duration::from_secs(1));
+    harness.server.update_live(|live| {
+        live.request_timeout = Duration::from_secs(1);
+        live.timeout_reply = reply;
+    });
     let jobs = harness.jobs();
     let request = |prompt: &str| json_request("/v1/images/generations", &json!({ "prompt": prompt, "n": 2, "size": "64x64" }));
     let cut = tokio::spawn(harness.app.clone().oneshot(request("cut")));
@@ -739,16 +742,26 @@ async fn a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs() {
     until("the runner is free", || harness.held.load(Ordering::SeqCst) == 0 && jobs.in_flight().is_idle()).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs() {
+    check_a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs(TimeoutReply::Partial).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_past_its_deadline_is_a_504_under_the_error_reply_too() {
+    check_a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs(TimeoutReply::Error).await;
+}
+
 /// ADR 0058: a streamed job is held to `server.stream_timeout`. The images
 /// it completed have gone out; then its `error` event says
-/// `request_timeout`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_streamed_job_past_its_deadline_sends_its_images_then_a_request_timeout_error() {
+/// `request_timeout`, under either `reply`.
+async fn check_a_streamed_job_past_its_deadline_sends_its_images_then_an_error(reply: TimeoutReply) {
     let gate = Gate::shut();
     let harness = Harness::new(Arc::clone(&gate));
     harness.server.update_live(|live| {
         live.request_timeout = Duration::from_secs(600);
         live.stream_timeout = Duration::from_secs(1);
+        live.timeout_reply = reply;
     });
     // The whole first image, then the job waits in the second's first step.
     harness.faults.free_steps.store(8, Ordering::SeqCst);
@@ -768,6 +781,40 @@ async fn a_streamed_job_past_its_deadline_sends_its_images_then_a_request_timeou
     assert_eq!(data["error"]["code"], "request_timeout", "{data}");
     assert!(data["error"]["message"].as_str().unwrap().contains("--server-stream-timeout"), "{data}");
     until("the prefix released", || harness.held.load(Ordering::SeqCst) == 0 && harness.jobs().in_flight().is_idle()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_streamed_job_past_its_deadline_sends_its_images_then_a_request_timeout_error() {
+    check_a_streamed_job_past_its_deadline_sends_its_images_then_an_error(TimeoutReply::Partial).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_streamed_job_past_its_deadline_ends_with_the_same_error_under_the_error_reply() {
+    check_a_streamed_job_past_its_deadline_sends_its_images_then_an_error(TimeoutReply::Error).await;
+}
+
+/// `0` is no deadline for a streamed job either, held to
+/// `server.stream_timeout` alone: one held past its `request_timeout` makes
+/// its image, and no `error` event follows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_zero_stream_timeout_leaves_a_streamed_job_to_its_images() {
+    let gate = Gate::shut();
+    let harness = Harness::new(Arc::clone(&gate));
+    harness.server.update_live(|live| {
+        live.request_timeout = Duration::from_millis(10);
+        live.stream_timeout = Duration::ZERO;
+    });
+    let body = json!({ "prompt": "x", "size": "64x64", "stream": true });
+    let response = harness.app.clone().oneshot(json_request("/v1/images/generations", &body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = tokio::spawn(events_of(response));
+    until("the job runs", || harness.held.load(Ordering::SeqCst) == 1).await;
+    // Time passing is the point here, not a synchronization.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    gate.open();
+    let events = events.await.unwrap();
+    let (last, _) = events.last().unwrap();
+    assert_eq!(last, "image_generation.completed", "{events:?}");
 }
 
 /// `0` is no deadline for a job either: one held well past a zero-length

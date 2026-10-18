@@ -15,10 +15,7 @@ use axum::http::Request;
 use tower::ServiceExt;
 
 use ignis_core::mock::{GateController, GatedCompute, MockCompute};
-use ignis_core::{
-    Compute, ComputeError, ConcreteScheduler, DecodeJob, DecodeOutcome, PrefillJob, PrefillOutcome,
-    RequestId, SchedulerConfig,
-};
+use ignis_core::{Compute, ConcreteScheduler, RequestId, SchedulerConfig};
 use ignis_server::deadline::TimeoutReply;
 use ignis_server::engine::Engine;
 use ignis_server::instruction::{DeveloperMessagePolicy, InstructionPolicy, SystemMessagePolicy};
@@ -32,6 +29,9 @@ mod support;
 #[path = "support/failing_prefill.rs"]
 mod failing_prefill;
 use failing_prefill::FailingPrefill;
+#[path = "support/lanes.rs"]
+mod lanes;
+use lanes::{the_only_lane_admits_a_new_request, ReleaseObservedCompute};
 use support::nudge;
 
 const MODEL: &str = "test-model";
@@ -132,29 +132,6 @@ fn harness_gated_with_timeout(timeout: Duration) -> (Harness, Arc<GatedCompute>,
     let (gated, controller) = GatedCompute::new(Arc::new(MockCompute::new()));
     let h = harness_over_with_timeout(gated.clone() as Arc<dyn Compute>, timeout, TimeoutReply::Error);
     (h, gated, controller)
-}
-
-/// A compute decorator that exposes the public lifecycle release callback so
-/// an HTTP test can wait deterministically for cancellation to free the first
-/// request before submitting the next one.
-struct ReleaseObservedCompute {
-    inner: MockCompute,
-    released: std::sync::mpsc::SyncSender<RequestId>,
-}
-
-impl Compute for ReleaseObservedCompute {
-    fn prefill_step(&self, jobs: &[PrefillJob]) -> Result<Vec<PrefillOutcome>, ComputeError> {
-        self.inner.prefill_step(jobs)
-    }
-
-    fn decode_step(&self, jobs: &[DecodeJob]) -> Result<Vec<DecodeOutcome>, ComputeError> {
-        self.inner.decode_step(jobs)
-    }
-
-    fn release(&self, request: RequestId) {
-        self.inner.release(request);
-        let _ = self.released.send(request);
-    }
 }
 
 /// The token the seed-0 mock emits for request `id` at decode step `i`
@@ -582,37 +559,6 @@ fn one_lane_gated(timeout: Duration, reply: TimeoutReply) -> (axum::Router, Arc<
     (server.app(), gated, controller, released_rx)
 }
 
-/// On a [`one_lane_gated`] engine whose first request was released: a
-/// second submission is admitted, so the first no longer occupies the only
-/// in-flight slot. Leaves the gate passed.
-async fn the_only_lane_admits_a_new_request(app: &axum::Router, controller: &GateController) {
-    let second = Request::builder()
-        .method("POST")
-        .uri("/v1/chat/completions")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({
-                "model": MODEL,
-                "messages": [{ "role": "user", "content": "replacement" }],
-                "max_tokens": 1,
-                "stream": true
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let second_response = app.clone().oneshot(second).await.unwrap();
-    assert_eq!(second_response.status(), 200);
-    // The body lives until the gate is passed: dropping it cancels the
-    // request, and a cancel the model thread reads before the request's
-    // first advance releases it with no decode step at all — the gate is
-    // never entered and `wait_entered` waits forever. A Windows CI run hung
-    // four hours on exactly that.
-    let second_body = second_response.into_body();
-    controller.wait_entered();
-    controller.release();
-    drop(second_body);
-}
-
 #[tokio::test]
 async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot() {
     // The stream's deadline (`server.stream_timeout`) is far past this test.
@@ -650,7 +596,7 @@ async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot
         .recv_timeout(Duration::from_secs(5))
         .expect("disconnecting the SSE client must release its scheduler request");
 
-    the_only_lane_admits_a_new_request(&app, &controller).await;
+    the_only_lane_admits_a_new_request(&app, MODEL, &controller).await;
 }
 
 /// How the client of a non-streaming completion stops waiting for it.
@@ -721,7 +667,7 @@ async fn check_an_abandoned_completion_releases_its_lane(abandon: Abandon, stop:
     });
 
     // The client's retry no longer meets `engine_full`.
-    the_only_lane_admits_a_new_request(&app, &controller).await;
+    the_only_lane_admits_a_new_request(&app, MODEL, &controller).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
