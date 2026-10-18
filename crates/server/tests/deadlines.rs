@@ -247,6 +247,37 @@ async fn a_cut_completion_carries_what_the_loop_guard_held_back() {
     rig.the_lane_comes_back().await;
 }
 
+/// A completion its engine let go of — its stream closed without a finish —
+/// is an engine error, not a completion its deadline cut: `500
+/// engine_error`, never a `504 request_timeout`. With and without a stop
+/// sequence, which collect the answer two ways.
+async fn check_a_dropped_completion_is_an_engine_error(stop: Option<&str>) {
+    let rig = rig(&["Hello"], |server| server.with_request_timeout(Duration::from_secs(600)));
+    let mut body = chat(false);
+    if let Some(stop) = stop {
+        body["stop"] = json!([stop]);
+    }
+    let reply = tokio::spawn(post(&rig.app, "/v1/chat/completions", body).then(read));
+    rig.generates_then_holds(1);
+    // The scheduler releases a cancelled request without a `Done`.
+    rig.server.active().text_engine().cancel(0);
+    rig.gate.release();
+    let (status, stopped_by, body) = reply.await.unwrap();
+    assert_eq!((status, stopped_by), (500, None), "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "engine_error", "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completion_its_engine_dropped_is_an_engine_error() {
+    check_a_dropped_completion_is_an_engine_error(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completion_with_a_stop_sequence_its_engine_dropped_is_an_engine_error() {
+    check_a_dropped_completion_is_an_engine_error(Some("zzz")).await;
+}
+
 /// `0` is no deadline: a request held well past what a zero-length deadline
 /// would allow still ends on its own, at its cap, with no header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

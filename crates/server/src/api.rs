@@ -50,7 +50,7 @@ use ignis_core::{
 use crate::{ModelSource, ModelStatus, Server};
 use crate::decoder::{Channel, OutputDecoder};
 use crate::deadline::{StreamDeadline, Timeout, TimeoutReply};
-use crate::engine::{CollectError, Completion, Engine, EventStream, RequestNotes, collect_completion, drain_tokens};
+use crate::engine::{CollectError, Completion, Engine, EventStream, Generated, RequestNotes, collect_completion, drain_tokens};
 use crate::media::{has_media, MediaRejection, MediaStats};
 use crate::openai_fields::{self, Surface};
 use crate::template::{
@@ -2328,28 +2328,43 @@ async fn chat_completions(
             schemas,
             stop,
         );
-        let answer = collect_answer(&mut cancel, &running, &mut stream, live.request_timeout, pipeline).await;
-        return match answer {
-            Ok(Answer { ending: AnswerEnding::Done(FinishReason::Error), .. }) => engine_error_response(),
-            Ok(Answer { ending: AnswerEnding::DeadlinePassed, .. }) if live.timeout_reply == TimeoutReply::Error => timeout_error(),
+        let answer = match collect_answer(&mut stream, live.request_timeout, pipeline).await {
             Ok(answer) => {
-                let (reasoning, content, calls) = answer.parts();
-                let finish_reason = match answer.ending {
-                    AnswerEnding::Done(reason) => resolve_finish_reason(reason, !calls.is_empty(), answer.mid_call),
-                    AnswerEnding::Stopped => resolve_finish_reason(FinishReason::Stop, !calls.is_empty(), false),
-                    AnswerEnding::DeadlinePassed => finish_reason_str(FinishReason::Length),
-                };
-                let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens).with_rewound(&rewound);
-                let body = completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage);
                 match answer.ending {
-                    AnswerEnding::DeadlinePassed => crate::deadline::stopped_by_timeout(body),
-                    _ => body,
+                    AnswerEnding::Stopped => cancel.stop(answer.completion_tokens),
+                    _ => cancel.completed(),
                 }
+                answer
             }
-            Err(_) => {
+            // The answer so far, and what the loop guard held back of it, as
+            // an answer a length limit cut.
+            Err(CollectError::DeadlinePassed(cut)) => {
                 cancel.timed_out();
-                timeout_error()
+                if live.timeout_reply == TimeoutReply::Error {
+                    return timeout_error();
+                }
+                cut.finish(&owed_at_deadline(&running, &mut stream).await)
             }
+            // The engine already let it go: nothing to cancel.
+            Err(CollectError::EngineGaveUp) => {
+                cancel.completed();
+                return engine_error_response();
+            }
+        };
+        if answer.ending == AnswerEnding::Done(FinishReason::Error) {
+            return engine_error_response();
+        }
+        let (reasoning, content, calls) = answer.parts();
+        let finish_reason = match answer.ending {
+            AnswerEnding::Done(reason) => resolve_finish_reason(reason, !calls.is_empty(), answer.mid_call),
+            AnswerEnding::Stopped => resolve_finish_reason(FinishReason::Stop, !calls.is_empty(), false),
+            AnswerEnding::DeadlinePassed => finish_reason_str(FinishReason::Length),
+        };
+        let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens).with_rewound(&rewound);
+        let body = completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage);
+        return match answer.ending {
+            AnswerEnding::DeadlinePassed => crate::deadline::stopped_by_timeout(body),
+            _ => body,
         };
     }
     // Non-streaming: collect the request's tokens to its completion, or to
@@ -2366,7 +2381,7 @@ async fn chat_completions(
         }
         // The answer so far, and what the loop guard held back of it, as an
         // answer a length limit cut.
-        Err(CollectError::DeadlinePassed(Completion { mut tokens, cached_tokens, .. })) => {
+        Err(CollectError::DeadlinePassed(Generated { mut tokens, cached_tokens })) => {
             cancel.timed_out();
             if live.timeout_reply == TimeoutReply::Error {
                 return timeout_error();
@@ -2374,9 +2389,10 @@ async fn chat_completions(
             tokens.extend(owed_at_deadline(&running, &mut stream).await);
             (tokens, None, None, cached_tokens)
         }
-        Err(CollectError::NotCompleted) => {
-            cancel.timed_out();
-            return timeout_error();
+        // The engine already let it go: nothing to cancel.
+        Err(CollectError::EngineGaveUp) => {
+            cancel.completed();
+            return engine_error_response();
         }
     };
     let (reasoning_content, content, tool_calls) =
@@ -2524,42 +2540,23 @@ impl Answer {
 
 /// Drive a request with `stop` to its answer: each token through `pipeline`
 /// as it arrives, until the engine finishes the request or a stop sequence
-/// matches — then the engine request generating it, `running`'s, is
-/// stopped through `cancel` ([`Engine::stop`]) and nothing past that token
-/// is read. Bounded by `timeout`, as [`collect_completion`] is: past it the
-/// request is cancelled, and the answer is what it had generated, with what
-/// the loop guard held back of it ([`owed_at_deadline`]). A stream that
-/// closes without a finish is left to the caller.
+/// matches — then nothing past that token is read, and the caller stops the
+/// engine request at it ([`AnswerEnding::Stopped`]). Bounded by `timeout`,
+/// as [`collect_completion`] is: past it, what the answer had become, for
+/// the caller to cancel the request and finish it ([`CutAnswer`]).
 async fn collect_answer(
-    cancel: &mut CancelOnDrop,
-    running: &crate::loop_guard::Running,
     stream: &mut EventStream,
     timeout: std::time::Duration,
     mut pipeline: AnswerPipeline,
-) -> Result<Answer, CollectError> {
+) -> Result<Answer, CollectError<CutAnswer>> {
     let deadline = crate::deadline::after(timeout);
     let mut pieces = Vec::new();
     let mut cached_tokens = 0;
     loop {
         let event = match tokio::time::timeout_at(deadline, stream.recv()).await {
             Ok(Some(event)) => event,
-            Ok(None) => return Err(CollectError::NotCompleted),
-            Err(_) => {
-                cancel.timed_out();
-                join_pieces(&mut pieces, pipeline.push(&owed_at_deadline(running, stream).await));
-                // A stop sequence the owed tokens completed ends the answer
-                // there, as it would have before the deadline.
-                let (ending, mid_call) = match pipeline.fired() {
-                    true => (AnswerEnding::Stopped, false),
-                    false => {
-                        let (tail, mid_call) = pipeline.finish();
-                        join_pieces(&mut pieces, tail);
-                        (AnswerEnding::DeadlinePassed, mid_call)
-                    }
-                };
-                let completion_tokens = pipeline.consumed();
-                return Ok(Answer { pieces, ending, mid_call, completion_tokens, cached_tokens, forced_at: None });
-            }
+            Ok(None) => return Err(CollectError::EngineGaveUp),
+            Err(_) => return Err(CollectError::DeadlinePassed(CutAnswer { pieces, pipeline, cached_tokens })),
         };
         let (ending, mid_call, forced_at) = match event {
             SchedEvent::Token { token, .. } => {
@@ -2567,11 +2564,9 @@ async fn collect_answer(
                 if !pipeline.fired() {
                     continue;
                 }
-                cancel.stop(pipeline.consumed());
                 (AnswerEnding::Stopped, false, None)
             }
             SchedEvent::Done { reason, thinking, .. } => {
-                cancel.completed();
                 let (tail, mid_call) = pipeline.finish();
                 join_pieces(&mut pieces, tail);
                 (AnswerEnding::Done(pipeline.ended(reason)), mid_call, thinking.and_then(|b| b.forced_at))
@@ -2591,6 +2586,35 @@ async fn collect_answer(
             cached_tokens,
             forced_at,
         });
+    }
+}
+
+/// An answer its deadline cut ([`collect_answer`]): the pieces it had, and
+/// the pipeline the rest of its tokens go through.
+struct CutAnswer {
+    pieces: Vec<Piece>,
+    pipeline: AnswerPipeline,
+    cached_tokens: u32,
+}
+
+impl CutAnswer {
+    /// The answer, once its request was cancelled and `owed` — what the
+    /// loop guard held back, and the tokens already waiting
+    /// ([`owed_at_deadline`]) — was read: where the deadline cut it, a tool
+    /// call left open dropped whole; or, at a stop sequence the owed tokens
+    /// completed, there, as it would have ended before the deadline.
+    fn finish(self, owed: &[ignis_core::TokenId]) -> Answer {
+        let Self { mut pieces, mut pipeline, cached_tokens } = self;
+        join_pieces(&mut pieces, pipeline.push(owed));
+        let (ending, mid_call) = match pipeline.fired() {
+            true => (AnswerEnding::Stopped, false),
+            false => {
+                let (tail, mid_call) = pipeline.finish();
+                join_pieces(&mut pieces, tail);
+                (AnswerEnding::DeadlinePassed, mid_call)
+            }
+        };
+        Answer { pieces, ending, mid_call, completion_tokens: pipeline.consumed(), cached_tokens, forced_at: None }
     }
 }
 
