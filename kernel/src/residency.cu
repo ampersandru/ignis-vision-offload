@@ -266,7 +266,8 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
                                                     uint32_t stride) {
   __shared__ uint32_t s_sel[IGNIS_MOE_EXPERTS / 32];
   __shared__ uint32_t s_list[kMaxKeysPerLayer];
-  __shared__ uint32_t s_need[kClasses], s_pinned[kClasses], s_hits[kClasses];
+  // s_held: the class's LRU slots this step's hits hold (stamped `now`), not the pinned hot set.
+  __shared__ uint32_t s_need[kClasses], s_held[kClasses], s_hits[kClasses];
   __shared__ unsigned long long s_scratch[32];
   __shared__ uint32_t s_status, s_n, s_prefetch_hits;
   __shared__ BlockScan::TempStorage s_scan;
@@ -281,7 +282,7 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
   const bool repeat = st->last_layer == layer;
 
   if (t < IGNIS_MOE_EXPERTS / 32) s_sel[t] = 0;
-  if (t < kClasses) s_need[t] = s_pinned[t] = s_hits[t] = 0;
+  if (t < kClasses) s_need[t] = s_held[t] = s_hits[t] = 0;
   if (t == 0) s_status = s_n = s_prefetch_hits = 0;
   __syncthreads();
 
@@ -339,7 +340,7 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
       in_lru = resident && static_cast<uint32_t>(slot) < d.capacity[c];
       staged = !resident && !repeat && (d.flags[key] & kStaged) &&
                st->half_layer[layer & 1] == layer;
-      if (in_lru) atomicAdd(&s_pinned[c], 1u);
+      if (in_lru) atomicAdd(&s_held[c], 1u);
       if (!resident && !staged) atomicAdd(&s_need[c], 1u);
     }
   }
@@ -351,7 +352,7 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
   //    device-only residency that would miss, since there is no host pool to copy from.
   if (decode && t == 0) {
     for (uint32_t k = 0; k < kClasses; ++k) {
-      if (s_need[k] > d.capacity[k] - s_pinned[k]) {
+      if (s_need[k] > d.capacity[k] - s_held[k]) {
         s_status = 1 + k;
         break;
       }

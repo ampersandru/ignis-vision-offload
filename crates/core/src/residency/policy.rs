@@ -550,18 +550,19 @@ impl ResidencyModel {
         misses: &[ProjectionId],
     ) -> Result<(), StepError> {
         let mut need = [0u32; KClass::COUNT];
-        let mut pinned = [0u32; KClass::COUNT];
+        // The LRU slots this step's hits hold until it ends (not the pinned hot set).
+        let mut held = [0u32; KClass::COUNT];
         for &id in misses {
             need[self.catalog.class_of(id).index()] += 1;
         }
         for &id in hits {
             if self.resident.contains_key(&id) {
-                pinned[self.catalog.class_of(id).index()] += 1;
+                held[self.catalog.class_of(id).index()] += 1;
             }
         }
         for class in KClass::ALL {
             let i = class.index();
-            let usable = self.config.capacity[i].saturating_sub(pinned[i]);
+            let usable = self.config.capacity[i].saturating_sub(held[i]);
             if need[i] > usable {
                 return Err(StepError::NoEvictableSlot { class, layer });
             }
