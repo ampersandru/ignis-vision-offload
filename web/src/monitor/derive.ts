@@ -223,8 +223,11 @@ export type Reasoning = {
   loopedShare: number | null;
   /** Loops by what the guard did about them. */
   outcomes: Record<LoopOutcome, Tally>;
-  /** Rewinds in the window: nudges and closes, each also one cancel and one admission on the request counters. */
-  rewinds: number | null;
+  /**
+   * The guard's cancels in the window: a rewind's (a nudge or a close), each also one admission on the request
+   * counters, and one whose continuation was refused.
+   */
+  guardCancels: number | null;
   rewoundTokens: Tally;
   /** Tokens taken back over the tokens decoded in the window. */
   rewoundShare: number | null;
@@ -599,14 +602,15 @@ export function deriveReasoning(points: Point[], since: number): Reasoning {
   const looped = tally((s) => s.loopGuard?.looped ?? null);
   const outcomes = Object.fromEntries(LOOP_OUTCOMES.map((outcome) => [outcome, tally((s) => s.loopGuard?.loops[outcome] ?? null)])) as Record<LoopOutcome, Tally>;
   const rewoundTokens = tally((s) => s.loopGuard?.rewoundTokens ?? null);
-  const rewinds = outcomes.rewound.window === null && outcomes.closed.window === null ? null : (outcomes.rewound.window ?? 0) + (outcomes.closed.window ?? 0);
+  const cancelling = [outcomes.rewound.window, outcomes.closed.window, outcomes.submit_refused.window];
+  const guardCancels = cancelling.every((n) => n === null) ? null : cancelling.reduce<number>((sum, n) => sum + (n ?? 0), 0);
   return {
     guard: last.loopGuard !== null,
     watched,
     looped,
     loopedShare: shareOf(looped.window, watched.window),
     outcomes,
-    rewinds,
+    guardCancels,
     rewoundTokens,
     rewoundShare: shareOf(rewoundTokens.window, increaseOver(points, (s) => s.decodedTokens, since)),
     minRatio: windowHistogram(points, (s) => s.loopGuard?.minRatio ?? null, since),

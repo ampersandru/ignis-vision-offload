@@ -196,9 +196,12 @@ off the model thread, into the same atomics. `ignis_loop_guard_loops_total`'s
 `detected`, `too_little_kept`, `no_room`, `no_tokenizer`, `submit_refused`,
 this last counted by the guard when its continuation's submit gives nothing,
 which the ops log). They take the decision family's exception: **absent
-until the guard watched a request** (a server running it `off` exports none
-of them), then every series renders, zeros included. A watched request's
-lowest score is observed before its `Done` reaches the client. A rewind is
+until a request the guard watched ended or it saw a loop** (a server running
+it `off` exports none of them), then every series renders, zeros included. A
+loop counts as the guard sees it; its request counts once, as it ends and
+before its `Done` reaches the client: watched, looped when it did, and its
+lowest score, together, so a window never reads more looped requests than
+watched ones. A rewind is
 two engine requests: its cancel counts once in
 `ignis_requests_cancelled_total` and its continuation once in
 `ignis_requests_accepted_total`, which keep counting engine requests; the
@@ -373,7 +376,7 @@ The initial stable metric contract is:
 | `ignis_decision_answer_mass` | histogram | none | Share of the next-token distribution held by a **readout's** declared options. **Readout-only**, so its `_count` is deliberately below the counter's sum — see below. **Absent until the first one** |
 | `ignis_locates_total` | counter | `kind=log\|prose\|records`, `method=shortlist\|vote`, `compression=template_fold\|none`, `found=true\|false\|unmeasured` | `locate`s answered, by the route that answered them and whether it found an answer (#278, spec 22). Only the served combinations have a series. **Absent until the first one** |
 | `ignis_thinking_forced_closes_total` | counter | none | Completed requests whose reasoning block the thinking budget closed (#265, spec server/08). The request log's `thinking_forced` says which. **Absent until the first one** |
-| `ignis_loop_guard_watched_requests_total` | counter | none | Requests the loop guard watched: `log` or `rewind`, starting in their reasoning (#330, spec server/14). **Absent until the guard watched a request**, as the four below |
+| `ignis_loop_guard_watched_requests_total` | counter | none | Requests the loop guard watched: `log` or `rewind`, starting in their reasoning (#330, spec server/14). Counted as each one ends. **Absent until a watched request ended or a loop was seen**, as the four below |
 | `ignis_loop_guard_looped_requests_total` | counter | none | Of those, the requests with at least one loop, whatever its outcome |
 | `ignis_loop_guard_loops_total` | counter | `outcome=rewound\|closed\|detected\|too_little_kept\|no_room\|no_tokenizer\|submit_refused` | Loops the guard saw, one per `ignis.loop_guard.*` line, by what it did about them: taken back and nudged, taken back and closed, only logged (`log` mode, or a request with images), held, or not acted on |
 | `ignis_loop_guard_rewound_tokens_total` | counter | none | Generated tokens the guard's rewinds took back, closes included: the usage's `rewound_tokens`, summed |

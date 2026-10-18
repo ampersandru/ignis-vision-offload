@@ -432,10 +432,10 @@ describe("deriveSpeculation", () => {
 // GitHub #330: the loop guard's rewinds and the budget's closes are read over the window.
 describe("deriveReasoning", () => {
   const ratio = (cumulative: number[]) => ({ bounds: [0.2, 0.5, Infinity], cumulative, sum: 1, count: cumulative[2] });
-  const guard = (watched: number, looped: number, rewound: number, closed: number, tokens: number, buckets: number[]) => ({
+  const guard = (watched: number, looped: number, rewound: number, closed: number, tokens: number, buckets: number[], refused = 0) => ({
     watched,
     looped,
-    loops: { rewound, closed, detected: 0, too_little_kept: 0, no_room: 0, no_tokenizer: 0, submit_refused: 0 },
+    loops: { rewound, closed, detected: 0, too_little_kept: 0, no_room: 0, no_tokenizer: 0, submit_refused: refused },
     rewoundTokens: tokens,
     minRatio: ratio(buckets),
   });
@@ -443,14 +443,15 @@ describe("deriveReasoning", () => {
   it("reads the loops by outcome, the shares and the histogram over the window only", () => {
     const points = [
       at(0, { decodedTokens: 1000, thinkingForcedCloses: 1, loopGuard: guard(10, 1, 1, 0, 100, [0, 5, 10]) }),
-      at(60_000, { decodedTokens: 3000, thinkingForcedCloses: 4, loopGuard: guard(30, 6, 5, 1, 300, [2, 12, 30]) }),
+      at(60_000, { decodedTokens: 3000, thinkingForcedCloses: 4, loopGuard: guard(30, 6, 5, 1, 300, [2, 12, 30], 2) }),
     ];
     const r = deriveReasoning(points, 0);
     expect(r.watched).toEqual({ total: 30, window: 20 });
     expect(r.looped).toEqual({ total: 6, window: 5 });
     expect(r.loopedShare).toBeCloseTo(5 / 20);
     expect(r.outcomes.rewound).toEqual({ total: 5, window: 4 });
-    expect(r.rewinds).toBe(5);
+    // Four nudges, a close and two refused continuations: each cancelled its engine request.
+    expect(r.guardCancels).toBe(7);
     expect(r.rewoundTokens).toEqual({ total: 300, window: 200 });
     expect(r.rewoundShare).toBeCloseTo(200 / 2000);
     expect(r.minRatio?.cumulative).toEqual([2, 7, 20]);
@@ -461,14 +462,14 @@ describe("deriveReasoning", () => {
     const points = [at(0, { loopGuard: guard(30, 6, 5, 1, 300, [2, 12, 30]) }), at(60_000, { loopGuard: guard(4, 1, 1, 0, 64, [0, 3, 4]) })];
     const r = deriveReasoning(points, 0);
     expect(r.watched.window).toBe(4);
-    expect(r.rewinds).toBe(1);
+    expect(r.guardCancels).toBe(1);
     expect(r.rewoundTokens.window).toBe(64);
     expect(r.minRatio?.count).toBe(4);
   });
 
   it("is on the dashboard once the guard or the budget has a series, and off before", () => {
     expect(deriveDashboard([at(0, {})], 60_000)!.reasoning).toBeNull();
-    expect(deriveDashboard([at(0, { thinkingForcedCloses: 2 })], 60_000)!.reasoning).toMatchObject({ guard: false, rewinds: null });
+    expect(deriveDashboard([at(0, { thinkingForcedCloses: 2 })], 60_000)!.reasoning).toMatchObject({ guard: false, guardCancels: null });
     expect(deriveDashboard([at(0, { loopGuard: guard(1, 0, 0, 0, 0, [0, 1, 1]) })], 60_000)!.reasoning?.guard).toBe(true);
   });
 });

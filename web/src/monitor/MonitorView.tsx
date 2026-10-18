@@ -28,6 +28,7 @@ import type { MonitorState } from "./scrape.ts";
 import {
   IMAGE_OUTCOMES,
   LOOP_OUTCOMES,
+  type LoopOutcome,
   REJECT_REASONS,
   type RejectReason,
   RETAINED_FAMILY_KEYS,
@@ -243,10 +244,10 @@ function Board({ dash, state }: { dash: Dashboard; state: MonitorState }) {
         <Card title="Request flow" subtitle={`Requests per minute, ${formatWindow(RATE_SPAN_MS)} rolling`}>
           <Legend series={flow} value={(s) => latestOf(s, formatNumber)} />
           <TimeChart label="Request flow per minute" {...chart} height={210} format={formatNumber} series={flow} />
-          {/* GitHub #330: a rewind cancels the engine request and submits a continuation, so the cancels above count it; say how many were that. */}
-          {dash.reasoning?.rewinds ? (
+          {/* GitHub #330: a rewind cancels the engine request before it submits a continuation, so the cancels above count it; say how many were that. */}
+          {dash.reasoning?.guardCancels ? (
             <p className="text-[11px] text-ash">
-              {formatCount(dash.reasoning.rewinds)} of these cancels {dash.reasoning.rewinds === 1 ? "was a loop-guard rewind" : "were loop-guard rewinds"}
+              {formatCount(dash.reasoning.guardCancels)} of these cancels {dash.reasoning.guardCancels === 1 ? "was a loop-guard rewind" : "were loop-guard rewinds"}
             </p>
           ) : null}
         </Card>
@@ -1145,7 +1146,7 @@ function SpeculationCard({ speculation, win }: { speculation: Speculation; win: 
 /** A loop score as its bucket bound: 0.15, 1, +Inf. */
 const formatRatioBound = (le: number) => (le === Infinity ? "+Inf" : String(le));
 
-const LOOP_OUTCOME_LABEL: Record<(typeof LOOP_OUTCOMES)[number], string> = {
+const LOOP_OUTCOME_LABEL: Record<LoopOutcome, string> = {
   rewound: "Rewound",
   closed: "Closed",
   detected: "Only logged",

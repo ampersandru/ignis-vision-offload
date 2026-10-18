@@ -260,7 +260,7 @@ pub enum LoopOutcome {
 }
 
 impl LoopOutcome {
-    pub(crate) const ALL: [LoopOutcome; 7] =
+    const ALL: [LoopOutcome; 7] =
         [Self::Rewound, Self::Closed, Self::Detected, Self::TooLittleKept, Self::NoRoom, Self::NoTokenizer, Self::SubmitRefused];
 
     fn label(self) -> &'static str {
@@ -615,7 +615,8 @@ pub struct Metrics {
     /// The loop guard (GitHub #330): the requests it watched and those that
     /// looped, its loops per [`LoopOutcome::ALL`], the tokens its rewinds
     /// took back, and each watched request's lowest score. Absent from the
-    /// exposition until it watched a request, then whole.
+    /// exposition until a watched request ended or a loop was seen, then
+    /// whole.
     loop_guard_watched: AtomicU64,
     loop_guard_looped: AtomicU64,
     loop_guard_loops: [AtomicU64; LoopOutcome::ALL.len()],
@@ -906,13 +907,13 @@ impl Metrics {
         self.thinking_forced_closes.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The loop guard began watching a request (GitHub #330). Recorded by
-    /// the guard, off the model thread, like everything below.
+    /// A request the loop guard watched ended (GitHub #330). Recorded by the
+    /// guard, off the model thread, like everything below.
     pub(crate) fn record_loop_guard_watched(&self) {
         self.loop_guard_watched.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A watched request saw its first loop.
+    /// That request had looped.
     pub(crate) fn record_loop_guard_looped(&self) {
         self.loop_guard_looped.fetch_add(1, Ordering::Relaxed);
     }
@@ -1485,11 +1486,12 @@ impl Metrics {
             );
             let _ = writeln!(out, "ignis_thinking_forced_closes_total {forced}");
         }
-        // GitHub #330: the loop guard, absent until it watched a request (a
-        // load that runs it `off` exports nothing of it), then the whole
-        // family: its zeros are what a quiet guard reads as.
+        // GitHub #330: the loop guard, absent until a request it watched
+        // ended or it saw a loop (a load that runs it `off` exports nothing
+        // of it), then the whole family: its zeros are what a quiet guard
+        // reads as.
         let watched = read(&self.loop_guard_watched);
-        if watched > 0 {
+        if watched + self.loop_guard_loops.iter().map(read).sum::<u64>() > 0 {
             declare(&mut out, "ignis_loop_guard_watched_requests_total", "counter", "Requests the loop guard watched.");
             let _ = writeln!(out, "ignis_loop_guard_watched_requests_total {watched}");
             declare(
@@ -2029,6 +2031,13 @@ mod tests {
         }
         let labels: Vec<_> = LoopOutcome::ALL.iter().map(|outcome| outcome.label()).collect();
         assert_eq!(labels, ["rewound", "closed", "detected", "too_little_kept", "no_room", "no_tokenizer", "submit_refused"]);
+        // A loop in the first watched request, before it ended: the family
+        // is there, its request not counted yet.
+        let looping = Metrics::new();
+        looping.record_loop_guard_loop(LoopOutcome::Rewound);
+        let text = looping.render();
+        assert_eq!(value(&text, "ignis_loop_guard_loops_total", "outcome=\"rewound\""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_watched_requests_total", ""), "0", "{text}");
     }
 
     /// GitHub #330: each loop by its outcome, a request that looped once

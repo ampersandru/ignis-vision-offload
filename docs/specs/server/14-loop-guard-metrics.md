@@ -201,18 +201,20 @@ Where the build departs from, or pins down, the text above:
   `+Inf`. A zlib ratio is at most about 1, so `le="1"` below `_count` would
   be a score that is not a ratio, as it is for the answer mass.
 - **The family appears whole** (Acceptance 1), the decision family's way:
-  absent until the guard watched its first request, then every series,
-  each outcome's zero included. The Monitor reads "no loop in N watched
-  turns" off those zeros.
+  absent until a request the guard watched ended or it saw a loop, then
+  every series, each outcome's zero included. The Monitor reads "no loop in
+  N watched turns" off those zeros.
 - **`submit_refused` is counted by the guard**, when its continuation's
   submit gives nothing: the line itself is written by the ops that refused
   it (`EngineOps`, the socket's `QueuedOps`), which have no metrics, and
   both write it exactly before giving nothing. `detected` is also what a
   request with images reads, since its loops are only logged.
-- **When it is counted.** `watched` when the guard starts, a loop beside
-  its log line (before the tag reaches the client), and the lowest score
-  before the `Done` does, or when the guard ends without one. A scrape right
-  after a response therefore already has all of it.
+- **When it is counted** (Acceptance 3). A loop beside its log line,
+  before the tag reaches the client; the request once, as its guard ends:
+  `watched`, `looped` when it did and its lowest score together, before the
+  `Done` reaches the client, or when the guard ends without one. A window
+  then reads a request's three in step, and a scrape right after a response
+  already has all of it.
 - **The rewind's engine requests stay counted**, the default above: the
   `accepted` / `cancelled` rows of ADR 0017 say a rewind is one of each.
 - **Tests.** `tests/loop_guard_metrics.rs` (chat completions and
@@ -224,8 +226,11 @@ Where the build departs from, or pins down, the text above:
   `submit_refused` is the one outcome the HTTP tests never reach.
 - **The Monitor's Reasoning card** shows the budget's closes alone when only
   that counter exists, and the guard's figures once its family does. The
-  live `loop_guard_ratio` is **not marked** on the histogram: no part of the
-  page reads it today, and reading it needs new plumbing; the card's note
-  names the default (0.265) instead. `npm run dev:mock`'s simulated server
+  live `loop_guard_ratio` is **not marked** on the histogram: the Server
+  view reads it (`/v1/config`), but nothing hands that config to the
+  Monitor, and the mark is deferred rather than plumbed; the card's note
+  names the default (0.265) instead. The Request flow's note counts every
+  cancel the guard made: its rewinds and closes, and a rewind whose
+  continuation was refused, which cancelled its request all the same. `npm run dev:mock`'s simulated server
   does not model the guard, as it does not model speculation or the image
   jobs: the card is exercised on `fixture.ts`'s exposition in the tests.

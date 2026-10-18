@@ -997,7 +997,7 @@ impl Guarding {
     pub fn guard(self, ops: impl GuardOps, request: RequestId, stream: EventStream) -> (EventStream, Running) {
         let running = Running::new(request);
         let stream = match self.watched {
-            Some((params, input)) => guard_metered(params, ops, input, running.clone(), stream, self.rewound, self.metrics),
+            Some((params, input)) => guard_counted(params, ops, input, running.clone(), stream, self.rewound, self.metrics),
             None => stream,
         };
         (stream, running)
@@ -1008,26 +1008,14 @@ impl Guarding {
 /// from `input`) and its consumer: the stream returned. `Off` returns
 /// `stream` itself.
 pub fn guard(params: LoopGuardParams, ops: impl GuardOps, input: RequestInput, request: RequestId, stream: EventStream) -> EventStream {
-    guard_counted(params, ops, input, Running::new(request), stream, Rewound::default())
+    guard_counted(params, ops, input, Running::new(request), stream, Rewound::default(), None)
 }
 
 /// [`guard`] on the request `running` names, adding the tokens each rewind
-/// takes back to `rewound` and keeping `running` on the engine request
-/// generating now.
+/// takes back to `rewound`, keeping `running` on the engine request
+/// generating now, and counting what the guard does on `metrics` (GitHub
+/// #330).
 pub fn guard_counted(
-    params: LoopGuardParams,
-    ops: impl GuardOps,
-    input: RequestInput,
-    running: Running,
-    stream: EventStream,
-    rewound: Rewound,
-) -> EventStream {
-    guard_metered(params, ops, input, running, stream, rewound, None)
-}
-
-/// [`guard_counted`], counting the request as watched and every loop the
-/// guard sees on `metrics` (GitHub #330).
-fn guard_metered(
     params: LoopGuardParams,
     ops: impl GuardOps,
     input: RequestInput,
@@ -1040,9 +1028,6 @@ fn guard_metered(
         return stream;
     }
     running.0.guarded.store(true, Ordering::Relaxed);
-    if let Some(metrics) = &metrics {
-        metrics.record_loop_guard_watched();
-    }
     let (tx, rx) = unbounded_channel();
     tokio::spawn(run(params, ops, input, running, stream, tx, rewound, metrics));
     rx
@@ -1094,16 +1079,16 @@ struct Guard<O: GuardOps> {
     /// arrives: what its `Done` indices are offset by.
     offset: u32,
     rewound: Rewound,
-    /// Where the guard counts what it does (GitHub #330): whether the
-    /// request has looped yet, and the lowest of its scores so far, across
-    /// rewinds, until [`Guard::finish`] observes it.
+    /// Where the guard counts what it does (GitHub #330), until
+    /// [`Guard::finish`] counts the request itself: whether it has looped
+    /// yet, and the lowest of its scores so far, across rewinds.
     metrics: Option<Arc<Metrics>>,
     looped: bool,
     lowest: Option<f64>,
 }
 
 /// Every way the guard ends without a `Done` (the client left, the request
-/// was stopped, the engine's stream ended) still observes its lowest score.
+/// was stopped, the engine's stream ended) still counts the request.
 impl<O: GuardOps> Drop for Guard<O> {
     fn drop(&mut self) {
         self.finish();
@@ -1126,7 +1111,7 @@ impl<O: GuardOps> Guard<O> {
         }
         let scores = self.watch.history.len();
         let found = self.watch.check(&self.view.scored, &self.params);
-        if let Some(scored) = self.watch.history.get(scores) {
+        if let (Some(_), Some(scored)) = (&self.metrics, self.watch.history.get(scores)) {
             self.lowest = Some(self.lowest.map_or(scored.ratio, |lowest| lowest.min(scored.ratio)));
         }
         let score = found?;
@@ -1244,11 +1229,12 @@ impl<O: GuardOps> Guard<O> {
             "loop in the reasoning: rewound"
         );
         self.count(if close { LoopOutcome::Closed } else { LoopOutcome::Rewound });
+        let taken = (generated - kept) as u32;
         if let Some(metrics) = &self.metrics {
-            metrics.record_loop_guard_rewound_tokens((generated - kept) as u32);
+            metrics.record_loop_guard_rewound_tokens(taken);
         }
 
-        self.rewound.taken.fetch_add((generated - kept) as u32, Ordering::Relaxed);
+        self.rewound.taken.fetch_add(taken, Ordering::Relaxed);
         self.rewound.unsent.fetch_add((generated - self.sent.max(kept)) as u32, Ordering::Relaxed);
 
         // The model's view: the kept tokens, then the nudge. The client has
@@ -1263,21 +1249,25 @@ impl<O: GuardOps> Guard<O> {
     }
 
     /// Count a loop the guard saw by what it did about it, next to its log
-    /// line (GitHub #330); the request's first counts it as looped.
+    /// line (GitHub #330).
     fn count(&mut self, outcome: LoopOutcome) {
         if let Some(metrics) = &self.metrics {
-            if !self.looped {
-                metrics.record_loop_guard_looped();
-            }
             metrics.record_loop_guard_loop(outcome);
         }
         self.looped = true;
     }
 
-    /// The request's lowest score into the margin histogram, once: before
-    /// its `Done` goes to the client, else when the guard ends without one.
+    /// Count the request, once: watched, looped when it did, and its lowest
+    /// score into the margin histogram, all three together so a window
+    /// reads them in step. Before its `Done` goes to the client, else when
+    /// the guard ends without one.
     fn finish(&mut self) {
-        if let (Some(metrics), Some(lowest)) = (&self.metrics, self.lowest.take()) {
+        let Some(metrics) = self.metrics.take() else { return };
+        metrics.record_loop_guard_watched();
+        if self.looped {
+            metrics.record_loop_guard_looped();
+        }
+        if let Some(lowest) = self.lowest {
             metrics.observe_loop_guard_min_ratio(lowest);
         }
     }
@@ -2381,6 +2371,7 @@ mod tests {
             Running::new(1),
             scripted(1, &reasoning, false),
             rewound.clone(),
+            None,
         ))
         .await;
         // One token per char here: each tag reports its struck tokens.
@@ -2572,6 +2563,7 @@ mod tests {
             running.clone(),
             scripted(1, &reasoning, false),
             Rewound::default(),
+            None,
         );
         assert_eq!(running.get(), 1);
         until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
@@ -2803,7 +2795,7 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let running = Running::new(1);
         let p = LoopGuardParams { holdback_chars: 1000, ..params(LoopGuardMode::Rewind) };
-        let mut out = guard_counted(p, ops.clone(), input("P", 40_000), running.clone(), rx, Rewound::default());
+        let mut out = guard_counted(p, ops.clone(), input("P", 40_000), running.clone(), rx, Rewound::default(), None);
         for token in tokens_of(&reasoning) {
             tx.send(SchedEvent::Token { request: 1, token }).unwrap();
         }
@@ -2824,7 +2816,7 @@ mod tests {
         let reasoning = prose(5000) + &looping(6000);
         let running = Running::new(1);
         let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
-        let mut out = guard_counted(p, Stalled(ops.clone()), input("P", 40_000), running.clone(), scripted(1, &reasoning, false), Rewound::default());
+        let mut out = guard_counted(p, Stalled(ops.clone()), input("P", 40_000), running.clone(), scripted(1, &reasoning, false), Rewound::default(), None);
         until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
         let kept = text_of(&held_back(&running, &mut out).await);
         let continued = text_of(&ops.submitted.lock().unwrap()[0].tokens);
@@ -2838,7 +2830,7 @@ mod tests {
     async fn a_request_no_guard_watches_holds_nothing_back() {
         let running = Running::new(1);
         let (_tx, rx) = unbounded_channel();
-        let mut out = guard_counted(params(LoopGuardMode::Off), ops_with(Vec::new()), input("P", 40_000), running.clone(), rx, Rewound::default());
+        let mut out = guard_counted(params(LoopGuardMode::Off), ops_with(Vec::new()), input("P", 40_000), running.clone(), rx, Rewound::default(), None);
         assert!(!running.stop());
         assert!(held_back(&running, &mut out).await.is_empty(), "nothing read from the engine's own stream");
     }
@@ -2912,7 +2904,7 @@ mod tests {
         let p = LoopGuardParams { holdback_chars: 500, ..params(LoopGuardMode::Rewind) };
         let rewound = Rewound::default();
         let (received, done) =
-            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone())).await;
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), None)).await;
         let text = text_of(&received);
         let (sent, _) = text.split_once(TAG_OPEN).expect("the cut is in what was sent: a tag");
         let kept = kept_then(&text_of(&models_view(&ops, "P", &[])), NUDGES[0], &reasoning).0.chars().count();
@@ -2944,7 +2936,7 @@ mod tests {
         let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
         let rewound = Rewound::default();
         let (received, done) =
-            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone())).await;
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), None)).await;
         assert_eq!(ops.submitted.lock().unwrap().len(), 1, "rewound");
         assert!(!text_of(&received).contains(TAG_PREFIX), "no tag");
         assert_eq!(received, models_view(&ops, "P", &tokens_of(after)), "the model's view, token for token");
@@ -3005,7 +2997,7 @@ mod tests {
     /// drained: what the client got, and the projection once the guard ended.
     async fn metered(p: LoopGuardParams, ops: impl GuardOps, input: RequestInput, stream: EventStream) -> (String, Arc<Metrics>) {
         let metrics = Arc::new(Metrics::new());
-        let out = guard_metered(p, ops, input, Running::new(1), stream, Rewound::default(), Some(Arc::clone(&metrics)));
+        let out = guard_counted(p, ops, input, Running::new(1), stream, Rewound::default(), Some(Arc::clone(&metrics)));
         let (text, _) = drain(out).await;
         (text, metrics)
     }
@@ -3030,7 +3022,7 @@ mod tests {
 
         // Rewound: the tokens it took back are the usage's.
         let (metrics, rewound) = (Arc::new(Metrics::new()), Rewound::default());
-        let out = guard_metered(rewind.clone(), roma(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), Some(Arc::clone(&metrics)));
+        let out = guard_counted(rewind.clone(), roma(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), Some(Arc::clone(&metrics)));
         drain(out).await;
         assert_eq!((loops(&metrics, "rewound"), loops(&metrics, "closed")), (1, 0));
         assert!(rewound.taken() > 0);
@@ -3084,7 +3076,7 @@ mod tests {
     #[tokio::test]
     async fn a_watched_request_s_lowest_score_is_observed_once_before_its_done() {
         let metrics = Arc::new(Metrics::new());
-        let mut out = guard_metered(params(LoopGuardMode::Rewind), ops_with(Vec::new()), input("P", 40_000), Running::new(1), scripted(1, &prose(5000), true), Rewound::default(), Some(Arc::clone(&metrics)));
+        let mut out = guard_counted(params(LoopGuardMode::Rewind), ops_with(Vec::new()), input("P", 40_000), Running::new(1), scripted(1, &prose(5000), true), Rewound::default(), Some(Arc::clone(&metrics)));
         while !matches!(out.recv().await.expect("a done"), SchedEvent::Done { .. }) {}
         assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_count"), Some(1), "observed by the time the Done arrives");
         assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_bucket{le=\"0.4\"}"), Some(0), "prose scores 0.45-0.49");
@@ -3100,5 +3092,24 @@ mod tests {
         let (_, metrics) = metered(params(LoopGuardMode::Rewind), ops_with(Vec::new()), input("P", 40_000), scripted(1, &prose(500), true)).await;
         assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(1));
         assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_count"), Some(0));
+    }
+
+    /// GitHub #330: a loop counts as soon as the guard sees it; its request
+    /// counts, watched and looped together, only when it ends, so a window
+    /// never reads more looped requests than watched ones.
+    #[tokio::test]
+    async fn a_loop_counts_at_once_and_its_request_when_it_ends() {
+        let (continuation, rx) = unbounded_channel();
+        let metrics = Arc::new(Metrics::new());
+        let reasoning = prose(5000) + &looping(6000);
+        let ops = ops_with(vec![(2, rx)]);
+        let out = guard_counted(params(LoopGuardMode::Rewind), ops, input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), Rewound::default(), Some(Arc::clone(&metrics)));
+        until("the rewind counted", || sample(&metrics, "ignis_loop_guard_loops_total{outcome=\"rewound\"}") == Some(1)).await;
+        assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(0), "still generating");
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(0));
+        continuation.send(done_event(2, 0)).unwrap();
+        drain(out).await;
+        assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(1));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(1));
     }
 }

@@ -192,6 +192,7 @@ describe("MonitorView", () => {
       .replace('outcome="rewound"} 7', 'outcome="rewound"} 10')
       .replace('outcome="closed"} 1', 'outcome="closed"} 2')
       .replace('outcome="no_room"} 0', 'outcome="no_room"} 1')
+      .replace('outcome="submit_refused"} 0', 'outcome="submit_refused"} 1')
       .replace("rewound_tokens_total 5120", "rewound_tokens_total 6144")
       .replace("ignis_decoded_tokens_total 12400", "ignis_decoded_tokens_total 22400");
     const state = applyScrape(applyScrape(initialMonitor(), { kind: "ok", text: LOOP_GUARD_EXPOSITION }, now - 10_000, 2), { kind: "ok", text: later }, now, 2);
@@ -207,7 +208,9 @@ describe("MonitorView", () => {
     expect(html).toContain("No room");
     expect(html).not.toContain("No tokenizer");
     expect(html).toContain("Budget closes");
-    expect(html).toContain("4 of these cancels were loop-guard rewinds");
+    expect(html).toContain("Continuation refused");
+    // Three nudges, a close and a refused continuation: five cancels.
+    expect(html).toContain("5 of these cancels were loop-guard rewinds");
     expect(html).toContain("Lowest loop score per turn");
   });
 
