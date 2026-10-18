@@ -111,7 +111,7 @@ The client sends text frames carrying one JSON event each. `response.create` tak
 
 `response.cancel` (an ignis extension borrowed from the Realtime API, `{type, response_id}`) ends one response with `response.incomplete`, `status: \"cancelled\"`, and stops the engine request generating for it, a rewind's continuation included. `response.steer` is refused (`steering_not_supported`). A failure is an `error` event `{type: \"error\", status, error: {type, code, message, param}, stream_id?}`, and never closes the socket. Closing it cancels everything the connection had running or queued.
 
-A socket idle for `server.socket_idle_close` seconds (default 600; 0 never) — nothing running or queued on it, and no text or binary frame from the client; pings do not count — is closed by the server with a normal close frame (1000) whose reason says so. Open a new socket to continue: a `previous_response_id` of the closed one is not found on it.",
+A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) — nothing running or queued on it, and no text or binary frame from the client; pings do not count — is closed by the server with a normal close frame (1000) whose reason says so. Open a new socket to continue: a `previous_response_id` of the closed one is not found on it.",
     responses(
         (status = 101, description = "Switching protocols: the socket is open."),
         (status = 400, description = "Not a WebSocket upgrade.", body = ApiError),

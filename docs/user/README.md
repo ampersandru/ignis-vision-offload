@@ -120,7 +120,7 @@ container, an open Responses WebSocket is a connection in flight. Knative's
 queue-proxy waits for it to drain before the server even gets its SIGTERM, up
 to the revision's `timeoutSeconds`, and counts it as concurrency, so the
 service does not scale to zero while one is open. The server closes a socket
-left idle for `--server-socket-idle-close` seconds (default `600`,
+left idle for `--server-socket-idle-close` seconds (default `300`,
 [WebSocket mode](#the-responses-api)), and the Playground closes its own a
 minute after its tab is hidden, so a tab left open holds the pod, and its GPU,
 for minutes rather than for the revision's timeout. Lower it
@@ -441,7 +441,7 @@ change does not reach and a `null` removes.
 | `--server-request-timeout <secs>` | `IGNIS_SERVER_REQUEST_TIMEOUT` | `120` (max `3600`) | The deadline for a non-streaming completion; expiry is a 504 `request_timeout`. |
 | `--switch-drain-timeout <secs>` | `IGNIS_SWITCH_DRAIN_TIMEOUT` | `30` (max `3600`) | How long a model switch lets the old model's running requests finish before it cancels them (`0` cancels at once). |
 | `--model-idle-unload <secs>` | `IGNIS_MODEL_IDLE_UNLOAD` | `300` (max `604800`) | Seconds with no request using the model before it is unloaded, the server staying up; the next request loads it again ([below](#idle-unload)). `0` never unloads. Patchable live. |
-| `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `600` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
+| `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `300` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
 | `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What Flash-Next's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next)). Per family as `--qwen38flashnext-model-host-margin-bytes`, which a 27B or image-model start takes for a later switch; neither makes a host plan. (`make` knob `HOST_MARGIN_BYTES`.) |
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is. `POST /v1/models/switch` is not affected. |
 | `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
@@ -1151,7 +1151,7 @@ one per text frame. On the socket:
 - **An idle socket is closed.** A socket with nothing running or queued on it
   and no text or binary frame from its client (a ping does not count) for
   `--server-socket-idle-close` seconds (file key `server.socket_idle_close`,
-  default `600`) is closed by the server with a normal close frame (`1000`)
+  default `300`) is closed by the server with a normal close frame (`1000`)
   whose reason says so. The client's next request opens a new socket; a
   `previous_response_id` from the old one is `previous_response_not_found`
   there, so it sends the full input. `0` never closes. The value is patchable

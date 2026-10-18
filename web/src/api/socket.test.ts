@@ -704,7 +704,7 @@ describe("a dropped socket", () => {
 });
 
 describe("a socket ignis closed (GitHub #329)", () => {
-  const idle = "idle for 600s (server.socket_idle_close); open a new socket to continue";
+  const idle = "idle for 300s (server.socket_idle_close); open a new socket to continue";
 
   it("fails nothing when ignis closes an idle socket, and the next turn opens another and sends the whole history", async () => {
     const h = harness();

@@ -1215,13 +1215,13 @@ fn the_idle_unload_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
 // ── the Responses socket's idle close (GitHub #329) ──────────────────────
 
 /// `server.socket_idle_close` resolves from flag, env and file with the
-/// usual precedence, defaults to ten minutes, takes 0 (never), refuses a
+/// usual precedence, defaults to five minutes, takes 0 (never), refuses a
 /// value past its ceiling naming both, and is visible and patchable with no
 /// reload: the live knob a socket reads.
 #[test]
-fn the_socket_idle_close_defaults_to_ten_minutes_takes_zero_and_has_a_ceiling() {
-    assert_eq!(config(&[]).socket_idle_close_secs, 600);
-    assert_eq!(DEFAULT_SOCKET_IDLE_CLOSE_SECS, 600);
+fn the_socket_idle_close_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
+    assert_eq!(config(&[]).socket_idle_close_secs, 300);
+    assert_eq!(DEFAULT_SOCKET_IDLE_CLOSE_SECS, 300);
     let env = env_map(&[("IGNIS_SERVER_SOCKET_IDLE_CLOSE", "90")]);
     assert_eq!(expect_config(resolve(&[], env).expect("resolve")).socket_idle_close_secs, 90);
     let env = env_map(&[("IGNIS_SERVER_SOCKET_IDLE_CLOSE", "90")]);

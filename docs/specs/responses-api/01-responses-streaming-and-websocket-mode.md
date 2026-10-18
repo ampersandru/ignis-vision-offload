@@ -314,7 +314,7 @@ the container gets its SIGTERM, and counts it as concurrency, so a Playground
 tab left open held a pod, and its GPU, for the revision's whole
 `timeoutSeconds`. A socket with nothing running, queued or waiting on it and
 no text or binary frame from its client for `server.socket_idle_close`
-seconds (default 600, `0` never; patchable live, read by every open socket at
+seconds (default 300, `0` never; patchable live, read by every open socket at
 least once a second) is closed by the server with a normal close frame
 (`1000`) whose reason names the field. A ping proves the connection, not a
 user, and does not count. The connection ends once the frame is sent, without

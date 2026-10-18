@@ -126,12 +126,12 @@ pub const DEFAULT_MODEL_IDLE_UNLOAD_SECS: u32 = 300;
 pub const MAX_MODEL_IDLE_UNLOAD_SECS: u32 = 7 * 24 * 3600;
 
 /// How long a Responses WebSocket may sit idle before the server closes it,
-/// in seconds (`--server-socket-idle-close`, GitHub #329): ten minutes is
+/// in seconds (`--server-socket-idle-close`, GitHub #329): five minutes is
 /// longer than a person pauses between the turns of one session, and lets a
 /// tab left open release a Knative pod, whose drain waits on every open
 /// socket, within minutes. A client's next request reconnects. 0 never
 /// closes.
-pub const DEFAULT_SOCKET_IDLE_CLOSE_SECS: u32 = 600;
+pub const DEFAULT_SOCKET_IDLE_CLOSE_SECS: u32 = 300;
 
 /// The upper bound `--server-socket-idle-close` accepts: a week, a ceiling
 /// against a fat-fingered value as [`MAX_MODEL_IDLE_UNLOAD_SECS`] is for its
