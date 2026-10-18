@@ -334,12 +334,15 @@ names a bundle of hardware-shaped defaults, below the file and above the
 built-in defaults. Two are built in:
 - `rtx5090` (the default) holds numbers measured on that card.
 - `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
-  Server Edition, 96 GB each). Both models get 1,048,576 tokens of context
-  (`yarn:4`), and Flash-Next gets 8 decode lanes and MTP speculation with 3
-  draft tokens ([below](#flash-next-speculation-mtp)). Everything else is as
-  on the 5090, except that the 27B's VRAM headroom stays at its default. These
-  numbers are **derived, not yet measured** on the card: start it with
-  `--profile rtxpro6000`, and expect them to change once they are.
+  Server Edition, 96 GB each), measured on a Server Edition under Linux
+  ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). Both
+  models get 1,048,576 tokens of context (`yarn:4`). Flash-Next gets 8 decode
+  lanes, MTP speculation with 3 draft tokens
+  ([below](#flash-next-speculation-mtp)) and `--ngram-hot-bytes auto`: the
+  whole n-gram table in RAM when the host plan leaves room for it
+  ([below](#flash-next-n-gram-startup-cache)). Everything else is as on the
+  5090, except that the 27B's VRAM headroom stays at its default. Start it
+  with `--profile rtxpro6000`.
 
 A file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
 card.
@@ -460,13 +463,19 @@ turns it on (below). Before turning it on:
   --spec-draft-rows 3`, or serve a single lane outright (`make MODEL=flash-next
   LANES=1 SPEC=mtp`), which also gives the expert cache the ~1 GiB the shared
   pool holds beyond one lane's context. **Leave it off** when several agents decode together.
-- A card that holds every expert in VRAM (96 GB) copies none over PCIe,
-  which is where MTP should pay most. The `rtxpro6000` profile turns it on
-  there with 3 draft tokens and the whole row budget: a verify round carries
-  at most 8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two active
-  lanes, 1 at three or four, and none from five on. It is not measured there
-  yet. A file's `spec: { qwen38flashnext: { backend: off } }` turns it off
-  alone; `--spec-backend off` turns off the 27B's DFlash2 with it.
+- A card that holds every expert in VRAM (96 GB) copies none over PCIe, and
+  there MTP pays at every lane count it drafts at. The `rtxpro6000` profile
+  turns it on with 3 draft tokens and the whole row budget: a verify round
+  carries at most 8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two
+  active lanes, 1 at three or four, and none from five on. Measured on an RTX
+  PRO 6000 Server Edition (2026-10-18,
+  [finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)), against
+  speculation off: one lane 1.85x on code and 1.44x on prose greedy (1.9x and
+  1.3x sampled), two lanes 1.24-1.53x, four 1.12-1.19x, eight 0.97-0.98x
+  (no drafts there; the head's fixed cost). More drafts help code and cost
+  prose: 2, 4 and 5 each do worse than 3 over the two together. A file's
+  `spec: { qwen38flashnext: { backend: off } }` turns it off alone;
+  `--spec-backend off` turns off the 27B's DFlash2 with it.
 
 ### VRAM budget and retained state
 
@@ -525,7 +534,7 @@ class is refused whatever the flag says.
 | `--vram-allow-oversubscription` | `IGNIS_VRAM_ALLOW_OVERSUBSCRIPTION` | off | With `--vram-budget-bytes` only: start above free memory (or below the plan's minimum) with a warning instead of a refusal. On Windows that pages. Both models. |
 | `--vram-allow-expert-cache-below-floor` | `IGNIS_VRAM_ALLOW_EXPERT_CACHE_BELOW_FLOOR` | off | Flash-Next only: start with an expert cache below its 12 GiB floor, with a warning ([above](#the-kv-pool)). The 27B, which has no expert cache, refuses it. (`make` knob `ALLOW_EXPERT_CACHE_BELOW_FLOOR=1`.) |
 | `--reuse-prompt <on\|off>` | `IGNIS_REUSE_PROMPT` | `on` | `off`: no prompt checkpoint is captured or reused, and no prefix is shared unless `--reuse-retained-device` or `--reuse-retained-host` gives slots for it. |
-| `--reuse-retained-device <n>` | `IGNIS_REUSE_RETAINED_DEVICE` | `0` | Retained slots in VRAM: reserved in the VRAM plan, copied device to device (~0.3 ms), and handed out before any host slot. A card with VRAM to spare can take `--reuse-retained-device 16 --reuse-retained-host 0`. |
+| `--reuse-retained-device <n>` | `IGNIS_REUSE_RETAINED_DEVICE` | `0` | Retained slots in VRAM: reserved in the VRAM plan, copied device to device (~0.3 ms), and handed out before any host slot. A card with VRAM to spare can take `--reuse-retained-device 16 --reuse-retained-host 0`; on an RTX PRO 6000 it took a conversation's second-turn TTFT from 0.36 to 0.32 s after a 64K-token first turn on Flash-Next and left the 27B's within noise, so no profile sets it. |
 | `--reuse-retained-host <n>` | `IGNIS_REUSE_RETAINED_HOST` | two per decode lane (16); `0` with `--reuse-prompt off` | Retained slots in one pinned host block reserved at start, ~222 MiB each at the default load (3.5 GiB for 16): no VRAM, so the KV pool gets it; a capture and a claim each cost a PCIe copy (~15–19 ms). Both kinds hold the images of retained checkpoints and shared prefixes. When none is free, retained state gives one up — checkpoints before prefixes, `agent` before `interactive`, then least recently used; when nothing can, the publish or capture is skipped. `--retained-slots` was replaced by these two and now refuses the start. |
 | `--reuse-retained-interactive-ttl <secs>` | `IGNIS_REUSE_RETAINED_INTERACTIVE_TTL` | `300` | Idle seconds after which a main-conversation checkpoint in KV-RAM ranks as a subagent's. Needs `--reuse-prompt on`. |
 
@@ -632,7 +641,12 @@ Serving Flash-Next needs about **46-47 GB of available RAM**: 38 GB of pinned
 experts, 1 GB of n-gram hot rows, ~0.5 GB of staging (KV-disk's 64 MiB
 included: `--qwen38flashnext-kv-disk-bytes 0` drops it), ~1 GB of retained host
 slots, the 2 GiB KV-RAM arena and the 4 GiB margin the load refuses to dip into
-(`--model-host-margin-bytes`: it never lets reuse push Windows into paging). A load below that is refused
+(`--model-host-margin-bytes`: it never lets reuse push Windows into paging).
+"Available" is free memory plus the page cache the system can drop (Windows'
+free plus standby, Linux's `MemAvailable`); in a Linux container it is capped
+by the container's memory limit (every cgroup v2 `memory.max` above the
+process, less what is charged there and not page cache), so a load inside a
+smaller limit is refused rather than OOM-killed. A load below that is refused
 in GiB, with how far short it fell and the plan line to shrink:
 
 ```
@@ -659,7 +673,12 @@ Check `make config MODEL=flash-next` for the lines a start will use.
 A host with RAM to spare can go the other way: `--ngram-hot-bytes auto`
 (`make MODEL=flash-next NGRAM_HOT_BYTES=auto`) gives the hot rows what the
 plan leaves, and with about 28 GB more available than the figure above
-(~75 GB) it holds the whole table and the NVMe is out of the decode path.
+(~75 GB) it holds the whole table and the NVMe is out of the decode path. The
+`rtxpro6000` profile sets `auto`. On a cloud block volume (EBS gp3, 16,000
+IOPS) the whole table measured 1.24x the 1 GiB default's decode at one and
+eight lanes and 2.3x its prefill (a 32K-token TTFT of 7.4 s instead of 16.9 s,
+[finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)); a local
+NVMe narrows the gap.
 
 ### Vision
 
