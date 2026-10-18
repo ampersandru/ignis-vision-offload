@@ -436,7 +436,7 @@ pub(crate) async fn switch_to_named_model(server: &Server, route: ModelKind, mod
     if let Some(named) = unswitchable_named(server, route, named.as_deref()) {
         return Err(unknown_model(server, named));
     }
-    crate::model_switch::ensure_loaded(server, named.as_deref()).await.map_err(|reason| load_failed(server, &reason))?;
+    crate::model_switch::ensure_loaded(server, named.as_deref()).await.map_err(|refusal| load_refused(server, refusal))?;
     crate::model_switch::implicit_switch(server, named.as_deref()).await.map_err(implicit_switch_refused)
 }
 
@@ -533,20 +533,36 @@ pub(crate) fn unknown_model(server: &Server, model: &str) -> Response {
     )
 }
 
-/// The answer to a request that waited on the load leaving `unloaded` (spec
-/// model-switch/02 AC 7) when that load failed: `503 model_load_failed` with
-/// its reason. No `Retry-After`: nothing says a retry fares better, though
-/// the next request does try the load again.
-pub(crate) fn load_failed(server: &Server, reason: &str) -> Response {
-    error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "server_error",
-        "model_load_failed",
-        format!(
-            "{} was unloaded while idle and loading a model again failed, so the request was not served: {reason}",
-            server.active().model_id()
+/// The answer to a request that needed the unloaded model and was not served
+/// on it ([`crate::model_switch::ensure_loaded`]). The load it waited on
+/// failed (spec model-switch/02 AC 7): `503 model_load_failed` with its
+/// reason, and no `Retry-After`, since nothing says a retry fares better,
+/// though the next request does try the load again. The server began to stop
+/// (GitHub #329): [`stopping`].
+pub(crate) fn load_refused(server: &Server, refusal: crate::model_switch::LoadRefusal) -> Response {
+    match refusal {
+        crate::model_switch::LoadRefusal::Failed(reason) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_error",
+            "model_load_failed",
+            format!(
+                "{} was unloaded while idle and loading a model again failed, so the request was not served: {reason}",
+                server.active().model_id()
+            ),
         ),
-    )
+        crate::model_switch::LoadRefusal::Stopping => {
+            stopping(format!("{} is not loaded, and no load is waited for while the server stops", server.active().model_id()))
+        }
+    }
+}
+
+/// The answer to a request that waited for a switch or a load, or would
+/// have, once the server began to stop (GitHub #329): `503 server_stopping`
+/// with `Retry-After`, where `why` says what it was not served on. The load
+/// is not waited for — it has no cancel, and the process ends under it — so
+/// the request is better sent again to a server that stays.
+fn stopping(why: String) -> Response {
+    unavailable("server_stopping", format!("the server is stopping: {why}; send the request again"))
 }
 
 /// Counts a request that uses the model ([`uses_the_model`]) as its use, for
@@ -587,7 +603,8 @@ fn uses_the_model(method: &axum::http::Method, path: &str) -> bool {
 /// did not land is `503 model_switch_failed` with the switch's reason and
 /// **no** `Retry-After` — 5xx because the server, not the request, failed,
 /// but nothing says a retry would fare better, and each one is a full
-/// teardown and reload of the model serving everyone else.
+/// teardown and reload of the model serving everyone else. A switch the
+/// server began to stop under is [`stopping`]'s `503 server_stopping`.
 pub(crate) fn implicit_switch_refused(refusal: crate::model_switch::ImplicitRefusal) -> Response {
     match refusal {
         crate::model_switch::ImplicitRefusal::Switching(running) => {
@@ -599,6 +616,9 @@ pub(crate) fn implicit_switch_refused(refusal: crate::model_switch::ImplicitRefu
             "model_switch_failed",
             format!("switching to {to} failed, so the request was not served: {reason}"),
         ),
+        crate::model_switch::ImplicitRefusal::Stopping { to } => {
+            stopping(format!("the switch to {to} is not waited for while the server stops"))
+        }
     }
 }
 
@@ -2155,7 +2175,7 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
         (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
-        (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`).", body = ApiError),
+        (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
         (status = 504, description = "The engine did not finish the request within `--server-request-timeout`.", body = ApiError),
     ),
 )]

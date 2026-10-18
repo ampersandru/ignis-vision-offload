@@ -5,19 +5,21 @@
 //! leave the process a zombie still holding VRAM. `Server::serve_on_until`
 //! therefore calls [`ignis_server::ActiveModel::shut_down`] after the HTTP
 //! drain — these tests prove the driver handle is gone once serve returns,
-//! a refused metrics listener included, and that a switch still running then
-//! is waited for, so the model it publishes is the one joined. What a warm-up
-//! left running logs is `serve_exit_warm_up_log.rs`'s.
+//! a refused metrics listener included. A switch still running then is not
+//! waited for (GitHub #329): it is returned, nothing torn down, for `main` to
+//! end the process under it. What a warm-up left running logs is
+//! `serve_exit_warm_up_log.rs`'s; the requests waiting on a load,
+//! `serve_exit_load.rs`'s.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use ignis_core::{mock::MockCompute, ConcreteScheduler, SchedulerConfig};
 use ignis_server::engine::Engine;
-use ignis_server::model_switch::{begin, SwitchOutcome, Switcher};
+use ignis_server::model_switch::{begin, SwitchOutcome, SwitchStarted, Switcher};
 use ignis_server::telemetry::SystemClock;
 use ignis_server::template::SimpleTemplateProvider;
-use ignis_server::{ActiveModel, Server};
+use ignis_server::{ActiveModel, Served, Server};
 
 #[path = "support/switch.rs"]
 mod switch_support;
@@ -55,10 +57,12 @@ async fn serve_on_until_joins_the_model_thread_before_returning() {
     let server = Server::from_active(model);
     let active = server.active();
     // Resolve immediately: only the join after the drain is looked at.
-    server
+    let served = server
         .serve_on_until(listener().await, None, std::future::ready(()))
         .await
         .expect("serve");
+
+    assert_eq!(served, Served::Drained);
 
     assert!(
         !active.holds_driver(),
@@ -83,31 +87,33 @@ async fn a_metrics_listener_refused_still_joins_the_model_thread() {
     );
 }
 
-/// A switch begun before serving ended — its `202` answered, its load still
-/// running — outlives the drain. The exit waits for it, then joins the model
-/// it published: nothing is left resident, nothing detached.
+/// GitHub #329: a switch begun before serving ended — its `202` answered,
+/// its load still running — is not waited for: a load has no cancel, and a
+/// cold one outlasts a pod's grace period. The serve returns once HTTP has
+/// drained, naming the switch, with nothing torn down: the model the switch
+/// is tearing down or loading is the process end's to free.
 #[tokio::test]
-async fn a_switch_still_running_when_serving_ends_is_waited_for_and_its_model_joined() {
+async fn a_switch_still_loading_when_serving_ends_is_returned_not_waited_for() {
     let loader = MockLoader::new();
     let server = Server::from_active(loader.model("mock-a"))
         .with_switcher(Switcher::new(Arc::clone(&loader) as _, Duration::from_secs(30)));
     let load = loader.hold_next_load();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let mut serving = tokio::spawn(server.clone().serve_on_until(listener().await, None, async {
+    let serving = tokio::spawn(server.clone().serve_on_until(listener().await, None, async {
         let _ = stopped.await;
     }));
     let (_, switch) = begin(&server, source("mock-b")).expect("begins");
     stop.send(()).expect("serving");
 
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), &mut serving).await.is_err(),
-        "serve returned while the switch was still loading its target"
-    );
-    load.send(()).expect("the load is held");
-    serving.await.expect("the serve task").expect("serve");
+    let served = tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("serve returned while the switch was still loading its target")
+        .expect("the serve task")
+        .expect("serve");
+    assert_eq!(served, Served::LoadAbandoned(SwitchStarted { from: "mock-a".into(), to: "mock-b".into() }));
+    assert!(loader.loads().is_empty(), "the load was not waited for");
 
+    // Released only so the test's runtime is not left joining a held thread.
+    load.send(()).expect("the load is held");
     assert_eq!(switch.await.expect("the switch task"), SwitchOutcome::Switched);
-    assert_eq!(server.active().model_id(), "mock-b");
-    assert!(!server.active().holds_driver(), "the switched-to model's thread was joined");
-    assert_eq!(loader.resident(), 0, "no model is left resident once serve returns");
 }

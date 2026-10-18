@@ -57,8 +57,10 @@ subcommand) stops on SIGTERM (or Ctrl+C) from the moment it starts. Before it
 serves — while the model downloads or loads — the process exits at once,
 which frees the GPU, its last line `ignis.process.stopped` naming the
 `phase` it was in; once it serves it drains in-flight requests and unloads
-the model first. A load while serving (a switch, a reload after an idle
-unload) is waited for: give the pod a grace longer than a load. Its probes are
+the model first. A load while serving (a switch, a reload, the load after an
+idle unload) is not waited for either: a request waiting for it is answered
+`503 server_stopping`, and once the drain is over the process exits under the
+load, its last line naming `phase: switching`. Its probes are
 [`/health` and `/ready`](#the-api).
 
 With no `IGNIS_MODEL_ARTIFACT` the image fetches the model into its own working

@@ -175,6 +175,19 @@ fn emit_stopped_before_serving(phase: &'static str) {
     );
 }
 
+/// The last line of a process whose serve stopped with a switch, a reload or
+/// a load still running ([`crate::Served::LoadAbandoned`]): `phase`
+/// `switching`, as `GET /v1/models` names one, and the ids it moved between.
+pub fn emit_stopped_abandoning(load: &crate::model_switch::SwitchStarted) {
+    tracing::info!(
+        name: "ignis.process.stopped",
+        phase = "switching",
+        from = %load.from,
+        to = %load.to,
+        "stopped while serving with a model loading: the load is abandoned and the process exits, which frees the GPU"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -183,7 +196,8 @@ mod tests {
     use ignis_logging::{JsonLayer, MemorySink};
     use tracing_subscriber::layer::SubscriberExt;
 
-    use super::{emit_stopping, StopSignal};
+    use super::{emit_stopped_abandoning, emit_stopping, StopSignal};
+    use crate::model_switch::SwitchStarted;
 
     fn records(sink: &MemorySink) -> Vec<serde_json::Value> {
         sink.lines().iter().map(|line| serde_json::from_str(line).expect("valid json")).collect()
@@ -201,6 +215,24 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0]["event_name"], "ignis.process.stopping");
         assert_eq!(lines[0]["severity_text"], "INFO");
+    }
+
+    /// GitHub #329: the last line of a process whose serve stopped with a
+    /// load running names the load it abandoned.
+    #[test]
+    fn emit_stopped_abandoning_names_the_load() {
+        let sink = Arc::new(MemorySink::new());
+        let subscriber = tracing_subscriber::registry().with(JsonLayer::new(sink.clone()));
+        let load = SwitchStarted { from: "qwen3.8-27b".into(), to: "qwen3.8-flash-next".into() };
+        tracing::subscriber::with_default(subscriber, || emit_stopped_abandoning(&load));
+
+        let lines = records(&sink);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0]["event_name"], "ignis.process.stopped");
+        assert_eq!(lines[0]["severity_text"], "INFO");
+        let attributes = &lines[0]["attributes"];
+        assert_eq!((attributes["phase"].as_str(), attributes["from"].as_str()), (Some("switching"), Some("qwen3.8-27b")));
+        assert_eq!(attributes["to"], "qwen3.8-flash-next");
     }
 
     /// A signal while the start is under way — the load, in the incident —

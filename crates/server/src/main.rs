@@ -38,7 +38,7 @@ use ignis_server::{
     template::SimpleTemplateProvider,
     telemetry::SystemClock,
     thinking::{self, ThinkingDefaults},
-    ActiveModel, Server,
+    ActiveModel, Served, Server,
 };
 
 /// Flush pending logging before an immediate exit (GitHub #80): every
@@ -575,7 +575,9 @@ async fn main() {
         "OpenAI API at /v1"
     );
     // The serve drains HTTP, then joins the model thread before returning
-    // (`Server::serve_on_until`): `ignis-model` is never left detached.
+    // (`Server::serve_on_until`): `ignis-model` is never left detached. A
+    // switch or a load still running is not waited for: it is returned, and
+    // the process ends under it below.
     let serve_result = server.serve_on_until(listener, metrics_listener, stopped).await;
 
     // The tunnel outlives the drain above, so in-flight remote requests
@@ -593,9 +595,18 @@ async fn main() {
     // process exits; it never blocks past its own timeout even if the sink
     // is stuck.
     match serve_result {
-        Ok(()) => {
+        Ok(Served::Drained) => {
             tracing::info!(name: "ignis.process.stopped", "graceful shutdown complete");
             logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
+        }
+        // GitHub #329: the load has no cancel, and returning from `main`
+        // would wait for it (the runtime's drop joins its blocking thread):
+        // the process ends now, as it does for a stop during the start-up
+        // load, which frees the GPU.
+        Ok(Served::LoadAbandoned(load)) => {
+            ignis_server::shutdown::emit_stopped_abandoning(&load);
+            logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
+            ignis_server::shutdown::exit_now(0)
         }
         Err(err) => {
             tracing::error!(name: "ignis.server.failed", error = %err, "server exited");

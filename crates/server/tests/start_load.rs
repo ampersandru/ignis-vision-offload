@@ -8,9 +8,11 @@
 //! - On unix, the real binary in a load that does not end (its artifact a
 //!   FIFO no one writes): the probes answer, and a SIGTERM ends the process
 //!   at once with its shutdown lines, where it used to be dropped until the
-//!   load was over. Windows has no SIGTERM, and a Ctrl+C cannot be sent to a
-//!   child that shares no console with the test: the stop's own logic is the
-//!   unit tests' in `shutdown.rs`.
+//!   load was over. The same for a switch's load while serving, which the
+//!   exit used to wait for. Windows has no SIGTERM, and a Ctrl+C cannot be
+//!   sent to a child that shares no console with the test: the stop's own
+//!   logic is the unit tests' in `shutdown.rs`, the serve's
+//!   `serve_exit_load.rs`'s.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -114,9 +116,12 @@ async fn the_server_takes_the_listener_over_on_the_same_address() {
 mod process {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::os::unix::ffi::OsStrExt;
-    use std::process::{Child, Command, Stdio};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    use serde_json::Value;
 
     /// Kills the child (and reaps it) when dropped: a failed assertion must
     /// not leave a process waiting on the FIFO.
@@ -129,42 +134,64 @@ mod process {
         }
     }
 
-    /// One HTTP/1.1 `GET path`; the whole response.
-    fn get(addr: &str, path: &str) -> String {
+    /// One HTTP/1.1 `method path` with `body`; the whole response.
+    fn request(addr: &str, method: &str, path: &str, body: &str) -> String {
         let mut stream = std::net::TcpStream::connect(addr).expect("connect");
         stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
-        write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").expect("write");
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("write");
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("read");
         response
     }
 
-    #[test]
-    fn a_sigterm_during_the_start_up_load_ends_the_process_at_once() {
-        let dir = std::env::temp_dir().join(format!("ignis-start-load-{}", std::process::id()));
+    fn get(addr: &str, path: &str) -> String {
+        request(addr, "GET", path, "")
+    }
+
+    /// A fresh directory of the test's own.
+    fn temp_dir(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ignis-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
-        // A FIFO no one writes to: the load's open of the artifact waits on
-        // it for as long as the process lives, a load that never ends on its
-        // own. The sidecar is the one file the load looks for before.
+        dir
+    }
+
+    /// An artifact in `dir` whose load never ends on its own: a FIFO no one
+    /// writes to, whose open waits for as long as the process lives. The
+    /// sidecar is the one file the load looks for before.
+    fn stalled_artifact(dir: &Path) -> PathBuf {
         let artifact = dir.join("stalled.ninfer");
         let path = std::ffi::CString::new(artifact.as_os_str().as_bytes()).expect("path");
         // SAFETY: a NUL-terminated path and a mode.
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo: {}", std::io::Error::last_os_error());
         std::fs::write(dir.join("stalled.ninfer.graft.json"), b"{}").expect("sidecar");
+        artifact
+    }
 
-        let child = Command::new(env!("CARGO_BIN_EXE_ignis-server"))
-            .args(["--model-artifact", artifact.to_str().expect("utf-8")])
+    /// The real binary in `dir`, on `artifact` or the placeholder start, its
+    /// log lines read off stdout as they come.
+    fn spawn(dir: &Path, artifact: Option<&Path>) -> (KillOnDrop, mpsc::Receiver<Value>) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ignis-server"));
+        if let Some(artifact) = artifact {
+            command.args(["--model-artifact", artifact.to_str().expect("utf-8")]);
+        }
+        let child = command
             .args(["--server-bind", "127.0.0.1:0", "--server-metrics", "false"])
             .args(["--download-enabled", "false", "--download-path", dir.to_str().expect("utf-8")])
             .env("IGNIS_LOG_FORMAT", "json")
             .env("IGNIS_LOG_LEVEL", "info")
             // No config file on the machine (spec config-v2/02 §Config-file
             // auto-discovery).
-            .current_dir(&dir)
-            .env("XDG_CONFIG_HOME", &dir)
+            .current_dir(dir)
+            .env("XDG_CONFIG_HOME", dir)
             .env_remove("IGNIS_CONFIG")
             .env_remove("IGNIS_PROFILE")
+            .env_remove("IGNIS_MODEL_ARTIFACT")
             .env_remove("IGNIS_SERVER_METRICS")
             .env_remove("IGNIS_SERVER_METRICS_BIND")
             .stdout(Stdio::piped())
@@ -172,7 +199,7 @@ mod process {
             .expect("spawn ignis-server");
         let mut child = KillOnDrop(child);
         let stdout = child.0.stdout.take().expect("piped stdout");
-        let (tx, rx) = mpsc::channel::<serde_json::Value>();
+        let (tx, rx) = mpsc::channel::<Value>();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
@@ -183,20 +210,56 @@ mod process {
                 }
             }
         });
+        (child, rx)
+    }
 
-        // Up to the load's first line: from there the start is in its load.
-        let mut records = Vec::new();
+    /// Read `rx` into `records` up to the first `name` line.
+    fn read_until(rx: &mpsc::Receiver<Value>, records: &mut Vec<Value>, name: &str) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !records.iter().any(|r: &serde_json::Value| r["event_name"] == "ignis.model.loading") {
+        while !records.iter().any(|r| r["event_name"] == name) {
             let left = deadline.saturating_duration_since(Instant::now());
-            let record = rx.recv_timeout(left).unwrap_or_else(|_| panic!("no ignis.model.loading; saw {records:?}"));
+            let record = rx.recv_timeout(left).unwrap_or_else(|_| panic!("no {name}; saw {records:?}"));
             records.push(record);
         }
+    }
+
+    /// The address the API listener is bound to, from its line.
+    fn address(records: &[Value]) -> String {
         let listening = records
             .iter()
             .find(|r| r["event_name"] == "ignis.server.listening")
-            .unwrap_or_else(|| panic!("the listener is bound before the load: {records:?}"));
-        let addr = listening["attributes"]["address"].as_str().expect("address").to_owned();
+            .unwrap_or_else(|| panic!("no ignis.server.listening: {records:?}"));
+        listening["attributes"]["address"].as_str().expect("address").to_owned()
+    }
+
+    /// SIGTERM `child`, and its exit status once it ends: within 10 s.
+    fn sigterm(child: &mut KillOnDrop) -> ExitStatus {
+        let sent = Instant::now();
+        // SAFETY: a signal to our own child, still running (its handle is held).
+        assert_eq!(unsafe { libc::kill(child.0.id() as libc::pid_t, libc::SIGTERM) }, 0);
+        loop {
+            if let Some(status) = child.0.try_wait().expect("wait") {
+                return status;
+            }
+            assert!(sent.elapsed() < Duration::from_secs(10), "still running 10 s after the SIGTERM");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn names(records: &[Value]) -> Vec<&str> {
+        records.iter().filter_map(|r| r["event_name"].as_str()).collect()
+    }
+
+    #[test]
+    fn a_sigterm_during_the_start_up_load_ends_the_process_at_once() {
+        let dir = temp_dir("start-load");
+        let artifact = stalled_artifact(&dir);
+        let (mut child, rx) = spawn(&dir, Some(&artifact));
+
+        // Up to the load's first line: from there the start is in its load.
+        let mut records = Vec::new();
+        read_until(&rx, &mut records, "ignis.model.loading");
+        let addr = address(&records);
 
         // Item 18: alive, and not ready.
         let health = get(&addr, "/health");
@@ -205,25 +268,50 @@ mod process {
         assert!(ready.starts_with("HTTP/1.1 503") && ready.contains("server_not_ready"), "{ready}");
 
         // Item 17: a SIGTERM in the load ends the process, now.
-        let sent = Instant::now();
-        // SAFETY: a signal to our own child, still running (its handle is held).
-        assert_eq!(unsafe { libc::kill(child.0.id() as libc::pid_t, libc::SIGTERM) }, 0);
-        let status = loop {
-            if let Some(status) = child.0.try_wait().expect("wait") {
-                break status;
-            }
-            assert!(sent.elapsed() < Duration::from_secs(10), "still running 10 s after the SIGTERM");
-            std::thread::sleep(Duration::from_millis(20));
-        };
+        let status = sigterm(&mut child);
         assert_eq!(status.code(), Some(0), "a requested stop, exited by itself: {status:?}");
 
         records.extend(rx.iter());
-        let names: Vec<&str> = records.iter().filter_map(|r| r["event_name"].as_str()).collect();
+        let names = names(&records);
         let stopping = names.iter().position(|&n| n == "ignis.process.stopping").unwrap_or_else(|| panic!("{names:?}"));
         assert_eq!(names.last(), Some(&"ignis.process.stopped"), "the stop's line is the last: {names:?}");
         assert!(stopping < names.len() - 1, "{names:?}");
         assert!(!names.contains(&"ignis.process.started"), "it never served: {names:?}");
         assert_eq!(records.last().expect("records")["attributes"]["phase"], "loading", "{records:?}");
+
+        drop(child);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 17 while serving: a switch whose load never ends — the 202
+    /// answered, its prepare waiting on the FIFO — does not hold the exit. A
+    /// SIGTERM drains HTTP and ends the process under the load, where the
+    /// exit used to wait for it.
+    #[test]
+    fn a_sigterm_during_a_switch_ends_the_process_without_waiting_for_its_load() {
+        let dir = temp_dir("switch-load");
+        let artifact = stalled_artifact(&dir);
+        // The placeholder start: serving at once, a switch away from it allowed.
+        let (mut child, rx) = spawn(&dir, None);
+        let mut records = Vec::new();
+        read_until(&rx, &mut records, "ignis.process.started");
+        let addr = address(&records);
+
+        let body = serde_json::json!({ "artifact": artifact.to_str().expect("utf-8"), "model": "stalled" }).to_string();
+        let switch = request(&addr, "POST", "/v1/models/switch", &body);
+        assert!(switch.starts_with("HTTP/1.1 202"), "{switch}");
+        read_until(&rx, &mut records, "ignis.model.switch_started");
+
+        let status = sigterm(&mut child);
+        assert_eq!(status.code(), Some(0), "a requested stop, exited by itself: {status:?}");
+
+        records.extend(rx.iter());
+        let names = names(&records);
+        assert!(names.contains(&"ignis.process.stopping"), "{names:?}");
+        assert_eq!(names.last(), Some(&"ignis.process.stopped"), "the stop's line is the last: {names:?}");
+        let stopped = &records.last().expect("records")["attributes"];
+        assert_eq!((stopped["phase"].as_str(), stopped["to"].as_str()), (Some("switching"), Some("stalled")), "{records:?}");
+        assert!(!names.contains(&"ignis.model.switched"), "the load never ended: {names:?}");
 
         drop(child);
         let _ = std::fs::remove_dir_all(&dir);

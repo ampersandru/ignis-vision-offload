@@ -561,6 +561,52 @@ async fn during_a_visit_other_requests_are_answered_model_switching() {
     assert_eq!(server.status().as_str(), "serving");
 }
 
+/// GitHub #329: an enhanced request waits for its visit's loads inside its
+/// handler. Once the serve stops it is answered `503 server_stopping`
+/// instead, on the way there and on the way back alike, and the visit still
+/// running is returned to be abandoned, not waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn once_the_serve_stops_a_visit_is_not_waited_for() {
+    for leg in ["there", "back"] {
+        let loader = MockLoader::new();
+        let server = on_the_image_model(&loader).await;
+        enhancing_with(&server, "mock-a");
+        let app = server.app();
+        let there = loader.hold_next_load();
+        let back = loader.hold_next_load();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let serving = tokio::spawn(server.clone().serve_on_until(listener, None, async {
+            let _ = stopped.await;
+        }));
+        let body = json!({ "prompt": "a red fox", "size": "1024x1024", "prompt_enhancement": true });
+        let enhanced = tokio::spawn({
+            let app = app.clone();
+            async move { send_generation(&app, body).await }
+        });
+        until(&server, "switching", PATIENT).await;
+        if leg == "back" {
+            there.send(()).unwrap();
+            let visiting = ModelStatus::Switching { from: "mock-a".into(), to: IMAGE.into() };
+            let deadline = Instant::now() + PATIENT;
+            while *server.status() != visiting || loader.resident() != 0 {
+                assert!(Instant::now() < deadline, "the visit never got to its way back: {:?}", server.status());
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+
+        stop.send(()).unwrap();
+        let bound = Duration::from_secs(5);
+        let (status, refused) = tokio::time::timeout(bound, enhanced).await.expect("answered at the stop").unwrap();
+        assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("server_stopping")), "{leg}: {refused}");
+        let served = tokio::time::timeout(bound, serving).await.expect("the serve returned").unwrap().expect("serve");
+        assert!(matches!(served, ignis_server::Served::LoadAbandoned(_)), "{leg}: {served:?}");
+        // Released only so the runtime is not left joining a held thread.
+        let _ = there.send(());
+        let _ = back.send(());
+    }
+}
+
 /// Review-322cf M1: an enhanced request on the loaded image model takes its
 /// turn in the queue before it visits the enhancer. The job running and the
 /// one waiting before it run to their end on the image model — past the

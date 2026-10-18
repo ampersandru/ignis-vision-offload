@@ -288,6 +288,9 @@ pub struct Switcher {
     /// listed ([`Switcher::tables`]). Set once, by the start or by the first
     /// switch, whichever sees it first.
     start: Mutex<Option<ModelSource>>,
+    /// Set once the serve has begun to stop ([`Switcher::stop_waiting`]):
+    /// from then on no request waits for a switch or a load (GitHub #329).
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 
 /// The two tables a server's models are named by, computed together from the
@@ -408,7 +411,34 @@ impl Switcher {
             last: Mutex::new(None),
             settled: AtomicBool::new(true),
             start: Mutex::new(None),
+            stopping: tokio::sync::watch::Sender::new(false),
         }
+    }
+
+    /// The serve has begun to stop (GitHub #329): a request waiting for a
+    /// switch, a reload or a load is answered `503 server_stopping` now, and
+    /// none begins one any more. A load has no cancel, and the process does
+    /// not outlive it ([`crate::Server::serve_on_until`]): waiting for it
+    /// would hold the serve's drain for as long as a cold load takes.
+    pub(crate) fn stop_waiting(&self) {
+        self.stopping.send_replace(true);
+    }
+
+    /// `wait`'s output, or `None` once the serve has begun to stop
+    /// ([`Switcher::stop_waiting`]), whichever comes first: an output ready
+    /// then is still taken.
+    pub(crate) async fn unless_stopping<T>(&self, wait: impl std::future::Future<Output = T>) -> Option<T> {
+        let mut stopping = self.stopping.subscribe();
+        tokio::select! {
+            biased;
+            done = wait => Some(done),
+            _ = stopping.wait_for(|stopping| *stopping) => None,
+        }
+    }
+
+    /// Whether the serve has begun to stop ([`Switcher::stop_waiting`]).
+    fn stopping(&self) -> bool {
+        *self.stopping.borrow()
     }
 
     /// What holds the switch's slot now — a switch, a reload, a load, or an
@@ -1085,6 +1115,26 @@ pub enum ImplicitRefusal {
         /// switch's.
         reason: String,
     },
+    /// The serve began to stop before the switch to `to` landed, or before
+    /// it began (GitHub #329, [`Switcher::stop_waiting`]): the switch is not
+    /// waited for, and the process ends without it. Answered `503
+    /// server_stopping`.
+    Stopping {
+        /// The model the request named.
+        to: String,
+    },
+}
+
+/// Why a request that needed the unloaded model was not served
+/// ([`ensure_loaded`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadRefusal {
+    /// The load it waited on failed (spec model-switch/02 AC 7): its reason.
+    Failed(String),
+    /// The serve began to stop while the model was not loaded (GitHub #329,
+    /// [`Switcher::stop_waiting`]): no load is waited for, or begun, and the
+    /// process ends without one. Answered `503 server_stopping`.
+    Stopping,
 }
 
 /// Switch to the model a request named, and wait until it serves (spec
@@ -1117,11 +1167,18 @@ pub async fn implicit_switch_telling(server: &Server, requested: Option<&str>, s
     let Some(requested) = requested.filter(|model| !model.is_empty()) else {
         return Ok(());
     };
-    let Some(artifact) = server.switcher.as_ref().and_then(|switcher| switcher.known(requested)) else {
+    let Some(switcher) = server.switcher.as_ref() else {
+        return Ok(());
+    };
+    let Some(artifact) = switcher.known(requested) else {
         return Ok(());
     };
     if server.active().model_id() == requested {
         return Ok(());
+    }
+    let stopping = || Err(ImplicitRefusal::Stopping { to: requested.to_owned() });
+    if switcher.stopping() {
+        return stopping();
     }
     let target = ModelSource { artifact: artifact.clone(), model: requested.to_owned() };
     let task = match begin_with(server, target, Run::Switch, steps) {
@@ -1150,7 +1207,12 @@ pub async fn implicit_switch_telling(server: &Server, requested: Option<&str>, s
         ) => return Ok(()),
     };
     let failed = |reason: String| Err(ImplicitRefusal::Failed { to: requested.to_owned(), reason });
-    match task.await {
+    // Dropped unawaited when the serve stops: the switch runs on, detached,
+    // until the process ends under it.
+    let Some(ended) = switcher.unless_stopping(task).await else {
+        return stopping();
+    };
+    match ended {
         Ok(SwitchOutcome::Switched) => Ok(()),
         Ok(SwitchOutcome::Refused { reason } | SwitchOutcome::Restored { reason } | SwitchOutcome::Failed { reason }) => {
             failed(reason)
@@ -1175,13 +1237,14 @@ pub async fn implicit_switch_telling(server: &Server, requested: Option<&str>, s
 /// `Ok` once a model serves — or at once in any other state, which is the
 /// gate's and the request's own business, as before. `Err` with the reason
 /// when the load this request waited on failed (AC 7); a failed load the
-/// request did not wait on is one it tries again.
+/// request did not wait on is one it tries again. `Err` too once the serve
+/// has begun to stop with no model loaded ([`LoadRefusal::Stopping`]).
 ///
 /// Called where [`implicit_switch`] is, after the API key and before
 /// [`crate::Server::pinned`]: an unauthenticated request never costs a load
 /// (the serving gate, outside the key, lets every route through while
 /// unloaded), and the pin then takes the loaded model.
-pub async fn ensure_loaded(server: &Server, requested: Option<&str>) -> Result<(), String> {
+pub async fn ensure_loaded(server: &Server, requested: Option<&str>) -> Result<(), LoadRefusal> {
     let Some(switcher) = server.switcher.clone() else {
         return Ok(());
     };
@@ -1198,13 +1261,16 @@ pub async fn ensure_loaded(server: &Server, requested: Option<&str>) -> Result<(
             }
             ModelStatus::Failed { reason, from_unloaded: true } => {
                 if waited {
-                    return Err(reason.clone());
+                    return Err(LoadRefusal::Failed(reason.clone()));
                 }
                 true
             }
             ModelStatus::Unloaded => true,
             _ => return Ok(()),
         };
+        if switcher.stopping() {
+            return Err(LoadRefusal::Stopping);
+        }
         if begin {
             let Some(target) = load_target(server, &switcher, requested) else {
                 // Nothing names an artifact to load (never so after an
@@ -1221,8 +1287,10 @@ pub async fn ensure_loaded(server: &Server, requested: Option<&str>) -> Result<(
                 }
             }
         }
-        if changed.changed().await.is_err() {
-            return Ok(());
+        match switcher.unless_stopping(changed.changed()).await {
+            Some(Ok(())) => {}
+            Some(Err(_)) => return Ok(()),
+            None => return Err(LoadRefusal::Stopping),
         }
     }
 }
@@ -1628,19 +1696,27 @@ pub(crate) async fn shut_down(model: &Arc<ActiveModel>) {
     }
 }
 
-/// Wait until nothing holds the switch's slot ([`Switcher::running`]): a
-/// switch, a reload or a load has run to its end — its model published, or
-/// torn down — and an unload's teardown is done, its line logged. The serve
-/// exit waits on it before it tears the loaded model down
-/// ([`Server::serve_on_until`]): a switch whose `202` was answered still
-/// runs after the HTTP drain, and the model it publishes is the one to join.
-/// A server without a switcher has no slot to wait on.
-pub(crate) async fn slot_freed(server: &Server) {
-    let Some(switcher) = &server.switcher else { return };
+/// What holds the switch's slot ([`Switcher::running`]) once no unload does,
+/// for the serve exit ([`Server::serve_on_until`]): nothing, or the switch,
+/// the reload or the load whose `202` was answered — or whose requests were
+/// answered `503 server_stopping` — and which still runs after the HTTP
+/// drain. An unload's teardown is waited for, its line logged: a bounded
+/// join, the one the exit itself would run. A load is not (GitHub #329): it
+/// has no cancel, a cold one outlasts a pod's grace period, and the process
+/// ending under it is what frees the card. A server without a switcher has
+/// no slot.
+pub(crate) async fn load_left_running(server: &Server) -> Option<SwitchStarted> {
+    let switcher = server.switcher.as_ref()?;
     let mut changed = server.status.subscribe();
-    while switcher.running().is_some() {
-        if changed.changed().await.is_err() {
-            return;
+    loop {
+        match switcher.running() {
+            None => return None,
+            Some(Slot::Switch(load)) => return Some(load),
+            Some(Slot::Unload { .. }) => {
+                if changed.changed().await.is_err() {
+                    return None;
+                }
+            }
         }
     }
 }

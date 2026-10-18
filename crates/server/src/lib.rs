@@ -679,8 +679,8 @@ impl Server {
     /// before returning (GitHub #80, spec §28: graceful shutdown, not an
     /// abrupt kill) — the caller emits `ignis.process.stopped` and flushes
     /// the logging queue after this returns, since that is the true last
-    /// event.
-    pub async fn serve(self, addr: String) -> std::io::Result<()> {
+    /// event, and on [`Served::LoadAbandoned`] ends the process at once.
+    pub async fn serve(self, addr: String) -> std::io::Result<Served> {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         self.serve_on(listener, None).await
     }
@@ -697,7 +697,7 @@ impl Server {
         self,
         listener: tokio::net::TcpListener,
         metrics_listener: Option<tokio::net::TcpListener>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Served> {
         let stop = shutdown::StopSignal::install_serving()?;
         self.serve_on_until(listener, metrics_listener, stop.serving()).await
     }
@@ -708,21 +708,35 @@ impl Server {
     /// listener without metrics on ([`Server::with_metrics`]) is refused
     /// with `InvalidInput` before anything is served.
     ///
-    /// After the HTTP drain, a switch or an unload still holding the switch's
-    /// slot runs to its end, then the loaded model is shut down and its
-    /// driver thread is joined ([`ActiveModel::shut_down`]) before this
-    /// returns. Dropping the `JoinHandle` without joining would detach
-    /// `ignis-model`; on Linux that thread can hang in CUDA teardown and
-    /// leave the process a VRAM-holding zombie under init — so serve exit
+    /// After the HTTP drain, an unload still holding the switch's slot runs
+    /// to its end, then the loaded model is shut down and its driver thread
+    /// is joined ([`ActiveModel::shut_down`]) before this returns
+    /// ([`Served::Drained`]). Dropping the `JoinHandle` without joining would
+    /// detach `ignis-model`; on Linux that thread can hang in CUDA teardown
+    /// and leave the process a VRAM-holding zombie under init — so serve exit
     /// must join, the same way a model switch does.
+    ///
+    /// A switch, a reload or a load is not waited for (GitHub #329): once
+    /// `shutdown` resolves, the requests waiting for one are answered `503
+    /// server_stopping` ([`model_switch::Switcher::stop_waiting`]), and one
+    /// still running after the drain is returned
+    /// ([`Served::LoadAbandoned`]) with nothing torn down, for the caller to
+    /// end the process under it.
     pub async fn serve_on_until(
         self,
         listener: tokio::net::TcpListener,
         metrics_listener: Option<tokio::net::TcpListener>,
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Served> {
         use std::future::IntoFuture;
 
+        let switcher = self.switcher.clone();
+        let shutdown = async move {
+            shutdown.await;
+            if let Some(switcher) = switcher {
+                switcher.stop_waiting();
+            }
+        };
         let metrics = match (metrics_listener, self.metrics_app()) {
             (None, _) => None,
             (Some(metrics_listener), Some(metrics_app)) => Some((metrics_listener, metrics_app)),
@@ -770,13 +784,29 @@ impl Server {
             let _ = warm_up.await;
         }
         drop(idle_clock);
-        // A switch whose `202` was answered, or an unload under way, outlives
-        // the drain: it runs to its end first, and the model it leaves loaded
-        // is the one torn down below — never one it would leave detached.
-        model_switch::slot_freed(&self).await;
+        // An unload under way outlives the drain and runs to its end first. A
+        // switch, a reload or a load still running is left as it is: the
+        // model it tears down or publishes is the process end's to free, and
+        // `active` may be a model it is tearing down.
+        if let Some(load) = model_switch::load_left_running(&self).await {
+            return serve_result.map(|()| Served::LoadAbandoned(load));
+        }
         // Join before returning to `main`: `ignis.process.stopped` must stay
         // the last log line (spec §28), and that is emitted after this returns.
         model_switch::shut_down(&self.active()).await;
-        serve_result
+        serve_result.map(|()| Served::Drained)
     }
+}
+
+/// How a serve ended ([`Server::serve_on_until`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Served {
+    /// HTTP drained, and the loaded model shut down with its thread joined:
+    /// nothing of it is left.
+    Drained,
+    /// HTTP drained, with a switch, a reload or a load still running: it has
+    /// no cancel, and it is not waited for (GitHub #329). Nothing was torn
+    /// down: the caller ends the process now ([`shutdown::exit_now`]), which
+    /// frees the GPU, and logs nothing that waits for the load.
+    LoadAbandoned(model_switch::SwitchStarted),
 }

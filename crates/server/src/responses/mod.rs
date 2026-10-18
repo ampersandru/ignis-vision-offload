@@ -148,7 +148,7 @@ The reasoning-loop guard (`--model-loop-guard`, ADR 0052) watches a request that
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
         (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
-        (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`).", body = ApiError),
+        (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
         (status = 504, description = "A non-streaming request the engine did not finish within `--server-request-timeout`.", body = ApiError),
     ),
 )]
