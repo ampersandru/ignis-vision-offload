@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION } from "./fixture.ts";
+import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION, LOOP_GUARD_EXPOSITION, THINKING_FORCED_CLOSES } from "./fixture.ts";
 import { MonitorView } from "./MonitorView.tsx";
 import { applyScrape, initialMonitor } from "./scrape.ts";
 
@@ -181,6 +181,53 @@ describe("MonitorView", () => {
     expect(html).toContain("Time denoising");
     const text = renderToStaticMarkup(<MonitorView state={applyScrape(initialMonitor(), { kind: "ok", text: IGNIS_EXPOSITION }, now, 2)} />);
     expect(text).not.toContain("Image jobs");
+  });
+
+  // GitHub #330: the Reasoning card, and the rewinds among the Request flow's cancels.
+  it("draws the Reasoning card once the loop guard watched a request, with the rewinds noted on the Request flow", () => {
+    const now = Date.now();
+    // Ten seconds on: 12 more watched turns, 3 looped, 3 rewound and 1 closed, so the window has something to say.
+    const later = LOOP_GUARD_EXPOSITION.replace("watched_requests_total 40", "watched_requests_total 52")
+      .replace("looped_requests_total 6", "looped_requests_total 9")
+      .replace('outcome="rewound"} 7', 'outcome="rewound"} 10')
+      .replace('outcome="closed"} 1', 'outcome="closed"} 2')
+      .replace('outcome="no_room"} 0', 'outcome="no_room"} 1')
+      .replace('outcome="submit_refused"} 0', 'outcome="submit_refused"} 1')
+      .replace("rewound_tokens_total 5120", "rewound_tokens_total 6144")
+      .replace("ignis_decoded_tokens_total 12400", "ignis_decoded_tokens_total 22400");
+    const state = applyScrape(applyScrape(initialMonitor(), { kind: "ok", text: LOOP_GUARD_EXPOSITION }, now - 10_000, 2), { kind: "ok", text: later }, now, 2);
+    const html = renderToStaticMarkup(<MonitorView state={state} />).replace(/<!-- -->/g, "");
+    expect(html).toContain('aria-label="Reasoning"');
+    expect(html).toContain("3 of 12");
+    expect(html).toContain("25%");
+    expect(html).toContain("1,024");
+    expect(html).toContain("10%");
+    expect(html).toContain("Rewound");
+    expect(html).toContain("Closed");
+    // The loops the guard could not act on show only when there were some in the window.
+    expect(html).toContain("No room");
+    expect(html).not.toContain("No tokenizer");
+    expect(html).toContain("Budget closes");
+    expect(html).toContain("Continuation refused");
+    // Three nudges, a close and a refused continuation: five cancels.
+    expect(html).toContain("5 of these cancels were loop-guard rewinds");
+    expect(html).toContain("Lowest loop score per turn");
+  });
+
+  it("draws no Reasoning card and no rewind note without the series, and only the budget's closes with just that counter", () => {
+    const now = Date.now();
+    const plain = renderToStaticMarkup(<MonitorView state={applyScrape(initialMonitor(), { kind: "ok", text: IGNIS_EXPOSITION }, now, 2)} />);
+    expect(plain).not.toContain('aria-label="Reasoning"');
+    expect(plain).not.toContain("loop-guard rewind");
+    const budget = renderToStaticMarkup(<MonitorView state={applyScrape(initialMonitor(), { kind: "ok", text: `${IGNIS_EXPOSITION}${THINKING_FORCED_CLOSES}` }, now, 2)} />);
+    expect(budget).toContain('aria-label="Reasoning"');
+    expect(budget).toContain("Budget closes");
+    expect(budget).not.toContain("Turns looped");
+    // A guard that watched but rewound nothing in the window says nothing on the Request flow.
+    const still = applyScrape(applyScrape(initialMonitor(), { kind: "ok", text: LOOP_GUARD_EXPOSITION }, now - 10_000, 2), { kind: "ok", text: LOOP_GUARD_EXPOSITION }, now, 2);
+    const html = renderToStaticMarkup(<MonitorView state={still} />);
+    expect(html).toContain('aria-label="Reasoning"');
+    expect(html).not.toContain("loop-guard rewind");
   });
 
   it("lays an image load's plan out by its condition budget, not a KV pool, and reads the prefixes held against it (GitHub #324)", () => {

@@ -299,7 +299,10 @@ live `PATCH`) rewinds, so no test meets a rewind it did not ask for.
   them.
 - **Observability.** The log carries `ignis.loop_guard.detected`, `rewound`, `no_room`,
   `no_tokenizer`, `submit_refused` and (ADR 0053) `too_little_kept`, each with its scores and offsets. `log` mode
-  reports the cut a rewind would have made, without acting.
+  reports the cut a rewind would have made, without acting. Since #330 (spec server/14)
+  `/metrics` tallies those lines per outcome (`ignis_loop_guard_loops_total`), with the
+  requests watched and looped, the tokens taken back and each request's lowest score
+  (ADR 0017's table), and the Playground's Monitor shows them.
 - **Wiring.** Implementing this ADR means:
   - wiring `/v1/responses`, HTTP and WebSocket, with its own count field, cancel by
     response, the model-view store and `encrypted_content`;

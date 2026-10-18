@@ -341,3 +341,49 @@ export const IMAGE_LOAD_EXPOSITION = `${IGNIS_EXPOSITION.split("\n")
     return series.startsWith("ignis_vram_reserved_bytes{") ? `${series} 0` : line;
   })
   .join("\n")}${IMAGE_JOB_FAMILIES}`;
+
+// The loop guard's families as the server renders them once it has watched a
+// request (GitHub #330): every series, zeros included. A server with the guard
+// off renders none of them, so this is the 27B-shaped exposition plus the
+// family, and the thinking budget's own close counter beside it.
+export const LOOP_GUARD_FAMILIES = `# HELP ignis_loop_guard_watched_requests_total Requests the loop guard watched.
+# TYPE ignis_loop_guard_watched_requests_total counter
+ignis_loop_guard_watched_requests_total 40
+# HELP ignis_loop_guard_looped_requests_total Watched requests with at least one loop.
+# TYPE ignis_loop_guard_looped_requests_total counter
+ignis_loop_guard_looped_requests_total 6
+# HELP ignis_loop_guard_loops_total Loops the guard saw, by what it did about them.
+# TYPE ignis_loop_guard_loops_total counter
+ignis_loop_guard_loops_total{outcome="rewound"} 7
+ignis_loop_guard_loops_total{outcome="closed"} 1
+ignis_loop_guard_loops_total{outcome="detected"} 0
+ignis_loop_guard_loops_total{outcome="too_little_kept"} 2
+ignis_loop_guard_loops_total{outcome="no_room"} 0
+ignis_loop_guard_loops_total{outcome="no_tokenizer"} 0
+ignis_loop_guard_loops_total{outcome="submit_refused"} 0
+# HELP ignis_loop_guard_rewound_tokens_total Generated tokens the guard's rewinds took back.
+# TYPE ignis_loop_guard_rewound_tokens_total counter
+ignis_loop_guard_rewound_tokens_total 5120
+# HELP ignis_loop_guard_min_ratio Lowest loop score each watched request reached.
+# TYPE ignis_loop_guard_min_ratio histogram
+ignis_loop_guard_min_ratio_bucket{le="0.1"} 0
+ignis_loop_guard_min_ratio_bucket{le="0.15"} 2
+ignis_loop_guard_min_ratio_bucket{le="0.2"} 4
+ignis_loop_guard_min_ratio_bucket{le="0.25"} 6
+ignis_loop_guard_min_ratio_bucket{le="0.3"} 9
+ignis_loop_guard_min_ratio_bucket{le="0.35"} 15
+ignis_loop_guard_min_ratio_bucket{le="0.4"} 24
+ignis_loop_guard_min_ratio_bucket{le="0.45"} 33
+ignis_loop_guard_min_ratio_bucket{le="0.5"} 38
+ignis_loop_guard_min_ratio_bucket{le="1"} 38
+ignis_loop_guard_min_ratio_bucket{le="+Inf"} 38
+ignis_loop_guard_min_ratio_sum 13.42
+ignis_loop_guard_min_ratio_count 38
+`;
+
+export const THINKING_FORCED_CLOSES = `# HELP ignis_thinking_forced_closes_total Reasonings the thinking budget closed.
+# TYPE ignis_thinking_forced_closes_total counter
+ignis_thinking_forced_closes_total 3
+`;
+
+export const LOOP_GUARD_EXPOSITION = `${IGNIS_EXPOSITION}${LOOP_GUARD_FAMILIES}${THINKING_FORCED_CLOSES}`;

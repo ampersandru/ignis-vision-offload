@@ -3,7 +3,19 @@
 // itself: `createSseParser` turns arbitrary text reads into complete event
 // payloads, `parseChunk` turns one payload into what it means.
 
-export type Usage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+/**
+ * A turn's token counts. The details are ignis's loop-guard extension (GitHub
+ * #330): `rewound_tokens`, the generated tokens a rewind took back, under
+ * `completion_tokens_details` on chat completions and `output_tokens_details`
+ * on /v1/responses; absent when nothing was rewound.
+ */
+export type Usage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  completion_tokens_details?: { rewound_tokens?: number } | null;
+  output_tokens_details?: { rewound_tokens?: number } | null;
+};
 
 /** A complete tool call: ignis streams each one whole, in a single delta. */
 export type ToolCall = { id: string; name: string; arguments: string };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseExposition } from "./exposition.ts";
-import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION } from "./fixture.ts";
+import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION, LOOP_GUARD_EXPOSITION } from "./fixture.ts";
 import { emptySnapshot, readSnapshot, counterValues, RETAINED_FAMILY_KEYS } from "./snapshot.ts";
 
 describe("readSnapshot", () => {
@@ -152,8 +152,8 @@ ignis_retained_state_hits_total{tier="tape",kind="prefix"} 1
     // 8 plain counters, 3 reject reasons, 36 retained series (disk's 12 null without the tier), 3 skips, 4 KV-disk, then
     // Flash-Next's 32 expert hit and miss series, 2 prefetch, 2 bytes, 2
     // stall (GitHub #306), 2 n-gram rows, 2 reads, the 3 speculative totals
-    // (GitHub #307), the image jobs' 5 outcomes, images, 4 phases and duration count (GitHub #324), and 2 histogram counts.
-    expect(counterValues(empty)).toHaveLength(112);
+    // (GitHub #307), the image jobs' 5 outcomes, images, 4 phases and duration count (GitHub #324), the loop guard's watched, looped, 7 outcomes, tokens and score count with the budget's closes (GitHub #330), and 2 histogram counts.
+    expect(counterValues(empty)).toHaveLength(124);
     expect(counterValues(moved).filter((v) => v !== null)).toHaveLength(40);
     const flashNext = readSnapshot(parseExposition(FLASH_NEXT_EXPOSITION));
     expect(counterValues(flashNext).filter((v) => v !== null)).toHaveLength(82);
@@ -208,6 +208,26 @@ ignis_retained_state_hits_total{tier="tape",kind="prefix"} 1
     expect(readSnapshot(parseExposition(FLASH_NEXT_EXPOSITION)).speculation).toBeNull();
     const stray = readSnapshot(parseExposition(`${FLASH_NEXT_EXPOSITION}${spec}\nignis_speculative_position_drafted_total{position="8"} 1\n`));
     expect(stray.unknown).toEqual([{ name: "ignis_speculative_position_drafted_total", labels: { position: "8" }, value: 1 }]);
+  });
+
+  // GitHub #330: the loop guard's family, all at once after the first watched request, and the budget's own close counter.
+  it("reads the loop guard's tallies and the thinking budget's closes, all in the contract, and none from a server without them", () => {
+    const s = readSnapshot(parseExposition(LOOP_GUARD_EXPOSITION));
+    expect(s.unknown).toEqual([]);
+    expect(s.loopGuard).toMatchObject({
+      watched: 40,
+      looped: 6,
+      loops: { rewound: 7, closed: 1, detected: 0, too_little_kept: 2, no_room: 0, no_tokenizer: 0, submit_refused: 0 },
+      rewoundTokens: 5120,
+    });
+    expect(s.loopGuard?.minRatio).toMatchObject({ count: 38, sum: 13.42 });
+    expect(s.loopGuard?.minRatio?.bounds).toEqual([0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 1, Infinity]);
+    expect(s.loopGuard?.minRatio?.cumulative.slice(0, 4)).toEqual([0, 2, 4, 6]);
+    expect(s.thinkingForcedCloses).toBe(3);
+    const plain = readSnapshot(parseExposition(IGNIS_EXPOSITION));
+    expect([plain.loopGuard, plain.thinkingForcedCloses]).toEqual([null, null]);
+    const stray = readSnapshot(parseExposition(`${LOOP_GUARD_EXPOSITION}ignis_loop_guard_loops_total{outcome="mystery"} 1\n`));
+    expect(stray.unknown).toEqual([{ name: "ignis_loop_guard_loops_total", labels: { outcome: "mystery" }, value: 1 }]);
   });
 
   // GitHub #324: the image families, once the image model admitted a job.

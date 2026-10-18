@@ -238,6 +238,53 @@ impl TokenizeRoute {
     }
 }
 
+/// What the loop guard did about a loop it saw (ADR 0052, 0053):
+/// `ignis_loop_guard_loops_total`'s fixed `outcome` label (GitHub #330).
+/// One per `ignis.loop_guard.*` log line, named after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopOutcome {
+    /// Taken back and nudged: `rewound` with `closed=false`.
+    Rewound,
+    /// Taken back and closed, its nudges spent: `rewound` with `closed=true`.
+    Closed,
+    /// Only logged: `log` mode, or a request with images (`detected`).
+    Detected,
+    /// Held: a rewind would keep too little reasoning (`too_little_kept`).
+    TooLittleKept,
+    /// Not taken back: `max_tokens` leaves no continuation room (`no_room`).
+    NoRoom,
+    /// Not taken back: the nudge cannot be encoded (`no_tokenizer`).
+    NoTokenizer,
+    /// Cancelled, and its continuation refused (`submit_refused`).
+    SubmitRefused,
+}
+
+impl LoopOutcome {
+    const ALL: [LoopOutcome; 7] =
+        [Self::Rewound, Self::Closed, Self::Detected, Self::TooLittleKept, Self::NoRoom, Self::NoTokenizer, Self::SubmitRefused];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Rewound => "rewound",
+            Self::Closed => "closed",
+            Self::Detected => "detected",
+            Self::TooLittleKept => "too_little_kept",
+            Self::NoRoom => "no_room",
+            Self::NoTokenizer => "no_tokenizer",
+            Self::SubmitRefused => "submit_refused",
+        }
+    }
+}
+
+/// `ignis_loop_guard_min_ratio`'s bucket boundaries (GitHub #330), in
+/// millionths: a request's lowest loop score. Where the signal is: the
+/// guard's threshold (0.265 by default) and the measured margin around it,
+/// harmful loops at most 0.257 and agentic reasoning at least 0.274
+/// (`docs/findings/2026-10-16-a-loop-persists.md`); plain prose scores
+/// 0.45-0.49.
+const LOOP_GUARD_MIN_RATIO_BOUNDS: [u64; 10] =
+    [100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000, 1_000_000];
+
 /// Which typed primitive a question asked for: `ignis_decisions_total`'s
 /// fixed `type` label (GitHub #241, ADR 0034).
 ///
@@ -565,6 +612,16 @@ pub struct Metrics {
     /// server/08). Absent from the exposition until the first one, like the
     /// decision family.
     thinking_forced_closes: AtomicU64,
+    /// The loop guard (GitHub #330): the requests it watched and those that
+    /// looped, its loops per [`LoopOutcome::ALL`], the tokens its rewinds
+    /// took back, and each watched request's lowest score. Absent from the
+    /// exposition until a watched request ended or a loop was seen, then
+    /// whole.
+    loop_guard_watched: AtomicU64,
+    loop_guard_looped: AtomicU64,
+    loop_guard_loops: [AtomicU64; LoopOutcome::ALL.len()],
+    loop_guard_rewound_tokens: AtomicU64,
+    loop_guard_min_ratio: Ratio,
     /// Speculative decoding (P5-06's request counters, GitHub #307): verify
     /// rounds, drafts verified and drafts committed, and per draft position
     /// how many rounds proposed it and committed it.
@@ -738,6 +795,11 @@ impl Metrics {
             decisions: Default::default(),
             answer_mass: Ratio::new(&ANSWER_MASS_BOUNDS),
             thinking_forced_closes: AtomicU64::new(0),
+            loop_guard_watched: AtomicU64::new(0),
+            loop_guard_looped: AtomicU64::new(0),
+            loop_guard_loops: Default::default(),
+            loop_guard_rewound_tokens: AtomicU64::new(0),
+            loop_guard_min_ratio: Ratio::new(&LOOP_GUARD_MIN_RATIO_BOUNDS),
             spec_rounds: AtomicU64::new(0),
             spec_drafted: AtomicU64::new(0),
             spec_accepted: AtomicU64::new(0),
@@ -843,6 +905,33 @@ impl Metrics {
     /// server/08).
     pub(crate) fn record_thinking_forced_close(&self) {
         self.thinking_forced_closes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A request the loop guard watched ended (GitHub #330). Recorded by the
+    /// guard, off the model thread, like everything below.
+    pub(crate) fn record_loop_guard_watched(&self) {
+        self.loop_guard_watched.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// That request had looped.
+    pub(crate) fn record_loop_guard_looped(&self) {
+        self.loop_guard_looped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The guard saw a loop and did `outcome` about it.
+    pub(crate) fn record_loop_guard_loop(&self, outcome: LoopOutcome) {
+        // `ALL` lists the outcomes in declaration order.
+        self.loop_guard_loops[outcome as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A rewind took `tokens` generated tokens back.
+    pub(crate) fn record_loop_guard_rewound_tokens(&self, tokens: u32) {
+        self.loop_guard_rewound_tokens.fetch_add(u64::from(tokens), Ordering::Relaxed);
+    }
+
+    /// A watched request ended, the lowest of its scores `ratio`.
+    pub(crate) fn observe_loop_guard_min_ratio(&self, ratio: f64) {
+        self.loop_guard_min_ratio.observe(ratio);
     }
 
     /// A call reached `/v1/tokenize` or `/v1/detokenize` (GitHub #285),
@@ -1397,6 +1486,43 @@ impl Metrics {
             );
             let _ = writeln!(out, "ignis_thinking_forced_closes_total {forced}");
         }
+        // GitHub #330: the loop guard, absent until a request it watched
+        // ended or it saw a loop (a load that runs it `off` exports nothing
+        // of it), then the whole family: its zeros are what a quiet guard
+        // reads as.
+        let watched = read(&self.loop_guard_watched);
+        if watched + self.loop_guard_loops.iter().map(read).sum::<u64>() > 0 {
+            declare(&mut out, "ignis_loop_guard_watched_requests_total", "counter", "Requests the loop guard watched.");
+            let _ = writeln!(out, "ignis_loop_guard_watched_requests_total {watched}");
+            declare(
+                &mut out,
+                "ignis_loop_guard_looped_requests_total",
+                "counter",
+                "Watched requests with at least one loop.",
+            );
+            let _ = writeln!(out, "ignis_loop_guard_looped_requests_total {}", read(&self.loop_guard_looped));
+            declare(
+                &mut out,
+                "ignis_loop_guard_loops_total",
+                "counter",
+                "Loops the guard saw, by what it did about them.",
+            );
+            for (outcome, series) in LoopOutcome::ALL.iter().zip(&self.loop_guard_loops) {
+                let _ = writeln!(out, "ignis_loop_guard_loops_total{{outcome=\"{}\"}} {}", outcome.label(), read(series));
+            }
+            declare(
+                &mut out,
+                "ignis_loop_guard_rewound_tokens_total",
+                "counter",
+                "Generated tokens the guard's rewinds took back.",
+            );
+            let _ = writeln!(out, "ignis_loop_guard_rewound_tokens_total {}", read(&self.loop_guard_rewound_tokens));
+            self.loop_guard_min_ratio.render(
+                &mut out,
+                "ignis_loop_guard_min_ratio",
+                "Lowest loop score each watched request reached.",
+            );
+        }
         // GitHub #307: speculative decoding, absent until a request that ran
         // verify rounds ends (a load without speculation exports nothing of
         // it). Acceptance is accepted / drafted; per position, a draft at
@@ -1683,6 +1809,19 @@ mod tests {
         let forced = Metrics::new();
         forced.record_thinking_forced_close();
         declared_once(&forced.render(), &[("ignis_thinking_forced_closes_total", "counter")]);
+        // And the loop guard's family (GitHub #330), once it watched a request.
+        let guarded = Metrics::new();
+        guarded.record_loop_guard_watched();
+        declared_once(
+            &guarded.render(),
+            &[
+                ("ignis_loop_guard_watched_requests_total", "counter"),
+                ("ignis_loop_guard_looped_requests_total", "counter"),
+                ("ignis_loop_guard_loops_total", "counter"),
+                ("ignis_loop_guard_rewound_tokens_total", "counter"),
+                ("ignis_loop_guard_min_ratio", "histogram"),
+            ],
+        );
         // And the counting routes' counter (GitHub #285).
         let counted = Metrics::new();
         counted.record_tokenize(TokenizeRoute::Tokenize);
@@ -1872,6 +2011,66 @@ mod tests {
         metrics.record_thinking_forced_close();
         metrics.record_thinking_forced_close();
         assert_eq!(value(&metrics.render(), "ignis_thinking_forced_closes_total", ""), "2");
+    }
+
+    /// GitHub #330: nothing of the loop guard until it watched a request,
+    /// then the whole family, zeros included: "no loop in N watched turns"
+    /// is the reading a quiet guard gives.
+    #[test]
+    fn the_loop_guard_family_is_absent_until_a_request_is_watched_then_whole() {
+        let metrics = Metrics::new();
+        assert!(!metrics.render().contains("ignis_loop_guard_"));
+        metrics.record_loop_guard_watched();
+        let text = metrics.render();
+        assert_eq!(value(&text, "ignis_loop_guard_watched_requests_total", ""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_looped_requests_total", ""), "0", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_rewound_tokens_total", ""), "0", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_count", ""), "0", "{text}");
+        for outcome in LoopOutcome::ALL {
+            assert_eq!(value(&text, "ignis_loop_guard_loops_total", &format!("outcome=\"{}\"", outcome.label())), "0", "{text}");
+        }
+        let labels: Vec<_> = LoopOutcome::ALL.iter().map(|outcome| outcome.label()).collect();
+        assert_eq!(labels, ["rewound", "closed", "detected", "too_little_kept", "no_room", "no_tokenizer", "submit_refused"]);
+        // A loop in the first watched request, before it ended: the family
+        // is there, its request not counted yet.
+        let looping = Metrics::new();
+        looping.record_loop_guard_loop(LoopOutcome::Rewound);
+        let text = looping.render();
+        assert_eq!(value(&text, "ignis_loop_guard_loops_total", "outcome=\"rewound\""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_watched_requests_total", ""), "0", "{text}");
+    }
+
+    /// GitHub #330: each loop by its outcome, a request that looped once
+    /// however often it looped, the tokens rewinds took back, and a
+    /// request's lowest score in the margin histogram.
+    #[test]
+    fn the_loop_guard_counts_loops_by_outcome_looped_requests_tokens_and_margins() {
+        let metrics = Metrics::new();
+        metrics.record_loop_guard_watched();
+        metrics.record_loop_guard_watched();
+        metrics.record_loop_guard_looped();
+        metrics.record_loop_guard_loop(LoopOutcome::Rewound);
+        metrics.record_loop_guard_loop(LoopOutcome::Rewound);
+        metrics.record_loop_guard_loop(LoopOutcome::Closed);
+        metrics.record_loop_guard_loop(LoopOutcome::TooLittleKept);
+        metrics.record_loop_guard_rewound_tokens(400);
+        metrics.record_loop_guard_rewound_tokens(125);
+        metrics.observe_loop_guard_min_ratio(0.182);
+        metrics.observe_loop_guard_min_ratio(0.47);
+        let text = metrics.render();
+        assert_eq!(value(&text, "ignis_loop_guard_watched_requests_total", ""), "2", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_looped_requests_total", ""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_loops_total", "outcome=\"rewound\""), "2", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_loops_total", "outcome=\"closed\""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_loops_total", "outcome=\"too_little_kept\""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_loops_total", "outcome=\"detected\""), "0", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_rewound_tokens_total", ""), "525", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_bucket", "le=\"0.15\""), "0", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_bucket", "le=\"0.2\""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_bucket", "le=\"0.45\""), "1", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_bucket", "le=\"0.5\""), "2", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_count", ""), "2", "{text}");
+        assert_eq!(value(&text, "ignis_loop_guard_min_ratio_sum", ""), "0.652", "{text}");
     }
 
     /// Every metric in the base contract, plus `also`, declared once with
@@ -2467,6 +2666,9 @@ mod tests {
     const MASS_BOUNDS: [&str; 10] =
         ["0.5", "0.9", "0.95", "0.98", "0.99", "0.995", "0.998", "0.999", "0.9995", "1"];
 
+    /// The loop guard's margin boundaries (GitHub #330), `+Inf` implied.
+    const MIN_RATIO_BOUNDS: [&str; 10] = ["0.1", "0.15", "0.2", "0.25", "0.3", "0.35", "0.4", "0.45", "0.5", "1"];
+
     #[test]
     fn the_histograms_use_exactly_the_adr_s_buckets_and_positive_infinity() {
         let text = Metrics::new().render();
@@ -2488,6 +2690,13 @@ mod tests {
         let mut expected: Vec<String> = MASS_BOUNDS.iter().map(|b| (*b).to_owned()).collect();
         expected.push("+Inf".to_owned());
         assert_eq!(bucket_bounds(&text, "ignis_decision_answer_mass"), expected, "{text}");
+        // The loop guard's margin (GitHub #330), once a request was watched.
+        let metrics = Metrics::new();
+        metrics.record_loop_guard_watched();
+        let text = metrics.render();
+        let mut expected: Vec<String> = MIN_RATIO_BOUNDS.iter().map(|b| (*b).to_owned()).collect();
+        expected.push("+Inf".to_owned());
+        assert_eq!(bucket_bounds(&text, "ignis_loop_guard_min_ratio"), expected, "{text}");
     }
 
     #[test]

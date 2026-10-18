@@ -15,6 +15,8 @@ import {
   type ImagePhase,
   KV_DISK_SPILL_SOURCES,
   type KvDiskSpillSource,
+  LOOP_OUTCOMES,
+  type LoopOutcome,
   REJECT_REASONS,
   type RejectReason,
   RETAINED_FAMILY_KEYS,
@@ -205,6 +207,36 @@ export type Images = {
   phases: { phase: ImagePhase; seconds: Tally; share: number | null }[];
 };
 
+/**
+ * The reasoning's two ways of being cut short over the window (GitHub #330):
+ * the loop guard's rewinds and the thinking budget's forced closes. Shares are
+ * computed here from the counters, since the server exports none. The guard's
+ * figures are null where the guard watched nothing (`loop_guard: off`); the
+ * budget's close is its own counter, not the guard's `closed`.
+ */
+export type Reasoning = {
+  /** Whether the guard's family is on the scrape at all. */
+  guard: boolean;
+  watched: Tally;
+  looped: Tally;
+  /** Requests that looped over requests watched, in the window. */
+  loopedShare: number | null;
+  /** Loops by what the guard did about them. */
+  outcomes: Record<LoopOutcome, Tally>;
+  /**
+   * The guard's cancels in the window: a rewind's (a nudge or a close), each also one admission on the request
+   * counters, and one whose continuation was refused.
+   */
+  guardCancels: number | null;
+  rewoundTokens: Tally;
+  /** Tokens taken back over the tokens decoded in the window. */
+  rewoundShare: number | null;
+  /** The lowest loop score each request reached, observed over the window. */
+  minRatio: Histogram | null;
+  /** Reasonings the thinking budget closed. */
+  forcedCloses: Tally;
+};
+
 export type HealthLevel = "idle" | "healthy" | "busy" | "saturated";
 /** The verdict: its level, what it rests on in a phrase, and the facts behind it. */
 export type Health = { level: HealthLevel; summary: string; notes: string[] };
@@ -246,6 +278,8 @@ export type Dashboard = {
   speculation: Speculation | null;
   /** Null until the image model admitted a job: a text-only server. */
   images: Images | null;
+  /** Null until the loop guard watched a request or the thinking budget closed one. */
+  reasoning: Reasoning | null;
   health: Health;
 };
 
@@ -456,6 +490,7 @@ export function deriveDashboard(points: Point[], windowMs: number): Dashboard | 
           phases: deriveImagePhases(points, from),
         }
       : null,
+    reasoning: last.loopGuard || last.thinkingForcedCloses !== null ? deriveReasoning(points, from) : null,
     health: { level: "idle", summary: "", notes: [] },
   };
   dash.health = assessHealth({
@@ -556,6 +591,30 @@ export function deriveNgram(points: Point[], since: number): Ngram {
     readBytes: tally((s) => s.ngram?.readBytes ?? null),
     readBytesPerSec: readBytesRate.at(-1) ?? null,
     readBytesPerSecSeries: readBytesRate,
+  };
+}
+
+/** The Reasoning card's figures (GitHub #330): the guard's loops and rewinds and the budget's closes, over the window. */
+export function deriveReasoning(points: Point[], since: number): Reasoning {
+  const last = points.at(-1)?.snap ?? emptySnapshot();
+  const tally = (pick: CounterPick): Tally => ({ total: pick(last), window: increaseOver(points, pick, since) });
+  const watched = tally((s) => s.loopGuard?.watched ?? null);
+  const looped = tally((s) => s.loopGuard?.looped ?? null);
+  const outcomes = Object.fromEntries(LOOP_OUTCOMES.map((outcome) => [outcome, tally((s) => s.loopGuard?.loops[outcome] ?? null)])) as Record<LoopOutcome, Tally>;
+  const rewoundTokens = tally((s) => s.loopGuard?.rewoundTokens ?? null);
+  const cancelling = [outcomes.rewound.window, outcomes.closed.window, outcomes.submit_refused.window];
+  const guardCancels = cancelling.every((n) => n === null) ? null : cancelling.reduce<number>((sum, n) => sum + (n ?? 0), 0);
+  return {
+    guard: last.loopGuard !== null,
+    watched,
+    looped,
+    loopedShare: shareOf(looped.window, watched.window),
+    outcomes,
+    guardCancels,
+    rewoundTokens,
+    rewoundShare: shareOf(rewoundTokens.window, increaseOver(points, (s) => s.decodedTokens, since)),
+    minRatio: windowHistogram(points, (s) => s.loopGuard?.minRatio ?? null, since),
+    forcedCloses: tally((s) => s.thinkingForcedCloses),
   };
 }
 

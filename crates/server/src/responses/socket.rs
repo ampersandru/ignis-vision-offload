@@ -587,7 +587,7 @@ async fn serve(
     // The engine the request is submitted to is the one its cancel guard
     // must reach, whatever a model switch does meanwhile.
     let engine = server.active().text_engine().clone();
-    let guarding = Guarding::new(server.live().loop_guard.clone(), &input, starts_in_reasoning);
+    let guarding = Guarding::new(server.live().loop_guard.clone(), &input, starts_in_reasoning, server.metrics.clone());
     let rewound = guarding.rewound();
     let (mut events, request, scheduled) = match queue.submit(&engine, &input, class, notes).await {
         Admission::Refused(refused) => {

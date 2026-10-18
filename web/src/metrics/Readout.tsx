@@ -10,6 +10,8 @@ export function Readout({ figures }: { figures: Figures }) {
     ["Decode", d.decode, true],
     ["Total", d.duration],
     ["Tokens", `${d.promptTokens} in, ${d.completionTokens} out`],
+    // GitHub #330: only a turn the loop guard rewound has any.
+    ...(figures.rewoundTokens !== undefined ? [["Rewound", `${figures.rewoundTokens} tokens`] as [string, string]] : []),
     ["Finish", d.finish],
   ];
   return (

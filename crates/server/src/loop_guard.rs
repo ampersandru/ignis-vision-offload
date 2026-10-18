@@ -100,6 +100,7 @@ use tokio::sync::watch;
 
 use crate::decoder::{Channel, OutputDecoder};
 use crate::engine::{Engine, EventStream, RequestNotes};
+use crate::metrics::{LoopOutcome, Metrics};
 use crate::template::{ChatMessage, TemplateProvider};
 
 /// What the guard does with a request (`--model-loop-guard`).
@@ -972,14 +973,16 @@ pub async fn held_back(running: &Running, stream: &mut EventStream) -> Vec<Token
 pub struct Guarding {
     watched: Option<(LoopGuardParams, RequestInput)>,
     rewound: Rewound,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl Guarding {
     /// The guard on `input` under `params`, the live `loop_guard` knobs,
-    /// when it watches it ([`LoopGuardParams::watches`]).
-    pub fn new(params: LoopGuardParams, input: &RequestInput, starts_in_reasoning: bool) -> Self {
+    /// when it watches it ([`LoopGuardParams::watches`]), counting what it
+    /// does on the server's `metrics` when they are on (GitHub #330).
+    pub fn new(params: LoopGuardParams, input: &RequestInput, starts_in_reasoning: bool, metrics: Option<Arc<Metrics>>) -> Self {
         let watched = params.watches(input, starts_in_reasoning).then(|| (params, input.clone()));
-        Self { watched, rewound: Rewound::default() }
+        Self { watched, rewound: Rewound::default(), metrics }
     }
 
     /// What the guard's rewinds take back, for the usage.
@@ -994,7 +997,7 @@ impl Guarding {
     pub fn guard(self, ops: impl GuardOps, request: RequestId, stream: EventStream) -> (EventStream, Running) {
         let running = Running::new(request);
         let stream = match self.watched {
-            Some((params, input)) => guard_counted(params, ops, input, running.clone(), stream, self.rewound),
+            Some((params, input)) => guard_counted(params, ops, input, running.clone(), stream, self.rewound, self.metrics),
             None => stream,
         };
         (stream, running)
@@ -1005,12 +1008,13 @@ impl Guarding {
 /// from `input`) and its consumer: the stream returned. `Off` returns
 /// `stream` itself.
 pub fn guard(params: LoopGuardParams, ops: impl GuardOps, input: RequestInput, request: RequestId, stream: EventStream) -> EventStream {
-    guard_counted(params, ops, input, Running::new(request), stream, Rewound::default())
+    guard_counted(params, ops, input, Running::new(request), stream, Rewound::default(), None)
 }
 
 /// [`guard`] on the request `running` names, adding the tokens each rewind
-/// takes back to `rewound` and keeping `running` on the engine request
-/// generating now.
+/// takes back to `rewound`, keeping `running` on the engine request
+/// generating now, and counting what the guard does on `metrics` (GitHub
+/// #330).
 pub fn guard_counted(
     params: LoopGuardParams,
     ops: impl GuardOps,
@@ -1018,13 +1022,14 @@ pub fn guard_counted(
     running: Running,
     stream: EventStream,
     rewound: Rewound,
+    metrics: Option<Arc<Metrics>>,
 ) -> EventStream {
     if params.mode == LoopGuardMode::Off {
         return stream;
     }
     running.0.guarded.store(true, Ordering::Relaxed);
     let (tx, rx) = unbounded_channel();
-    tokio::spawn(run(params, ops, input, running, stream, tx, rewound));
+    tokio::spawn(run(params, ops, input, running, stream, tx, rewound, metrics));
     rx
 }
 
@@ -1074,6 +1079,20 @@ struct Guard<O: GuardOps> {
     /// arrives: what its `Done` indices are offset by.
     offset: u32,
     rewound: Rewound,
+    /// Where the guard counts what it does (GitHub #330), until
+    /// [`Guard::finish`] counts the request itself: whether it has looped
+    /// yet, and the lowest of its scores so far, across rewinds.
+    metrics: Option<Arc<Metrics>>,
+    looped: bool,
+    lowest: Option<f64>,
+}
+
+/// Every way the guard ends without a `Done` (the client left, the request
+/// was stopped, the engine's stream ended) still counts the request.
+impl<O: GuardOps> Drop for Guard<O> {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 /// A continuation, ready to go: the tag the client receives before it, if
@@ -1090,7 +1109,12 @@ impl<O: GuardOps> Guard<O> {
         if self.closed || !self.view.in_reasoning() {
             return None;
         }
-        let score = self.watch.check(&self.view.scored, &self.params)?;
+        let scores = self.watch.history.len();
+        let found = self.watch.check(&self.view.scored, &self.params);
+        if let (Some(_), Some(scored)) = (&self.metrics, self.watch.history.get(scores)) {
+            self.lowest = Some(self.lowest.map_or(scored.ratio, |lowest| lowest.min(scored.ratio)));
+        }
+        let score = found?;
         let at = self.view.text().len();
         // What a rewind keeps: the whole tokens before the cut, counted in
         // the reasoning the model reads.
@@ -1104,6 +1128,7 @@ impl<O: GuardOps> Guard<O> {
                 raw_ratio = score.raw_ratio, window_start_chars = score.start, cut_chars = cut, kept_chars,
                 "loop with too little reasoning before it to keep: log only"
             );
+            self.count(LoopOutcome::TooLittleKept);
             // The watch goes on: a clean window later gives a later loop
             // something to keep, and this run of loop scores fires no more.
             self.watch.hold();
@@ -1117,6 +1142,7 @@ impl<O: GuardOps> Guard<O> {
                 cut_chars = cut,
                 "loop in the reasoning (log only)"
             );
+            self.count(LoopOutcome::Detected);
             self.watch = Watch::from(at, &self.params);
             return None;
         }
@@ -1143,6 +1169,7 @@ impl<O: GuardOps> Guard<O> {
         };
         let (Some(nudge), Some(encoded_tag)) = (self.ops.encode(sentence), encoded_tag) else {
             tracing::warn!(name: "ignis.loop_guard.no_tokenizer", request = self.original, "cannot encode the nudge: log only");
+            self.count(LoopOutcome::NoTokenizer);
             self.watch = Watch::from(at, &self.params);
             return None;
         };
@@ -1152,6 +1179,7 @@ impl<O: GuardOps> Guard<O> {
             let left = max_tokens.saturating_sub(used);
             if left < self.params.min_continuation_tokens {
                 tracing::info!(name: "ignis.loop_guard.no_room", request = self.original, at_chars = at, left, "loop, no room left to rewind");
+                self.count(LoopOutcome::NoRoom);
                 self.watch = Watch::from(at, &self.params);
                 return None;
             }
@@ -1173,7 +1201,14 @@ impl<O: GuardOps> Guard<O> {
         // it out of the wait: a submission dropped before its answer is
         // cancelled (`Engine::submit_with_notes`), a queue ticket leaves.
         let (request, stream) = tokio::select! {
-            submitted = self.ops.submit(next, Duration::from_secs(u64::from(self.params.submit_wait_secs))) => submitted?,
+            submitted = self.ops.submit(next, Duration::from_secs(u64::from(self.params.submit_wait_secs))) => match submitted {
+                Some(submitted) => submitted,
+                // The ops logged it (`submit_refused`).
+                None => {
+                    self.count(LoopOutcome::SubmitRefused);
+                    return None;
+                }
+            },
             () = self.tx.closed() => return None,
             // Ended before the continuation was admitted: the client is owed
             // the kept reasoning, never the loop.
@@ -1193,8 +1228,13 @@ impl<O: GuardOps> Guard<O> {
             attempt = self.rewinds + 1, closed = close,
             "loop in the reasoning: rewound"
         );
+        self.count(if close { LoopOutcome::Closed } else { LoopOutcome::Rewound });
+        let taken = (generated - kept) as u32;
+        if let Some(metrics) = &self.metrics {
+            metrics.record_loop_guard_rewound_tokens(taken);
+        }
 
-        self.rewound.taken.fetch_add((generated - kept) as u32, Ordering::Relaxed);
+        self.rewound.taken.fetch_add(taken, Ordering::Relaxed);
         self.rewound.unsent.fetch_add((generated - self.sent.max(kept)) as u32, Ordering::Relaxed);
 
         // The model's view: the kept tokens, then the nudge. The client has
@@ -1206,6 +1246,30 @@ impl<O: GuardOps> Guard<O> {
         self.rewinds += 1;
         self.closed = close;
         Some(Continuation { request, stream, tag: encoded_tag })
+    }
+
+    /// Count a loop the guard saw by what it did about it, next to its log
+    /// line (GitHub #330).
+    fn count(&mut self, outcome: LoopOutcome) {
+        if let Some(metrics) = &self.metrics {
+            metrics.record_loop_guard_loop(outcome);
+        }
+        self.looped = true;
+    }
+
+    /// Count the request, once: watched, looped when it did, and its lowest
+    /// score into the margin histogram, all three together so a window
+    /// reads them in step. Before its `Done` goes to the client, else when
+    /// the guard ends without one.
+    fn finish(&mut self) {
+        let Some(metrics) = self.metrics.take() else { return };
+        metrics.record_loop_guard_watched();
+        if self.looped {
+            metrics.record_loop_guard_looped();
+        }
+        if let Some(lowest) = self.lowest {
+            metrics.observe_loop_guard_min_ratio(lowest);
+        }
     }
 
     /// The model's view of `tokens`, its generation so far.
@@ -1255,6 +1319,7 @@ impl<O: GuardOps> Guard<O> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run<O: GuardOps>(
     params: LoopGuardParams,
     ops: O,
@@ -1263,6 +1328,7 @@ async fn run<O: GuardOps>(
     mut stream: EventStream,
     tx: UnboundedSender<SchedEvent>,
     rewound: Rewound,
+    metrics: Option<Arc<Metrics>>,
 ) {
     let view = View::new(ops.decoder(), params.normalize);
     let rewindable = params.rewinds(&input);
@@ -1285,6 +1351,9 @@ async fn run<O: GuardOps>(
         forwarded: 0,
         offset: 0,
         rewound,
+        metrics,
+        looped: false,
+        lowest: None,
     };
     // Once a continuation runs, only its tokens and its end reach the
     // client: its admission and prompt-reuse events describe a request the
@@ -1348,6 +1417,7 @@ async fn run<O: GuardOps>(
                     }
                     *reasoning_redirected_at = reasoning_redirected_at.map(|at| at + offset);
                 }
+                guard.finish();
                 let _ = guard.tx.send(event);
                 return;
             }
@@ -2301,6 +2371,7 @@ mod tests {
             Running::new(1),
             scripted(1, &reasoning, false),
             rewound.clone(),
+            None,
         ))
         .await;
         // One token per char here: each tag reports its struck tokens.
@@ -2492,6 +2563,7 @@ mod tests {
             running.clone(),
             scripted(1, &reasoning, false),
             Rewound::default(),
+            None,
         );
         assert_eq!(running.get(), 1);
         until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
@@ -2723,7 +2795,7 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let running = Running::new(1);
         let p = LoopGuardParams { holdback_chars: 1000, ..params(LoopGuardMode::Rewind) };
-        let mut out = guard_counted(p, ops.clone(), input("P", 40_000), running.clone(), rx, Rewound::default());
+        let mut out = guard_counted(p, ops.clone(), input("P", 40_000), running.clone(), rx, Rewound::default(), None);
         for token in tokens_of(&reasoning) {
             tx.send(SchedEvent::Token { request: 1, token }).unwrap();
         }
@@ -2744,7 +2816,7 @@ mod tests {
         let reasoning = prose(5000) + &looping(6000);
         let running = Running::new(1);
         let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
-        let mut out = guard_counted(p, Stalled(ops.clone()), input("P", 40_000), running.clone(), scripted(1, &reasoning, false), Rewound::default());
+        let mut out = guard_counted(p, Stalled(ops.clone()), input("P", 40_000), running.clone(), scripted(1, &reasoning, false), Rewound::default(), None);
         until("no rewind", || !ops.submitted.lock().unwrap().is_empty()).await;
         let kept = text_of(&held_back(&running, &mut out).await);
         let continued = text_of(&ops.submitted.lock().unwrap()[0].tokens);
@@ -2758,7 +2830,7 @@ mod tests {
     async fn a_request_no_guard_watches_holds_nothing_back() {
         let running = Running::new(1);
         let (_tx, rx) = unbounded_channel();
-        let mut out = guard_counted(params(LoopGuardMode::Off), ops_with(Vec::new()), input("P", 40_000), running.clone(), rx, Rewound::default());
+        let mut out = guard_counted(params(LoopGuardMode::Off), ops_with(Vec::new()), input("P", 40_000), running.clone(), rx, Rewound::default(), None);
         assert!(!running.stop());
         assert!(held_back(&running, &mut out).await.is_empty(), "nothing read from the engine's own stream");
     }
@@ -2832,7 +2904,7 @@ mod tests {
         let p = LoopGuardParams { holdback_chars: 500, ..params(LoopGuardMode::Rewind) };
         let rewound = Rewound::default();
         let (received, done) =
-            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone())).await;
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), None)).await;
         let text = text_of(&received);
         let (sent, _) = text.split_once(TAG_OPEN).expect("the cut is in what was sent: a tag");
         let kept = kept_then(&text_of(&models_view(&ops, "P", &[])), NUDGES[0], &reasoning).0.chars().count();
@@ -2864,7 +2936,7 @@ mod tests {
         let p = LoopGuardParams { holdback_chars: 6000, ..params(LoopGuardMode::Rewind) };
         let rewound = Rewound::default();
         let (received, done) =
-            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone())).await;
+            drain_tokens(guard_counted(p, ops.clone(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), None)).await;
         assert_eq!(ops.submitted.lock().unwrap().len(), 1, "rewound");
         assert!(!text_of(&received).contains(TAG_PREFIX), "no tag");
         assert_eq!(received, models_view(&ops, "P", &tokens_of(after)), "the model's view, token for token");
@@ -2919,5 +2991,125 @@ mod tests {
         assert_eq!(text, reasoning);
         let Some(SchedEvent::Done { reason, tokens, .. }) = done else { panic!("no done") };
         assert_eq!((reason, tokens), (FinishReason::Error, 3000));
+    }
+
+    /// The guard on `stream` counting on a fresh [`Metrics`] (GitHub #330),
+    /// drained: what the client got, and the projection once the guard ended.
+    async fn metered(p: LoopGuardParams, ops: impl GuardOps, input: RequestInput, stream: EventStream) -> (String, Arc<Metrics>) {
+        let metrics = Arc::new(Metrics::new());
+        let out = guard_counted(p, ops, input, Running::new(1), stream, Rewound::default(), Some(Arc::clone(&metrics)));
+        let (text, _) = drain(out).await;
+        (text, metrics)
+    }
+
+    /// `series`' sample in `metrics`' exposition, when it has one.
+    fn sample(metrics: &Metrics, series: &str) -> Option<u64> {
+        metrics.render().lines().find_map(|line| line.strip_prefix(series)?.strip_prefix(' ')?.parse().ok())
+    }
+
+    fn loops(metrics: &Metrics, outcome: &str) -> u64 {
+        sample(metrics, &format!("ignis_loop_guard_loops_total{{outcome=\"{outcome}\"}}")).expect("the loop family")
+    }
+
+    /// GitHub #330: every loop the guard sees counts once by what it did
+    /// about it, and the request it is in counts as looped once however
+    /// often it looped.
+    #[tokio::test]
+    async fn every_loop_is_counted_by_its_outcome_and_its_request_as_looped_once() {
+        let reasoning = prose(5000) + &looping(6000);
+        let rewind = params(LoopGuardMode::Rewind);
+        let roma = || ops_with(vec![(2, scripted(2, "Roma.", true))]);
+
+        // Rewound: the tokens it took back are the usage's.
+        let (metrics, rewound) = (Arc::new(Metrics::new()), Rewound::default());
+        let out = guard_counted(rewind.clone(), roma(), input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), rewound.clone(), Some(Arc::clone(&metrics)));
+        drain(out).await;
+        assert_eq!((loops(&metrics, "rewound"), loops(&metrics, "closed")), (1, 0));
+        assert!(rewound.taken() > 0);
+        assert_eq!(sample(&metrics, "ignis_loop_guard_rewound_tokens_total"), Some(u64::from(rewound.taken())));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(1));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(1));
+
+        // Closed, its nudges spent.
+        let (_, metrics) = metered(LoopGuardParams { retries: 0, ..rewind.clone() }, roma(), input("P", 40_000), scripted(1, &reasoning, false)).await;
+        assert_eq!((loops(&metrics, "rewound"), loops(&metrics, "closed")), (0, 1));
+        assert!(sample(&metrics, "ignis_loop_guard_rewound_tokens_total").unwrap() > 0, "a close takes the loop back too");
+
+        // Logged, every time the loop goes on: one looped request.
+        let (_, metrics) = metered(params(LoopGuardMode::Log), roma(), input("P", 40_000), scripted(1, &reasoning, true)).await;
+        assert!(loops(&metrics, "detected") > 1, "{}", metrics.render());
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(1));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_rewound_tokens_total"), Some(0));
+
+        // Held: nothing before the loop to keep.
+        let (_, metrics) = metered(rewind.clone(), roma(), input("P", 40_000), scripted(1, &looping(8000), true)).await;
+        assert_eq!(loops(&metrics, "too_little_kept"), 1);
+        assert_eq!(loops(&metrics, "rewound"), 0);
+
+        // No tokenizer for the nudge.
+        let (_, metrics) = metered(rewind.clone(), NoTokenizer(roma()), input("P", 40_000), scripted(1, &reasoning, true)).await;
+        assert!(loops(&metrics, "no_tokenizer") >= 1);
+
+        // No room left: `max_tokens` one short of a continuation's worth.
+        let ops = roma();
+        drain(guard(rewind.clone(), ops.clone(), input("P", 40_000), 1, scripted(1, &reasoning, false))).await;
+        let used = 40_000 - ops.submitted.lock().unwrap()[0].params.max_tokens.unwrap();
+        let (_, metrics) = metered(rewind.clone(), roma(), input("P", used + DEFAULT_MIN_CONTINUATION_TOKENS - 1), scripted(1, &reasoning, true)).await;
+        assert!(loops(&metrics, "no_room") >= 1);
+        assert_eq!(loops(&metrics, "rewound"), 0);
+
+        // Cancelled, and its continuation refused.
+        let (_, metrics) = metered(rewind.clone(), ops_with(Vec::new()), input("P", 40_000), scripted(1, &reasoning, true)).await;
+        assert!(loops(&metrics, "submit_refused") >= 1);
+        assert_eq!((loops(&metrics, "rewound"), sample(&metrics, "ignis_loop_guard_rewound_tokens_total")), (0, Some(0)));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(1));
+
+        // Off: no guard, nothing counted.
+        let (_, metrics) = metered(params(LoopGuardMode::Off), roma(), input("P", 40_000), scripted(1, &reasoning, true)).await;
+        assert!(!metrics.render().contains("ignis_loop_guard_"));
+    }
+
+    /// GitHub #330: a watched request's lowest score goes into the margin
+    /// histogram once, before its `Done` reaches the client: prose stays
+    /// well above the threshold, a loop's request goes under it, and a
+    /// request too short for a window is watched and never scored.
+    #[tokio::test]
+    async fn a_watched_request_s_lowest_score_is_observed_once_before_its_done() {
+        let metrics = Arc::new(Metrics::new());
+        let mut out = guard_counted(params(LoopGuardMode::Rewind), ops_with(Vec::new()), input("P", 40_000), Running::new(1), scripted(1, &prose(5000), true), Rewound::default(), Some(Arc::clone(&metrics)));
+        while !matches!(out.recv().await.expect("a done"), SchedEvent::Done { .. }) {}
+        assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_count"), Some(1), "observed by the time the Done arrives");
+        assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_bucket{le=\"0.4\"}"), Some(0), "prose scores 0.45-0.49");
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(0));
+        assert!(out.recv().await.is_none());
+        assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_count"), Some(1), "once");
+
+        let reasoning = prose(5000) + &looping(6000);
+        let (_, metrics) = metered(params(LoopGuardMode::Rewind), ops_with(vec![(2, scripted(2, "Roma.", true))]), input("P", 40_000), scripted(1, &reasoning, false)).await;
+        assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_count"), Some(1), "one request, across its rewind");
+        assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_bucket{le=\"0.25\"}"), Some(1));
+
+        let (_, metrics) = metered(params(LoopGuardMode::Rewind), ops_with(Vec::new()), input("P", 40_000), scripted(1, &prose(500), true)).await;
+        assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(1));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_min_ratio_count"), Some(0));
+    }
+
+    /// GitHub #330: a loop counts as soon as the guard sees it; its request
+    /// counts, watched and looped together, only when it ends, so a window
+    /// never reads more looped requests than watched ones.
+    #[tokio::test]
+    async fn a_loop_counts_at_once_and_its_request_when_it_ends() {
+        let (continuation, rx) = unbounded_channel();
+        let metrics = Arc::new(Metrics::new());
+        let reasoning = prose(5000) + &looping(6000);
+        let ops = ops_with(vec![(2, rx)]);
+        let out = guard_counted(params(LoopGuardMode::Rewind), ops, input("P", 40_000), Running::new(1), scripted(1, &reasoning, false), Rewound::default(), Some(Arc::clone(&metrics)));
+        until("the rewind counted", || sample(&metrics, "ignis_loop_guard_loops_total{outcome=\"rewound\"}") == Some(1)).await;
+        assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(0), "still generating");
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(0));
+        continuation.send(done_event(2, 0)).unwrap();
+        drain(out).await;
+        assert_eq!(sample(&metrics, "ignis_loop_guard_watched_requests_total"), Some(1));
+        assert_eq!(sample(&metrics, "ignis_loop_guard_looped_requests_total"), Some(1));
     }
 }

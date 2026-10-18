@@ -187,6 +187,27 @@ a memory gauge's zero is a reading -- which is why its name stays outside the
 `ignis_image_` families that are absent until a job. The Monitor's *VRAM plan*
 lays an image load out by its condition budget, and *In use now* reads the
 prefixes against it.
+Amended 2026-10-18 (#330, spec server/14): five families for the **loop
+guard** (ADR 0052, 0053), rendered after the forced-close counter. No fact of
+the guard reaches the telemetry consumer: the guard's own task records them,
+off the model thread, into the same atomics. `ignis_loop_guard_loops_total`'s
+`outcome` is the guard's log line it counts, one increment beside each
+(`rewound`, `closed` for a `rewound` line that closed the reasoning,
+`detected`, `too_little_kept`, `no_room`, `no_tokenizer`, `submit_refused`,
+this last counted by the guard when its continuation's submit gives nothing,
+which the ops log). They take the decision family's exception: **absent
+until a request the guard watched ended or it saw a loop** (a server running
+it `off` exports none of them), then every series renders, zeros included. A
+loop counts as the guard sees it; its request counts once, as it ends and
+before its `Done` reaches the client: watched, looped when it did, and its
+lowest score, together, so a window never reads more looped requests than
+watched ones. A rewind is
+two engine requests: its cancel counts once in
+`ignis_requests_cancelled_total` and its continuation once in
+`ignis_requests_accepted_total`, which keep counting engine requests; the
+Monitor's *Request flow* names the cancels that were rewinds, and a
+*Reasoning* card reads the families with the forced-close counter. A guard's
+close is prefilled, not forced, so it is never a forced close.
 
 ## Context
 
@@ -343,9 +364,9 @@ The initial stable metric contract is:
 | `ignis_retained_state_spills_total` | counter | `tier=device\|kv_ram\|disk`, `kind=checkpoint\|prefix` | Retained checkpoints and prefixes written into the tier (`kv_ram`, and `disk` on a load with KV-disk) |
 | `ignis_retained_state_discards_total` | counter | `tier=device\|kv_ram\|disk`, `kind=checkpoint\|prefix` | Retained checkpoints and prefixes that left the tier for nowhere |
 | `ignis_retained_state_restores_total` | counter | `tier=device\|kv_ram\|disk`, `kind=checkpoint\|prefix` | Prefills that landed on a checkpoint from the tier, and prefixes brought back from it; a hit whose prefill never lands has no restore |
-| `ignis_requests_accepted_total` | counter | none | Accepted submissions |
+| `ignis_requests_accepted_total` | counter | none | Accepted submissions. A loop-guard rewind's continuation is one (#330) |
 | `ignis_requests_completed_total` | counter | none | Completed requests |
-| `ignis_requests_cancelled_total` | counter | none | Accepted requests cancelled before completion |
+| `ignis_requests_cancelled_total` | counter | none | Accepted requests cancelled before completion. A loop-guard rewind cancels one (#330) |
 | `ignis_requests_rejected_total` | counter | `reason=full\|unknown_model\|oversized` | Rejected submissions by fixed reason |
 | `ignis_generated_tokens_total` | counter | none | Generated tokens on completed requests |
 | `ignis_decoded_tokens_total` | counter | none | Tokens generated so far, counted as each one is emitted |
@@ -355,6 +376,11 @@ The initial stable metric contract is:
 | `ignis_decision_answer_mass` | histogram | none | Share of the next-token distribution held by a **readout's** declared options. **Readout-only**, so its `_count` is deliberately below the counter's sum — see below. **Absent until the first one** |
 | `ignis_locates_total` | counter | `kind=log\|prose\|records`, `method=shortlist\|vote`, `compression=template_fold\|none`, `found=true\|false\|unmeasured` | `locate`s answered, by the route that answered them and whether it found an answer (#278, spec 22). Only the served combinations have a series. **Absent until the first one** |
 | `ignis_thinking_forced_closes_total` | counter | none | Completed requests whose reasoning block the thinking budget closed (#265, spec server/08). The request log's `thinking_forced` says which. **Absent until the first one** |
+| `ignis_loop_guard_watched_requests_total` | counter | none | Requests the loop guard watched: `log` or `rewind`, starting in their reasoning (#330, spec server/14). Counted as each one ends. **Absent until a watched request ended or a loop was seen**, as the four below |
+| `ignis_loop_guard_looped_requests_total` | counter | none | Of those, the requests with at least one loop, whatever its outcome |
+| `ignis_loop_guard_loops_total` | counter | `outcome=rewound\|closed\|detected\|too_little_kept\|no_room\|no_tokenizer\|submit_refused` | Loops the guard saw, one per `ignis.loop_guard.*` line, by what it did about them: taken back and nudged, taken back and closed, only logged (`log` mode, or a request with images), held, or not acted on |
+| `ignis_loop_guard_rewound_tokens_total` | counter | none | Generated tokens the guard's rewinds took back, closes included: the usage's `rewound_tokens`, summed |
+| `ignis_loop_guard_min_ratio` | histogram | none | Per watched request that scored a window: the lowest normalized loop score it reached, across its rewinds. Buckets `0.1, 0.15, … 0.5` by 0.05, then `1` and `+Inf`; `le="1"` below `_count` would be a score that is not a ratio |
 | `ignis_tokenize_requests_total` | counter | `route=tokenize\|detokenize` | Calls to `POST /v1/tokenize` and `/v1/detokenize`, whatever they answered (#285, spec server/10). Not requests of the lifecycle above: they never enter the scheduler. **Absent until the first one** |
 | `ignis_image_jobs_total` | counter | `outcome=completed\|cancelled\|stopped\|refused\|failed` | Image jobs ended, by how (#324, spec image-model/05). A request that went away is `cancelled`, a model stopped under it `stopped`, a runner that refused its condition `refused`, a failed or panicked call `failed`. **Absent until the image model admitted a job**, as the four below |
 | `ignis_image_images_total` | counter | none | Images the image jobs made, including those of a job that ended before its last (#324) |

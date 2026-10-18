@@ -198,6 +198,26 @@ export type ImageJobs = {
   running: number | null;
 };
 
+/** What the loop guard did about a loop (GitHub #330): `ignis_loop_guard_loops_total`'s `outcome` label, in the order the card reads them. */
+export const LOOP_OUTCOMES = ["rewound", "closed", "detected", "too_little_kept", "no_room", "no_tokenizer", "submit_refused"] as const;
+export type LoopOutcome = (typeof LOOP_OUTCOMES)[number];
+
+/**
+ * The loop guard's tallies (GitHub #330, ADR 0017's amendment): the requests
+ * it watched and those that looped, every loop by what it did about it, the
+ * tokens its rewinds took back, and the lowest loop score each watched request
+ * reached. The server writes the whole family at the first watched request,
+ * zeros included, and none of it with the guard off, so null on such a load.
+ */
+export type LoopGuard = {
+  watched: number | null;
+  looped: number | null;
+  loops: Record<LoopOutcome, number | null>;
+  rewoundTokens: number | null;
+  /** Null until the family has a histogram to read. */
+  minRatio: Histogram | null;
+};
+
 /** A histogram: upper bounds in seconds ending in +Inf, their cumulative counts, the sum and the count. */
 export type Histogram = { bounds: number[]; cumulative: number[]; sum: number; count: number };
 
@@ -230,6 +250,10 @@ export type Snapshot = {
   speculation: Speculation | null;
   /** Null until the image model admitted a job: a text-only server. */
   images: ImageJobs | null;
+  /** Null until the guard watched a request, or with `loop_guard: off`. */
+  loopGuard: LoopGuard | null;
+  /** The thinking budget's own closes (GitHub #330); null until the first. Not the guard's `closed`. */
+  thinkingForcedCloses: number | null;
   ttft: Histogram | null;
   duration: Histogram | null;
   unknown: Sample[];
@@ -297,6 +321,18 @@ const IMAGE_FAMILIES = {
   queue: "ignis_image_queue_jobs",
 } as const;
 
+/** The loop guard's families (GitHub #330). */
+const LOOP_FAMILIES = {
+  watched: "ignis_loop_guard_watched_requests_total",
+  looped: "ignis_loop_guard_looped_requests_total",
+  loops: "ignis_loop_guard_loops_total",
+  rewoundTokens: "ignis_loop_guard_rewound_tokens_total",
+  minRatio: "ignis_loop_guard_min_ratio",
+} as const;
+
+/** The thinking budget's forced closes (GitHub #330): absent until the first. */
+const THINKING_FORCED_CLOSES = "ignis_thinking_forced_closes_total";
+
 /** The typed primitives a decision's question asks for (GitHub #241, ADR 0034). */
 export const DECISION_TYPES = ["noul", "choice", "score"] as const;
 export type DecisionType = (typeof DECISION_TYPES)[number];
@@ -324,6 +360,8 @@ const KNOWN = new Set<string>([
   ...Object.values(NGRAM_FAMILIES),
   ...Object.values(SPEC_FAMILIES),
   ...Object.values(IMAGE_FAMILIES),
+  ...Object.values(LOOP_FAMILIES),
+  THINKING_FORCED_CLOSES,
 ]);
 
 const emptyMatrix = (): RetainedMatrix =>
@@ -361,6 +399,8 @@ export function emptySnapshot(): Snapshot {
     ngram: null,
     speculation: null,
     images: null,
+    loopGuard: null,
+    thinkingForcedCloses: null,
     ttft: null,
     duration: null,
     unknown: [],
@@ -464,6 +504,18 @@ export function readSnapshot({ families }: Exposition): Snapshot {
     };
   }
 
+  // The loop guard, all or nothing: the first watched request renders every series.
+  if (families.has(LOOP_FAMILIES.watched)) {
+    snap.loopGuard = {
+      watched: valueOf(LOOP_FAMILIES.watched),
+      looped: valueOf(LOOP_FAMILIES.looped),
+      loops: Object.fromEntries(LOOP_OUTCOMES.map((outcome) => [outcome, valueOf(LOOP_FAMILIES.loops, ["outcome", outcome])])) as LoopGuard["loops"],
+      rewoundTokens: valueOf(LOOP_FAMILIES.rewoundTokens),
+      minRatio: readHistogram(samples(LOOP_FAMILIES.minRatio), LOOP_FAMILIES.minRatio),
+    };
+  }
+  snap.thinkingForcedCloses = valueOf(THINKING_FORCED_CLOSES);
+
   snap.ttft = readHistogram(samples("ignis_request_ttft_seconds"), "ignis_request_ttft_seconds");
   snap.duration = readHistogram(samples("ignis_request_duration_seconds"), "ignis_request_duration_seconds");
   snap.unknown = [...families.values()].flatMap((f) => f.samples.filter((s) => !inContract(f.name, s)));
@@ -490,7 +542,10 @@ function inContract(family: string, s: Sample): boolean {
     case "ignis_request_duration_seconds":
     case "ignis_decision_answer_mass":
     case IMAGE_FAMILIES.duration:
+    case LOOP_FAMILIES.minRatio:
       return true;
+    case LOOP_FAMILIES.loops:
+      return oneOf(LOOP_OUTCOMES, s.labels.outcome) && Object.keys(s.labels).length === 1;
     case IMAGE_FAMILIES.jobs:
       return oneOf(IMAGE_OUTCOMES, s.labels.outcome) && Object.keys(s.labels).length === 1;
     case IMAGE_FAMILIES.phaseSeconds:
@@ -562,6 +617,12 @@ export function counterValues(s: Snapshot): (number | null)[] {
     s.images?.images ?? null,
     ...IMAGE_PHASES.map((phase) => s.images?.phaseSeconds[phase] ?? null),
     s.images?.duration?.count ?? null,
+    s.loopGuard?.watched ?? null,
+    s.loopGuard?.looped ?? null,
+    ...LOOP_OUTCOMES.map((outcome) => s.loopGuard?.loops[outcome] ?? null),
+    s.loopGuard?.rewoundTokens ?? null,
+    s.loopGuard?.minRatio?.count ?? null,
+    s.thinkingForcedCloses,
     s.ttft?.count ?? null,
     s.duration?.count ?? null,
   ];
