@@ -29,14 +29,14 @@ fn request(id: &str, prompt: &str, max_tokens: u32, stream: bool) -> Request {
 
 fn metrics(out: &Outcome) -> RequestMetrics {
     RequestMetrics {
-        retries: 0,
-        retry_wait_ms: 0.0,
         id: "m".into(),
         class: RequestClass::Sub,
         ttft_ms: out.ttft_ms,
         n_tokens: out.n_tokens,
         total_ms: out.total_ms,
         ok: true,
+        retries: 0,
+        retry_wait_ms: 0.0,
     }
 }
 

@@ -153,14 +153,14 @@ fn depth_metrics(record: &Record, depth_tokens: u32) -> Option<Vec<RequestMetric
         cell.samples
             .iter()
             .map(|s| RequestMetrics {
-                retries: 0,
-                retry_wait_ms: 0.0,
                 id: s.id.clone(),
                 class: RequestClass::Main,
                 ttft_ms: s.ttft_ms,
                 n_tokens: s.n_tokens,
                 total_ms: s.total_ms,
                 ok: s.ok,
+                retries: 0,
+                retry_wait_ms: 0.0,
             })
             .collect()
     })

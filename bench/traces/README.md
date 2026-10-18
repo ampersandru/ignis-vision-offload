@@ -52,6 +52,7 @@ which trace a given verdict replayed.
    — exits 0 only when the v1 verdict passes (≥ 99% of the reference's
    speed per class **and** self-consistent canaries). A performance-only
    comparison (no canary section) is `ignis-bench report`.
+
 ## Replaying an agentic trace faithfully (opt-in)
 
 A trace line's `prompt` may be the raw JSON request body a real agent client
@@ -67,16 +68,29 @@ parallel agents, does MTP pay?" (GitHub #329 item 14):
   every other recorded field. The harness still sets `max_tokens` (the
   line's), `stream`/`stream_options`, `temperature: 0`, `seed: 0`, the
   `class` extension and `enable_thinking` where set, and drops the recorded
-  `model`. Any other line is sent flat, as before. Compare an as-recorded
-  run only with another as-recorded run, never with a flat baseline.
+  `model`. Any other line is sent flat, as before; the replay prints "N of M
+  lines sent as recorded" so a trace of non-chat lines does not pass for a
+  faithful one. Compare an as-recorded run only with another as-recorded
+  run, never with a flat baseline. The body is greedy (`temperature: 0`),
+  not the client's own sampling, so a speculative-decoding study ("does MTP
+  pay?") reads an **upper bound** on acceptance: greedy drafts match more
+  often than sampled ones. A reply made only of tool calls has no text
+  chunk to time, so it counts in the request totals and the ttft but is left
+  out of the decode rate.
 - `--retry-engine-full` waits out a `503` `engine_full` (more concurrent
   requests than the server has lanes) and resends instead of recording a
   failure: it waits the `Retry-After` seconds (1 s without the header),
-  bounded to `--retry-max-wait S` (default 30), at most `--retry-max N`
-  resends (default 5) per request. The run file then carries `retries` and
-  `retry_wait_ms` on the requests that queued (omitted when zero);
-  `ttft_ms` and `total_ms` time the admitted attempt, so queueing is the
-  waiting and service is the rest.
+  bounded to `--retry-max-wait S` (default 30, at most 60: the server's
+  `Retry-After` is 1 to 60 s), at most `--retry-max N` resends (default 100)
+  and `--retry-total-wait S` of waiting in all (default 600) per request: a
+  request with a `max_tokens` of tens of thousands holds its lane for
+  minutes, so it is the budget that ends a request which keeps being
+  refused. The run file then carries `retries` and `retry_wait_ms` on the
+  requests that queued (omitted when zero); `ttft_ms` and `total_ms` time
+  the admitted attempt, so queueing is the waiting and service is the rest.
+  `retry_wait_ms` is the waiting slept, not the refused round trips.
+  `report` and `gate` print the retries and the wait per class when there
+  are any, since a run that queued for minutes passes the speed gate.
 
 ```
 ignis-bench replay --trace bench/traces/<load>-trace.jsonl --endpoint <url> --conc 11 \

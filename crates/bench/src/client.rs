@@ -169,6 +169,9 @@ pub struct Queueing {
     /// How many times the request was refused with `engine_full` and resent.
     pub retries: u32,
     /// The wall time slept waiting to resend, summed over the retries (ms).
+    /// It leaves out the refused round trips themselves (each refusal's
+    /// request and response), so it is the waiting the harness chose, not
+    /// the whole time lost to the queue.
     pub wait_ms: f64,
 }
 
@@ -180,13 +183,37 @@ pub struct RetryPolicy {
     /// The most times one request is resent after a refusal.
     pub max_retries: u32,
     /// The longest a single wait may be: the `Retry-After` header's seconds
-    /// are bounded to this, so a stale estimate cannot park the run.
+    /// are bounded to this, so a stale estimate cannot park the run. At most
+    /// [`MAX_RETRY_WAIT`], the server's own `Retry-After` range.
     pub max_wait: Duration,
+    /// The most time one request may spend waiting, summed over its
+    /// retries: a request that long-held lanes (a `max_tokens` of tens of
+    /// thousands runs for minutes) keep refusing is given up on at this
+    /// budget, not after a count of short waits. The last wait is cut to
+    /// what is left.
+    pub total_wait: Duration,
 }
+
+/// The longest `--retry-max-wait` accepted: the server's `Retry-After` is
+/// 1 to 60 seconds (`server/src/api.rs`), so a longer cap waits for nothing.
+pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self { max_retries: 5, max_wait: Duration::from_secs(30) }
+        // The budget, not the count, is what ends a retry by default.
+        Self { max_retries: 100, max_wait: Duration::from_secs(30), total_wait: Duration::from_secs(600) }
+    }
+}
+
+impl RetryPolicy {
+    /// How long to wait before the next resend after `waited_ms` of waiting
+    /// so far, or `None` when the budget is spent.
+    fn next_wait(&self, retry_after: Option<&str>, waited_ms: f64) -> Option<Duration> {
+        let left = self.total_wait.as_secs_f64() * 1000.0 - waited_ms;
+        if left <= 0.0 {
+            return None;
+        }
+        Some(retry_wait(retry_after, self.max_wait).min(Duration::from_secs_f64(left / 1000.0)))
     }
 }
 
@@ -246,7 +273,7 @@ pub trait Endpoint: Send + Sync {
     /// thereby cancel the server-side generation by dropping the body.
     ///
     /// `suppress_eos` names the token ids a measurement lane must not stop
-    /// on (see [`request_body_suppressing_eos`]). It is a *request* the
+    /// on (see [`suppress_eos_in`]). It is a *request* the
     /// endpoint may be unable to grant: this default ignores it, and even
     /// the HTTP endpoint can only pass it on — an engine that honours
     /// neither `ignore_eos` nor `logit_bias` still stops at its own EOS.
@@ -598,11 +625,8 @@ fn request_body(req: &Request) -> serde_json::Value {
 /// dropped: which model answers is the server's configuration, not the
 /// trace's.
 fn as_recorded_body(req: &Request) -> Option<serde_json::Value> {
-    let mut body: serde_json::Value = serde_json::from_str(&req.prompt).ok()?;
+    let mut body = recorded_chat_body(&req.prompt)?;
     let object = body.as_object_mut()?;
-    if !object.get("messages").is_some_and(serde_json::Value::is_array) {
-        return None;
-    }
     object.remove("model");
     object.remove("max_completion_tokens");
     object.remove("stream_options");
@@ -618,6 +642,19 @@ fn as_recorded_body(req: &Request) -> Option<serde_json::Value> {
         object.insert("stream_options".into(), serde_json::json!({ "include_usage": true }));
     }
     Some(body)
+}
+
+/// A trace line's `prompt` as a recorded chat request: a JSON object with a
+/// `messages` array. Anything else is sent flat, even under `--as-recorded`.
+fn recorded_chat_body(prompt: &str) -> Option<serde_json::Value> {
+    let body: serde_json::Value = serde_json::from_str(prompt).ok()?;
+    body.get("messages")?.is_array().then_some(body)
+}
+
+/// Whether `--as-recorded` sends this `prompt` as the recorded body (and
+/// not as one flat user message).
+pub fn is_recorded_chat_body(prompt: &str) -> bool {
+    recorded_chat_body(prompt).is_some()
 }
 
 #[cfg(test)]
@@ -739,18 +776,21 @@ impl HttpEndpoint {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             let detail = resp.text().unwrap_or_default();
-            match self.retry {
-                Some(policy)
-                    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                        && is_engine_full(&detail)
-                        && queueing.retries < policy.max_retries =>
-                {
+            let wait = self.retry.and_then(|policy| {
+                (status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    && is_engine_full(&detail)
+                    && queueing.retries < policy.max_retries)
+                    .then(|| policy.next_wait(retry_after.as_deref(), queueing.wait_ms))
+                    .flatten()
+            });
+            match wait {
+                Some(wait) => {
                     let slept = Instant::now();
-                    std::thread::sleep(retry_wait(retry_after.as_deref(), policy.max_wait));
+                    std::thread::sleep(wait);
                     queueing.retries += 1;
                     queueing.wait_ms += ms_since(slept);
                 }
-                _ => return (Err(format!("POST {url} -> {status}: {detail}")), queueing),
+                None => return (Err(format!("POST {url} -> {status}: {detail}")), queueing),
             }
         }
     }
@@ -1272,6 +1312,20 @@ mod tests {
     }
 
     #[test]
+    fn the_total_wait_budget_cuts_the_last_wait_and_then_ends_the_retries() {
+        let policy = RetryPolicy {
+            max_retries: 100,
+            max_wait: Duration::from_secs(30),
+            total_wait: Duration::from_secs(45),
+        };
+        assert_eq!(policy.next_wait(Some("20"), 0.0), Some(Duration::from_secs(20)));
+        assert_eq!(policy.next_wait(Some("20"), 20_000.0), Some(Duration::from_secs(20)));
+        assert_eq!(policy.next_wait(Some("20"), 40_000.0), Some(Duration::from_secs(5)), "cut to what is left");
+        assert_eq!(policy.next_wait(Some("20"), 45_000.0), None, "spent");
+        assert_eq!(policy.next_wait(None, 60_000.0), None);
+    }
+
+    #[test]
     fn only_the_engine_full_code_is_a_refusal_to_wait_out() {
         assert!(is_engine_full(r#"{"error":{"code":"engine_full","message":"m"}}"#));
         assert!(!is_engine_full(r#"{"error":{"code":"model_switching"}}"#));
@@ -1529,14 +1583,14 @@ mod tests {
         };
         let o = MockEndpoint::fallback_for(&req);
         let m = RequestMetrics {
-            retries: 0,
-            retry_wait_ms: 0.0,
             id: "r".into(),
             class: RequestClass::Sub,
             ttft_ms: o.ttft_ms,
             n_tokens: o.n_tokens,
             total_ms: o.total_ms,
             ok: true,
+            retries: 0,
+            retry_wait_ms: 0.0,
         };
         assert_eq!(m.tok_s(), 0.0);
     }
@@ -1592,6 +1646,46 @@ mod tests {
         });
         sse.push_str(&format!("data: {finish}\n\ndata: [DONE]\n\n"));
         sse
+    }
+
+    #[test]
+    fn a_tool_call_only_reply_with_usage_has_no_decode_window_and_stays_out_of_the_rate() {
+        // `--as-recorded` sends `tools`: a reply may be one `tool_calls` delta
+        // and nothing else. Its token count is the engine's (`usage`), but
+        // no text chunk timed a first token, so ttft == total.
+        let mut sse = sse_chunk(serde_json::json!({
+            "tool_calls": [{ "index": 0, "id": "call_0", "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" } }],
+        }));
+        sse.push_str(&format!(
+            "data: {}
+
+data: {}
+
+data: [DONE]
+
+",
+            serde_json::json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+            serde_json::json!({ "choices": [], "usage": { "prompt_tokens": 50, "completion_tokens": 40 } }),
+        ));
+        let out = read_recorded(&sse);
+        assert_eq!(out.n_tokens, 40, "the engine's own count");
+        assert_eq!(out.ttft_ms, out.total_ms, "no text chunk to time");
+        let calls = RequestMetrics {
+            id: "calls".into(),
+            class: RequestClass::Sub,
+            ttft_ms: out.ttft_ms,
+            n_tokens: out.n_tokens,
+            total_ms: out.total_ms,
+            ok: true,
+            retries: 0,
+            retry_wait_ms: 0.0,
+        };
+        let text = RequestMetrics { id: "text".into(), ttft_ms: 100.0, n_tokens: 11, total_ms: 1100.0, ..calls.clone() };
+        let stats = crate::metrics::class_stats(RequestClass::Sub, &[calls, text]);
+        assert_eq!(stats.n_requests, 2);
+        assert_eq!(stats.total_tokens, 51);
+        assert!((stats.tok_s - 10.0).abs() < 1e-9, "10 decoded tokens in 1 s, not 49: {}", stats.tok_s);
     }
 
     #[test]

@@ -121,7 +121,7 @@ fn by_default_a_full_engine_is_recorded_as_a_failure_without_a_retry() {
 fn a_refused_request_is_resent_after_retry_after_and_the_wait_is_recorded() {
     let engine = MockEngine::start();
     engine.state.set_fail_503_times(2, Some(1));
-    let policy = RetryPolicy { max_retries: 3, max_wait: Duration::from_millis(60) };
+    let policy = RetryPolicy { max_retries: 3, max_wait: Duration::from_millis(60), total_wait: Duration::from_secs(60) };
     let ep: Arc<dyn Endpoint> = Arc::new(HttpEndpoint::new(engine.url()).with_retry(policy));
     let results = replay(ep, &trace_of("p", 1), &no_wait());
     let m = &results[0];
@@ -137,7 +137,7 @@ fn a_refused_request_is_resent_after_retry_after_and_the_wait_is_recorded() {
 fn the_retries_are_bounded_and_a_request_that_never_fits_still_fails_with_its_waiting_recorded() {
     let engine = MockEngine::start();
     engine.state.set_fail_503_times(100, None);
-    let policy = RetryPolicy { max_retries: 2, max_wait: Duration::from_millis(20) };
+    let policy = RetryPolicy { max_retries: 2, max_wait: Duration::from_millis(20), total_wait: Duration::from_secs(60) };
     let ep: Arc<dyn Endpoint> = Arc::new(HttpEndpoint::new(engine.url()).with_retry(policy));
     let results = replay(ep, &trace_of("p", 1), &no_wait());
     let m = &results[0];
@@ -148,10 +148,24 @@ fn the_retries_are_bounded_and_a_request_that_never_fits_still_fails_with_its_wa
 }
 
 #[test]
+fn the_total_wait_budget_ends_the_retries_before_their_count_does() {
+    let engine = MockEngine::start();
+    engine.state.set_fail_503_times(1000, None);
+    let policy = RetryPolicy { max_retries: 1000, max_wait: Duration::from_millis(40), total_wait: Duration::from_millis(100) };
+    let ep: Arc<dyn Endpoint> = Arc::new(HttpEndpoint::new(engine.url()).with_retry(policy));
+    let results = replay(ep, &trace_of("p", 1), &no_wait());
+    let m = &results[0];
+    assert!(!m.ok);
+    assert!(m.retries >= 2 && m.retries < 10, "{} retries", m.retries);
+    // Waits of 40, 40 and the 20 left: the budget, with a little sleep slack.
+    assert!(m.retry_wait_ms >= 95.0 && m.retry_wait_ms < 400.0, "waited {} ms", m.retry_wait_ms);
+}
+
+#[test]
 fn only_engine_full_is_retried() {
     // A 400 (an empty messages array) is the client's fault: sent once.
     let engine = MockEngine::start();
-    let policy = RetryPolicy { max_retries: 3, max_wait: Duration::from_millis(20) };
+    let policy = RetryPolicy { max_retries: 3, max_wait: Duration::from_millis(20), total_wait: Duration::from_secs(60) };
     let ep = HttpEndpoint::new(engine.url()).as_recorded(true).with_retry(policy);
     let err = ep
         .complete(&request_for(serde_json::json!({ "messages": [] }).to_string()))

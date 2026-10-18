@@ -154,14 +154,14 @@ impl ThroughputSample {
     /// This sample as a [`RequestMetrics`] (the shared aggregation seam).
     fn as_metrics(&self) -> RequestMetrics {
         RequestMetrics {
-            retries: 0,
-            retry_wait_ms: 0.0,
             id: self.id.clone(),
             class: RequestClass::Main,
             ttft_ms: self.ttft_ms,
             n_tokens: self.n_tokens,
             total_ms: self.total_ms,
             ok: self.ok,
+            retries: 0,
+            retry_wait_ms: 0.0,
         }
     }
 }
