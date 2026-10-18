@@ -102,6 +102,7 @@ type Connection = {
   closed: boolean;
   /** What the close frame said, when it said anything. */
   closeReason?: string;
+  closeCode?: number;
   /** The named streams this connection has carried: ignis counts every id it has seen. */
   ids: Set<string>;
   /** Requests that picked this connection and have not settled; a full connection closes once there are none. */
@@ -121,7 +122,7 @@ type Outcome =
   | { kind: "completed"; id: string; output: InputItem[] }
   | { kind: "ended" }
   | { kind: "stopped" }
-  | { kind: "failed"; message: string; notFound?: boolean };
+  | { kind: "failed"; message: string; notFound?: boolean; idleClosed?: boolean };
 
 /** Resolves "stopped" once `signal` aborts, so a wait can give way to a stop. */
 const whenStopped = (signal?: AbortSignal) =>
@@ -162,6 +163,7 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
       socket.onclose = (event) => {
         connection.closed = true;
         connection.closeReason = event.reason || undefined;
+        connection.closeCode = event.code;
         resolve(false);
         for (const listener of [...connection.listeners.values()]) listener(null);
         forget(connection);
@@ -281,7 +283,10 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
       connection.listeners.set(streamId, (event) => {
         if (event === null) {
           const why = connection.closeReason ? `: ${connection.closeReason}` : "";
-          return end({ kind: "failed", message: `the connection to ignis closed before the reply finished${why}` });
+          // ignis's idle close that crossed this request on the wire: it never read the frame, since any
+          // frame it reads restarts the idle time, so the request can go again on a new connection.
+          const idleClosed = connection.closeCode === 1000 && responseId === undefined && !!connection.closeReason?.includes("server.socket_idle_close");
+          return end({ kind: "failed", message: `the connection to ignis closed before the reply finished${why}`, idleClosed });
         }
         const at = now();
         if (event.type === "response.created" && event.response) {
@@ -362,7 +367,7 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
       return stopped();
     }
 
-    const connection = connectionFor(streamId);
+    let connection = connectionFor(streamId);
     try {
       const ready = await Promise.race([connection.ready, stop]);
       if (ready === "stopped") {
@@ -401,6 +406,18 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
         await sent.ended;
         sent = attempt(items);
         outcome = await sent.outcome;
+      }
+      if (outcome.kind === "failed" && outcome.idleClosed) {
+        // The idle close crossed this request: the same request, whole, on a new connection, once.
+        await sent.ended;
+        leave(connection);
+        connection = connectionFor(streamId);
+        const again = await Promise.race([connection.ready, stop]);
+        if (again === "stopped") outcome = { kind: "stopped" };
+        else if (again && !options.signal?.aborted) {
+          sent = attempt(items);
+          outcome = await sent.outcome;
+        }
       }
       void sent.ended.then(releaseLine);
 

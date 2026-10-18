@@ -1105,6 +1105,23 @@ async fn an_idle_socket_is_closed_with_a_normal_close_frame_saying_why() {
     metric_reaches(&metrics, "ignis_responses_sockets 0").await;
 }
 
+/// The server waits for the client's Close after its own, but only so long:
+/// a peer that read the frame and went silent (here, never read again, so
+/// its echo is never flushed) does not hold the connection, or the gauge,
+/// open.
+#[tokio::test]
+async fn a_peer_silent_after_the_idle_close_does_not_hold_the_connection() {
+    let server = server(&Script::new(HashMap::new()), SchedulerConfig::default(), plain()).with_metrics().with_socket_idle_close(IDLE);
+    let metrics = Arc::clone(server.metrics.as_ref().unwrap());
+    let live = live(server).await;
+    let mut socket = socket(&live).await;
+    closed(&mut socket).await;
+    let closed_at = std::time::Instant::now();
+    metric_reaches(&metrics, "ignis_responses_sockets 0").await;
+    assert!(closed_at.elapsed() < Duration::from_secs(5), "held {:?} by a silent peer", closed_at.elapsed());
+    drop(socket);
+}
+
 /// A response running or queued keeps its socket open however long it
 /// takes, and the idle time counts from its end: here a hog runs out a
 /// request timeout of three idle times while a second socket's request

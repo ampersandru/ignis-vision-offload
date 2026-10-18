@@ -63,6 +63,11 @@ use crate::Server;
 /// convention): `openai-insecure-api-key.<key>`.
 pub(crate) const CREDENTIAL_PREFIX: &str = "openai-insecure-api-key.";
 
+/// How long an idle close waits for the client's own Close frame after
+/// sending the server's: a grace for the protocol's closing handshake
+/// (RFC 6455 §7.1.2), not an operator limit.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
+
 /// Distinct named streams one connection may use; the default stream does
 /// not count.
 const NAMED_STREAMS: usize = 32;
@@ -242,14 +247,15 @@ impl Connection {
         let look = tokio::time::sleep_until(self.next_look());
         tokio::pin!(look);
         loop {
+            // Biased, the client's frames before the idle deadline: a frame
+            // already read when the deadline falls due must win it, or a
+            // request that crossed the close on the wire is lost (the idle
+            // time restarts with the frame). The server's own events come
+            // last: a client frame, a cancel above all, is never held
+            // behind a streaming reply, and the deadline only fires when
+            // no frame is ready.
             tokio::select! {
-                () = &mut look => {
-                    if let Some(after) = self.idle_past() {
-                        self.close_idle(after).await;
-                        break;
-                    }
-                    look.as_mut().reset(self.next_look());
-                }
+                biased;
                 frame = self.socket.recv() => match frame {
                     Some(Ok(Message::Text(text))) => {
                         self.quiet_since = Instant::now();
@@ -275,6 +281,13 @@ impl Connection {
                     }
                     Some(Err(_)) | None => break,
                 },
+                () = &mut look => {
+                    if let Some(after) = self.idle_past() {
+                        self.close_idle(after).await;
+                        break;
+                    }
+                    look.as_mut().reset(self.next_look());
+                }
                 Some(outgoing) = self.inbox.recv() => match outgoing {
                     Outgoing::Event(event) => {
                         if self.socket.send(Message::Text(event.to_string().into())).await.is_err() {
@@ -318,12 +331,16 @@ impl Connection {
     }
 
     /// Close an idle socket with a normal close frame its client can show.
-    /// The connection ends once the frame is sent, without waiting for the
-    /// client's own: a peer gone silent must not hold it open.
+    /// After the frame, the client's own is awaited for [`CLOSE_GRACE`] at
+    /// most: dropping the stream with client bytes still unread makes the
+    /// OS reset the connection, which can discard the close frame in
+    /// flight (the browser then reports 1006, without the reason), while a
+    /// peer gone silent must not hold the connection open.
     async fn close_idle(&mut self, after: Duration) {
-        tracing::info!(name: "ignis.ws.idle_closed", idle_ms = after.as_millis() as u64, "closed a Responses socket idle past server.socket_idle_close");
+        tracing::info!(name: "ignis.ws.idle_closed", after_ms = after.as_millis() as u64, "closed a Responses socket idle past server.socket_idle_close");
         let reason = format!("idle for {after:?} (server.socket_idle_close); open a new socket to continue");
         let _ = self.socket.send(Message::Close(Some(CloseFrame { code: close_code::NORMAL, reason: reason.into() }))).await;
+        let _ = tokio::time::timeout(CLOSE_GRACE, async { while let Some(Ok(_)) = self.socket.recv().await {} }).await;
     }
 
     /// Queue a frame for the writer, behind the frames already queued.

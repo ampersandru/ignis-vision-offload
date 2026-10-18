@@ -728,6 +728,52 @@ describe("a socket ignis closed (GitHub #329)", () => {
     expect(await next.result).toMatchObject({ ok: true });
   });
 
+  it("sends a request again on a new connection when the idle close crossed it", async () => {
+    const h = harness();
+    const first = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    expect(h.sockets[0].creates()).toHaveLength(1);
+    // The server's idle close, with no response.created for the turn: it never read the frame.
+    h.sockets[0].closeByServer(1000, idle);
+    await tick();
+    expect(h.sockets).toHaveLength(2);
+    h.sockets[1].accept();
+    await tick();
+    expect(h.sockets[1].creates()).toHaveLength(1);
+    expect(h.sockets[1].creates()[0]).not.toHaveProperty("previous_response_id");
+    for (const event of reply("session", "resp_1", { text: "b" })) h.sockets[1].emit(event);
+    expect(await first.result).toMatchObject({ ok: true });
+  });
+
+  it("retries a crossed request once only", async () => {
+    const h = harness();
+    const first = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    h.sockets[0].closeByServer(1000, idle);
+    await tick();
+    h.sockets[1].accept();
+    await tick();
+    h.sockets[1].closeByServer(1000, idle);
+    expect(await first.result).toMatchObject({ ok: false, message: expect.stringContaining("server.socket_idle_close") });
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it("does not resend a request cut short after its response began", async () => {
+    const h = harness();
+    const cut = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    h.sockets[0].emit({ type: "response.created", stream_id: "session", response: { id: "resp_1", status: "in_progress" } });
+    h.sockets[0].closeByServer(1000, idle);
+    expect(await cut.result).toMatchObject({ ok: false });
+    expect(h.sockets).toHaveLength(1);
+  });
+
   it("says why when a close cuts a reply short", async () => {
     const h = harness();
     const cut = h.start([user("a")], { streamId: "session" });

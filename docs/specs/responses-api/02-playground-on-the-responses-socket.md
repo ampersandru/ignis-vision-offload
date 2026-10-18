@@ -117,7 +117,10 @@ the #220 stream budget still applies; over the socket it does not.
 socket for the turn that needs it and never holds one for its own sake. A
 socket ignis closes for idleness (`server.socket_idle_close`, spec 01) fails
 nothing, since nothing was running on it, and the next turn opens another and
-sends its whole history. While the page is hidden it closes every socket no
+sends its whole history. One crossing is possible: a turn sent in the instant
+the close falls due. A close with code 1000 naming `server.socket_idle_close`
+before the turn's `response.created` means ignis never read the frame, so the
+page sends that turn again, once, on a new connection. While the page is hidden it closes every socket no
 turn is using once a minute (`HIDDEN_CLOSE_MS`) passes with none of them
 used, so a background tab holds no connection, and no Knative pod. A close
 that cuts a reply short shows the close frame's reason with the failure.

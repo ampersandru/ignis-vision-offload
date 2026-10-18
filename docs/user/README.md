@@ -111,6 +111,11 @@ for minutes rather than for the revision's timeout. Lower it
 (`-e IGNIS_SERVER_SOCKET_IDLE_CLOSE=120`) to release the pod sooner; a
 client's next request opens a new socket either way.
 
+The Monitor is the other thing that keeps a scale-to-zero service awake: its
+tab polls `/ui/metrics` and counts as traffic for as long as it polls. Until
+the Monitor stops polling while its tab is hidden (GitHub #329 item 11), a
+Monitor tab left open holds the pod whatever the socket settings say.
+
 ### Release archives
 
 A `v*` tag also publishes a Windows `.zip` and a Linux `.tar.gz`, each with its
