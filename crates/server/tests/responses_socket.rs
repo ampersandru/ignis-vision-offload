@@ -1051,4 +1051,8 @@ async fn a_socket_continuation_waits_in_the_queue_behind_what_already_waits() {
     assert_eq!(ended["type"], "response.incomplete", "{ended}");
     assert!(ended["response"]["output"][0]["content"][0]["text"].as_str().unwrap().contains(TAG_PREFIX), "rewound");
     metric_reaches(&metrics, "ignis_responses_queued_requests 0").await;
+    // GitHub #330: a socket's rewind counts on `/metrics` like any other.
+    metric_reaches(&metrics, "ignis_loop_guard_loops_total{outcome=\"rewound\"} 1").await;
+    let rewound = ended["response"]["usage"]["output_tokens_details"]["rewound_tokens"].as_u64().expect("rewound tokens");
+    metric_reaches(&metrics, &format!("ignis_loop_guard_rewound_tokens_total {rewound}")).await;
 }
