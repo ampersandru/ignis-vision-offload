@@ -145,6 +145,19 @@ pub fn flash_next_window(draft_tokens: u32, row_budget: u32, lanes: u32) -> u32 
     }
 }
 
+/// The rows one Flash-Next decode step carries at most at `decode_lanes`:
+/// the widest verify round, `w * (k + 1)` over 1..=`decode_lanes` lanes, or
+/// the lanes themselves when a plain step of them is wider. The leaf's
+/// `verify::decode_rows`, which sizes its MoE decode route by it.
+pub fn flash_next_decode_rows(draft_tokens: u32, row_budget: u32, decode_lanes: u32) -> u32 {
+    (1..=decode_lanes)
+        .map(|w| match flash_next_window(draft_tokens, row_budget, w) {
+            0 => 0,
+            k => w * (k + 1),
+        })
+        .fold(decode_lanes, u32::max)
+}
+
 /// The window a round runs at when its tightest lane has `room` positions left
 /// before its sequence's capacity (or the load's context): `window` while the
 /// round's writes fit -- `2 * window` positions under MTP, `window + 1`
@@ -200,6 +213,12 @@ impl FlashNextSpeculation {
 
     pub fn row_budget(&self) -> u32 {
         self.row_budget
+    }
+
+    /// The rows a decode step of a `decode_lanes` load carries at most
+    /// ([`flash_next_decode_rows`]).
+    pub fn decode_rows(&self, decode_lanes: u32) -> u32 {
+        flash_next_decode_rows(self.draft_tokens, self.row_budget, decode_lanes)
     }
 
     /// The window a round of `lanes` lanes verifies at.
@@ -492,6 +511,35 @@ mod tests {
                 for lanes in 1..=8 {
                     let k = flash_next_window(draft, budget, lanes);
                     assert!(k <= draft && (k == 0 || lanes * (k + 1) <= FLASH_NEXT_VERIFY_ROWS), "{draft} {budget} {lanes}");
+                }
+            }
+        }
+    }
+
+    /// The rows a decode step carries at most, as the leaf sizes its MoE
+    /// decode route (`verify::decode_rows`): the widest verify round over
+    /// one lane up to the load's lanes, never fewer than the lanes.
+    #[test]
+    fn the_widest_decode_step_is_the_leaf_s_decode_rows() {
+        let rows = |draft, budget, lanes| flash_next_decode_rows(draft, budget, lanes);
+        // A 2-draft load at the decode route's 8 rows: 1 x 3, 2 x 3, 3 x 2.
+        assert_eq!((rows(2, 0, 1), rows(2, 0, 2), rows(2, 0, 3)), (3, 6, 6));
+        // The rtxpro6000's 3 drafts over 8 lanes: the budget caps it, and
+        // from five lanes a plain step of every lane is the widest.
+        assert_eq!((rows(3, 0, 1), rows(3, 0, 3), rows(3, 0, 4), rows(3, 0, 8)), (4, 8, 8, 8));
+        assert_eq!(rows(7, 6, 3), 6, "a 6-row budget");
+        assert_eq!(rows(1, 2, 3), 3, "one lane's 2 rows, fewer than the lanes");
+        let spec = FlashNextSpeculation::new(SpeculativeBackend::Mtp, 2, 0).expect("valid");
+        assert_eq!(spec.decode_rows(3), 6);
+        for draft in 1..=MAX_DRAFT_TOKENS {
+            for budget in 0..=FLASH_NEXT_VERIFY_ROWS {
+                for lanes in 1..=8 {
+                    let widest = (1..=lanes)
+                        .map(|w| w * (flash_next_window(draft, budget, w) + 1))
+                        .max()
+                        .unwrap()
+                        .max(lanes);
+                    assert_eq!(rows(draft, budget, lanes), widest, "{draft} {budget} {lanes}");
                 }
             }
         }

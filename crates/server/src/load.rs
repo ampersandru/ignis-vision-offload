@@ -81,7 +81,24 @@ impl From<crate::runtime::FlashNextLoadError> for LoadError {
     fn from(error: crate::runtime::FlashNextLoadError) -> Self {
         match error {
             crate::runtime::FlashNextLoadError::HostPlan(refusal) => Self::HostPlan(refusal),
+            crate::runtime::FlashNextLoadError::PinnedExperts(refusal) => Self::LoadFailed(refusal.to_string()),
             crate::runtime::FlashNextLoadError::Other(message) => Self::LoadFailed(message),
+        }
+    }
+}
+
+impl LoadError {
+    /// A Flash-Next load's failure under `config`: a pinned hot set it cannot
+    /// hold names its budget as `config` took it (GitHub #329 item 12) -- the
+    /// flag, the environment variable, the file key or the profile -- and
+    /// anything else reads as [`LoadError::from`] has it.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    fn from_flash_next(error: crate::runtime::FlashNextLoadError, config: &crate::config::Config) -> Self {
+        match error {
+            crate::runtime::FlashNextLoadError::PinnedExperts(refusal) => {
+                Self::LoadFailed(refusal.naming(&config.basis.resolution().spelled("vram", "pinned_expert_bytes")))
+            }
+            error => Self::from(error),
         }
     }
 }
@@ -480,7 +497,7 @@ fn cuda_scheduler_for(
             config.ngram_cache.clone(),
             &config.kv_disk_location,
         )
-        .map_err(LoadError::from),
+        .map_err(|error| LoadError::from_flash_next(error, config)),
         ModelFamily::Qwen38_27b => cuda_scheduler_with_thinking_close(
             artifact,
             model.into(),
@@ -550,5 +567,28 @@ mod tests {
         let field = |name: &str| warned.get(name).or_else(|| warned["attributes"].get(name)).cloned();
         assert_eq!(field("sizes"), Some(serde_json::json!("4096x4096")), "{warned}");
         assert_eq!(field("max_target_cells"), Some(serde_json::json!(4096)), "{warned}");
+    }
+
+    /// GitHub #329 item 12, second review 2026-10-18: a pinned hot set the
+    /// load cannot hold is refused naming where its budget was set -- the
+    /// profile, the flag -- not always the flag; any other failure reads as
+    /// it did.
+    #[test]
+    fn a_refused_pin_names_where_its_budget_was_set() {
+        use crate::runtime::FlashNextLoadError;
+        let resolved = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(&args, |_| None).expect("the options resolve") else {
+                panic!("a config")
+            };
+            config
+        };
+        let refused = ignis_core::residency::PinRefused { asked: 2 << 30, most: 1 << 30, keep: 78, rows: 3, lanes: 3 };
+        let message = |config: &crate::config::Config, error: FlashNextLoadError| LoadError::from_flash_next(error, config).to_string();
+        let profiled = message(&resolved(&[]), FlashNextLoadError::PinnedExperts(refused.clone()));
+        assert!(profiled.starts_with("`vram.pinned_expert_bytes (profile rtx5090 in the built-in profiles)` asks for 2147483648 bytes"), "{profiled}");
+        let flagged = message(&resolved(&["--vram-pinned-expert-bytes", "2G"]), FlashNextLoadError::PinnedExperts(refused));
+        assert!(flagged.starts_with("`--vram-pinned-expert-bytes` asks for"), "{flagged}");
+        assert_eq!(message(&resolved(&[]), FlashNextLoadError::from("no MTP head")), "no MTP head");
     }
 }

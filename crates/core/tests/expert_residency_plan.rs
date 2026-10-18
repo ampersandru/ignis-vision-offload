@@ -7,7 +7,7 @@ use ignis_core::residency::{
     ExpertCachePlanError, ExpertCacheRequest, ExpertCatalog, ExpertTraffic, DEFAULT_HOST_MARGIN_BYTES,
     HostPlanError, HostPlanRequest, KBits, MEASURED_ONE_ROW_PREFETCH_BUDGET_BYTES,
     MEASURED_THREE_ROW_PREFETCH_BUDGET_BYTES, Projection, ProjectionId, default_prefetch_budget, human_bytes,
-    holds_every_expert, min_slots_per_class, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
+    holds_every_expert, min_slots_per_class, pin_hot_experts, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
     residency_table_bytes, staging_ring_bytes_for, warm_start_order,
 };
 
@@ -514,4 +514,52 @@ fn the_sidecar_s_per_expert_traffic_gives_the_warm_start_order() {
             p(1, 2, Projection::Down),
         ]
     );
+}
+
+// ---- the pinned hot set (GitHub #329 item 12) -------------------------------
+
+/// Slots per class for `catalog()`: gate/up K2 4, K3 1, K4 2, down K2 6, K2.5 2.
+const POOLS: [u32; 8] = [4, 0, 1, 2, 6, 2, 0, 0];
+
+#[test]
+fn nothing_is_pinned_at_a_budget_of_zero() {
+    let traffic = ExpertTraffic::new(&catalog(), vec![5, 0, 9, 7, 9, 1]).expect("traffic");
+    let pinned = pin_hot_experts(&catalog(), &traffic, POOLS, 1, 0);
+    assert!(pinned.is_empty());
+    assert_eq!((pinned.bytes, pinned.experts(), pinned.per_class), (0, 0, [0; 8]));
+    assert_eq!(pinned.lru_capacity(POOLS), POOLS, "the LRU keeps every slot");
+    assert_eq!(pinned.by_key(&catalog()), vec![false; 12]);
+}
+
+#[test]
+fn the_pinned_set_is_the_hottest_whole_experts_until_their_bytes_reach_the_budget() {
+    let catalog = catalog();
+    let traffic = ExpertTraffic::new(&catalog, vec![5, 0, 9, 7, 9, 1]).expect("traffic");
+    let p = |layer, expert, projection| ProjectionId::new(layer, expert, projection);
+    // The hottest, (0, 2), is 200 + 100 bytes: a budget it reaches pins it alone.
+    let one = pin_hot_experts(&catalog, &traffic, [4, 0, 2, 2, 6, 2, 0, 0], 1, 300);
+    assert_eq!(one.projections, vec![p(0, 2, Projection::GateUp), p(0, 2, Projection::Down)]);
+    assert_eq!((one.bytes, one.per_class), (300, [1, 0, 0, 0, 1, 0, 0, 0]));
+    // One byte more takes the next expert whole, (1, 1) at 300 + 125.
+    let two = pin_hot_experts(&catalog, &traffic, [4, 0, 2, 2, 6, 2, 0, 0], 1, 301);
+    assert_eq!(two.experts(), 2);
+    assert_eq!((two.bytes, two.per_class), (725, [1, 0, 1, 0, 1, 1, 0, 0]));
+    let keys = two.by_key(&catalog);
+    // Keys (layer · 3 + expert) · 2 + projection: (0, 2) is 4 and 5, (1, 1) is 8 and 9.
+    let pinned_keys: Vec<usize> = keys.iter().enumerate().filter(|&(_, &pinned)| pinned).map(|(key, _)| key).collect();
+    assert_eq!(pinned_keys, vec![4, 5, 8, 9]);
+}
+
+#[test]
+fn an_expert_that_would_take_a_class_below_its_lru_minimum_is_skipped() {
+    let catalog = catalog();
+    let traffic = ExpertTraffic::new(&catalog, vec![5, 0, 9, 7, 9, 1]).expect("traffic");
+    let p = |layer, expert| [ProjectionId::new(layer, expert, Projection::GateUp), ProjectionId::new(layer, expert, Projection::Down)];
+    // gate/up K3 has one slot, its minimum: (1, 1) is skipped, the walk goes on.
+    // (0, 1) is never selected, so never pinned.
+    let pinned = pin_hot_experts(&catalog, &traffic, POOLS, 1, 10_000);
+    assert_eq!(pinned.projections, [p(0, 2), p(1, 0), p(0, 0), p(1, 2)].concat());
+    assert_eq!(pinned.bytes, 300 + 500 + 300 + 300);
+    assert_eq!(pinned.per_class, [3, 0, 0, 1, 4, 0, 0, 0]);
+    assert_eq!(pinned.lru_capacity(POOLS), [1, 0, 1, 1, 2, 2, 0, 0]);
 }

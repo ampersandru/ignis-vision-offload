@@ -1693,7 +1693,7 @@ pub fn render_expert_residency(
         out,
         "ignis_expert_cache_slots",
         "gauge",
-        "VRAM expert cache slots per K class: capacity reserved at load, and in use.",
+        "VRAM expert cache LRU slots per K class: capacity reserved at load, and in use. A pinned hot set's slots are not among them (the load's ignis.runtime.flash_next_pinned_experts event names them).",
     );
     for class in KClass::ALL {
         for (state, slots) in [("capacity", capacity), ("in_use", occupancy)] {
@@ -2788,6 +2788,10 @@ mod tests {
             value(&text, "ignis_expert_cache_slots", "class=\"down_k2\",state=\"in_use\""),
             "12"
         );
+        // GitHub #329 item 12: the capacity is the LRU's; a pinned hot set's
+        // slots are past it, named by the load's event, not by a series.
+        let help = text.lines().find(|l| l.starts_with("# HELP ignis_expert_cache_slots ")).expect("help");
+        assert!(help.contains("LRU slots") && help.contains("ignis.runtime.flash_next_pinned_experts"), "{help}");
     }
 
     #[test]

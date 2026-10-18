@@ -375,7 +375,11 @@ ignis-server config patch --model-max-context 131072   # change the file in plac
 **Profiles.** `--profile <name>` / `IGNIS_PROFILE` / the file's `profile:`
 names a bundle of hardware-shaped defaults, below the file and above the
 built-in defaults. Two are built in:
-- `rtx5090` (the default) holds numbers measured on that card.
+- `rtx5090` (the default) holds numbers measured on that card. Under it
+  Flash-Next pins its calibration-hottest 2 GiB of experts in VRAM
+  (`--vram-pinned-expert-bytes 2G`, [the pinned hot set](#host-ram-for-flash-next)):
+  2.1 GB less RAM for at most ~1% of three-lane decode. `--vram-pinned-expert-bytes 0`
+  turns it off.
 - `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
   Server Edition, 96 GB each), measured on a Server Edition under Linux
   ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). Both
@@ -592,6 +596,7 @@ class is refused whatever the flag says.
 | `--vram-budget-bytes <b>` | `IGNIS_VRAM_BUDGET_BYTES` | derived | The device memory the whole process may hold, weights included. More than is free refuses the start. |
 | `--vram-allow-oversubscription` | `IGNIS_VRAM_ALLOW_OVERSUBSCRIPTION` | off | With `--vram-budget-bytes` only: start above free memory (or below the plan's minimum) with a warning instead of a refusal. On Windows that pages. Both models. |
 | `--vram-allow-expert-cache-below-floor` | `IGNIS_VRAM_ALLOW_EXPERT_CACHE_BELOW_FLOOR` | off | Flash-Next only: start with an expert cache below its 12 GiB floor, with a warning ([above](#the-kv-pool)). The 27B, which has no expert cache, refuses it. (`make` knob `ALLOW_EXPERT_CACHE_BELOW_FLOOR=1`.) |
+| `--vram-pinned-expert-bytes <b>` | `IGNIS_VRAM_PINNED_EXPERT_BYTES` | `0`; `2G` under the `rtx5090` profile | Flash-Next only: the calibration-hottest experts held in the expert cache for the whole load, outside its LRU, with no copy in RAM, up to these bytes: the RAM the experts take shrinks by as much ([Host RAM for Flash-Next](#host-ram-for-flash-next)). `0` pins none. A pin that cannot leave every class the slots of the widest decode step (under MTP a verify round's lanes x (drafts + 1)) is refused, naming the most it can pin. The 27B refuses it when named, and passes the profile's value over. (`make` knob `PINNED_EXPERT_BYTES`.) |
 | `--reuse-prompt <on\|off>` | `IGNIS_REUSE_PROMPT` | `on` | `off`: no prompt checkpoint is captured or reused, and no prefix is shared unless `--reuse-retained-device` or `--reuse-retained-host` gives slots for it. |
 | `--reuse-retained-device <n>` | `IGNIS_REUSE_RETAINED_DEVICE` | `0` | Retained slots in VRAM: reserved in the VRAM plan, copied device to device (~0.3 ms), and handed out before any host slot. A card with VRAM to spare can take `--reuse-retained-device 16 --reuse-retained-host 0`. |
 | `--reuse-retained-host <n>` | `IGNIS_REUSE_RETAINED_HOST` | two per decode lane (16); `0` with `--reuse-prompt off` | Retained slots in one pinned host block reserved at start, ~222 MiB each at the default load (3.5 GiB for 16): no VRAM, so the KV pool gets it; a capture and a claim each cost a PCIe copy (~15–19 ms). Both kinds hold the images of retained checkpoints and shared prefixes. When none is free, retained state gives one up — checkpoints before prefixes, `agent` before `interactive`, then least recently used; when nothing can, the publish or capture is skipped. `--retained-slots` was replaced by these two and now refuses the start. |
@@ -699,7 +704,7 @@ file per artifact remains. This cache is separate from prompt/KV reuse.
 ### Host RAM for Flash-Next
 
 Serving Flash-Next needs about **46-47 GB of available RAM**: 38 GB of pinned
-experts, 1 GB of n-gram hot rows, ~0.5 GB of staging (KV-disk's 64 MiB
+experts (2.1 GB less under the `rtx5090` profile's pinned hot set, below), 1 GB of n-gram hot rows, ~0.5 GB of staging (KV-disk's 64 MiB
 included: `--qwen38flashnext-kv-disk-bytes 0` drops it), ~1 GB of retained host
 slots, the 2 GiB KV-RAM arena and the 4 GiB margin the load refuses to dip into
 (`--model-host-margin-bytes`: it never lets reuse push Windows into paging).
@@ -754,8 +759,35 @@ with what each costs:
 | `FN_KV_HOST_POOL_BYTES` | `--qwen38flashnext-reuse-kv-host-pool-bytes <n>` | up to the 2 GiB arena (`0` turns it off) | The KV-RAM tier holds fewer suspended requests: under VRAM pressure a request that cannot be parked there is evicted and prefilled again. |
 | `NGRAM_HOT_BYTES` | `--ngram-hot-bytes <n>` | up to the 1 GiB default (`0` holds none) | Each n-gram row not held in RAM is read from NVMe when a step needs it: more reads per token, and slower prefill. |
 | `HOST_MARGIN_BYTES` | `--model-host-margin-bytes <n>` | what it lowers the 4 GiB default by (`0` leaves none) | Less room for the rest of the machine to grow into: the plan's lines are pinned and cannot be paged, so once other applications outgrow what is left, Windows pages *them* out. |
+| `PINNED_EXPERT_BYTES` | `--vram-pinned-expert-bytes <n>` | about `<n>` of the experts line (`2G` under the `rtx5090` profile, else off) | The pinned hot set (below): the LRU loses those slots. Measured on the 5090: nothing at `1G`, up to ~1% of three-lane decode at `2G`, 5.9% at `4G`; the load takes ~2 s longer. |
 
 Check `make config MODEL=flash-next` for the lines a start will use.
+
+**The pinned hot set** (`--vram-pinned-expert-bytes`, `IGNIS_VRAM_PINNED_EXPERT_BYTES`,
+`vram.pinned_expert_bytes`; 0 by default, `2G` under the `rtx5090` profile, ADR 0055). On a card whose expert cache
+holds only part of the experts, as on a 32 GB one, the load can keep its
+calibration-hottest experts in the cache for its whole life: whole experts,
+hottest first, until they reach the bytes named. They sit outside the cache's
+LRU, are never evicted or copied, and have no copy in RAM: the `expert_pool`
+line, and the process's RAM, shrink by their bytes. The trade is the LRU's
+slots they take. On the RTX 5090 (2026-10-18,
+[finding](../findings/2026-10-18-pinned-hot-set-measured-on-the-5090.md)) `1G`
+gave back 1.075 GB for no measurable decode cost, `2G` 2.149 GB for 0.1-0.2%
+of one-lane and 0.2-1.1% of three-lane decode, and `4G` 4.296 GB for 4.3% and
+5.9%; greedy output is the same at each. Past 2 GiB the cost climbs, as the
+replay study
+([finding](../findings/2026-10-18-partial-exclusive-expert-pool.md)) predicted
+(3.8-5.3% of three-lane decode at 4 GB), and faster: the hottest experts are
+mostly 4-bit, and pinning them takes most of those classes' LRU. The
+records the pin keeps reach VRAM
+through a few buffers held while the experts load (the plan's `load_staging`
+line, ~0.3-0.9 GB). The load logs `ignis.runtime.flash_next_pinned_experts`
+with what it pinned; the Monitor's expert slots and `ignis_expert_cache_slots`
+count the LRU's slots only. A pin the cache cannot hold while every K class
+keeps the slots of the widest decode step (a verify round's rows under MTP)
+is refused at start, naming the most it can pin and where the value was set:
+the flag, the environment, a config file or the profile. A card that holds every expert keeps none in RAM already
+and ignores the field; the 27B refuses it.
 
 A host with RAM to spare can go the other way: `--ngram-hot-bytes auto`
 (`make MODEL=flash-next NGRAM_HOT_BYTES=auto`) gives the hot rows what the

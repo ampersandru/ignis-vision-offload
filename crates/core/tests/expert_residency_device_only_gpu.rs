@@ -74,6 +74,7 @@ fn a_device_only_residency_admits_every_projection_then_hits() {
         host_pool_bytes: 0,
         copy_blocks: 4,
         report: 1,
+        pinned: [0; 8],
     };
     // A device-only residency takes no pool offsets.
     let mut gpu = match DeviceResidency::new(&desc, &k2, &[]) {

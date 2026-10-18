@@ -1051,7 +1051,8 @@ function TallyCell({ tally }: { tally: { total: number | null; window: number | 
  * the decode hit rate, the misses each token cost and the PCIe traffic —
  * what tells a slow turn caused by misses from one caused by compute — the
  * time the expert kernels waited on those copies (GitHub #306), then each K
- * class's slots against their capacity.
+ * class's slots against their capacity: the LRU's, without a pinned hot set's
+ * slots (ADR 0055), which the series does not count.
  */
 function ExpertsCard({ experts, chart, win }: { experts: Experts; chart: ChartFrame; win: string }) {
   const { issued, used } = experts.prefetch;
@@ -1091,7 +1092,7 @@ function ExpertsCard({ experts, chart, win }: { experts: Experts; chart: ChartFr
           <thead>
             <tr className="border-b border-line text-left text-ash">
               <th className="py-1.5 pr-4 font-display font-medium">K class</th>
-              <th className="py-1.5 pr-4 text-right font-display font-medium">Slots in use</th>
+              <th className="py-1.5 pr-4 text-right font-display font-medium">LRU slots in use</th>
               <th className="py-1.5 pr-4 text-right font-display font-medium">Hits</th>
               <th className="py-1.5 pr-4 text-right font-display font-medium">Misses</th>
             </tr>
@@ -1117,7 +1118,8 @@ function ExpertsCard({ experts, chart, win }: { experts: Experts; chart: ChartFr
       </div>
       <p className="text-[11px] text-ash">
         Hits and misses count selected projections over both phases since start, the window's gain beside them. A slot in use stays in use: an eviction
-        hands it to the next projection, so a full pool is the steady state, and the hit rate says whether it holds the right ones.
+        hands it to the next projection, so a full pool is the steady state, and the hit rate says whether it holds the right ones. The slots counted are
+        the LRU's. A pinned hot set's slots are not among them: they never turn over, and the load's log names them (ADR 0055).
       </p>
     </Card>
   );

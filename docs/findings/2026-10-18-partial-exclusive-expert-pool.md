@@ -283,7 +283,14 @@ What a pin needs, if built:
 
 - If the owner wants the RAM: a spec for the pin, sized 1-2 GB by default as
   a config field, with this study's wrapper becoming the policy model's pin
-  and a GPU match test.
+  and a GPU match test. **Done 2026-10-18**, a field off by default
+  (`--vram-pinned-expert-bytes`, ADR 0055, accepted with the `rtx5090`
+  profile pinning 2 GiB for Flash-Next): measured on the card in
+  [A pinned hot set measured on the 5090](2026-10-18-pinned-hot-set-measured-on-the-5090.md).
+  The wrapper above differs from the device in one detail, at several lanes:
+  it removes pinned experts from each ranking before interleaving the lanes,
+  where the device keeps a pinned candidate's rank and skips it; at one lane
+  the two agree step for step (`the_policy_model_s_pin_is_the_study_s_wrapper`).
 - The replay loaders in `expert_residency_study_replay.rs` and
   `expert_residency_partial_exclusive.rs` are copies; share them if a third
   study needs one.

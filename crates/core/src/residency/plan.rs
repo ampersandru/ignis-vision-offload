@@ -36,14 +36,18 @@ pub struct HostPlanRequest {
     /// Physical memory available at load (`MEMORYSTATUSEX::ullAvailPhys`),
     /// measured before the first pinned allocation.
     pub available_physical_bytes: u64,
-    /// Every expert projection, pinned for the life of the load: the
-    /// [`ExpertCatalog::total_bytes`] of the artifact. 0 on a device-only
-    /// load (ADR 0054), whose experts live only in VRAM.
+    /// The expert pool, pinned for the life of the load: every expert
+    /// projection ([`ExpertCatalog::total_bytes`] of the artifact) but a
+    /// pinned hot set's, which have no host copy (ADR 0055). 0 on a
+    /// device-only load (ADR 0054), whose experts live only in VRAM.
     pub expert_pool_bytes: u64,
-    /// A device-only load's expert layer buffers (ADR 0054,
-    /// [`stream_staging_bytes`](super::load::stream_staging_bytes)): pageable,
-    /// held only while the load reads the experts, and freed before it reads
-    /// the n-gram hot rows. 0 on a load with an expert pool.
+    /// The layer buffers experts stream through on their way to VRAM, held
+    /// only while the load reads them and freed before it reads the n-gram
+    /// hot rows: pageable. A device-only load's every expert (ADR 0054,
+    /// [`stream_staging_bytes`](super::load::stream_staging_bytes)), or a
+    /// pinned hot set's (ADR 0055,
+    /// [`pinned_staging_bytes`](super::load::pinned_staging_bytes)); 0 on a
+    /// load that pins nothing beside its expert pool.
     pub load_staging_bytes: u64,
     /// The n-gram table's hot rows held in RAM (spec flash-next/04).
     pub ngram_hot_rows_bytes: u64,
@@ -229,8 +233,9 @@ impl std::fmt::Display for HostPlanError {
             _ => f.write_str("Close other applications"),
         }?;
         f.write_str(". Plan: ")?;
-        // The layer buffers only where a device-only load has them, and said
-        // apart: the peak does not add them to the lines serving holds.
+        // The layer buffers only where a load streams experts through them
+        // (device-only, or a pinned hot set's), and said apart: the peak does
+        // not add them to the lines serving holds.
         let listed = lines.iter().filter(|&&(name, bytes)| name != "load_staging" || bytes > 0);
         for (i, (name, bytes)) in listed.enumerate() {
             write!(f, "{}{} {}", if i == 0 { "" } else { ", " }, line_label(name), human_bytes(*bytes))?;
@@ -814,6 +819,138 @@ pub const TABLE_BYTES_PER_PROJECTION: u64 = 48;
 pub fn residency_table_bytes(layers: u64, experts: u64, max_tokens: u64, lookahead_width: u64) -> u64 {
     let keys = layers * experts * 2;
     keys * TABLE_BYTES_PER_PROJECTION + 2 * (2 * experts) * (24 + 4) + max_tokens * lookahead_width * 4 + 16 * 1024
+}
+
+/// The load's **pinned hot set** (GitHub #329 item 12,
+/// `docs/findings/2026-10-18-partial-exclusive-expert-pool.md`): experts held
+/// in VRAM for the load's whole life, each projection in a slot of its
+/// class's pool that the LRU gives up, so the host expert pool keeps no copy
+/// of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PinnedExperts {
+    /// Both projections of each pinned expert, gate/up first, hottest expert
+    /// first.
+    pub projections: Vec<ProjectionId>,
+    /// Pinned projections per class, indexed like [`KClass::ALL`].
+    pub per_class: [u32; KClass::COUNT],
+    /// What they weigh: the bytes the host pool no longer holds.
+    pub bytes: u64,
+}
+
+impl PinnedExperts {
+    pub fn is_empty(&self) -> bool {
+        self.projections.is_empty()
+    }
+
+    pub fn experts(&self) -> usize {
+        self.projections.len() / 2
+    }
+
+    /// The LRU's slots per class: `pools` (the split's
+    /// [`ExpertCachePlan::capacity`]) less the pinned ones.
+    pub fn lru_capacity(&self, pools: [u32; KClass::COUNT]) -> [u32; KClass::COUNT] {
+        std::array::from_fn(|i| pools[i].saturating_sub(self.per_class[i]))
+    }
+
+    /// Whether each projection of `catalog` is pinned, in key order
+    /// (`(layer · experts + expert) · 2 + projection`).
+    pub fn by_key(&self, catalog: &ExpertCatalog) -> Vec<bool> {
+        let experts = usize::from(catalog.experts());
+        let mut keys = vec![false; usize::from(catalog.layers()) * experts * 2];
+        for id in &self.projections {
+            keys[(usize::from(id.layer) * experts + usize::from(id.expert)) * 2 + usize::from(id.projection == Projection::Down)] =
+                true;
+        }
+        keys
+    }
+}
+
+/// A pinned hot set the expert cache cannot hold (`flash_next::pinned_experts`,
+/// GitHub #329 item 12): the bytes asked, the most whole experts it can pin
+/// while every K class keeps `keep` LRU slots, and the widest decode step
+/// those are for -- `rows` rows at `lanes` lanes, more rows than lanes when it
+/// is a verify round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinRefused {
+    pub asked: u64,
+    pub most: u64,
+    pub keep: u32,
+    pub rows: u32,
+    pub lanes: u32,
+}
+
+impl PinRefused {
+    /// The refusal, naming the budget as `named`: where the operator set it
+    /// (the flag, the environment variable, the file key or the profile, as
+    /// the server's config spells it).
+    pub fn naming(&self, named: &str) -> String {
+        let Self { asked, most, keep, rows, lanes } = *self;
+        let at = match lanes {
+            1 => "1 lane".to_owned(),
+            n => format!("{n} lanes"),
+        };
+        let step = if rows > lanes {
+            format!("{rows} rows: a verify round, lanes x (drafts + 1), at {at}")
+        } else {
+            format!("{rows} rows: {at}")
+        };
+        format!(
+            "`{named}` asks for {asked} bytes ({}) of pinned experts, but this expert cache can pin at most \
+             {most} bytes ({}) of whole experts while every K class keeps {keep} LRU slots for the widest \
+             decode step ({step}). Ask for at most {most} bytes, or 0 for no pinned experts",
+            human_bytes(asked),
+            human_bytes(most),
+        )
+    }
+}
+
+/// Named by its flag, for a load no config resolved.
+impl std::fmt::Display for PinRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.naming("--vram-pinned-expert-bytes"))
+    }
+}
+
+impl std::error::Error for PinRefused {}
+
+/// The pinned hot set of pools of `capacity` slots per class: whole experts
+/// in [`warm_start_order`] (the calibration-hottest first) until their bytes
+/// reach `budget_bytes`, so the last one may pass it by less than one expert.
+/// Each class keeps at least `keep` slots for its LRU (the class minimum,
+/// [`min_slots_per_class`]): an expert that would take one below it is
+/// skipped and the walk goes on. Never-selected experts are never pinned.
+///
+/// The pins come out of the pools the cache split already made, as the
+/// study measured them (under 1% of three-lane decode for 1-2 GB on the
+/// rtx5090 profile's cache); splitting the rest again was not measured.
+pub fn pin_hot_experts(
+    catalog: &ExpertCatalog,
+    traffic: &ExpertTraffic,
+    capacity: [u32; KClass::COUNT],
+    keep: u32,
+    budget_bytes: u64,
+) -> PinnedExperts {
+    let mut room: [u32; KClass::COUNT] = std::array::from_fn(|i| capacity[i].saturating_sub(keep));
+    let mut pinned = PinnedExperts::default();
+    for expert in warm_start_order(traffic).chunks_exact(2) {
+        if pinned.bytes >= budget_bytes {
+            break;
+        }
+        let mut need = [0u32; KClass::COUNT];
+        for &id in expert {
+            need[catalog.class_of(id).index()] += 1;
+        }
+        if (0..KClass::COUNT).any(|c| need[c] > room[c]) {
+            continue;
+        }
+        for c in 0..KClass::COUNT {
+            room[c] -= need[c];
+            pinned.per_class[c] += need[c];
+        }
+        pinned.bytes += expert.iter().map(|&id| catalog.bytes(id)).sum::<u64>();
+        pinned.projections.extend_from_slice(expert);
+    }
+    pinned
 }
 
 /// The warm start's order: both projections of every selected expert,

@@ -266,7 +266,8 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
                                                     uint32_t stride) {
   __shared__ uint32_t s_sel[IGNIS_MOE_EXPERTS / 32];
   __shared__ uint32_t s_list[kMaxKeysPerLayer];
-  __shared__ uint32_t s_need[kClasses], s_pinned[kClasses], s_hits[kClasses];
+  // s_held: the class's LRU slots this step's hits hold (stamped `now`), not the pinned hot set.
+  __shared__ uint32_t s_need[kClasses], s_held[kClasses], s_hits[kClasses];
   __shared__ unsigned long long s_scratch[32];
   __shared__ uint32_t s_status, s_n, s_prefetch_hits;
   __shared__ BlockScan::TempStorage s_scan;
@@ -281,7 +282,7 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
   const bool repeat = st->last_layer == layer;
 
   if (t < IGNIS_MOE_EXPERTS / 32) s_sel[t] = 0;
-  if (t < kClasses) s_need[t] = s_pinned[t] = s_hits[t] = 0;
+  if (t < kClasses) s_need[t] = s_held[t] = s_hits[t] = 0;
   if (t == 0) s_status = s_n = s_prefetch_hits = 0;
   __syncthreads();
 
@@ -324,18 +325,22 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
     return;
   }
 
-  // 2. Classify each key of the layer: one thread per key.
+  // 2. Classify each key of the layer: one thread per key. A pinned key's slot lies past its
+  //    class's LRU slots: resident, but outside the LRU, so the step neither stamps it nor counts
+  //    it against the class's room (GitHub #329 item 12).
   const uint32_t key = layer * nk + t;
-  bool selected = false, resident = false, staged = false;
+  bool selected = false, resident = false, in_lru = false, staged = false;
   uint32_t c = 0;
   if (t < nk) {
     selected = (s_sel[(t >> 1) >> 5] >> ((t >> 1) & 31)) & 1u;
     if (selected) {
       c = d.cls[key];
-      resident = d.slot_of[key] >= 0;
+      const int32_t slot = d.slot_of[key];
+      resident = slot >= 0;
+      in_lru = resident && static_cast<uint32_t>(slot) < d.capacity[c];
       staged = !resident && !repeat && (d.flags[key] & kStaged) &&
                st->half_layer[layer & 1] == layer;
-      if (resident) atomicAdd(&s_pinned[c], 1u);
+      if (in_lru) atomicAdd(&s_held[c], 1u);
       if (!resident && !staged) atomicAdd(&s_need[c], 1u);
     }
   }
@@ -347,7 +352,7 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
   //    device-only residency that would miss, since there is no host pool to copy from.
   if (decode && t == 0) {
     for (uint32_t k = 0; k < kClasses; ++k) {
-      if (s_need[k] > d.capacity[k] - s_pinned[k]) {
+      if (s_need[k] > d.capacity[k] - s_held[k]) {
         s_status = 1 + k;
         break;
       }
@@ -404,7 +409,7 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
   bool prefetch_hit = false;
   if (hit) {
     if (resident) {
-      d.stamp[c][d.slot_of[key]] = now;
+      if (in_lru) d.stamp[c][d.slot_of[key]] = now;
       prefetch_hit = d.flags[key] & kPrefetched;
       d.flags[key] &= static_cast<uint8_t>(~kPrefetched);
     } else {
@@ -767,6 +772,9 @@ int32_t check_desc(const ignis_residency_desc *d) {
   }
   for (uint32_t k = 0; k < kClasses; ++k) {
     if (d->capacity[k] >= (1u << kKeyBits)) return fail("residency: a class capacity must stay below 2^20");
+    if (d->pinned[k] >= (1u << kKeyBits) - d->capacity[k]) {
+      return fail("residency: a class's capacity and pinned slots must stay below 2^20");
+    }
     if (d->record_bytes[k] == 0 || d->record_bytes[k] % 16 != 0) {
       return fail("residency: record bytes must be a non-zero multiple of 16");
     }
@@ -809,9 +817,12 @@ struct ignis_residency {
   uint32_t branch_layer = 0, branch_phase = 0;
   bool stepped = false;
   ignis_residency_mirror *mirror_host = nullptr;  // registered by ignis_residency_set_mirror
-  // Device-only (host_pool_bytes 0): the admission's host copy of the tables, uploaded whole by
-  // ignis_residency_admit_finish, which sets `admitted`; no step runs before it.
+  // Device-only (host_pool_bytes 0), or with pinned keys beside a host pool (`pins` of them, their
+  // host offsets IGNIS_RESIDENCY_NO_HOST_COPY): the admission's host copy of the tables, uploaded
+  // by ignis_residency_admit_finish, which sets `admitted`; no step runs before it.
   bool device_only = false;
+  uint32_t pins = 0;
+  uint32_t adm_pinned[kClasses] = {};
   bool admitted = false;
   std::vector<int32_t> adm_slot_of;
   std::vector<ignis_moe_slot> adm_table;
@@ -843,7 +854,7 @@ int32_t ignis_residency_plan_bytes(const ignis_residency_desc *desc, ignis_resid
   if (plan == nullptr) return fail("residency: no plan to write");
   plan->pools = 0;
   for (uint32_t k = 0; k < kClasses; ++k) {
-    plan->pools += round_up(static_cast<uint64_t>(desc->capacity[k]) * desc->record_bytes[k]);
+    plan->pools += round_up((static_cast<uint64_t>(desc->capacity[k]) + desc->pinned[k]) * desc->record_bytes[k]);
   }
   plan->staging = round_up(2 * desc->staging_half_bytes);
   plan->tables = carve(*desc).total;
@@ -869,6 +880,7 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
   if (!r->device_only) r->host_off.assign(pool_offsets, pool_offsets + keys);
   r->cls.resize(keys);
   uint64_t per_class[kClasses] = {};
+  uint64_t marked[kClasses] = {};  // keys with no host copy: the pinned ones
   uint64_t heaviest = 0;
   for (uint32_t l = 0; l < d.layers; ++l) {
     uint64_t layer_bytes = 0;
@@ -884,7 +896,9 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
       const uint32_t c = projection * 4 + (v == 4 ? 0 : v == 5 ? 1 : v == 6 ? 2 : 3);
       r->cls[key] = static_cast<uint8_t>(c);
       const uint64_t bytes = d.record_bytes[c];
-      if (!r->device_only && (r->host_off[key] % 16 != 0 || r->host_off[key] + bytes > d.host_pool_bytes)) {
+      if (!r->device_only && r->host_off[key] == IGNIS_RESIDENCY_NO_HOST_COPY) {
+        ++marked[c];
+      } else if (!r->device_only && (r->host_off[key] % 16 != 0 || r->host_off[key] + bytes > d.host_pool_bytes)) {
         delete r;
         return fail("residency: record of key " + std::to_string(key) +
                     " is unaligned or outside the host pool");
@@ -893,6 +907,20 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
       layer_bytes += bytes;
     }
     heaviest = std::max(heaviest, layer_bytes);
+  }
+  for (uint32_t k = 0; k < kClasses; ++k) {
+    if (r->device_only && d.pinned[k] != 0) {
+      // Every projection already has its slot: there is no host pool to keep pinned keys out of.
+      delete r;
+      return fail("residency: a device-only residency has no pinned slots (class " + std::to_string(k) + " names " +
+                  std::to_string(d.pinned[k]) + ")");
+    }
+    if (marked[k] != d.pinned[k]) {
+      delete r;
+      return fail("residency: class " + std::to_string(k) + " has " + std::to_string(d.pinned[k]) +
+                  " pinned slots and " + std::to_string(marked[k]) + " keys with no host copy");
+    }
+    r->pins += d.pinned[k];
   }
   if (!r->device_only && d.staging_half_bytes < heaviest) {
     // A prefill can touch a whole layer; a smaller half could overflow mid-chunk. A device-only
@@ -929,7 +957,7 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
     if (e != cudaSuccess) return cleanup(fail(std::string("residency: cudaHostGetDevicePointer: ") + cudaGetErrorString(e)));
   }
   for (uint32_t k = 0; k < kClasses; ++k) {
-    const uint64_t bytes = static_cast<uint64_t>(d.capacity[k]) * d.record_bytes[k];
+    const uint64_t bytes = (static_cast<uint64_t>(d.capacity[k]) + d.pinned[k]) * d.record_bytes[k];
     if (bytes == 0) continue;
     e = cudaMalloc(reinterpret_cast<void **>(&r->pool[k]), bytes);
     if (e != cudaSuccess) return cleanup(fail(std::string("residency: cudaMalloc of a class pool: ") + cudaGetErrorString(e)));
@@ -999,6 +1027,9 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
       r->adm_owner[k].assign(d.capacity[k], kNone);
       r->adm_stamp[k].assign(d.capacity[k], 0);
     }
+  } else if (r->pins > 0) {
+    r->adm_slot_of.assign(keys, -1);
+    r->adm_table.assign(keys, ignis_moe_slot{nullptr, 0, 0});
   }
   e = cudaEventCreateWithFlags(&r->fork, cudaEventDisableTiming);
   if (e == cudaSuccess) e = cudaEventCreateWithFlags(&r->demanded, cudaEventDisableTiming);
@@ -1040,6 +1071,7 @@ int32_t ignis_residency_warm_start(ignis_residency *r, const uint32_t *keys, uin
   if (r == nullptr || admitted == nullptr || (n > 0 && keys == nullptr)) return fail("residency: warm start arguments");
   if (r->stepped) return fail("residency: the warm start comes before the first step");
   if (r->device_only) return fail("residency: a device-only residency has no host pool to warm from; admit its records");
+  if (r->pins > 0 && !r->admitted) return fail("residency: the warm start comes once the pinned keys are admitted");
   const ignis_residency_desc &d = r->desc;
   const uint64_t nkeys = static_cast<uint64_t>(d.layers) * d.experts * 2;
   RESIDENCY_CUDA(cudaDeviceSynchronize());
@@ -1100,7 +1132,9 @@ int32_t ignis_residency_warm_start(ignis_residency *r, const uint32_t *keys, uin
 int32_t ignis_residency_admit(ignis_residency *r, const uint32_t *keys, uint32_t n, const uint8_t *src,
                               const uint64_t *src_offsets) {
   if (r == nullptr) return fail("residency: no residency");
-  if (!r->device_only) return fail("residency: only a device-only residency admits records; fill its host pool");
+  if (!r->device_only && r->pins == 0) {
+    return fail("residency: only a device-only residency admits records; fill its host pool");
+  }
   if (r->admitted) return fail("residency: the admission is finished");
   if (n > 0 && (keys == nullptr || src == nullptr || src_offsets == nullptr)) return fail("residency: admit arguments");
   const ignis_residency_desc &d = r->desc;
@@ -1110,6 +1144,19 @@ int32_t ignis_residency_admit(ignis_residency *r, const uint32_t *keys, uint32_t
     if (key >= nkeys) return fail("residency: key " + std::to_string(key) + " is outside the catalog");
     if (r->adm_slot_of[key] >= 0) return fail("residency: key " + std::to_string(key) + " is admitted twice");
     const uint32_t c = r->cls[key];
+    if (!r->device_only) {
+      // A pinned key, on the next pinned slot of its class: past the LRU's.
+      if (r->host_off[key] != IGNIS_RESIDENCY_NO_HOST_COPY) {
+        return fail("residency: key " + std::to_string(key) + " has a host copy; only a pinned key is admitted");
+      }
+      const uint32_t slot = d.capacity[c] + r->adm_pinned[c];
+      uint8_t *dst = r->pool[c] + static_cast<uint64_t>(slot) * d.record_bytes[c];
+      RESIDENCY_CUDA(cudaMemcpy(dst, src + src_offsets[i], d.record_bytes[c], cudaMemcpyHostToDevice));
+      r->adm_slot_of[key] = static_cast<int32_t>(slot);
+      r->adm_table[key] = ignis_moe_slot{dst, r->k2[key], 0};
+      ++r->adm_pinned[c];  // create counted the class's marked keys, so a slot is free
+      continue;
+    }
     const uint32_t slot = r->adm_used[c];
     if (slot >= d.capacity[c]) return fail("residency: class " + std::to_string(c) + " is full");  // create checked
     uint8_t *dst = r->pool[c] + static_cast<uint64_t>(slot) * d.record_bytes[c];
@@ -1125,10 +1172,30 @@ int32_t ignis_residency_admit(ignis_residency *r, const uint32_t *keys, uint32_t
 
 int32_t ignis_residency_admit_finish(ignis_residency *r) {
   if (r == nullptr) return fail("residency: no residency");
-  if (!r->device_only) return fail("residency: only a device-only residency admits records");
+  if (!r->device_only && r->pins == 0) return fail("residency: only a device-only residency admits records");
   if (r->admitted) return fail("residency: the admission is finished");
   const ignis_residency_desc &d = r->desc;
   const uint64_t nkeys = static_cast<uint64_t>(d.layers) * d.experts * 2;
+  if (!r->device_only) {
+    // The pinned keys: their slot-table entries and slots go up whole. Nothing else is resident
+    // yet (the warm start and the steps wait for this), so the rest stays as create left it.
+    uint64_t missing = 0;
+    for (uint64_t key = 0; key < nkeys; ++key) {
+      missing += r->host_off[key] == IGNIS_RESIDENCY_NO_HOST_COPY && r->adm_slot_of[key] < 0;
+    }
+    if (missing != 0) {
+      return fail("residency: " + std::to_string(missing) + " of " + std::to_string(r->pins) +
+                  " pinned projections were never admitted; the host pool holds no copy of them");
+    }
+    RESIDENCY_CUDA(cudaDeviceSynchronize());
+    RESIDENCY_CUDA(cudaMemcpy(r->dev.slot_of, r->adm_slot_of.data(), nkeys * 4, cudaMemcpyHostToDevice));
+    RESIDENCY_CUDA(cudaMemcpy(r->dev.table, r->adm_table.data(), nkeys * sizeof(ignis_moe_slot), cudaMemcpyHostToDevice));
+    RESIDENCY_CUDA(cudaDeviceSynchronize());
+    r->admitted = true;
+    r->adm_slot_of = {};
+    r->adm_table = {};
+    return 0;
+  }
   uint64_t missing = 0;
   for (uint64_t key = 0; key < nkeys; ++key) missing += r->adm_slot_of[key] < 0;
   if (missing != 0) {
@@ -1194,6 +1261,7 @@ int32_t ignis_residency_step_ranked(ignis_residency *r, uint32_t layer, uint32_t
   if (r->device_only && !r->admitted) {
     return fail("residency: a device-only residency steps only once every projection is admitted");
   }
+  if (r->pins > 0 && !r->admitted) return fail("residency: a residency steps only once its pinned keys are admitted");
   const cudaStream_t s = static_cast<cudaStream_t>(stream);
   if (ignis_residency_join(r, stream) != 0) return -1;
   r->stepped = true;
@@ -1239,6 +1307,7 @@ int32_t step_demand(ignis_residency *r, uint32_t layer, uint32_t phase, const fl
   if (r->device_only && !r->admitted) {
     return fail("residency: a device-only residency steps only once every projection is admitted");
   }
+  if (r->pins > 0 && !r->admitted) return fail("residency: a residency steps only once its pinned keys are admitted");
   const cudaStream_t s = static_cast<cudaStream_t>(stream);
   if (ignis_residency_join(r, stream) != 0) return -1;
   r->stepped = true;
@@ -1410,7 +1479,7 @@ int32_t ignis_residency_get_layout(ignis_residency *r, ignis_residency_layout *o
   if (r == nullptr || out == nullptr) return fail("residency: layout arguments");
   for (uint32_t k = 0; k < kClasses; ++k) {
     out->pool[k] = r->pool[k];
-    out->pool_bytes[k] = static_cast<uint64_t>(r->desc.capacity[k]) * r->desc.record_bytes[k];
+    out->pool_bytes[k] = (static_cast<uint64_t>(r->desc.capacity[k]) + r->desc.pinned[k]) * r->desc.record_bytes[k];
   }
   out->ring = r->ring;
   out->ring_bytes = 2 * r->desc.staging_half_bytes;

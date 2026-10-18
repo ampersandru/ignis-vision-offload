@@ -172,6 +172,8 @@ async fn main() {
         kv_pool: _,
         vram: _,
         allow_expert_cache_below_floor: _,
+        // Read through `EngineShape`, like the other load-shape knobs.
+        pinned_expert_bytes: _,
         host_pool_bytes,
         // Read through `EngineShape`, like the other load-shape knobs.
         host_margin_bytes: _,

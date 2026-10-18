@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use ignis_core::residency::{
     DEFAULT_PREFETCH_WIDTH, ExpertCatalog, ExpertCacheRequest, ExpertTraffic, KBits, KClass, LayerStep,
     PolicyConfig, Projection, ProjectionId, ResidencyModel, StepError, StepOutcome, default_prefetch_budget,
-    min_slots_per_class, plan_expert_cache, prefill_staging_ring_bytes, residency_table_bytes,
+    min_slots_per_class, pin_hot_experts, plan_expert_cache, prefill_staging_ring_bytes, residency_table_bytes,
     warm_start_order,
 };
 
@@ -262,6 +262,65 @@ fn a_pinned_expert_is_never_copied_and_its_slots_leave_the_lru() {
         }
     }
     assert!(served > 0, "the routing selects pinned experts");
+}
+
+/// The load's pinned set ([`pin_hot_experts`]) is the study's pin.
+#[test]
+fn the_plan_pins_the_experts_the_study_pinned() {
+    let (catalog, traffic) = synthetic();
+    let capacity = catalog.class_counts().map(|n| if n > 0 { 8 } else { 0 });
+    let order = warm_start_order(&traffic);
+    for budget in [0, 1, 3_000, 6_000, 20_000, u64::MAX] {
+        let study = pin_prefix(&catalog, capacity, 4, &order, budget);
+        let plan = pin_hot_experts(&catalog, &traffic, capacity, 4, budget);
+        let experts: Vec<(u16, u16)> = plan.projections.chunks(2).map(|p| (p[0].layer, p[0].expert)).collect();
+        assert_eq!(experts, study, "budget {budget}");
+        assert_eq!(plan.bytes, pinned_bytes(&catalog, &study), "budget {budget}");
+    }
+}
+
+/// The policy model's own pin ([`ResidencyModel::pin`], what the device must
+/// match) decides what this study's wrapper decided: the LRU's outcome step
+/// for step, the hits being the wrapper's and the pinned projections the
+/// step selected, and the same counters but for those hits. One lane: with
+/// several, the wrapper's filtered rankings interleave differently from the
+/// device's, where a pinned candidate keeps its rank and is skipped.
+#[test]
+fn the_policy_model_s_pin_is_the_study_s_wrapper() {
+    let (catalog, traffic) = synthetic();
+    let capacity = catalog.class_counts().map(|n| if n > 0 { 8 } else { 0 });
+    let order = warm_start_order(&traffic);
+    let pinned = pin_hot_experts(&catalog, &traffic, capacity, 4, 6_000);
+    let pin: Vec<(u16, u16)> = pinned.projections.chunks(2).map(|p| (p[0].layer, p[0].expert)).collect();
+    let mut wrapper = Pinned::new(&catalog, capacity, synthetic_config(capacity), &pin, &order);
+    let mut model = ResidencyModel::new(catalog.clone(), synthetic_config(pinned.lru_capacity(capacity)));
+    assert_eq!(model.pin(&pinned.projections), pinned.projections.len());
+    model.warm_start(&order);
+    assert_eq!(model.occupancy(), wrapper.model.occupancy());
+    let mut pinned_uses = [0u64; KClass::COUNT];
+    for (layer, selected, ahead) in synthetic_routing(200, catalog.layers(), catalog.experts()) {
+        let lanes = [ahead.clone()];
+        let refs: Vec<&[u16]> = lanes.iter().map(|v| v.as_slice()).collect();
+        let got = model.step(&LayerStep::decode(layer, &selected).lookahead(&refs)).unwrap();
+        let (want, served) = wrapper.decode(layer, &selected, &lanes).unwrap();
+        let mut hits = want.hits.clone();
+        for e in served {
+            for projection in Projection::ALL {
+                let id = ProjectionId::new(layer, e, projection);
+                pinned_uses[catalog.class_of(id).index()] += 1;
+                hits.push(id);
+            }
+        }
+        hits.sort();
+        assert_eq!(got.hits, hits, "layer {layer} {selected:?}");
+        assert_eq!(StepOutcome { hits: want.hits.clone(), ..got }, want);
+    }
+    let mut counters = model.counters().clone();
+    for (class, uses) in pinned_uses.iter().enumerate() {
+        counters.hits[class][0] -= uses;
+    }
+    assert!(pinned_uses.iter().sum::<u64>() > 0, "the routing selects pinned experts");
+    assert_eq!(&counters, wrapper.model.counters());
 }
 
 // ---------------------------------------------------------------------------

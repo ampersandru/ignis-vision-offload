@@ -216,7 +216,7 @@ ignis_expert_bytes_moved_total{phase="prefill"} 9000000000
 # TYPE ignis_expert_residency_stall_seconds_total counter
 ignis_expert_residency_stall_seconds_total{phase="decode"} 18.6
 ignis_expert_residency_stall_seconds_total{phase="prefill"} 40.25
-# HELP ignis_expert_cache_slots VRAM expert cache slots per K class: capacity reserved at load, and in use.
+# HELP ignis_expert_cache_slots VRAM expert cache LRU slots per K class: capacity reserved at load, and in use. A pinned hot set's slots are not among them (the load's ignis.runtime.flash_next_pinned_experts event names them).
 # TYPE ignis_expert_cache_slots gauge
 ignis_expert_cache_slots{class="gate_up_k2",state="capacity"} 3000
 ignis_expert_cache_slots{class="gate_up_k2",state="in_use"} 3000

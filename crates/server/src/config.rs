@@ -346,6 +346,11 @@ pub struct Config {
     /// warning (`--vram-allow-expert-cache-below-floor`, ADR 0045). The 27B,
     /// which has no expert cache, refuses it.
     pub allow_expert_cache_below_floor: bool,
+    /// Flash-Next's pinned hot set, in bytes (`--vram-pinned-expert-bytes`,
+    /// GitHub #329 item 12): the calibration-hottest experts held in the
+    /// expert cache outside its LRU, with no copy in the host pool. 0 pins
+    /// none. The 27B, which has no expert cache, refuses it.
+    pub pinned_expert_bytes: u64,
     /// The KV-RAM host tier's budget, in bytes (P4-07, GitHub #125): pinned
     /// host memory for evicted (suspended) request snapshots. `0` disables
     /// the tier (admission refuses instead of evicting once the resident
@@ -970,12 +975,7 @@ fn derive(
     let s = &resolution.settings;
     // The spelling a field's value came under, for an error that names it;
     // its flag when it is at its default.
-    let spelled = |group: &str, name: &str| {
-        resolution
-            .origin(group, name)
-            .map(|origin| origin.spelling.clone())
-            .unwrap_or_else(|| schema::field(group, name).expect("a declared field").flag())
-    };
+    let spelled = |group: &str, name: &str| resolution.spelled(group, name);
     let explicit = |group: &str, name: &str| resolution.explicit(group, name);
 
     let vram = derive_vram(&resolution, &spelled)?;
@@ -1076,6 +1076,7 @@ fn derive(
         kv_pool: s.vram.kv_pool_bytes,
         vram,
         allow_expert_cache_below_floor: s.vram.allow_expert_cache_below_floor,
+        pinned_expert_bytes: s.vram.pinned_expert_bytes,
         host_pool_bytes: s.reuse.kv_host_pool_bytes,
         host_margin_bytes: s.model.host_margin_bytes,
         prompt_reuse,

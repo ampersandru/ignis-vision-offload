@@ -40,7 +40,14 @@ pub const NONE_PROFILE: &str = "none";
 /// `model.rope_scaling yarn:4` to reach past the checkpoint's trained
 /// 262,144-position envelope. `vram.headroom_bytes`'s 1536 MiB hardcoded
 /// default (finding 2026-10-09-vram-headroom-wddm-paging) still holds for
-/// Flash-Next, which never needed to trade it down.
+/// Flash-Next, which never needed to trade it down. Flash-Next also pins its
+/// calibration-hottest 2 GiB of experts in the expert cache
+/// (`vram.pinned_expert_bytes`, the owner's call, ADR 0055): measured on the
+/// card (finding 2026-10-18-pinned-hot-set-measured-on-the-5090), that gives
+/// back 2.149 GB of the host pool's RAM for 0.1-0.2% of one-lane and
+/// 0.2-1.1% of three-lane decode (two sessions), greedy text unchanged; `4G`
+/// would give back 4.296 GB for 4.3% and 5.9%. The field is
+/// Flash-Next-only: the 27B passes it over.
 ///
 /// `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
 /// Server Edition: 96 GB each, sm_120, the 5090's architecture). Derived
@@ -70,6 +77,7 @@ const BUILT_IN: &str = r#"{
     "rtx5090": {
         "vram": {
             "headroom_bytes": "1536M",
+            "pinned_expert_bytes": "2G",
             "qwen38": { "headroom_bytes": "1200M" }
         },
         "model": {
@@ -157,6 +165,29 @@ mod tests {
 
         let lanes = field("spec", "decode_lanes").unwrap();
         assert_eq!(rtx5090.get(lanes, None).unwrap().raw, "3", "Flash-Next-only; the 27B passes it over");
+
+        // Flash-Next pins its calibration-hottest 2 GiB of experts (the
+        // owner's call, ADR 0055): the field's own default stays 0, and the
+        // field is Flash-Next-only, so the 27B passes it over.
+        let pinned = field("vram", "pinned_expert_bytes").unwrap();
+        assert_eq!((pinned.default)(), serde_json::Value::from(0));
+        assert_eq!(rtx5090.get(pinned, None).unwrap().raw, "2G");
+        assert!(profiles["rtxpro6000"].get(pinned, None).is_none(), "a device-only load keeps no expert in RAM");
+    }
+
+    /// The 27B started under `rtx5090` takes the profile's Flash-Next-only
+    /// pin as a default it passes over, and Flash-Next takes 2 GiB.
+    #[test]
+    fn under_the_rtx5090_profile_only_flash_next_pins_experts() {
+        use super::super::source::{resolve_settings, Fit, Sources};
+        use ignis_core::compute::ModelFamily;
+
+        let sources = Sources { profile: built_in()[DEFAULT_PROFILE].clone(), ..Sources::default() };
+        let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
+        assert_eq!(qwen.settings.vram.pinned_expert_bytes, 0);
+        assert!(qwen.dropped.is_empty(), "passed over, not dropped: {:?}", qwen.dropped);
+        let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
+        assert_eq!(flash.settings.vram.pinned_expert_bytes, 2 << 30);
     }
 
     /// The RTX PRO 6000 Blackwell series (Workstation, Max-Q, Server Edition:

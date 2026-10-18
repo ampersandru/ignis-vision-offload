@@ -7,7 +7,10 @@
 
 use ignis_artifact::flash_next::{self, FlashNextGeometry, Projection as ArtifactProjection, fixture};
 use ignis_artifact::Reader;
-use ignis_core::residency::load::{catalog, fill_expert_pool, pool_layout, stream_expert_layers, stream_staging_bytes};
+use ignis_core::residency::load::{
+    catalog, fill_expert_pool, fill_expert_pool_except, pinned_staging_bytes, pool_layout, pool_layout_without,
+    stream_expert_layers, stream_pinned_records, stream_staging_bytes, NO_HOST_COPY,
+};
 use ignis_core::residency::{KClass, Projection, ProjectionId};
 
 #[test]
@@ -129,4 +132,107 @@ fn a_refused_layer_ends_the_stream_with_its_error() {
     })
     .expect_err("refused");
     assert_eq!((err.as_str(), calls), ("no slot", 1));
+}
+
+// ---- the pinned hot set (GitHub #329 item 12) -------------------------------
+
+/// Pinned keys of the fixture's 2 x 8 experts: a few scattered, or all of
+/// layer 0 and the last record of layer 1.
+fn pin_masks(keys: usize) -> Vec<Vec<bool>> {
+    let scattered: Vec<bool> = (0..keys).map(|key| [2, 3, 6, 17, 18].contains(&key)).collect();
+    let layer_and_one: Vec<bool> = (0..keys).map(|key| key < keys / 2 || key == keys - 1).collect();
+    vec![scattered, layer_and_one]
+}
+
+#[test]
+fn with_nothing_pinned_the_layout_is_the_index_s_own() {
+    let artifact = fixture::build("residency-pin-none").expect("fixture artifact");
+    let reader = Reader::open(&artifact.path).expect("open");
+    let plan = flash_next::bind(&reader, &FlashNextGeometry::fixture()).expect("bind");
+    let index = &plan.experts;
+    let keys = index.layers() * index.experts_per_layer() * 2;
+    assert_eq!(pool_layout_without(index, &vec![false; keys]), pool_layout(index));
+    assert_eq!(pinned_staging_bytes(index, &vec![false; keys]).expect("staging"), 0);
+}
+
+/// A pinned record has no place in the pool; the others are packed back to
+/// back in key order and filled with the file's bytes, a run of records at a
+/// time.
+#[test]
+fn the_pool_holds_every_record_but_the_pinned_ones_packed_back_to_back() {
+    let artifact = fixture::build("residency-pin-pool").expect("fixture artifact");
+    let reader = Reader::open(&artifact.path).expect("open");
+    let plan = flash_next::bind(&reader, &FlashNextGeometry::fixture()).expect("bind");
+    let index = &plan.experts;
+    let experts = index.experts_per_layer();
+    let keys = index.layers() * experts * 2;
+    let file_bytes = std::fs::read(&artifact.path).expect("read");
+    let whole = pool_layout(index);
+    for pinned in pin_masks(keys) {
+        let layout = pool_layout_without(index, &pinned);
+        assert_eq!(layout.k2, whole.k2);
+        let mut pool = vec![0u8; layout.bytes as usize];
+        let read = fill_expert_pool_except(&artifact.path, index, &layout, &mut pool).expect("fill");
+        let (mut at, mut pinned_bytes) = (0u64, 0u64);
+        for key in 0..keys {
+            let (layer, expert, p) = (key / (2 * experts), (key / 2) % experts, key % 2);
+            let r = index.get(layer, expert, ArtifactProjection::ALL[p]).expect("indexed");
+            if pinned[key] {
+                assert_eq!(layout.offsets[key], NO_HOST_COPY, "key {key}");
+                pinned_bytes += r.bytes;
+                continue;
+            }
+            assert_eq!(layout.offsets[key], at, "key {key} follows the record before it");
+            let (from, len) = (r.file_offset as usize, r.bytes as usize);
+            assert_eq!(&pool[at as usize..at as usize + len], &file_bytes[from..from + len], "key {key}");
+            at += r.bytes;
+        }
+        assert_eq!(layout.bytes, at);
+        assert_eq!(layout.bytes + pinned_bytes, whole.bytes, "the pool is smaller by the pinned bytes");
+        assert_eq!(read, at);
+    }
+}
+
+/// The pinned records stream once each, with the file's bytes, a layer's
+/// in one buffer, and the RAM held is the staging line's.
+#[test]
+fn the_pinned_records_stream_once_each_with_their_bytes() {
+    let artifact = fixture::build("residency-pin-stream").expect("fixture artifact");
+    let reader = Reader::open(&artifact.path).expect("open");
+    let plan = flash_next::bind(&reader, &FlashNextGeometry::fixture()).expect("bind");
+    let index = &plan.experts;
+    let experts = index.experts_per_layer();
+    let keys = index.layers() * experts * 2;
+    let file_bytes = std::fs::read(&artifact.path).expect("read");
+    for pinned in pin_masks(keys) {
+        let mut layers = Vec::new();
+        let read = stream_pinned_records(&artifact.path, index, &pinned, |layer| {
+            layers.push(layer);
+            Ok(())
+        })
+        .expect("stream");
+        let mut seen = Vec::new();
+        let mut want_read = 0;
+        for records in &layers {
+            assert_eq!(records.offsets.len(), records.keys.len());
+            for (&key, &at) in records.keys.iter().zip(&records.offsets) {
+                let key = key as usize;
+                assert_eq!(key / (2 * experts), records.layer, "key {key} streams with its own layer");
+                let r = index.get(records.layer, (key / 2) % experts, ArtifactProjection::ALL[key % 2]).expect("indexed");
+                let (at, len, from) = (at as usize, r.bytes as usize, r.file_offset as usize);
+                assert!(at + len <= records.bytes.len(), "key {key} runs past its buffer");
+                assert_eq!(&records.bytes[at..at + len], &file_bytes[from..from + len], "key {key}");
+                seen.push(key);
+                want_read += r.bytes;
+            }
+        }
+        seen.sort();
+        let want: Vec<usize> = (0..keys).filter(|&key| pinned[key]).collect();
+        assert_eq!(seen, want, "every pinned record once, nothing else");
+        assert_eq!(read, want_read);
+        let heaviest = layers.iter().map(|l| l.bytes.len() as u64).max().expect("layers");
+        // A reader per layer with pins, one queued and one being admitted.
+        let staging = pinned_staging_bytes(index, &pinned).expect("staging");
+        assert_eq!(staging, (layers.len() as u64 + 2) * heaviest);
+    }
 }

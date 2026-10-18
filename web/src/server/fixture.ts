@@ -103,6 +103,8 @@ export const FIELDS: FieldDecl[] = [
     "Start above free memory, with a warning. Needs `budget_bytes`."),
   decl("vram", "allow_expert_cache_below_floor", "bool", false, { families: ["qwen38flashnext"], patchable: true, reload_required: true },
     "Start Flash-Next with an expert cache below its 12 GiB floor, with a warning — decode slows sharply below it."),
+  decl("vram", "pinned_expert_bytes", "bytes", 0, { families: ["qwen38flashnext"], patchable: true, reload_required: true },
+    "Flash-Next's calibration-hottest experts held in the expert cache for the whole load, outside its LRU, with no copy in the pinned host pool: whole experts, hottest first, until they reach this many bytes. The pool takes that much less RAM; the LRU has those slots fewer (on the 5090: nothing measurable at 1 GiB, ~1% of three-lane decode at 2 GiB). 0 pins none; the `rtx5090` profile pins 2 GiB. A card that holds every expert keeps none in RAM anyway and ignores it."),
   decl("reuse", "prompt", "bool", true, { scoped: true, patchable: true, reload_required: true },
     "Cross-request state reuse. Off, no prompt checkpoint is captured or claimed, and no prefix is shared unless `retained_device` or `retained_host` gives slots for it."),
   decl("reuse", "retained_device", "slots", null, { scoped: true, patchable: true, reload_required: true },
@@ -199,7 +201,7 @@ export const CONFIG: ConfigDocument = {
     budget_bytes: null,
     allow_oversubscription: false,
     qwen38: { headroom_bytes: "1200M" },
-    qwen38flashnext: { allow_expert_cache_below_floor: false },
+    qwen38flashnext: { allow_expert_cache_below_floor: false, pinned_expert_bytes: "2G" },
   },
   reuse: { prompt: true, retained_device: null, retained_host: null, retained_interactive_ttl: 300, kv_host_pool_bytes: "2G" },
   switch: {
@@ -243,6 +245,7 @@ export type Provenance = Record<string, { source: OriginRow["source"]; spelling?
 
 export const PROVENANCE: Provenance = {
   "vram.qwen38.headroom_bytes": { source: "profile", spelling: "rtx5090" },
+  "vram.qwen38flashnext.pinned_expert_bytes": { source: "profile", spelling: "rtx5090" },
   "model.thinking_budget": { source: "env", spelling: "IGNIS_MODEL_THINKING_BUDGET" },
 };
 

@@ -16,6 +16,12 @@
 //! has no pool: [`stream_expert_layers`] reads the same layers the same way,
 //! each into a buffer of its own, and hands them to the caller to admit, a
 //! one-layer queue bounding the RAM it holds ([`stream_staging_bytes`]).
+//!
+//! A load with a pinned hot set (GitHub #329 item 12) keeps no copy of the
+//! pinned records: its pool is laid out without them
+//! ([`pool_layout_without`], filled by [`fill_expert_pool_except`]), and
+//! [`stream_pinned_records`] reads them alone, a layer's at a time, for the
+//! caller to admit to their VRAM slots ([`pinned_staging_bytes`]).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -33,8 +39,12 @@ use super::class::{ExpertCatalog, KBits, KClass, Projection};
 /// regresses from contention).
 const READ_WORKERS: usize = 4;
 
+/// A pool offset meaning "no copy in the pool": a pinned record's
+/// (`IGNIS_RESIDENCY_NO_HOST_COPY`).
+pub const NO_HOST_COPY: u64 = u64::MAX;
+
 /// The pool as the leaf residency takes it: each projection's K (as `k2`)
-/// and pool offset in key order, and the pool's size.
+/// and pool offset in key order (or [`NO_HOST_COPY`]), and the pool's size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolLayout {
     pub k2: Vec<u8>,
@@ -52,6 +62,33 @@ pub fn pool_layout(index: &ExpertIndex) -> PoolLayout {
                 k2.push(record.k.k2());
                 offsets.push(record.pool_offset);
                 bytes = bytes.max(record.pool_offset + record.bytes);
+            }
+        }
+    }
+    PoolLayout { k2, offsets, bytes }
+}
+
+/// The pool layout of a load whose pinned hot set is `pinned` (per key, in
+/// key order: [`PinnedExperts::by_key`](super::PinnedExperts::by_key)): a
+/// pinned record has no place in the pool ([`NO_HOST_COPY`]) and the others
+/// are packed back to back in key order, so the pool is smaller by the
+/// pinned bytes. With nothing pinned it is [`pool_layout`]'s, the index's own.
+pub fn pool_layout_without(index: &ExpertIndex, pinned: &[bool]) -> PoolLayout {
+    if !pinned.contains(&true) {
+        return pool_layout(index);
+    }
+    let (mut k2, mut offsets, mut bytes) = (Vec::new(), Vec::new(), 0u64);
+    for layer in 0..index.layers() {
+        for expert in 0..index.experts_per_layer() {
+            for projection in ArtifactProjection::ALL {
+                let record = index.get(layer, expert, projection).expect("every projection is indexed");
+                k2.push(record.k.k2());
+                if pinned[offsets.len()] {
+                    offsets.push(NO_HOST_COPY);
+                } else {
+                    offsets.push(bytes);
+                    bytes += record.bytes;
+                }
             }
         }
     }
@@ -246,6 +283,128 @@ pub fn fill_expert_pool(path: &Path, index: &ExpertIndex, pool: &mut [u8]) -> st
     Ok(total.load(Ordering::Relaxed))
 }
 
+/// Each layer's `[lo, hi)` in a pool laid out by `layout`, over its records
+/// that have a place there: ascending, empty for a layer whose records are
+/// all pinned.
+fn layout_layer_ranges(index: &ExpertIndex, layout: &PoolLayout, pool_len: usize) -> std::io::Result<Vec<(u64, u64)>> {
+    let per_layer = index.experts_per_layer() * 2;
+    let mut ranges = Vec::with_capacity(index.layers());
+    let mut cursor = 0u64;
+    for layer in 0..index.layers() {
+        let (mut lo, mut hi) = (u64::MAX, 0u64);
+        for key in layer * per_layer..(layer + 1) * per_layer {
+            let at = layout.offsets[key];
+            if at == NO_HOST_COPY {
+                continue;
+            }
+            let r = index.get(layer, (key / 2) % index.experts_per_layer(), ArtifactProjection::ALL[key % 2]).expect("indexed");
+            lo = lo.min(at);
+            hi = hi.max(at + r.bytes);
+        }
+        if lo == u64::MAX {
+            (lo, hi) = (cursor, cursor);
+        }
+        if hi as usize > pool_len {
+            return Err(std::io::Error::other(format!("layer {layer} ends at {hi}, past the {pool_len}-byte pool")));
+        }
+        ranges.push((lo, hi));
+        cursor = hi;
+    }
+    check_ranges_ascending_and_disjoint(&ranges)?;
+    Ok(ranges)
+}
+
+/// Reads `layer`'s records that have a place in `layout` into `slice`
+/// (`slice[0]` standing for pool offset `lo`), one read per run of records
+/// back to back in both the file and the pool.
+fn fill_layer_runs<F: Read + Seek>(
+    file: &mut F,
+    index: &ExpertIndex,
+    layout: &PoolLayout,
+    layer: usize,
+    lo: u64,
+    slice: &mut [u8],
+) -> std::io::Result<u64> {
+    let experts = index.experts_per_layer();
+    let mut read = 0u64;
+    // (file offset, pool offset, length) of the run being gathered.
+    let mut run: Option<(u64, u64, u64)> = None;
+    let mut flush = |file: &mut F, (from, at, len): (u64, u64, u64)| -> std::io::Result<()> {
+        let start = (at - lo) as usize;
+        let end = start + len as usize;
+        if end > slice.len() {
+            return Err(std::io::Error::other(format!("a run of layer {layer} ends at {end}, past its {}-byte slice", slice.len())));
+        }
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(&mut slice[start..end])?;
+        read += len;
+        Ok(())
+    };
+    for key in layer * experts * 2..(layer + 1) * experts * 2 {
+        let at = layout.offsets[key];
+        if at == NO_HOST_COPY {
+            continue;
+        }
+        let r = index.get(layer, (key / 2) % experts, ArtifactProjection::ALL[key % 2]).expect("indexed");
+        run = match run {
+            Some((from, start, len)) if from + len == r.file_offset && start + len == at => Some((from, start, len + r.bytes)),
+            previous => {
+                if let Some(previous) = previous {
+                    flush(file, previous)?;
+                }
+                Some((r.file_offset, at, r.bytes))
+            }
+        };
+    }
+    if let Some(last) = run {
+        flush(file, last)?;
+    }
+    Ok(read)
+}
+
+/// [`fill_expert_pool`] for a pool laid out by `layout`
+/// ([`pool_layout_without`]): every record with a place there read into
+/// `pool` at its offset, a run of records back to back in both the file and
+/// the pool at a time, [`READ_WORKERS`] layers at a time in parallel. Returns
+/// the bytes read.
+pub fn fill_expert_pool_except(path: &Path, index: &ExpertIndex, layout: &PoolLayout, pool: &mut [u8]) -> std::io::Result<u64> {
+    let ranges = layout_layer_ranges(index, layout, pool.len())?;
+    let workers = READ_WORKERS.max(1);
+    let mut buckets: Vec<Vec<(usize, u64, &mut [u8])>> = (0..workers).map(|_| Vec::new()).collect();
+    let mut rest = pool;
+    let mut cursor = 0u64;
+    for (layer, &(lo, hi)) in ranges.iter().enumerate() {
+        let (_gap, remainder) = rest.split_at_mut((lo - cursor) as usize);
+        let (slice, remainder) = remainder.split_at_mut((hi - lo) as usize);
+        buckets[layer % workers].push((layer, lo, slice));
+        rest = remainder;
+        cursor = hi;
+    }
+    let total = AtomicU64::new(0);
+    thread::scope(|scope| -> std::io::Result<()> {
+        let mut handles = Vec::new();
+        for bucket in buckets {
+            if bucket.is_empty() {
+                continue;
+            }
+            let total = &total;
+            handles.push(scope.spawn(move || -> std::io::Result<()> {
+                let mut file = File::open(path)?;
+                for (layer, lo, slice) in bucket {
+                    let read = fill_layer_runs(&mut file, index, layout, layer, lo, slice)?;
+                    total.fetch_add(read, Ordering::Relaxed);
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("expert pool read worker panicked")?;
+        }
+        Ok(())
+    })?;
+    Ok(total.load(Ordering::Relaxed))
+}
+
 /// One layer's expert records, read into a buffer of their own for a
 /// device-only residency to admit: `keys[i]`'s record sits at `offsets[i]`
 /// in `bytes`, keys in key order.
@@ -285,16 +444,99 @@ fn stream_workers(layers: usize) -> usize {
 pub fn stream_expert_layers(
     path: &Path,
     index: &ExpertIndex,
-    mut admit: impl FnMut(LayerRecords) -> Result<(), String>,
+    admit: impl FnMut(LayerRecords) -> Result<(), String>,
 ) -> Result<u64, String> {
     let ranges = layer_pool_ranges(index, pool_layout(index).bytes as usize).map_err(|e| e.to_string())?;
-    let workers = stream_workers(ranges.len());
     let experts = index.experts_per_layer();
+    let layers: Vec<usize> = (0..ranges.len()).collect();
+    let read_layer = |file: &mut File, layer: usize| {
+        let (lo, hi) = ranges[layer];
+        let mut bytes = vec![0u8; (hi - lo) as usize];
+        fill_layer(file, index, layer, lo, &mut bytes).map(|read| {
+            let mut keys = Vec::with_capacity(experts * 2);
+            let mut offsets = Vec::with_capacity(experts * 2);
+            for expert in 0..experts {
+                for (p, projection) in ArtifactProjection::ALL.into_iter().enumerate() {
+                    let r = index.get(layer, expert, projection).expect("indexed");
+                    keys.push(((layer * experts + expert) * 2 + p) as u32);
+                    offsets.push(r.pool_offset - lo);
+                }
+            }
+            (read, LayerRecords { layer, keys, offsets, bytes })
+        })
+    };
+    stream_layers(path, &layers, read_layer, admit)
+}
+
+/// The keys of `pinned` (per key, in key order) in `layer`, and their bytes.
+fn pinned_in_layer(index: &ExpertIndex, pinned: &[bool], layer: usize) -> (Vec<usize>, u64) {
+    let experts = index.experts_per_layer();
+    let keys: Vec<usize> = (layer * experts * 2..(layer + 1) * experts * 2).filter(|&key| pinned[key]).collect();
+    let bytes = keys
+        .iter()
+        .map(|&key| index.get(layer, (key / 2) % experts, ArtifactProjection::ALL[key % 2]).expect("indexed").bytes)
+        .sum();
+    (keys, bytes)
+}
+
+/// The RAM [`stream_pinned_records`] holds at most at once: as
+/// [`stream_staging_bytes`], each buffer the size of the layer with the most
+/// pinned bytes; 0 with nothing pinned.
+pub fn pinned_staging_bytes(index: &ExpertIndex, pinned: &[bool]) -> std::io::Result<u64> {
+    let per_layer: Vec<u64> = (0..index.layers()).map(|layer| pinned_in_layer(index, pinned, layer).1).filter(|&b| b > 0).collect();
+    let heaviest = per_layer.iter().copied().max().unwrap_or(0);
+    if heaviest == 0 {
+        return Ok(0);
+    }
+    Ok((stream_workers(per_layer.len()) + STREAM_QUEUE_LAYERS + 1) as u64 * heaviest)
+}
+
+/// Reads the records `pinned` names (per key, in key order) from the artifact
+/// at `path`, a layer's into one buffer of their own, and hands each layer
+/// that has any to `admit` on the calling thread, as
+/// [`stream_expert_layers`] does with whole layers. Returns the bytes read.
+pub fn stream_pinned_records(
+    path: &Path,
+    index: &ExpertIndex,
+    pinned: &[bool],
+    admit: impl FnMut(LayerRecords) -> Result<(), String>,
+) -> Result<u64, String> {
+    let experts = index.experts_per_layer();
+    let layers: Vec<usize> = (0..index.layers()).filter(|&layer| pinned_in_layer(index, pinned, layer).1 > 0).collect();
+    let read_layer = |file: &mut File, layer: usize| -> std::io::Result<(u64, LayerRecords)> {
+        let (keys, total) = pinned_in_layer(index, pinned, layer);
+        let mut bytes = vec![0u8; total as usize];
+        let mut offsets = Vec::with_capacity(keys.len());
+        let mut at = 0usize;
+        for &key in &keys {
+            let r = index.get(layer, (key / 2) % experts, ArtifactProjection::ALL[key % 2]).expect("indexed");
+            file.seek(SeekFrom::Start(r.file_offset))?;
+            file.read_exact(&mut bytes[at..at + r.bytes as usize])?;
+            offsets.push(at as u64);
+            at += r.bytes as usize;
+        }
+        let keys = keys.into_iter().map(|key| key as u32).collect();
+        Ok((total, LayerRecords { layer, keys, offsets, bytes }))
+    };
+    stream_layers(path, &layers, read_layer, admit)
+}
+
+/// Reads `layers` with `read_layer` on [`READ_WORKERS`] handles at most,
+/// round-robined, and hands each to `admit` on the calling thread through a
+/// queue of [`STREAM_QUEUE_LAYERS`]. Returns the bytes read; the first read
+/// error or `admit` error ends it, the readers stopping at their next layer.
+fn stream_layers(
+    path: &Path,
+    layers: &[usize],
+    read_layer: impl Fn(&mut File, usize) -> std::io::Result<(u64, LayerRecords)> + Sync,
+    mut admit: impl FnMut(LayerRecords) -> Result<(), String>,
+) -> Result<u64, String> {
+    let workers = stream_workers(layers.len());
     let (tx, rx) = mpsc::sync_channel::<std::io::Result<(u64, LayerRecords)>>(STREAM_QUEUE_LAYERS);
     thread::scope(|scope| -> Result<u64, String> {
         for worker in 0..workers {
             let tx = tx.clone();
-            let ranges = &ranges;
+            let read_layer = &read_layer;
             scope.spawn(move || {
                 let mut file = match File::open(path) {
                     Ok(file) => file,
@@ -303,21 +545,8 @@ pub fn stream_expert_layers(
                         return;
                     }
                 };
-                for layer in (worker..ranges.len()).step_by(workers) {
-                    let (lo, hi) = ranges[layer];
-                    let mut bytes = vec![0u8; (hi - lo) as usize];
-                    let message = fill_layer(&mut file, index, layer, lo, &mut bytes).map(|read| {
-                        let mut keys = Vec::with_capacity(experts * 2);
-                        let mut offsets = Vec::with_capacity(experts * 2);
-                        for expert in 0..experts {
-                            for (p, projection) in ArtifactProjection::ALL.into_iter().enumerate() {
-                                let r = index.get(layer, expert, projection).expect("indexed");
-                                keys.push(((layer * experts + expert) * 2 + p) as u32);
-                                offsets.push(r.pool_offset - lo);
-                            }
-                        }
-                        (read, LayerRecords { layer, keys, offsets, bytes })
-                    });
+                for &layer in layers.iter().skip(worker).step_by(workers) {
+                    let message = read_layer(&mut file, layer);
                     let failed = message.is_err();
                     // The receiver is gone once the caller's admit failed: stop.
                     if tx.send(message).is_err() || failed {

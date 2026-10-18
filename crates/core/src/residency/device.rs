@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use super::class::{ExpertCatalog, KBits, KClass, Projection, ProjectionId};
 use super::counters::{ResidencyCounters, ResidencyMirror, MIRROR_BYTES};
+pub use super::load::NO_HOST_COPY;
 use super::policy::{Admission, Phase, PrefetchBudget};
 use crate::moe::MoeSlot;
 
@@ -61,6 +62,9 @@ pub struct ResidencyDesc {
     pub host_pool_bytes: u64,
     pub copy_blocks: u32,
     pub report: u32,
+    /// Pinned slots per class past its `capacity` LRU slots: as many keys of
+    /// the class whose pool offset is [`NO_HOST_COPY`] (GitHub #329 item 12).
+    pub pinned: [u32; KClass::COUNT],
 }
 
 /// 1:1 with `struct ignis_residency_plan`: the device bytes a residency
@@ -204,6 +208,12 @@ pub fn projection_of(experts: u16, key: u32) -> ProjectionId {
 /// The K map and the records' host-pool offsets in key order, from a
 /// catalog whose records are packed back to back (the binder's expert pool).
 pub fn packed_layout(catalog: &ExpertCatalog) -> (Vec<u8>, Vec<u64>, u64) {
+    packed_layout_without(catalog, |_| false)
+}
+
+/// [`packed_layout`] with no place in the pool for the projections `pinned`
+/// names: their offset is [`NO_HOST_COPY`], the others still back to back.
+pub fn packed_layout_without(catalog: &ExpertCatalog, pinned: impl Fn(ProjectionId) -> bool) -> (Vec<u8>, Vec<u64>, u64) {
     let mut k2 = Vec::new();
     let mut offsets = Vec::new();
     let mut at = 0u64;
@@ -212,8 +222,12 @@ pub fn packed_layout(catalog: &ExpertCatalog) -> (Vec<u8>, Vec<u64>, u64) {
             for projection in Projection::ALL {
                 let id = ProjectionId::new(layer, expert, projection);
                 k2.push(catalog.class_of(id).k.half_bits() as u8);
-                offsets.push(at);
-                at += catalog.bytes(id);
+                if pinned(id) {
+                    offsets.push(NO_HOST_COPY);
+                } else {
+                    offsets.push(at);
+                    at += catalog.bytes(id);
+                }
             }
         }
     }
@@ -311,9 +325,11 @@ impl DeviceResidency {
         Some(unsafe { std::slice::from_raw_parts_mut(base, self.desc.host_pool_bytes as usize) })
     }
 
-    /// A device-only residency's admission: each key takes the next free
-    /// slot of its class, its record copied from `src` at the matching
-    /// offset. Before the first step; [`Self::admit_finish`] closes it.
+    /// A device-only residency's admission, or the pinned keys' beside a
+    /// host pool: each key takes the next free slot of its class (a pinned
+    /// key, the next pinned one), its record copied from `src` at the
+    /// matching offset. Before the warm start and the first step;
+    /// [`Self::admit_finish`] closes it.
     pub fn admit(&mut self, keys: &[u32], src: &[u8], offsets: &[u64]) -> Result<(), String> {
         if keys.len() != offsets.len() {
             return Err(format!("residency: {} keys and {} offsets to admit", keys.len(), offsets.len()));
@@ -330,8 +346,9 @@ impl DeviceResidency {
         })
     }
 
-    /// Closes a device-only residency's admission: refused unless every
-    /// projection was admitted, since no step could serve a missing one.
+    /// Closes the admission: refused unless every projection (device-only)
+    /// or every pinned one was admitted, since no step could serve a missing
+    /// one.
     pub fn admit_finish(&mut self) -> Result<(), String> {
         check(unsafe { ffi::ignis_residency_admit_finish(self.raw.as_ptr()) })
     }
