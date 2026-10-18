@@ -549,6 +549,9 @@ mod tests {
         assert_eq!((rows(3, 0, 1), rows(3, 0, 3), rows(3, 0, 4), rows(3, 0, 8)), (4, 8, 8, 8));
         assert_eq!(rows(7, 6, 3), 6, "a 6-row budget");
         assert_eq!(rows(1, 2, 3), 3, "one lane's 2 rows, fewer than the lanes");
+        // GitHub #329 item 5: past the default's 8 rows the widest step is
+        // the budget's, 8 lanes of 3 drafts at 16 and 32 rows.
+        assert_eq!((rows(3, 16, 8), rows(3, 32, 8)), (16, 32));
         let spec = FlashNextSpeculation::new(SpeculativeBackend::Mtp, 2, 0).expect("valid");
         assert_eq!(spec.decode_rows(3), 6);
         for draft in 1..=MAX_DRAFT_TOKENS {

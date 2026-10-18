@@ -1275,6 +1275,11 @@ mod tests {
         let speculative = EngineOptions { speculation: Some(mtp), ..plain.clone() };
         assert_eq!((plain.class_minimum_slots(), speculative.class_minimum_slots()), (26, 78));
         assert_eq!(EngineOptions::default().class_minimum_slots(), class_minimum_slots(DEFAULT_DECODE_LANES), "MTP off: the lanes");
+        // GitHub #329 item 5: a row budget past 8 widens the step -- 8 lanes
+        // x 4 columns at 32 rows -- and the minimum with it.
+        let wide = FlashNextSpeculation::new(SpeculativeBackend::Mtp, 3, 32).expect("a 32-row budget");
+        let wide = EngineOptions { decode_lanes: 8, speculation: Some(wide), ..plain.clone() };
+        assert_eq!((wide.decode_rows(), wide.class_minimum_slots()), (32, class_minimum_slots(32)));
         let split = |options: &EngineOptions| residency_pools(options, &catalog, &traffic).expect("split").cache.capacity();
         // One lane's step: 26 slots a class first, and the cold classes get
         // little more.
