@@ -1051,7 +1051,8 @@ function TallyCell({ tally }: { tally: { total: number | null; window: number | 
  * the decode hit rate, the misses each token cost and the PCIe traffic —
  * what tells a slow turn caused by misses from one caused by compute — the
  * time the expert kernels waited on those copies (GitHub #306), then each K
- * class's slots against their capacity.
+ * class's slots against their capacity: the LRU's, without a pinned hot set's
+ * slots (ADR 0055), which the series does not count.
  */
 function ExpertsCard({ experts, chart, win }: { experts: Experts; chart: ChartFrame; win: string }) {
   const { issued, used } = experts.prefetch;
