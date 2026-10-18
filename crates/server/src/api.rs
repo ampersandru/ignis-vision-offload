@@ -381,6 +381,28 @@ async fn ready(State(server): State<Arc<Server>>) -> Response {
     }
 }
 
+/// What the API listener answers while the server starts, before any model
+/// is loaded (GitHub #329, [`crate::starting::Starting`]): `GET /health` 200,
+/// as a live process does, and every other path — `/ready`, `/v1` — `503
+/// server_not_ready` with `Retry-After: 5`, whatever the key. No request
+/// spans: tower-http logs a 503 as an ERROR, and a probe meets one every few
+/// seconds for the length of a load.
+pub(crate) fn starting_router() -> Router {
+    Router::new()
+        .route("/health", axum::routing::get(health))
+        .route("/ready", axum::routing::get(starting))
+        .fallback(starting)
+        .layer(middleware::from_fn(cors_headers))
+}
+
+/// What a request is told while the server starts ([`starting_router`]).
+const STARTING_MESSAGE: &str = "the server is starting and its model is not loaded yet; retry shortly";
+
+/// The answer of every path but `/health` while the server starts.
+async fn starting() -> Response {
+    unavailable("server_not_ready", STARTING_MESSAGE)
+}
+
 /// What a request is told while a switch from `from` to `to` runs: by the
 /// gate, and by [`implicit_switch_refused`] to one that named a model as the
 /// switch began — the same words, since it is the same situation.

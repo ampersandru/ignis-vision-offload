@@ -51,6 +51,14 @@ on port 8000, while the keyless Prometheus listener stays on the container's
 own loopback. To scrape it from outside, add
 `-e IGNIS_SERVER_METRICS_BIND=0.0.0.0:9464 -p 9464:9464`.
 
+The server is the image's entrypoint, so it is the container's PID 1, and it
+needs no init in front of it: it stops on SIGTERM (or Ctrl+C) from the moment
+it starts. Before it serves — while the model downloads or loads — the
+process exits at once, which frees the GPU, its last line
+`ignis.process.stopped` naming the `phase` it was in; once it serves it
+drains in-flight requests and unloads the model first. Its probes are
+[`/health` and `/ready`](#the-api).
+
 With no `IGNIS_MODEL_ARTIFACT` the image fetches the model into its own working
 directory (`/home/ignis/models`) and loses it with the container. Mount a
 directory and point the download at it to keep what it fetches:
@@ -753,16 +761,19 @@ CPU mock, which has nothing to capture, is ready at once.
 **Probes.** Two, both outside `/v1`: neither asks for an API key, and neither
 counts as a use of the model (idle unload does not see them).
 - `GET /health` is **liveness**: `200 {"status": "ok"}` whenever the process
-  answers: through the warm-up, every switch and reload, and an idle
+  answers, and it answers from its start: the API listener is bound before
+  the start-up download and load (`ignis.server.listening` names its
+  address), then through the warm-up, every switch and reload, and an idle
   unload's load. Point a restarting probe here (Kubernetes `livenessProbe`),
   never at `/ready`: a loading server is alive, and restarting it would
-  restart the load in a loop. The start-up load comes before the listener
-  binds, so during it nothing answers at all: give it room with a
-  `startupProbe` (or an `initialDelaySeconds`) sized for the model's load.
+  restart the load in a loop. It needs no `startupProbe` or
+  `initialDelaySeconds` for the load.
 - `GET /ready` is **readiness**: whether to send it requests. It answers
-  `503 server_not_ready` with `Retry-After: 5` until that first warm-up has
-  run. After that it answers `200 {"status": "ok"}` while a model serves or
-  is on its way: through a switch, an idle unload and the load after it
+  `503 server_not_ready` with `Retry-After: 5` through the start-up load and
+  until that first warm-up has run; while the model loads at start, every
+  path but `/health` answers that way, whatever the key. After that it
+  answers `200 {"status": "ok"}` while a model serves or is on its way:
+  through a switch, an idle unload and the load after it
   (failed too, since the next request tries it again), and a failed switch
   that is reloading the old model. The one exception is a failed switch
   that could reload nothing, which leaves no model serving and none loading
