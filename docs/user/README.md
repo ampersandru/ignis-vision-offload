@@ -1499,7 +1499,7 @@ With metrics on (the default; `--server-metrics false` turns them off), the Prom
 rejections, KV pool pages and evictions, the KV-RAM arena, retained slots and
 what reuse held or gave up, the VRAM plan, decoded tokens, forced thinking
 closes, and decision counters with the answer-mass histogram ([ADR 0017](../adr/0017-prometheus-metrics.md)).
-The Playground's **Monitor** tab scrapes the same exposition.
+The Playground's **Monitor** tab scrapes the same exposition. It scrapes every 2-5 s while the tab is visible and stops while the tab is hidden (so a tab left open does not keep a scale-to-zero deployment awake), scraping again when the tab shows.
 
 ---
 
