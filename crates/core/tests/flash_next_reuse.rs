@@ -181,6 +181,7 @@ fn spec_host_plan(available: u64) -> HostPlanRequest {
     HostPlanRequest {
         available_physical_bytes: available,
         expert_pool_bytes: 37_700_000_000,
+        load_staging_bytes: 0,
         ngram_hot_rows_bytes: GIB,
         staging_bytes: GIB / 2,
         retained_host_slots_bytes: u64::from(ModelFamily::FlashNext.default_retained_host_slots()) * image,
@@ -196,10 +197,10 @@ fn the_host_plan_charges_the_retained_slots_and_the_kv_ram_arena() {
     let names: Vec<_> = lines.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        ["expert_pool", "ngram_hot_rows", "staging", "retained_host_slots", "kv_ram_arena"]
+        ["expert_pool", "load_staging", "ngram_hot_rows", "staging", "retained_host_slots", "kv_ram_arena"]
     );
-    assert_eq!(lines[3].1, 8 * 130_014_464, "eight images, ~1 GiB");
-    assert_eq!(lines[4].1, 2 * GIB);
+    assert_eq!(lines[4].1, 8 * 130_014_464, "eight images, ~1 GiB");
+    assert_eq!(lines[5].1, 2 * GIB);
     // The spec's table: ~10 GB left for the n-gram page cache and the margin.
     assert!((10_000_000_000..11_000_000_000).contains(&plan.left_bytes), "{}", plan.left_bytes);
 }
@@ -236,6 +237,7 @@ fn the_logged_switch_fits_with_flash_nexts_own_arena() {
     let logged = |arena| HostPlanRequest {
         available_physical_bytes: 46_708_031_488,
         expert_pool_bytes: 37_795_446_784,
+        load_staging_bytes: 0,
         ngram_hot_rows_bytes: GIB,
         staging_bytes: 64 << 20,
         retained_host_slots_bytes: 1_040_115_712,
@@ -256,6 +258,7 @@ fn the_refusal_reads_in_binary_units_with_the_shortfall() {
     let request = HostPlanRequest {
         available_physical_bytes: 41_632_530_432,
         expert_pool_bytes: 37_795_446_784,
+        load_staging_bytes: 0,
         ngram_hot_rows_bytes: GIB,
         staging_bytes: 64 << 20,
         retained_host_slots_bytes: 1_040_115_712,

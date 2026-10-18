@@ -35,8 +35,10 @@ no host copy of any expert.**
   name. A step that would still miss is refused (`IGNIS_RESIDENCY_STATUS_NO_HOST`), its
   projections left ABSENT so an expert op traps, and nothing is prefetched. A miss there is an
   invariant broken, never a copy from a pool that is not there.
-- The host plan's `expert_pool` line is 0 on such a load, and its staging line carries the layer
-  buffers.
+- The host plan's `expert_pool` line is 0 on such a load. The layer buffers are a transient line
+  of their own, `load_staging`, held only during the residency phase: the load frees them before
+  it reads the n-gram hot rows, so the plan charges its peak, that phase or the lines kept while
+  serving, whichever is more (#329 item 3).
 
 ## Considered options
 
@@ -52,8 +54,9 @@ no host copy of any expert.**
 
 ## Consequences
 
-- A machine with a 96 GB card serves Flash-Next with ~13 GB of RAM available instead of ~46, and
-  the whole n-gram table fits beside it on 64 GB.
+- A machine with a 96 GB card serves Flash-Next with ~9 GB of RAM available instead of ~46 (the
+  layer buffers are then the plan's peak), and the whole n-gram table fits beside it on 64 GB
+  (from ~37 GB available).
 - Decode, TTFT and greedy text are unchanged or better (no miss left), measured on the card.
 - The load reads the artifact as before. Whether the residency phase is shorter (no second copy,
   pool to VRAM) or longer (one synchronous copy per record from pageable buffers) was not settled

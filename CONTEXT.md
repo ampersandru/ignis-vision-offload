@@ -221,7 +221,9 @@ When output names a domain concept, use the term as defined here.
 - **Device-only residency** — a resident load's expert residency (ADR 0054):
   the expert cache holds every projection, so there is no expert pool. At
   load each record is **admitted** from the artifact straight to its slot, a
-  layer at a time, and no step misses.
+  layer at a time, and no step misses. The layer buffers it reads through are
+  the host plan's one transient line (`load_staging`), charged only while the
+  experts load.
 - **Expert cache** — the fixed-size VRAM slot pools that hold the projections
   in use, replaced least-recently-used; a plan line at load. It takes what the
   **KV pool policy** leaves. Below its 12 GiB floor the start is refused,

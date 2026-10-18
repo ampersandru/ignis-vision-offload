@@ -44,7 +44,7 @@ export type HostPlan = {
   needed_bytes: number;
   short_bytes: number;
   /** The first line, in plan order, the available memory could not hold. */
-  crossing_line: "expert_pool" | "ngram_hot_rows" | "staging" | "retained_host_slots" | "kv_ram_arena";
+  crossing_line: "expert_pool" | "load_staging" | "ngram_hot_rows" | "staging" | "retained_host_slots" | "kv_ram_arena";
   lines: { name: string; bytes: number }[];
 };
 

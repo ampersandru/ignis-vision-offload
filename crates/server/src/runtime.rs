@@ -468,6 +468,7 @@ pub fn log_host_plan_refused(refusal: &ignis_core::residency::HostPlanError) {
         short_bytes = refusal.short_bytes(),
         crossing_line = *crossing_line,
         expert_pool_bytes = line("expert_pool"),
+        load_staging_bytes = line("load_staging"),
         ngram_hot_rows_bytes = line("ngram_hot_rows"),
         staging_bytes = line("staging"),
         retained_host_slots_bytes = line("retained_host_slots"),
@@ -1039,8 +1040,9 @@ pub(crate) fn flash_next_load(
     let kv_disk_staging_bytes = if kv_disk_bytes > 0 { ignis_runtime::kv_disk::STAGING_BYTES } else { 0 };
     // A load whose cache holds every expert pins no expert pool: its records
     // go from the file to their slots through a few layer buffers, the
-    // staging line's (`build_residency`).
-    let (expert_pool_bytes, expert_staging_bytes) = if device_only(&options, &cat) {
+    // load staging line's (`build_residency`), all freed before the leaf
+    // reads the n-gram hot rows (`FlashNextLeaf::open`).
+    let (expert_pool_bytes, load_staging_bytes) = if device_only(&options, &cat) {
         (0, stream_staging_bytes(&plan.experts).map_err(|e| e.to_string())?)
     } else {
         (pool_layout(&plan.experts).bytes, 0)
@@ -1048,8 +1050,9 @@ pub(crate) fn flash_next_load(
     let mut host_request = available_physical_bytes().map(|available| HostPlanRequest {
         available_physical_bytes: available,
         expert_pool_bytes,
+        load_staging_bytes,
         ngram_hot_rows_bytes: 0,
-        staging_bytes: kv_disk_staging_bytes + expert_staging_bytes,
+        staging_bytes: kv_disk_staging_bytes,
         retained_host_slots_bytes: pool_plan.retained_host_bytes,
         kv_ram_arena_bytes: options.kv_ram_arena_bytes,
         margin_bytes: shape.host_margin_bytes,
@@ -1091,9 +1094,9 @@ pub(crate) fn flash_next_load(
             retained_host_bytes = pool_plan.retained_host_bytes,
             kv_ram_arena_bytes = options.kv_ram_arena_bytes,
             expert_pool_bytes = request.expert_pool_bytes,
+            load_staging_bytes = request.load_staging_bytes,
             staging_bytes = request.staging_bytes,
             kv_disk_staging_bytes,
-            expert_staging_bytes,
             "flash-next host plan"
         );
     }
@@ -1588,6 +1591,7 @@ mod tests {
         ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
             available_physical_bytes: 41_632_530_432,
             expert_pool_bytes: 37_795_446_784,
+            load_staging_bytes: 0,
             ngram_hot_rows_bytes: 1 << 30,
             staging_bytes: 64 << 20,
             retained_host_slots_bytes: 1_040_115_712,
@@ -1597,17 +1601,22 @@ mod tests {
         .expect_err("short of RAM")
     }
 
-    #[test]
-    fn a_refused_host_plan_logs_every_line_in_bytes_beside_the_persons_message() {
+    /// The one event [`log_host_plan_refused`] logs for `refusal`.
+    fn refusal_event(refusal: &ignis_core::residency::HostPlanError) -> serde_json::Value {
         use tracing_subscriber::layer::SubscriberExt;
-        let refusal = starved_plan();
         let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
         let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
-        tracing::subscriber::with_default(subscriber, || log_host_plan_refused(&refusal));
-        let events: Vec<serde_json::Value> =
+        tracing::subscriber::with_default(subscriber, || log_host_plan_refused(refusal));
+        let mut events: Vec<serde_json::Value> =
             sink.lines().iter().map(|line| serde_json::from_str(line).expect("valid json")).collect();
         assert_eq!(events.len(), 1, "{events:?}");
-        let event = &events[0];
+        events.remove(0)
+    }
+
+    #[test]
+    fn a_refused_host_plan_logs_every_line_in_bytes_beside_the_persons_message() {
+        let refusal = starved_plan();
+        let event = refusal_event(&refusal);
         assert_eq!(event["event_name"], "ignis.runtime.flash_next_host_plan_refused");
         assert_eq!(event["severity_text"], "WARN");
         assert_eq!(event["body"], refusal.to_string(), "the message a person reads");
@@ -1619,6 +1628,7 @@ mod tests {
             ("needed_bytes", 46_418_864_128),
             ("short_bytes", 4_786_333_696),
             ("expert_pool_bytes", 37_795_446_784),
+            ("load_staging_bytes", 0),
             ("ngram_hot_rows_bytes", 1 << 30),
             ("staging_bytes", 64 << 20),
             ("retained_host_slots_bytes", 1_040_115_712),
@@ -1627,6 +1637,35 @@ mod tests {
             assert_eq!(attributes[field], bytes, "{field}: {attributes}");
         }
         assert_eq!(attributes["crossing_line"], "expert_pool");
+    }
+
+    /// A device-only load (ADR 0054) on a machine with 8.5 GB available: its
+    /// ~4.7 GB of layer buffers, the peak, do not fit. The event names them
+    /// apart from KV-disk's staging (GitHub #329 item 3).
+    #[test]
+    fn a_refused_device_only_plan_logs_its_layer_buffers_apart_from_kv_disks_staging() {
+        let refusal = ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
+            available_physical_bytes: 8_500_000_000,
+            expert_pool_bytes: 0,
+            load_staging_bytes: 4_700_000_000,
+            ngram_hot_rows_bytes: 1 << 30,
+            staging_bytes: 64 << 20,
+            retained_host_slots_bytes: 1_040_115_712,
+            kv_ram_arena_bytes: 2 << 30,
+            margin_bytes: ignis_core::residency::DEFAULT_HOST_MARGIN_BYTES,
+        })
+        .expect_err("short of RAM");
+        let event = refusal_event(&refusal);
+        let attributes = &event["attributes"];
+        for (field, bytes) in [
+            ("planned_bytes", 4_700_000_000u64),
+            ("expert_pool_bytes", 0),
+            ("load_staging_bytes", 4_700_000_000),
+            ("staging_bytes", 64 << 20),
+        ] {
+            assert_eq!(attributes[field], bytes, "{field}: {attributes}");
+        }
+        assert_eq!(attributes["crossing_line"], "load_staging");
     }
 
     fn plan_for(mode: ignis_core::VramMode, free: u64) -> ignis_core::VramPlan {

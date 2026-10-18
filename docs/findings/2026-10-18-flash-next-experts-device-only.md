@@ -55,7 +55,8 @@ device-only:
 `plan_expert_cache` gives every class all its projections, and an expected
 hit rate of 1.0, when the cache holds the catalog. `build_residency` takes
 the device-only path exactly then. The host plan's `expert_pool` line is 0
-there, and its staging line carries the layer buffers.
+there, and the layer buffers are a line of their own, `load_staging`,
+charged only while the experts load (below, Limits).
 
 **Tests.**
 - `ignis_kernel_residency_device_only_test` (new CTest) passed on the RTX 5090
@@ -152,7 +153,11 @@ Eight vCPUs instead of sixteen cost nothing measurable.
 - **The host plan of such a load shrinks from ~74 GB to ~41 GB with the whole
   n-gram table** (36.8 GB of lines and the 4 GiB margin), and from ~46 GB to
   ~13 GB with the 1 GiB default. The pinned single allocation, the one a
-  32-34 GiB driver ceiling would refuse, is gone.
+  32-34 GiB driver ceiling would refuse, is gone. With the layer buffers
+  charged only while the experts load (#329 item 3, arithmetic over the
+  same lines, not measured): ~36 GB with the whole table (its ~32.1 GB held
+  while serving and the margin), ~9 GB with the default (the 4.7 GB of
+  buffers, then the peak, and the margin).
 - **Both builds share one thing that is not about residency:** an MTP
   decode error. The ~73 tok/s first cells after a load were not slow decode:
   a request in those reps ended with `ignis.runtime.leaf_error`
@@ -181,8 +186,15 @@ Eight vCPUs instead of sixteen cost nothing measurable.
 - One card, one artifact (trellis-a25), Linux. Windows was compiled and the
   kernel tests run on the 5090; the full device-only load was not run there
   (a 32 GB card is never resident).
-- The staging line (4.7 GB) is charged for the whole plan, though the load
-  frees it before serving.
+- The 4.7 GB of layer buffers were charged for the whole plan in the runs
+  above, in the staging line beside the n-gram hot rows, though the load
+  frees them before serving: the 36.8 GB `planned_bytes` measured includes
+  them. Since #329 item 3 they are their own line, `load_staging`, charged
+  only during the residency phase (`FlashNextLeaf::open` frees them before
+  the MTP head, the n-gram hot rows and the KV-RAM arena; the retained host
+  slots and KV-disk's staging come after the leaf), so the plan holds at its
+  peak the larger of that phase and the lines kept while serving, and
+  `--ngram-hot-bytes auto` gets the 4.7 GB back. Not re-run on the card.
 - Whether the device-only residency phase loads faster or slower than the
   pool fill with the page cache warm was not measured end to end. Inference
   from the admission bench (above): admission makes one synchronous copy per
@@ -203,7 +215,8 @@ Eight vCPUs instead of sixteen cost nothing measurable.
 
 Noted in https://github.com/gpillon/ignis/issues/329:
 - the prefill staging ring on a device-only load;
-- the staging line charged beside the n-gram line;
+- the staging line charged beside the n-gram line (done: `load_staging`,
+  above);
 - the MTP decode error that killed the first requests after a load;
 - the residency phase's load time with the page cache warm, and admitting a
   layer in fewer, larger copies.

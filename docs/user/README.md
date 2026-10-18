@@ -588,7 +588,9 @@ are the head of that ranking that fits the budget. What a budget holds:
   the artifact already is its copy on disk.
 
 `auto` picks among those, from what the host plan leaves after its other
-lines and its margin, less 256 MiB for the load's own reads: the whole
+lines held while serving and its margin (a device-only load's layer buffers
+are freed before the rows are read, and take none of it), less 256 MiB for
+the load's own reads: the whole
 table when that holds it, otherwise the whole ranking when it fits, otherwise
 the rest rounded down to whole GiB and never below the 1 GiB default, which
 the plan then refuses exactly where it would refuse the default. So `auto` never refuses a start the
@@ -637,11 +639,15 @@ slots, the 2 GiB KV-RAM arena and the 4 GiB margin the load refuses to dip into
 **On a card that holds every expert** (around 96 GB: the VRAM plan's
 `kv_pool_policy: resident`) there are no pinned experts at all: every record is
 read from the artifact straight into its VRAM slot, a layer at a time, and no
-step ever copies an expert in, so the plan's `expert_pool` line is 0 and its
-staging line carries the layer buffers of the load instead (~4.7 GB, given
-back once the model is loaded). The same load then needs about **13 GB
-available** (~9 GB of lines and the 4 GiB margin), and the whole n-gram table
-(28.8 GB, `--ngram-hot-bytes auto`) fits beside it on a 64 GB machine.
+step ever copies an expert in, so the plan's `expert_pool` line is 0. The
+layer buffers the load reads them through are a line of their own,
+`load_staging` (~4.7 GB): they are freed before the n-gram hot rows are read,
+so the plan charges them only while the experts load, and holds at its peak
+the larger of that phase and the lines kept while serving. The same load then
+needs about **9 GB available** (the 4.7 GB of layer buffers, more than the
+~4.3 GB of lines it keeps, and the 4 GiB margin), and `--ngram-hot-bytes auto`
+holds the whole n-gram table (28.8 GB) from about 37 GB available, which a
+64 GB machine has.
 Measured on an RTX PRO 6000 (2026-10-18): the pinned memory went from 41.1 to
 3.3 GB, decode and greedy text unchanged, the expert cache's hit rate 1.0
 instead of 0.994.
@@ -656,10 +662,16 @@ other applications. Plan: experts 35.2 GiB, n-gram hot rows 1 GiB, staging 64 Mi
 992 MiB, KV-RAM arena 2 GiB; margin 4 GiB (--qwen38flashnext-model-host-margin-bytes).
 ```
 
+A device-only load lists its layer buffers apart, as `expert layer buffers
+4.4 GiB (while the experts load)`, and one that cannot hold them is refused
+naming them (`crossing_line: load_staging`): no flag shrinks them, so close
+other applications.
+
 The same refusal in exact bytes is the `ignis.runtime.flash_next_host_plan_refused`
-log event (every line, `available_bytes`, `margin_bytes`, `needed_bytes`,
-`short_bytes`, `crossing_line`) and, after a switch, `GET /v1/models`'s
-`last_switch.host_plan`. The knobs that lower it, with what each costs:
+log event (every line, the plan's peak as `planned_bytes`, `available_bytes`,
+`margin_bytes`, `needed_bytes`, `short_bytes`, `crossing_line`) and, after a
+switch, `GET /v1/models`'s `last_switch.host_plan`. The knobs that lower it,
+with what each costs:
 
 | Knob (`make`) | Flag | Saves | Costs |
 |---|---|---|---|

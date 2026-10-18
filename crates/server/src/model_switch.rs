@@ -1744,6 +1744,7 @@ mod tests {
         let refusal = ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
             available_physical_bytes: 41_632_530_432,
             expert_pool_bytes: 37_795_446_784,
+            load_staging_bytes: 0,
             ngram_hot_rows_bytes: 1 << 30,
             staging_bytes: 64 << 20,
             retained_host_slots_bytes: 1_040_115_712,
