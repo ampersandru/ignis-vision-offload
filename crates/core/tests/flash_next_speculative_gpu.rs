@@ -59,7 +59,7 @@ use ignis_artifact::packer::ARTIFACT_FILE_NAME;
 use ignis_core::flash_next::{EngineOptions, FlashNextEngine, LaneRound, RoundLogits};
 use ignis_core::gpu_profile;
 use ignis_core::kv_format::KvFormat;
-use ignis_core::speculation::{FlashNextSpeculation, SpeculativeBackend};
+use ignis_core::speculation::{FlashNextSpeculation, SpeculativeBackend, FLASH_NEXT_DEFAULT_VERIFY_ROWS};
 use ignis_core::step::SamplingParams;
 
 #[path = "support/logit_drift.rs"]
@@ -772,7 +772,10 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
     // rounds take 8 rows at any budget of 8 or more -- two lanes of 4
     // columns, the default's widest shape (a lone last lane, 4 rows).
     let speculation = engine.options().speculation.expect("speculation");
-    assert!(2 * (speculation.window(2) as usize + 1) <= 8, "{what}: two lanes verify within 8 rows");
+    assert!(
+        2 * (speculation.window(2) + 1) <= FLASH_NEXT_DEFAULT_VERIFY_ROWS,
+        "{what}: two lanes verify within {FLASH_NEXT_DEFAULT_VERIFY_ROWS} rows"
+    );
     let mut narrow = (0u32, 0u32);
     for pair in set.chunks(2) {
         let (accepted, offered) = acceptance(&run(engine, pair, None).rounds)[0];

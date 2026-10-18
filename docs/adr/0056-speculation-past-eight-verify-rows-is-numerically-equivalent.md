@@ -5,7 +5,16 @@
 Accepted (2026-10-18, owner decision: option 3 of
 [`docs/findings/2026-10-18-flash-next-verify-rows-past-8.md`](../findings/2026-10-18-flash-next-verify-rows-past-8.md)).
 GitHub #329 item 5. The default budget (8 rows) and every profile are unchanged; whether a
-profile takes a wider budget is the RTX PRO 6000 measurement's to decide.
+profile takes a wider budget is the RTX PRO 6000 measurement's to decide. It decided: there
+every budget past 8 loses to 8 (0.42-0.84x), so the `rtxpro6000` profile keeps 8
+([verify rows on the RTX PRO 6000](../findings/2026-10-18-verify-rows-on-the-rtx-pro-6000.md)).
+
+**Amended 2026-10-18 (review of #329 item 5, after acceptance, from the measured data).** Two
+thresholds below were added after the owner accepted option 3, by the review and not by the
+owner: the moved pick's own bound of **16 ulps** (the owner's text allowed a moved pick at a
+near tie within the 64-ulp tolerance; measured moved picks sat at 0-8 ulps, so 16 is stricter),
+and the acceptance band's width of **0.1** (the owner asked for acceptance within a band; 0.1 is
+1.5x the widest measured 0.066).
 
 ## Context
 
@@ -47,7 +56,7 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
     of only 1.1x on the RTX 5090 (1.6x over the default's own 40.2). It is kept that tight
     because the discriminator is close: the rows of a lane whose text left spec-off's at its
     second token, compared at the same indices anyway (another context, what a row read from
-    the wrong lane or position looks like), measured 33-202 ulps, median 104, 89% past 64 but
+    the wrong lane or position looks like), measured 33-202 ulps, median 103, 89% past 64 but
     only 59% past 96. The RTX PRO 6000 run re-derives it before a profile takes a budget past
     8. The pick bound is its own, not the logit tolerance (64 ulps at a top logit of 20 is 8
     logits, no near tie): measured moved picks sat at gaps of 0-8 ulps, and 16 is 2x that.
@@ -96,8 +105,9 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
   and its band are constants of the test's support module, measured on the RTX 5090 with these
   prompts. A change of the wide routes (a new GEMM tiling, option 2) or another card (the RTX
   PRO 6000 first) re-measures them, as the finding records.
-- The default's plan lines are main's byte for byte (verify-only and no speculation, checked
-  against main's own build, a sample pinned in `flash_next_bind`): nothing about a load that
-  names no budget changes.
+- The default's plan lines are main's byte for byte in the 15 cells `flash_next_bind` pins
+  against main's own figures (no speculation and verify-only, both KV formats): nothing about
+  such a load that names no budget changes. MTP loads (the profiles') were not planned: the
+  test's descriptors carry no head.
 - `out_logits` is appended to `ignis_decode_options` (ADR 0016's rule): a NULL costs nothing,
   a set one costs one host copy before the round's synchronize.

@@ -12,6 +12,8 @@
 //! exact at any budget is the commit: a round commits its own argmax
 //! ([`commit_follows_argmax`]).
 
+use ignis_core::speculation::FLASH_NEXT_DEFAULT_VERIFY_ROWS;
+
 /// The teacher-forced tolerance, in BF16 ulps at the reference row's largest
 /// magnitude: no logit of a verify round's row may sit further than this from
 /// the plain round's. Measured on the RTX 5090 (2026-10-18, ADR 0056): the
@@ -137,11 +139,15 @@ pub fn within(drift: &RowDrift, tolerance_ulps: f32, pick_gap_ulps: f32) -> Resu
 /// line naming both otherwise, or when either offered no first draft.
 pub fn acceptance_within_band(wide: (u32, u32), narrow: (u32, u32), band: f64) -> Result<(), String> {
     if wide.1 == 0 || narrow.1 == 0 {
-        return Err(format!("no first draft to compare: {wide:?} against 8 rows' {narrow:?}"));
+        return Err(format!(
+            "no first draft to compare: {wide:?} against {FLASH_NEXT_DEFAULT_VERIFY_ROWS} rows' {narrow:?}"
+        ));
     }
     let (w, n) = (f64::from(wide.0) / f64::from(wide.1), f64::from(narrow.0) / f64::from(narrow.1));
     if (w - n).abs() > band {
-        return Err(format!("first-draft acceptance {w:.3} against 8 rows' {n:.3} on the same prompts, past {band}"));
+        return Err(format!(
+            "first-draft acceptance {w:.3} against {FLASH_NEXT_DEFAULT_VERIFY_ROWS} rows' {n:.3} on the same prompts, past {band}"
+        ));
     }
     Ok(())
 }

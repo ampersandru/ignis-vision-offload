@@ -838,6 +838,13 @@ impl FlashNextEngine {
     /// ([`decode_flash_next`]): a round no generate path runs, for a test of
     /// what the leaf refuses (GitHub #329 item 5). Moves each sequence and
     /// its context one token on, or neither when the round is refused.
+    ///
+    /// Test-only: public because its one caller,
+    /// `a_permitted_set_refuses_the_logits_copy` in
+    /// `tests/flash_next_speculative_gpu.rs`, is an integration test outside
+    /// the crate, and it reads the engine's private model, pool and n-gram
+    /// table. No serving path calls it.
+    #[doc(hidden)]
     pub fn decode_standing(
         &self,
         sequences: &mut [crate::seq::Seq<'_>],

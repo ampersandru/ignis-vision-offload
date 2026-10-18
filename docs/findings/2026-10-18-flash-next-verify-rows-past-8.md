@@ -5,7 +5,7 @@
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
 - Scope: kernel / the Flash-Next verify round's row budget (`verify::kMaxRows`, `--spec-draft-rows`), MTP speculation's losslessness seam (`crates/core/tests/flash_next_speculative_gpu.rs`, `crates/core/tests/support/logit_drift.rs`)
-- Related: https://github.com/gpillon/ignis/issues/329 (item 5), [ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md), [spec flash-next/07](../specs/flash-next/07-mtp-speculation.md), [the rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), [batched decode width drift](2026-09-14-batched-decode-width-drift.md), `.scratch/verify-rows/` (branch `verify-rows`)
+- Related: https://github.com/gpillon/ignis/issues/329 (item 5), [ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md), [spec flash-next/07](../specs/flash-next/07-mtp-speculation.md), [the rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), [verify rows on the RTX PRO 6000](2026-10-18-verify-rows-on-the-rtx-pro-6000.md), [batched decode width drift](2026-09-14-batched-decode-width-drift.md), `.scratch/verify-rows/` (branch `verify-rows`)
 - Superseded by: none
 
 ## Question
@@ -142,8 +142,8 @@ prompts 0.89.
 For scale: the rows of the 8-row BF16 two-lane cell's lane 1 after its pick
 moved at index 1 -- a text one token off spec-off's, compared at the same
 indices anyway, what a row read on another context looks like -- drift
-33-202 ulps (median 104; 89% past 64, 59% past 96), most of it on the top
-logits (a pick at 21.5 read at -0.9).
+33-202 ulps (median 103 over its 142 rows; 89% past 64, 59% past 96), most
+of it on the top logits (a pick at 21.5 read at -0.9).
 
 **VRAM** (plan lines, `flash_next_bind` at 131,072 tokens hq-e8-2b, 4 lanes x 3
 drafts, budget 8 -> 16): verify round 13.2 -> 24.0 MB, sampling 4.6 -> 8.6 MB
@@ -163,10 +163,14 @@ an MTP load's own head lines are not in it):
 | 32 | 32 | 47.9 MB | 16.5 MB | 144.2 MB | 208.7 MB | +147.5 MB |
 
 At budgets 0, 2, 6 and 8 the plan lines are main's (0a810c0b) byte for
-byte -- no speculation and verify-only, 1-8 lanes and the default's, both KV
-formats: 96 planned cells, against main's own build (an MTP load is not
-plannable from these descriptors, which carry no head) -- and 15 of them are
-pinned in the same CTest.
+byte in the 15 cells the same CTest pins against the figures main's own build
+planned: no speculation and verify-only, 2, 3 or 7 drafts, 1, 2, 4, 5 or 8
+lanes and the default's, both KV formats (`flash_next_bind`; its run at
+the branch's head, with the 8-lane lines of the table above:
+`.scratch/verify-rows-fixes/ctest_flash_next_bind.log`). A one-off probe of
+96 such cells against main's build agreed as well, but neither its code nor
+its output was kept, so the 15 pinned cells are the evidence. MTP loads
+were not planned: these descriptors carry no head.
 
 **Cost on the 5090** (`flash_next_mtp_bench mtp --draft-tokens 3 --lanes 8`,
 hq-e8-2b, 1,536-token prompts, 128 tokens, 16 GB expert cache; decode is
@@ -205,8 +209,10 @@ Inferred:
   ulps off.
 - So a budget past 8 is not held lossless by the repository's seam, only
   numerically equivalent to speculation off.
-- The slowdown is what a PCIe-bound card predicts from the extra expert
-  copies; a card that holds every expert is unmeasured.
+- The slowdown is not only the extra expert copies. On the RTX PRO 6000,
+  where no expert crosses PCIe, a round past 8 rows still takes a fixed
+  +44-48 ms over the 8-row round (measured afterwards, [verify rows on the RTX PRO 6000](2026-10-18-verify-rows-on-the-rtx-pro-6000.md)),
+  which points at the routes a wide round switches to (not profiled).
 
 ## Implications
 
@@ -257,16 +263,16 @@ prompts' at 8 rows (1.5x the widest measured 0.066) -- not to its text. The opti
   every wide shape against spec-off's row, and it puts each shape inside the
   default's drift class. A subtler error (one that moves logits by tens of
   ulps) would pass it.
-- The RTX PRO 6000 numbers (MTP 3 at 4 lanes 1.12-1.19x, at 8 lanes 0.97x)
-  predate this change; what a 16-row budget pays there is unmeasured.
+- This finding measured no card but the 5090. What the wide budgets pay on
+  the RTX PRO 6000 was measured afterwards ([verify rows on the RTX PRO 6000](2026-10-18-verify-rows-on-the-rtx-pro-6000.md)): every
+  budget past 8 loses to 8 there (0.42-0.84x at 4 and 8 lanes), and the
+  `rtxpro6000` profile keeps 8.
 
 ## Follow-ups
 
-- On the RTX PRO 6000, `flash_next_mtp_bench mtp --draft-tokens 3
-  --lanes 8 --draft-rows 8|16|24`, then the profile campaign's 4- and 8-lane
-  cells at `spec.draft_rows` 16 against 8: whether a profile takes a budget
-  past 8. Before that, the four budget tests there, reading the drift column
-  to re-derive the 64-ulp tolerance (and the 16-ulp pick bound) on that
-  card.
+- On the RTX PRO 6000, the four budget tests, reading the drift column to
+  re-derive the 64-ulp tolerance (and the 16-ulp pick bound) on that card,
+  before any profile takes a budget past 8. (Whether the profile takes one
+  is answered: it keeps 8, [verify rows on the RTX PRO 6000](2026-10-18-verify-rows-on-the-rtx-pro-6000.md).)
 - A change of the wide routes (a GEMM tiling, option 2) re-measures the
   tolerance: rerun the four budget tests and read the drift column.
