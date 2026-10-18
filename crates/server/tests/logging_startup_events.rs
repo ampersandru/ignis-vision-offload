@@ -31,8 +31,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Run `ignis-server` to completion and return its last stdout line as a
-/// logging JSON record. Only valid for paths that exit before binding a
-/// socket (every "refusing to start" site, plus a bind failure).
+/// logging JSON record. Only valid for paths that exit before serving
+/// (every "refusing to start" site, plus a bind failure). The API listener
+/// is bound before the artifact is looked at (GitHub #329): a launch that
+/// names no `--server-bind` gets an ephemeral port, so it neither meets a
+/// real server's nor another launch's.
 fn run(args: &[&str]) -> serde_json::Value {
     run_with_envs(args, &[])
 }
@@ -77,6 +80,9 @@ fn run_with_envs(args: &[&str], envs: &[(&str, &str)]) -> serde_json::Value {
         .args(no_download())
         .env("IGNIS_LOG_FORMAT", "json")
         .env("IGNIS_LOG_LEVEL", "info");
+    if !args.contains(&"--server-bind") {
+        command.args(["--server-bind", "127.0.0.1:0"]);
+    }
     no_config_file(&mut command);
     for (key, value) in envs {
         command.env(key, value);

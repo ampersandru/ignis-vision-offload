@@ -561,6 +561,118 @@ async fn during_a_visit_other_requests_are_answered_model_switching() {
     assert_eq!(server.status().as_str(), "serving");
 }
 
+/// GitHub #329: an enhanced request waits for its visit's loads inside its
+/// handler. Once the serve stops it is answered `503 server_stopping`
+/// instead, on the way there and on the way back alike, and the visit still
+/// running is returned to be abandoned, not waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn once_the_serve_stops_a_visit_is_not_waited_for() {
+    for leg in ["there", "back"] {
+        let loader = MockLoader::new();
+        let server = on_the_image_model(&loader).await;
+        enhancing_with(&server, "mock-a");
+        let app = server.app();
+        let there = loader.hold_next_load();
+        let back = loader.hold_next_load();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let serving = tokio::spawn(server.clone().serve_on_until(listener, None, async {
+            let _ = stopped.await;
+        }));
+        let body = json!({ "prompt": "a red fox", "size": "1024x1024", "prompt_enhancement": true });
+        let enhanced = tokio::spawn({
+            let app = app.clone();
+            async move { send_generation(&app, body).await }
+        });
+        until(&server, "switching", PATIENT).await;
+        if leg == "back" {
+            there.send(()).unwrap();
+            let visiting = ModelStatus::Switching { from: "mock-a".into(), to: IMAGE.into() };
+            let deadline = Instant::now() + PATIENT;
+            while *server.status() != visiting || loader.resident() != 0 {
+                assert!(Instant::now() < deadline, "the visit never got to its way back: {:?}", server.status());
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+
+        stop.send(()).unwrap();
+        let bound = Duration::from_secs(5);
+        let (status, refused) = tokio::time::timeout(bound, enhanced).await.expect("answered at the stop").unwrap();
+        assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("server_stopping")), "{leg}: {refused}");
+        let served = tokio::time::timeout(bound, serving).await.expect("the serve returned").unwrap().expect("serve");
+        assert!(matches!(served, ignis_server::Served::LoadAbandoned { .. }), "{leg}: {served:?}");
+        // Released only so the runtime is not left joining a held thread.
+        let _ = there.send(());
+        let _ = back.send(());
+    }
+}
+
+/// GitHub #329: an enhanced request whose turn in the queue comes after the
+/// stop — the job admitted before it run to its end by the drain — begins
+/// no visit: it is answered `503 server_stopping`, nothing is loaded, and
+/// the serve ends drained, with no load left to abandon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_enhanced_request_whose_turn_comes_after_the_stop_begins_no_visit() {
+    let loader = MockLoader::new();
+    let (model, gate) = loader.gated_image_model(IMAGE);
+    let server = Server::from_active(model)
+        .with_switcher(Switcher::new(Arc::clone(&loader) as _, PATIENT).with_known_models(known(&["mock-a", IMAGE])));
+    enhancing_with(&server, "mock-a");
+    let jobs = Arc::clone(&server.active().image_model().expect("the image model").jobs);
+    let in_flight = |waiting: u32, running: u32| {
+        let jobs = Arc::clone(&jobs);
+        async move {
+            let deadline = Instant::now() + PATIENT;
+            while (jobs.in_flight().waiting, jobs.in_flight().running) != (waiting, running) {
+                assert!(Instant::now() < deadline, "never {waiting} waiting and {running} running: {:?}", jobs.in_flight());
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(server.clone().serve_on_until(listener, None, async {
+        let _ = stopped.await;
+    }));
+    // Over the listener, so the serve's drain waits for both requests.
+    let send = |body: Value| {
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder().pool_max_idle_per_host(0).build().unwrap();
+            let response = client
+                .post(format!("http://{addr}/v1/images/generations"))
+                .header(header::CONTENT_TYPE.as_str(), "application/json")
+                .body(body.to_string())
+                .send()
+                .await
+                .expect("answered");
+            let status = response.status().as_u16();
+            let retry_after = response.headers().get("retry-after").map(|value| value.to_str().unwrap().to_owned());
+            (status, retry_after, serde_json::from_str::<Value>(&response.text().await.unwrap()).unwrap())
+        })
+    };
+    let first = send(json!({ "prompt": "first", "size": "1024x1024" }));
+    in_flight(0, 1).await;
+    let enhanced = send(json!({ "prompt": "second", "size": "1024x1024", "prompt_enhancement": true }));
+    in_flight(1, 1).await;
+
+    stop.send(()).unwrap();
+    let switcher = Arc::clone(server.switcher.as_ref().unwrap());
+    let deadline = Instant::now() + PATIENT;
+    while !switcher.stopping() {
+        assert!(Instant::now() < deadline, "the serve never began to stop");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    gate.open();
+    let (status, _, answer) = first.await.unwrap();
+    assert_eq!(status, 200, "the job before it runs to its end: {answer}");
+    let (status, retry_after, refused) = enhanced.await.unwrap();
+    assert_eq!((status, refused["error"]["code"].as_str(), retry_after.as_deref()), (503, Some("server_stopping"), Some("5")), "{refused}");
+    let served = tokio::time::timeout(Duration::from_secs(5), serving).await.expect("the serve returned").unwrap().expect("serve");
+    assert_eq!(served, ignis_server::Served::Drained, "no visit began, so none was abandoned");
+    assert!(loader.prepared_artifacts().is_empty() && loader.loads().is_empty(), "no visit began: {:?}", loader.loads());
+}
+
 /// Review-322cf M1: an enhanced request on the loaded image model takes its
 /// turn in the queue before it visits the enhancer. The job running and the
 /// one waiting before it run to their end on the image model — past the

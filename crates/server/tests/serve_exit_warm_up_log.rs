@@ -88,7 +88,7 @@ async fn a_warm_up_still_running_when_serving_ends_is_cancelled_and_reports_noth
     assert_eq!(warm_up_reports(&log), ["ignis.process.ready"], "the control's warm-up is seen");
 
     let server = Server::from_active(model_on(Box::new(Stalled(scheduler())))).with_warm_up();
-    server
+    let served = server
         .serve_on_until(
             tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind"),
             None,
@@ -96,6 +96,7 @@ async fn a_warm_up_still_running_when_serving_ends_is_cancelled_and_reports_noth
         )
         .await
         .expect("serve");
+    assert_eq!(served, ignis_server::Served::Drained);
     // A warm-up left running is ended by the teardown and reports its
     // failure on its own task, after serve has returned: give it the time.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

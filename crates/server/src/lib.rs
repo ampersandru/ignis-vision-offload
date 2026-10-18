@@ -53,6 +53,8 @@ pub mod responses;
 pub mod reuse;
 pub mod runtime;
 pub mod scalar;
+pub mod shutdown;
+pub mod starting;
 pub mod stop;
 pub mod telemetry;
 pub mod template;
@@ -673,50 +675,68 @@ impl Server {
 
     /// Bind `addr` and serve. The engine's model thread (GitHub #69) was
     /// already spawned when it was constructed — nothing to start here.
-    /// Runs until [`shutdown_signal`] resolves (Ctrl+C, or SIGTERM on
-    /// unix), then drains in-flight requests before returning (GitHub #80,
-    /// spec §28: graceful shutdown, not an abrupt kill) — `main` is
-    /// responsible for emitting `ignis.process.stopped` and flushing the
-    /// logging queue after this returns, since that is the true last event.
-    pub async fn serve(self, addr: String) -> std::io::Result<()> {
+    /// Runs until Ctrl+C, or SIGTERM on unix, then drains in-flight requests
+    /// before returning (GitHub #80, spec §28: graceful shutdown, not an
+    /// abrupt kill) — the caller emits `ignis.process.stopped` and flushes
+    /// the logging queue after this returns, since that is the true last
+    /// event, and on [`Served::LoadAbandoned`] ends the process at once.
+    pub async fn serve(self, addr: String) -> std::io::Result<Served> {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         self.serve_on(listener, None).await
     }
 
-    /// [`Server::serve`] on a listener the caller already bound — `main`
-    /// binds first when `--server-expose` needs the bound port before serving.
+    /// [`Server::serve`] on a listener the caller already bound.
     ///
     /// With `metrics_listener` (`--server-metrics`, GitHub #89), [`Server::metrics_app`]
-    /// is served there too, and one process signal stops both.
+    /// is served there too, and one process signal stops both. The signal
+    /// is listened for from this call: `main`, which has a load to stop
+    /// before it serves, listens from its start instead
+    /// ([`shutdown::StopSignal`], GitHub #329) and calls
+    /// [`Server::serve_on_until`] with it.
     pub async fn serve_on(
         self,
         listener: tokio::net::TcpListener,
         metrics_listener: Option<tokio::net::TcpListener>,
-    ) -> std::io::Result<()> {
-        self.serve_on_until(listener, metrics_listener, shutdown_signal()).await
+    ) -> std::io::Result<Served> {
+        let stop = shutdown::StopSignal::install_serving()?;
+        self.serve_on_until(listener, metrics_listener, stop.serving()).await
     }
 
     /// [`Server::serve_on`], stopping gracefully — both listeners, when there
-    /// are two — once `shutdown` resolves instead of on a process signal
-    /// (tests). A metrics listener without metrics on
-    /// ([`Server::with_metrics`]) is refused with `InvalidInput` before
-    /// anything is served.
+    /// are two — once `shutdown` resolves: `main`'s
+    /// [`shutdown::StopSignal::serving`], or a test's own. A metrics
+    /// listener without metrics on ([`Server::with_metrics`]) is refused
+    /// with `InvalidInput` before anything is served.
     ///
-    /// After the HTTP drain, a switch or an unload still holding the switch's
-    /// slot runs to its end, then the loaded model is shut down and its
-    /// driver thread is joined ([`ActiveModel::shut_down`]) before this
-    /// returns. Dropping the `JoinHandle` without joining would detach
-    /// `ignis-model`; on Linux that thread can hang in CUDA teardown and
-    /// leave the process a VRAM-holding zombie under init — so serve exit
+    /// After the HTTP drain, an unload still holding the switch's slot runs
+    /// to its end, then the loaded model is shut down and its driver thread
+    /// is joined ([`ActiveModel::shut_down`]) before this returns
+    /// ([`Served::Drained`]). Dropping the `JoinHandle` without joining would
+    /// detach `ignis-model`; on Linux that thread can hang in CUDA teardown
+    /// and leave the process a VRAM-holding zombie under init — so serve exit
     /// must join, the same way a model switch does.
+    ///
+    /// A switch, a reload or a load is not waited for (GitHub #329): once
+    /// `shutdown` resolves, the requests waiting for one are answered `503
+    /// server_stopping` ([`model_switch::Switcher::stop_waiting`]), and one
+    /// still running after the drain is returned
+    /// ([`Served::LoadAbandoned`]) with nothing torn down, for the caller to
+    /// end the process under it.
     pub async fn serve_on_until(
         self,
         listener: tokio::net::TcpListener,
         metrics_listener: Option<tokio::net::TcpListener>,
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Served> {
         use std::future::IntoFuture;
 
+        let switcher = self.switcher.clone();
+        let shutdown = async move {
+            shutdown.await;
+            if let Some(switcher) = switcher {
+                switcher.stop_waiting();
+            }
+        };
         let metrics = match (metrics_listener, self.metrics_app()) {
             (None, _) => None,
             (Some(metrics_listener), Some(metrics_app)) => Some((metrics_listener, metrics_app)),
@@ -764,77 +784,39 @@ impl Server {
             let _ = warm_up.await;
         }
         drop(idle_clock);
-        // A switch whose `202` was answered, or an unload under way, outlives
-        // the drain: it runs to its end first, and the model it leaves loaded
-        // is the one torn down below — never one it would leave detached.
-        model_switch::slot_freed(&self).await;
+        // An unload under way outlives the drain and runs to its end first. A
+        // switch, a reload or a load still running is left as it is: the
+        // model it tears down or publishes is the process end's to free, and
+        // `active` may be a model it is tearing down.
+        if let Some((load, phase)) = model_switch::load_left_running(&self).await {
+            return serve_result.map(|()| Served::LoadAbandoned { load, phase });
+        }
         // Join before returning to `main`: `ignis.process.stopped` must stay
         // the last log line (spec §28), and that is emitted after this returns.
         model_switch::shut_down(&self.active()).await;
-        serve_result
+        serve_result.map(|()| Served::Drained)
     }
 }
 
-/// Emits `ignis.process.stopping` (spec §28) — split out from
-/// [`shutdown_signal`] so the event's own shape is unit-testable without
-/// having to actually deliver Ctrl+C/SIGTERM to a live process (not
-/// portably doable from a Rust test, and Windows has no SIGTERM at all —
-/// see `shutdown_tests` below).
-fn emit_stopping() {
-    tracing::info!(name: "ignis.process.stopping", "graceful shutdown signal received");
-}
-
-/// Waits for a graceful-shutdown signal (Ctrl+C, or SIGTERM on unix) and
-/// emits `ignis.process.stopping` (spec §28) right as it resolves — passed
-/// to `axum::serve(..).with_graceful_shutdown(..)` so in-flight requests get
-/// a chance to finish before the listener actually stops. This is the one
-/// INFO event on this path; it fires at most once per process lifetime, not
-/// a hot-path concern.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("installing the Ctrl+C handler");
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("installing the SIGTERM handler")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
-    }
-    emit_stopping();
-}
-
-#[cfg(test)]
-mod shutdown_tests {
-    use std::sync::Arc;
-
-    use ignis_logging::{JsonLayer, MemorySink};
-    use tracing_subscriber::layer::SubscriberExt;
-
-    use super::emit_stopping;
-
-    /// The integration-level path (`shutdown_signal` actually waiting on a
-    /// real Ctrl+C/SIGTERM) is exercised by hand, not by this suite — see
-    /// `emit_stopping`'s doc comment. This covers the part that is
-    /// meaningfully unit-testable: the event `shutdown_signal` emits once a
-    /// signal resolves has the exact name/severity spec §28 asks for.
-    #[test]
-    fn emit_stopping_produces_the_spec_shaped_event() {
-        let sink = Arc::new(MemorySink::new());
-        let subscriber = tracing_subscriber::registry().with(JsonLayer::new(sink.clone()));
-        tracing::subscriber::with_default(subscriber, emit_stopping);
-
-        let lines = sink.lines();
-        assert_eq!(lines.len(), 1);
-        let record: serde_json::Value = serde_json::from_str(&lines[0]).expect("valid json");
-        assert_eq!(record["event_name"], "ignis.process.stopping");
-        assert_eq!(record["severity_text"], "INFO");
-    }
+/// How a serve ended ([`Server::serve_on_until`]). A caller must look:
+/// returning from `main` on [`Served::LoadAbandoned`] would wait for the
+/// load (the runtime's drop joins its blocking thread) and leave the model
+/// it publishes un-joined.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Served {
+    /// HTTP drained, and the loaded model shut down with its thread joined:
+    /// nothing of it is left.
+    Drained,
+    /// HTTP drained, with a switch, a reload or a load still running: it has
+    /// no cancel, and it is not waited for (GitHub #329). Nothing was torn
+    /// down: the caller ends the process now ([`shutdown::exit_now`]), which
+    /// frees the GPU, and logs nothing that waits for the load.
+    LoadAbandoned {
+        /// The ids it moves between.
+        load: model_switch::SwitchStarted,
+        /// What `GET /v1/models` reports it as: `loading` for a load out of
+        /// `unloaded`, else `switching`.
+        phase: &'static str,
+    },
 }

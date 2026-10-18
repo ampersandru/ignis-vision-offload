@@ -50,6 +50,11 @@ miniz_oxide = "0.9"
 # version `ignis-artifact` decodes with.
 png = "0.18"
 
+# `_exit` (GitHub #329, `shutdown::exit_now`): a stop before serving ends the
+# process without running its exit handlers. Already in the tree.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tower = { workspace = true }
 http-body-util = { workspace = true }

@@ -38,7 +38,7 @@ use ignis_server::{
     template::SimpleTemplateProvider,
     telemetry::SystemClock,
     thinking::{self, ThinkingDefaults},
-    ActiveModel, Server,
+    ActiveModel, Served, Server,
 };
 
 /// Flush pending logging before an immediate exit (GitHub #80): every
@@ -106,6 +106,27 @@ async fn main() {
         }
         Err(err) => {
             tracing::error!(name: "ignis.config.invalid", error = %err, "refusing to start");
+            exit_after_flush(&logging_handle, 1);
+        }
+    };
+    // GitHub #329: the stop signal is listened for from here, before
+    // anything slow. A signal during the download or the load ends the
+    // process at once (`shutdown::StopSignal`), one while serving stops the
+    // serve, and a second one during that shutdown ends the process at once
+    // too. The kernel drops a signal a PID 1 has no handler for, so with
+    // the handler installed only once serving began, a container's SIGTERM
+    // during the load did nothing.
+    let logging_handle = Arc::new(logging_handle);
+    let stop = match ignis_server::shutdown::StopSignal::install({
+        let logging_handle = Arc::clone(&logging_handle);
+        move || {
+            logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
+            ignis_server::shutdown::exit_now(0)
+        }
+    }) {
+        Ok(stop) => stop,
+        Err(err) => {
+            tracing::error!(name: "ignis.process.signal_failed", error = %err, "refusing to start");
             exit_after_flush(&logging_handle, 1);
         }
     };
@@ -202,6 +223,25 @@ async fn main() {
         },
     };
 
+    // GitHub #329: the API listener is bound before anything slow and
+    // answers through the start — `/health` 200, everything else 503
+    // `server_not_ready` (`starting::Starting`) — so a liveness probe meets a
+    // live process during the download and the load, never a refused
+    // connection. The server takes it over once it serves.
+    let starting = match tokio::net::TcpListener::bind(&bind).await.and_then(ignis_server::starting::Starting::answer) {
+        Ok(starting) => starting,
+        Err(err) => {
+            tracing::error!(name: "ignis.server.failed", bind = %bind, error = %err, "server exited");
+            exit_after_flush(&logging_handle, 1);
+        }
+    };
+    tracing::info!(
+        name: "ignis.server.listening",
+        bind = %bind,
+        address = %starting.local_addr(),
+        "the API listener answers while the server starts: /health 200, /ready and /v1 503 until the model serves"
+    );
+
     // The catalog (ADR 0047): the built-in entries, and the operator's file
     // when `--download-catalog` names one — read now, so a catalog that is
     // missing or malformed refuses the start whatever the start then needs.
@@ -257,6 +297,7 @@ async fn main() {
                     exit_after_flush(&logging_handle, 1);
                 }
             };
+            stop.starting("downloading");
             match downloader.fetch(&entry, &dir).await {
                 Ok(path) => Some(path),
                 Err(err) => {
@@ -288,10 +329,25 @@ async fn main() {
         // artifact would silently degrade to the placeholder.
         // The running configuration is the start options fitted to the
         // artifact's family (spec config-v2/01): what `GET /v1/config` shows.
-        let loaded = ignis_server::load::prepare_model(&start_options, artifact_path).and_then(|prepared| {
-            let running = prepared.config().clone();
-            ignis_server::load::load_model(prepared).map(|loaded| (loaded, running))
-        });
+        // On its own thread (GitHub #329), as a switch's load is: `stop`'s
+        // watcher ends the process from a runtime worker whatever the load is
+        // doing, and the start keeps answering on the listener meanwhile.
+        stop.starting("loading");
+        tracing::info!(
+            name: "ignis.model.loading",
+            artifact = %artifact_path.display(),
+            "the start-up load begins: /ready answers 503 until the model serves"
+        );
+        let (options, path) = (start_options.clone(), artifact_path.clone());
+        let loaded = tokio::task::spawn_blocking(move || {
+            ignis_server::load::prepare_model(&options, &path).and_then(|prepared| {
+                let running = prepared.config().clone();
+                ignis_server::load::load_model(prepared).map(|loaded| (loaded, running))
+            })
+        })
+        .await
+        .unwrap_or_else(|panicked| std::panic::resume_unwind(panicked.into_panic()));
+        stop.starting("starting");
         let (loaded, running) = match loaded {
             Ok(loaded) => loaded,
             Err(err) => {
@@ -429,17 +485,6 @@ async fn main() {
         None => server,
     };
 
-    // The driver loop: the single task that advances the engine and routes
-    // its per-request events into the request handlers' streams (the
-    // server's `serve` spawns it; see `Server::serve`).
-    let listener = match tokio::net::TcpListener::bind(&bind).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            tracing::error!(name: "ignis.server.failed", bind = %bind, error = %err, "server exited");
-            exit_after_flush(&logging_handle, 1);
-        }
-    };
-
     // The metrics listener (ADR 0017): its own address, bound before serving
     // like the API's, and never the one `--server-expose` tunnels. Metrics are
     // on by default, so the default address may be a second server's: that
@@ -480,11 +525,7 @@ async fn main() {
     let exposure = match expose {
         None => None,
         Some(mode) => {
-            let opened = match listener.local_addr() {
-                Ok(local) => ignis_server::expose::start(mode, local).await,
-                Err(err) => Err(err.to_string()),
-            };
-            match opened {
+            match ignis_server::expose::start(mode, starting.local_addr()).await {
                 Ok(exposure) => {
                     // A plain stdout line like the generated key's, so the
                     // Makefile helpers can repeat it (mk/windows/common.ps1).
@@ -514,6 +555,12 @@ async fn main() {
         }
     };
 
+    // The start's answers end here: the listener, still bound, is the
+    // server's from its first accept. From here a signal stops the serve,
+    // not the process: taken before `started` is logged, so a signal can no
+    // longer end a loaded process as if it were still starting.
+    let listener = starting.finish().await;
+    let stopped = stop.serving();
     tracing::info!(
         name: "ignis.process.started",
         // The id the load is served under (`config::Config::for_family`): a
@@ -528,28 +575,53 @@ async fn main() {
         exposed = exposure.as_ref().map_or("no", |_| "yes"),
         "OpenAI API at /v1"
     );
-    // `serve_on` drains HTTP, then joins the model thread before returning
-    // (`Server::serve_on_until`): `ignis-model` is never left detached.
-    let serve_result = server.serve_on(listener, metrics_listener).await;
+    // The serve drains HTTP, then joins the model thread before returning
+    // (`Server::serve_on_until`): `ignis-model` is never left detached. A
+    // switch or a load still running is not waited for: it is returned, and
+    // the process ends under it below.
+    let serve_result = server.serve_on_until(listener, metrics_listener, stopped).await;
 
     // The tunnel outlives the drain above, so in-flight remote requests
-    // finish through it; only then is it unregistered.
-    if let Some(exposure) = exposure {
-        if let Err(err) = exposure.shutdown().await {
-            tracing::warn!(name: "ignis.expose.close_failed", error = %err, "tunnel did not close cleanly");
+    // finish through it; only then is it unregistered. Not with a load
+    // abandoned: unregistering takes up to ~32 s (the vendored crate's 30 s
+    // grace, which it does not let a caller shorten), past a pod's grace
+    // period, and the process ends at once below. The tunnel is in-process
+    // and dies with it; the edge drops the connection, and a quick tunnel's
+    // URL is never reused. Kept, not dropped, until then: a drop starts the
+    // unregistering on detached tasks, whose lines would follow `stopped`.
+    let _tunnel = match exposure {
+        Some(exposure) if !matches!(serve_result, Ok(Served::LoadAbandoned { .. })) => {
+            if let Err(err) = exposure.shutdown().await {
+                tracing::warn!(name: "ignis.expose.close_failed", error = %err, "tunnel did not close cleanly");
+            }
+            None
         }
-    }
+        kept => kept,
+    };
 
     // `ignis.process.stopped` MUST be the last event emitted (spec §28) —
     // whichever branch below runs, nothing after it logs anything. The
     // trailing `flush` (bounded, GitHub #80) gives the queued writer thread
     // a chance to actually hand these last lines to the sink before the
     // process exits; it never blocks past its own timeout even if the sink
-    // is stuck.
+    // is stuck. A second signal that got there first logged the last line
+    // itself and is ending the process: nothing is left to do but let it.
+    if !stop.ending() {
+        std::future::pending::<()>().await;
+    }
     match serve_result {
-        Ok(()) => {
+        Ok(Served::Drained) => {
             tracing::info!(name: "ignis.process.stopped", "graceful shutdown complete");
             logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
+        }
+        // GitHub #329: the load has no cancel, and returning from `main`
+        // would wait for it (the runtime's drop joins its blocking thread):
+        // the process ends now, as it does for a stop during the start-up
+        // load, which frees the GPU.
+        Ok(Served::LoadAbandoned { load, phase }) => {
+            ignis_server::shutdown::emit_stopped_abandoning(&load, phase);
+            logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
+            ignis_server::shutdown::exit_now(0)
         }
         Err(err) => {
             tracing::error!(name: "ignis.server.failed", error = %err, "server exited");

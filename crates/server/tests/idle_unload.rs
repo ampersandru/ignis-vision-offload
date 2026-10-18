@@ -944,6 +944,31 @@ async fn the_unload_keeps_its_slot_until_its_teardown_ends_even_when_the_clock_s
     assert_eq!(loader.loads(), ["mock-a"]);
 }
 
+/// GitHub #329: what the serve exit leaves to the process end is a load,
+/// never an unload. An unload still tearing down when serving ends is waited
+/// for — a bounded join, the one the exit itself runs — and the serve ends
+/// drained, as with nothing loaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unload_tearing_down_when_serving_ends_is_waited_for() {
+    let loader = MockLoader::new();
+    let (compute, entered, release) = HeldTeardown::new();
+    let server = idle_server(&loader, loader.model_over("mock-a", compute), IDLE, &[]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    // The serve's own clock unloads the model nobody uses.
+    let mut serving = tokio::spawn(server.clone().serve_on_until(listener, None, async {
+        let _ = stopped.await;
+    }));
+    tokio::task::spawn_blocking(move || entered.recv_timeout(PATIENT).expect("the teardown began")).await.unwrap();
+
+    stop.send(()).unwrap();
+    assert!(tokio::time::timeout(TICK * 4, &mut serving).await.is_err(), "the serve returned mid-teardown");
+    release.send(()).expect("the teardown is waiting");
+    let served = tokio::time::timeout(PATIENT, serving).await.expect("the serve returned").unwrap().expect("serve");
+    assert_eq!(served, ignis_server::Served::Drained);
+    assert_eq!(*server.status(), ModelStatus::Unloaded);
+}
+
 /// AC 13: a live `PATCH` of `model.idle_unload` takes effect with no reload:
 /// 0 → 1 unloads about a second later, the clock starting at the change.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

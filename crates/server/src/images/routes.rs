@@ -38,7 +38,7 @@ use super::job::{self, Background, ImageJob, JobContext, JobEnd, JobEvent, Phase
 use super::{ImageModel, Running, Waiting};
 use crate::api::{
     bad_request_param, check_kind, check_served_kind, error_response, error_response_naming, implicit_switch_refused,
-    load_failed, refused_field, split_model_lane, unknown_model, unswitchable_named, ApiError, ENGINE_ERROR_MESSAGE,
+    load_refused, refused_field, split_model_lane, unknown_model, unswitchable_named, ApiError, ENGINE_ERROR_MESSAGE,
 };
 use crate::config::schema::ImageGroup;
 use crate::model_switch::{ImplicitRefusal, Steps, SwitchOutcome, SwitchRefusal, SwitchStep};
@@ -411,7 +411,7 @@ Prompt enhancement (`prompt_enhancement: true`, or `image.prompt_enhancement` wh
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
         (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 500, description = "The image model failed a call (`engine_error`).", body = ApiError),
-        (status = 503, description = "The queue is full (`engine_full`, with `Retry-After`); a model switch is under way (`model_switching`, with `Retry-After`) or did not land (`model_switch_failed`, also when a prompt enhancement visit could not switch back to the image model); the image model was stopped before the job finished (`model_stopped`, with `Retry-After`); or the model was unloaded while idle and loading it again failed (`model_load_failed`).", body = ApiError),
+        (status = 503, description = "The queue is full (`engine_full`, with `Retry-After`); a model switch is under way (`model_switching`, with `Retry-After`) or did not land (`model_switch_failed`, also when a prompt enhancement visit could not switch back to the image model); the image model was stopped before the job finished (`model_stopped`, with `Retry-After`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
     ),
 )]
 pub(crate) async fn create_image(State(server): State<Arc<Server>>, Json(fields): Json<GenerationRequest>) -> Response {
@@ -444,7 +444,7 @@ Each condition image is resized to 1024x1024 pixels of area at its own aspect ra
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
         (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`).", body = ApiError),
         (status = 500, description = "The image model failed a call (`engine_error`).", body = ApiError),
-        (status = 503, description = "As for a generation: `engine_full`, `model_switching`, `model_switch_failed`, `model_stopped`, `model_load_failed`.", body = ApiError),
+        (status = 503, description = "As for a generation: `engine_full`, `model_switching`, `model_switch_failed`, `model_stopped`, `model_load_failed`, `server_stopping`.", body = ApiError),
     ),
 )]
 pub(crate) async fn create_image_edit(State(server): State<Arc<Server>>, multipart: Multipart) -> Response {
@@ -700,7 +700,7 @@ async fn admit(
         _ => named.as_deref(),
     };
     let loading = std::time::Instant::now();
-    crate::model_switch::ensure_loaded(&server, load).await.map_err(|reason| load_failed(&server, &reason))?;
+    crate::model_switch::ensure_loaded(&server, load).await.map_err(|refusal| load_refused(&server, refusal))?;
     let mut switch = loading.elapsed();
     // Drawn now, so that the rewrite is seeded with it too.
     let seed = request.seed.or(server.seedless_seed).unwrap_or_else(crate::api::fresh_seed);
@@ -903,18 +903,30 @@ async fn enhance(
     let mut visit = match crate::model_switch::visit(server, via, then, Some(switch_steps(events.clone(), 2))) {
         Ok(visit) => visit,
         Err(SwitchRefusal::InProgress(running)) => return Err(implicit_switch_refused(ImplicitRefusal::Switching(running))),
+        // GitHub #329: a request whose turn came after the stop — behind a
+        // job the drain let finish — begins no visit, and is not served
+        // without the rewrite it asked for either.
+        Err(SwitchRefusal::Stopping) => return Err(implicit_switch_refused(ImplicitRefusal::Stopping { to })),
         Err(refused) => return Ok(Enhanced::without(prompt, &enhancer, &format!("a visit to it could not begin ({refused:?})"))),
     };
     // The gate is closed: what waits behind this request runs in the drain.
     drop(turn);
-    let rewritten = match visit.arrived().await {
+    // Once the serve stops, neither of the visit's loads is waited for
+    // (GitHub #329): the visit runs on, detached, until the process ends.
+    let Some(arrived) = switcher.unless_stopping(visit.arrived()).await else {
+        return Err(implicit_switch_refused(ImplicitRefusal::Stopping { to }));
+    };
+    let rewritten = match arrived {
         Some(visited) => {
             let _ = events.send(progress(Phase::Enhancing, 1, 1));
             Some(super::enhance::rewrite(&visited, &prompt, images, seed).await)
         }
         None => None,
     };
-    match (visit.on().await, rewritten) {
+    let Some(on) = switcher.unless_stopping(visit.on()).await else {
+        return Err(implicit_switch_refused(ImplicitRefusal::Stopping { to }));
+    };
+    match (on, rewritten) {
         (SwitchOutcome::Switched, Some(rewritten)) => Ok(Enhanced::of(prompt, &enhancer, rewritten)),
         // The way there did not land, and the model it left serves again.
         (SwitchOutcome::Refused { reason } | SwitchOutcome::Restored { reason }, None) => {
