@@ -1828,15 +1828,18 @@ struct HostPlanInfo {
     available_bytes: u64,
     /// What the plan must leave of it (`model.host_margin_bytes`).
     margin_bytes: u64,
-    /// The lines' sum.
+    /// What the load holds at its peak: every line but `load_staging`, or
+    /// `expert_pool` and `load_staging` while the experts load, whichever is
+    /// more.
     planned_bytes: u64,
-    /// The lines and the margin: what had to be available.
+    /// The peak and the margin: what had to be available.
     needed_bytes: u64,
     /// `needed_bytes` less `available_bytes`.
     short_bytes: u64,
     /// The first line, in plan order, the available memory could not hold:
-    /// `expert_pool`, `ngram_hot_rows`, `staging`, `retained_host_slots` or
-    /// `kv_ram_arena`.
+    /// `expert_pool`, `load_staging` (a device-only load's expert layer
+    /// buffers, freed once the experts are in VRAM), `ngram_hot_rows`,
+    /// `staging` (KV-disk's), `retained_host_slots` or `kv_ram_arena`.
     crossing_line: &'static str,
     /// Every line, in plan order.
     lines: Vec<HostPlanLine>,

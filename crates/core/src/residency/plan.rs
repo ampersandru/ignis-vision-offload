@@ -1,7 +1,8 @@
 //! Expert residency's reservations as **plan lines** computed at load (ADR
-//! 0030): the host plan (the pinned expert pool, the n-gram hot rows, staging
-//! buffers, and prompt reuse's host retained slots and KV-RAM arena) with its
-//! refusal margin, and the VRAM lines — the expert cache,
+//! 0030): the host plan (the pinned expert pool or a device-only load's layer
+//! buffers, the n-gram hot rows, KV-disk's staging buffers, and prompt reuse's
+//! host retained slots and KV-RAM arena) with its refusal margin, charged at
+//! its peak, and the VRAM lines — the expert cache,
 //! split into eight K-class pools, the prefill staging ring and residency's
 //! tables.
 //!
@@ -36,11 +37,17 @@ pub struct HostPlanRequest {
     /// measured before the first pinned allocation.
     pub available_physical_bytes: u64,
     /// Every expert projection, pinned for the life of the load: the
-    /// [`ExpertCatalog::total_bytes`] of the artifact.
+    /// [`ExpertCatalog::total_bytes`] of the artifact. 0 on a device-only
+    /// load (ADR 0054), whose experts live only in VRAM.
     pub expert_pool_bytes: u64,
+    /// A device-only load's expert layer buffers (ADR 0054,
+    /// [`stream_staging_bytes`](super::load::stream_staging_bytes)): pageable,
+    /// held only while the load reads the experts, and freed before it reads
+    /// the n-gram hot rows. 0 on a load with an expert pool.
+    pub load_staging_bytes: u64,
     /// The n-gram table's hot rows held in RAM (spec flash-next/04).
     pub ngram_hot_rows_bytes: u64,
-    /// Host staging buffers: the artifact read buffers and the like.
+    /// KV-disk's pinned staging windows (spec vram-budget/03).
     pub staging_bytes: u64,
     /// Prompt reuse's host retained slots (`--reuse-retained-host`, spec
     /// flash-next/05): one pinned block of a state image per slot.
@@ -58,8 +65,11 @@ pub struct HostPlanRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostPlan {
     pub request: HostPlanRequest,
+    /// What the load holds at its peak: the residency phase's lines (the
+    /// expert pool and the layer buffers) or the lines held while serving
+    /// (every line but the layer buffers), whichever is more.
     pub total_bytes: u64,
-    /// What stays available after the plan: at least the request's margin.
+    /// What stays available at that peak: at least the request's margin.
     pub left_bytes: u64,
 }
 
@@ -71,20 +81,75 @@ impl HostPlan {
 }
 
 /// The host plan's lines.
-pub const HOST_PLAN_LINES: usize = 5;
+pub const HOST_PLAN_LINES: usize = 6;
+
+/// When a line holds its bytes, in the order a Flash-Next load allocates
+/// them (`FlashNextLeaf::open`, then the server's load): the residency phase
+/// (the expert pool, or a device-only load's layer buffers); then the n-gram
+/// hot rows and the KV-RAM arena; the model's sequence pool with the retained
+/// host slots; KV-disk's staging last. Nothing the plan holds is freed before
+/// the model drops but the layer buffers, which are gone when the residency
+/// phase ends, so the plan's peak is that phase or serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// From the residency phase for the life of the load.
+    FromResidency,
+    /// Only during the residency phase.
+    DuringResidency,
+    /// From after the residency phase for the life of the load.
+    AfterResidency,
+}
 
 /// The lines in plan order: what the model needs to run first, prompt
 /// reuse's last, so a plan short of room names a reuse line -- the one an
 /// operator can shrink without losing the model -- whenever giving up reuse
-/// would make it fit.
-fn host_lines(request: &HostPlanRequest) -> [(&'static str, u64); HOST_PLAN_LINES] {
+/// would make it fit. The layer buffers follow the experts: a residency
+/// phase that does not fit is named before any line serving holds.
+fn held_lines(request: &HostPlanRequest) -> [(&'static str, u64, Held); HOST_PLAN_LINES] {
+    use Held::*;
     [
-        ("expert_pool", request.expert_pool_bytes),
-        ("ngram_hot_rows", request.ngram_hot_rows_bytes),
-        ("staging", request.staging_bytes),
-        ("retained_host_slots", request.retained_host_slots_bytes),
-        ("kv_ram_arena", request.kv_ram_arena_bytes),
+        ("expert_pool", request.expert_pool_bytes, FromResidency),
+        ("load_staging", request.load_staging_bytes, DuringResidency),
+        ("ngram_hot_rows", request.ngram_hot_rows_bytes, AfterResidency),
+        ("staging", request.staging_bytes, AfterResidency),
+        ("retained_host_slots", request.retained_host_slots_bytes, AfterResidency),
+        ("kv_ram_arena", request.kv_ram_arena_bytes, AfterResidency),
     ]
+}
+
+fn host_lines(request: &HostPlanRequest) -> [(&'static str, u64); HOST_PLAN_LINES] {
+    held_lines(request).map(|(name, bytes, _)| (name, bytes))
+}
+
+/// What a run of lines holds in the residency phase and while serving.
+#[derive(Debug, Clone, Copy, Default)]
+struct Phases {
+    residency: u64,
+    serving: u64,
+}
+
+impl Phases {
+    fn with(self, bytes: u64, held: Held) -> Self {
+        let add = |sum: u64, holds: bool| if holds { sum.saturating_add(bytes) } else { sum };
+        Self {
+            residency: add(self.residency, held != Held::AfterResidency),
+            serving: add(self.serving, held != Held::DuringResidency),
+        }
+    }
+
+    fn peak(self) -> u64 {
+        self.residency.max(self.serving)
+    }
+}
+
+/// The running [`Phases`] of `request`'s lines in plan order: the last is
+/// the whole plan's.
+fn running_phases(request: &HostPlanRequest) -> [Phases; HOST_PLAN_LINES] {
+    let mut phases = Phases::default();
+    held_lines(request).map(|(_, bytes, held)| {
+        phases = phases.with(bytes, held);
+        phases
+    })
 }
 
 /// A load the host plan refuses.
@@ -94,17 +159,18 @@ pub enum HostPlanError {
     /// physical memory.
     BelowMargin {
         available_bytes: u64,
+        /// What the load holds at its peak ([`HostPlan::total_bytes`]).
         planned_bytes: u64,
         margin_bytes: u64,
-        /// The first line, in plan order, whose running total passes what
-        /// the margin leaves usable.
+        /// The first line, in plan order, at which the running peak passes
+        /// what the margin leaves usable.
         crossing_line: &'static str,
         lines: [(&'static str, u64); HOST_PLAN_LINES],
     },
 }
 
 impl HostPlanError {
-    /// What the plan needed available: its lines and the margin.
+    /// What the plan needed available: its peak and the margin.
     pub fn needed_bytes(&self) -> u64 {
         let Self::BelowMargin { planned_bytes, margin_bytes, .. } = self;
         planned_bytes.saturating_add(*margin_bytes)
@@ -132,7 +198,7 @@ impl std::fmt::Display for HostPlanError {
         } = self;
         write!(
             f,
-            "not enough RAM: the load pins {} and keeps {} free for the system, so it needs {} \
+            "not enough RAM: the load holds {} and keeps {} free for the system, so it needs {} \
              available, but only {} is ({} short). ",
             human_bytes(*planned_bytes),
             human_bytes(*margin_bytes),
@@ -142,6 +208,9 @@ impl std::fmt::Display for HostPlanError {
         )?;
         match *crossing_line {
             "expert_pool" => write!(f, "Even the experts alone ({}) do not fit: close other applications", human_bytes(lines[0].1)),
+            "load_staging" => f.write_str(
+                "The experts' layer buffers do not fit while the load reads them into VRAM: close other applications",
+            ),
             "ngram_hot_rows" => f.write_str(
                 "The experts fit, the n-gram hot rows do not: hold fewer (--ngram-hot-bytes) or close other applications",
             ),
@@ -160,8 +229,14 @@ impl std::fmt::Display for HostPlanError {
             _ => f.write_str("Close other applications"),
         }?;
         f.write_str(". Plan: ")?;
-        for (i, (name, bytes)) in lines.iter().enumerate() {
+        // The layer buffers only where a device-only load has them, and said
+        // apart: the peak does not add them to the lines serving holds.
+        let listed = lines.iter().filter(|&&(name, bytes)| name != "load_staging" || bytes > 0);
+        for (i, (name, bytes)) in listed.enumerate() {
             write!(f, "{}{} {}", if i == 0 { "" } else { ", " }, line_label(name), human_bytes(*bytes))?;
+            if *name == "load_staging" {
+                f.write_str(" (while the experts load)")?;
+            }
         }
         write!(f, "; margin {} (--qwen38flashnext-model-host-margin-bytes).", human_bytes(*margin_bytes))
     }
@@ -173,6 +248,7 @@ impl std::error::Error for HostPlanError {}
 fn line_label(name: &str) -> &str {
     match name {
         "expert_pool" => "experts",
+        "load_staging" => "expert layer buffers",
         "ngram_hot_rows" => "n-gram hot rows",
         "retained_host_slots" => "retained host slots",
         "kv_ram_arena" => "KV-RAM arena",
@@ -203,19 +279,17 @@ pub fn human_bytes(bytes: u64) -> String {
 /// Lay the host plan out, or refuse the load.
 pub fn plan_host(request: &HostPlanRequest) -> Result<HostPlan, HostPlanError> {
     let lines = host_lines(request);
-    let total = lines.iter().fold(0u64, |sum, (_, b)| sum.saturating_add(*b));
+    let running = running_phases(request);
+    let total = running[HOST_PLAN_LINES - 1].peak();
     let usable = request
         .available_physical_bytes
         .saturating_sub(request.margin_bytes);
     if total > usable {
-        let mut running = 0u64;
         let crossing_line = lines
             .iter()
-            .find(|(_, bytes)| {
-                running = running.saturating_add(*bytes);
-                running > usable
-            })
-            .map_or(lines[0].0, |(name, _)| *name);
+            .zip(running)
+            .find(|(_, phases)| phases.peak() > usable)
+            .map_or(lines[0].0, |((name, _), _)| *name);
         return Err(HostPlanError::BelowMargin {
             available_bytes: request.available_physical_bytes,
             planned_bytes: total,
@@ -233,16 +307,20 @@ pub fn plan_host(request: &HostPlanRequest) -> Result<HostPlan, HostPlanError> {
 
 /// What the host plan leaves its n-gram hot-row line (`--ngram-hot-bytes
 /// auto`, GitHub #306): the available memory past the margin and every
-/// other line. `request.ngram_hot_rows_bytes` is not read, so a line no
-/// larger than this is one [`plan_host`] accepts.
+/// other line held while serving. The residency phase's layer buffers are
+/// freed before the rows are read, so they take none of it (GitHub #329);
+/// a residency phase that does not fit on its own leaves 0.
+/// `request.ngram_hot_rows_bytes` is not read, so, when the residency phase
+/// fits, a line no larger than this is one [`plan_host`] accepts.
 pub fn ngram_hot_rows_room(request: &HostPlanRequest) -> u64 {
-    let others = host_lines(&HostPlanRequest { ngram_hot_rows_bytes: 0, ..*request })
-        .iter()
-        .fold(0u64, |sum, (_, bytes)| sum.saturating_add(*bytes));
-    request
+    let others = running_phases(&HostPlanRequest { ngram_hot_rows_bytes: 0, ..*request })[HOST_PLAN_LINES - 1];
+    let usable = request
         .available_physical_bytes
-        .saturating_sub(request.margin_bytes)
-        .saturating_sub(others)
+        .saturating_sub(request.margin_bytes);
+    if others.residency > usable {
+        return 0;
+    }
+    usable.saturating_sub(others.serving)
 }
 
 /// The sidecar's `expert_traffic`: calibration selections per (layer,
@@ -501,6 +579,24 @@ pub fn plan_expert_cache(
     let catalog = request.catalog;
     let slot_bytes: [u64; KClass::COUNT] = std::array::from_fn(|i| catalog.slot_bytes(KClass::ALL[i]));
     let projections = catalog.class_counts();
+    // A cache that holds the whole catalog (ADR 0045's resident load) gives
+    // every class all of its projections. The split below models an LRU of
+    // calibration traffic, which holds no never-selected projection and
+    // floors each class's share: at exactly the catalog's bytes it left 244
+    // projections slotless at one lane and 1,944 at eight (1.2 GB unused) on
+    // the trellis-a25 artifact, so those were copied from RAM on a miss.
+    if holds_every_expert(catalog, cache) {
+        let pools = std::array::from_fn(|i| ClassPool { slots: projections[i] as u32, bytes: projections[i] * slot_bytes[i] });
+        return Ok(ExpertCachePlan {
+            cache_bytes: cache,
+            pools,
+            staging_ring_bytes: request.staging_ring_bytes,
+            table_bytes: request.table_bytes,
+            // Every projection resident: every selection hits.
+            expected_hit_rate: 1.0,
+            below_floor,
+        });
+    }
     let mut slots: [u64; KClass::COUNT] =
         std::array::from_fn(|i| u64::from(request.min_slots).min(projections[i]));
     let needed: u64 = (0..KClass::COUNT).map(|i| slots[i] * slot_bytes[i]).sum();
@@ -686,6 +782,21 @@ pub fn prefill_staging_ring_bytes(catalog: &ExpertCatalog) -> u64 {
         .max()
         .unwrap_or(0);
     2 * heaviest
+}
+
+/// Whether an expert cache of `cache_bytes` holds every projection of
+/// `catalog`: its residency is then device-only (ADR 0054) -- every
+/// projection has its slot, there is no host pool, and no step misses.
+pub fn holds_every_expert(catalog: &ExpertCatalog, cache_bytes: u64) -> bool {
+    cache_bytes >= catalog.total_bytes()
+}
+
+/// The prefill staging ring a residency with an expert cache of
+/// `cache_bytes` reserves: none when the cache [`holds_every_expert`], since
+/// with no miss nothing stages (GitHub #329 item 2), else
+/// [`prefill_staging_ring_bytes`].
+pub fn staging_ring_bytes_for(catalog: &ExpertCatalog, cache_bytes: u64) -> u64 {
+    if holds_every_expert(catalog, cache_bytes) { 0 } else { prefill_staging_ring_bytes(catalog) }
 }
 
 /// Per projection, what the leaf's residency keeps (`kernel/src/residency.cu`):

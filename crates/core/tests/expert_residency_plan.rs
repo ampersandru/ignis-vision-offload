@@ -7,8 +7,8 @@ use ignis_core::residency::{
     ExpertCachePlanError, ExpertCacheRequest, ExpertCatalog, ExpertTraffic, DEFAULT_HOST_MARGIN_BYTES,
     HostPlanError, HostPlanRequest, KBits, MEASURED_ONE_ROW_PREFETCH_BUDGET_BYTES,
     MEASURED_THREE_ROW_PREFETCH_BUDGET_BYTES, Projection, ProjectionId, default_prefetch_budget, human_bytes,
-    min_slots_per_class, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
-    residency_table_bytes, warm_start_order,
+    holds_every_expert, min_slots_per_class, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
+    residency_table_bytes, staging_ring_bytes_for, warm_start_order,
 };
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -19,6 +19,7 @@ fn host(available: u64) -> HostPlanRequest {
     HostPlanRequest {
         available_physical_bytes: available,
         expert_pool_bytes: 38 * GIB,
+        load_staging_bytes: 0,
         ngram_hot_rows_bytes: 2 * GIB,
         staging_bytes: GIB,
         retained_host_slots_bytes: 0,
@@ -33,7 +34,7 @@ fn the_host_plan_adds_its_lines_and_says_what_it_leaves() {
     let names: Vec<_> = plan.entries().iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        ["expert_pool", "ngram_hot_rows", "staging", "retained_host_slots", "kv_ram_arena"]
+        ["expert_pool", "load_staging", "ngram_hot_rows", "staging", "retained_host_slots", "kv_ram_arena"]
     );
     assert_eq!(plan.total_bytes, 41 * GIB);
     assert_eq!(plan.left_bytes, 11 * GIB);
@@ -97,7 +98,7 @@ fn a_host_plan_below_the_margin_refuses_naming_the_line_that_crosses_it() {
     // would make room; the exact bytes are the error's fields.
     let message = err.to_string();
     for needle in [
-        "not enough RAM: the load pins 41 GiB and keeps 4 GiB free for the system",
+        "not enough RAM: the load holds 41 GiB and keeps 4 GiB free for the system",
         "needs 45 GiB available, but only 43 GiB is (2 GiB short)",
         "the n-gram hot rows do not: hold fewer (--ngram-hot-bytes)",
         "Plan: experts 38 GiB, n-gram hot rows 2 GiB, staging 1 GiB",
@@ -143,6 +144,70 @@ fn the_staging_line_crossing_names_staging_and_its_own_remedy() {
     // general `--kv-disk-bytes` cannot shadow it.
     assert!(message.contains("KV-disk's staging buffers do not: --qwen38flashnext-kv-disk-bytes 0 drops them"), "{message}");
     assert!(!message.contains("--ngram-hot-bytes"), "{message}");
+}
+
+/// A device-only load (ADR 0054): no expert pool, its experts read through
+/// 5 GiB of layer buffers; 1 GiB of n-gram hot rows, KV-disk's 64 MiB, a
+/// GiB of retained host slots and the 2 GiB arena held while serving.
+fn device_only(available: u64) -> HostPlanRequest {
+    HostPlanRequest {
+        available_physical_bytes: available,
+        expert_pool_bytes: 0,
+        load_staging_bytes: 5 * GIB,
+        ngram_hot_rows_bytes: GIB,
+        staging_bytes: 64 << 20,
+        retained_host_slots_bytes: GIB,
+        kv_ram_arena_bytes: 2 * GIB,
+        margin_bytes: DEFAULT_HOST_MARGIN_BYTES,
+    }
+}
+
+#[test]
+fn the_layer_buffers_are_charged_only_while_the_experts_load() {
+    // Freed before the n-gram rows are read (GitHub #329 item 3): the lines
+    // held while serving may take what the buffers held.
+    let serving = HostPlanRequest { ngram_hot_rows_bytes: 26 * GIB, ..device_only(0) };
+    let plan = plan_host(&HostPlanRequest { available_physical_bytes: 33 * GIB + (64 << 20), ..serving })
+        .expect("serving's 29 GiB and 64 MiB fit beside the margin");
+    assert_eq!(plan.total_bytes, 29 * GIB + (64 << 20), "the peak, not the lines' 34 GiB sum");
+    assert_eq!(plan.left_bytes, DEFAULT_HOST_MARGIN_BYTES);
+    let err = plan_host(&HostPlanRequest { available_physical_bytes: 33 * GIB + (64 << 20) - 1, ..serving })
+        .expect_err("a byte short");
+    let HostPlanError::BelowMargin { crossing_line, planned_bytes, .. } = err;
+    assert_eq!((crossing_line, planned_bytes), ("kv_ram_arena", 29 * GIB + (64 << 20)));
+}
+
+#[test]
+fn a_residency_phase_short_of_room_names_the_layer_buffers() {
+    // 8.5 GiB available, 4.5 usable: serving's 4 GiB and 64 MiB fit, the
+    // 5 GiB of layer buffers do not.
+    let err = plan_host(&device_only(8 * GIB + GIB / 2)).expect_err("below the margin");
+    let HostPlanError::BelowMargin { planned_bytes, crossing_line, lines, .. } = &err;
+    assert_eq!((*crossing_line, *planned_bytes), ("load_staging", 5 * GIB));
+    assert_eq!((err.needed_bytes(), err.short_bytes()), (9 * GIB, GIB / 2));
+    assert_eq!(lines[1], ("load_staging", 5 * GIB), "the exact bytes name it");
+    let message = err.to_string();
+    for needle in [
+        "the load holds 5 GiB and keeps 4 GiB free for the system, so it needs 9 GiB",
+        "The experts' layer buffers do not fit while the load reads them into VRAM: close other applications",
+        "Plan: experts 0 bytes, expert layer buffers 5 GiB (while the experts load), n-gram hot rows 1 GiB, \
+         staging 64 MiB, retained host slots 1 GiB, KV-RAM arena 2 GiB; margin 4 GiB",
+    ] {
+        assert!(message.contains(needle), "{needle} missing: {message}");
+    }
+    let plan = plan_host(&device_only(9 * GIB)).expect("fits exactly");
+    assert_eq!((plan.total_bytes, plan.left_bytes), (5 * GIB, 4 * GIB));
+}
+
+#[test]
+fn a_residency_phase_short_of_room_is_named_before_a_reuse_line() {
+    // 7 GiB available, 3 usable: the arena crosses while serving, but
+    // shrinking it would still leave the layer buffers short.
+    let err = plan_host(&device_only(7 * GIB)).expect_err("below the margin");
+    let message = err.to_string();
+    let HostPlanError::BelowMargin { crossing_line, .. } = err;
+    assert_eq!(crossing_line, "load_staging");
+    assert!(!message.contains("-reuse-"), "{message}");
 }
 
 // ---- the VRAM expert cache -------------------------------------------------
@@ -214,6 +279,31 @@ fn a_cache_larger_than_every_projection_holds_them_all() {
     };
     let plan = plan_expert_cache(&request).expect("fits");
     assert_eq!(plan.capacity(), [10, 0, 0, 10, 10, 0, 0, 10]);
+}
+
+/// The resident load's cache is exactly the catalog's bytes. The LRU split
+/// holds no never-selected projection and floors each class's share, so it
+/// left projections slotless there with bytes unused (244 at one lane, 1,944
+/// at eight on the real artifact); every projection now gets its slot.
+#[test]
+fn a_cache_of_exactly_the_catalog_gives_every_projection_a_slot_selected_or_not() {
+    let (catalog, traffic) = hot_and_cold_with(0);
+    assert_eq!(catalog.total_bytes(), 4_000);
+    let request = ExpertCacheRequest {
+        budget_bytes: 4_000 + 1_000 + 500 + 300,
+        ..cache_request(&catalog, &traffic)
+    };
+    let plan = plan_expert_cache(&request).expect("fits");
+    assert_eq!(plan.cache_bytes, 4_000);
+    assert_eq!(plan.capacity(), [10, 0, 0, 10, 10, 0, 0, 10]);
+    assert_eq!(plan.pooled_bytes(), 4_000, "no byte of the cache left unassigned");
+    assert_eq!(plan.expected_hit_rate, 1.0);
+    // One slot's bytes short of the catalog the LRU split runs as before: one
+    // projection without a slot, every byte assigned.
+    let short = plan_expert_cache(&ExpertCacheRequest { budget_bytes: request.budget_bytes - 100, ..request })
+        .expect("fits");
+    assert_eq!(short.capacity().iter().sum::<u32>(), 39);
+    assert_eq!(short.pooled_bytes(), 3_900);
 }
 
 #[test]
@@ -371,6 +461,21 @@ fn catalog() -> ExpertCatalog {
 fn the_staging_ring_holds_two_of_the_heaviest_layer() {
     // Layer 0: 3 x (200 + 100) = 900. Layer 1: 400+100 + 300+125 + 200+100 = 1,225.
     assert_eq!(prefill_staging_ring_bytes(&catalog()), 2 * 1_225);
+}
+
+/// GitHub #329 item 2: a cache that holds the whole catalog makes the
+/// residency device-only (ADR 0054): no step misses, so nothing stages and it
+/// reserves no ring. One byte short, a prefill miss can stage, and it needs
+/// the ring.
+#[test]
+fn a_cache_that_holds_every_expert_reserves_no_staging_ring() {
+    let catalog = catalog();
+    assert_eq!(catalog.total_bytes(), 900 + 1_225);
+    let at = |cache_bytes| (holds_every_expert(&catalog, cache_bytes), staging_ring_bytes_for(&catalog, cache_bytes));
+    assert_eq!(at(2_125), (true, 0));
+    assert_eq!(at(12 << 30), (true, 0));
+    assert_eq!(at(2_124), (false, 2 * 1_225));
+    assert_eq!(at(0), (false, 2 * 1_225));
 }
 
 #[test]

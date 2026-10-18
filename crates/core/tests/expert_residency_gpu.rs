@@ -212,7 +212,7 @@ fn the_device_steps_equal_the_policy_model_on_random_traces() {
             return;
         }
         };
-        for (i, b) in gpu.host_pool_mut().iter_mut().enumerate() {
+        for (i, b) in gpu.host_pool_mut().expect("host pool").iter_mut().enumerate() {
             *b = (i * 7 + 3) as u8;
         }
         let warm: Vec<ProjectionId> = (0..6u16)

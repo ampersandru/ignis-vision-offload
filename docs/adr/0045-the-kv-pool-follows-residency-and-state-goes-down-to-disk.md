@@ -14,6 +14,10 @@ shortage takes what is not decoding first), **ADR 0017** (`tier="disk"` is
 exported on a load that has the tier) and **spec core-05** (a reservation
 grows).
 
+**Amended by ADR 0054** (proposed 2026-10-18): a resident Flash-Next load
+keeps its experts only in VRAM, with no host expert pool; the offloaded
+branch is unchanged.
+
 **Amended 2026-10-08 (owner).** Four decisions replace the open point this ADR
 first left to the owner (two whole-context reservations fill the default
 pool):
@@ -159,8 +163,9 @@ clone), GitHub #205 (the owner's Tier 2 header decision and its RoPE comment).
   KV pool is reserved first at a default size, and the expert cache takes the
   rest.**
 - **The test is plan arithmetic**, done before anything is allocated. A load is
-  resident when the budget holds its fixed lines, residency's fixed lines,
-  every expert projection and the minimum pool.
+  resident when the budget holds its fixed lines, residency's tables (no
+  prefill staging ring on a resident load, ADR 0054), every expert projection
+  and the minimum pool.
 - **The offloaded default is 524,288 tokens (owner)**, capped and floored
   *(agent proposal)*:
 

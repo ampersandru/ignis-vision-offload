@@ -18,7 +18,7 @@ use std::os::raw::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use super::class::{ExpertCatalog, KClass, Projection, ProjectionId};
+use super::class::{ExpertCatalog, KBits, KClass, Projection, ProjectionId};
 use super::counters::{ResidencyCounters, ResidencyMirror, MIRROR_BYTES};
 use super::policy::{Admission, Phase, PrefetchBudget};
 use crate::moe::MoeSlot;
@@ -34,6 +34,9 @@ pub fn budget_words(budget: Option<PrefetchBudget>) -> (u64, u64) {
 }
 /// The status of a step whose ids name an expert outside the catalog.
 pub const STATUS_INVALID: u32 = 0x100;
+/// The status of a device-only residency's step that would miss: it has no
+/// host pool to copy from, so the step is refused and changes nothing.
+pub const STATUS_NO_HOST: u32 = 0x200;
 /// Bit 31 of a report entry: the projection went to the staging ring.
 pub const STAGING_BIT: u32 = 0x8000_0000;
 /// The lists of a step's report, in [`DeviceReport::lists`] order.
@@ -124,6 +127,14 @@ mod ffi {
         pub fn ignis_residency_host_pool(r: *mut RawResidency) -> *mut c_void;
         pub fn ignis_residency_slot_table(r: *mut RawResidency, layer: u32) -> *const MoeSlot;
         pub fn ignis_residency_warm_start(r: *mut RawResidency, keys: *const u32, n: u32, admitted: *mut u32) -> i32;
+        pub fn ignis_residency_admit(
+            r: *mut RawResidency,
+            keys: *const u32,
+            n: u32,
+            src: *const u8,
+            src_offsets: *const u64,
+        ) -> i32;
+        pub fn ignis_residency_admit_finish(r: *mut RawResidency) -> i32;
         pub fn ignis_residency_step(
             r: *mut RawResidency,
             layer: u32,
@@ -228,6 +239,9 @@ pub struct DeviceReport {
 pub struct DeviceResidency {
     raw: NonNull<RawResidency>,
     desc: ResidencyDesc,
+    /// The K map, key order: an admitted record's class, so its length is
+    /// checked before the leaf copies it.
+    k2: Vec<u8>,
     /// Kept past the free, which unregisters it, so its readers never see
     /// freed memory.
     mirror: Option<Arc<ResidencyMirror>>,
@@ -243,17 +257,23 @@ unsafe impl Send for DeviceResidency {}
 
 impl DeviceResidency {
     /// Creates the residency: every pool empty, every slot-table entry
-    /// ABSENT, and the pinned host pool allocated for the caller to fill.
+    /// ABSENT, and the pinned host pool allocated for the caller to fill --
+    /// or, with `host_pool_bytes` 0, none: a device-only residency, whose
+    /// every record the caller admits ([`Self::admit`]) and whose
+    /// `pool_offsets` may be empty.
     pub fn new(desc: &ResidencyDesc, k2: &[u8], pool_offsets: &[u64]) -> Result<Self, String> {
         let keys = desc.layers as usize * desc.experts as usize * 2;
-        if k2.len() != keys || pool_offsets.len() != keys {
+        let device_only = desc.host_pool_bytes == 0;
+        if k2.len() != keys || (pool_offsets.len() != keys && !(device_only && pool_offsets.is_empty())) {
             return Err(format!("residency: {keys} keys, {} K values and {} offsets", k2.len(), pool_offsets.len()));
         }
+        let offsets = if pool_offsets.is_empty() { std::ptr::null() } else { pool_offsets.as_ptr() };
         let mut raw = std::ptr::null_mut();
-        check(unsafe { ffi::ignis_residency_create(desc, k2.as_ptr(), pool_offsets.as_ptr(), &mut raw) })?;
+        check(unsafe { ffi::ignis_residency_create(desc, k2.as_ptr(), offsets, &mut raw) })?;
         Ok(Self {
             raw: NonNull::new(raw).ok_or_else(|| "residency: created nothing".to_owned())?,
             desc: *desc,
+            k2: k2.to_vec(),
             mirror: None,
         })
     }
@@ -281,10 +301,50 @@ impl DeviceResidency {
         self.raw.as_ptr().cast()
     }
 
-    /// The pinned host expert pool, for the loader to fill.
-    pub fn host_pool_mut(&mut self) -> &mut [u8] {
+    /// The pinned host expert pool, for the loader to fill; `None` on a
+    /// device-only residency, which has none.
+    pub fn host_pool_mut(&mut self) -> Option<&mut [u8]> {
         let base = unsafe { ffi::ignis_residency_host_pool(self.raw.as_ptr()) } as *mut u8;
-        unsafe { std::slice::from_raw_parts_mut(base, self.desc.host_pool_bytes as usize) }
+        if base.is_null() {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts_mut(base, self.desc.host_pool_bytes as usize) })
+    }
+
+    /// A device-only residency's admission: each key takes the next free
+    /// slot of its class, its record copied from `src` at the matching
+    /// offset. Before the first step; [`Self::admit_finish`] closes it.
+    pub fn admit(&mut self, keys: &[u32], src: &[u8], offsets: &[u64]) -> Result<(), String> {
+        if keys.len() != offsets.len() {
+            return Err(format!("residency: {} keys and {} offsets to admit", keys.len(), offsets.len()));
+        }
+        for (i, (&key, &at)) in keys.iter().zip(offsets).enumerate() {
+            let class = self.class_of_key(key)?;
+            let end = at.checked_add(self.desc.record_bytes[class]);
+            if end.is_none_or(|end| end > src.len() as u64) {
+                return Err(format!("residency: record {i} (key {key}) runs past its {}-byte buffer", src.len()));
+            }
+        }
+        check(unsafe {
+            ffi::ignis_residency_admit(self.raw.as_ptr(), keys.as_ptr(), keys.len() as u32, src.as_ptr(), offsets.as_ptr())
+        })
+    }
+
+    /// Closes a device-only residency's admission: refused unless every
+    /// projection was admitted, since no step could serve a missing one.
+    pub fn admit_finish(&mut self) -> Result<(), String> {
+        check(unsafe { ffi::ignis_residency_admit_finish(self.raw.as_ptr()) })
+    }
+
+    /// The class index of `key`, from the K map the residency was made with.
+    fn class_of_key(&self, key: u32) -> Result<usize, String> {
+        let keys = self.desc.layers * self.desc.experts * 2;
+        if key >= keys {
+            return Err(format!("residency: key {key} is outside the {keys}-key catalog"));
+        }
+        let k2 = self.k2[key as usize];
+        let k = KBits::from_half_bits(u32::from(k2)).ok_or_else(|| format!("residency: key {key} has k2 {k2}"))?;
+        Ok(KClass::new(Projection::ALL[(key & 1) as usize], k).index())
     }
 
     /// Layer `layer`'s device slot table, what the expert ops take.

@@ -240,7 +240,9 @@ __device__ void stage(const Dev &d, uint32_t key, uint32_t h, uint32_t layer, Jo
                       uint32_t *n_jobs) {
   const unsigned long long bytes = d.record_bytes[d.cls[key]];
   const unsigned long long off = d.st->half_fill[h];
-  if (off + bytes > d.half_bytes) __trap();  // the plan sizes a half for a whole layer
+  // The plan sizes a half for a whole layer; a device-only residency's ring may be 0, and it never
+  // gets here (its steps refuse a miss, its prefetches place nothing).
+  if (off + bytes > d.half_bytes) __trap();
   d.st->half_fill[h] = off + bytes;
   d.st->half_layer[h] = layer;
   d.half_keys[h * 2 * d.experts + d.st->half_count[h]++] = key;
@@ -341,13 +343,19 @@ __device__ __forceinline__ void resolve_demand_step(const Dev &d, uint32_t layer
   const bool miss = selected && !hit;
   __syncthreads();
 
-  // 3. A decode step whose class cannot hold its misses is refused whole.
+  // 3. A decode step whose class cannot hold its misses is refused whole; so is any step of a
+  //    device-only residency that would miss, since there is no host pool to copy from.
   if (decode && t == 0) {
     for (uint32_t k = 0; k < kClasses; ++k) {
       if (s_need[k] > d.capacity[k] - s_pinned[k]) {
         s_status = 1 + k;
         break;
       }
+    }
+  }
+  if (d.host == nullptr && t == 0) {
+    for (uint32_t k = 0; k < kClasses; ++k) {
+      if (s_need[k] != 0) s_status = IGNIS_RESIDENCY_STATUS_NO_HOST;
     }
   }
   __syncthreads();
@@ -546,6 +554,8 @@ __global__ void __launch_bounds__(kThreads)
     if (t == 0 && report != nullptr) report->status = s_status;
     return;
   }
+  // A device-only residency holds every projection: nothing to prefetch, nowhere to fetch from.
+  if (d.host == nullptr) return;
 
   const unsigned long long now = st->clock;  // the demand half's commit
   uint32_t count[kLists];
@@ -799,6 +809,16 @@ struct ignis_residency {
   uint32_t branch_layer = 0, branch_phase = 0;
   bool stepped = false;
   ignis_residency_mirror *mirror_host = nullptr;  // registered by ignis_residency_set_mirror
+  // Device-only (host_pool_bytes 0): the admission's host copy of the tables, uploaded whole by
+  // ignis_residency_admit_finish, which sets `admitted`; no step runs before it.
+  bool device_only = false;
+  bool admitted = false;
+  std::vector<int32_t> adm_slot_of;
+  std::vector<ignis_moe_slot> adm_table;
+  std::vector<uint32_t> adm_owner[kClasses];
+  std::vector<unsigned long long> adm_stamp[kClasses];
+  uint32_t adm_used[kClasses] = {};
+  unsigned long long adm_clock = 0;
 };
 
 namespace {
@@ -834,7 +854,8 @@ int32_t ignis_residency_plan_bytes(const ignis_residency_desc *desc, ignis_resid
 int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *k2,
                                const uint64_t *pool_offsets, ignis_residency **out) {
   if (check_desc(desc) != 0) return -1;
-  if (k2 == nullptr || pool_offsets == nullptr || out == nullptr) {
+  // A device-only residency (no host pool) has no pool offsets to take.
+  if (k2 == nullptr || (pool_offsets == nullptr && desc->host_pool_bytes != 0) || out == nullptr) {
     return fail("residency: the K map, the pool offsets and the out pointer are required");
   }
   *out = nullptr;
@@ -844,8 +865,10 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
   r->desc = d;
   if (r->desc.copy_blocks == 0) r->desc.copy_blocks = 16;
   r->k2.assign(k2, k2 + keys);
-  r->host_off.assign(pool_offsets, pool_offsets + keys);
+  r->device_only = d.host_pool_bytes == 0;
+  if (!r->device_only) r->host_off.assign(pool_offsets, pool_offsets + keys);
   r->cls.resize(keys);
+  uint64_t per_class[kClasses] = {};
   uint64_t heaviest = 0;
   for (uint32_t l = 0; l < d.layers; ++l) {
     uint64_t layer_bytes = 0;
@@ -861,34 +884,50 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
       const uint32_t c = projection * 4 + (v == 4 ? 0 : v == 5 ? 1 : v == 6 ? 2 : 3);
       r->cls[key] = static_cast<uint8_t>(c);
       const uint64_t bytes = d.record_bytes[c];
-      if (r->host_off[key] % 16 != 0 || r->host_off[key] + bytes > d.host_pool_bytes) {
+      if (!r->device_only && (r->host_off[key] % 16 != 0 || r->host_off[key] + bytes > d.host_pool_bytes)) {
         delete r;
         return fail("residency: record of key " + std::to_string(key) +
                     " is unaligned or outside the host pool");
       }
+      ++per_class[c];
       layer_bytes += bytes;
     }
     heaviest = std::max(heaviest, layer_bytes);
   }
-  if (d.staging_half_bytes < heaviest) {
-    // A prefill can touch a whole layer; a smaller half could overflow mid-chunk.
+  if (!r->device_only && d.staging_half_bytes < heaviest) {
+    // A prefill can touch a whole layer; a smaller half could overflow mid-chunk. A device-only
+    // step never misses, so it never stages: there the ring may be 0, and none is allocated.
     delete r;
     return fail("residency: staging_half_bytes " + std::to_string(d.staging_half_bytes) +
                 " is below the heaviest layer's " + std::to_string(heaviest));
+  }
+  if (r->device_only) {
+    // No host pool to miss from: every projection needs its slot.
+    for (uint32_t k = 0; k < kClasses; ++k) {
+      if (d.capacity[k] < per_class[k]) {
+        delete r;
+        return fail("residency: a device-only residency needs a slot for every projection, and class " +
+                    std::to_string(k) + " has " + std::to_string(d.capacity[k]) + " slots for " +
+                    std::to_string(per_class[k]) + " projections");
+      }
+    }
   }
   auto cleanup = [&](int32_t rc) {
     ignis_residency_free(r);
     return rc;
   };
 
-  cudaError_t e = cudaHostAlloc(reinterpret_cast<void **>(&r->host), d.host_pool_bytes,
-                                cudaHostAllocMapped | cudaHostAllocPortable);
-  if (e != cudaSuccess) {
-    r->host = nullptr;
-    return cleanup(fail(std::string("residency: cudaHostAlloc of the expert pool: ") + cudaGetErrorString(e)));
+  cudaError_t e = cudaSuccess;
+  if (!r->device_only) {
+    e = cudaHostAlloc(reinterpret_cast<void **>(&r->host), d.host_pool_bytes,
+                      cudaHostAllocMapped | cudaHostAllocPortable);
+    if (e != cudaSuccess) {
+      r->host = nullptr;
+      return cleanup(fail(std::string("residency: cudaHostAlloc of the expert pool: ") + cudaGetErrorString(e)));
+    }
+    e = cudaHostGetDevicePointer(reinterpret_cast<void **>(&r->host_dev), r->host, 0);
+    if (e != cudaSuccess) return cleanup(fail(std::string("residency: cudaHostGetDevicePointer: ") + cudaGetErrorString(e)));
   }
-  e = cudaHostGetDevicePointer(reinterpret_cast<void **>(&r->host_dev), r->host, 0);
-  if (e != cudaSuccess) return cleanup(fail(std::string("residency: cudaHostGetDevicePointer: ") + cudaGetErrorString(e)));
   for (uint32_t k = 0; k < kClasses; ++k) {
     const uint64_t bytes = static_cast<uint64_t>(d.capacity[k]) * d.record_bytes[k];
     if (bytes == 0) continue;
@@ -907,7 +946,7 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
   std::vector<uint8_t> image(r->layout.total, 0);
   std::memcpy(image.data() + r->layout.cls, r->cls.data(), keys);
   std::memcpy(image.data() + r->layout.k2, r->k2.data(), keys);
-  std::memcpy(image.data() + r->layout.host_off, r->host_off.data(), keys * 8);
+  if (!r->device_only) std::memcpy(image.data() + r->layout.host_off, r->host_off.data(), keys * 8);
   std::memset(image.data() + r->layout.slot_of, 0xFF, keys * 4);  // -1: nowhere
   for (uint32_t k = 0; k < kClasses; ++k) {
     std::memset(image.data() + r->layout.owner[k], 0xFF, static_cast<uint64_t>(d.capacity[k]) * 4);
@@ -953,6 +992,14 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
 
   e = cudaStreamCreateWithFlags(&r->prefetch_stream, cudaStreamNonBlocking);
   if (e != cudaSuccess) return cleanup(fail(std::string("residency: the prefetch stream: ") + cudaGetErrorString(e)));
+  if (r->device_only) {
+    r->adm_slot_of.assign(keys, -1);
+    r->adm_table.assign(keys, ignis_moe_slot{nullptr, 0, 0});
+    for (uint32_t k = 0; k < kClasses; ++k) {
+      r->adm_owner[k].assign(d.capacity[k], kNone);
+      r->adm_stamp[k].assign(d.capacity[k], 0);
+    }
+  }
   e = cudaEventCreateWithFlags(&r->fork, cudaEventDisableTiming);
   if (e == cudaSuccess) e = cudaEventCreateWithFlags(&r->demanded, cudaEventDisableTiming);
   if (e == cudaSuccess) e = cudaEventCreateWithFlags(&r->join, cudaEventDisableTiming);
@@ -992,6 +1039,7 @@ int32_t ignis_residency_warm_start(ignis_residency *r, const uint32_t *keys, uin
                                    uint32_t *admitted) {
   if (r == nullptr || admitted == nullptr || (n > 0 && keys == nullptr)) return fail("residency: warm start arguments");
   if (r->stepped) return fail("residency: the warm start comes before the first step");
+  if (r->device_only) return fail("residency: a device-only residency has no host pool to warm from; admit its records");
   const ignis_residency_desc &d = r->desc;
   const uint64_t nkeys = static_cast<uint64_t>(d.layers) * d.experts * 2;
   RESIDENCY_CUDA(cudaDeviceSynchronize());
@@ -1049,6 +1097,69 @@ int32_t ignis_residency_warm_start(ignis_residency *r, const uint32_t *keys, uin
   return 0;
 }
 
+int32_t ignis_residency_admit(ignis_residency *r, const uint32_t *keys, uint32_t n, const uint8_t *src,
+                              const uint64_t *src_offsets) {
+  if (r == nullptr) return fail("residency: no residency");
+  if (!r->device_only) return fail("residency: only a device-only residency admits records; fill its host pool");
+  if (r->admitted) return fail("residency: the admission is finished");
+  if (n > 0 && (keys == nullptr || src == nullptr || src_offsets == nullptr)) return fail("residency: admit arguments");
+  const ignis_residency_desc &d = r->desc;
+  const uint64_t nkeys = static_cast<uint64_t>(d.layers) * d.experts * 2;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t key = keys[i];
+    if (key >= nkeys) return fail("residency: key " + std::to_string(key) + " is outside the catalog");
+    if (r->adm_slot_of[key] >= 0) return fail("residency: key " + std::to_string(key) + " is admitted twice");
+    const uint32_t c = r->cls[key];
+    const uint32_t slot = r->adm_used[c];
+    if (slot >= d.capacity[c]) return fail("residency: class " + std::to_string(c) + " is full");  // create checked
+    uint8_t *dst = r->pool[c] + static_cast<uint64_t>(slot) * d.record_bytes[c];
+    RESIDENCY_CUDA(cudaMemcpy(dst, src + src_offsets[i], d.record_bytes[c], cudaMemcpyHostToDevice));
+    r->adm_owner[c][slot] = key;
+    r->adm_stamp[c][slot] = ++r->adm_clock;
+    r->adm_slot_of[key] = static_cast<int32_t>(slot);
+    r->adm_table[key] = ignis_moe_slot{dst, r->k2[key], 0};
+    ++r->adm_used[c];
+  }
+  return 0;
+}
+
+int32_t ignis_residency_admit_finish(ignis_residency *r) {
+  if (r == nullptr) return fail("residency: no residency");
+  if (!r->device_only) return fail("residency: only a device-only residency admits records");
+  if (r->admitted) return fail("residency: the admission is finished");
+  const ignis_residency_desc &d = r->desc;
+  const uint64_t nkeys = static_cast<uint64_t>(d.layers) * d.experts * 2;
+  uint64_t missing = 0;
+  for (uint64_t key = 0; key < nkeys; ++key) missing += r->adm_slot_of[key] < 0;
+  if (missing != 0) {
+    return fail("residency: " + std::to_string(missing) + " of " + std::to_string(nkeys) +
+                " projections were never admitted; a device-only residency must hold them all");
+  }
+  RESIDENCY_CUDA(cudaDeviceSynchronize());
+  State state{};
+  RESIDENCY_CUDA(cudaMemcpy(&state, r->dev.st, sizeof(State), cudaMemcpyDeviceToHost));
+  for (uint32_t c = 0; c < kClasses; ++c) {
+    state.used[c] = r->adm_used[c];
+    if (d.capacity[c] == 0) continue;
+    RESIDENCY_CUDA(cudaMemcpy(r->dev.owner[c], r->adm_owner[c].data(), d.capacity[c] * 4ull, cudaMemcpyHostToDevice));
+    RESIDENCY_CUDA(cudaMemcpy(r->dev.stamp[c], r->adm_stamp[c].data(), d.capacity[c] * 8ull, cudaMemcpyHostToDevice));
+  }
+  state.clock = r->adm_clock;
+  RESIDENCY_CUDA(cudaMemcpy(r->dev.slot_of, r->adm_slot_of.data(), nkeys * 4, cudaMemcpyHostToDevice));
+  RESIDENCY_CUDA(cudaMemcpy(r->dev.table, r->adm_table.data(), nkeys * sizeof(ignis_moe_slot), cudaMemcpyHostToDevice));
+  RESIDENCY_CUDA(cudaMemcpy(r->dev.st, &state, sizeof(State), cudaMemcpyHostToDevice));
+  // As the warm start: the first step may run on a stream that does not wait for the legacy one.
+  RESIDENCY_CUDA(cudaDeviceSynchronize());
+  r->admitted = true;
+  r->adm_slot_of = {};
+  r->adm_table = {};
+  for (uint32_t c = 0; c < kClasses; ++c) {
+    r->adm_owner[c] = {};
+    r->adm_stamp[c] = {};
+  }
+  return 0;
+}
+
 int32_t ignis_residency_join(ignis_residency *r, void *stream) {
   if (r == nullptr) return fail("residency: no residency");
   if (!r->forked) return 0;
@@ -1079,6 +1190,9 @@ int32_t ignis_residency_step_ranked(ignis_residency *r, uint32_t layer, uint32_t
   }
   if (lookahead != nullptr && (rows == 0 || rows > d.max_tokens || stride == 0)) {
     return fail("residency: a lookahead takes 1.." + std::to_string(d.max_tokens) + " rows of a non-zero stride");
+  }
+  if (r->device_only && !r->admitted) {
+    return fail("residency: a device-only residency steps only once every projection is admitted");
   }
   const cudaStream_t s = static_cast<cudaStream_t>(stream);
   if (ignis_residency_join(r, stream) != 0) return -1;
@@ -1121,6 +1235,9 @@ int32_t step_demand(ignis_residency *r, uint32_t layer, uint32_t phase, const fl
   if (phase != IGNIS_RESIDENCY_DECODE && phase != IGNIS_RESIDENCY_PREFILL) return fail("residency: phase must be decode or prefill");
   if (ids == nullptr || tokens == 0 || tokens > d.max_tokens) {
     return fail("residency: a step takes 1.." + std::to_string(d.max_tokens) + " rows of ids");
+  }
+  if (r->device_only && !r->admitted) {
+    return fail("residency: a device-only residency steps only once every projection is admitted");
   }
   const cudaStream_t s = static_cast<cudaStream_t>(stream);
   if (ignis_residency_join(r, stream) != 0) return -1;

@@ -140,7 +140,7 @@ gives the reason for each.
 | Point | Default | |
 |---|---|---|
 | Offloaded pool | `max(floor, min(524288, decode_lanes × --max-context))` tokens | *(owner)* size, *(agent)* cap and floor |
-| Resident test | budget ≥ fixed lines + residency's fixed lines + every expert projection + floor pool | *(agent)* |
+| Resident test | budget ≥ fixed lines + residency's tables (no staging ring on a resident load, ADR 0054) + every expert projection + floor pool | *(agent)* |
 | `--kv-pool-bytes` | bytes, or `<n>[K\|M]tok`; honoured on both models | *(agent)* |
 | Floor opt-in | `--allow-expert-cache-below-floor`, WARN; class minimum stays a refusal | *(owner)* |
 | Default cap | `--default-max-tokens`, its own default 38,912 on both models, changed by the flag, `IGNIS_DEFAULT_MAX_TOKENS` or `DEFAULT_MAX_TOKENS` on either branch; clamped to the context; `0` = up to the context | *(owner)* value, override and `0`, *(agent)* name |
@@ -1096,5 +1096,6 @@ tickets.
   already carries what that would need.
 - **Deduplicating prefix bytes across blobs** (ADR 0024's chained blobs).
 - **Dropping the host expert pool or the prefill staging ring on a resident
-  Flash-Next load.** Spec flash-next/03 owns residency.
+  Flash-Next load.** Spec flash-next/03 owns residency. Both done since,
+  outside this spec: ADR 0054 and GitHub #329.
 - **A completion-port IO backend.**

@@ -23,10 +23,10 @@ use crate::model_load::{load_flash_next, plan_flash_next_reservations, IgnisMode
 use crate::ngram::NgramContext;
 use crate::ngram_table::{NgramTable, NgramTableOptions};
 use crate::residency::device::{budget_words, DeviceResidency, ResidencyDesc};
-use crate::residency::load::{catalog, fill_expert_pool, pool_layout};
+use crate::residency::load::{catalog, fill_expert_pool, pool_layout, stream_expert_layers};
 use crate::residency::{
-    default_prefetch_budget, min_slots_per_class, plan_expert_cache, prefill_staging_ring_bytes,
-    residency_table_bytes, warm_start_order, ExpertCacheRequest, ExpertCatalog, ExpertTraffic, KClass,
+    default_prefetch_budget, holds_every_expert, min_slots_per_class, plan_expert_cache, residency_table_bytes,
+    staging_ring_bytes_for, warm_start_order, ExpertCacheRequest, ExpertCatalog, ExpertTraffic, KClass,
 };
 use crate::seq::{SeqPool, SeqPoolBudget};
 use crate::speculation::{FlashNextSpeculation, SpeculativeBackend};
@@ -203,6 +203,14 @@ pub fn class_minimum_slots(lanes: u32) -> u32 {
 /// hold them (the sidecar's; uniform when it has none), the pinned pool
 /// filled from the file, and the warm start -- the hottest projections,
 /// hottest first, up to each pool -- before the first step.
+///
+/// A cache that holds every projection (ADR 0045's resident load, a ~96 GB
+/// card) gets no pinned pool at all: every record goes from the file straight
+/// to its slot, a layer at a time ([`stream_expert_layers`]), and no step
+/// ever misses. The ~38 GB the pool pinned for the life of the load stays
+/// free for the rest of the host plan, the n-gram table first; and with no
+/// miss nothing stages, so it reserves no prefill staging ring (~1.6 GB of
+/// VRAM on the trellis-a25 artifact, the KV pool's on that branch).
 pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOptions) -> Result<DeviceResidency, String> {
     let index = &plan.experts;
     let cat = catalog(index)?;
@@ -210,7 +218,10 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
     let (layers, experts) = (u64::from(cat.layers()), u64::from(cat.experts()));
     let traffic = expert_traffic(path, &cat)?;
     let max_tokens = options.prefill_chunk_tokens.max(options.decode_lanes);
-    let staging_ring = prefill_staging_ring_bytes(&cat);
+    // A device-only residency never misses, so it never stages: no ring, as
+    // the VRAM plan's resident branch placed none (GitHub #329 item 2).
+    let no_host_pool = device_only(options, &cat);
+    let staging_ring = staging_ring_bytes_for(&cat, options.expert_cache_bytes);
     let tables = residency_table_bytes(layers, experts, u64::from(max_tokens), u64::from(LOOKAHEAD_WIDTH));
     let cache = plan_expert_cache(&ExpertCacheRequest {
         budget_bytes: options.expert_cache_bytes + staging_ring + tables,
@@ -236,14 +247,29 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
         prefetch_budget_one_row_bytes: one_row,
         prefetch_budget_per_row_bytes: per_row,
         staging_half_bytes: staging_ring / 2,
-        host_pool_bytes: layout.bytes,
+        host_pool_bytes: if no_host_pool { 0 } else { layout.bytes },
         copy_blocks: 16,
         report: 0,
     };
+    if no_host_pool {
+        let mut residency = DeviceResidency::new(&desc, &layout.k2, &[])?;
+        stream_expert_layers(path, index, |layer| residency.admit(&layer.keys, &layer.bytes, &layer.offsets))
+            .map_err(|e| format!("admit the experts: {e}"))?;
+        residency.admit_finish()?;
+        return Ok(residency);
+    }
     let mut residency = DeviceResidency::new(&desc, &layout.k2, &layout.offsets)?;
-    fill_expert_pool(path, index, residency.host_pool_mut()).map_err(|e| format!("fill the expert pool: {e}"))?;
+    let pool = residency.host_pool_mut().ok_or("residency: no host pool")?;
+    fill_expert_pool(path, index, pool).map_err(|e| format!("fill the expert pool: {e}"))?;
     residency.warm_start(&warm_start_order(&traffic))?;
     Ok(residency)
+}
+
+/// Whether a load of `options` keeps every expert of `catalog` in VRAM and
+/// none in RAM: its cache holds the whole catalog (the VRAM plan's resident
+/// branch hands it exactly that).
+pub fn device_only(options: &EngineOptions, catalog: &ExpertCatalog) -> bool {
+    holds_every_expert(catalog, options.expert_cache_bytes)
 }
 
 /// The artifact's non-expert tensors placed on the device, and the device

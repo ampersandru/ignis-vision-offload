@@ -19,6 +19,7 @@ fn host(available: u64) -> HostPlanRequest {
     HostPlanRequest {
         available_physical_bytes: available,
         expert_pool_bytes: 37_795_446_784,
+        load_staging_bytes: 0,
         ngram_hot_rows_bytes: 0,
         staging_bytes: 0,
         retained_host_slots_bytes: 1_040_115_712,
@@ -142,6 +143,42 @@ fn the_room_is_what_the_other_lines_and_the_margin_leave() {
     let room = ngram_hot_rows_room(&host(available));
     assert!(plan_host(&HostPlanRequest { ngram_hot_rows_bytes: room, ..host(available) }).is_ok());
     assert!(plan_host(&HostPlanRequest { ngram_hot_rows_bytes: room + 1, ..host(available) }).is_err());
+}
+
+/// A device-only start (ADR 0054): no expert pool, its experts read through
+/// ~4.7 GB of layer buffers (`load_staging`), KV-disk's 64 MiB windows.
+fn device_only(available: u64) -> HostPlanRequest {
+    HostPlanRequest {
+        expert_pool_bytes: 0,
+        load_staging_bytes: 4_700_000_000,
+        staging_bytes: 64 << 20,
+        ..host(available)
+    }
+}
+
+#[test]
+fn a_device_only_loads_layer_buffers_leave_the_room_alone() {
+    // The buffers are freed before the leaf reads the n-gram rows (GitHub
+    // #329 item 3): the room is what the lines held beside the rows leave.
+    let available = 38 * GIB;
+    let held = (64 << 20) + 1_040_115_712 + 2 * GIB;
+    let room = ngram_hot_rows_room(&device_only(available));
+    assert_eq!(room, available - DEFAULT_HOST_MARGIN_BYTES - held);
+    assert!(plan_host(&HostPlanRequest { ngram_hot_rows_bytes: room, ..device_only(available) }).is_ok());
+    assert!(plan_host(&HostPlanRequest { ngram_hot_rows_bytes: room + 1, ..device_only(available) }).is_err());
+    // At 38 GiB available `auto` holds the whole table beside them; charged
+    // beside the rows, the buffers cut it to the ranked list.
+    let whole = FLASH_NEXT.whole_table_bytes();
+    assert_eq!(HotBudget::Auto.resolve(&FLASH_NEXT, Some(room)), whole);
+    assert!(room - 4_700_000_000 < whole + AUTO_LOAD_HEADROOM_BYTES);
+}
+
+#[test]
+fn a_residency_phase_that_does_not_fit_leaves_no_room() {
+    // 8 GiB available, 4 usable: the lines held while serving would leave
+    // ~1 GB, but the 4.7 GB of layer buffers cannot be read in at all.
+    assert_eq!(ngram_hot_rows_room(&device_only(8 * GIB)), 0);
+    assert!(plan_host(&device_only(8 * GIB)).is_err(), "refused whatever the rows take");
 }
 
 #[test]

@@ -176,6 +176,9 @@ impl FlashNextLeaf {
         let weights = DeviceWeights::place(&reader, &plan)?;
         log_load_phase("device_weights", start.elapsed());
 
+        // A device-only residency's layer buffers are gone when this
+        // returns, and every host-plan line but the expert pool is allocated
+        // after it: the plan charges them to this phase alone (`load_staging`).
         let start = Instant::now();
         let mut residency = build_residency(path, &plan, &options)?;
         log_load_phase("residency", start.elapsed());

@@ -150,6 +150,7 @@ async fn a_switch_short_of_ram_reports_the_host_plan_in_bytes_beside_its_reason(
         plan["lines"],
         json!([
             { "name": "expert_pool", "bytes": 37_795_446_784u64 },
+            { "name": "load_staging", "bytes": 0u64 },
             { "name": "ngram_hot_rows", "bytes": 1u64 << 30 },
             { "name": "staging", "bytes": 64u64 << 20 },
             { "name": "retained_host_slots", "bytes": 1_040_115_712u64 },
