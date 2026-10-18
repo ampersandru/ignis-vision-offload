@@ -900,13 +900,13 @@ pub(crate) fn flash_next_load(
     use ignis_artifact::{CudaDevice, Reader};
     use ignis_core::compute::ModelConfig;
     use ignis_core::flash_next::{
-        class_minimum_slots, device_only, expert_traffic, pinned_experts, EngineOptions, LOOKAHEAD_WIDTH,
+        device_only, expert_traffic, plan_cache_request, residency_pools, EngineOptions, LOOKAHEAD_WIDTH,
     };
     use ignis_core::residency::load::{catalog, pinned_staging_bytes, pool_layout, pool_layout_without, stream_staging_bytes};
     use ignis_core::ngram_table::NgramTable;
     use ignis_core::residency::{
         available_physical_bytes, ngram_hot_rows_room, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
-        residency_table_bytes, ExpertCacheRequest, HostPlanRequest, EXPERT_CACHE_FLOOR_BYTES,
+        residency_table_bytes, HostPlanRequest, EXPERT_CACHE_FLOOR_BYTES,
     };
     use ignis_core::seq::SeqPool;
     use ignis_runtime::{FlashNextLeaf, KV_PAGE_TOKENS};
@@ -1036,17 +1036,14 @@ pub(crate) fn flash_next_load(
     // total is the budget the cache's share is read against, and the ring is
     // the one the plan placed (none on the resident branch).
     let traffic = expert_traffic(artifact_path, &cat)?;
-    let cache = plan_expert_cache(&ExpertCacheRequest {
-        budget_bytes: vram.total_bytes,
-        planned_bytes: vram.total_bytes - vram.residency_bytes - vram.expert_cache_bytes,
-        staging_ring_bytes: vram.staging_ring_bytes,
-        table_bytes: tables,
-        floor_bytes: EXPERT_CACHE_FLOOR_BYTES,
-        allow_below_floor: shape.allow_expert_cache_below_floor,
-        catalog: &cat,
-        traffic: &traffic,
-        min_slots: class_minimum_slots(lanes),
-    })
+    let cache = plan_expert_cache(&plan_cache_request(
+        &vram,
+        tables,
+        shape.allow_expert_cache_below_floor,
+        lanes,
+        &cat,
+        &traffic,
+    ))
     .map_err(|e| e.to_string())?;
     log_vram_warnings(&vram);
     warn_expert_cache_below_floor(&cache, EXPERT_CACHE_FLOOR_BYTES);
@@ -1058,13 +1055,16 @@ pub(crate) fn flash_next_load(
     log_flash_next_plan(&vram, cache.expected_hit_rate, lanes, &speculation_text, process_held_bytes);
     options.kv_pool_pages = Some(vram.kv_page_count);
     options.expert_cache_bytes = vram.expert_cache_bytes;
-    // GitHub #329 item 12: the pinned hot set, as `build_residency` will pin
-    // it from the same split; logged only when asked for, so a default load's
-    // events are what they were.
-    let pinned = pinned_experts(&options, &cat, &traffic, &cache);
+    // GitHub #329 item 12: the pinned hot set, from the call `build_residency`
+    // makes with these same options, so the host plan charges the pool the
+    // load fills; refused here, before anything loads, when the pin cannot
+    // leave every class its widest decode step. Logged only when asked for,
+    // so a load at 0 logs what it did before.
+    let pools = residency_pools(&options, &cat, &traffic)?;
     if shape.pinned_expert_bytes > 0 {
-        log_flash_next_pinned_experts(shape.pinned_expert_bytes, &pinned, &cache, device_only(&options, &cat));
+        log_flash_next_pinned_experts(shape.pinned_expert_bytes, &pools.pinned, &pools.cache, device_only(&options, &cat));
     }
+    let pinned = pools.pinned;
     // Spec flash-next/05: what one sequence's reusable state costs, derived
     // from the topology -- the image a retained slot or a blob holds, and
     // what each token adds to the pages.

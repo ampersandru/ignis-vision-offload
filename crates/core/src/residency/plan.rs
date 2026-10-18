@@ -36,14 +36,18 @@ pub struct HostPlanRequest {
     /// Physical memory available at load (`MEMORYSTATUSEX::ullAvailPhys`),
     /// measured before the first pinned allocation.
     pub available_physical_bytes: u64,
-    /// Every expert projection, pinned for the life of the load: the
-    /// [`ExpertCatalog::total_bytes`] of the artifact. 0 on a device-only
-    /// load (ADR 0054), whose experts live only in VRAM.
+    /// The expert pool, pinned for the life of the load: every expert
+    /// projection ([`ExpertCatalog::total_bytes`] of the artifact) but a
+    /// pinned hot set's, which have no host copy (ADR 0055). 0 on a
+    /// device-only load (ADR 0054), whose experts live only in VRAM.
     pub expert_pool_bytes: u64,
-    /// A device-only load's expert layer buffers (ADR 0054,
-    /// [`stream_staging_bytes`](super::load::stream_staging_bytes)): pageable,
-    /// held only while the load reads the experts, and freed before it reads
-    /// the n-gram hot rows. 0 on a load with an expert pool.
+    /// The layer buffers experts stream through on their way to VRAM, held
+    /// only while the load reads them and freed before it reads the n-gram
+    /// hot rows: pageable. A device-only load's every expert (ADR 0054,
+    /// [`stream_staging_bytes`](super::load::stream_staging_bytes)), or a
+    /// pinned hot set's (ADR 0055,
+    /// [`pinned_staging_bytes`](super::load::pinned_staging_bytes)); 0 on a
+    /// load that pins nothing beside its expert pool.
     pub load_staging_bytes: u64,
     /// The n-gram table's hot rows held in RAM (spec flash-next/04).
     pub ngram_hot_rows_bytes: u64,
@@ -229,8 +233,9 @@ impl std::fmt::Display for HostPlanError {
             _ => f.write_str("Close other applications"),
         }?;
         f.write_str(". Plan: ")?;
-        // The layer buffers only where a device-only load has them, and said
-        // apart: the peak does not add them to the lines serving holds.
+        // The layer buffers only where a load streams experts through them
+        // (device-only, or a pinned hot set's), and said apart: the peak does
+        // not add them to the lines serving holds.
         let listed = lines.iter().filter(|&&(name, bytes)| name != "load_staging" || bytes > 0);
         for (i, (name, bytes)) in listed.enumerate() {
             write!(f, "{}{} {}", if i == 0 { "" } else { ", " }, line_label(name), human_bytes(*bytes))?;
