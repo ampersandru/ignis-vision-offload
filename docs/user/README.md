@@ -402,7 +402,7 @@ family's section (the loaded model's too) sits beside it wherever that family's
 value differs, so what the loaded model runs with is its section's, else the
 group's.
 `PATCH /v1/config` takes a partial document in the file's shape: a change to
-the request timeout, the message policies, the thinking defaults or the switch
+the deadlines, the message policies, the thinking defaults or the switch
 knobs applies at once, and so does a value the loaded model does not run with
 — one in the other model's family section, or a group value the loaded model
 overrides in its own — which that model uses when it next loads; a change to
@@ -442,7 +442,9 @@ change does not reach and a `null` removes.
 | `--download-path <dir>` | `IGNIS_DOWNLOAD_PATH` | `./models` | Where a fetched model lands, and where one fetched earlier is found. |
 | `--download-endpoint`, `--download-token`, `--download-catalog` | `IGNIS_DOWNLOAD_*` | | Where a model is fetched from, with which token, and an operator catalog ([above](#where-the-bytes-come-from-endpoint-and-token)). |
 | `model download` / `model list` | — | — | Fetch catalog entries, or list them ([above](#fetching-one-ignis-server-model-download)). |
-| `--server-request-timeout <secs>` | `IGNIS_SERVER_REQUEST_TIMEOUT` | `120` (max `3600`) | The deadline for a non-streaming completion; expiry is a 504 `request_timeout`. |
+| `--server-request-timeout <secs>` | `IGNIS_SERVER_REQUEST_TIMEOUT` | `2400` (max `3600`) | The deadline of a request answered whole — chat completions and the Responses API without `stream`, each question of a decision, an image job not streamed, a request's media acquisition — from its admission (an image job's from its start). Past it, the reply `--server-timeout-reply` says ([deadlines](#deadlines)). `0` is no deadline. Patchable live. |
+| `--server-stream-timeout <secs>` | `IGNIS_SERVER_STREAM_TIMEOUT` | `2400` (max `3600`) | The deadline of a request that streams — chat completions and the Responses API with `stream: true`, a Responses WebSocket's response, a streamed image job — from its admission (a socket's never from its queue, an image job's from its start). `0` is no deadline. Patchable live. |
+| `--server-timeout-reply <partial\|error>` | `IGNIS_SERVER_TIMEOUT_REPLY` | `partial` | What a request past its deadline is answered: `partial`, what it generated as an answer a length limit cut (`finish_reason: "length"`, a response `incomplete` with `max_output_tokens`); `error`, `504 request_timeout` or a stream's error ending. A decision's question and an image job are an error either way ([deadlines](#deadlines)). Patchable live. |
 | `--switch-drain-timeout <secs>` | `IGNIS_SWITCH_DRAIN_TIMEOUT` | `30` (max `3600`) | How long a model switch lets the old model's running requests finish before it cancels them (`0` cancels at once). |
 | `--model-idle-unload <secs>` | `IGNIS_MODEL_IDLE_UNLOAD` | `300` (max `604800`) | Seconds with no request using the model before it is unloaded, the server staying up; the next request loads it again ([below](#idle-unload)). `0` never unloads. Patchable live. |
 | `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `300` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
@@ -877,7 +879,8 @@ refusal that names the real limit — the context — rather than a byte count.
 
 **Errors** use OpenAI's `{"error": {message, type, code}}` body with the
 matching status: 400 bad request, 404 unknown model, 413 oversized request, 503
-engine full, 504 the engine did not finish in the timeout.
+engine full, 504 a request past its deadline that is answered an error
+([deadlines](#deadlines)).
 
 **A full engine** (every lane in use) answers `503` with type and code
 `engine_full` and a `Retry-After`, on `/v1/chat/completions` and on HTTP
@@ -893,7 +896,41 @@ already proved wrong for that request, and a client that polls sooner leaves a
 freed lane idle for less. It is `1` before any request has finished. Only the
 Responses API's [WebSocket mode](#the-responses-api) queues a request instead.
 A request that stops being waited for gives its lane back at once, whether it
-hit the 504 or its client went away.
+hit its deadline or its client went away.
+
+#### Deadlines
+
+Every route that runs the model holds a request to a deadline
+([ADR 0058](../adr/0058-every-route-has-a-deadline-and-a-passed-one-answers-what-was-generated.md)):
+`--server-request-timeout` for one answered whole, `--server-stream-timeout`
+for one that streams, both `2400` seconds by default and `0` for none, counted
+from the request's admission (a WebSocket response's never from its queue, an
+image job's from its start). Past it the request is cancelled, its lane freed,
+and the request log's `ignis.request.cancelled` line says `cause: timeout`.
+Before any ending the client gets everything the loop guard held back. What it
+is answered is `--server-timeout-reply`:
+
+| Route | `partial` (the default) | `error` |
+|---|---|---|
+| `/v1/chat/completions`, whole | `200`, the answer so far with `finish_reason: "length"` and its `usage`, and the header `x-ignis-stopped-by: request_timeout` | `504 request_timeout` |
+| `/v1/chat/completions`, streamed | the `length` finish chunk, the usage chunk if `include_usage`, then `[DONE]` | one `{"error": {...}}` chunk, type and code `request_timeout`, then `[DONE]`, as an engine error ends a stream |
+| `/v1/responses`, whole | `200`, `status: "incomplete"`, `incomplete_details.reason: "max_output_tokens"`, the output so far, and the same header | `504 request_timeout` |
+| `/v1/responses`, streamed or WebSocket | `response.incomplete`, as above | `response.failed` with code `request_timeout` |
+| `/v1/decide` | the question `not_completed` | the same |
+| `/v1/images/*` | `504 request_timeout`; streamed, the images already made, then an `error` event with `request_timeout` | the same |
+
+`length` and `max_output_tokens` are the only values the two APIs define for
+an answer a limit cut, so every client already reads them; the header, on a
+whole answer, and the log say it was the deadline. A tool call the deadline cut
+mid-way is dropped whole. A decision has no partial answer, and an image cut
+short is no image, so those two are errors either way. A chat request's media
+acquisition keeps its own deadline, `--server-request-timeout` from its start;
+at `0` only each fetch's timeout bounds it.
+
+Upgrading from 0.7.1: the default deadline is 40 minutes, not 120 seconds; a
+request past it is answered with what it generated, not a `504`, unless
+`--server-timeout-reply error`; a chat stream and an image job now have a
+deadline; `0` is accepted and means none.
 
 **Readiness.** A loaded model is not served the moment it is on the GPU: the
 server first runs one two-token request through the scheduler so the decode
@@ -1190,7 +1227,8 @@ one per text frame. On the socket:
 - **A full engine queues instead of refusing**: the request gets
   `response.queued` and waits in one server-wide first-in first-out queue
   shared by every connection, where HTTP would answer `503`.
-  A queued request's timeout counts from its admission, not from its wait.
+  A queued request's deadline, `--server-stream-timeout`, counts from its
+  admission, not from its wait ([deadlines](#deadlines)).
 - `response.cancel` (`{type, response_id?}`, an ignis extension in the shape
   of OpenAI's Realtime API) cancels one running or queued response; closing
   the socket cancels everything it had running or queued. `response.steer` is
@@ -1333,7 +1371,12 @@ condition size (a panorama past 200:1).
 **The queue.** One image job runs at a time and `image.queue_depth` wait in
 order; a full queue answers `503 engine_full` with `Retry-After`. A client that
 disconnects cancels its job before it starts or between denoising steps. A
-running or queued job counts as use for [idle unload](#idle-unload).
+job is held to `--server-request-timeout` from its start, never from its queue,
+or `--server-stream-timeout` when it streams: past it the job ends between two
+steps, its runner free for the next, and its request is `504 request_timeout`,
+or, streamed, an `error` event after the images already made, whatever
+`--server-timeout-reply` says ([deadlines](#deadlines)). A running or queued
+job counts as use for [idle unload](#idle-unload).
 
 | Setting (`--image-<name>`, `IGNIS_IMAGE_<NAME>`, `image.<name>` in the file) | Default | Meaning |
 |---|---|---|
@@ -1647,8 +1690,9 @@ Everything goes through one structured log on stdout, in the format
 - The request lifecycle is the `ignis.request.*` events (`admitted` / `ttft` /
   `done`), with the request id doubling as the OTel trace id
   ([ADR 0012](../adr/0012-request-id-as-trace-id.md)). A cancelled request
-  ends with `cancelled` instead of `done`: its `cause` is `timeout` (past
-  `--server-request-timeout`), `consumer` (its client hung up, its queued
+  ends with `cancelled` instead of `done`: its `cause` is `timeout` (past its
+  deadline, `--server-request-timeout` or `--server-stream-timeout`, whatever
+  it was answered), `consumer` (its client hung up, its queued
   response was cancelled, or a loop-guard rewind replaced it) or `shutdown`
   (a model switch stopped it), beside how long it ran, whether it had a lane
   and the tokens it generated.

@@ -948,9 +948,11 @@ tokens       integer                         generated before the cancel
 class        interactive | agent
 ```
 
-`timeout` is `--server-request-timeout`, whatever answered it (a 504, a
-response `failed` with `request_timeout`, a decision question `not_completed`,
-an image prompt rewrite given up); `shutdown` a model thread stopped with it in flight (a
+`timeout` is the request's deadline, `--server-request-timeout` or
+`--server-stream-timeout` (ADR 0058), whatever answered it (the answer so far
+cut `length` or `incomplete`, a 504, a response `failed` with
+`request_timeout`, a stream's error chunk, a decision question
+`not_completed`, an image prompt rewrite given up); `shutdown` a model thread stopped with it in flight (a
 switch past its drain window); `consumer` whatever waited for it letting it
 go: a client that hung up, a queued response cancelled, a loop-guard rewind
 (whose `ignis.loop_guard.rewound` line names it `cancelled`). A request

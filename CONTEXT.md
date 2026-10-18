@@ -72,6 +72,17 @@ When output names a domain concept, use the term as defined here.
   `0` lifts the default to the context. Reaching it ends the request with
   `finish_reason: "length"`. An explicit cap past the context is refused, never
   clamped (ADR 0045).
+- **Deadline** — how long a request may run before the server cuts it (ADR
+  0058): `server.request_timeout` for one answered whole, `server.stream_timeout`
+  for one that streams, from its admission (an **image job**'s from its start,
+  never its queue); `0` is none. A passed deadline cancels the request and frees
+  its **lane**.
+- **Partial reply** — what a request past its **deadline** is answered under
+  `server.timeout_reply: partial`, the default: what it generated, ended as the
+  **generation cap** ends one (`finish_reason: "length"`, a response
+  `incomplete` with `max_output_tokens`). Not a cap: the header
+  `x-ignis-stopped-by` and the request log's `cause: timeout` say which it was.
+  A decision and an image job have none; they answer an error.
 - **Reasoning redirect** — an EOS a request draws while its reasoning block is
   still open becomes the block's `</think>`, and the model goes on to answer
   (ADR 0048, GitHub #315). The leaf decides it on the host, before the token is

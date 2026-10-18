@@ -239,8 +239,10 @@ pub enum CancelCause {
     /// response cancelled, a loop-guard rewind (whose
     /// `ignis.loop_guard.rewound` line names it `cancelled`).
     Consumer,
-    /// Past `--server-request-timeout`, whatever answered it: a 504, a
-    /// response `failed` with `request_timeout`, a decision question
+    /// Past its deadline (`--server-request-timeout`,
+    /// `--server-stream-timeout`, ADR 0058), whatever answered it: the answer
+    /// so far cut `length` or `incomplete`, a 504, a response `failed` with
+    /// `request_timeout`, a stream's error chunk, a decision question
     /// `not_completed`, an image prompt rewrite given up.
     Timeout,
     /// The model thread stopped with it in flight: a model switch past its
