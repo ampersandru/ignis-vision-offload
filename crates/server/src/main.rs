@@ -194,6 +194,7 @@ async fn main() {
         request_timeout_secs,
         switch_drain_timeout_secs,
         idle_unload_secs,
+        socket_idle_close_secs,
         allow_model_switch,
         known_models,
         ui,
@@ -369,6 +370,7 @@ async fn main() {
         .with_request_timeout(std::time::Duration::from_secs(request_timeout_secs as u64))
         .with_instruction_policy(instruction_policy)
         .with_idle_unload(std::time::Duration::from_secs(u64::from(idle_unload_secs)))
+        .with_socket_idle_close(std::time::Duration::from_secs(u64::from(socket_idle_close_secs)))
         .with_image(running.settings().image.clone());
     // Spec config-v2/02: the running configuration, shown and changed over
     // `GET`/`PATCH /v1/config` and written back to the config file in use;

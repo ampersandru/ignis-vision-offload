@@ -1212,6 +1212,38 @@ fn the_idle_unload_defaults_to_five_minutes_takes_zero_and_has_a_ceiling() {
     assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().idle_unload_secs, 45, "the file key is model.idle_unload");
 }
 
+// ── the Responses socket's idle close (GitHub #329) ──────────────────────
+
+/// `server.socket_idle_close` resolves from flag, env and file with the
+/// usual precedence, defaults to ten minutes, takes 0 (never), refuses a
+/// value past its ceiling naming both, and is visible and patchable with no
+/// reload: the live knob a socket reads.
+#[test]
+fn the_socket_idle_close_defaults_to_ten_minutes_takes_zero_and_has_a_ceiling() {
+    assert_eq!(config(&[]).socket_idle_close_secs, 600);
+    assert_eq!(DEFAULT_SOCKET_IDLE_CLOSE_SECS, 600);
+    let env = env_map(&[("IGNIS_SERVER_SOCKET_IDLE_CLOSE", "90")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).socket_idle_close_secs, 90);
+    let env = env_map(&[("IGNIS_SERVER_SOCKET_IDLE_CLOSE", "90")]);
+    let zero = expect_config(resolve(&args(&["--server-socket-idle-close", "0"]), env).expect("resolve"));
+    assert_eq!(zero.socket_idle_close_secs, 0, "flag must win over env, and 0 never closes");
+    let ceiling = MAX_SOCKET_IDLE_CLOSE_SECS.to_string();
+    let past = (MAX_SOCKET_IDLE_CLOSE_SECS + 1).to_string();
+    let err = refused(&["--server-socket-idle-close", &past]);
+    assert!(err.contains(&ceiling) && err.contains(&past), "{err}");
+    let field = schema::field("server", "socket_idle_close").expect("declared");
+    assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    let files = MemFiles::with(&[("c.yaml", "server:\n  socket_idle_close: 45\n")]);
+    assert_eq!(
+        with_files(&["--config", "c.yaml"], no_env, &files).unwrap().socket_idle_close_secs,
+        45,
+        "the file key is server.socket_idle_close"
+    );
+    let live = crate::Live::of(&config(&["--server-socket-idle-close", "30"]));
+    assert_eq!(live.socket_idle_close, std::time::Duration::from_secs(30));
+    assert_eq!(crate::Live::default().socket_idle_close, std::time::Duration::ZERO, "a server built without a config never closes");
+}
+
 // ── loop guard (ADR 0052) ────────────────────────────────────────────────
 
 /// The loop guard scores normalized reasoning at 1,000 characters and 0.265

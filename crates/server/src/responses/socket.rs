@@ -27,11 +27,18 @@
 //!   queue ([`super::queue`]) with `response.queued`, instead of a 503.
 //! - **Close.** Closing the socket, by either side, cancels every response it
 //!   has running and drops the ones it has queued.
+//! - **Idle close** (GitHub #329). A socket with nothing running, queued or
+//!   waiting and no text or binary frame from its client for
+//!   `server.socket_idle_close` is closed by the server, with a normal close
+//!   frame saying why; the client's next request opens another. An open
+//!   socket holds a Knative pod from scaling down, its drain waiting on every
+//!   one. A ping proves the connection, not a user, so it does not count.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::State;
 use axum::http::header::{SEC_WEBSOCKET_PROTOCOL, UPGRADE};
@@ -41,6 +48,7 @@ use serde_json::{json, Map, Value as JsonValue};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
+use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::api::{self, ApiError, CancelOnDrop};
@@ -54,6 +62,11 @@ use crate::Server;
 /// The subprotocol prefix a browser authenticates with (OpenAI's Realtime
 /// convention): `openai-insecure-api-key.<key>`.
 pub(crate) const CREDENTIAL_PREFIX: &str = "openai-insecure-api-key.";
+
+/// How long an idle close waits for the client's own Close frame after
+/// sending the server's: a grace for the protocol's closing handshake
+/// (RFC 6455 §7.1.2), not an operator limit.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Distinct named streams one connection may use; the default stream does
 /// not count.
@@ -96,7 +109,9 @@ fn offered(headers: &HeaderMap) -> impl Iterator<Item = &str> {
 
 The client sends text frames carrying one JSON event each. `response.create` takes the `POST /v1/responses` body's fields beside its `type`, plus `stream_id` (a named stream, 1-256 characters of `[A-Za-z0-9_.-]`; 32 per connection) and `generate: false` (a warm-up: the prompt is prefilled and its state kept, nothing is generated). The server answers with the same events as the HTTP stream, with `stream_id` on the events of a named stream. Requests on one stream run in order; different streams run concurrently, up to 16 responses per connection. `previous_response_id` continues a stream's latest finished response on this connection with only the new items; a response the reasoning-loop guard rewound is continued from the reasoning as the model saw it, without the tags and the text they took back. A request the engine cannot admit waits in a server-wide queue (`response.created` with `status: \"queued\"`, then `response.queued`, then `response.in_progress`), and so does the continuation of a rewind. The loop guard, `usage.output_tokens_details.rewound_tokens` and `include: [\"reasoning.encrypted_content\"]` work as over HTTP.
 
-`response.cancel` (an ignis extension borrowed from the Realtime API, `{type, response_id}`) ends one response with `response.incomplete`, `status: \"cancelled\"`, and stops the engine request generating for it, a rewind's continuation included. `response.steer` is refused (`steering_not_supported`). A failure is an `error` event `{type: \"error\", status, error: {type, code, message, param}, stream_id?}`, and never closes the socket. Closing it cancels everything the connection had running or queued.",
+`response.cancel` (an ignis extension borrowed from the Realtime API, `{type, response_id}`) ends one response with `response.incomplete`, `status: \"cancelled\"`, and stops the engine request generating for it, a rewind's continuation included. `response.steer` is refused (`steering_not_supported`). A failure is an `error` event `{type: \"error\", status, error: {type, code, message, param}, stream_id?}`, and never closes the socket. Closing it cancels everything the connection had running or queued.
+
+A socket idle for `server.socket_idle_close` seconds (default 600; 0 never) — nothing running or queued on it, and no text or binary frame from the client; pings do not count — is closed by the server with a normal close frame (1000) whose reason says so. Open a new socket to continue: a `previous_response_id` of the closed one is not found on it.",
     responses(
         (status = 101, description = "Switching protocols: the socket is open."),
         (status = 400, description = "Not a WebSocket upgrade.", body = ApiError),
@@ -204,6 +219,9 @@ struct Connection {
     waiting: VecDeque<Job>,
     active: HashMap<u64, Active>,
     next_key: u64,
+    /// The client's latest text or binary frame, or the end of the latest
+    /// response, whichever came last: where the idle time counts from.
+    quiet_since: Instant,
 }
 
 impl Connection {
@@ -218,6 +236,7 @@ impl Connection {
             waiting: VecDeque::new(),
             active: HashMap::new(),
             next_key: 0,
+            quiet_since: Instant::now(),
         }
     }
 
@@ -225,16 +244,32 @@ impl Connection {
         // Counted until this future is dropped, however it ends: a closed
         // socket, or a task aborted or panicking.
         let _open = OpenSocket::new(Arc::clone(&self.server.responses));
+        let look = tokio::time::sleep_until(self.next_look());
+        tokio::pin!(look);
         loop {
+            // Biased, the client's frames before the idle deadline: a frame
+            // already read when the deadline falls due must win it, or a
+            // request that crossed the close on the wire is lost (the idle
+            // time restarts with the frame). The server's own events come
+            // last: a client frame, a cancel above all, is never held
+            // behind a streaming reply, and the deadline only fires when
+            // no frame is ready.
             tokio::select! {
+                biased;
                 frame = self.socket.recv() => match frame {
-                    Some(Ok(Message::Text(text))) => self.receive(text.as_str()),
-                    Some(Ok(Message::Binary(_))) => self.send(error_event(
-                        "invalid_request_error",
-                        "a frame must be a text frame carrying one JSON event",
-                        None,
-                        &None,
-                    )),
+                    Some(Ok(Message::Text(text))) => {
+                        self.quiet_since = Instant::now();
+                        self.receive(text.as_str());
+                    }
+                    Some(Ok(Message::Binary(_))) => {
+                        self.quiet_since = Instant::now();
+                        self.send(error_event(
+                            "invalid_request_error",
+                            "a frame must be a text frame carrying one JSON event",
+                            None,
+                            &None,
+                        ));
+                    }
                     // Pings are answered by the socket itself.
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                     Some(Ok(Message::Close(_))) => {
@@ -246,6 +281,13 @@ impl Connection {
                     }
                     Some(Err(_)) | None => break,
                 },
+                () = &mut look => {
+                    if let Some(after) = self.idle_past() {
+                        self.close_idle(after).await;
+                        break;
+                    }
+                    look.as_mut().reset(self.next_look());
+                }
                 Some(outgoing) = self.inbox.recv() => match outgoing {
                     Outgoing::Event(event) => {
                         if self.socket.send(Message::Text(event.to_string().into())).await.is_err() {
@@ -265,6 +307,40 @@ impl Connection {
         for active in self.active.values() {
             active.task.abort();
         }
+    }
+
+    /// The live `server.socket_idle_close`, when the socket has been idle
+    /// for at least that long: nothing running, queued or waiting, and
+    /// nothing from the client since.
+    fn idle_past(&self) -> Option<Duration> {
+        let after = self.server.live().socket_idle_close;
+        let idle = self.active.is_empty() && self.waiting.is_empty();
+        (idle && !after.is_zero() && self.quiet_since.elapsed() >= after).then_some(after)
+    }
+
+    /// When to look at the idle time next: when it would be due, and at
+    /// least once an [`IDLE_TICK`](crate::idle::IDLE_TICK), so a live change
+    /// of the knob, or the end of a response, reaches a socket within one.
+    fn next_look(&self) -> Instant {
+        let tick = Instant::now() + crate::idle::IDLE_TICK;
+        let after = self.server.live().socket_idle_close;
+        if after.is_zero() || !self.active.is_empty() {
+            return tick;
+        }
+        (self.quiet_since + after).min(tick)
+    }
+
+    /// Close an idle socket with a normal close frame its client can show.
+    /// After the frame, the client's own is awaited for [`CLOSE_GRACE`] at
+    /// most: dropping the stream with client bytes still unread makes the
+    /// OS reset the connection, which can discard the close frame in
+    /// flight (the browser then reports 1006, without the reason), while a
+    /// peer gone silent must not hold the connection open.
+    async fn close_idle(&mut self, after: Duration) {
+        tracing::info!(name: "ignis.ws.idle_closed", after_ms = after.as_millis() as u64, "closed a Responses socket idle past server.socket_idle_close");
+        let reason = format!("idle for {after:?} (server.socket_idle_close); open a new socket to continue");
+        let _ = self.socket.send(Message::Close(Some(CloseFrame { code: close_code::NORMAL, reason: reason.into() }))).await;
+        let _ = tokio::time::timeout(CLOSE_GRACE, async { while let Some(Ok(_)) = self.socket.recv().await {} }).await;
     }
 
     /// Queue a frame for the writer, behind the frames already queued.
@@ -422,6 +498,8 @@ impl Connection {
         let Some(active) = self.active.remove(&key) else {
             return;
         };
+        // The socket may be idle from here.
+        self.quiet_since = Instant::now();
         let state = self.streams.entry(active.stream.clone()).or_default();
         state.busy = false;
         match outcome {

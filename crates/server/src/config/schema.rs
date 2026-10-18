@@ -269,6 +269,13 @@ config_group! {
         /// image routes are not bounded by it: ten images at 2048x2048 take
         /// longer.
         request_timeout: Secs = super::DEFAULT_REQUEST_TIMEOUT_SECS, between(1, super::MAX_REQUEST_TIMEOUT_SECS as i64), ALL, [Visible, Patchable];
+        /// Seconds a Responses WebSocket may sit idle — no frame from the
+        /// client and no response running or queued on it — before the
+        /// server closes it with a normal close frame saying why; the
+        /// client's next request opens another. An open socket holds a
+        /// Knative pod, and its GPU, from scaling down. 0 never closes.
+        socket_idle_close: Secs = super::DEFAULT_SOCKET_IDLE_CLOSE_SECS, between(0, super::MAX_SOCKET_IDLE_CLOSE_SECS as i64), ALL,
+            [Visible, Patchable];
         /// Where `system` messages go: `merge` joins a leading run into the
         /// system prompt and keeps a later one as its own block in place;
         /// `strict` answers 400 for a system message that is not first.

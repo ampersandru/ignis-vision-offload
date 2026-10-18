@@ -174,6 +174,11 @@ pub struct Live {
     /// it (`--model-idle-unload`, spec model-switch/02); zero never unloads.
     /// Read by the clock at every tick, so a live change needs no restart.
     pub idle_unload: Duration,
+    /// How long a Responses WebSocket may sit idle before the server closes
+    /// it (`--server-socket-idle-close`, GitHub #329); zero never closes.
+    /// Read by every open socket at least once a second, so a live change
+    /// reaches the sockets already open.
+    pub socket_idle_close: Duration,
     /// The loop guard (`--model-loop-guard`, ADR 0052): read per request.
     pub loop_guard: loop_guard::LoopGuardParams,
     /// The image model's serving (`image.*`, spec image-model/05): its
@@ -186,9 +191,10 @@ pub struct Live {
 impl Default for Live {
     /// What a server built without a config runs with: the timeout's
     /// default, thinking on with no effort or budget, merge / inplace — and
-    /// no idle unload and no loop guard: only a configured server (`main`, a
-    /// live `PATCH`) unloads its model or rewinds a reasoning, so no test or
-    /// in-process harness meets a cold reload or a rewind it did not ask for.
+    /// no idle unload, no idle socket close and no loop guard: only a
+    /// configured server (`main`, a live `PATCH`) unloads its model, closes
+    /// an idle socket or rewinds a reasoning, so no test or in-process
+    /// harness meets a cold reload, a close or a rewind it did not ask for.
     fn default() -> Self {
         Self {
             request_timeout: Duration::from_secs(crate::config::DEFAULT_REQUEST_TIMEOUT_SECS as u64),
@@ -197,6 +203,7 @@ impl Default for Live {
             default_thinking_budget: None,
             instruction_policy: instruction::InstructionPolicy::default(),
             idle_unload: Duration::ZERO,
+            socket_idle_close: Duration::ZERO,
             loop_guard: loop_guard::LoopGuardParams { mode: loop_guard::LoopGuardMode::Off, ..Default::default() },
             image: config::schema::ImageGroup::default(),
         }
@@ -213,6 +220,7 @@ impl Live {
             default_thinking_budget: config.thinking_budget,
             instruction_policy: config.instruction_policy,
             idle_unload: Duration::from_secs(u64::from(config.idle_unload_secs)),
+            socket_idle_close: Duration::from_secs(u64::from(config.socket_idle_close_secs)),
             loop_guard: config.loop_guard.clone(),
             image: config.settings().image.clone(),
         }
@@ -531,6 +539,13 @@ impl Server {
     /// (`--model-idle-unload`, spec model-switch/02); zero never does.
     pub fn with_idle_unload(self, after: Duration) -> Self {
         self.update_live(|live| live.idle_unload = after);
+        self
+    }
+
+    /// Close a Responses WebSocket idle for `after`
+    /// (`--server-socket-idle-close`, GitHub #329); zero never does.
+    pub fn with_socket_idle_close(self, after: Duration) -> Self {
+        self.update_live(|live| live.socket_idle_close = after);
         self
     }
 

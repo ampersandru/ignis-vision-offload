@@ -125,6 +125,19 @@ pub const DEFAULT_MODEL_IDLE_UNLOAD_SECS: u32 = 300;
 /// whoever wants the model never unloaded says 0.
 pub const MAX_MODEL_IDLE_UNLOAD_SECS: u32 = 7 * 24 * 3600;
 
+/// How long a Responses WebSocket may sit idle before the server closes it,
+/// in seconds (`--server-socket-idle-close`, GitHub #329): ten minutes is
+/// longer than a person pauses between the turns of one session, and lets a
+/// tab left open release a Knative pod, whose drain waits on every open
+/// socket, within minutes. A client's next request reconnects. 0 never
+/// closes.
+pub const DEFAULT_SOCKET_IDLE_CLOSE_SECS: u32 = 600;
+
+/// The upper bound `--server-socket-idle-close` accepts: a week, a ceiling
+/// against a fat-fingered value as [`MAX_MODEL_IDLE_UNLOAD_SECS`] is for its
+/// flag — whoever wants a socket never closed says 0.
+pub const MAX_SOCKET_IDLE_CLOSE_SECS: u32 = 7 * 24 * 3600;
+
 /// Whether a request naming another model may switch the server to it
 /// without anyone saying so (`--switch-allow-implicit`, spec model-switch/01
 /// §Implicit switch). On: the owner's clients name the model they want and
@@ -413,6 +426,10 @@ pub struct Config {
     /// server staying up (`--model-idle-unload`, spec model-switch/02). In
     /// `[0, MAX_MODEL_IDLE_UNLOAD_SECS]`; 0 never unloads.
     pub idle_unload_secs: u32,
+    /// How long a Responses WebSocket may sit idle before the server closes
+    /// it (`--server-socket-idle-close`, GitHub #329). In
+    /// `[0, MAX_SOCKET_IDLE_CLOSE_SECS]`; 0 never closes.
+    pub socket_idle_close_secs: u32,
     /// Whether a request whose `model` names another model listed in
     /// [`Config::known_models`] switches the server to it, and is then
     /// served on it (`--switch-allow-implicit`, spec model-switch/01
@@ -1086,6 +1103,7 @@ fn derive(
         request_timeout_secs: s.server.request_timeout,
         switch_drain_timeout_secs: s.switch.drain_timeout,
         idle_unload_secs: s.model.idle_unload,
+        socket_idle_close_secs: s.server.socket_idle_close,
         allow_model_switch: s.switch.allow_implicit,
         known_models: s.switch.known_models.clone(),
         ui: s.server.ui,

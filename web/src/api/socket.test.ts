@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeFigures } from "../metrics/figures.ts";
 import { forgetKey, getAuth, saveKey } from "./auth.ts";
 import type { ConversationRequest, Settings, Turn } from "./request.ts";
 import type { ServerEvent } from "./responses.ts";
-import { createResponsesSocket, type SocketLike, STREAMS_PER_SOCKET, streamIdOf } from "./socket.ts";
+import { createResponsesSocket, HIDDEN_CLOSE_MS, type SocketDeps, type SocketLike, STREAMS_PER_SOCKET, streamIdOf, type Visibility } from "./socket.ts";
 import type { ChunkEvent } from "./sse.ts";
 import { createStreamChat, type StreamOptions, streamChatCompletions } from "./stream.ts";
 import { chooseTransport, getTransport } from "./transport.ts";
@@ -40,6 +40,10 @@ class FakeSocket implements SocketLike {
   }
   drop() {
     this.onclose?.({ code: 1006 });
+  }
+  /** ignis closing the socket itself, as its idle close does: a close frame with a code and a reason. */
+  closeByServer(code: number, reason: string) {
+    this.onclose?.({ code, reason });
   }
   emit(event: ServerEvent) {
     this.onmessage?.({ data: JSON.stringify(event) });
@@ -101,7 +105,7 @@ function ticking() {
   return () => (t += 10);
 }
 
-function harness(probeStatus: number | "down" = 200) {
+function harness(probeStatus: number | "down" = 200, deps: Partial<SocketDeps> = {}) {
   const sockets: FakeSocket[] = [];
   const probes: RequestInit[] = [];
   const socket = createResponsesSocket({
@@ -117,6 +121,7 @@ function harness(probeStatus: number | "down" = 200) {
       return new Response(probeStatus === 401 ? '{"error":{"message":"incorrect API key provided"}}' : '{"data":[]}', { status: probeStatus });
     }) as typeof fetch,
     now: ticking(),
+    ...deps,
   });
   /** Starts a request and collects what it hands the turn loop. */
   const start = (turns: Turn[], options: Partial<StreamOptions> = {}) => {
@@ -695,5 +700,166 @@ describe("a dropped socket", () => {
     await tick();
     for (const event of reply("a", "resp_c", { text: "back" })) h.sockets[1].emit(event);
     expect(await next.result).toMatchObject({ ok: true });
+  });
+});
+
+describe("a socket ignis closed (GitHub #329)", () => {
+  const idle = "idle for 600s (server.socket_idle_close); open a new socket to continue";
+
+  it("fails nothing when ignis closes an idle socket, and the next turn opens another and sends the whole history", async () => {
+    const h = harness();
+    const first = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    for (const event of reply("session", "resp_1", { text: "b" })) h.sockets[0].emit(event);
+    expect(await first.result).toMatchObject({ ok: true });
+
+    h.sockets[0].closeByServer(1000, idle);
+    const next = h.start([user("a"), { role: "assistant", content: "b" }, user("c")], { streamId: "session" });
+    await tick();
+    expect(h.sockets).toHaveLength(2);
+    h.sockets[1].accept();
+    await tick();
+    const create = h.sockets[1].creates()[0];
+    expect(create).not.toHaveProperty("previous_response_id");
+    expect(create.input).toHaveLength(3);
+    for (const event of reply("session", "resp_2", { text: "d" })) h.sockets[1].emit(event);
+    expect(await next.result).toMatchObject({ ok: true });
+  });
+
+  it("sends a request again on a new connection when the idle close crossed it", async () => {
+    const h = harness();
+    const first = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    expect(h.sockets[0].creates()).toHaveLength(1);
+    // The server's idle close, with no response.created for the turn: it never read the frame.
+    h.sockets[0].closeByServer(1000, idle);
+    await tick();
+    expect(h.sockets).toHaveLength(2);
+    h.sockets[1].accept();
+    await tick();
+    expect(h.sockets[1].creates()).toHaveLength(1);
+    expect(h.sockets[1].creates()[0]).not.toHaveProperty("previous_response_id");
+    for (const event of reply("session", "resp_1", { text: "b" })) h.sockets[1].emit(event);
+    expect(await first.result).toMatchObject({ ok: true });
+  });
+
+  it("retries a crossed request once only", async () => {
+    const h = harness();
+    const first = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    h.sockets[0].closeByServer(1000, idle);
+    await tick();
+    h.sockets[1].accept();
+    await tick();
+    h.sockets[1].closeByServer(1000, idle);
+    expect(await first.result).toMatchObject({ ok: false, message: expect.stringContaining("server.socket_idle_close") });
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it("does not resend a request cut short after its response began", async () => {
+    const h = harness();
+    const cut = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    h.sockets[0].emit({ type: "response.created", stream_id: "session", response: { id: "resp_1", status: "in_progress" } });
+    h.sockets[0].closeByServer(1000, idle);
+    expect(await cut.result).toMatchObject({ ok: false });
+    expect(h.sockets).toHaveLength(1);
+  });
+
+  it("says why when a close cuts a reply short", async () => {
+    const h = harness();
+    const cut = h.start([user("a")], { streamId: "session" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    h.sockets[0].emit({ type: "response.created", stream_id: "session", response: { id: "resp_1", status: "in_progress" } });
+    h.sockets[0].closeByServer(1001, "ignis is shutting down");
+    expect(await cut.result).toMatchObject({ ok: false, message: expect.stringContaining("ignis is shutting down") });
+  });
+});
+
+describe("a hidden page (GitHub #329)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /** A page whose visibility the test sets. */
+  function page() {
+    let hidden = false;
+    const listeners: (() => void)[] = [];
+    const visibility: Visibility = { hidden: () => hidden, onChange: (listener) => void listeners.push(listener) };
+    const set = (to: boolean) => {
+      hidden = to;
+      for (const listener of listeners) listener();
+    };
+    return { visibility, hide: () => set(true), show: () => set(false) };
+  }
+
+  const flush = () => vi.advanceTimersByTimeAsync(0);
+
+  /** A harness on `visibility`, its socket open and `session` having answered "a" with "b". */
+  async function answered(visibility: Visibility) {
+    const h = harness(200, { visibility });
+    const first = h.start([user("a")], { streamId: "session" });
+    await flush();
+    h.sockets[0].accept();
+    await flush();
+    for (const event of reply("session", "resp_1", { text: "b" })) h.sockets[0].emit(event);
+    await first.result;
+    return h;
+  }
+
+  it(`closes a socket nothing uses once the page has been hidden ${HIDDEN_CLOSE_MS} ms, and the next turn opens another`, async () => {
+    const p = page();
+    const h = await answered(p.visibility);
+    p.hide();
+    await vi.advanceTimersByTimeAsync(HIDDEN_CLOSE_MS - 1);
+    expect(h.sockets[0].closedByPage).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.sockets[0].closedByPage).toBe(true);
+
+    p.show();
+    const next = h.start([user("a"), { role: "assistant", content: "b" }, user("c")], { streamId: "session" });
+    await flush();
+    expect(h.sockets).toHaveLength(2);
+    h.sockets[1].accept();
+    await flush();
+    expect(h.sockets[1].creates()[0]).not.toHaveProperty("previous_response_id");
+    for (const event of reply("session", "resp_2", { text: "d" })) h.sockets[1].emit(event);
+    expect(await next.result).toMatchObject({ ok: true });
+  });
+
+  it("keeps the socket when the page is shown again within the grace", async () => {
+    const p = page();
+    const h = await answered(p.visibility);
+    p.hide();
+    await vi.advanceTimersByTimeAsync(HIDDEN_CLOSE_MS / 2);
+    p.show();
+    await vi.advanceTimersByTimeAsync(HIDDEN_CLOSE_MS * 2);
+    expect(h.sockets[0].closedByPage).toBe(false);
+  });
+
+  it("never closes a socket with a reply in flight, and closes it a whole grace after the reply ends", async () => {
+    const p = page();
+    const h = await answered(p.visibility);
+    const running = h.start([user("x")], { streamId: "agent" });
+    await flush();
+    p.hide();
+    await vi.advanceTimersByTimeAsync(HIDDEN_CLOSE_MS * 3);
+    expect(h.sockets[0].closedByPage).toBe(false);
+
+    for (const event of reply("agent", "resp_x", { text: "y" })) h.sockets[0].emit(event);
+    expect(await running.result).toMatchObject({ ok: true });
+    await vi.advanceTimersByTimeAsync(HIDDEN_CLOSE_MS - 1);
+    expect(h.sockets[0].closedByPage).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.sockets[0].closedByPage).toBe(true);
   });
 });
