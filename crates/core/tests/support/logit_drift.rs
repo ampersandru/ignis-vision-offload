@@ -14,23 +14,43 @@
 
 /// The teacher-forced tolerance, in BF16 ulps at the reference row's largest
 /// magnitude: no logit of a verify round's row may sit further than this from
-/// the plain round's, and their picks may differ only where the plain row
-/// rates the two within it. Measured on the RTX 5090 (2026-10-18, ADR 0056):
-/// the default's own 8-row rounds reach 40.2 ulps from spec-off, 16-32 rows
-/// 58.3; the next power of two above both. Rows on another context (a lane
-/// one moved pick off the text) reach 33-202, 89% of them past it.
+/// the plain round's. Measured on the RTX 5090 (2026-10-18, ADR 0056): the
+/// default's own 8-row rounds reach 40.2 ulps from spec-off, 16-32 rows 58.3
+/// (one tail logit, 32 rows hq-e8-2b); 64 is the next power of two above
+/// both -- a margin of 1.1x over the wide budgets' widest on this card, 1.6x
+/// over the default's. Kept that tight because the discriminator is close:
+/// rows on another context (a lane one moved pick off the text) reach 33-202,
+/// 89% of them past 64 but only 59% past 96. Another card's tensor-core
+/// tiling may move the drift: the RTX PRO 6000 run re-derives it before a
+/// profile takes a budget past 8 (the finding's follow-up).
 pub const TOLERANCE_ULPS: f32 = 64.0;
 
+/// The near tie a moved pick must sit inside, in the same ulps: a verify
+/// round's pick may differ from the plain round's only where the plain row
+/// rates the two within this. Measured moved picks sat at gaps of 0-8 ulps in
+/// every cell (ADR 0056); 16 is the next power of two above, 2x. Not
+/// [`TOLERANCE_ULPS`], which bounds how far any logit may move: 64 ulps at a
+/// top logit of 20 is 8 logits, no near tie.
+pub const PICK_GAP_ULPS: f32 = 16.0;
+
 /// The teacher-forced mean log-probability's tolerance, in nats a token: the
-/// wide route's mean over a cell's compared rows against the plain route's.
-/// Measured: 0.0077 at 8 rows, 0.0117 at 16-32 (the text is spec-off's own
-/// greedy text, so the wide route reads lower); 1.7x the widest.
+/// wide route's mean over a cell's compared rows against the plain route's,
+/// either way. Measured from -0.0117 to +0.0077 (wide minus spec-off): the
+/// verify rows read spec-off's own greedy text both less and more likely
+/// than spec-off's rows do, so the check is two-sided; 0.02 is 1.7x the
+/// widest.
 pub const MEAN_LOG_PROB_NATS: f64 = 0.02;
 
 /// The head's first-position acceptance under which a budget's cell is
 /// refused: a wide round's rows or the head's entries gone wrong show as
 /// drafts no longer accepted. Measured 0.74-0.94 on these prompts.
 pub const HEAD_ACCEPTANCE_FLOOR: f64 = 0.5;
+
+/// The band a wide budget's first-draft acceptance keeps around the same
+/// prompts' at the default's 8 rows (the head run on them two lanes at a
+/// time, rounds of 8 rows): the owner's "acceptance within a band" (ADR
+/// 0056), either way.
+pub const ACCEPTANCE_BAND: f64 = 0.1;
 
 pub fn bf16(bits: u16) -> f32 {
     f32::from_bits(u32::from(bits) << 16)
@@ -96,18 +116,32 @@ pub fn row_drift(off: &[u16], on: &[u16]) -> RowDrift {
     RowDrift { max_abs, ulps: max_abs / ulp, worst, pick_off, pick_on, gap_ulps: (top - bf16(off[pick_on as usize])) / ulp }
 }
 
-/// Within `tolerance_ulps`: every logit, and a different pick only where the
-/// plain row rates the two picks within it. A line naming the excess
-/// otherwise.
-pub fn within(drift: &RowDrift, tolerance_ulps: f32) -> Result<(), String> {
+/// Within `tolerance_ulps` every logit, and a different pick only where the
+/// plain row rates the two picks within `pick_gap_ulps` (a near tie). A line
+/// naming the excess otherwise.
+pub fn within(drift: &RowDrift, tolerance_ulps: f32, pick_gap_ulps: f32) -> Result<(), String> {
     if drift.ulps > tolerance_ulps {
         return Err(format!("a logit moved {} ({} ulps, past {tolerance_ulps})", drift.max_abs, drift.ulps));
     }
-    if drift.pick_off != drift.pick_on && drift.gap_ulps > tolerance_ulps {
+    if drift.pick_off != drift.pick_on && drift.gap_ulps > pick_gap_ulps {
         return Err(format!(
-            "the pick moved from {} to {}, {} ulps apart in the plain row (past {tolerance_ulps})",
+            "the pick moved from {} to {}, {} ulps apart in the plain row (past {pick_gap_ulps})",
             drift.pick_off, drift.pick_on, drift.gap_ulps
         ));
+    }
+    Ok(())
+}
+
+/// The head's first-draft acceptance at a wide budget, `(accepted, offered)`,
+/// within `band` of the same prompts' at 8 rows (`narrow`), either way. A
+/// line naming both otherwise, or when either offered no first draft.
+pub fn acceptance_within_band(wide: (u32, u32), narrow: (u32, u32), band: f64) -> Result<(), String> {
+    if wide.1 == 0 || narrow.1 == 0 {
+        return Err(format!("no first draft to compare: {wide:?} against 8 rows' {narrow:?}"));
+    }
+    let (w, n) = (f64::from(wide.0) / f64::from(wide.1), f64::from(narrow.0) / f64::from(narrow.1));
+    if (w - n).abs() > band {
+        return Err(format!("first-draft acceptance {w:.3} against 8 rows' {n:.3} on the same prompts, past {band}"));
     }
     Ok(())
 }

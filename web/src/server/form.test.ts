@@ -73,6 +73,8 @@ describe("controlFor", () => {
     expect(controlFor(field("model.prefill_chunk"), 1024)).toMatchObject({ hint: "tokens, nonzero multiple of 128" });
     expect(controlFor(field("model.max_context"), 786432)).toMatchObject({ hint: "tokens, >= 1" });
     expect(controlFor(field("vram.kv_pool_bytes"), null)).toEqual({ kind: "text", hint: "bytes|tokens", placeholder: "auto" });
+    // The draft row budget's range as the server declares it (GitHub #329 item 5: up to 32).
+    expect(controlFor(field("spec.draft_rows"), null)).toEqual({ kind: "text", hint: "rows, 0..=32", placeholder: "auto" });
   });
 });
 

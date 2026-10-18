@@ -171,6 +171,9 @@ fn main() -> Result<(), String> {
         sets.truncate(n);
     }
     if let Some(n) = lanes {
+        // The four short windows first, code and prose alternating (0 and 32
+        // code, 2 and 8 prose: four lanes are the two of each above), then
+        // further test2048 windows up to eight lanes.
         let mut wide = Vec::new();
         for window in [0, 2, 32, 8, 4, 6, 10, 12].into_iter().take(n as usize) {
             wide.push(prompt("test2048", window, 1536)?);

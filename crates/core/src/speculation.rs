@@ -119,7 +119,7 @@ impl SpeculativeBackend {
 /// The rows a Flash-Next verify round carries (`lanes * (k + 1)`) when the
 /// operator names no row budget (0): the decode route's one-launch width
 /// (`verify::kDefaultRows`, `kernel/src/flash_next/verify.h`).
-pub const FLASH_NEXT_VERIFY_ROWS: u32 = 8;
+pub const FLASH_NEXT_DEFAULT_VERIFY_ROWS: u32 = 8;
 
 /// The widest row budget a Flash-Next load takes (`verify::kMaxRows`): past
 /// the default's 8 rows a round's MoE runs the decode route in launches of
@@ -134,7 +134,7 @@ pub const FLASH_NEXT_DEFAULT_DRAFT_TOKENS: u32 = 2;
 
 /// The window a Flash-Next round of `lanes` lanes verifies at (spec
 /// flash-next/07): the load's draft tokens, cut so that `lanes * (k + 1)`
-/// stays within the row budget (0: [`FLASH_NEXT_VERIFY_ROWS`]; past
+/// stays within the row budget (0: [`FLASH_NEXT_DEFAULT_VERIFY_ROWS`]; past
 /// [`FLASH_NEXT_MAX_VERIFY_ROWS`]: that maximum). 0 means that width runs a
 /// one-token round. The leaf's `verify::window_for` is the same rule; a
 /// round asks it for this window.
@@ -142,7 +142,8 @@ pub fn flash_next_window(draft_tokens: u32, row_budget: u32, lanes: u32) -> u32 
     if draft_tokens == 0 || lanes == 0 {
         return 0;
     }
-    let budget = if row_budget == 0 { FLASH_NEXT_VERIFY_ROWS } else { row_budget.min(FLASH_NEXT_MAX_VERIFY_ROWS) };
+    let budget =
+        if row_budget == 0 { FLASH_NEXT_DEFAULT_VERIFY_ROWS } else { row_budget.min(FLASH_NEXT_MAX_VERIFY_ROWS) };
     let columns = budget / lanes;
     if columns <= 1 {
         0
@@ -180,7 +181,7 @@ pub struct FlashNextSpeculation {
 
 impl FlashNextSpeculation {
     /// `draft_tokens` in `1..=MAX_DRAFT_TOKENS`, a row budget of 0 (the
-    /// default's [`FLASH_NEXT_VERIFY_ROWS`]) or
+    /// default's [`FLASH_NEXT_DEFAULT_VERIFY_ROWS`]) or
     /// 2..=[`FLASH_NEXT_MAX_VERIFY_ROWS`]; DFlash2 is the 27B's.
     pub fn new(backend: SpeculativeBackend, draft_tokens: u32, row_budget: u32) -> Result<Self, String> {
         if backend == SpeculativeBackend::Dflash2 {
@@ -191,7 +192,7 @@ impl FlashNextSpeculation {
         }
         if row_budget > FLASH_NEXT_MAX_VERIFY_ROWS || row_budget == 1 {
             return Err(format!(
-                "a draft row budget of {row_budget}: 0 (= {FLASH_NEXT_VERIFY_ROWS}) or 2..{FLASH_NEXT_MAX_VERIFY_ROWS}"
+                "a draft row budget of {row_budget}: 0 (= {FLASH_NEXT_DEFAULT_VERIFY_ROWS}) or 2..{FLASH_NEXT_MAX_VERIFY_ROWS}"
             ));
         }
         Ok(Self { backend, draft_tokens, row_budget })
@@ -481,7 +482,7 @@ mod tests {
     }
 
     /// Spec flash-next/07: k adapts to the row budget as lanes join -- the
-    /// decode route's 8 rows give a 2-draft load k = 2 at one and two lanes
+    /// default's 8 rows give a 2-draft load k = 2 at one and two lanes
     /// and k = 1 at three (phase A's widths), and no draft past four lanes.
     #[test]
     fn the_flash_next_window_fits_the_row_budget() {
@@ -501,12 +502,13 @@ mod tests {
         assert_eq!(widths(3, 24), [3, 3, 3, 3, 3, 3, 2, 2]);
         assert_eq!(widths(7, FLASH_NEXT_MAX_VERIFY_ROWS), [7, 7, 7, 7, 5, 4, 3, 3]);
         for draft in 1..=MAX_DRAFT_TOKENS {
-            assert_eq!(widths(draft, 0), widths(draft, FLASH_NEXT_VERIFY_ROWS), "0 is the default budget");
+            assert_eq!(widths(draft, 0), widths(draft, FLASH_NEXT_DEFAULT_VERIFY_ROWS), "0 is the default budget");
         }
         // Every window fits its budget, and none goes past the maximum.
         for draft in 1..=MAX_DRAFT_TOKENS {
             for budget in 0..=FLASH_NEXT_MAX_VERIFY_ROWS + 1 {
-                let rows = if budget == 0 { FLASH_NEXT_VERIFY_ROWS } else { budget.min(FLASH_NEXT_MAX_VERIFY_ROWS) };
+                let rows =
+                    if budget == 0 { FLASH_NEXT_DEFAULT_VERIFY_ROWS } else { budget.min(FLASH_NEXT_MAX_VERIFY_ROWS) };
                 for lanes in 1..=8 {
                     let k = flash_next_window(draft, budget, lanes);
                     assert!(k <= draft && (k == 0 || lanes * (k + 1) <= rows), "{draft} {budget} {lanes}");

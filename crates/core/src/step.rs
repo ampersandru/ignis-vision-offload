@@ -1067,8 +1067,8 @@ pub fn prefill_flash_next(
 /// permitted set (0 without one).
 ///
 /// `out_logits` (GitHub #329 item 5), if `Some`, receives every lane's BF16
-/// logits row, `[sequences.len()][vocab]` exactly: the measurement readout,
-/// refused with a permitted set.
+/// logits row, `[sequences.len()][vocab]` exactly: a measurement's copy of
+/// the round's logits, refused with a permitted set.
 pub fn decode_flash_next(
     model: &Model,
     pool: &SeqPool,
@@ -1077,6 +1077,7 @@ pub fn decode_flash_next(
     ngram_rows: &[u8],
     out_logits: Option<&mut [u16]>,
 ) -> Result<Vec<(i32, f32)>, String> {
+    let out_logits = out_logits_ptr(out_logits, sequences.len(), flash_next_vocab(), "decode_flash_next")?;
     let lanes: Vec<LaneDraw<'_>> = lanes
         .iter()
         .map(|&(sampling, permitted)| LaneDraw {
@@ -1084,16 +1085,22 @@ pub fn decode_flash_next(
             ..LaneDraw::free(sampling)
         })
         .collect();
-    Ok(round(model, pool, sequences, &lanes, Some(ngram_rows), out_logits)?
+    Ok(program_round(model, pool, sequences, &lanes, Some(ngram_rows), out_logits)?
         .into_iter()
         .map(|drawn| (drawn.token, drawn.probability))
         .collect())
 }
 
-/// A logits readout's length check: the leaf writes `rows` rows of the
-/// Flash-Next vocabulary, never by the slice's own length.
-fn readout_rows(out_logits: Option<&mut [u16]>, rows: usize, what: &str) -> Result<*mut u16, String> {
-    let vocab = crate::compute::ModelConfig::qwen38_flash_next().vocab as usize;
+/// Flash-Next's vocabulary: the columns of every row its round writes to
+/// `out_logits` (a [`Model`] carries no geometry of its own).
+fn flash_next_vocab() -> usize {
+    crate::compute::ModelConfig::qwen38_flash_next().vocab as usize
+}
+
+/// The pointer the leaf writes `rows` rows of `vocab` columns through, from
+/// a caller's `out_logits` of exactly that length (the leaf never reads the
+/// slice's own length); null for `None`.
+fn out_logits_ptr(out_logits: Option<&mut [u16]>, rows: usize, vocab: usize, what: &str) -> Result<*mut u16, String> {
     match out_logits {
         None => Ok(std::ptr::null_mut()),
         Some(logits) if logits.len() == rows * vocab => Ok(logits.as_mut_ptr()),
@@ -1116,21 +1123,22 @@ pub fn decode_program_round(
     lanes: &[LaneDraw<'_>],
     ngram_rows: Option<&[u8]>,
 ) -> Result<Vec<RoundDraw>, String> {
-    round(model, pool, sequences, lanes, ngram_rows, None)
+    program_round(model, pool, sequences, lanes, ngram_rows, std::ptr::null_mut())
 }
 
-fn round(
+/// [`decode_program_round`], its logits copied through `out_logits` (null:
+/// none; else [`out_logits_ptr`]'s, sized for these lanes).
+fn program_round(
     model: &Model,
     pool: &SeqPool,
     sequences: &mut [&mut Seq<'_>],
     lanes: &[LaneDraw<'_>],
     ngram_rows: Option<&[u8]>,
-    out_logits: Option<&mut [u16]>,
+    out_logits: *mut u16,
 ) -> Result<Vec<RoundDraw>, String> {
     if lanes.len() != sequences.len() {
         return Err(format!("decode_program_round: {} lanes for {} sequences", lanes.len(), sequences.len()));
     }
-    let out_logits = readout_rows(out_logits, sequences.len(), "decode_program_round")?;
     if let Some(rows) = ngram_rows {
         if rows.len() != sequences.len() * flash_next_ngram_token_bytes() {
             return Err(format!(
@@ -1444,7 +1452,7 @@ pub fn decode_program_verify_runs(
 ///
 /// `out_logits` (GitHub #329 item 5), if `Some`, receives every column's BF16
 /// logits row, `[lanes][window + 1][vocab]` exactly, as the accept read
-/// them: the measurement readout.
+/// them: a measurement's copy of the round's logits.
 pub fn decode_flash_next_verify(
     model: &Model,
     pool: &SeqPool,
@@ -1463,7 +1471,8 @@ pub fn decode_flash_next_verify(
             flash_next_ngram_token_bytes()
         ));
     }
-    let out_logits = readout_rows(out_logits, sequences.len() * columns, "decode_flash_next_verify")?;
+    let out_logits =
+        out_logits_ptr(out_logits, sequences.len() * columns, flash_next_vocab(), "decode_flash_next_verify")?;
     verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr(), out_logits)
 }
 
@@ -1962,4 +1971,25 @@ pub fn program_stats(model: &Model, pool: &SeqPool) -> Result<ProgramStats, Stri
         decode_graph_ready_mask: stats.decode_graph_ready_mask,
         verify_graph_ready_mask: stats.verify_graph_ready_mask,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GitHub #329 item 5: the leaf writes exactly `rows` rows of the
+    /// vocabulary through `out_logits`, so a slice of any other length is
+    /// refused by name before the round runs; none is a null pointer.
+    #[test]
+    fn out_logits_of_the_wrong_length_are_refused_before_the_round() {
+        assert!(out_logits_ptr(None, 3, 10, "round").expect("none asks for nothing").is_null());
+        let mut exact = vec![0u16; 30];
+        let start = exact.as_mut_ptr();
+        assert_eq!(out_logits_ptr(Some(&mut exact), 3, 10, "round"), Ok(start));
+        for len in [0, 29, 31, 40] {
+            let mut wrong = vec![0u16; len];
+            let err = out_logits_ptr(Some(&mut wrong), 3, 10, "decode_flash_next").unwrap_err();
+            assert_eq!(err, format!("decode_flash_next: {len} logits for 3 rows of 10 columns"));
+        }
+    }
 }

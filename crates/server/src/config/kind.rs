@@ -583,7 +583,7 @@ impl FieldKind for DraftHead {
 }
 
 /// Flash-Next's draft row budget (GitHub #307, #329): `0` (the default's
-/// [`ignis_core::speculation::FLASH_NEXT_VERIFY_ROWS`]) or
+/// [`ignis_core::speculation::FLASH_NEXT_DEFAULT_VERIFY_ROWS`]) or
 /// `2..=`[`ignis_core::speculation::FLASH_NEXT_MAX_VERIFY_ROWS`]. One row is
 /// refused, not a range end: a round needs a row for the token it verifies
 /// and one for a draft.

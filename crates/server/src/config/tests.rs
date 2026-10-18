@@ -7,7 +7,9 @@ use super::*;
 use crate::instruction::{DeveloperMessagePolicy, SystemMessagePolicy};
 use crate::thinking::ReasoningEffort;
 use ignis_core::compute::ModelFamily;
-use ignis_core::speculation::{FLASH_NEXT_DEFAULT_DRAFT_TOKENS, FLASH_NEXT_MAX_VERIFY_ROWS, FLASH_NEXT_VERIFY_ROWS};
+use ignis_core::speculation::{
+    FLASH_NEXT_DEFAULT_DRAFT_TOKENS, FLASH_NEXT_DEFAULT_VERIFY_ROWS, FLASH_NEXT_MAX_VERIFY_ROWS,
+};
 
 fn no_env(_: &str) -> Option<String> {
     None
@@ -540,7 +542,7 @@ fn the_help_names_mtp_and_the_draft_row_budget() {
     assert!(spec.contains("mtp") && spec.contains("off"), "{spec}");
     let rows = help_block("--spec-draft-rows");
     assert!(rows.contains("IGNIS_SPEC_DRAFT_ROWS"), "{rows}");
-    assert!(rows.contains(&format!("0 (= {FLASH_NEXT_VERIFY_ROWS})")), "{rows}");
+    assert!(rows.contains(&format!("0 (= {FLASH_NEXT_DEFAULT_VERIFY_ROWS})")), "{rows}");
     assert!(rows.contains(&format!("2..={FLASH_NEXT_MAX_VERIFY_ROWS}")), "{rows}");
 }
 

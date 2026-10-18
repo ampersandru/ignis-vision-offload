@@ -331,7 +331,7 @@ int32_t program_verify(ignis_model *model, ignis_seq_pool *pool, ignis_seq *cons
     ok = run_pass(model, fn, views.ctx, sections, width, &error) == 0;
   }
   std::vector<int32_t> licensed(rows, 0), accepted(batch_size, 0);
-  // The logits readout (GitHub #329 item 5): every column's row, read before the commit, whose
+  // The round's logits copy (GitHub #329 item 5): every column's row, read before the commit, whose
   // MTP head writes its own logits into the same buffer.
   ok = ok && (options->out_logits == nullptr ||
               check_cuda(cudaMemcpyAsync(options->out_logits, model->sampling_decode_logits->p,

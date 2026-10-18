@@ -31,7 +31,8 @@
 //!    mask is per lane and a round mixes them.
 //! 5. **The refusals**: a set larger than the leaf's cap, and an id outside
 //!    the vocabulary, are errors rather than truncations or reads past the
-//!    end of a row.
+//!    end of a row; and a round's logits copy, a Flash-Next round's (GitHub
+//!    #329 item 5), is refused on the 27B rather than left unwritten.
 //!
 //! Explicit GPU profile (ADR 0006, GitHub #38): outside `IGNIS_GPU_PROFILE=1`
 //! a missing artifact or GPU is a skip; under the profile it is a failure.
@@ -47,8 +48,8 @@ use ignis_core::gpu_profile;
 use ignis_core::model_load::{Model, load_qwen38_27b};
 use ignis_core::seq::{Seq, SeqPool, SeqPoolBudget};
 use ignis_core::step::{
-    PermittedLane, SamplingParams, decode_program_batch_permitted, prefill_program_permitted,
-    prefill_program_sampled,
+    PermittedLane, SamplingParams, decode_flash_next, decode_program_batch_permitted,
+    flash_next_ngram_token_bytes, prefill_program_permitted, prefill_program_sampled,
 };
 
 const ARTIFACT: &str = r"F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer";
@@ -324,4 +325,16 @@ fn a_permitted_set_is_the_only_thing_a_lane_can_commit() {
     )
     .expect_err("an id past the vocabulary is refused");
     assert!(error.contains("outside the vocabulary"), "{error}");
+
+    let mut copy = vec![0u16; ModelConfig::qwen38_flash_next().vocab as usize];
+    let error = decode_flash_next(
+        &model,
+        &pool,
+        &mut [&mut sequence],
+        &[(SamplingParams::greedy(), &[][..])],
+        &vec![0u8; flash_next_ngram_token_bytes()],
+        Some(&mut copy),
+    )
+    .expect_err("the 27B refuses a round's logits copy");
+    assert!(error.contains("out_logits is read on a Flash-Next load only"), "{error}");
 }

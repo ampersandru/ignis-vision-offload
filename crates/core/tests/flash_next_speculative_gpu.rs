@@ -3,7 +3,7 @@
 //! MTP head drafts.
 //!
 //! The load is `SpeculativeBackend::VerifyOnly` at 3 draft tokens and the
-//! decode route's 8 rows: one lane verifies 3 drafts a round, three lanes 1.
+//! default's 8 rows: one lane verifies 3 drafts a round, three lanes 1.
 //! Four drafters run the same prompts for the same number of tokens:
 //! - **none** (every lane at extent 0): one committed token a round, through
 //!   the verify pass's k + 1 columns;
@@ -60,13 +60,14 @@ use ignis_core::flash_next::{EngineOptions, FlashNextEngine, LaneRound, RoundLog
 use ignis_core::gpu_profile;
 use ignis_core::kv_format::KvFormat;
 use ignis_core::speculation::{FlashNextSpeculation, SpeculativeBackend};
+use ignis_core::step::SamplingParams;
 
 #[path = "support/logit_drift.rs"]
 mod logit_drift;
 
 use logit_drift::{
-    commit_follows_argmax, log_prob, row_drift, LaneCommit, RowDrift, HEAD_ACCEPTANCE_FLOOR, MEAN_LOG_PROB_NATS,
-    TOLERANCE_ULPS,
+    acceptance_within_band, commit_follows_argmax, log_prob, row_drift, LaneCommit, RowDrift, ACCEPTANCE_BAND,
+    HEAD_ACCEPTANCE_FLOOR, MEAN_LOG_PROB_NATS, PICK_GAP_ULPS, TOLERANCE_ULPS,
 };
 
 const MODEL_DIR: &str = "F:/ai/models/Qwen3.8-Flash-Next-ignis";
@@ -182,15 +183,15 @@ fn run(engine: &FlashNextEngine, prompts: &[Vec<u32>], drafter: Option<&mut dyn 
     run_with(engine, prompts, drafter, None)
 }
 
-/// [`run`], every round's logits handed to `readout`.
+/// [`run`], every round's logits handed to `on_round`.
 fn run_with(
     engine: &FlashNextEngine,
     prompts: &[Vec<u32>],
     drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>,
-    readout: Option<&mut dyn FnMut(RoundLogits<'_>)>,
+    on_round: Option<&mut dyn FnMut(RoundLogits<'_>)>,
 ) -> Outcome {
     let mut run = engine
-        .generate_speculative_readout(prompts, TOKENS, drafter, readout)
+        .generate_speculative_with_logits(prompts, TOKENS, drafter, on_round)
         .unwrap_or_else(|e| panic!("generate_speculative on {} lanes: {e}", prompts.len()));
     let mut probes = Vec::new();
     for (seq, context) in run.sequences.iter_mut().zip(run.contexts.iter_mut()) {
@@ -531,21 +532,21 @@ fn eight_prompts() -> Option<Vec<Vec<u32>>> {
     Some(prompts)
 }
 
-/// One round's readout, kept small: its lanes, columns a lane, each row's
+/// One round's picks, kept small: its lanes, columns a lane, each row's
 /// pick (`[lanes][columns]`) and a hash of its bits.
 #[derive(Debug, PartialEq)]
-struct Readout {
+struct RoundPicks {
     lanes: Vec<usize>,
     columns: usize,
     picks: Vec<u32>,
     bits: u64,
 }
 
-fn readout_of(round: &RoundLogits<'_>, vocab: usize) -> Readout {
+fn picks_of(round: &RoundLogits<'_>, vocab: usize) -> RoundPicks {
     let picks = round.rows.chunks_exact(vocab).map(|row| logit_drift::argmax(row).0).collect();
     // FNV-1a over the rows' bits: two runs' rows compared without keeping them.
     let bits = round.rows.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
-    Readout { lanes: round.lanes.to_vec(), columns: round.columns, picks, bits }
+    RoundPicks { lanes: round.lanes.to_vec(), columns: round.columns, picks, bits }
 }
 
 /// Exact at any budget (ADR 0056): every lane of every round committed its
@@ -554,16 +555,16 @@ fn readout_of(round: &RoundLogits<'_>, vocab: usize) -> Readout {
 /// lane that did not.
 fn commits_follow_picks(
     run: &Outcome,
-    readouts: &[Readout],
+    picked: &[RoundPicks],
     offered: &dyn Fn(usize, usize, usize) -> Vec<u32>,
     what: &str,
 ) -> Vec<String> {
-    assert_eq!(run.rounds.len(), readouts.len(), "{what}: a readout a round");
+    assert_eq!(run.rounds.len(), picked.len(), "{what}: one round's picks a round");
     let mut at = vec![0usize; run.tokens.len()];
     let mut refused = Vec::new();
-    for (r, (round, readout)) in run.rounds.iter().zip(readouts).enumerate() {
-        assert_eq!(round.len(), readout.lanes.len(), "{what}: round {r}'s lanes");
-        for (a, (lane_round, &lane)) in round.iter().zip(&readout.lanes).enumerate() {
+    for (r, (round, round_picks)) in run.rounds.iter().zip(picked).enumerate() {
+        assert_eq!(round.len(), round_picks.lanes.len(), "{what}: round {r}'s lanes");
+        for (a, (lane_round, &lane)) in round.iter().zip(&round_picks.lanes).enumerate() {
             let (p, committed) = (at[lane], lane_round.committed as usize);
             let drafts = offered(r, lane, p);
             assert!(lane_round.extent as usize <= drafts.len(), "{what}: round {r} lane {lane} verified more than it was offered");
@@ -572,7 +573,7 @@ fn commits_follow_picks(
                 drafts: &drafts[..lane_round.extent as usize],
                 committed: &run.tokens[lane][p..p + committed],
                 next: run.tokens[lane].get(p + committed).copied(),
-                picks: &readout.picks[a * readout.columns..(a + 1) * readout.columns],
+                picks: &round_picks.picks[a * round_picks.columns..(a + 1) * round_picks.columns],
             };
             if let Err(e) = commit_follows_argmax(&commit) {
                 refused.push(format!("{what} round {r} lane {lane}: {e}"));
@@ -637,7 +638,7 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
     // rows' pick.
     let mut off_rows: Vec<Vec<u16>> = Vec::with_capacity(TOKENS);
     let off = engine
-        .generate_readout(set, TOKENS, &mut |round| {
+        .generate_with_logits(set, TOKENS, &mut |round| {
             assert_eq!((round.lanes.len(), round.columns), (lanes, 1), "{what}: a spec-off round's shape");
             off_rows.push(round.rows.to_vec());
         })
@@ -653,7 +654,7 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
     // is the teacher's; each row is held to spec-off's at the same text index.
     let positions = std::cell::RefCell::new(vec![0usize; lanes]);
     let mut forced: Vec<Forced> = Vec::new();
-    let mut readouts = Vec::new();
+    let mut taught_picks = Vec::new();
     let teacher = |lane: usize, p: usize| -> Vec<u32> { off[lane][(p + 1).min(TOKENS)..(p + 1 + DRAFT_TOKENS as usize).min(TOKENS)].to_vec() };
     let taught = run_with(
         engine,
@@ -687,13 +688,13 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
                         drift.pick_off,
                         logit_drift::bf16(plain[drift.pick_off as usize])
                     );
-                    forced.push(Forced { round: readouts.len(), lane, column, at, drift, worst, log_probs });
+                    forced.push(Forced { round: taught_picks.len(), lane, column, at, drift, worst, log_probs });
                 }
             }
-            readouts.push(readout_of(&round, vocab));
+            taught_picks.push(picks_of(&round, vocab));
         }),
     );
-    refused.extend(commits_follow_picks(&taught, &readouts, &|_, lane, p| teacher(lane, p), &format!("{what} teacher-forced")));
+    refused.extend(commits_follow_picks(&taught, &taught_picks, &|_, lane, p| teacher(lane, p), &format!("{what} teacher-forced")));
 
     // A row is on the teacher's text when its column was drafted and its
     // lane's text up to the round's anchor is the teacher's: a lane whose
@@ -702,7 +703,7 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
     let mut valid = std::collections::HashSet::new();
     let mut at = vec![0usize; lanes];
     for (r, round) in taught.rounds.iter().enumerate() {
-        for (lane_round, &lane) in round.iter().zip(&readouts[r].lanes) {
+        for (lane_round, &lane) in round.iter().zip(&taught_picks[r].lanes) {
             let p = at[lane];
             anchors.insert((r, lane), p);
             if taught.tokens[lane][..=p] == off[lane][..=p] {
@@ -720,7 +721,7 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
     let compared: Vec<&Forced> = forced.iter().filter(|f| valid.contains(&(f.round, f.lane, f.column))).collect();
     assert!(compared.len() >= lanes * (TOKENS - 1) / 2, "{what}: only {} teacher-forced rows compared", compared.len());
     for f in &compared {
-        if let Err(e) = logit_drift::within(&f.drift, TOLERANCE_ULPS) {
+        if let Err(e) = logit_drift::within(&f.drift, TOLERANCE_ULPS, PICK_GAP_ULPS) {
             refused.push(format!(
                 "{what} teacher-forced round {} lane {} column {} (text index {}): {e}; {}",
                 f.round, f.lane, f.column, f.at, f.worst
@@ -747,31 +748,44 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
     // The head: it drafts and is accepted, its commits are its rows' picks,
     // and the same budget gives the same text, rounds, drafts, rows and
     // state run to run.
-    let mut head_readouts = Vec::new();
-    let head = run_with(engine, set, None, Some(&mut |round| head_readouts.push(readout_of(&round, vocab))));
-    let mut again_readouts = Vec::new();
-    let again = run_with(engine, set, None, Some(&mut |round| again_readouts.push(readout_of(&round, vocab))));
+    let mut head_picks = Vec::new();
+    let head = run_with(engine, set, None, Some(&mut |round| head_picks.push(picks_of(&round, vocab))));
+    let mut again_picks = Vec::new();
+    let again = run_with(engine, set, None, Some(&mut |round| again_picks.push(picks_of(&round, vocab))));
     assert_eq!((&again.tokens, &again.rounds, &again.head_drafts), (&head.tokens, &head.rounds, &head.head_drafts), "{what}: the head's run is not deterministic");
-    assert!(again_readouts == head_readouts, "{what}: the head's rows differ run to run");
+    assert!(again_picks == head_picks, "{what}: the head's rows differ run to run");
     for (lane, (p, q)) in again.probes.iter().zip(&head.probes).enumerate() {
         assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the head's run differs run to run");
     }
     let head_offered = |r: usize, lane: usize, _: usize| -> Vec<u32> {
         let Some(before) = r.checked_sub(1) else { return Vec::new() };
-        let at = head_readouts[before].lanes.iter().position(|&l| l == lane).expect("a lane runs every round until it ends");
+        let at = head_picks[before].lanes.iter().position(|&l| l == lane).expect("a lane runs every round until it ends");
         head.head_drafts[before][at].clone()
     };
-    refused.extend(commits_follow_picks(&head, &head_readouts, &head_offered, &format!("{what} head")));
+    refused.extend(commits_follow_picks(&head, &head_picks, &head_offered, &format!("{what} head")));
     let alpha = acceptance(&head.rounds);
     let first = f64::from(alpha[0].0) / f64::from(alpha[0].1.max(1));
     if first < HEAD_ACCEPTANCE_FLOOR {
         refused.push(format!("{what}: the head's first drafts accepted {first:.3} ({alpha:?}), under {HEAD_ACCEPTANCE_FLOOR}"));
     }
+    // The band: the head on the same prompts two lanes at a time, whose
+    // rounds take 8 rows at any budget of 8 or more -- two lanes of 4
+    // columns, the default's widest shape (a lone last lane, 4 rows).
+    let speculation = engine.options().speculation.expect("speculation");
+    assert!(2 * (speculation.window(2) as usize + 1) <= 8, "{what}: two lanes verify within 8 rows");
+    let mut narrow = (0u32, 0u32);
+    for pair in set.chunks(2) {
+        let (accepted, offered) = acceptance(&run(engine, pair, None).rounds)[0];
+        narrow = (narrow.0 + accepted, narrow.1 + offered);
+    }
+    if let Err(e) = acceptance_within_band(alpha[0], narrow, ACCEPTANCE_BAND) {
+        refused.push(format!("{what}: {e}"));
+    }
 
     println!(
         "{what}: teacher-forced {} rows ({left} lane(s) left at a moved pick), drift ulps max {} (lane {}@{}: {} \
          logits, {}) p99 {} median {}, picks moved [{}], mean log-prob spec-off {plain_lp:.6} wide {wide_lp:.6} (diff {:.3e}); head {} rounds, \
-         acceptance {alpha:?} ({first:.3})",
+         acceptance {alpha:?} ({first:.3}), two lanes at a time {narrow:?} ({:.3})",
         compared.len(),
         ulps[ulps.len() - 1],
         widest.lane,
@@ -782,9 +796,33 @@ fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32
         ulps[ulps.len() / 2],
         moved.join(", "),
         wide_lp - plain_lp,
-        head.rounds.len()
+        head.rounds.len(),
+        f64::from(narrow.0) / f64::from(narrow.1.max(1))
     );
     refused
+}
+
+/// GitHub #329 item 5: a round's logits copy cannot ride a permitted set
+/// (its mask writes into the rows), so the leaf refuses the pair by name
+/// (`program.cu`) -- and the same round without the copy runs.
+fn a_permitted_set_refuses_the_logits_copy(engine: &FlashNextEngine, prompt: &[u32]) {
+    let mut standing = engine
+        .generate_speculative(&[prompt.to_vec()], 2, None)
+        .unwrap_or_else(|e| panic!("generate_speculative: {e}"));
+    let permitted = [0i32, 1];
+    let lanes = [(SamplingParams::greedy(), &permitted[..])];
+    let mut logits = vec![0u16; engine.vocab()];
+    let err = engine
+        .decode_standing(&mut standing.sequences, &mut standing.contexts, &lanes, Some(&mut logits))
+        .expect_err("a permitted set with a logits copy is refused");
+    assert!(err.contains("out_logits cannot ride a round with a permitted set"), "{err}");
+    engine
+        .decode_standing(&mut standing.sequences, &mut standing.contexts, &lanes, None)
+        .unwrap_or_else(|e| panic!("the same round without the copy: {e}"));
+    // A round emits the token the last draw left pending; its own draw, from
+    // the set, now stands pending.
+    let pending = standing.sequences[0].pending_token().expect("a pending token");
+    assert!(permitted.contains(&pending), "the round drew {pending}, outside its permitted set");
 }
 
 /// Every cell of one verify budget, in both KV formats: `lane_sets` the
@@ -793,7 +831,9 @@ fn budget(rows: u32, lane_sets: &[usize]) {
     let Some(prompts) = eight_prompts() else { return };
     let mut refused = Vec::new();
     for kv_format in [KvFormat::Bf16, KvFormat::HqE8_2b] {
-        let Some(mut engine) = budget_engine(kv_format, rows) else { return };
+        // A load that skips outside the profile ends the cells, not the
+        // refusals already collected in the other format.
+        let Some(mut engine) = budget_engine(kv_format, rows) else { break };
         let speculation = engine.options().speculation.expect("speculation");
         let verifying = (1..=8u32).filter(|&w| speculation.window(w) > 0).fold(0, |mask, w| mask | 1 << (w - 1));
         assert_eq!(
@@ -802,6 +842,7 @@ fn budget(rows: u32, lane_sets: &[usize]) {
             "{kv_format:?}: a verify graph did not capture at {rows} rows: {:?}",
             engine.graph_error()
         );
+        a_permitted_set_refuses_the_logits_copy(&engine, &prompts[0]);
         for &lanes in lane_sets {
             let window = speculation.window(lanes as u32) as usize;
             assert!(window > 0 && lanes * (window + 1) <= rows as usize, "{lanes} lanes draft within {rows} rows");

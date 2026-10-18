@@ -6,8 +6,8 @@
 mod logit_drift;
 
 use logit_drift::{
-    argmax, bf16, bf16_ulp, commit_follows_argmax, log_prob, row_drift, within, LaneCommit, HEAD_ACCEPTANCE_FLOOR,
-    MEAN_LOG_PROB_NATS, TOLERANCE_ULPS,
+    acceptance_within_band, argmax, bf16, bf16_ulp, commit_follows_argmax, log_prob, row_drift, within, LaneCommit,
+    ACCEPTANCE_BAND, HEAD_ACCEPTANCE_FLOOR, MEAN_LOG_PROB_NATS, PICK_GAP_ULPS, TOLERANCE_ULPS,
 };
 
 fn row(values: &[f32]) -> Vec<u16> {
@@ -60,8 +60,8 @@ fn the_drift_counts_ulps_at_the_rows_scale_and_the_picks_gap() {
 fn a_row_passes_inside_the_tolerance_and_names_the_excess_outside_it() {
     let off = row(&[20.0, 19.75, -40.0, 0.5]);
     let near_flip = row_drift(&off, &row(&[19.75, 20.0, -40.0, 0.5]));
-    assert_eq!(within(&near_flip, 1.0), Ok(()));
-    assert!(within(&near_flip, 0.5).unwrap_err().contains("a logit moved"));
+    assert_eq!(within(&near_flip, 1.0, 1.0), Ok(()));
+    assert!(within(&near_flip, 0.5, 1.0).unwrap_err().contains("a logit moved"));
 
     // Every logit within 2 ulps (scale 20, ulp 0.125), but the pick moved
     // where the plain row leads by 3: the pick rule refuses it at 2.
@@ -69,8 +69,43 @@ fn a_row_passes_inside_the_tolerance_and_names_the_excess_outside_it() {
     let on = row(&[19.75, 19.875, 0.0]);
     let d = row_drift(&off, &on);
     assert_eq!((d.ulps, d.pick_on, d.gap_ulps), (2.0, 1, 3.0));
-    assert_eq!(within(&d, 3.0), Ok(()));
-    assert!(within(&d, 2.0).unwrap_err().contains("the pick moved from 0 to 1"));
+    assert_eq!(within(&d, 3.0, 3.0), Ok(()));
+    assert!(within(&d, 3.0, 2.0).unwrap_err().contains("the pick moved from 0 to 1"));
+}
+
+/// A moved pick is held to its own near-tie bound, not to the logit
+/// tolerance: at the policy's 64 ulps a top logit of 20 may move 8 logits,
+/// which is no near tie. The plain row leads its pick by 17 ulps here and
+/// every logit stays within 17: past [`PICK_GAP_ULPS`], refused.
+#[test]
+fn a_moved_pick_is_held_to_the_near_tie_bound_not_to_the_logit_tolerance() {
+    // Scale 20: one ulp is 0.125, 17 ulps 2.125.
+    let off = row(&[20.0, 17.875, 0.0]);
+    let on = row(&[17.875, 20.0, 0.0]);
+    let d = row_drift(&off, &on);
+    assert_eq!((d.ulps, d.pick_off, d.pick_on, d.gap_ulps), (17.0, 0, 1, 17.0));
+    assert!(d.ulps <= TOLERANCE_ULPS, "every logit inside the tolerance");
+    let err = within(&d, TOLERANCE_ULPS, PICK_GAP_ULPS).unwrap_err();
+    assert!(err.contains("the pick moved from 0 to 1, 17 ulps apart"), "{err}");
+    // At the bound itself the move is a near tie.
+    let off = row(&[20.0, 18.0, 0.0]);
+    let d = row_drift(&off, &row(&[18.0, 20.0, 0.0]));
+    assert_eq!(d.gap_ulps, PICK_GAP_ULPS);
+    assert_eq!(within(&d, TOLERANCE_ULPS, PICK_GAP_ULPS), Ok(()));
+}
+
+/// The head's first-draft acceptance at a wide budget stays within the band
+/// of the same prompts' at 8 rows, either way; no first draft offered is no
+/// acceptance to compare.
+#[test]
+fn the_wide_budgets_acceptance_stays_in_the_band_around_the_defaults() {
+    assert_eq!(acceptance_within_band((80, 100), (85, 100), ACCEPTANCE_BAND), Ok(()));
+    assert_eq!(acceptance_within_band((90, 100), (85, 100), ACCEPTANCE_BAND), Ok(()));
+    let err = acceptance_within_band((70, 100), (85, 100), ACCEPTANCE_BAND).unwrap_err();
+    assert!(err.contains("0.700") && err.contains("0.850"), "{err}");
+    assert!(acceptance_within_band((99, 100), (85, 100), ACCEPTANCE_BAND).is_err(), "two-sided");
+    assert!(acceptance_within_band((0, 0), (85, 100), ACCEPTANCE_BAND).unwrap_err().contains("no first draft"));
+    assert!(acceptance_within_band((80, 100), (0, 0), ACCEPTANCE_BAND).unwrap_err().contains("no first draft"));
 }
 
 /// A log-softmax: uniform rows give -ln n, and the probabilities sum to one.
@@ -118,8 +153,10 @@ fn the_policy_admits_its_tolerance_and_refuses_an_ulp_past_it() {
     let off = row(&[16.0, 8.0, 0.0]);
     let moved = |ulps: f32| row_drift(&off, &row(&[16.0, 8.0 + ulps * 0.125, 0.0]));
     assert_eq!(moved(TOLERANCE_ULPS).ulps, TOLERANCE_ULPS);
-    assert_eq!(within(&moved(TOLERANCE_ULPS), TOLERANCE_ULPS), Ok(()));
-    assert!(within(&moved(TOLERANCE_ULPS + 1.0), TOLERANCE_ULPS).is_err());
+    assert_eq!(within(&moved(TOLERANCE_ULPS), TOLERANCE_ULPS, PICK_GAP_ULPS), Ok(()));
+    assert!(within(&moved(TOLERANCE_ULPS + 1.0), TOLERANCE_ULPS, PICK_GAP_ULPS).is_err());
+    assert!(PICK_GAP_ULPS < TOLERANCE_ULPS, "a moved pick's bound is the tighter one");
     assert!(MEAN_LOG_PROB_NATS > 0.0 && MEAN_LOG_PROB_NATS < 0.1, "{MEAN_LOG_PROB_NATS}");
     assert!(HEAD_ACCEPTANCE_FLOOR > 0.0 && HEAD_ACCEPTANCE_FLOOR < 1.0, "{HEAD_ACCEPTANCE_FLOOR}");
+    assert!(ACCEPTANCE_BAND > 0.0 && ACCEPTANCE_BAND < HEAD_ACCEPTANCE_FLOOR, "{ACCEPTANCE_BAND}");
 }

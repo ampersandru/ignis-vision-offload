@@ -2269,7 +2269,7 @@ extern "C" int32_t ignis_program_decode(struct ignis_model *model,
                 std::to_string(options->size));
       return -1;
     }
-    // GitHub #329 item 5: the logits readout is a Flash-Next round's; refused here rather than
+    // GitHub #329 item 5: the round's logits copy is a Flash-Next round's; refused here rather than
     // left unwritten.
     if (options->out_logits != nullptr) {
       set_error("ignis_program_decode: out_logits is read on a Flash-Next load only");

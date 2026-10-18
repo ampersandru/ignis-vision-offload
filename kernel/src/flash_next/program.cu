@@ -1213,7 +1213,7 @@ int32_t program_decode(ignis_model *model, ignis_seq_pool *pool, ignis_seq *cons
                                     batch_size * sizeof(float), cudaMemcpyDeviceToHost, stream),
                     "copying the permitted probabilities", &error);
   }
-  // The logits readout (GitHub #329 item 5): the draw only reads the rows.
+  // The round's logits copy (GitHub #329 item 5): the draw only reads the rows.
   ok = ok && (options->out_logits == nullptr ||
               check_cuda(cudaMemcpyAsync(options->out_logits, model->sampling_decode_logits->p,
                                          batch_size * static_cast<std::size_t>(vocab) * sizeof(uint16_t),
