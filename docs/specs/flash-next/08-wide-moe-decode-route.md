@@ -2,9 +2,8 @@
 
 GitHub: #331 (origin: #329 item 5).
 
-**Status: proposed (2026-10-18), awaiting the owner's triage.** Phase 0 is a
-measurement with a pre-registered go / no-go; nothing past it is built
-before the owner reads its result.
+Phase 0 is a measurement with a pre-registered go / no-go; nothing past it
+is built before the owner reads its result.
 
 ADRs:
 - 0043 / 0051: every op this spec touches is OURS (the MoE ops, the FP8 and
@@ -12,17 +11,19 @@ ADRs:
   vendored changes (0010, 0037).
 - 0044: experts in trellis, a K per expert.
 - 0030: plan lines; a load that names no budget plans as today.
-- 0056 (accepted 2026-10-18; on branch `verify-rows` until it merges): a
-  verify budget past 8 rows is held numerically equivalent to speculation
-  off, not to its text. This spec's new routes are held to the same rule.
+- 0056 (accepted 2026-10-18): a verify budget past 8 rows is held
+  numerically equivalent to speculation off, not to its text. This spec's
+  new routes are held to the same rule.
 
 Sources:
-- `.scratch/rows-card/results.jsonl` (render with `table.py` in the same
-  directory) and the server log `.scratch/rows-card/server-full.jsonl`: the
-  RTX PRO 6000 run of the verify-rows binary (`ignis-server` at `33c15274`)
-  that motivates this spec;
-- `docs/findings/2026-10-18-flash-next-verify-rows-past-8.md` and ADR 0056
-  (branch `verify-rows`): what switches at row 9, the drift, the 5090 cost;
+- `docs/findings/2026-10-18-verify-rows-on-the-rtx-pro-6000.md`: the RTX PRO
+  6000 run of the verify-rows binary (`ignis-server` at `33c15274`) that
+  motivates this spec, the durable source of every measured cell and round
+  time below. Its raw output (`.scratch/rows-card/` in the clone that ran
+  it) is per-clone and is cited only for the expert-cache counters the
+  finding does not tabulate;
+- `docs/findings/2026-10-18-flash-next-verify-rows-past-8.md` and ADR 0056:
+  what switches at row 9, the drift, the 5090 cost;
 - `docs/findings/2026-10-18-rtxpro6000-profile-measured.md`: the card, MTP
   ratios, the 27B's DFlash2 at 8 requests;
 - `docs/findings/2026-10-05-moe-decode-is-structure-bound.md` and
@@ -37,12 +38,11 @@ How to read the numbers: **measured** (ours, with the file),
 
 A verify round carries lanes x (drafts + 1) rows. At the default budget of
 8 rows, five or more lanes draft nothing. #329 item 5 raised the budget to
-32 (`--spec-draft-rows`, branch `verify-rows`). On an RTX PRO 6000 that
-holds every expert in VRAM, so decode is compute and VRAM-bandwidth bound,
-a wider budget loses:
+32 (`--spec-draft-rows`). On an RTX PRO 6000 that holds every expert in
+VRAM, so decode is compute and VRAM-bandwidth bound, a wider budget loses:
 
 **Measured** (aggregate tok/s, MTP 3, greedy, 512 tokens a lane, 3 reps,
-median; `.scratch/rows-card/results.jsonl`):
+median; the rows-card finding's tables):
 
 | cell | off | budget 8 | 16 | 24 | 32 |
 |---|---:|---:|---:|---:|---:|
@@ -58,22 +58,31 @@ budgets accept well (at 8 lanes, code: 1.95, 2.80 and 3.55 tokens a lane a
 round at 16, 24 and 32 rows; prose 1.80, 2.30, 2.64). They lose on round
 time.
 
-**The round time** (**estimate** from measured data: a batch round's time is
-lanes x tokens a lane a round / aggregate tok/s, the tokens a lane a round
-from the `ignis_speculative_*` deltas; the per-request `request done` events
-of `server-full.jsonl` give the same within 3%):
+**The round time** (the rows-card finding's table, derived there from
+measured data: a lane's tokens per round, 1 + accepted / rounds from the
+speculative counters, over the per-lane rate):
 
 | rows a round | shape (lanes x columns) | round |
 |---:|---|---:|
 | 1 | 1 x 1, off | 7.8 ms |
-| 4 | 1 x 4 / 4 x 1 off | 13.1 / 12.1 ms |
-| 8 | 4 x 2 / 8 x 1 off | 19.2 / 18.8 ms |
-| 16 | 8 x 2 and 4 x 4 | 65.6-67.5 ms |
-| 24 | 8 x 3 | 74.5-75.0 ms |
-| 32 | 8 x 4 | 80.8-81.1 ms |
+| 4 | 4 x 1 off; 1 x 4 | 12.2; 13.1 ms |
+| 8 | 8 x 1 off; 8 x 1 and 4 x 2 (MTP 3, rows 8) | 19.0; 19.4-19.6 ms |
+| 16 | 8 x 2; 4 x 4 | 66.6-67.7; 63.6-64.8 ms |
+| 24 | 8 x 3 | 73.6-74.6 ms |
+| 32 | 8 x 4 | 79.2-80.2 ms |
 
-Up to 8 rows a row costs ~1.6 ms. From 16 rows on, ~0.9 ms. **Between 8 and
-16 the round jumps by ~48 ms**: a cliff at row 9, not a slope.
+Up to 8 rows a row costs ~1.6 ms. From 16 rows on, ~0.8 ms (5.3-7.1 ms per
+further 8 rows, cell by cell). **Between 8 and 16 the round jumps by 44-48
+ms**: a cliff at row 9, not a slope.
+
+The estimates below were computed before the finding, from a per-request
+re-derivation of the same runs: 16 / 24 / 32 rows at 67.0 / 74.8 / 81.0
+ms, 6.2-7.5 ms per further 8 rows, a slope of 0.875 ms a row past 16. The
+rounds sit within ~2% of the finding's; the slope sits ~12% above its ~0.78
+ms. With the finding's numbers the best band below would be 3-6% faster and
+the MoE-only gain slightly smaller (a launch of 8 at most ~7.1 ms, not
+7.5); no conclusion and no acceptance threshold moves, and Phase 0
+re-runs the model on measured per-family times anyway.
 
 **What switches at row 9** (the verify-rows finding, and the code):
 - the routed experts: `fn_moe_experts_decode`
@@ -93,20 +102,22 @@ Up to 8 rows a row costs ~1.6 ms. From 16 rows on, ~0.9 ms. **Between 8 and
 - the shared expert: GEMV to MMA, as the FP8 linears.
 
 **The MoE is the smaller part.** **Estimate** (method):
-- From 16 rows on, each further 8 rows add 6.2-7.5 ms. That includes one more
-  MoE launch of 8 plus every other op's extra rows. So **one MoE launch of 8
-  rows costs at most ~7.5 ms a round**; the register kernel's bench (25.4 us a
-  layer at 1 token, ~1.4 us a layer per further distinct expert, RTX 5090)
-  puts it nearer 4-5 ms.
+- From 16 rows on, each further 8 rows add 5.3-7.1 ms (the finding's cells;
+  6.2-7.5 in the re-derivation above). That includes one more MoE launch of 8
+  plus every other op's extra rows. So **one MoE launch of 8 rows costs at
+  most ~7-7.5 ms a round**; the register kernel's bench (25.4 us a layer at
+  1 token, ~1.4 us a layer per further distinct expert, RTX 5090) puts it
+  nearer 4-5 ms.
 - What a once-per-round weight read saves is the experts two launches share.
   Distinct experts per layer per round (**measured**, the expert-cache hit
-  deltas / rounds / 48 layers / 2 projections, prefill included, so an upper
+  deltas in the run's raw counters, `.scratch/rows-card/results.jsonl`, /
+  rounds / 48 layers / 2 projections, prefill included, so an upper
   value): 8 rows 56 (4 x 2) to 62 (8 x 1); 16 rows 94 (8 x 2, code); 32 rows
   137 (8 x 4, code). Two launches of 4 x 2 read ~112 at 16 rows: 19% more
   expert bytes, ~1.3 GB a round, **~0.7 ms at 1.79 TB/s**. At 32 rows four
   launches of 2 x 4 read ~190 (estimate): ~4 GB, ~2.2 ms.
-- So of the 48 ms cliff, the MoE launches explain **at most ~7.5 ms**; **~40 ms
-  is the dense routes switching** (the list above). That part is not
+- So of the 44-48 ms cliff, the MoE launches explain **at most ~7.5 ms**;
+  **~37-41 ms is the dense routes switching** (the list above). That part is not
   attributed per op: no profile of a wide round exists (Phase 0 takes it).
 
 **What the MoE route alone would buy.** **Estimate**: a native call costs the
@@ -326,7 +337,7 @@ On the RTX PRO 6000, resident, 8 lanes, MTP 3, against speculation off
   that a call of 1-8 rows still runs the old route (the bits of today's
   `flash_next_moe_rows` 8-row launch).
 - Plan lines: at budgets 0, 2, 6 and 8 byte for byte main's
-  (`flash_next_bind`, as the verify-rows branch pins); at 16-32 recorded.
+  (`flash_next_bind`'s pins, from #329 item 5); at 16-32 recorded.
 - ADR 0056's tests (`crates/core/tests/flash_next_speculative_gpu.rs`,
   `support/logit_drift.rs`) on the 5090 and the RTX PRO 6000.
 - `cargo test` workspace-wide; the GPU tests on a free card (AGENTS.md).
