@@ -4,8 +4,8 @@
 - Status: current
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
-- Scope: serving / the `rtxpro6000` profile's Flash-Next MTP row budget (`spec.draft_rows`, branch `verify-rows`), the verify round's time by width on a card that holds every expert in VRAM
-- Related: https://github.com/gpillon/ignis/issues/329 (item 5), finding `2026-10-18-flash-next-verify-rows-past-8.md` (branch `verify-rows`), [the rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), [spec flash-next/07](../specs/flash-next/07-mtp-speculation.md), `.scratch/rows-card/`
+- Scope: serving / the `rtxpro6000` profile's Flash-Next MTP row budget (`spec.draft_rows`, ADR 0056), the verify round's time by width on a card that holds every expert in VRAM
+- Related: https://github.com/gpillon/ignis/issues/329 (item 5), [Flash-Next verify rows past 8](2026-10-18-flash-next-verify-rows-past-8.md), [the rtxpro6000 profile measured](2026-10-18-rtxpro6000-profile-measured.md), [spec flash-next/07](../specs/flash-next/07-mtp-speculation.md), `.scratch/rows-card/`
 - Superseded by: none
 
 ## Question
@@ -62,7 +62,7 @@ drafts a lane verifies at 8 lanes):
 | MTP 2 | 24 | 2 | 299.7 | 244.7 | 0.70 / 0.58 | 0.903 / 0.651 |
 | MTP 3 | 32 | 3 | 350.3 | 261.6 | 0.82 / 0.62 | 0.864 / 0.553 |
 
-A cell's three reps span at most 4% (6% for 4 lanes code at rows 16,
+A cell's three reps span at most 4.1% (6.1% for 4 lanes code at rows 16,
 208-221). Rows 8, re-measured after the other configurations about 40
 minutes later, ran 413.8 / 413.4.
 
@@ -74,9 +74,11 @@ minutes later, ran 413.8 / 413.4.
 | MTP 3 | 8 | 1 | 404.0 | 369.3 | 1.22 / 1.12 | 0.941 / 0.774 |
 | MTP 3 | 16 | 3 | 208.9 | 155.6 | 0.63 / 0.47 | 0.844 / 0.521 |
 
-**One lane** (the warm-up cell, code, 256 tokens): MTP 3 ran 241.6-241.8
-tok/s at rows 8, 16, 24 and 32 alike (a lane alone verifies 3 drafts at
-every budget); MTP 2 228.4, MTP 1 188.8, off 128.8.
+**One lane** (the warm-up cell, code, 256 tokens, 2 reps): MTP 3 ran
+241.6-241.8 tok/s in rep 1 and 211.6-211.8 in rep 2 at rows 8, 16, 24 and
+32 alike (a lane alone verifies 3 drafts at every budget); MTP 2 228.4 /
+212.3, MTP 1 188.8 / 184.7, off 128.8 / 128.7. In rep 2 MTP 2 is at
+least MTP 3 (212.3 against 211.7), so this cell does not separate 3 from 2.
 
 **Simulated agents** (tokens over the makespan; the same work in every
 run: 10,240 tokens in 32 turns at 4 agents, 19,136 in 64 at 8; no turn
@@ -126,8 +128,8 @@ The budget was 100,127.7 MB in the reloads unless marked (the cold load,
 at rows 8, had 100,362.2 MB and 11,493,504 tokens). The KV pool takes the
 difference at 4,576 bytes a pool token: 32 rows cost 32,256 tokens against
 8 at the same budget (0.28% of the pool), 24 rows ~21,500, 16 rows ~10,700.
-The 32-row figure the `verify-rows` finding extrapolated (about 150 MB) is
-147.6 MB measured.
+The plan event's +147.6 MB at 32 rows matches the `verify-rows` finding's
+host-only plan figure (+147.5 MB) within 0.1 MB.
 
 **Errors.** 856 requests over one cold load and seven reloads, every one
 `finish_reason: length` at its `max_tokens`; no `ignis.runtime.leaf_error`,
@@ -146,10 +148,11 @@ So every wider budget loses to rows 8 wherever it changes the round:
 A lane alone, which verifies 3 drafts at any budget, is unchanged. The cost
 follows the window, not the draft count: MTP 1 at 16 rows and MTP 2 at 24
 match MTP 3 at the same rows within 1%. The VRAM is small (47-148 MB, at
-most 0.28% of the KV pool); time is what the wider round costs.
+most 0.28% of the KV pool, as planned); time is what the wider round costs.
 
 Inferred, not profiled: the round's time is one jump past 8 rows (+44-48 ms
-from 8 to 16) and then ~6-7 ms per 8 rows. Up to 8 it climbs ~1.5-1.7 ms a
+from 8 to 16) and then 5.3-7.1 ms per further 8 rows (each 8-lane cell from
+16 to 24 to 32 rows). Up to 8 it climbs ~1.5-1.7 ms a
 row.
 - The later steps are of the size one more MoE launch of 8 tokens would
   add (the route a wider round keeps), though an 8-token MoE pass was not
@@ -164,9 +167,11 @@ row.
 - **Recommendation for the `rtxpro6000` profile: keep `spec.draft_rows`
   unset (0 = 8 rows) and `draft_tokens: 3`.** Rows 8 is the measured best
   at one, four and eight lanes and for both agent counts. The draft count
-  has no reason to move: at rows 8 it matters only at one or two lanes,
-  where the earlier campaign found 3 best over code and prose (one lane
-  here: 241.6 / 228.4 / 188.8 tok/s for 3 / 2 / 1).
+  has no reason to move from this run: at rows 8 it matters only at one or
+  two lanes, where the earlier campaign found 3 and 4 tied over code and
+  prose and ahead of 2 and 5. This run's one-lane warm-up (code only, 256
+  tokens, 2 reps) does not separate 3 from 2: 241.6 / 228.4 / 188.8 tok/s
+  for 3 / 2 / 1 in rep 1, 211.7 / 212.3 / 184.7 in rep 2.
 - The knob is worth revisiting on this card only once a 16-row round runs
   under ~35 ms. Either of the `verify-rows` finding's options 1 (launches of
   8 rows on every route that switches at 8) or 2 (decode-phase GEMVs wider
