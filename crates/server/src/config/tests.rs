@@ -826,19 +826,26 @@ fn the_expert_cache_floor_opt_in_parses_and_refuses_the_27b() {
 /// pin) as the field's own default, 2 GiB under the default `rtx5090`
 /// profile (ADR 0055), a byte count from the flag, the environment or a
 /// file, changed only through a reload, refused on the 27B when named and
-/// dropped by a switch to it; the profile's value the 27B passes over.
+/// dropped by a switch to it; the profile's value the 27B passes over. Each
+/// source is spelled as a refused pin names it (second review 2026-10-18).
 #[test]
-fn the_pinned_expert_budget_is_none_by_default_and_flash_next_s() {
-    assert_eq!(config(&["--profile", "none"]).pinned_expert_bytes, 0);
+fn the_pinned_expert_budget_is_0_by_default_2_gib_under_the_rtx5090_profile_and_flash_next_s() {
+    let spelled = |config: &Config| config.basis.resolution().spelled("vram", "pinned_expert_bytes");
+    let unprofiled = config(&["--profile", "none"]);
+    assert_eq!((unprofiled.pinned_expert_bytes, spelled(&unprofiled)), (0, "--vram-pinned-expert-bytes".to_owned()));
     let profiled = config(&[]);
     assert_eq!(profiled.pinned_expert_bytes, 2 * GIB, "the rtx5090 profile");
+    assert_eq!(spelled(&profiled), "vram.pinned_expert_bytes (profile rtx5090 in the built-in profiles)");
     assert!(served_model_for(&profiled, ModelFamily::Qwen38_27b).is_ok(), "a profile's value is passed over");
     let flag = config(&["--vram-pinned-expert-bytes", "1G"]);
-    assert_eq!(flag.pinned_expert_bytes, GIB);
+    assert_eq!((flag.pinned_expert_bytes, spelled(&flag)), (GIB, "--vram-pinned-expert-bytes".to_owned()));
     let env = env_map(&[("IGNIS_VRAM_PINNED_EXPERT_BYTES", "2G")]);
-    assert_eq!(expect_config(resolve(&[], env).expect("env")).pinned_expert_bytes, 2 * GIB);
+    let from_env = expect_config(resolve(&[], env).expect("env"));
+    assert_eq!((from_env.pinned_expert_bytes, spelled(&from_env)), (2 * GIB, "IGNIS_VRAM_PINNED_EXPERT_BYTES".to_owned()));
     let files = MemFiles::with(&[("c.yaml", "vram:\n  pinned_expert_bytes: 1536M\n")]);
-    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().pinned_expert_bytes, 1536 << 20);
+    let from_file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap();
+    assert_eq!(from_file.pinned_expert_bytes, 1536 << 20);
+    assert!(spelled(&from_file).starts_with("vram.pinned_expert_bytes (") && spelled(&from_file).contains("c.yaml"), "{}", spelled(&from_file));
     let meta = schema::field("vram", "pinned_expert_bytes").expect("declared");
     assert!(meta.visible && meta.patchable && meta.reload_required && !meta.scoped);
     assert!(served_model_for(&flag, ModelFamily::FlashNext).is_ok());

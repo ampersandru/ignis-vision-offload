@@ -371,6 +371,14 @@ impl Resolution {
         self.origins.iter().find(|((g, n), _)| *g == group && *n == name).map(|(_, origin)| origin)
     }
 
+    /// The spelling `<group>.<name>`'s value came under, for an error that
+    /// names it ([`Origin::spelling`]); its flag when it is at its default.
+    pub fn spelled(&self, group: &str, name: &str) -> String {
+        self.origin(group, name)
+            .map(|origin| origin.spelling.clone())
+            .unwrap_or_else(|| super::schema::field(group, name).expect("a declared field").flag())
+    }
+
     /// Whether the operator wrote `<group>.<name>` for this process
     /// ([`Source::explicit`]) as something other than its default
     /// ([`Origin::at_default`]).

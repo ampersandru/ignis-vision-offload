@@ -484,10 +484,13 @@ pub fn log_host_plan_refused(refusal: &ignis_core::residency::HostPlanError) {
 
 /// Why a Flash-Next load failed: its host plan's refusal, kept whole so a
 /// switch can report it in bytes (`GET /v1/models`, `last_switch.host_plan`),
-/// or anything else, as the text it always was.
+/// a pinned hot set it cannot hold, kept whole so the load names its budget
+/// where the config took it from (`LoadError::from_flash_next`), or anything
+/// else, as the text it always was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlashNextLoadError {
     HostPlan(ignis_core::residency::HostPlanError),
+    PinnedExperts(ignis_core::residency::PinRefused),
     Other(String),
 }
 
@@ -507,6 +510,7 @@ impl std::fmt::Display for FlashNextLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HostPlan(refusal) => refusal.fmt(f),
+            Self::PinnedExperts(refusal) => refusal.fmt(f),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -900,7 +904,8 @@ pub(crate) fn flash_next_load(
     use ignis_artifact::{CudaDevice, Reader};
     use ignis_core::compute::ModelConfig;
     use ignis_core::flash_next::{
-        device_only, expert_traffic, plan_cache_request, residency_pools, EngineOptions, LOOKAHEAD_WIDTH,
+        device_only, expert_traffic, plan_cache_request, residency_pools, EngineOptions, PoolsRefused,
+        LOOKAHEAD_WIDTH,
     };
     use ignis_core::residency::load::{catalog, pinned_staging_bytes, pool_layout, pool_layout_without, stream_staging_bytes};
     use ignis_core::ngram_table::NgramTable;
@@ -1029,42 +1034,48 @@ pub(crate) fn flash_next_load(
     })
     .map_err(|e| e.to_string())?;
     let indexer_bytes = pool_plan_at(vram.kv_page_count)?.indexer_bytes;
-    // The expert cache's floor and class minimums, at plan time: what the
+    // The expert cache's floor and class minimum, at plan time: what the
     // plan left it, split by the calibration traffic as the leaf will split
     // it. Below the floor only with --vram-allow-expert-cache-below-floor; below
-    // a class's minimum never. The plan's total holds the cache, so that
+    // a class's minimum -- the widest decode step's slots, a verify round's
+    // rows under MTP -- never. The plan's total holds the cache, so that
     // total is the budget the cache's share is read against, and the ring is
     // the one the plan placed (none on the resident branch).
     let traffic = expert_traffic(artifact_path, &cat)?;
-    let cache = plan_expert_cache(&plan_cache_request(
+    let plan_split = plan_expert_cache(&plan_cache_request(
         &vram,
         tables,
         shape.allow_expert_cache_below_floor,
-        lanes,
+        &options,
         &cat,
         &traffic,
     ))
     .map_err(|e| e.to_string())?;
     log_vram_warnings(&vram);
-    warn_expert_cache_below_floor(&cache, EXPERT_CACHE_FLOOR_BYTES);
+    warn_expert_cache_below_floor(&plan_split, EXPERT_CACHE_FLOOR_BYTES);
     let speculation_text = speculation.map_or_else(
         || "off".to_owned(),
         |s| format!("mtp draft tokens {} rows {} (k at 1/2/3 lanes: {}/{}/{})", s.draft_tokens(), s.row_budget(),
                     s.window(1), s.window(2), s.window(3)),
     );
-    log_flash_next_plan(&vram, cache.expected_hit_rate, lanes, &speculation_text, process_held_bytes);
+    log_flash_next_plan(&vram, plan_split.expected_hit_rate, lanes, &speculation_text, process_held_bytes);
     options.kv_pool_pages = Some(vram.kv_page_count);
     options.expert_cache_bytes = vram.expert_cache_bytes;
-    // GitHub #329 item 12: the pinned hot set, from the call `build_residency`
-    // makes with these same options, so the host plan charges the pool the
-    // load fills; refused here, before anything loads, when the pin cannot
-    // leave every class its widest decode step. Logged only when asked for,
-    // so a load at 0 logs what it did before.
-    let pools = residency_pools(&options, &cat, &traffic)?;
+    // GitHub #329 item 12: the load's pools and pinned hot set, from the call
+    // `build_residency` makes with these same options, so the host plan
+    // charges the pool the load fills; refused here, before anything loads,
+    // when the pin cannot leave every class its widest decode step (the
+    // load names where its budget was set). Logged only when asked for, so
+    // a load at 0 logs what it did before.
+    let load_pools = residency_pools(&options, &cat, &traffic).map_err(|refused| match refused {
+        PoolsRefused::Pin(refusal) => FlashNextLoadError::PinnedExperts(refusal),
+        split => FlashNextLoadError::Other(split.to_string()),
+    })?;
     if shape.pinned_expert_bytes > 0 {
-        log_flash_next_pinned_experts(shape.pinned_expert_bytes, &pools.pinned, &pools.cache, device_only(&options, &cat));
+        let device_only = device_only(&options, &cat);
+        log_flash_next_pinned_experts(shape.pinned_expert_bytes, &load_pools.pinned, &load_pools.cache, device_only);
     }
-    let pinned = pools.pinned;
+    let pinned = load_pools.pinned;
     // Spec flash-next/05: what one sequence's reusable state costs, derived
     // from the topology -- the image a retained slot or a blob holds, and
     // what each token adds to the pages.

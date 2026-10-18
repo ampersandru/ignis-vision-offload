@@ -865,6 +865,54 @@ impl PinnedExperts {
     }
 }
 
+/// A pinned hot set the expert cache cannot hold (`flash_next::pinned_experts`,
+/// GitHub #329 item 12): the bytes asked, the most whole experts it can pin
+/// while every K class keeps `keep` LRU slots, and the widest decode step
+/// those are for -- `rows` rows at `lanes` lanes, more rows than lanes when it
+/// is a verify round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinRefused {
+    pub asked: u64,
+    pub most: u64,
+    pub keep: u32,
+    pub rows: u32,
+    pub lanes: u32,
+}
+
+impl PinRefused {
+    /// The refusal, naming the budget as `named`: where the operator set it
+    /// (the flag, the environment variable, the file key or the profile, as
+    /// the server's config spells it).
+    pub fn naming(&self, named: &str) -> String {
+        let Self { asked, most, keep, rows, lanes } = *self;
+        let at = match lanes {
+            1 => "1 lane".to_owned(),
+            n => format!("{n} lanes"),
+        };
+        let step = if rows > lanes {
+            format!("{rows} rows: a verify round, lanes x (drafts + 1), at {at}")
+        } else {
+            format!("{rows} rows: {at}")
+        };
+        format!(
+            "`{named}` asks for {asked} bytes ({}) of pinned experts, but this expert cache can pin at most \
+             {most} bytes ({}) of whole experts while every K class keeps {keep} LRU slots for the widest \
+             decode step ({step}). Ask for at most {most} bytes, or 0 for no pinned experts",
+            human_bytes(asked),
+            human_bytes(most),
+        )
+    }
+}
+
+/// Named by its flag, for a load no config resolved.
+impl std::fmt::Display for PinRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.naming("--vram-pinned-expert-bytes"))
+    }
+}
+
+impl std::error::Error for PinRefused {}
+
 /// The pinned hot set of pools of `capacity` slots per class: whole experts
 /// in [`warm_start_order`] (the calibration-hottest first) until their bytes
 /// reach `budget_bytes`, so the last one may pass it by less than one expert.

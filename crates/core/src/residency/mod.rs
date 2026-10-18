@@ -85,7 +85,7 @@ pub use plan::{
     ClassPool, EXPERT_CACHE_FLOOR_BYTES, ExpertCachePlan, ExpertCachePlanError,
     ExpertCacheRequest, ExpertTraffic, DEFAULT_HOST_MARGIN_BYTES, HOST_PLAN_LINES, human_bytes, HostPlan, HostPlanError,
     HostPlanRequest, MEASURED_ONE_ROW_PREFETCH_BUDGET_BYTES, MEASURED_THREE_ROW_PREFETCH_BUDGET_BYTES,
-    PinnedExperts, TrafficMismatch, default_prefetch_budget, holds_every_expert, min_slots_per_class,
+    PinRefused, PinnedExperts, TrafficMismatch, default_prefetch_budget, holds_every_expert, min_slots_per_class,
     ngram_hot_rows_room, pin_hot_experts, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
     residency_table_bytes, staging_ring_bytes_for, warm_start_order,
 };

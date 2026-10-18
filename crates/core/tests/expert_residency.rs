@@ -341,7 +341,7 @@ fn a_prefetch_never_evicts_the_current_step_and_is_dropped_when_nothing_else_can
     decode(&mut m, 1, &[0]); // an old down that a prefetch may evict
     let lane: &[u16] = &[1, 2];
     let step = m.step(&LayerStep::decode(0, &[0]).lookahead(&[lane])).expect("step");
-    // Down K2: (0, 0) is this step's and pinned; (1, 0) is old. One prefetched
+    // Down K2: (0, 0) is this step's and held; (1, 0) is old. One prefetched
     // down evicts (1, 0); the other has nowhere to go and is dropped.
     assert_eq!(step.evictions, vec![down(1, 0)]);
     assert!(step.prefetches.contains(&(down(1, 1), Admission::Slot)));

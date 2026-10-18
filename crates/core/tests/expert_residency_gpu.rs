@@ -204,7 +204,7 @@ fn the_device_steps_equal_the_policy_model_with_pinned_keys() {
 }
 
 /// One step's report on the device against the policy model's outcome.
-/// Returns the pinned keys among its hits.
+/// Returns how many of its hits were pinned keys.
 fn assert_step_equal(report: &DeviceReport, outcome: Result<StepOutcome, StepError>, pinned: &[ProjectionId], at: &str) -> usize {
     match outcome {
         Ok(o) => {
@@ -269,8 +269,8 @@ struct RecordedStep {
 /// (`crates/core/tests/expert_residency_fixture.rs` documents the format).
 struct RecordedTrace {
     catalog: ExpertCatalog,
-    record_bytes: [u64; 8],
-    capacity: [u32; 8],
+    record_bytes: [u64; KClass::COUNT],
+    capacity: [u32; KClass::COUNT],
     width: usize,
     prefill_width: usize,
     budget: Option<PrefetchBudget>,
@@ -282,7 +282,7 @@ fn read_recorded_trace() -> RecordedTrace {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernel/tests/fixtures/residency/trace_v1.txt");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let (mut layers, mut experts) = (0u16, 0u16);
-    let (mut record_bytes, mut capacity) = ([0u64; 8], [0u32; 8]);
+    let (mut record_bytes, mut capacity) = ([0u64; KClass::COUNT], [0u32; KClass::COUNT]);
     let (mut width, mut prefill_width, mut budget) = (0, 0, None);
     let (mut k2, mut warm_keys, mut steps) = (Vec::new(), Vec::new(), Vec::new());
     for line in text.lines() {

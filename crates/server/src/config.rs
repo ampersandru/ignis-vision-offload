@@ -975,12 +975,7 @@ fn derive(
     let s = &resolution.settings;
     // The spelling a field's value came under, for an error that names it;
     // its flag when it is at its default.
-    let spelled = |group: &str, name: &str| {
-        resolution
-            .origin(group, name)
-            .map(|origin| origin.spelling.clone())
-            .unwrap_or_else(|| schema::field(group, name).expect("a declared field").flag())
-    };
+    let spelled = |group: &str, name: &str| resolution.spelled(group, name);
     let explicit = |group: &str, name: &str| resolution.explicit(group, name);
 
     let vram = derive_vram(&resolution, &spelled)?;

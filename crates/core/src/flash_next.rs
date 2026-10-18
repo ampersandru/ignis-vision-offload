@@ -28,9 +28,9 @@ use crate::residency::load::{
     stream_pinned_records,
 };
 use crate::residency::{
-    default_prefetch_budget, holds_every_expert, human_bytes, min_slots_per_class, pin_hot_experts, plan_expert_cache,
-    residency_table_bytes, staging_ring_bytes_for, warm_start_order, ExpertCachePlan, ExpertCacheRequest,
-    ExpertCatalog, ExpertTraffic, KClass, PinnedExperts, EXPERT_CACHE_FLOOR_BYTES,
+    default_prefetch_budget, holds_every_expert, min_slots_per_class, pin_hot_experts, plan_expert_cache,
+    residency_table_bytes, staging_ring_bytes_for, warm_start_order, ExpertCachePlan, ExpertCachePlanError,
+    ExpertCacheRequest, ExpertCatalog, ExpertTraffic, KClass, PinRefused, PinnedExperts, EXPERT_CACHE_FLOOR_BYTES,
 };
 use crate::seq::{SeqPool, SeqPoolBudget};
 use crate::speculation::{FlashNextSpeculation, SpeculativeBackend};
@@ -107,6 +107,14 @@ impl EngineOptions {
     /// `verify::decode_rows`).
     pub fn decode_rows(&self) -> u32 {
         self.speculation.map_or(self.decode_lanes, |s| s.decode_rows(self.decode_lanes))
+    }
+
+    /// The slots every K class gets first and keeps for its LRU: those of
+    /// the widest decode step ([`class_minimum_slots`] of
+    /// [`EngineOptions::decode_rows`]). The one minimum the cache's split,
+    /// the plan's and the load's alike, and the pinned hot set keep.
+    pub fn class_minimum_slots(&self) -> u32 {
+        class_minimum_slots(self.decode_rows())
     }
 
     /// The speculative backend the pool is built for: an MTP load's head is
@@ -208,10 +216,11 @@ pub fn expert_traffic(path: &Path, catalog: &ExpertCatalog) -> Result<ExpertTraf
     ExpertTraffic::new(catalog, counts).map_err(|e| e.to_string())
 }
 
-/// The slots every K class gets first at `lanes`: one decode step's
-/// selection and lookahead, as if all of them fell in that class.
-pub fn class_minimum_slots(lanes: u32) -> u32 {
-    min_slots_per_class(lanes, crate::moe::TOP_K, LOOKAHEAD_WIDTH)
+/// The slots a K class needs for a decode step of `rows` rows: its
+/// selection and lookahead, as if all of them fell in that class. A load
+/// asks it of its widest step ([`EngineOptions::class_minimum_slots`]).
+pub fn class_minimum_slots(rows: u32) -> u32 {
+    min_slots_per_class(rows, crate::moe::TOP_K, LOOKAHEAD_WIDTH)
 }
 
 /// The expert residency of the artifact at `path` bound as `plan`, for a
@@ -242,7 +251,7 @@ pub fn build_residency(path: &Path, plan: &FlashNextPlan, options: &EngineOption
     // A device-only residency never misses, so it never stages: no ring, as
     // the VRAM plan's resident branch placed none (GitHub #329 item 2).
     let no_host_pool = device_only(options, &cat);
-    let ResidencyPools { cache, pinned } = residency_pools(options, &cat, &traffic)?;
+    let ResidencyPools { cache, pinned } = residency_pools(options, &cat, &traffic).map_err(|e| e.to_string())?;
     let (one_row, per_row) = budget_words(Some(default_prefetch_budget()));
     let desc = ResidencyDesc {
         layers: layers as u32,
@@ -320,17 +329,37 @@ impl ResidencyPools {
     }
 }
 
+/// Why [`residency_pools`] refused a load: the cache's split, or a pinned
+/// hot set it cannot hold, which the server names by where its budget was
+/// set ([`PinRefused::naming`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolsRefused {
+    Split(ExpertCachePlanError),
+    Pin(PinRefused),
+}
+
+impl std::fmt::Display for PoolsRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Split(refused) => refused.fmt(f),
+            Self::Pin(refused) => refused.fmt(f),
+        }
+    }
+}
+
 /// The expert cache a load of `options` builds: the eight K-class pools
 /// split from `expert_cache_bytes` the way one LRU over the calibration
-/// traffic would hold them, and the pinned hot set ([`pinned_experts`]).
-/// [`build_residency`] builds them, and the server's plan charges the host
-/// pool and names the pinned set from the same call with the same options
-/// (GitHub #329 item 12), so the plan and the load pin the same experts.
+/// traffic would hold them, each class given the widest decode step's slots
+/// first ([`EngineOptions::class_minimum_slots`]), and the pinned hot set
+/// ([`pinned_experts`]). [`build_residency`] builds them, and the server's
+/// plan charges the host pool and names the pinned set from the same call
+/// with the same options (GitHub #329 item 12), so the plan and the load pin
+/// the same experts.
 pub fn residency_pools(
     options: &EngineOptions,
     catalog: &ExpertCatalog,
     traffic: &ExpertTraffic,
-) -> Result<ResidencyPools, String> {
+) -> Result<ResidencyPools, PoolsRefused> {
     let staging_ring = staging_ring_bytes_for(catalog, options.expert_cache_bytes);
     let tables = residency_table_bytes(
         u64::from(catalog.layers()),
@@ -347,24 +376,24 @@ pub fn residency_pools(
         allow_below_floor: false,
         catalog,
         traffic,
-        min_slots: class_minimum_slots(options.decode_lanes),
+        min_slots: options.class_minimum_slots(),
     })
-    .map_err(|e| e.to_string())?;
-    let pinned = pinned_experts(options, catalog, traffic, &cache)?;
+    .map_err(PoolsRefused::Split)?;
+    let pinned = pinned_experts(options, catalog, traffic, &cache).map_err(PoolsRefused::Pin)?;
     Ok(ResidencyPools { cache, pinned })
 }
 
 /// The expert cache's split the server's plan checks at start (ADR 0045):
 /// the cache the VRAM plan `vram` left beside its other lines, against the
 /// floor (`--vram-allow-expert-cache-below-floor` lets it below) and the
-/// class minimums of `decode_lanes`. The same bytes and minimums as the
-/// load's split ([`residency_pools`]), since the plan's residency line is
-/// the ring and `table_bytes`.
+/// class minimum of a load of `options` ([`EngineOptions::class_minimum_slots`]).
+/// The same bytes and minimum as the load's split ([`residency_pools`]),
+/// since the plan's residency line is the ring and `table_bytes`.
 pub fn plan_cache_request<'a>(
     vram: &crate::VramPlan,
     table_bytes: u64,
     allow_below_floor: bool,
-    decode_lanes: u32,
+    options: &EngineOptions,
     catalog: &'a ExpertCatalog,
     traffic: &'a ExpertTraffic,
 ) -> ExpertCacheRequest<'a> {
@@ -377,7 +406,7 @@ pub fn plan_cache_request<'a>(
         allow_below_floor,
         catalog,
         traffic,
-        min_slots: class_minimum_slots(decode_lanes),
+        min_slots: options.class_minimum_slots(),
     }
 }
 
@@ -385,43 +414,29 @@ pub fn plan_cache_request<'a>(
 /// `cache` split for it (GitHub #329 item 12): the calibration-hottest whole
 /// experts until they reach `pinned_expert_bytes` ([`pin_hot_experts`]).
 /// Each class keeps for its LRU the slots of the widest decode step the load
-/// runs, `class_minimum_slots` of its decode rows -- a verify round's
-/// `lanes * (k + 1)` under speculation, not the lanes -- so no step finds its
-/// class without room. A budget the walk cannot reach while keeping them is
-/// refused, naming the most it can. None at 0, and none on a device-only
-/// load, which keeps no expert in RAM to begin with.
+/// runs ([`EngineOptions::class_minimum_slots`]: a verify round's
+/// `lanes * (k + 1)` rows under speculation, not the lanes), the minimum the
+/// split gave it first, so no step finds its class without room. A budget
+/// the walk cannot reach while keeping them is refused ([`PinRefused`]),
+/// naming the most it can. None at 0, and none on a device-only load, which
+/// keeps no expert in RAM to begin with.
 pub fn pinned_experts(
     options: &EngineOptions,
     catalog: &ExpertCatalog,
     traffic: &ExpertTraffic,
     cache: &ExpertCachePlan,
-) -> Result<PinnedExperts, String> {
+) -> Result<PinnedExperts, PinRefused> {
     let asked = options.pinned_expert_bytes;
     if asked == 0 || device_only(options, catalog) {
         return Ok(PinnedExperts::default());
     }
-    let rows = options.decode_rows();
-    let keep = class_minimum_slots(rows);
+    let keep = options.class_minimum_slots();
     let pinned = pin_hot_experts(catalog, traffic, cache.capacity(), keep, asked);
     if pinned.bytes >= asked {
         return Ok(pinned);
     }
     let most = pin_hot_experts(catalog, traffic, cache.capacity(), keep, u64::MAX).bytes;
-    let lanes = match options.decode_lanes {
-        1 => "1 lane".to_owned(),
-        n => format!("{n} lanes"),
-    };
-    let step = match options.speculation {
-        Some(_) if rows > options.decode_lanes => format!("{rows} rows: a verify round, lanes x (drafts + 1), at {lanes}"),
-        _ => format!("{rows} rows: {lanes}"),
-    };
-    Err(format!(
-        "--vram-pinned-expert-bytes asks for {asked} bytes ({}), but this expert cache can pin at most {most} \
-         bytes ({}) of whole experts while every K class keeps {keep} LRU slots for the widest decode step \
-         ({step}). Ask for at most {most} bytes, or 0 for no pinned experts",
-        human_bytes(asked),
-        human_bytes(most),
-    ))
+    Err(PinRefused { asked, most, keep, rows: options.decode_rows(), lanes: options.decode_lanes })
 }
 
 /// The artifact's non-expert tensors placed on the device, and the device
@@ -1034,22 +1049,19 @@ mod tests {
         assert_eq!(planned.pool_budget_of(100).kv_page_group_count, 100);
     }
 
-    /// GitHub #329 item 12: a load pins the plan's hottest experts at its
-    /// budget, each class keeping its decode minimum for the LRU, and none at
-    /// 0 or on a device-only load (a cache that holds every expert).
     /// 128 experts over `layers` layers, every projection K = 2 (gate/up 200
     /// bytes, down 100), every expert selected; and a split of `slots` slots
     /// in each of their two classes.
     fn two_class_catalog(layers: u16, slots: u32) -> (ExpertCatalog, ExpertTraffic, ExpertCachePlan) {
         use crate::residency::{ClassPool, KBits};
-        let bytes = [200, 250, 300, 400, 100, 125, 150, 200];
-        let catalog = ExpertCatalog::new(layers, 128 / layers, vec![(KBits::K2, KBits::K2); 128], bytes).expect("catalog");
+        let slot_bytes = [200, 250, 300, 400, 100, 125, 150, 200];
+        let catalog = ExpertCatalog::new(layers, 128 / layers, vec![(KBits::K2, KBits::K2); 128], slot_bytes).expect("catalog");
         let traffic = ExpertTraffic::new(&catalog, (0..128).map(|i| 1 + i % 7).collect()).expect("traffic");
         let mut pools = [ClassPool::default(); KClass::COUNT];
-        let bytes = u64::from(slots);
-        (pools[0], pools[4]) = (ClassPool { slots, bytes: bytes * 200 }, ClassPool { slots, bytes: bytes * 100 });
+        let n = u64::from(slots);
+        (pools[0], pools[4]) = (ClassPool { slots, bytes: n * 200 }, ClassPool { slots, bytes: n * 100 });
         let cache = ExpertCachePlan {
-            cache_bytes: bytes * 300,
+            cache_bytes: n * 300,
             pools,
             staging_ring_bytes: 0,
             table_bytes: 0,
@@ -1098,8 +1110,10 @@ mod tests {
         let starving = pin(&plain, 7_000).expect("one lane keeps 26");
         assert_eq!(starving.lru_capacity(cache.capacity())[0], 76);
         let err = pin(&speculative, 7_000).expect_err("a verify round would find too few slots");
-        for part in ["7000", "6600", "78 LRU slots", "3 rows", "--vram-pinned-expert-bytes"] {
-            assert!(err.contains(part), "{part}: {err}");
+        assert_eq!(err, PinRefused { asked: 7_000, most: 6_600, keep: 78, rows: 3, lanes: 1 });
+        let named = err.naming("vram.pinned_expert_bytes (profile p in c.yaml)");
+        for part in ["`vram.pinned_expert_bytes (profile p in c.yaml)` asks for 7000", "at most 6600", "78 LRU slots", "3 rows: a verify round"] {
+            assert!(named.contains(part), "{part}: {named}");
         }
         let kept = pin(&speculative, 6_600).expect("22 experts leave 78");
         assert!(kept.lru_capacity(cache.capacity()).iter().zip(cache.capacity()).all(|(&lru, pool)| pool == 0 || lru >= 78));
@@ -1107,7 +1121,82 @@ mod tests {
         let (catalog, traffic, cache) = two_class_catalog(2, 40);
         let options = EngineOptions { pinned_expert_bytes: 1, ..speculative };
         let err = pinned_experts(&options, &catalog, &traffic, &cache).expect_err("40 slots, 78 kept");
-        assert!(err.contains("at most 0 bytes"), "{err}");
+        assert_eq!(err.most, 0, "{err}");
+    }
+
+    /// 256 experts over eight layers (so that the plan's staging ring, two
+    /// of them, offloads): the first four layers' hot (100 selections each)
+    /// at K = 2, 300 bytes an expert, the last four layers' cold (1 each) at
+    /// K = 3, 450 bytes -- four classes of 128 projections, the cold ones
+    /// (gate/up and down K3) those a split by traffic gives least.
+    fn hot_and_cold_catalog() -> (ExpertCatalog, ExpertTraffic) {
+        use crate::residency::KBits;
+        let ks = (0..256).map(|i| if i < 128 { (KBits::K2, KBits::K2) } else { (KBits::K3, KBits::K3) }).collect();
+        let catalog = ExpertCatalog::new(8, 32, ks, [200, 250, 300, 400, 100, 125, 150, 200]).expect("catalog");
+        let traffic = ExpertTraffic::new(&catalog, (0..256).map(|i| if i < 128 { 100 } else { 1 }).collect()).expect("traffic");
+        (catalog, traffic)
+    }
+
+    /// GitHub #329 item 12, second review 2026-10-18: the split gives every
+    /// class the slots of the widest decode step first -- under MTP a verify
+    /// round's `lanes * (k + 1)` rows, not the lanes -- the minimum the pin
+    /// keeps too, so no class is split below what one round selects and
+    /// looks ahead, pinned or not.
+    /// Without speculation the widest step is the lanes', so a load with MTP
+    /// off (the rtx5090 profile's) splits as before.
+    #[test]
+    fn the_split_gives_every_class_the_widest_decode_step() {
+        let (catalog, traffic) = hot_and_cold_catalog();
+        let mtp = FlashNextSpeculation::new(SpeculativeBackend::Mtp, 2, 0).expect("mtp");
+        let plain = EngineOptions { decode_lanes: 1, prefill_chunk_tokens: 64, expert_cache_bytes: 60_000, ..EngineOptions::default() };
+        let speculative = EngineOptions { speculation: Some(mtp), ..plain.clone() };
+        assert_eq!((plain.class_minimum_slots(), speculative.class_minimum_slots()), (26, 78));
+        assert_eq!(EngineOptions::default().class_minimum_slots(), class_minimum_slots(DEFAULT_DECODE_LANES), "MTP off: the lanes");
+        let split = |options: &EngineOptions| residency_pools(options, &catalog, &traffic).expect("split").cache.capacity();
+        // One lane's step: 26 slots a class first, and the cold classes get
+        // little more.
+        let lanes = split(&plain);
+        assert!(lanes[2] < 78 && lanes[6] < 78, "{lanes:?}");
+        // A 3-row verify round's: 78 a class first.
+        let rows = split(&speculative);
+        assert!(rows.iter().all(|&slots| slots == 0 || slots >= 78), "{rows:?}");
+        // The plan's split takes the same minimum from the same options.
+        let tables = residency_table_bytes(8, 32, 64, u64::from(LOOKAHEAD_WIDTH));
+        let vram = offloaded_vram(&catalog, tables, 60_000);
+        for (options, split) in [(&plain, lanes), (&speculative, rows)] {
+            let request = plan_cache_request(&vram, tables, true, options, &catalog, &traffic);
+            assert_eq!(plan_expert_cache(&request).expect("plan's split").capacity(), split);
+        }
+    }
+
+    /// An offloaded VRAM plan at one lane of `catalog`'s experts: the pool's
+    /// one page of one byte (a lane's whole 64-token context), the staging
+    /// ring, `tables`, and `cache_bytes` left to the cache.
+    fn offloaded_vram(catalog: &ExpertCatalog, tables: u64, cache_bytes: u64) -> crate::VramPlan {
+        use crate::vram::{ExpertResidency, Residency, VramLines, VramMode, VramRequest};
+        let ring = crate::residency::prefill_staging_ring_bytes(catalog);
+        let budget = 1 + ring + tables + cache_bytes;
+        let vram = crate::plan_vram(&VramRequest {
+            mode: VramMode::Explicit { budget_bytes: budget, allow_oversubscription: false },
+            free_at_start_bytes: budget,
+            lines: VramLines::default(),
+            kv_page_bytes: 1,
+            max_context_tokens: 64,
+            retained_slots: 0,
+            kv_pool: None,
+            residency: Residency::Experts(ExpertResidency {
+                expert_pool_bytes: catalog.total_bytes(),
+                staging_ring_bytes: ring,
+                table_bytes: tables,
+                decode_lanes: 1,
+            }),
+            embedding_pool_named: false,
+            kv_arena_bytes: &|pages: u32| u64::from(pages),
+            can_page: true,
+        })
+        .expect("plan");
+        assert_eq!(vram.expert_cache_bytes, cache_bytes, "offloaded");
+        vram
     }
 
     /// GitHub #329 item 12, review 2026-10-18: the server's plan and the load
@@ -1119,40 +1208,15 @@ mod tests {
     /// pins.
     #[test]
     fn the_plan_and_the_load_split_the_cache_alike_and_pin_the_same_experts() {
-        use crate::vram::{ExpertResidency, Residency, VramLines, VramMode, VramRequest};
         // Four layers, so that the staging ring (two of them) is less than
         // every expert and the plan offloads.
         let (catalog, traffic, _) = two_class_catalog(4, 0);
         let options = EngineOptions { decode_lanes: 1, prefill_chunk_tokens: 64, ..EngineOptions::default() };
         let tables = residency_table_bytes(4, 32, 64, u64::from(LOOKAHEAD_WIDTH));
-        let ring = crate::residency::prefill_staging_ring_bytes(&catalog);
-        let arena = |pages: u32| u64::from(pages);
         for cache_bytes in [9_000u64, 12_000, 15_000] {
-            // An offloaded plan: the pool's one page of one byte (a lane's
-            // whole 64-token context), the ring, the tables, the rest to the
-            // cache.
-            let budget = 1 + ring + tables + cache_bytes;
-            let vram = crate::plan_vram(&VramRequest {
-                mode: VramMode::Explicit { budget_bytes: budget, allow_oversubscription: false },
-                free_at_start_bytes: budget,
-                lines: VramLines::default(),
-                kv_page_bytes: 1,
-                max_context_tokens: 64,
-                retained_slots: 0,
-                kv_pool: None,
-                residency: Residency::Experts(ExpertResidency {
-                    expert_pool_bytes: catalog.total_bytes(),
-                    staging_ring_bytes: ring,
-                    table_bytes: tables,
-                    decode_lanes: 1,
-                }),
-                embedding_pool_named: false,
-                kv_arena_bytes: &arena,
-                can_page: true,
-            })
-            .expect("plan");
-            assert_eq!(vram.expert_cache_bytes, cache_bytes, "offloaded");
-            let planned = plan_expert_cache(&plan_cache_request(&vram, tables, true, 1, &catalog, &traffic)).expect("plan's split");
+            let vram = offloaded_vram(&catalog, tables, cache_bytes);
+            let planned =
+                plan_expert_cache(&plan_cache_request(&vram, tables, true, &options, &catalog, &traffic)).expect("plan's split");
             let options = EngineOptions { expert_cache_bytes: vram.expert_cache_bytes, pinned_expert_bytes: 600, ..options.clone() };
             let pools = residency_pools(&options, &catalog, &traffic).expect("load's split");
             assert_eq!(pools.cache.capacity(), planned.capacity(), "{cache_bytes}: one split");
