@@ -182,7 +182,7 @@ ALLOW_EXPERT_CACHE_BELOW_FLOOR ?=
 # the calibration-hottest experts held in the expert cache outside its LRU, with
 # no copy in the pinned host pool, which takes that much less RAM (on the 5090:
 # nothing measurable at 1G, ~1% of three-lane decode at 2G). Empty = the
-# server's 0: none. The 27B refuses it.
+# server's: 2G under the rtx5090 profile, else 0 (none). The 27B refuses it.
 PINNED_EXPERT_BYTES ?=
 # The VRAM budget (GitHub #210, ADR 0030). Empty = the server's default: the
 # memory free at start minus a 1536M headroom. VRAM_HEADROOM derives it with

@@ -823,12 +823,16 @@ fn the_expert_cache_floor_opt_in_parses_and_refuses_the_27b() {
 }
 
 /// GitHub #329 item 12: `--vram-pinned-expert-bytes` is Flash-Next's: 0 (no
-/// pin) by default, a byte count from the flag, the environment or a file,
-/// changed only through a reload, refused on the 27B and dropped by a switch
-/// to it.
+/// pin) as the field's own default, 2 GiB under the default `rtx5090`
+/// profile (ADR 0055), a byte count from the flag, the environment or a
+/// file, changed only through a reload, refused on the 27B when named and
+/// dropped by a switch to it; the profile's value the 27B passes over.
 #[test]
 fn the_pinned_expert_budget_is_none_by_default_and_flash_next_s() {
-    assert_eq!(config(&[]).pinned_expert_bytes, 0);
+    assert_eq!(config(&["--profile", "none"]).pinned_expert_bytes, 0);
+    let profiled = config(&[]);
+    assert_eq!(profiled.pinned_expert_bytes, 2 * GIB, "the rtx5090 profile");
+    assert!(served_model_for(&profiled, ModelFamily::Qwen38_27b).is_ok(), "a profile's value is passed over");
     let flag = config(&["--vram-pinned-expert-bytes", "1G"]);
     assert_eq!(flag.pinned_expert_bytes, GIB);
     let env = env_map(&[("IGNIS_VRAM_PINNED_EXPERT_BYTES", "2G")]);
