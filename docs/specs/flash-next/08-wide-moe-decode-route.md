@@ -345,10 +345,13 @@ On the RTX PRO 6000, resident, 8 lanes, MTP 3, against speculation off
    8 lanes and budget 16, **≥ 1.10x speculation off on code and ≥ 1.0x on
    prose**. Otherwise **NO-GO**: the finding stays, nothing is built, the
    owner decides on the issue.
-4. **Wide MoE kernel.** One launch serves 9-32 decode rows on the register
-   route's units, each distinct expert's projection decoded once a call;
-   within the fp64 bounds of `ignis_moe.h`; deterministic; the 1-8-token
-   launch's bits unchanged. On the card, from the verify routing: one
+4. **Wide MoE kernel.** A separate instantiation, taken only by
+   decode-phase calls of 9-32 rows, serves them in one launch (the register
+   route's unit shape), each distinct expert's projection decoded once a
+   call; within the fp64 bounds of `ignis_moe.h`; deterministic. A call of
+   1-8 tokens still runs today's kernel, its bits unchanged and pinned by a
+   test: lifting `IGNIS_MOE_DECODE_MAX_TOKENS` on the existing kernel does
+   not meet this criterion. On the card, from the verify routing: one
    16-row call ≤ 0.85x the time of two 8-row launches, one 32-row call ≤ 0.65x
    of four (vLLM's fused MoE measures 0.80x and 0.55x on the same shape [L9]).
 5. **Compact workspace.** The MoE decode regions grow linearly in the call's
@@ -406,6 +409,9 @@ On the RTX PRO 6000, resident, 8 lanes, MTP 3, against speculation off
 4. Is ≥ 1.0x on prose the right bar, given code at 1.10x?
 
 ### Literature (accessed 2026-10-18)
+
+Each number below was read from its source on 2026-10-18. L7 and L8 are
+community measurements, not an engine's or a vendor's.
 
 **(a) Speculative decoding vs batch size.** Every primary source shows the
 gain falling with concurrency; MoE targets lose part of it to the experts the
