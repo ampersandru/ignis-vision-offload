@@ -38,6 +38,14 @@
 //! through other kernel shapes (attention splits, the indexer's prefill
 //! scoring), so its logits differ by summation order.
 //!
+//! Past the default's 8 verify rows (GitHub #329 item 5, ADR 0056) the
+//! linears and mixes take their tensor-core routes and the text is no longer
+//! held to spec-off's: a budget's rounds are held instead to spec-off's
+//! logits row by row on spec-off's own text (teacher-forced, a tolerance in
+//! BF16 ulps), to their own rows' picks (the commit, exact), to none's state
+//! (exact), to themselves run to run, and to spec-off's mean log-probability
+//! and a floor of the head's acceptance (`support/logit_drift.rs`).
+//!
 //! Machine-local: `F:/ai/models/Qwen3.8-Flash-Next-ignis/` (or
 //! `IGNIS_FLASH_NEXT_DIR`). Explicit GPU profile (ADR 0006): outside
 //! `IGNIS_GPU_PROFILE=1` a missing artifact or GPU is a skip, under it a
@@ -48,10 +56,18 @@
 use std::path::PathBuf;
 
 use ignis_artifact::packer::ARTIFACT_FILE_NAME;
-use ignis_core::flash_next::{EngineOptions, FlashNextEngine, LaneRound};
+use ignis_core::flash_next::{EngineOptions, FlashNextEngine, LaneRound, RoundLogits};
 use ignis_core::gpu_profile;
 use ignis_core::kv_format::KvFormat;
 use ignis_core::speculation::{FlashNextSpeculation, SpeculativeBackend};
+
+#[path = "support/logit_drift.rs"]
+mod logit_drift;
+
+use logit_drift::{
+    commit_follows_argmax, log_prob, row_drift, LaneCommit, RowDrift, HEAD_ACCEPTANCE_FLOOR, MEAN_LOG_PROB_NATS,
+    TOLERANCE_ULPS,
+};
 
 const MODEL_DIR: &str = "F:/ai/models/Qwen3.8-Flash-Next-ignis";
 const DRAFT_TOKENS: u32 = 3;
@@ -153,23 +169,34 @@ fn long_prompt(prompts: &[Vec<u32>]) -> Vec<u32> {
     out
 }
 
-/// What one drafter's run left: each lane's tokens, its rounds, and the
-/// probe row after them.
+/// What one drafter's run left: each lane's tokens, its rounds, the head's
+/// drafts each round made, and the probe row after them.
 struct Outcome {
     tokens: Vec<Vec<u32>>,
     rounds: Vec<Vec<LaneRound>>,
+    head_drafts: Vec<Vec<Vec<u32>>>,
     probes: Vec<Vec<f32>>,
 }
 
 fn run(engine: &FlashNextEngine, prompts: &[Vec<u32>], drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>) -> Outcome {
+    run_with(engine, prompts, drafter, None)
+}
+
+/// [`run`], every round's logits handed to `readout`.
+fn run_with(
+    engine: &FlashNextEngine,
+    prompts: &[Vec<u32>],
+    drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>,
+    readout: Option<&mut dyn FnMut(RoundLogits<'_>)>,
+) -> Outcome {
     let mut run = engine
-        .generate_speculative(prompts, TOKENS, drafter)
+        .generate_speculative_readout(prompts, TOKENS, drafter, readout)
         .unwrap_or_else(|e| panic!("generate_speculative on {} lanes: {e}", prompts.len()));
     let mut probes = Vec::new();
     for (seq, context) in run.sequences.iter_mut().zip(run.contexts.iter_mut()) {
         probes.push(engine.probe_logits(seq, context).unwrap_or_else(|e| panic!("probe: {e}")));
     }
-    Outcome { tokens: run.tokens, rounds: run.rounds, probes }
+    Outcome { tokens: run.tokens, rounds: run.rounds, head_drafts: run.head_drafts, probes }
 }
 
 fn same_bits(a: &[f32], b: &[f32]) -> usize {
@@ -468,136 +495,357 @@ fn the_heads_drafts_never_read_a_rejected_column() {
     }
 }
 
-/// `on` against `off` lane by lane under `assert_near_tie`'s rule, returning
-/// a line for every divergence the rule refuses instead of panicking.
-fn near_tie_exceedances(engine: &mut FlashNextEngine, prompts: &[Vec<u32>], off: &[Vec<u32>], on: &[Vec<u32>], what: &str) -> Vec<String> {
+/// A load of eight decode lanes with the MTP head at a verify budget of
+/// `rows`, or None with a skip.
+fn budget_engine(kv_format: KvFormat, rows: u32) -> Option<FlashNextEngine> {
+    let dir = model_dir();
+    if !dir.join(ARTIFACT_FILE_NAME).exists() || !ignis_core::flash_next_mtp::companion_path(&dir).exists() {
+        gpu_profile::skip_or_fail(&format!("no Flash-Next artifact or MTP companion in {}", dir.display()));
+        return None;
+    }
+    let speculation = FlashNextSpeculation::new(SpeculativeBackend::Mtp, DRAFT_TOKENS, rows).expect("valid");
+    let options = EngineOptions {
+        max_context_tokens: 8192,
+        kv_format,
+        decode_lanes: 8,
+        speculation: Some(speculation),
+        ..EngineOptions::default()
+    };
+    match FlashNextEngine::load(&dir, options) {
+        Ok(engine) => Some(engine),
+        Err(e) => {
+            gpu_profile::skip_or_fail(&format!("load the Flash-Next engine at {rows} rows: {e}"));
+            None
+        }
+    }
+}
+
+/// The G1 prompts and test2048 windows 3, 9, 17 and 33 (40 tokens each):
+/// one a lane, or None with a skip.
+fn eight_prompts() -> Option<Vec<Vec<u32>>> {
+    let mut prompts = g1_prompts()?;
+    for window in [3, 9, 17, 33] {
+        prompts.push(test2048_window(window, 40)?);
+    }
+    assert_eq!(prompts.len(), 8, "eight prompts, one a lane");
+    Some(prompts)
+}
+
+/// One round's readout, kept small: its lanes, columns a lane, each row's
+/// pick (`[lanes][columns]`) and a hash of its bits.
+#[derive(Debug, PartialEq)]
+struct Readout {
+    lanes: Vec<usize>,
+    columns: usize,
+    picks: Vec<u32>,
+    bits: u64,
+}
+
+fn readout_of(round: &RoundLogits<'_>, vocab: usize) -> Readout {
+    let picks = round.rows.chunks_exact(vocab).map(|row| logit_drift::argmax(row).0).collect();
+    // FNV-1a over the rows' bits: two runs' rows compared without keeping them.
+    let bits = round.rows.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    Readout { lanes: round.lanes.to_vec(), columns: round.columns, picks, bits }
+}
+
+/// Exact at any budget (ADR 0056): every lane of every round committed its
+/// own rows' picks -- `offered(round, lane, position)` the drafts the lane
+/// was offered at its anchor's position, cut to its extent here. A line per
+/// lane that did not.
+fn commits_follow_picks(
+    run: &Outcome,
+    readouts: &[Readout],
+    offered: &dyn Fn(usize, usize, usize) -> Vec<u32>,
+    what: &str,
+) -> Vec<String> {
+    assert_eq!(run.rounds.len(), readouts.len(), "{what}: a readout a round");
+    let mut at = vec![0usize; run.tokens.len()];
     let mut refused = Vec::new();
-    for (lane, ((prompt, a), b)) in prompts.iter().zip(off).zip(on).enumerate() {
-        let Some(at) = a.iter().zip(b).position(|(x, y)| x != y) else { continue };
-        let mut text = prompt.clone();
-        text.extend_from_slice(&a[..at]);
-        let logits = engine.last_logits(&text).unwrap_or_else(|e| panic!("near-tie probe: {e}"));
-        let (top, first, _) = top_two(&logits);
-        let gap = logits[a[at] as usize] - logits[b[at] as usize];
-        let line = format!(
-            "{what} lane {lane}: diverges at {at}: off {} on {} (prefill pick {top}), prefill gap off - on = {gap} (ulp {})",
-            a[at],
-            b[at],
-            bf16_ulp(first)
-        );
-        println!("{line}");
-        if gap > bf16_ulp(first) {
-            refused.push(line);
+    for (r, (round, readout)) in run.rounds.iter().zip(readouts).enumerate() {
+        assert_eq!(round.len(), readout.lanes.len(), "{what}: round {r}'s lanes");
+        for (a, (lane_round, &lane)) in round.iter().zip(&readout.lanes).enumerate() {
+            let (p, committed) = (at[lane], lane_round.committed as usize);
+            let drafts = offered(r, lane, p);
+            assert!(lane_round.extent as usize <= drafts.len(), "{what}: round {r} lane {lane} verified more than it was offered");
+            let commit = LaneCommit {
+                anchor: run.tokens[lane][p],
+                drafts: &drafts[..lane_round.extent as usize],
+                committed: &run.tokens[lane][p..p + committed],
+                next: run.tokens[lane].get(p + committed).copied(),
+                picks: &readout.picks[a * readout.columns..(a + 1) * readout.columns],
+            };
+            if let Err(e) = commit_follows_argmax(&commit) {
+                refused.push(format!("{what} round {r} lane {lane}: {e}"));
+            }
+            at[lane] = p + committed;
         }
     }
     refused
 }
 
-/// GitHub #329 item 5: a row budget past the default's 8. At 16 rows and 3
-/// draft tokens four lanes verify 3 drafts a round, five 2 and eight 1 --
-/// rounds of 16, 15 and 16 rows, past the MoE decode route's one launch, so
-/// their MoE runs in launches of 8 rows (`fn_moe_experts_decode`) and their
-/// linears, mixes and shared expert on their tensor-core routes.
-///
-/// The wide shapes are consistent with themselves: reject commits none's
-/// text and leaves none's state bit for bit (a column's computation does not
-/// depend on its round's other columns), and so does the oracle, which
-/// commits every column of every lane each round, in BF16 KV (up to
-/// near-ties under hq-e8-2b). The head drafts and is accepted. Its text is
-/// held against spec-off (one-token rounds) by the near-tie rule; not
-/// against none: its lanes accept different counts, so they finish in
-/// different rounds and the last ones run their last rounds narrower --
-/// another round shape than none's, which runs every round at the full
-/// width (the same holds at the default's 8 rows). Every cell runs; the
-/// divergences the rule refuses are listed together at the end.
-///
-/// Measured on the RTX 5090 (2026-10-18, finding
-/// `2026-10-18-flash-next-verify-rows-past-8.md`): past 8 rows the
-/// tensor-core routes move the verify pass's logits further from spec-off
-/// than the decode routes do, and the rule refuses a divergence at eight
-/// lanes -- a budget past 8 is not held lossless yet.
-#[test]
-#[ignore = "GPU profile only: the real Flash-Next artifact and its MTP companion"]
-fn a_sixteen_row_budget_keeps_the_text_and_the_state_from_four_to_eight_lanes() {
-    const ROWS: u32 = 16;
-    let Some(mut prompts) = g1_prompts() else { return };
-    for window in [3, 9, 17, 33] {
-        let Some(prompt) = test2048_window(window, 40) else { return };
-        prompts.push(prompt);
+/// One verify row on the teacher's text: its round, lane, column and the
+/// text index its column held, its drift from the plain route's row there,
+/// and both routes' log-probability of the text's next token (plain, wide;
+/// None at the text's last token).
+struct Forced {
+    round: usize,
+    lane: usize,
+    column: usize,
+    at: usize,
+    drift: RowDrift,
+    worst: String,
+    log_probs: Option<(f64, f64)>,
+}
+
+/// One cell of a budget: `set` on the load's lanes, every check of ADR
+/// 0056's policy. Panics on an exact check; returns a line per row or lane
+/// outside a tolerance, or per commit that is not its rows' picks.
+fn budget_cell(engine: &mut FlashNextEngine, kv_format: KvFormat, set: &[Vec<u32>], what: &str) -> Vec<String> {
+    let vocab = engine.vocab();
+    let lanes = set.len();
+    let mut refused = Vec::new();
+
+    // The state, exact: a rejected draft is a draft never made, and so in
+    // BF16 KV is an accepted one (the oracle: none's own text as drafts).
+    let none = run(engine, set, Some(&mut |_, _, _| Vec::new()));
+    let reject = run(engine, set, Some(&mut |_, _, w| vec![REJECTED; w as usize]));
+    assert_eq!(reject.tokens, none.tokens, "{what}: the reject drafter committed other text than none");
+    for (lane, (p, q)) in reject.probes.iter().zip(&none.probes).enumerate() {
+        assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the reject drafter's rounds is not none's");
     }
-    assert_eq!(prompts.len(), 8, "eight prompts, one a lane");
+    assert!(reject.rounds.iter().flatten().any(|l| l.extent > 0), "{what}: the reject drafter's drafts were never verified");
+    if kv_format == KvFormat::Bf16 {
+        let reference = none.tokens.clone();
+        let oracle = run(
+            engine,
+            set,
+            Some(&mut |lane, emitted, w| {
+                let next = emitted.len() + 1;
+                reference[lane][next.min(TOKENS)..(next + w as usize).min(TOKENS)].to_vec()
+            }),
+        );
+        let accepted: u32 = oracle.rounds.iter().flatten().map(|l| l.committed - 1).sum();
+        let proposed: u32 = oracle.rounds.iter().flatten().map(|l| l.extent).sum();
+        assert_eq!(accepted, proposed, "{what}: an oracle draft was rejected");
+        assert_eq!(oracle.tokens, none.tokens, "{what}: the oracle committed other text than none");
+        for (lane, (p, q)) in oracle.probes.iter().zip(&none.probes).enumerate() {
+            assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the oracle's rounds is not none's");
+        }
+    }
+
+    // The teacher: speculation off, every round's rows kept. Its draw is its
+    // rows' pick.
+    let mut off_rows: Vec<Vec<u16>> = Vec::with_capacity(TOKENS);
+    let off = engine
+        .generate_readout(set, TOKENS, &mut |round| {
+            assert_eq!((round.lanes.len(), round.columns), (lanes, 1), "{what}: a spec-off round's shape");
+            off_rows.push(round.rows.to_vec());
+        })
+        .unwrap_or_else(|e| panic!("{what}: spec-off generate: {e}"));
+    for (t, rows) in off_rows.iter().enumerate().take(TOKENS - 1) {
+        for (lane, row) in rows.chunks_exact(vocab).enumerate() {
+            assert_eq!(off[lane][t + 1], logit_drift::argmax(row).0, "{what}: spec-off lane {lane} drew past its row at {t}");
+        }
+    }
+
+    // Teacher-forced: the verify rounds offered spec-off's text as drafts, so
+    // every column holds the teacher's token while the lane's committed text
+    // is the teacher's; each row is held to spec-off's at the same text index.
+    let positions = std::cell::RefCell::new(vec![0usize; lanes]);
+    let mut forced: Vec<Forced> = Vec::new();
+    let mut readouts = Vec::new();
+    let teacher = |lane: usize, p: usize| -> Vec<u32> { off[lane][(p + 1).min(TOKENS)..(p + 1 + DRAFT_TOKENS as usize).min(TOKENS)].to_vec() };
+    let taught = run_with(
+        engine,
+        set,
+        Some(&mut |lane, emitted, w| {
+            positions.borrow_mut()[lane] = emitted.len();
+            let mut drafts = teacher(lane, emitted.len());
+            drafts.truncate(w as usize);
+            drafts
+        }),
+        Some(&mut |round| {
+            let positions = positions.borrow();
+            for (a, &lane) in round.lanes.iter().enumerate() {
+                for column in 0..round.columns {
+                    let at = positions[lane] + column;
+                    if at >= TOKENS {
+                        continue;
+                    }
+                    let on = &round.rows[(a * round.columns + column) * vocab..][..vocab];
+                    let plain = &off_rows[at][lane * vocab..][..vocab];
+                    let log_probs = (at + 1 < TOKENS).then(|| {
+                        let next = off[lane][at + 1];
+                        (log_prob(plain, next), log_prob(on, next))
+                    });
+                    let drift = row_drift(plain, on);
+                    let worst = format!(
+                        "id {} moved {} -> {} (pick {} at {})",
+                        drift.worst,
+                        logit_drift::bf16(plain[drift.worst as usize]),
+                        logit_drift::bf16(on[drift.worst as usize]),
+                        drift.pick_off,
+                        logit_drift::bf16(plain[drift.pick_off as usize])
+                    );
+                    forced.push(Forced { round: readouts.len(), lane, column, at, drift, worst, log_probs });
+                }
+            }
+            readouts.push(readout_of(&round, vocab));
+        }),
+    );
+    refused.extend(commits_follow_picks(&taught, &readouts, &|_, lane, p| teacher(lane, p), &format!("{what} teacher-forced")));
+
+    // A row is on the teacher's text when its column was drafted and its
+    // lane's text up to the round's anchor is the teacher's: a lane whose
+    // pick moved leaves the comparison after that round (no cascade).
+    let mut anchors = std::collections::HashMap::new();
+    let mut valid = std::collections::HashSet::new();
+    let mut at = vec![0usize; lanes];
+    for (r, round) in taught.rounds.iter().enumerate() {
+        for (lane_round, &lane) in round.iter().zip(&readouts[r].lanes) {
+            let p = at[lane];
+            anchors.insert((r, lane), p);
+            if taught.tokens[lane][..=p] == off[lane][..=p] {
+                for column in 0..=lane_round.extent as usize {
+                    valid.insert((r, lane, column));
+                }
+            }
+            at[lane] = p + lane_round.committed as usize;
+        }
+    }
+    for f in &forced {
+        assert_eq!(Some(&(f.at - f.column)), anchors.get(&(f.round, f.lane)), "{what}: round {} lane {}'s anchor", f.round, f.lane);
+    }
+    let left = (0..lanes).filter(|&lane| taught.tokens[lane] != off[lane]).count();
+    let compared: Vec<&Forced> = forced.iter().filter(|f| valid.contains(&(f.round, f.lane, f.column))).collect();
+    assert!(compared.len() >= lanes * (TOKENS - 1) / 2, "{what}: only {} teacher-forced rows compared", compared.len());
+    for f in &compared {
+        if let Err(e) = logit_drift::within(&f.drift, TOLERANCE_ULPS) {
+            refused.push(format!(
+                "{what} teacher-forced round {} lane {} column {} (text index {}): {e}; {}",
+                f.round, f.lane, f.column, f.at, f.worst
+            ));
+        }
+    }
+    let mut ulps: Vec<f32> = compared.iter().map(|f| f.drift.ulps).collect();
+    ulps.sort_by(f32::total_cmp);
+    let widest = compared.iter().max_by(|a, b| a.drift.ulps.total_cmp(&b.drift.ulps)).expect("a compared row");
+    let moved: Vec<String> = compared
+        .iter()
+        .filter(|f| f.drift.pick_off != f.drift.pick_on)
+        .map(|f| format!("lane {}@{} gap {} ulps", f.lane, f.at, f.drift.gap_ulps))
+        .collect();
+    let pairs: Vec<(f64, f64)> = compared.iter().filter_map(|f| f.log_probs).collect();
+    let mean = |pick: fn(&(f64, f64)) -> f64| pairs.iter().map(pick).sum::<f64>() / pairs.len() as f64;
+    let (plain_lp, wide_lp) = (mean(|p| p.0), mean(|p| p.1));
+    if (wide_lp - plain_lp).abs() > MEAN_LOG_PROB_NATS {
+        refused.push(format!(
+            "{what} teacher-forced: mean log-probability {wide_lp} against spec-off's {plain_lp}, past {MEAN_LOG_PROB_NATS}"
+        ));
+    }
+
+    // The head: it drafts and is accepted, its commits are its rows' picks,
+    // and the same budget gives the same text, rounds, drafts, rows and
+    // state run to run.
+    let mut head_readouts = Vec::new();
+    let head = run_with(engine, set, None, Some(&mut |round| head_readouts.push(readout_of(&round, vocab))));
+    let mut again_readouts = Vec::new();
+    let again = run_with(engine, set, None, Some(&mut |round| again_readouts.push(readout_of(&round, vocab))));
+    assert_eq!((&again.tokens, &again.rounds, &again.head_drafts), (&head.tokens, &head.rounds, &head.head_drafts), "{what}: the head's run is not deterministic");
+    assert!(again_readouts == head_readouts, "{what}: the head's rows differ run to run");
+    for (lane, (p, q)) in again.probes.iter().zip(&head.probes).enumerate() {
+        assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the head's run differs run to run");
+    }
+    let head_offered = |r: usize, lane: usize, _: usize| -> Vec<u32> {
+        let Some(before) = r.checked_sub(1) else { return Vec::new() };
+        let at = head_readouts[before].lanes.iter().position(|&l| l == lane).expect("a lane runs every round until it ends");
+        head.head_drafts[before][at].clone()
+    };
+    refused.extend(commits_follow_picks(&head, &head_readouts, &head_offered, &format!("{what} head")));
+    let alpha = acceptance(&head.rounds);
+    let first = f64::from(alpha[0].0) / f64::from(alpha[0].1.max(1));
+    if first < HEAD_ACCEPTANCE_FLOOR {
+        refused.push(format!("{what}: the head's first drafts accepted {first:.3} ({alpha:?}), under {HEAD_ACCEPTANCE_FLOOR}"));
+    }
+
+    println!(
+        "{what}: teacher-forced {} rows ({left} lane(s) left at a moved pick), drift ulps max {} (lane {}@{}: {} \
+         logits, {}) p99 {} median {}, picks moved [{}], mean log-prob spec-off {plain_lp:.6} wide {wide_lp:.6} (diff {:.3e}); head {} rounds, \
+         acceptance {alpha:?} ({first:.3})",
+        compared.len(),
+        ulps[ulps.len() - 1],
+        widest.lane,
+        widest.at,
+        widest.drift.max_abs,
+        widest.worst,
+        ulps[ulps.len() * 99 / 100],
+        ulps[ulps.len() / 2],
+        moved.join(", "),
+        wide_lp - plain_lp,
+        head.rounds.len()
+    );
+    refused
+}
+
+/// Every cell of one verify budget, in both KV formats: `lane_sets` the
+/// lanes of each cell, each a width whose window drafts.
+fn budget(rows: u32, lane_sets: &[usize]) {
+    let Some(prompts) = eight_prompts() else { return };
     let mut refused = Vec::new();
     for kv_format in [KvFormat::Bf16, KvFormat::HqE8_2b] {
-        let dir = model_dir();
-        if !dir.join(ARTIFACT_FILE_NAME).exists() || !ignis_core::flash_next_mtp::companion_path(&dir).exists() {
-            gpu_profile::skip_or_fail(&format!("no Flash-Next artifact or MTP companion in {}", dir.display()));
-            return;
-        }
-        let speculation = FlashNextSpeculation::new(SpeculativeBackend::Mtp, DRAFT_TOKENS, ROWS).expect("valid");
-        let options = EngineOptions {
-            max_context_tokens: 8192,
-            kv_format,
-            decode_lanes: 8,
-            speculation: Some(speculation),
-            ..EngineOptions::default()
-        };
-        let mut engine = match FlashNextEngine::load(&dir, options) {
-            Ok(engine) => engine,
-            Err(e) => {
-                gpu_profile::skip_or_fail(&format!("load the Flash-Next engine at {ROWS} rows: {e}"));
-                return;
-            }
-        };
-        assert_eq!((1..=8).map(|w| speculation.window(w)).collect::<Vec<_>>(), [3, 3, 3, 3, 2, 1, 1, 1]);
+        let Some(mut engine) = budget_engine(kv_format, rows) else { return };
+        let speculation = engine.options().speculation.expect("speculation");
+        let verifying = (1..=8u32).filter(|&w| speculation.window(w) > 0).fold(0, |mask, w| mask | 1 << (w - 1));
         assert_eq!(
             engine.verify_graphs_ready(),
-            Ok(0xff),
-            "{kv_format:?}: a verify graph did not capture at {ROWS} rows: {:?}",
+            Ok(verifying),
+            "{kv_format:?}: a verify graph did not capture at {rows} rows: {:?}",
             engine.graph_error()
         );
-        for lanes in [4usize, 5, 8] {
-            let set = &prompts[..lanes];
-            let what = format!("{kv_format:?} {lanes} lanes at {ROWS} rows");
-            let none = run(&engine, set, Some(&mut |_, _, _| Vec::new()));
-            let reject = run(&engine, set, Some(&mut |_, _, w| vec![REJECTED; w as usize]));
-            assert_eq!(reject.tokens, none.tokens, "{what}: the reject drafter committed other text than none");
-            for (lane, (p, q)) in reject.probes.iter().zip(&none.probes).enumerate() {
-                assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the reject drafter's rounds is not none's");
-            }
-            let drafted: u32 = reject.rounds.iter().flatten().map(|l| l.extent).sum();
-            assert!(drafted > 0, "{what}: the reject drafter's drafts were never verified");
-
-            let reference = none.tokens.clone();
-            let oracle = run(
-                &engine,
-                set,
-                Some(&mut |lane, emitted, w| {
-                    let next = emitted.len() + 1;
-                    reference[lane][next.min(TOKENS)..(next + w as usize).min(TOKENS)].to_vec()
-                }),
-            );
-            let accepted: u32 = oracle.rounds.iter().flatten().map(|l| l.committed - 1).sum();
-            let proposed: u32 = oracle.rounds.iter().flatten().map(|l| l.extent).sum();
-            println!("{what}: oracle {} rounds, {accepted}/{proposed} drafts accepted", oracle.rounds.len());
-            if kv_format == KvFormat::Bf16 {
-                assert_eq!(accepted, proposed, "{what}: an oracle draft was rejected");
-                assert_eq!(oracle.tokens, none.tokens, "{what}: the oracle committed other text than none");
-                for (lane, (p, q)) in oracle.probes.iter().zip(&none.probes).enumerate() {
-                    assert_eq!(same_bits(p, q), 0, "{what}: lane {lane}'s state after the oracle's rounds is not none's");
-                }
-            } else {
-                refused.extend(near_tie_exceedances(&mut engine, set, &none.tokens, &oracle.tokens, &format!("{what} oracle vs none")));
-            }
-
-            let head = run(&engine, set, None);
-            let alpha = acceptance(&head.rounds);
-            let tokens: u32 = head.rounds.iter().flatten().map(|l| l.committed).sum();
-            println!("{what}: head {} rounds for {tokens} tokens, acceptance per position {alpha:?}", head.rounds.len());
-            assert!(alpha[0].0 > 0, "{what}: the head's first drafts were never accepted: {alpha:?}");
-            let off = engine.generate(set, TOKENS).unwrap_or_else(|e| panic!("{what}: spec-off generate: {e}"));
-            refused.extend(near_tie_exceedances(&mut engine, set, &off, &head.tokens, &format!("{what} spec-on vs spec-off")));
+        for &lanes in lane_sets {
+            let window = speculation.window(lanes as u32) as usize;
+            assert!(window > 0 && lanes * (window + 1) <= rows as usize, "{lanes} lanes draft within {rows} rows");
+            let what = format!("{kv_format:?} {lanes} lanes x {} columns at a budget of {rows} rows", window + 1);
+            refused.extend(budget_cell(&mut engine, kv_format, &prompts[..lanes], &what));
         }
         drop(engine);
     }
-    assert!(refused.is_empty(), "{} divergence(s) past the near-tie rule:\n{}", refused.len(), refused.join("\n"));
+    assert!(refused.is_empty(), "{} refusal(s) under ADR 0056's policy:\n{}", refused.len(), refused.join("\n"));
+}
+
+/// GitHub #329 item 5, ADR 0056: the default's 8 rows (two lanes of 4
+/// columns, four of 2) against the same rules as a wider budget -- where the
+/// tolerance's floor is measured; its text is held bit for bit and to the
+/// near-tie rule by the tests above.
+#[test]
+#[ignore = "GPU profile only: the real Flash-Next artifact and its MTP companion"]
+fn the_default_budgets_rounds_keep_the_wide_budgets_rules() {
+    budget(8, &[2, 4]);
+}
+
+/// GitHub #329 item 5, ADR 0056: past 8 rows a verify round's linears, mixes
+/// and shared expert take their tensor-core routes and its MoE runs in
+/// launches of 8, so its logits are spec-off's up to summation order: held
+/// row by row to spec-off's within `TOLERANCE_ULPS` on spec-off's own text,
+/// its commits to its own rows' picks, its state to none's, its runs to
+/// themselves, its quality to spec-off's and its head's acceptance to a
+/// floor. Four lanes verify 3 drafts (16 rows), five 2 (15), eight 1 (16).
+#[test]
+#[ignore = "GPU profile only: the real Flash-Next artifact and its MTP companion"]
+fn a_sixteen_row_budget_is_numerically_equivalent_to_speculation_off() {
+    budget(16, &[4, 5, 8]);
+}
+
+/// As at 16 rows: six lanes verify 3 drafts (24 rows), eight 2 (24).
+#[test]
+#[ignore = "GPU profile only: the real Flash-Next artifact and its MTP companion"]
+fn a_twenty_four_row_budget_is_numerically_equivalent_to_speculation_off() {
+    budget(24, &[6, 8]);
+}
+
+/// As at 16 rows: eight lanes verify 3 drafts (32 rows).
+#[test]
+#[ignore = "GPU profile only: the real Flash-Next artifact and its MTP companion"]
+fn a_thirty_two_row_budget_is_numerically_equivalent_to_speculation_off() {
+    budget(32, &[8]);
 }

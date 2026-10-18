@@ -1125,6 +1125,9 @@ int32_t program_decode(ignis_model *model, ignis_seq_pool *pool, ignis_seq *cons
     slots[i] = seq->slot;
     positions[i] = static_cast<int32_t>(seq->position);
   }
+  if (constrained && options->out_logits != nullptr) {
+    return refuse("out_logits cannot ride a round with a permitted set: its mask writes into the rows");
+  }
 
   const auto began = std::chrono::steady_clock::now();
   cudaStream_t stream = model->stream;
@@ -1210,6 +1213,12 @@ int32_t program_decode(ignis_model *model, ignis_seq_pool *pool, ignis_seq *cons
                                     batch_size * sizeof(float), cudaMemcpyDeviceToHost, stream),
                     "copying the permitted probabilities", &error);
   }
+  // The logits readout (GitHub #329 item 5): the draw only reads the rows.
+  ok = ok && (options->out_logits == nullptr ||
+              check_cuda(cudaMemcpyAsync(options->out_logits, model->sampling_decode_logits->p,
+                                         batch_size * static_cast<std::size_t>(vocab) * sizeof(uint16_t),
+                                         cudaMemcpyDeviceToHost, stream),
+                         "copying the logits", &error));
   std::vector<int32_t> successors(batch_size, -1);
   ok = ok &&
        check_cuda(cudaMemcpyAsync(successors.data(), model->sampling_decode_out->p, batch_size * sizeof(int32_t),

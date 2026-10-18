@@ -577,6 +577,17 @@ impl FlashNextEngine {
         self.generate_timed(prompts, count).map(|(tokens, _)| tokens)
     }
 
+    /// [`generate`](Self::generate), handing every round's logits to
+    /// `readout` (GitHub #329 item 5): one row a lane, as its draw read it.
+    pub fn generate_readout(
+        &mut self,
+        prompts: &[Vec<u32>],
+        count: usize,
+        readout: &mut dyn FnMut(RoundLogits<'_>),
+    ) -> Result<Vec<Vec<u32>>, String> {
+        self.generate_rounds(prompts, count, Some(readout)).map(|(tokens, _)| tokens)
+    }
+
     /// [`generate`](Self::generate), with each round's wall time: the host's
     /// n-gram staging of the round's tokens plus the round itself, as a
     /// serving loop pays it (spec flash-next/07 phase A's cost per row).
@@ -584,6 +595,15 @@ impl FlashNextEngine {
         &mut self,
         prompts: &[Vec<u32>],
         count: usize,
+    ) -> Result<(Vec<Vec<u32>>, Vec<std::time::Duration>), String> {
+        self.generate_rounds(prompts, count, None)
+    }
+
+    fn generate_rounds(
+        &mut self,
+        prompts: &[Vec<u32>],
+        count: usize,
+        mut readout: Option<&mut dyn FnMut(RoundLogits<'_>)>,
     ) -> Result<(Vec<Vec<u32>>, Vec<std::time::Duration>), String> {
         if prompts.is_empty() || prompts.len() > self.options.decode_lanes as usize {
             return Err(format!("{} prompts on {} lanes", prompts.len(), self.options.decode_lanes));
@@ -603,6 +623,8 @@ impl FlashNextEngine {
         let mut out = vec![Vec::with_capacity(count); prompts.len()];
         let mut times = Vec::with_capacity(count);
         let mut rows = vec![0u8; prompts.len() * self.table.token_bytes()];
+        let all: Vec<usize> = (0..prompts.len()).collect();
+        let mut logits = vec![0u16; if readout.is_some() { prompts.len() * self.vocab() } else { 0 }];
         for _ in 0..count {
             let began = std::time::Instant::now();
             let pending: Vec<[u32; 1]> = seqs
@@ -614,10 +636,14 @@ impl FlashNextEngine {
             self.table.begin_batch(&mut lanes)?.finish(&mut rows)?;
             let mut handles: Vec<_> = seqs.iter_mut().collect();
             let greedy = vec![(SamplingParams::greedy(), &[][..]); handles.len()];
-            let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows)?;
+            let read = readout.is_some().then_some(&mut logits[..]);
+            let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows, read)?;
             times.push(began.elapsed());
             for (lane, (token, _)) in emitted.into_iter().enumerate() {
                 out[lane].push(token as u32);
+            }
+            if let Some(readout) = readout.as_mut() {
+                readout(RoundLogits { lanes: &all, columns: 1, rows: &logits });
             }
         }
         Ok((out, times))
@@ -635,7 +661,21 @@ impl FlashNextEngine {
         &self,
         prompts: &[Vec<u32>],
         count: usize,
+        drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>,
+    ) -> Result<SpeculativeRun<'_>, String> {
+        self.generate_speculative_readout(prompts, count, drafter, None)
+    }
+
+    /// [`generate_speculative`](Self::generate_speculative), handing every
+    /// round's logits to `readout` (GitHub #329 item 5): a one-token round's
+    /// row a lane, a verify round's every column of every lane -- drafted or
+    /// padding -- as the accept read them.
+    pub fn generate_speculative_readout(
+        &self,
+        prompts: &[Vec<u32>],
+        count: usize,
         mut drafter: Option<&mut dyn FnMut(usize, &[u32], u32) -> Vec<u32>>,
+        mut readout: Option<&mut dyn FnMut(RoundLogits<'_>)>,
     ) -> Result<SpeculativeRun<'_>, String> {
         let speculation = self.options.speculation.ok_or("this engine was loaded without speculation")?;
         if prompts.is_empty() || prompts.len() > self.options.decode_lanes as usize {
@@ -692,7 +732,12 @@ impl FlashNextEngine {
                 let mut handles: Vec<_> =
                     seqs.iter_mut().enumerate().filter(|(i, _)| active.contains(i)).map(|(_, s)| s).collect();
                 let greedy = vec![(SamplingParams::greedy(), &[][..]); handles.len()];
-                let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows)?;
+                let mut logits = vec![0u16; if readout.is_some() { active.len() * self.vocab() } else { 0 }];
+                let read = readout.is_some().then_some(&mut logits[..]);
+                let emitted = decode_flash_next(&self.model, &self.pool, &mut handles, &greedy, &rows, read)?;
+                if let Some(readout) = readout.as_mut() {
+                    readout(RoundLogits { lanes: &active, columns: 1, rows: &logits });
+                }
                 for ((&lane, (token, _)), context) in active.iter().zip(emitted).zip(lane_contexts) {
                     out[lane].push(token as u32);
                     contexts[lane] = context;
@@ -743,7 +788,12 @@ impl FlashNextEngine {
                     .collect();
                 let mut handles: Vec<_> =
                     seqs.iter_mut().enumerate().filter(|(i, _)| active.contains(i)).map(|(_, s)| s).collect();
-                let runs = decode_flash_next_verify(&self.model, &self.pool, &mut handles, &lanes, window, &rows)?;
+                let mut logits = vec![0u16; if readout.is_some() { active.len() * columns * self.vocab() } else { 0 }];
+                let read = readout.is_some().then_some(&mut logits[..]);
+                let runs = decode_flash_next_verify(&self.model, &self.pool, &mut handles, &lanes, window, &rows, read)?;
+                if let Some(readout) = readout.as_mut() {
+                    readout(RoundLogits { lanes: &active, columns, rows: &logits });
+                }
                 for (&lane, run) in active.iter().zip(runs) {
                     let committed: Vec<u32> = run.tokens.iter().map(|&t| t as u32).collect();
                     // The context after the run: its last tokens.
@@ -797,6 +847,17 @@ impl FlashNextEngine {
 pub struct LaneRound {
     pub extent: u32,
     pub committed: u32,
+}
+
+/// One round's logits readout ([`FlashNextEngine::generate_readout`],
+/// [`FlashNextEngine::generate_speculative_readout`]): the prompt indices of
+/// the lanes that ran it, in order, its columns a lane (1 in a one-token
+/// round, the window + 1 in a verify round) and its BF16 rows,
+/// `[lanes][columns][vocab]`.
+pub struct RoundLogits<'a> {
+    pub lanes: &'a [usize],
+    pub columns: usize,
+    pub rows: &'a [u16],
 }
 
 /// What [`FlashNextEngine::generate_speculative`] produced: each lane's

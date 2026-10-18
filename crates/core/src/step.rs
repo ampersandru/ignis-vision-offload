@@ -103,6 +103,10 @@ pub(crate) mod ffi {
         /// lane's successor to its `reasoning_close_id`, else 0; null asks
         /// for nothing.
         pub out_reasoning_redirected: *mut i32,
+        /// GitHub #329 item 5 (ADR 0056): a Flash-Next round's BF16 logits,
+        /// every row its head produced (`[batch][vocab]`, a verify round
+        /// `[batch][window + 1][vocab]`); null asks for nothing.
+        pub out_logits: *mut u16,
     }
 
     /// 1:1 with `struct ignis_prefill_options` (ADR 0016, P2-02, GitHub
@@ -1061,12 +1065,17 @@ pub fn prefill_flash_next(
 /// consumes (`ngram_rows`: `[sequences.len()][16][90]`, its pending token's
 /// rows). Returns each lane's emitted token and its probability within its
 /// permitted set (0 without one).
+///
+/// `out_logits` (GitHub #329 item 5), if `Some`, receives every lane's BF16
+/// logits row, `[sequences.len()][vocab]` exactly: the measurement readout,
+/// refused with a permitted set.
 pub fn decode_flash_next(
     model: &Model,
     pool: &SeqPool,
     sequences: &mut [&mut Seq<'_>],
     lanes: &[(SamplingParams, &[i32])],
     ngram_rows: &[u8],
+    out_logits: Option<&mut [u16]>,
 ) -> Result<Vec<(i32, f32)>, String> {
     let lanes: Vec<LaneDraw<'_>> = lanes
         .iter()
@@ -1075,10 +1084,21 @@ pub fn decode_flash_next(
             ..LaneDraw::free(sampling)
         })
         .collect();
-    Ok(decode_program_round(model, pool, sequences, &lanes, Some(ngram_rows))?
+    Ok(round(model, pool, sequences, &lanes, Some(ngram_rows), out_logits)?
         .into_iter()
         .map(|drawn| (drawn.token, drawn.probability))
         .collect())
+}
+
+/// A logits readout's length check: the leaf writes `rows` rows of the
+/// Flash-Next vocabulary, never by the slice's own length.
+fn readout_rows(out_logits: Option<&mut [u16]>, rows: usize, what: &str) -> Result<*mut u16, String> {
+    let vocab = crate::compute::ModelConfig::qwen38_flash_next().vocab as usize;
+    match out_logits {
+        None => Ok(std::ptr::null_mut()),
+        Some(logits) if logits.len() == rows * vocab => Ok(logits.as_mut_ptr()),
+        Some(logits) => Err(format!("{what}: {} logits for {rows} rows of {vocab} columns", logits.len())),
+    }
 }
 
 /// One plain round -- one token a lane, no drafts -- over `sequences`, each
@@ -1096,9 +1116,21 @@ pub fn decode_program_round(
     lanes: &[LaneDraw<'_>],
     ngram_rows: Option<&[u8]>,
 ) -> Result<Vec<RoundDraw>, String> {
+    round(model, pool, sequences, lanes, ngram_rows, None)
+}
+
+fn round(
+    model: &Model,
+    pool: &SeqPool,
+    sequences: &mut [&mut Seq<'_>],
+    lanes: &[LaneDraw<'_>],
+    ngram_rows: Option<&[u8]>,
+    out_logits: Option<&mut [u16]>,
+) -> Result<Vec<RoundDraw>, String> {
     if lanes.len() != sequences.len() {
         return Err(format!("decode_program_round: {} lanes for {} sequences", lanes.len(), sequences.len()));
     }
+    let out_logits = readout_rows(out_logits, sequences.len(), "decode_program_round")?;
     if let Some(rows) = ngram_rows {
         if rows.len() != sequences.len() * flash_next_ngram_token_bytes() {
             return Err(format!(
@@ -1130,6 +1162,7 @@ pub fn decode_program_round(
         ngram_rows: ngram_rows.map_or(std::ptr::null(), <[u8]>::as_ptr),
         out_drafts: std::ptr::null_mut(),
         out_reasoning_redirected: redirected.as_mut_ptr(),
+        out_logits,
     };
     let mut tokens = vec![-1; handles.len()];
     let rc = unsafe {
@@ -1398,7 +1431,7 @@ pub fn decode_program_verify_runs(
     lanes: &[VerifyLane<'_>],
     window: u32,
 ) -> Result<Vec<LaneVerifyRun>, String> {
-    verify_round(model, pool, sequences, lanes, window, std::ptr::null())
+    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut())
 }
 
 /// GitHub #307 (spec flash-next/07): one Flash-Next verify round at the
@@ -1408,6 +1441,10 @@ pub fn decode_program_verify_runs(
 /// drafts, then anything (the anchor again) up to the window --
 /// `[lanes][window + 1][16][90]`, hashed on the lane's context as if the
 /// columns were committed in order.
+///
+/// `out_logits` (GitHub #329 item 5), if `Some`, receives every column's BF16
+/// logits row, `[lanes][window + 1][vocab]` exactly, as the accept read
+/// them: the measurement readout.
 pub fn decode_flash_next_verify(
     model: &Model,
     pool: &SeqPool,
@@ -1415,6 +1452,7 @@ pub fn decode_flash_next_verify(
     lanes: &[VerifyLane<'_>],
     window: u32,
     ngram_rows: &[u8],
+    out_logits: Option<&mut [u16]>,
 ) -> Result<Vec<LaneVerifyRun>, String> {
     let columns = window as usize + 1;
     if ngram_rows.len() != sequences.len() * columns * flash_next_ngram_token_bytes() {
@@ -1425,7 +1463,8 @@ pub fn decode_flash_next_verify(
             flash_next_ngram_token_bytes()
         ));
     }
-    verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr())
+    let out_logits = readout_rows(out_logits, sequences.len() * columns, "decode_flash_next_verify")?;
+    verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr(), out_logits)
 }
 
 fn verify_round(
@@ -1435,6 +1474,7 @@ fn verify_round(
     lanes: &[VerifyLane<'_>],
     window: u32,
     ngram_rows: *const u8,
+    out_logits: *mut u16,
 ) -> Result<Vec<LaneVerifyRun>, String> {
     if lanes.len() != sequences.len() {
         return Err(format!(
@@ -1501,6 +1541,7 @@ fn verify_round(
         ngram_rows,
         out_drafts: next_drafts.as_mut_ptr(),
         out_reasoning_redirected: redirected.as_mut_ptr(),
+        out_logits,
     };
     let rc = unsafe {
         ffi::ignis_program_decode(
