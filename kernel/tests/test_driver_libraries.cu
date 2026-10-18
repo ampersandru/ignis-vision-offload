@@ -49,6 +49,12 @@ int main(int argc, char **argv) {
   std::printf("ignis_device_driver_version: rc %d, version %d\n", version_rc, version);
   expect(ignis_device_driver_version(nullptr) == -1, "a NULL version is refused");
 
+  int32_t runtime = -1;
+  const int32_t runtime_rc = ignis_device_runtime_version(&runtime);
+  std::printf("ignis_device_runtime_version: rc %d, version %d\n", runtime_rc, runtime);
+  expect(runtime_rc == 0 && runtime >= 13000, "the runtime version is a CUDA 13+ figure");
+  expect(ignis_device_runtime_version(nullptr) == -1, "a NULL runtime version is refused");
+
   uint64_t free_bytes = 0;
   uint64_t total_bytes = 0;
   const int32_t nvml_rc = ignis_device_nvml_mem_info(0, &free_bytes, &total_bytes);

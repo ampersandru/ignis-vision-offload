@@ -192,14 +192,25 @@ const NVML_LIBRARY: &str = if cfg!(windows) { "nvml.dll" } else { "libnvidia-ml.
 /// driver (`model download`, `--help`); a GPU load there is refused naming the
 /// driver, rather than by a runtime error from whichever call came first.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
-fn driver_check(rc: i32, version: i32) -> Result<()> {
-    if rc == 0 && version > 0 {
-        return Ok(());
+fn driver_check(rc: i32, version: i32, runtime: i32) -> Result<()> {
+    if rc != 0 || version <= 0 {
+        return Err(fail(format!(
+            "no NVIDIA driver ({DRIVER_LIBRARY}) on this machine: a GPU load needs the host's NVIDIA \
+             driver (in a container, the NVIDIA container runtime provides it on a GPU node)"
+        )));
     }
-    Err(fail(format!(
-        "no NVIDIA driver ({DRIVER_LIBRARY}) on this machine: a GPU load needs the host's NVIDIA \
-         driver (in a container, the NVIDIA container runtime provides it on a GPU node)"
-    )))
+    // CUDA minor-version compatibility lets a 13.0 driver run a 13.1 runtime,
+    // so only a lower major is too old.
+    if version / 1000 < runtime / 1000 {
+        let cuda = |v: i32| format!("{}.{}", v / 1000, (v % 1000) / 10);
+        return Err(fail(format!(
+            "the NVIDIA driver on this machine supports CUDA {} but this build's CUDA runtime is {}:              update the NVIDIA driver to one that supports CUDA {} or newer",
+            cuda(version),
+            cuda(runtime),
+            runtime / 1000
+        )));
+    }
+    Ok(())
 }
 
 /// A CUDA device context (a dedicated non-blocking load stream + a
@@ -272,8 +283,10 @@ impl CudaDevice {
     /// else -- so a machine without the driver is named as such (GitHub #329).
     fn require_driver() -> Result<()> {
         let mut version = 0i32;
+        let mut runtime = 0i32;
         let rc = unsafe { crate::ffi::ignis_device_driver_version(&mut version) };
-        driver_check(rc, version)
+        let runtime_rc = unsafe { crate::ffi::ignis_device_runtime_version(&mut runtime) };
+        driver_check(if runtime_rc == 0 { rc } else { runtime_rc }, version, runtime)
     }
 }
 
@@ -419,9 +432,22 @@ mod tests {
         // GitHub #329: with no driver library to load, the runtime reports
         // driver version 0 -- or the query itself fails.
         for (rc, version) in [(0, 0), (-1, 0)] {
-            let message = driver_check(rc, version).unwrap_err().to_string();
+            let message = driver_check(rc, version, 13010).unwrap_err().to_string();
             assert!(message.starts_with(&format!("no NVIDIA driver ({DRIVER_LIBRARY}) on this machine")), "{message}");
         }
-        assert!(driver_check(0, 13010).is_ok());
+        assert!(driver_check(0, 13010, 13010).is_ok());
+    }
+
+    #[test]
+    fn a_driver_older_than_the_runtime_is_named_with_both_versions() {
+        // A CUDA 12.x driver under a 13.1 runtime: the major is below.
+        let message = driver_check(0, 12040, 13010).unwrap_err().to_string();
+        assert!(message.contains("12.4") && message.contains("13.1"), "{message}");
+        assert!(message.contains("update the NVIDIA driver"), "{message}");
+        // Minor-version compatibility: same major, older minor is accepted.
+        assert!(driver_check(0, 13000, 13010).is_ok());
+        // A newer driver is accepted.
+        assert!(driver_check(0, 13020, 13010).is_ok());
+        assert!(driver_check(0, 14000, 13010).is_ok());
     }
 }

@@ -62,6 +62,13 @@ int32_t ignis_device_mem_info(struct ignis_device *d, uint64_t *free_bytes,
  * argument. */
 int32_t ignis_device_driver_version(int32_t *version);
 
+/* The CUDA version of the runtime this library was built with, as
+ * cudaRuntimeGetVersion reports it (13010 for CUDA 13.1), into `*version`:
+ * the figure a GPU path compares the driver's version against, to name a
+ * driver too old for the build. Creates no context. Returns 0 on success,
+ * -1 on a CUDA error (logged to stderr) or a NULL argument. */
+int32_t ignis_device_runtime_version(int32_t *version);
+
 /* Free / total memory of CUDA device `device_id` as NVML reports it -- the
  * figure nvidia-smi and Task Manager show -- read without creating a CUDA
  * context (GitHub #210). A VRAM budget is derived from this rather than from

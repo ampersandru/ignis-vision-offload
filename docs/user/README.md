@@ -155,6 +155,9 @@ included — on a machine with no driver, such as a Kubernetes CPU node. The
 CUDA build links none of the driver's libraries; it reaches them only when a
 model loads, and a GPU load on a machine without the driver is refused as
 `no NVIDIA driver (libcuda.so.1) on this machine` (`nvcuda.dll` on Windows).
+A driver too old for the build's CUDA runtime (a lower CUDA major version than
+the runtime's; a lower minor is fine) is refused naming both versions and asking
+to update the NVIDIA driver.
 Progress goes to stderr, the artifact paths to stdout, and the exit code is 0
 only when every entry verified. It reads the same configuration a start does
 (config file, environment, flags).

@@ -249,6 +249,19 @@ extern "C" int32_t ignis_device_driver_version(int32_t *version) {
   return 0;
 }
 
+extern "C" int32_t ignis_device_runtime_version(int32_t *version) {
+  if (version == nullptr) {
+    return -1;
+  }
+  int runtime_version = 0;
+  cudaError_t err = cudaRuntimeGetVersion(&runtime_version);
+  if (err != cudaSuccess) {
+    return log_cuda_error(-1, "cudaRuntimeGetVersion", err);
+  }
+  *version = runtime_version;
+  return 0;
+}
+
 extern "C" int32_t ignis_device_nvml_mem_info(int device_id, uint64_t *free_bytes,
                                               uint64_t *total_bytes) {
   if (free_bytes == nullptr || total_bytes == nullptr) {
