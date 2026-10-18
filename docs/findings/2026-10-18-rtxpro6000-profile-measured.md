@@ -5,7 +5,7 @@
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
 - Scope: serving / the built-in `rtxpro6000` profile (`crates/server/src/config/profile.rs`) on both families: Flash-Next MTP speculation, decode lanes, n-gram hot rows; the 27B's DFlash2 draft count; retained slots on the device; the host plan's available-RAM input in a container (`crates/core/src/residency/host_memory.rs`)
-- Related: [MTP on the 5090](2026-10-07-flash-next-mtp-speculation-is-pcie-bound.md), [Flash-Next prefill chunk and the decode share](2026-10-07-flash-next-prefill-chunk-and-decode-share.md), https://github.com/gpillon/ignis/issues/327, `.scratch/rtxpro6000-profile/`
+- Related: [MTP on the 5090](2026-10-07-flash-next-mtp-speculation-is-pcie-bound.md), [Flash-Next prefill chunk and the decode share](2026-10-07-flash-next-prefill-chunk-and-decode-share.md), https://github.com/gpillon/ignis/issues/327, https://github.com/gpillon/ignis/issues/329, `.scratch/rtxpro6000-profile/`
 - Superseded by: none
 
 ## Question
@@ -26,7 +26,8 @@ ROSA HCP cluster (OpenShift 4.20.40, RHCOS 9.6, us-east-2a). The engine is
 pod with a 112 GiB memory limit. The artifacts are the built-in catalog's,
 on an EBS gp3 volume provisioned to 16,000 IOPS and 1,000 MiB/s. Knobs
 changed through `PATCH /v1/config`, which reloads in place, and the models
-through `POST /v1/models/switch`, so one pod ran the whole campaign.
+through `POST /v1/models/switch`, so one pod ran the whole campaign. The
+simulated agents alone ran on another build and host (below).
 
 **Client.** `sweep.py` (in `.scratch/rtxpro6000-profile/`, stdlib Python) in
 a CPU pod of the same namespace, so no ingress sits in the timed path:
@@ -62,6 +63,11 @@ in `.scratch/rtxpro6000-profile/`.
   - The whole n-gram table took 27.8 s.
   - A reload with the page cache warm takes ~22 s.
 
+**Expert traffic.** Every Flash-Next decode cell (3 reps) missed the expert
+cache 564-3,719 times and moved 2.2-13.5 GB to the device, a hit rate of
+99.93-99.98%; the residency stall summed to at most 0.063 s a cell
+(`ignis_expert_*` deltas in each result line).
+
 **Flash-Next, MTP 3 against speculation off** (aggregate tok/s, greedy, the
 1 GiB n-gram default):
 
@@ -80,14 +86,44 @@ Acceptance falls from 0.80 (greedy code) to 0.75-0.77 sampled.
 
 **MTP draft count** (one lane, the whole table, greedy):
 
-| drafts | code | prose | acceptance code / prose |
-|---:|---:|---:|---|
-| 2 | 231 | 200 | 0.85 / 0.64 |
-| 3 | 257 | 191 | 0.80 / 0.53 |
-| 4 | 267 | 177 | 0.71 / 0.43 |
-| 5 | 270 | 161 | 0.67 / 0.34 |
+| drafts | code | prose | code + prose | acceptance code / prose |
+|---:|---:|---:|---:|---|
+| 2 | 231 | 200 | 431 | 0.85 / 0.64 |
+| 3 | 257 | 191 | 448 | 0.80 / 0.53 |
+| 4 | 267 | 177 | 444 | 0.71 / 0.43 |
+| 5 | 270 | 161 | 431 | 0.67 / 0.34 |
 
+The 4-draft code reps span 208-274 tok/s, so 3 and 4 tie over the two kinds.
 At two lanes 2 and 3 drafts tie on code (349, 350 tok/s).
+
+**Simulated agents** (`sweep.py --type agents`, phase 9). N agents, started
+0.3 s apart, each 8 turns of one growing conversation:
+- a turn generates exactly a seeded 96-768 tokens (greedy, `ignore_eos`);
+- then the agent waits a seeded 0.5-4 s ("a tool") and appends a seeded
+  800-16,000-character tool result;
+- seed 7, so both configurations get the same schedule.
+
+This ran on the device-only expert build of branch
+`resident-experts-vram-only` on a g7e.2xlarge (8 vCPU, 64 GiB RAM), with the
+whole n-gram table, after a one-lane warm-up per configuration. Its decode
+rates are within 4% of this build's (finding
+2026-10-18-flash-next-experts-device-only).
+
+| agents | MTP 3 makespan | off makespan | MTP tokens | off tokens | MTP tok/s | off tok/s | x |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 55.45 s | 68.47 s | 9,864 | 10,240 | 177.9 | 149.6 | 1.19 |
+| 8 | 84.85 s | 88.92 s | 18,698 | 19,136 | 220.4 | 215.2 | 1.02 |
+
+The tok/s is the tokens over the makespan. 3 of the 96 MTP turns ended
+before their scheduled length despite `ignore_eos`, and none with
+speculation off, so MTP's runs did 3.7% (4 agents) and 2.3% (8) less work;
+the tok/s column corrects for it. The median turn took 2.72 s against
+3.83 s at 4 agents, and 5.19 s against 5.27 s at 8.
+
+**A recorded trace** (`ignis-bench replay` of a 4-agent load trace, phase 8,
+`replay-g4-*`) does not compare the two: the replay sends each recorded
+request body as one user message, the outputs diverge between the two runs,
+and the requests past 8 concurrent ones failed `engine_full`.
 
 **n-gram rows: the whole table in RAM** (`--ngram-hot-bytes 27G`, every row,
 no step reads the volume; `ignis_ngram_reads_total` stays 0) **against the
@@ -104,7 +140,8 @@ no step reads the volume; `ignis_ngram_reads_total` stays 0) **against the
 With 1 GiB of hot rows a decode round still reads ~10 rows a token from the
 volume (123K reads for 12K tokens at 8 lanes), and a 32K prefill ~320K.
 
-**The 27B, DFlash2 7 against off and against 4 drafts** (aggregate tok/s, greedy):
+**The 27B, DFlash2 7 against off and against 4 drafts** (aggregate tok/s,
+greedy; 4 drafts ran in three cells only):
 
 | requests | DFlash2 7 code | DFlash2 4 code | off code | DFlash2 7 prose | DFlash2 4 prose | off prose |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -124,9 +161,10 @@ the first turn's), 3-4 samples each.
 | 27B | 16K | 0.151-0.163 s | 0.124-0.153 s |
 | 27B | 64K | 0.330-0.335 s | 0.318-0.345 s |
 
-**The host plan in a container.** The plan read 126.7 GB available
-(`/proc/meminfo`'s `MemAvailable`, the whole node's) inside a 112 GiB
-(120.3 GB) container limit. The container's own cgroup, read in the pod
+**The host plan in a container.** Every load's plan read 126.7-127.7 GB
+available (`/proc/meminfo`'s `MemAvailable`, the whole node's) inside a
+112 GiB (120.3 GB) container limit. The largest plan made, the whole
+table's, took 69.9 GB and fit. The container's own cgroup, read in the pod
 mid-campaign, was:
 - `memory.max` 120,259,084,288 B, `memory.current` 112,050,900,992 B;
 - `anon` 30.2 GB (the whole n-gram table among it);
@@ -136,53 +174,63 @@ mid-campaign, was:
 
 ## Finding
 
-- **The derived numbers hold, all of them.** Flash-Next's MTP with 3 drafts
-  is the best draft count over code and prose together. It pays 1.85x / 1.44x
-  at one lane and still 1.12-1.19x at four. At eight it drafts nothing (row
-  budget 8) and costs 2-3%. 8 lanes give the most aggregate. The 27B's
-  DFlash2 at 7 drafts is 2.3-3.3x speculation off and beats 4 drafts
-  everywhere but prose at eight requests (-6%). 1,048,576 tokens of context
-  leave both resident KV pools at 8-11 million tokens.
-- **MTP's sign flips from the 5090 because no expert crosses PCIe.** On the
-  5090 a verify round copies more experts and loses at two lanes. Here the
-  cache holds them all (a few hundred misses per cell), and the round is
-  compute.
+- **Every derived number the campaign measured holds.** The context length
+  holds only by the load plan: 1,048,576 tokens leave both resident KV
+  pools at 8-11 million tokens, but no request went past 128K.
+  - Flash-Next's MTP with 3 drafts ties 4 over code and prose together and
+    beats 2 and 5.
+  - Every lane decoding at once, it pays 1.85x / 1.44x at one lane and still
+    1.12-1.19x at four. At eight it drafts nothing (row budget 8) and costs
+    2-3%. 8 lanes give the most aggregate.
+  - With simulated agents, whose lanes wait on tools and prefills between
+    turns, MTP pays 1.19x at four agents and ties at eight (1.02x).
+  - The 27B's DFlash2 at 7 drafts is 1.6-3.3x speculation off (1.6x on
+    prose at eight requests, 3.3x on code at one). It beats 4 drafts in the
+    three cells both ran except prose at eight requests (-6%).
+- **MTP's sign flips from the 5090 because almost no expert crosses PCIe.**
+  On the 5090 a verify round copies more experts and loses at two lanes.
+  Here the cache misses 0.02-0.07% of lookups and stalls at most 0.06 s a
+  cell, so the round is compute (inference from the stall counter: the round
+  itself is not timed).
 - **The n-gram table is the 96 GB card's real lever, and it is a host
   setting.** With the 1 GiB default every decode round and every prefill
   chunk wait on reads of the artifact's table range. On a cloud block volume
   (16,000 IOPS, ms latency) that costs a fifth of decode (the whole table
   runs 1.24x) and more than half the prefill (2.3x).
-  - The whole table in RAM takes them all off the disk.
-  - That is `--ngram-hot-bytes auto` on a host with ~75 GB available, and
-    every machine built around a 96 GB card has it.
-  - The gap measured here is EBS's. It is smaller on a local NVMe, but the
-    whole table is never slower: it costs RAM and ~28 s of load.
-- **Device-resident retained slots are not a profile number.** They cut a
-  64K Flash-Next restore by ~35 ms and leave the 27B within noise. The
-  second turn's ~0.15-0.35 s is mostly elsewhere: rendering and prefilling
-  the conversation's new tail.
+  - The whole table in RAM takes them all off the disk. It costs ~28.8 GB of
+    RAM and ~28 s of load.
+  - The gap measured here is EBS's; a local NVMe was not measured.
+- **Device-resident retained slots are not a profile number.** At 64K
+  Flash-Next the device slots' range sits 8-51 ms below the host slots'; the
+  27B's ranges overlap. The rest of the second turn's ~0.15-0.35 s is not in
+  the restore (inference: rendering and prefilling the conversation's new
+  tail; not timed apart).
 - **Inside a container `MemAvailable` overstates what a load may pin.** It
-  is the node's figure, so a container whose limit is below it can plan past
-  its limit. A plan from `auto` (or any large `--ngram-hot-bytes`) is then
-  OOM-killed instead of refused. Capping it by every cgroup v2 level's
-  `memory.max` less the non-page-cache charge would have read ~48.6 GB here
-  instead of 126.7 GB.
+  is the node's figure (126.7 GB here against a 120.3 GB limit), so a
+  container whose limit is below it can plan past its limit. A plan from
+  `auto` (or any large `--ngram-hot-bytes`) would then be OOM-killed instead
+  of refused (inference: no plan here came near the limit).
+  - Capping it by every cgroup v2 level's `memory.max` less the
+    non-page-cache charge reads at most 120.3 GB at a load.
+  - Mid-campaign, with the engine's own anon and shmem charged, the same
+    formula reads ~48.6 GB.
 
 ## Implications
 
 - `rtxpro6000` keeps every number and adds `ngram.hot_bytes: auto`
   (Flash-Next-only; the 27B passes it over). This is safe only with the
-  cgroup-capped host plan, which ships in the same change.
+  cgroup-capped host plan, which ships in the same change, and only on
+  cgroup v2: a cgroup v1 container's limit is not read.
 - The host plan's available RAM on Linux is `MemAvailable` capped by every
   cgroup v2 limit above the process, each less its charge net of page cache
   (`active_file` + `inactive_file`; pinned and `shmem` pages count as taken).
   Without this, anvil-serving's recipe shape (52 GiB limit on a ~93 GB host)
   would plan the whole table and be killed.
-- A 64 GiB host (g7e.2xlarge) holds Flash-Next only with the 1 GiB default,
-  so 19% slower decode (the whole table is 1.24x) and 2.3x the TTFT on block
-  storage. It is also
-  unverified against the pinned ceiling. A 128 GiB host holds the whole
-  table.
+- On a 64 GiB host (g7e.2xlarge) the ~38 GB pinned pool of every expert
+  leaves `auto` less than the whole table. It plans a partial table, above
+  the 1 GiB default, whose speed was not measured. The pinned pool itself
+  is unverified there against the single-allocation ceiling. A 128 GiB host
+  holds the whole table.
 - Device-resident n-gram rows would give the whole-table speed with no host
   RAM: the table (28.8 GB) fits in the 51 GB the resident KV pool now takes,
   leaving ~5M tokens of KV.
@@ -193,8 +241,19 @@ mid-campaign, was:
   editions (and Windows) are not measured; the Max-Q's 300 W cap may lower
   every rate.
 - The whole-table gain is measured against a cloud volume, not a local NVMe.
+- The MTP lane table ran with the 1 GiB hot-rows default, before the profile
+  set `auto`; with the whole table, MTP was compared with speculation off
+  only at one lane sampled and with the simulated agents.
+- `auto`, the profile's value, ran only as an explicit `27G` (the whole
+  table on the 128 GiB host). On a host where `auto` plans a partial table
+  nothing was measured.
+- No request went past 128K tokens, although the profile sets 1,048,576.
 - Greedy everywhere except one sampled MTP pair; synthetic prompts (8 code,
   8 prose), 512 tokens, loop guard off.
+- The simulated agents ran on another build (device-only experts) and host
+  (64 GiB), once per configuration (no reps). MTP's run ended 3 turns early
+  (above), unexplained.
+- No recorded agent trace was replayed faithfully (above).
 - In phase 5 the first sampled spec-off pair ran with MTP on: its `PATCH`
   was refused, because a live `draft_tokens: 3` has nothing to configure
   under `backend: off`. It is discarded and redone (`fn-off2-*`).
@@ -205,15 +264,15 @@ mid-campaign, was:
 
 ## Follow-ups
 
-- Device-resident n-gram rows on a card that holds every expert.
+Every follow-up of this campaign is noted in
+https://github.com/gpillon/ignis/issues/329, among them:
+- device-resident n-gram rows on a card that holds every expert;
 - `ignis-server model download` in the published image cannot run on a
   machine without an NVIDIA driver: the CUDA build links `libcuda.so.1`
-  dynamically and dies before `main`, against the README's "needs no GPU".
-- Once an image carries the cgroup-capped host plan, check it on a live
+  dynamically and dies before `main`, against the README's "needs no GPU";
+- once an image carries the cgroup-capped host plan, check it on a live
   container: `ignis.runtime.flash_next_host_plan`'s `available_bytes` must
   read at most the container's `memory.max` (120,259,084,288 here) where it
-  read the node's 126.7 GB. The parsers are tested, the file layout was read
-  in the pod, but the walk itself has not run on Linux yet.
-- The Kubernetes/OpenShift deployment used here (scale-to-zero ksvc,
-  auth-gate, EBS volume, curl download Job pinned to the catalog) lives
-  outside this repository (`gps-inference/infra/rosa-serverless-gpu-ignis`).
+  read the node's 126.7 GB. The walk is tested on file trees and the file
+  layout was read in the pod, but the walk has not run on a live cgroup;
+- MTP turns that end before `max_tokens` under `ignore_eos`.

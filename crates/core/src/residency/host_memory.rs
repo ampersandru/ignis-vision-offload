@@ -55,26 +55,46 @@ mod imp {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use std::path::{Path, PathBuf};
-
     pub fn available_physical_bytes() -> Option<u64> {
         let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
         let machine = super::parse::mem_available(&meminfo)?;
-        Some(super::parse::capped_by(machine, cgroup_headrooms()))
+        let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+        let headrooms = super::cgroup::headrooms(std::path::Path::new("/sys/fs/cgroup"), &own);
+        Some(super::capped_by(machine, headrooms))
     }
+}
 
-    /// What each cgroup v2 level from the process's own up to the mount's
-    /// root still lets it take; a level with no limit (or no memory files:
-    /// the host's root cgroup) gives none. Inside a container with its own
-    /// cgroup namespace `/proc/self/cgroup` reads `0::/` and the mount's root
-    /// *is* the container's cgroup. cgroup v1, or nothing readable, gives no
-    /// levels: `MemAvailable` alone, as before.
-    fn cgroup_headrooms() -> Vec<u64> {
-        let root = Path::new("/sys/fs/cgroup");
-        let own = std::fs::read_to_string("/proc/self/cgroup").ok();
-        let relative = own.as_deref().and_then(super::parse::cgroup_v2_path).unwrap_or("/");
-        let mut dir: PathBuf = root.join(relative.trim_start_matches('/'));
-        if relative.contains("..") || !dir.is_dir() {
+#[cfg(not(any(windows, target_os = "linux")))]
+mod imp {
+    pub fn available_physical_bytes() -> Option<u64> {
+        None
+    }
+}
+
+/// The machine's available memory, capped by every cgroup level's.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn capped_by(machine: u64, headrooms: impl IntoIterator<Item = u64>) -> u64 {
+    headrooms.into_iter().fold(machine, u64::min)
+}
+
+/// The cgroup v2 walk, on plain files (compiled on every host, so a
+/// temporary tree tests it everywhere; Linux runs it on `/sys/fs/cgroup`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod cgroup {
+    use std::path::{Component, Path, PathBuf};
+
+    /// What each cgroup v2 level from the process's own up to `root` still
+    /// lets it take, the process's own level first; a level with no limit
+    /// (or no memory files: the host's root cgroup) gives none. `own` is
+    /// `/proc/self/cgroup`. Inside a container with its own cgroup
+    /// namespace that reads `0::/`, and `root` *is* the container's cgroup.
+    /// cgroup v1 (no unified line), a path that leaves `root`, or one that
+    /// does not exist under it walk `root` alone.
+    pub fn headrooms(root: &Path, own: &str) -> Vec<u64> {
+        let relative = Path::new(super::parse::cgroup_v2_path(own).unwrap_or("/"));
+        let inside = relative.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+        let mut dir: PathBuf = root.join(relative.strip_prefix("/").unwrap_or(relative));
+        if !inside || !dir.is_dir() {
             dir = root.to_path_buf();
         }
         let mut headrooms = Vec::new();
@@ -82,7 +102,7 @@ mod imp {
             if let Some(headroom) = headroom_at(&dir) {
                 headrooms.push(headroom);
             }
-            if dir == root || !dir.pop() || !dir.starts_with(root) {
+            if dir == root || !dir.pop() {
                 break;
             }
         }
@@ -95,12 +115,65 @@ mod imp {
         let stat = std::fs::read_to_string(dir.join("memory.stat")).unwrap_or_default();
         super::parse::cgroup_headroom(&max, &current, &stat)
     }
-}
 
-#[cfg(not(any(windows, target_os = "linux")))]
-mod imp {
-    pub fn available_physical_bytes() -> Option<u64> {
-        None
+    #[cfg(test)]
+    mod tests {
+        use super::headrooms;
+        use std::path::PathBuf;
+
+        /// A cgroup tree under the temp dir: each level its memory files, or
+        /// none for a level written as `None`.
+        fn tree(name: &str, levels: &[(&str, Option<(&str, &str, &str)>)]) -> PathBuf {
+            let root = std::env::temp_dir().join(format!("ignis-cgroup-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            for (dir, files) in levels {
+                let at = root.join(dir);
+                std::fs::create_dir_all(&at).expect("mkdir");
+                if let Some((max, current, stat)) = files {
+                    std::fs::write(at.join("memory.max"), max).expect("max");
+                    std::fs::write(at.join("memory.current"), current).expect("current");
+                    std::fs::write(at.join("memory.stat"), stat).expect("stat");
+                }
+            }
+            root
+        }
+
+        #[test]
+        fn a_namespaced_container_reads_its_own_root() {
+            let root = tree("ns", &[("", Some(("1000\n", "400\n", "active_file 100\ninactive_file 100\n")))]);
+            assert_eq!(headrooms(&root, "0::/\n"), vec![800]);
+            std::fs::remove_dir_all(&root).ok();
+        }
+
+        #[test]
+        fn every_level_up_to_the_root_caps_and_an_unlimited_one_does_not() {
+            // A pod level limited at 2000, a container level at 1000, the
+            // host root with no memory files, a slice unlimited.
+            let root = tree(
+                "walk",
+                &[
+                    ("", None),
+                    ("kubepods.slice", Some(("max\n", "999\n", ""))),
+                    ("kubepods.slice/pod", Some(("2000\n", "500\n", ""))),
+                    ("kubepods.slice/pod/crio-1.scope", Some(("1000\n", "300\n", ""))),
+                ],
+            );
+            assert_eq!(headrooms(&root, "0::/kubepods.slice/pod/crio-1.scope\n"), vec![700, 1500]);
+            std::fs::remove_dir_all(&root).ok();
+        }
+
+        #[test]
+        fn a_path_that_leaves_the_root_or_is_missing_or_v1_walks_the_root_alone() {
+            let root = tree("odd", &[("", Some(("1000\n", "0\n", "")))]);
+            assert_eq!(headrooms(&root, "0::/../../etc\n"), vec![1000]);
+            assert_eq!(headrooms(&root, "0::/not/there\n"), vec![1000]);
+            assert_eq!(headrooms(&root, "12:memory:/docker/abc\n"), vec![1000]);
+            // A legal name with two dots in it is a name, not a parent.
+            let dotted = tree("dots", &[("", None), ("a..b", Some(("500\n", "100\n", "")))]);
+            assert_eq!(headrooms(&dotted, "0::/a..b\n"), vec![400]);
+            std::fs::remove_dir_all(&root).ok();
+            std::fs::remove_dir_all(&dotted).ok();
+        }
     }
 }
 
@@ -144,11 +217,6 @@ mod parse {
         Some(max.saturating_sub(current.saturating_sub(page_cache)))
     }
 
-    /// The machine's available memory, capped by every cgroup level's.
-    pub fn capped_by(machine: u64, headrooms: impl IntoIterator<Item = u64>) -> u64 {
-        headrooms.into_iter().fold(machine, u64::min)
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -190,6 +258,7 @@ mod parse {
 
         #[test]
         fn the_tightest_level_caps_the_machine() {
+            use super::super::capped_by;
             let gib = 1u64 << 30;
             // anvil-serving's recipe: a 52 GiB container limit on a host
             // reporting ~93 GB available.

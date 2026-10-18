@@ -463,17 +463,21 @@ turns it on (below). Before turning it on:
   --spec-draft-rows 3`, or serve a single lane outright (`make MODEL=flash-next
   LANES=1 SPEC=mtp`), which also gives the expert cache the ~1 GiB the shared
   pool holds beyond one lane's context. **Leave it off** when several agents decode together.
-- A card that holds every expert in VRAM (96 GB) copies none over PCIe, and
-  there MTP pays at every lane count it drafts at. The `rtxpro6000` profile
-  turns it on with 3 draft tokens and the whole row budget: a verify round
-  carries at most 8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two
-  active lanes, 1 at three or four, and none from five on. Measured on an RTX
-  PRO 6000 Server Edition (2026-10-18,
-  [finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)), against
-  speculation off: one lane 1.85x on code and 1.44x on prose greedy (1.9x and
-  1.3x sampled), two lanes 1.24-1.53x, four 1.12-1.19x, eight 0.97-0.98x
-  (no drafts there; the head's fixed cost). More drafts help code and cost
-  prose: 2, 4 and 5 each do worse than 3 over the two together. A file's
+- A card whose cache holds nearly every expert (96 GB) copies few over PCIe,
+  and there MTP pays wherever it drafts. The `rtxpro6000` profile turns it on
+  with 3 draft tokens and the whole row budget: a verify round carries at most
+  8 rows (lanes × (drafts + 1)), so it drafts 3 at one or two active lanes, 1
+  at three or four, and none from five on. On an RTX PRO 6000 Server Edition
+  ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)):
+  - with every lane decoding at once (greedy, the 1 GiB n-gram default), one
+    lane runs 1.85x speculation off on code and 1.44x on prose, two lanes
+    1.24-1.53x, four 1.12-1.19x and eight 0.97-0.98x (no drafts there, only
+    the head's fixed cost);
+  - sampled, one lane runs 1.9x on code and 1.3x on prose;
+  - with simulated agents, whose lanes wait on tools and prefills between
+    turns, four agents generate 1.19x the tokens a second and eight 1.02x.
+  3 drafts tie with 4 over code and prose together and beat 2 and 5: more
+  drafts help code and cost prose. A file's
   `spec: { qwen38flashnext: { backend: off } }` turns it off alone;
   `--spec-backend off` turns off the 27B's DFlash2 with it.
 
@@ -534,7 +538,7 @@ class is refused whatever the flag says.
 | `--vram-allow-oversubscription` | `IGNIS_VRAM_ALLOW_OVERSUBSCRIPTION` | off | With `--vram-budget-bytes` only: start above free memory (or below the plan's minimum) with a warning instead of a refusal. On Windows that pages. Both models. |
 | `--vram-allow-expert-cache-below-floor` | `IGNIS_VRAM_ALLOW_EXPERT_CACHE_BELOW_FLOOR` | off | Flash-Next only: start with an expert cache below its 12 GiB floor, with a warning ([above](#the-kv-pool)). The 27B, which has no expert cache, refuses it. (`make` knob `ALLOW_EXPERT_CACHE_BELOW_FLOOR=1`.) |
 | `--reuse-prompt <on\|off>` | `IGNIS_REUSE_PROMPT` | `on` | `off`: no prompt checkpoint is captured or reused, and no prefix is shared unless `--reuse-retained-device` or `--reuse-retained-host` gives slots for it. |
-| `--reuse-retained-device <n>` | `IGNIS_REUSE_RETAINED_DEVICE` | `0` | Retained slots in VRAM: reserved in the VRAM plan, copied device to device (~0.3 ms), and handed out before any host slot. A card with VRAM to spare can take `--reuse-retained-device 16 --reuse-retained-host 0`; on an RTX PRO 6000 it took a conversation's second-turn TTFT from 0.36 to 0.32 s after a 64K-token first turn on Flash-Next and left the 27B's within noise, so no profile sets it. |
+| `--reuse-retained-device <n>` | `IGNIS_REUSE_RETAINED_DEVICE` | `0` | Retained slots in VRAM: reserved in the VRAM plan, copied device to device (~0.3 ms), and handed out before any host slot. A card with VRAM to spare can take `--reuse-retained-device 16 --reuse-retained-host 0`. |
 | `--reuse-retained-host <n>` | `IGNIS_REUSE_RETAINED_HOST` | two per decode lane (16); `0` with `--reuse-prompt off` | Retained slots in one pinned host block reserved at start, ~222 MiB each at the default load (3.5 GiB for 16): no VRAM, so the KV pool gets it; a capture and a claim each cost a PCIe copy (~15–19 ms). Both kinds hold the images of retained checkpoints and shared prefixes. When none is free, retained state gives one up — checkpoints before prefixes, `agent` before `interactive`, then least recently used; when nothing can, the publish or capture is skipped. `--retained-slots` was replaced by these two and now refuses the start. |
 | `--reuse-retained-interactive-ttl <secs>` | `IGNIS_REUSE_RETAINED_INTERACTIVE_TTL` | `300` | Idle seconds after which a main-conversation checkpoint in KV-RAM ranks as a subagent's. Needs `--reuse-prompt on`. |
 
@@ -643,10 +647,11 @@ included: `--qwen38flashnext-kv-disk-bytes 0` drops it), ~1 GB of retained host
 slots, the 2 GiB KV-RAM arena and the 4 GiB margin the load refuses to dip into
 (`--model-host-margin-bytes`: it never lets reuse push Windows into paging).
 "Available" is free memory plus the page cache the system can drop (Windows'
-free plus standby, Linux's `MemAvailable`); in a Linux container it is capped
-by the container's memory limit (every cgroup v2 `memory.max` above the
+free plus standby, Linux's `MemAvailable`); in a Linux container on cgroup v2
+it is capped by the container's memory limit (every `memory.max` above the
 process, less what is charged there and not page cache), so a load inside a
-smaller limit is refused rather than OOM-killed. A load below that is refused
+smaller limit is refused rather than OOM-killed. On cgroup v1 the cap is not
+read: give such a container a limit near the machine's RAM. A load below that is refused
 in GiB, with how far short it fell and the plan line to shrink:
 
 ```
@@ -677,8 +682,8 @@ plan leaves, and with about 28 GB more available than the figure above
 `rtxpro6000` profile sets `auto`. On a cloud block volume (EBS gp3, 16,000
 IOPS) the whole table measured 1.24x the 1 GiB default's decode at one and
 eight lanes and 2.3x its prefill (a 32K-token TTFT of 7.4 s instead of 16.9 s,
-[finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)); a local
-NVMe narrows the gap.
+[finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). A local
+NVMe was not measured.
 
 ### Vision
 

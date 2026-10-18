@@ -44,32 +44,28 @@ pub const NONE_PROFILE: &str = "none";
 ///
 /// `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
 /// Server Edition: 96 GB each, sm_120, the 5090's architecture). Derived
-/// first (2026-10-17), then measured on a Server Edition under Linux
-/// (2026-10-18, finding 2026-10-18-rtxpro6000-profile-measured), which kept
-/// every derived number and added one. Both families run at 1,048,576 tokens
-/// of context, `yarn:4` over the 262,144 trained positions and the 27B's
-/// whole hq-e8-2b attention envelope; the 27B leaves its headroom at the
-/// hardcoded default, since nothing has to be traded for vision any more,
-/// and drafts with DFlash2 at 7 tokens, 2.3-3.3x speculation off at 1-8
-/// requests (4 drafts lose everywhere but prose at 8, by 6%). Flash-Next runs
-/// 8 decode lanes: every expert is resident (the resident KV pool still holds
-/// 11.1M tokens), and the aggregate rises to the eighth lane. It drafts with
-/// its MTP head, 3 tokens a lane, which the 5090 leaves off because decode
-/// there is bound by the experts it copies over PCIe (finding
-/// 2026-10-07-flash-next-mtp-speculation-is-pcie-bound): here one lane runs
-/// 1.85x spec-off on code and 1.44x on prose, greedy, and 1.9x / 1.3x sampled,
-/// the gain falling to 1.1-1.2x at four lanes; 3 drafts beat 2, 4 and 5 over
-/// code and prose together (more help code and cost prose). The row budget
-/// stays the verify round's whole 8, so 3 drafts at one or two lanes, 1 at
-/// three or four, none from five on, where MTP costs 2-3%. Its n-gram hot
-/// rows are `auto`, the measured addition: a machine with a 96 GB card has
-/// the RAM to hold the whole 28.8 GB table, and with every row in RAM no
-/// decode round reads the disk -- 1.24x decode and 2.3x prefill against the
-/// 1 GiB default on a cloud block volume (16,000 IOPS), less on a local
-/// NVMe; `auto` never refuses a start the default would make, and the host
-/// plan it sizes against counts a container's cgroup limit. The VRAM plan
-/// sizes the rest, the KV pool among it. No other card ships a profile; a
-/// config file's `profiles:` defines one for any other card.
+/// first (2026-10-17), then measured on a Server Edition under Linux; the
+/// numbers are in the finding 2026-10-18-rtxpro6000-profile-measured. The
+/// measurement kept the derived choices and added one. Both families run at
+/// 1,048,576 tokens of context, `yarn:4` over the 262,144 trained positions
+/// and the 27B's whole hq-e8-2b attention envelope (the plan holds it; no
+/// request that long was run). The 27B leaves its headroom at the hardcoded
+/// default, since nothing has to be traded for vision any more, and drafts
+/// with DFlash2 at 7 tokens, which beat 4 in every cell measured but one.
+/// Flash-Next runs 8 decode lanes, where its aggregate peaks: its expert
+/// cache holds nearly every expert, so a lane costs its state and its share
+/// of the KV pool. It drafts with its MTP head, 3 tokens a lane, which the
+/// 5090 leaves off because decode there is bound by the experts it copies
+/// over PCIe (finding 2026-10-07-flash-next-mtp-speculation-is-pcie-bound);
+/// here MTP pays at one to four active lanes and with four simulated agents,
+/// and ties with eight. The row budget stays the verify round's whole 8, so
+/// 3 drafts at one or two lanes, 1 at three or four, none from five on. Its
+/// n-gram hot rows are `auto`, the measured addition: the whole table in RAM
+/// keeps the disk out of every decode round, and `auto` takes it wherever
+/// the host plan leaves room, never refusing a start the 1 GiB default would
+/// make. The VRAM plan sizes the rest, the KV pool among it. No other card
+/// ships a profile; a config file's `profiles:` defines one for any other
+/// card.
 const BUILT_IN: &str = r#"{
     "rtx5090": {
         "vram": {
@@ -221,7 +217,7 @@ mod tests {
         let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
         assert_eq!(qwen.settings.ngram.hot_bytes, None);
         let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
-        assert!(flash.settings.ngram.hot_bytes.is_some());
+        assert_eq!(flash.settings.ngram.hot_bytes.map(|b| b.to_string()).as_deref(), Some("auto"));
     }
 
     #[test]
