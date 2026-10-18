@@ -18,13 +18,14 @@ use futures_util::StreamExt;
 use ignis_core::{MockCompute, SchedulerConfig};
 use serde_json::json;
 
+use ignis_server::Served;
 use responses::{server, Script, MODEL};
 
 /// Serve `server` on a fresh listener; the address, the stop, and the serve
 /// task to wait on.
 async fn serving(
     server: ignis_server::Server,
-) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<std::io::Result<()>>) {
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<std::io::Result<Served>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -50,7 +51,7 @@ async fn an_idle_keep_alive_connection_does_not_hold_the_exit() {
     assert!(ready.status().is_success());
     // The connection stays in the client's pool, idle.
     stop.send(()).expect("serving");
-    tokio::time::timeout(BOUND, task).await.expect("serve returned").expect("task").expect("serve");
+    assert_eq!(tokio::time::timeout(BOUND, task).await.expect("serve returned").expect("task").expect("serve"), Served::Drained);
 }
 
 #[tokio::test]
@@ -59,7 +60,7 @@ async fn an_idle_responses_socket_does_not_hold_the_exit() {
     let (addr, stop, task) = serving(server(&script, SchedulerConfig::default(), Arc::new(MockCompute::new()))).await;
     let (_socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/responses")).await.expect("the upgrade");
     stop.send(()).expect("serving");
-    tokio::time::timeout(BOUND, task).await.expect("serve returned with a socket open").expect("task").expect("serve");
+    assert_eq!(tokio::time::timeout(BOUND, task).await.expect("serve returned with a socket open").expect("task").expect("serve"), Served::Drained);
 }
 
 #[tokio::test]
@@ -78,6 +79,6 @@ async fn a_stream_still_generating_does_not_hold_the_exit() {
     let mut body = response.bytes_stream();
     body.next().await.expect("a first chunk").expect("chunk");
     stop.send(()).expect("serving");
-    tokio::time::timeout(BOUND, task).await.expect("serve returned with a stream generating").expect("task").expect("serve");
+    assert_eq!(tokio::time::timeout(BOUND, task).await.expect("serve returned with a stream generating").expect("task").expect("serve"), Served::Drained);
     drop(body);
 }
