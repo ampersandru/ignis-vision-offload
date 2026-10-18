@@ -30,8 +30,9 @@
 #
 # Both halves build the real GPU engine (`--features cuda`). No runner has an
 # NVIDIA GPU, so nothing here is *run* -- the kernel leaf is compiled for
-# SM120a and linked against the toolkit's driver stubs (crates/artifact/
-# build.rs).
+# SM120a and links the CUDA runtime only: the driver (libcuda/nvcuda) and NVML
+# are opened at run time (kernel/src/cuda_driver_shim.cu, shared_library.cu;
+# crates/artifact/build.rs), so no driver stub is needed at link time.
 
 name: release
 
@@ -407,7 +408,7 @@ jobs:
                    include/cuda_bf16.h include/cuda_fp16.h include/cuda_fp4.h \
                    include/cuda_fp8.h include/cuda_pipeline.h \
                    include/cooperative_groups.h include/math_constants.h \
-                   include/nvml.h include/nvtx3/nvToolsExt.h \
+                   include/nvml.h include/nvtx3/nvToolsExt.h include/cudaTypedefs.h \
                    include/cccl/cub/block/block_merge_sort.cuh \
                    lib/x64/cudart.lib lib/x64/nvml.lib; do
             if [ -e "$cuda/$f" ]; then echo "  ok      $f"; else echo "  MISSING $f"; missing=1; fi

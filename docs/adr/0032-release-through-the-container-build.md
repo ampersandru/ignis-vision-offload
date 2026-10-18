@@ -6,6 +6,9 @@ Accepted (2026-09-19, owner decision — GitHub #225). **Revised (2026-09-21,
 owner decision)**: the two-workflow split below is withdrawn — one workflow,
 one Linux job, and a CPU-only test gate in front of every build. The core
 decision (the Linux binaries *are* the container build) is unchanged.
+**Revised (2026-10-18, GitHub #329 item 9)**: the CUDA binaries link no NVIDIA
+driver library; the driver and NVML are opened at run time, so the image runs
+its no-GPU commands (`model download`, `--help`) on a machine without a driver.
 
 ## Context
 

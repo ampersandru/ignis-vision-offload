@@ -110,9 +110,11 @@ ENV IGNIS_SERVER_BIND=0.0.0.0:8000
 # IGNIS_MODEL_ARTIFACT is deliberately NOT defaulted. A .ninfer container is tens of
 # GB, so it is mounted rather than baked in -- and a default pointing at a path
 # that is usually absent would turn "no model given" into a load failure.
-# Left unset, the image starts on the deterministic CPU mock (ADR 0006), which
-# is what makes `docker run <image>` a useful smoke test on its own; set it to
-# the mounted artifact to serve the real model on the GPU.
+# Left unset, the server downloads its default model first (`--download-enabled`
+# is on); with `--download-enabled false` it starts on the deterministic CPU
+# mock (ADR 0006), which needs no GPU and no driver, so that is the image's
+# smoke test. Set IGNIS_MODEL_ARTIFACT to the mounted artifact to serve the real
+# model on the GPU.
 
 # The OpenAI-compatible API + the Playground, and the Prometheus listener
 # (ADR 0017). Metrics are on by default, but the listener stays on the
