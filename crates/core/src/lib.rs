@@ -135,7 +135,7 @@ pub use scheduler::{
 };
 pub use rope_scaling::{
     DEFAULT_YARN_BETA_FAST, DEFAULT_YARN_BETA_SLOW, DEFAULT_YARN_TEMPERATURE,
-    MAX_YARN_FACTOR, RopeScaling, RopeScalingError,
+    MAX_YARN_FACTOR, RopeScaling, RopeScalingError, FromAuto, RopeSetting, TRAINED_POSITIONS,
 };
 pub use speculation::{MAX_DRAFT_TOKENS, ProposalHead, Speculation, SpeculativeBackend};
 pub use vision::{
