@@ -65,6 +65,7 @@
 #include "ignis_moe.h"
 #include "ignis_seq.h"
 
+#include "../rope_scaling.h"
 #include "core/arena.h"
 #include "ninfer/ops/rope.h"
 
@@ -345,6 +346,23 @@ struct IndexerLayerState {
 struct NgramState {
   void *conv_columns = nullptr;
 };
+
+// The checkpoint's trained position envelope (config.json `max_position_embeddings`, the YaRN
+// recipe's `original_max_position_embeddings`): the denominator of every YaRN ramp bound. The
+// topology does not carry it; it equals the 27B's kTextOriginalPositions, but is Flash-Next's own.
+inline constexpr uint32_t kOriginalPositions = 262144;
+
+// The text table a load of `topology` rotates at under `scaling`, which ignis_model_load has
+// passed through rope_scaling_rejection (ADR 0059): the linear one without scaling -- the very
+// table before YaRN, attention factor 1 -- else HF's YaRN on the topology's rotary dims, its
+// attention factor folded into cos and sin on queries and keys (indexer::Rope::scale). One table
+// for attention, the indexer and the MTP head.
+inline ninfer::ops::RopeFrequencies text_rope(const ignis_topology &topology, const RopeScaling &scaling) {
+  const float theta = static_cast<float>(topology.rope_theta);
+  const int rotary_dim = static_cast<int>(topology.rotary_dim);
+  return scaling.is_yarn() ? rope_yarn_frequencies(theta, rotary_dim, kOriginalPositions, scaling)
+                           : ninfer::ops::rope_linear_frequencies(theta, rotary_dim);
+}
 
 // What every entry point reads the load and the lanes' state through. [S1]
 struct Context {

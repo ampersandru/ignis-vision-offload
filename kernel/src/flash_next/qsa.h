@@ -8,8 +8,9 @@
 //   q_h | gate_h = q_proj(x) per head, [256 | 256] of each 512   (view(.., -1, 512).chunk(2))
 //   q = rope(q_norm(q_h)), k = rope(k_norm(k_proj(x))), v = v_proj(x)
 //                    (1 + w) RMSNorm in fp32 rounded once to BF16; rope on dims [0, 64) of each
-//                    head, pairs (i, i + 32), in torch's BF16 arithmetic (cos and sin rounded to
-//                    BF16, each product rounded, then their sum) -- the indexer's convention
+//                    head, pairs (i, i + 32), in torch's BF16 arithmetic (cos and sin times the
+//                    YaRN attention factor rounded to BF16, each product rounded, then their
+//                    sum) -- the indexer's convention, the factor on q and k alike (ADR 0059)
 //   o = softmax(q k^T / 16) v over the row's visible tokens (causal), query head h on KV head
 //       h / 12 (repeat_kv); or over the indexer's selection (S3's sparse route)
 //   y = o_proj(bf16(o * bf16(sigmoid(gate))))

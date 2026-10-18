@@ -81,8 +81,8 @@ __global__ void __launch_bounds__((kQHeads + kKvHeads) * 32) prepare_kernel(Prep
 #pragma unroll
   for (int s = 0; s < 8; ++s) x[s] = round_bf16((x[s] * r) * (1.0F + __bfloat162float(w[s * 32 + lane])));
   const float phi = static_cast<float>(row_position(a.positions, a.tokens, row)) * a.rope.inv_freq[lane];
-  const float c = round_bf16(cosf(phi));
-  const float sn = round_bf16(sinf(phi));
+  const float c = round_bf16(cosf(phi) * a.rope.scale);
+  const float sn = round_bf16(sinf(phi) * a.rope.scale);
   const float x1 = x[0], x2 = x[1];
   x[0] = round_bf16(round_bf16(x1 * c) + round_bf16(-x2 * sn));
   x[1] = round_bf16(round_bf16(x2 * c) + round_bf16(x1 * sn));
@@ -388,7 +388,6 @@ int32_t fn_qsa_attention(const Context &ctx, int32_t attn_ordinal, const QsaWeig
   };
   ignis_seq_pool *pool = ctx.pool;
   if (pool == nullptr) return fail("no seq pool");
-  if (ctx.rope.attention_factor != 1.0F) return fail("a rope attention factor other than 1 is not supported");
   if (pool->kv_format != ctx.kv_format || pool->kv_head_dim != qsa::kHeadDim ||
       pool->kv_num_kv_heads != qsa::kKvHeads) {
     return fail("the seq pool's KV planes are not this load's format and geometry");

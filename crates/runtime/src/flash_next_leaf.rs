@@ -416,6 +416,7 @@ impl StepLeaf for FlashNextLeaf {
             o.decode_lanes,
             &self.residency,
             o.speculation,
+            o.rope_scaling,
             self.mtp.as_ref(),
         )
         .map_err(|e| leaf_error("model load", e))?;

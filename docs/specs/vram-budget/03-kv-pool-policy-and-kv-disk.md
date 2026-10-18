@@ -1093,7 +1093,10 @@ tickets.
   constants until the owner asks.
 - **A Monitor view of parked lanes.** The counter is on `/metrics`.
 - **Reusing disk blobs across a restart or a model switch.** The header
-  already carries what that would need.
+  already carries what that would need, but such a reuse must bump
+  `FORMAT_VERSION` (`crates/runtime/src/kv_disk.rs`): Flash-Next files written
+  before ADR 0059 label linear-rotated pages with the profiles' `yarn:4`, so
+  their RoPE scaling field would match a `yarn:4` load that rotates at YaRN.
 - **Deduplicating prefix bytes across blobs** (ADR 0024's chained blobs).
 - **Dropping the host expert pool or the prefill staging ring on a resident
   Flash-Next load.** Spec flash-next/03 owns residency. Both done since,

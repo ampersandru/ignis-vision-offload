@@ -642,6 +642,13 @@ target_include_directories(ignis_kernel_flash_next_contract_test
                            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(ignis_kernel_flash_next_contract_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_flash_next_contract_test COMMAND ignis_kernel_flash_next_contract_test)
+# ADR 0059 (spec rope-scaling/02): OURS -- the rotary table a Flash-Next load rotates at, YaRN
+# against HF's formula in fp64 and the linear one against the table before YaRN. Host-only.
+add_executable(ignis_kernel_flash_next_rope_table_test test_flash_next_rope_table.cpp)
+target_include_directories(ignis_kernel_flash_next_rope_table_test
+                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_flash_next_rope_table_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_flash_next_rope_table_test COMMAND ignis_kernel_flash_next_rope_table_test)
 # A sequence pool of the topology's attention layers (kv_num_layers), planned
 # without building it. Host-only.
 add_executable(ignis_kernel_seq_pool_layers_test test_seq_pool_layers.cpp)
@@ -703,7 +710,10 @@ add_test(NAME ignis_kernel_flash_next_embed_head_test COMMAND ignis_kernel_flash
 # the first c records against c one-token rounds over the same columns, bit for bit. GPU.
 # GitHub #329 item 5: a verify round's MoE past the decode route's one launch -- each row the bits
 # of its own launch. GPU.
-foreach(name IN ITEMS gdn qsa side_branch verify moe_rows)
+# ADR 0059 (spec rope-scaling/02): the two rope sites (qsa.cu prepare_kernel, indexer.cu rope_row)
+# under a factor-4 YaRN table up to position 1,048,575, and the indexer's selection over it,
+# against a host restatement. GPU.
+foreach(name IN ITEMS gdn qsa side_branch verify moe_rows rope)
   add_executable(ignis_kernel_flash_next_${name}_test test_flash_next_${name}.cu)
   target_include_directories(ignis_kernel_flash_next_${name}_test
                              PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
