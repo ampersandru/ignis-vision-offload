@@ -2,9 +2,39 @@
 //!
 //! Subcommands:
 //!   `replay  --trace <trace.jsonl> --endpoint <url> [--conc N] [--scale F]
-//!             [--out <run.json>] [--label L]`
+//!             [--out <run.json>] [--label L] [--as-recorded]
+//!             [--retry-engine-full [--retry-max N] [--retry-max-wait S]
+//!                                  [--retry-total-wait S]]`
 //!       Re-send the JSONL trace against a running endpoint and write the run
-//!       (per-request metrics) as JSON.
+//!       (per-request metrics) as JSON. Both options are opt-in; without them
+//!       a replay is what every recorded baseline was measured with.
+//!       `--as-recorded`: a line whose `prompt` is a recorded chat request
+//!       body (a JSON object with `messages`, what a real agent client sent)
+//!       is sent as that body: its messages, `tools`, `tool_choice` and every
+//!       other field as recorded. The harness still sets `max_tokens` (the
+//!       line's), `stream`/`stream_options`, `temperature: 0` and `seed: 0`,
+//!       the `class` extension and `enable_thinking` where set, and drops the
+//!       recorded `model` (the server's configured model answers). Any other
+//!       line is sent as one flat user message, as without the flag. Without
+//!       the flag the body is that flat message, so two servers are not
+//!       given the same work; baselines recorded that way compare only with
+//!       replays that do not use it. The replay says how many lines it sent
+//!       as recorded. The body is greedy (`temperature: 0`), so the replay is
+//!       reproducible but not the client's own sampling: on a question like
+//!       "does MTP pay", its acceptance is an upper bound.
+//!       `--retry-engine-full`: a `503` `engine_full` (the engine has no free
+//!       lane) is waited out and resent instead of recorded as a failure:
+//!       the wait is the response's `Retry-After` seconds (1 s without one),
+//!       bounded to `--retry-max-wait` seconds (default 30, at most 60: the
+//!       server's `Retry-After` is 1 to 60 s), up to `--retry-max` resends
+//!       (default 100) and `--retry-total-wait` seconds of waiting in all
+//!       (default 600) per request; the budget is what usually ends a
+//!       request that keeps being refused. The run records, per request,
+//!       `retries` and `retry_wait_ms` (omitted when zero; the waiting slept,
+//!       not the refused round trips); `ttft_ms`/`total_ms` time the attempt
+//!       that was admitted, so queueing and service are told apart. Only
+//!       `engine_full` is retried. `report` and `gate` print the retries and
+//!       the wait per class when there are any.
 //!   `canary  --endpoint <url> [--out <canary.json>]`
 //!       Run the canary suite (self-consistency: sane + greedy-deterministic)
 //!       against a running endpoint; ship the divergence report as JSON.
@@ -104,7 +134,7 @@ use std::sync::Arc;
 
 use ignis_bench::{
     canary::{self, CanaryResult},
-    client::{replay, Endpoint, HttpEndpoint, ReplayConfig},
+    client::{is_recorded_chat_body, replay, Endpoint, HttpEndpoint, ReplayConfig, RetryPolicy, MAX_RETRY_WAIT},
     equivalence,
     g2, g3, g3_gate, g4, g4_gate, g5, g5_gate,
     gate::GateReport,
@@ -146,6 +176,7 @@ fn print_usage() {
     eprintln!(
         "usage:
   ignis-bench replay --trace <trace.jsonl> --endpoint <url> [--conc N] [--scale F] [--out <run.json>] [--label L]
+                     [--as-recorded] [--retry-engine-full [--retry-max N] [--retry-max-wait S] [--retry-total-wait S]]
   ignis-bench canary --endpoint <url> [--out <canary.json>]
   ignis-bench report --ours <ours.json> --ref <ref.json>
   ignis-bench gate --ours <ours.json> --ref <ref.json> --canary <canary.json> [--out <gate.json>]
@@ -228,6 +259,52 @@ fn endpoint_for(base_url: &str) -> HttpEndpoint {
     ep
 }
 
+/// `replay`'s opt-in fidelity options: `--as-recorded`, and
+/// `--retry-engine-full` with its `--retry-max` / `--retry-max-wait` /
+/// `--retry-total-wait` bounds. A bound without the switch it tunes is
+/// refused rather than ignored, and so is a wait that is not a sane number
+/// of seconds (or a `--retry-max-wait` past the server's 60 s).
+fn replay_options(args: &[String]) -> Result<(bool, Option<RetryPolicy>), String> {
+    let as_recorded = args.iter().any(|a| a == "--as-recorded");
+    let defaults = RetryPolicy::default();
+    let retry_max = opt(args, "retry-max");
+    let retry_max_wait = opt(args, "retry-max-wait");
+    let retry_total_wait = opt(args, "retry-total-wait");
+    if !args.iter().any(|a| a == "--retry-engine-full") {
+        if retry_max.is_some() || retry_max_wait.is_some() || retry_total_wait.is_some() {
+            return Err("--retry-max, --retry-max-wait and --retry-total-wait need --retry-engine-full".into());
+        }
+        return Ok((as_recorded, None));
+    }
+    let max_retries = match retry_max {
+        Some(v) => v.parse::<u32>().map_err(|_| format!("--retry-max {v}: not a whole number"))?,
+        None => defaults.max_retries,
+    };
+    let seconds = |flag: &str, v: &str| {
+        v.parse::<f64>()
+            .ok()
+            .and_then(|s| std::time::Duration::try_from_secs_f64(s).ok())
+            .ok_or_else(|| format!("--{flag} {v}: not a number of seconds"))
+    };
+    let max_wait = match retry_max_wait {
+        Some(v) => {
+            let wait = seconds("retry-max-wait", &v)?;
+            if wait > MAX_RETRY_WAIT {
+                return Err(format!(
+                    "--retry-max-wait {v}: the server's Retry-After is 1 to 60 seconds, so a longer cap waits for nothing"
+                ));
+            }
+            wait
+        }
+        None => defaults.max_wait,
+    };
+    let total_wait = match retry_total_wait {
+        Some(v) => seconds("retry-total-wait", &v)?,
+        None => defaults.total_wait,
+    };
+    Ok((as_recorded, Some(RetryPolicy { max_retries, max_wait, total_wait })))
+}
+
 fn cmd_replay(args: &[String]) -> ExitCode {
     let trace_path = match require(args, "trace") {
         Ok(p) => p,
@@ -251,7 +328,32 @@ fn cmd_replay(args: &[String]) -> ExitCode {
         }
     };
 
-    let ep = endpoint_for(&endpoint);
+    let (as_recorded, retry) = match replay_options(args) {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut ep = endpoint_for(&endpoint).as_recorded(as_recorded);
+    if let Some(policy) = retry {
+        ep = ep.with_retry(policy);
+    }
+    if as_recorded {
+        let recorded = trace.lines().iter().filter(|l| is_recorded_chat_body(&l.prompt)).count();
+        eprintln!(
+            "as recorded: {recorded} of {} lines sent as recorded (a line holding a chat request body is sent as that body, any other as one flat message)",
+            trace.len()
+        );
+    }
+    if let Some(policy) = retry {
+        eprintln!(
+            "engine_full: waited out and resent (up to {} times, each wait at most {} s, {} s of waiting in all)",
+            policy.max_retries,
+            policy.max_wait.as_secs_f64(),
+            policy.total_wait.as_secs_f64()
+        );
+    }
     // Pre-flight: the engine must be reachable and have a model loaded — a
     // clean error beats N failed requests in the run file.
     match ep.list_models() {
@@ -379,7 +481,7 @@ fn cmd_report(args: &[String]) -> ExitCode {
         }
     };
     let report = PerformanceReport::new(&ours, &reference);
-    print!("{}", report.render());
+    print!("{}{}{}", report.render(), ours.queueing_note(), reference.queueing_note());
     if report.gate_passed() {
         ExitCode::SUCCESS
     } else {
@@ -446,7 +548,7 @@ fn cmd_gate(args: &[String]) -> ExitCode {
     // 99% gate, per class) + the divergence report (canary
     // self-consistency), a single overall verdict.
     let artifact = GateReport::new(PerformanceReport::new(&ours, &reference), canary);
-    print!("{}", artifact.render());
+    print!("{}{}{}", artifact.render(), ours.queueing_note(), reference.queueing_note());
 
     // Ship the artifact as JSON (`--out`, spec 02).
     if let Some(path) = out {
@@ -1643,6 +1745,54 @@ mod tests {
 
     fn argv(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn replay_fidelity_options_are_opt_in_with_bounded_defaults() {
+        assert_eq!(replay_options(&argv(&["--trace", "t"])).unwrap(), (false, None));
+        let (as_recorded, retry) = replay_options(&argv(&["--as-recorded", "--retry-engine-full"])).unwrap();
+        assert!(as_recorded);
+        assert_eq!(retry, Some(RetryPolicy::default()));
+        let (_, retry) = replay_options(&argv(&[
+            "--retry-engine-full", "--retry-max", "2", "--retry-max-wait", "0.5", "--retry-total-wait", "90",
+        ]))
+        .unwrap();
+        assert_eq!(
+            retry,
+            Some(RetryPolicy {
+                max_retries: 2,
+                max_wait: std::time::Duration::from_millis(500),
+                total_wait: std::time::Duration::from_secs(90),
+            })
+        );
+    }
+
+    #[test]
+    fn a_retry_bound_without_the_retry_switch_or_with_a_bad_value_is_refused() {
+        assert!(replay_options(&argv(&["--retry-max", "2"])).is_err());
+        assert!(replay_options(&argv(&["--retry-max-wait", "5"])).is_err());
+        assert!(replay_options(&argv(&["--retry-engine-full", "--retry-max", "x"])).is_err());
+        assert!(replay_options(&argv(&["--retry-engine-full", "--retry-max-wait", "-1"])).is_err());
+        assert!(replay_options(&argv(&["--retry-total-wait", "5"])).is_err());
+        assert!(replay_options(&argv(&["--retry-engine-full", "--retry-total-wait", "x"])).is_err());
+    }
+
+    #[test]
+    fn a_wait_too_big_for_a_duration_is_refused_not_a_panic() {
+        // `Duration::from_secs_f64` panics on these.
+        for huge in ["1e30", "1e300", "inf", "NaN"] {
+            for flag in ["--retry-max-wait", "--retry-total-wait"] {
+                let err = replay_options(&argv(&["--retry-engine-full", flag, huge])).expect_err(huge);
+                assert!(err.contains(flag.trim_start_matches("--")), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_retry_max_wait_past_the_servers_retry_after_range_is_refused() {
+        assert!(replay_options(&argv(&["--retry-engine-full", "--retry-max-wait", "60"])).is_ok());
+        let err = replay_options(&argv(&["--retry-engine-full", "--retry-max-wait", "61"])).unwrap_err();
+        assert!(err.contains("60"), "{err}");
     }
 
     #[test]

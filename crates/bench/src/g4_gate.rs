@@ -514,6 +514,8 @@ mod tests {
             n_tokens: n,
             total_ms: total,
             ok: true,
+            retries: 0,
+            retry_wait_ms: 0.0,
         }
     }
 

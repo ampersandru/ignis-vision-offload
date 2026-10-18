@@ -159,6 +159,8 @@ fn depth_metrics(record: &Record, depth_tokens: u32) -> Option<Vec<RequestMetric
                 n_tokens: s.n_tokens,
                 total_ms: s.total_ms,
                 ok: s.ok,
+                retries: 0,
+                retry_wait_ms: 0.0,
             })
             .collect()
     })

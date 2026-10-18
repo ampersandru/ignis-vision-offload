@@ -35,6 +35,8 @@ fn metrics(out: &Outcome) -> RequestMetrics {
         n_tokens: out.n_tokens,
         total_ms: out.total_ms,
         ok: true,
+        retries: 0,
+        retry_wait_ms: 0.0,
     }
 }
 

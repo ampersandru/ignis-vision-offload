@@ -35,6 +35,24 @@ pub struct RequestMetrics {
     /// token (false on an error, and on a response that delivered nothing —
     /// GitHub #147).
     pub ok: bool,
+    /// How many times the engine refused the request with `engine_full` and
+    /// the harness resent it (`replay --retry-engine-full`). `ttft_ms` and
+    /// `total_ms` time the attempt that was admitted, so a report tells
+    /// queueing (this and `retry_wait_ms`) from service. Absent in a run
+    /// recorded without the retry, and not written when zero.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retries: u32,
+    /// The wall time spent waiting between those attempts (ms).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub retry_wait_ms: f64,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl RequestMetrics {
@@ -111,6 +129,37 @@ impl Run {
         Some(class_stats(class, &items))
     }
 
+    /// What the run spent queueing (`replay --retry-engine-full`): per class
+    /// with any, the `engine_full` refusals it was resent after and the time
+    /// slept between them. Empty for a run that never queued. A run that
+    /// waited minutes looks as fast as one that did not in the stats above,
+    /// whose timings start at the admitted attempt, so `report` and `gate`
+    /// print this beside them. The wait leaves out the refused round trips.
+    pub fn queueing_note(&self) -> String {
+        let mut out = String::new();
+        for class in self.classes() {
+            let (retries, wait_ms) = self
+                .metrics
+                .iter()
+                .filter(|m| m.class == class)
+                .fold((0u64, 0.0f64), |(r, w), m| (r + m.retries as u64, w + m.retry_wait_ms));
+            if retries == 0 && wait_ms == 0.0 {
+                continue;
+            }
+            let class = match class {
+                RequestClass::Main => "main",
+                RequestClass::Sub => "sub",
+            };
+            out.push_str(&format!(
+                "  queueing in {}: {class:<5} {retries} retries after engine_full, {:.1} s waited
+",
+                self.label,
+                wait_ms / 1000.0
+            ));
+        }
+        out
+    }
+
     /// The classes present in the run, in a stable order (main, sub).
     pub fn classes(&self) -> Vec<RequestClass> {
         let mut out: Vec<RequestClass> = self
@@ -131,14 +180,16 @@ pub fn class_stats(class: RequestClass, items: &[RequestMetrics]) -> ClassStats 
     let n_requests = items.len() as u32;
     let total_tokens: u64 = items.iter().map(|m| m.n_tokens as u64).sum();
 
-    let decoded: f64 = items
-        .iter()
+    // A request with no decode window (`total_ms == ttft_ms`) delivered no
+    // text chunk: a reply made only of `tool_calls` has its `n_tokens` from
+    // `usage` but no first token to time (`ttft_ms` falls back to
+    // `total_ms`). Its tokens against zero seconds would overstate the
+    // rate, so it stays out of both sums; counts and ttft still include it.
+    let decoding = || items.iter().filter(|m| m.total_ms - m.ttft_ms > 0.0);
+    let decoded: f64 = decoding()
         .map(|m| m.n_tokens.saturating_sub(1) as f64)
         .sum();
-    let decode_s: f64 = items
-        .iter()
-        .map(|m| (m.total_ms - m.ttft_ms).max(0.0) / 1000.0)
-        .sum();
+    let decode_s: f64 = decoding().map(|m| (m.total_ms - m.ttft_ms) / 1000.0).sum();
     let tok_s = if decode_s > 0.0 && decoded > 0.0 {
         decoded / decode_s
     } else {
@@ -186,7 +237,22 @@ mod tests {
             n_tokens: n,
             total_ms: total,
             ok: true,
+            retries: 0,
+            retry_wait_ms: 0.0,
         }
+    }
+
+    #[test]
+    fn retries_are_not_written_when_zero_so_recorded_baselines_read_and_write_unchanged() {
+        let old = r#"{"id":"r","class":"sub","ttft_ms":1.0,"n_tokens":2,"total_ms":3.0,"ok":true}"#;
+        let read: RequestMetrics = serde_json::from_str(old).expect("a pre-retry record");
+        assert_eq!((read.retries, read.retry_wait_ms), (0, 0.0));
+        assert!(!serde_json::to_string(&read).unwrap().contains("retr"));
+        let mut queued = read;
+        queued.retries = 1;
+        queued.retry_wait_ms = 250.0;
+        let json = serde_json::to_string(&queued).unwrap();
+        assert_eq!(serde_json::from_str::<RequestMetrics>(&json).unwrap(), queued);
     }
 
     #[test]
@@ -237,6 +303,35 @@ mod tests {
         assert_eq!(s.n_requests, 2);
         assert_eq!(s.total_tokens, 30);
         assert!((s.tok_s - 28.0 / 1.8).abs() < 1e-6, "got {}", s.tok_s);
+    }
+
+    #[test]
+    fn a_request_with_no_decode_window_stays_out_of_the_decode_rate_but_in_the_counts() {
+        // A tool-call-only reply: 200 tokens from `usage`, no text chunk, so
+        // ttft == total. Counting its 199 "decoded" tokens against 0 s would
+        // lift 28 / 1.8 to 227 / 1.8.
+        let items = vec![
+            m("a", RequestClass::Sub, 200.0, 10, 1000.0),
+            m("b", RequestClass::Sub, 300.0, 20, 1300.0),
+            m("calls", RequestClass::Sub, 500.0, 200, 500.0),
+        ];
+        let s = class_stats(RequestClass::Sub, &items);
+        assert_eq!(s.n_requests, 3);
+        assert_eq!(s.total_tokens, 230);
+        assert!((s.tok_s - 28.0 / 1.8).abs() < 1e-6, "got {}", s.tok_s);
+        assert!((s.ttft_p50_ms - 300.0).abs() < 1e-6, "its latency still counts: {}", s.ttft_p50_ms);
+    }
+
+    #[test]
+    fn the_queueing_note_names_the_classes_that_waited_and_is_empty_otherwise() {
+        let mut waited = m("s1", RequestClass::Sub, 80.0, 128, 4000.0);
+        waited.retries = 3;
+        waited.retry_wait_ms = 4500.0;
+        let run = Run::new("ours", vec![m("main", RequestClass::Main, 100.0, 512, 6000.0), waited]);
+        let note = run.queueing_note();
+        assert!(note.contains("sub") && note.contains("3 retries") && note.contains("4.5 s"), "{note}");
+        assert!(!note.contains("main"), "main never queued: {note}");
+        assert_eq!(Run::new("ref", vec![m("main", RequestClass::Main, 100.0, 512, 6000.0)]).queueing_note(), "");
     }
 
     #[test]

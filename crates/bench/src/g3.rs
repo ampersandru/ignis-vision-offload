@@ -160,6 +160,8 @@ impl ThroughputSample {
             n_tokens: self.n_tokens,
             total_ms: self.total_ms,
             ok: self.ok,
+            retries: 0,
+            retry_wait_ms: 0.0,
         }
     }
 }

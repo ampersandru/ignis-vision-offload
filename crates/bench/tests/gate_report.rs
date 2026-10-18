@@ -22,6 +22,8 @@ fn m(id: &str, class: RequestClass, ttft: f64, n: u32, total: f64) -> RequestMet
         n_tokens: n,
         total_ms: total,
         ok: true,
+        retries: 0,
+        retry_wait_ms: 0.0,
     }
 }
 
