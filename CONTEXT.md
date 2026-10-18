@@ -235,9 +235,9 @@ When output names a domain concept, use the term as defined here.
   unless the operator accepts it with `--vram-allow-expert-cache-below-floor`
   (ADR 0045).
 - **Pinned hot set** — the calibration-hottest experts an offloaded load
-  holds in its **expert cache** for its whole life, opt-in
-  (`--vram-pinned-expert-bytes`, 0 by default; ADR 0055). Each projection is a
-  **pinned expert**: a slot past its K class's LRU slots, a hit whenever
+  holds in its **expert cache** for its whole life
+  (`--vram-pinned-expert-bytes`: 0 by default, 2 GiB under the `rtx5090`
+  profile; ADR 0055). Each projection is a **pinned expert**: a slot past its K class's LRU slots, a hit whenever
   selected, never evicted or copied, and no copy in the **expert pool**, which
   is smaller by their bytes.
   _Avoid_: "pinned" alone for it: the expert pool is pinned (page-locked) host

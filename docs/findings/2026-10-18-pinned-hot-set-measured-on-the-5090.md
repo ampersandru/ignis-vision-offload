@@ -1,10 +1,10 @@
-# A pinned hot set measured on the 5090: the host pool gives back the pinned bytes exactly and greedy text is unchanged; 1 GiB costs nothing measurable, 2 GiB about 1% of three-lane decode
+# A pinned hot set measured on the 5090: the host pool gives back the pinned bytes exactly and greedy text is unchanged; 1 GiB costs nothing measurable, 2 GiB 0.2-1.1% of three-lane decode, 4 GiB 4.3% of one-lane and 5.9% of three-lane decode
 
 - Kind: experiment
 - Status: current
 - Observed: 2026-10-18
 - Last verified: 2026-10-18
-- Scope: core / Flash-Next expert residency with a pinned hot set (`vram.pinned_expert_bytes`): the host plan's expert pool, the process's RAM, the expert cache's decode hit rate, decode tok/s and load time on the rtx5090 profile
+- Scope: core / Flash-Next expert residency with a pinned hot set (`vram.pinned_expert_bytes`, 1, 2 and 4 GiB): the host plan's expert pool, the process's RAM, the expert cache's decode hit rate, decode tok/s and load time on the rtx5090 profile
 - Related: [GitHub #329](https://github.com/gpillon/ignis/issues/329) (item 12),
   [ADR 0055](../adr/0055-a-pinned-hot-set-is-opt-in.md),
   [A partially exclusive expert pool on the 5090](2026-10-18-partial-exclusive-expert-pool.md),
@@ -44,7 +44,8 @@ kernel build (nvcc) ran on the CPU over it, 13:27-13:31, which that agent
 reported afterwards; the launch ended at 13:31. It is left out of the speed
 figures. Script and raw data: `.scratch/expert-pin/` in the
 `expert-pin` worktree (`measure.py`, one JSON and one log per launch,
-`summary.txt`).
+`summary.txt`), copied to `.scratch/orchestra-2026-10-18/expert-pin/session1/`
+in the main checkout.
 
 **What was pinned.**
 
@@ -87,6 +88,44 @@ binary's, at `0`, `1G` and `2G`.
 **Load.** The residency phase took 17.5-18.3 s at `0`, 19.9-20.9 s at `1G` and
 19.9-20.4 s at `2G`, with the page cache warm.
 
+**Second session: 4 GiB (15:34-15:46, for the owner's choice between `2G`
+and `4G`).** The same script (`measure.py`, copied unchanged), the same lean
+host lines, prompts, reps and averaging, on the branch's binary with the
+review's fixes (the pin keeps the slots of the widest decode step, which with
+MTP off is the lanes as before; a pin it cannot reach is refused; a kernel
+variable renamed). `0`, `2G` and `4G` three launches each, in three rounds
+(4G/2G/0, 0/2G/4G, 4G/2G/0), the control at an explicit
+`--vram-pinned-expert-bytes 0`, since the rtx5090 profile now sets `2G`. The
+VRAM plan gave the cache 18,185,223,504 B (70 MB more than the first session:
+the desktop held less VRAM); 48.0-48.1 GB was available before each launch,
+and no build ran during any (logged per launch). Script, raw data and
+`summary-session2.txt` (`summarize.py` reproduces the first session's
+figures from its JSON): `.scratch/expert-pin-4g/` in the `expert-pin`
+worktree, copied to `.scratch/orchestra-2026-10-18/expert-pin/session2-4g/`
+in the main checkout.
+
+| field | experts | projections | pinned bytes | of which K = 4 | load staging |
+|---|---:|---:|---:|---:|---:|
+| `4G` | 1,995 | 3,990 | 4,296,007,680 | 1,977 projections | 867,164,160 |
+
+At 4 GiB the gate/up K4 LRU keeps 78 of its 1,077 slots, the minimum three
+lanes' decode step needs (3 x (10 + 16)), and the down K4 LRU 168 of 1,146;
+the walk then pins K = 3 experts (972 gate/up and 877 down projections). The
+host plan's `expert_pool` was 33,499,439,104 B and the working set 33.866 GB:
+4,296,007,680 B and 4.296 GB less than at `0` (37,795,446,784 B, 38.162 GB).
+
+| session 2 | 1 lane tok/s | hit | stall ms/round | 3 lanes tok/s | hit | stall ms/round |
+|---|---:|---:|---:|---:|---:|---:|
+| `0` | 105.95 | 96.331% | 2.142 | 139.78 | 95.163% | 8.092 |
+| `2G` | 105.77 | 96.275% | 2.186 | 139.54 | 95.041% | 8.352 |
+| `4G` | 101.35 | 95.797% | 2.594 | 131.48 | 94.417% | 9.717 |
+
+Per launch at three lanes: `0` 140.04 / 139.26 / 140.04, `2G` 138.97 /
+138.96 / 140.69, `4G` 130.54 / 130.93 / 132.98; at one lane `4G` 100.94 /
+101.48 / 101.63 against `0`'s 105.90-105.99. Every launch's 12 completions
+equal the baseline binary's. The residency phase took 17.4-17.5 s at `0`,
+19.7-19.9 s at `2G` and 18.9-19.1 s at `4G`.
+
 ## Finding
 
 **Observed.** The pin gives back exactly its bytes: the plan's expert pool
@@ -107,15 +146,36 @@ At 2 GiB (2.15 GB) the card measures 1.1% and 0.1%: the same order, the
 three-lane cost at the top of the study's bracket. Its hit-rate deltas at
 2 GB (−0.04 and −0.08 points) are close to these (−0.07 and −0.14).
 
+**Observed (second session).** `4G` (4.30 GB pinned) costs 4.3% of one-lane
+and 5.9% of three-lane decode (101.35 against 105.95, 131.48 against 139.78
+tok/s; every `4G` launch below every `0` launch at both lane counts), the hit
+rate 0.53 and 0.75 points lower and the demand stall 0.45 and 1.63 ms per
+round higher. Its RAM comes back exactly (4.296 GB) and greedy text is
+unchanged. In the same session `2G` measured 0.2% at both lane counts, two of
+its three-lane launches 0.6% below `0`'s mean and the third above it: with
+the first session's 1.1%, `2G` costs 0.2-1.1% of three-lane decode.
+
+**Compared with the study at 4 GB.** It predicted 3.8-5.3% of a three-lane
+round and 1.6-2.1% of a one-lane one for 4.00 GB (1,833 experts). The card
+measures 5.9% and 4.3%: above the bracket's top at three lanes, and twice it
+at one. Part of the gap is the larger pin (4.30 GB, 1,995 experts) on a cost
+curve that rises steeply here (the study's demand +1.0-1.6% at 2 GB, +8-10% at
+4 GB) (inferred); the rest is not separated here.
+
 ## Implications
 
-- `--vram-pinned-expert-bytes 1G` is RAM for free on this host; `2G` costs about
-  1% of three-lane decode. Past 2 GiB the K = 4 LRU pools are what the pin
-  eats (72% of the gate/up K4 slots at 2 GiB), where the study saw the cost
-  climb.
+- `--vram-pinned-expert-bytes 1G` is RAM for free on this host; `2G` costs
+  0.2-1.1% of three-lane decode for 2.149 GB; `4G` 4.3% of one-lane and 5.9%
+  of three-lane decode for 4.296 GB, about 0.7 GB of RAM per % of three-lane
+  decode against 2-11 GB per % at `2G`. Past 2 GiB the K = 4 LRU pools are
+  what the pin eats (72% of the gate/up K4 slots at 2 GiB, all but the
+  three-lane minimum at 4 GiB), and the cost climbs as the study said, faster
+  than it predicted.
 - Loading with a pin takes ~2 s longer, from reading the pinned records apart
   and the pool in runs around them.
-- The default stays 0 (ADR 0055): the owner decides when the RAM is worth it.
+- The field's default stays 0; the owner accepted ADR 0055 with the rtx5090
+  profile at `2G` for Flash-Next, and chooses between `2G` and `4G` from the
+  second session.
 
 ## Limits and unknowns
 
@@ -128,7 +188,9 @@ three-lane cost at the top of the study's bracket. Its hit-rate deltas at
   cache or the drive.
 - The hit rates are this workload's, higher than the replay's teacher-forced
   chunks; the deltas are what compares.
-- Only 1 and 2 GiB were measured, at one cache size.
+- Only 1, 2 and 4 GiB were measured, at one cache size (18.12-18.19 GB), and
+  with MTP off. The two sessions ran about two hours apart on two binaries; their
+  `0` rows agree within 0.05%, so the rows compare within a session.
 
 ## Follow-ups
 
