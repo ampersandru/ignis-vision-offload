@@ -32,6 +32,7 @@ use crate::residency::{
     residency_table_bytes, staging_ring_bytes_for, warm_start_order, ExpertCachePlan, ExpertCachePlanError,
     ExpertCacheRequest, ExpertCatalog, ExpertTraffic, KClass, PinRefused, PinnedExperts, EXPERT_CACHE_FLOOR_BYTES,
 };
+use crate::rope_scaling::RopeScaling;
 use crate::seq::{SeqPool, SeqPoolBudget};
 use crate::speculation::{FlashNextSpeculation, SpeculativeBackend};
 use crate::step::{
@@ -89,6 +90,11 @@ pub struct EngineOptions {
     /// Speculative decoding (spec flash-next/07): the verify round at the
     /// load's windows; `None` runs one-token rounds only.
     pub speculation: Option<FlashNextSpeculation>,
+    /// The text rotary table (ADR 0059): [`RopeScaling::NONE`] is the
+    /// checkpoint's linear one, a YaRN factor rescales its trained 262,144
+    /// positions -- on attention, the indexer and the MTP head alike. The
+    /// plan and the load are handed this one value.
+    pub rope_scaling: RopeScaling,
 }
 
 impl EngineOptions {
@@ -188,6 +194,7 @@ impl Default for EngineOptions {
             retained_host_slots: 0,
             kv_ram_arena_bytes: 0,
             speculation: None,
+            rope_scaling: RopeScaling::NONE,
         }
     }
 }
@@ -517,6 +524,7 @@ impl FlashNextEngine {
             options.kv_format,
             options.decode_lanes,
             options.speculation,
+            options.rope_scaling,
             mtp.as_ref().map(|head| head.plan()),
         )?;
 
@@ -536,6 +544,7 @@ impl FlashNextEngine {
             options.decode_lanes,
             &residency,
             options.speculation,
+            options.rope_scaling,
             mtp.as_ref(),
         )?;
         // The pool is planned against what is free before it is created, so a

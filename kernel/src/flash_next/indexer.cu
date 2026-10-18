@@ -51,11 +51,12 @@ __device__ __forceinline__ void rms_norm_row(float (&x)[4], const __nv_bfloat16 
 }
 
 // Rope on dims [0, 64) of a 128-wide row (pair i = (i, i + 32), held by lane i as x[0], x[1]) in
-// torch's BF16 arithmetic: cos and sin rounded to BF16, each product rounded, then the sum.
+// torch's BF16 arithmetic: cos and sin times the table's scale rounded to BF16 (ADR 0059), each
+// product rounded, then the sum.
 __device__ __forceinline__ void rope_row(float (&x)[4], const Rope &rope, int32_t position, int lane) {
   const float phi = static_cast<float>(position) * rope.inv_freq[lane];
-  const float c = round_bf16(cosf(phi));
-  const float s = round_bf16(sinf(phi));
+  const float c = round_bf16(cosf(phi) * rope.scale);
+  const float s = round_bf16(sinf(phi) * rope.scale);
   const float x1 = x[0], x2 = x[1];
   x[0] = round_bf16(round_bf16(x1 * c) + round_bf16(-x2 * s));
   x[1] = round_bf16(round_bf16(x2 * c) + round_bf16(x1 * s));
@@ -445,6 +446,7 @@ Rope rope_from(const ninfer::ops::RopeFrequencies &frequencies) {
   for (int i = 0; i < kRotaryDim / 2; ++i) {
     rope.inv_freq[i] = 1.0F / static_cast<float>(1.0 / frequencies.inv_frequency[i]);
   }
+  rope.scale = frequencies.attention_factor;
   return rope;
 }
 

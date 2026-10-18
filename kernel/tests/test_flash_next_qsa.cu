@@ -19,7 +19,8 @@
 //               makes between the two fp64 references; the residual window's rows exact after a
 //               chunk wider than the ring.
 //   entry       fn_qsa_attention itself on seq pools of both formats: bit-identical to qsa::run,
-//               its K/V in its own attention layer's planes and window only, its refusals.
+//               its K/V in its own attention layer's planes and window only, its refusals, and
+//               a YaRN table (ADR 0059) reaching qsa::run with its attention factor.
 //   fused       (GitHub #306) the grouped q/k/v projection and the gate in the split combine
 //               against the unfused launches, bit for bit: output and store, both formats.
 //
@@ -1028,11 +1029,31 @@ int main() {
     other.kv_format = format == IGNIS_KV_FORMAT_BF16 ? IGNIS_KV_FORMAT_HQ_E8_2B : IGNIS_KV_FORMAT_BF16;
     check(refused(other, 1, "format"), fname + ": a KV format other than the pool's is refused");
     other = ctx;
-    other.rope.attention_factor = 2.0F;
-    check(refused(other, 1, "attention factor"), fname + ": a rope attention factor is refused");
-    other = ctx;
     other.pool = nullptr;
     check(refused(other, 1, "no seq pool"), fname + ": a context without a seq pool is refused");
+    // ADR 0059: the entry rotates at its context's table, the YaRN attention factor included --
+    // the next token under a factor-4 table gives what qsa::run gives at that table's rope_from.
+    {
+      fn::Context yarn = ctx;
+      ignis::RopeScaling four;
+      four.factor = 4.0F;
+      yarn.rope = ignis::rope_yarn_frequencies(1e7F, 64, fn::kOriginalPositions, four);
+      upload(d_x, token_input(7, first));
+      upload(d_positions, std::vector<int32_t>{first});
+      std::vector<int32_t> list(kWidth, -1);
+      for (int32_t j = 0; j <= first; ++j) list[j] = j;
+      upload(d_sel_tokens, list);
+      upload(d_sel_counts, std::vector<int32_t>{first + 1});
+      MOE_CUDA(cudaDeviceSynchronize());
+      fn::Selection listed;
+      listed.tokens = d_sel_tokens.as<int32_t>();
+      listed.counts = d_sel_counts.as<int32_t>();
+      FN_RC(fn::fn_qsa_attention(yarn, 1, wv, one, d_x.p, listed, d_y_bf16.p, arena, stream));
+      FN_RC(qsa::run(g, own_kv, fn::indexer::rope_from(yarn.rope), wv, one, d_x.p, listed, d_y_hq.p, arena, stream));
+      MOE_CUDA(cudaStreamSynchronize(stream));
+      check(download<uint16_t>(d_y_bf16.p, H) == download<uint16_t>(d_y_hq.p, H),
+            fname + ": a YaRN table, its attention factor with it, reaches qsa::run");
+    }
     ignis_seq_release(pool, seq);
     ignis_seq_pool_free(pool);
   }

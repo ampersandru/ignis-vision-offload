@@ -891,6 +891,37 @@ pub fn flash_next_scheduler_with_ngram_cache(
         .map_err(|e| e.to_string())
 }
 
+/// The options a Flash-Next load of `shape` runs with, but for what its
+/// plans decide (the KV pool's pages, the expert cache, the n-gram hot
+/// rows). Separate from [`flash_next_load`] for the same reason as
+/// [`leaf_config_for_shape`]: the rotary table among them (ADR 0059) is the
+/// one value the reservation plan, the leaf's load and KV-disk's identity
+/// read, and a field left to `EngineOptions::default()` here would load the
+/// linear table under a plan and a label that say otherwise.
+#[cfg(feature = "cuda")]
+fn flash_next_engine_options(
+    shape: &EngineShape,
+    lanes: u32,
+    speculation: Option<ignis_core::speculation::FlashNextSpeculation>,
+    ngram_cache: ignis_core::ngram_cache::PersistenceOptions,
+) -> ignis_core::flash_next::EngineOptions {
+    ignis_core::flash_next::EngineOptions {
+        ngram_cache,
+        prefill_chunk_tokens: shape.prefill_chunk,
+        max_context_tokens: shape.max_context,
+        kv_format: shape.kv_format,
+        decode_lanes: lanes,
+        pinned_expert_bytes: shape.pinned_expert_bytes,
+        capture_graphs: true,
+        retained_device_slots: shape.retained_device_slots,
+        retained_host_slots: shape.retained_host_slots,
+        kv_ram_arena_bytes: shape.host_pool_bytes,
+        speculation,
+        rope_scaling: shape.rope_scaling,
+        ..ignis_core::flash_next::EngineOptions::default()
+    }
+}
+
 /// [`flash_next_scheduler_with_ngram_cache`], with a host plan's refusal
 /// kept whole ([`FlashNextLoadError::HostPlan`]): the server's load reads it.
 #[cfg(feature = "cuda")]
@@ -904,7 +935,7 @@ pub(crate) fn flash_next_load(
     use ignis_artifact::{CudaDevice, Reader};
     use ignis_core::compute::ModelConfig;
     use ignis_core::flash_next::{
-        device_only, expert_traffic, plan_cache_request, residency_pools, EngineOptions, PoolsRefused,
+        device_only, expert_traffic, plan_cache_request, residency_pools, PoolsRefused,
         LOOKAHEAD_WIDTH,
     };
     use ignis_core::residency::load::{catalog, pinned_staging_bytes, pool_layout, pool_layout_without, stream_staging_bytes};
@@ -951,6 +982,10 @@ pub(crate) fn flash_next_load(
         (Some(_), None) => return Err("the MTP head: the artifact path has no directory".into()),
         (None, _) => None,
     };
+    // The options the leaf loads with, but for the KV pool's pages and the
+    // expert cache, which the plan below decides: one budget for the pool the
+    // plan charges and the pool the leaf builds.
+    let mut options = flash_next_engine_options(&shape, lanes, speculation, ngram_cache);
     let reserved = ignis_core::model_load::plan_flash_next_reservations(
         &plan,
         &geometry,
@@ -959,26 +994,10 @@ pub(crate) fn flash_next_load(
         shape.kv_format,
         lanes,
         speculation,
+        options.rope_scaling,
         mtp_plan.as_ref(),
     )?;
     let config = ModelConfig::flash_next_from(&geometry);
-    // The options the leaf loads with, but for the KV pool's pages and the
-    // expert cache, which the plan below decides: one budget for the pool the
-    // plan charges and the pool the leaf builds.
-    let mut options = EngineOptions {
-        ngram_cache,
-        prefill_chunk_tokens: shape.prefill_chunk,
-        max_context_tokens: shape.max_context,
-        kv_format: shape.kv_format,
-        decode_lanes: lanes,
-        pinned_expert_bytes: shape.pinned_expert_bytes,
-        capture_graphs: true,
-        retained_device_slots: shape.retained_device_slots,
-        retained_host_slots: shape.retained_host_slots,
-        kv_ram_arena_bytes: shape.host_pool_bytes,
-        speculation,
-        ..EngineOptions::default()
-    };
     // The sequence pool at any page count (ADR 0045): the lanes' state, the
     // retained slots, the residual window and the n-gram state do not move
     // with it; the arena its pages take -- KV and the indexer's keys, both
@@ -1170,6 +1189,8 @@ pub(crate) fn flash_next_load(
     }
     drop(reader);
     let leaf = FlashNextLeaf::open(artifact_path, options)?;
+    // ADR 0059: KV-disk labels its files with the table the leaf rotates at.
+    let rope_scaling = leaf.options().rope_scaling;
     // GitHub #301, #302: the telemetry consumer reads the leaf's counters
     // through their source, never through the leaf, which drops with its
     // model.
@@ -1185,7 +1206,7 @@ pub(crate) fn flash_next_load(
         model_id: &model_id,
         location: kv_disk_location,
         bytes: kv_disk_bytes,
-        rope_scaling: shape.rope_scaling,
+        rope_scaling,
         gate,
         restore_floor_tokens: ignis_runtime::kv_disk::restore_floor_tokens(ignis_core::compute::ModelFamily::FlashNext),
         pace: shape
@@ -1241,6 +1262,32 @@ mod tests {
             panic!("expected a runnable config");
         };
         assert_eq!(EngineShape::from(&config), EngineShape::default());
+    }
+
+    /// ADR 0059: a Flash-Next load's options carry its shape's rotary table,
+    /// the one value its reservation plan is asked under, its leaf loads with
+    /// and KV-disk's identity reads back off the leaf; the identity's rope
+    /// bits are then the four scalars the leaf's load crosses
+    /// (`model_load::flash_next_options`, pinned in ignis-core).
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn a_flash_next_load_runs_and_labels_its_shapes_rope_table() {
+        use ignis_core::RopeScaling;
+        for (scaling, scalars) in [
+            (RopeScaling::NONE, [0.0f32, 0.1, 32.0, 1.0]),
+            (RopeScaling::yarn(2.25).unwrap(), [2.25, 0.1, 32.0, 1.0]),
+        ] {
+            let shape = EngineShape { rope_scaling: scaling, ..EngineShape::default() };
+            let options = flash_next_engine_options(&shape, 3, None, Default::default());
+            assert_eq!(options.rope_scaling, scaling, "{scaling}");
+            let identity = ignis_runtime::kv_disk::DiskIdentity::of_load(
+                "qwen3.8-flash-next",
+                &ignis_core::BlobIdentity::UNSET,
+                options.rope_scaling,
+                None,
+            );
+            assert_eq!(identity.rope_scaling, scalars.map(f32::to_bits), "{scaling}");
+        }
     }
 
     /// The whole chain from an operator's flags to a blob's identity, with no

@@ -591,8 +591,17 @@ std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, ui
              std::to_string(max_decode_lanes()) + " a Flash-Next round serves";
     return nullptr;
   }
-  if (options != nullptr && options->rope_scaling_factor != 0.0F && options->rope_scaling_factor != 1.0F) {
-    *error = "Qwen3.8-Flash-Next rotates at its own linear table, not a scaled one";
+  // ADR 0059: the load's rotary table, YaRN or linear (text_rope); a scaling that builds none is
+  // refused by name, as ignis_model_load refuses it.
+  RopeScaling rope_scaling{};
+  if (options != nullptr) {
+    rope_scaling.factor = options->rope_scaling_factor;
+    rope_scaling.temperature = options->rope_scaling_temperature;
+    rope_scaling.beta_fast = options->rope_scaling_beta_fast;
+    rope_scaling.beta_slow = options->rope_scaling_beta_slow;
+  }
+  if (const std::string why = rope_scaling_rejection(rope_scaling); !why.empty()) {
+    *error = why;
     return nullptr;
   }
   // The binder first: a set of descriptors is right or wrong whatever the
@@ -638,8 +647,7 @@ std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, ui
     fn->decode_rows = verify::decode_rows(fn->decode_lanes, fn->draft_tokens, fn->draft_row_budget);
   }
   try {
-    fn->rope = ninfer::ops::rope_linear_frequencies(static_cast<float>(topology.rope_theta),
-                                                    static_cast<int>(topology.rotary_dim));
+    fn->rope = text_rope(topology, rope_scaling);
     fn->sizes = plan_sizes(*fn);
   } catch (const std::exception &e) {
     *error = std::string("Qwen3.8-Flash-Next's plan: ") + e.what();
