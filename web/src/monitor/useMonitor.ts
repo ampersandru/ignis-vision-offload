@@ -5,7 +5,9 @@ import { applyScrape, clampInterval, fetchScrape, initialMonitor, type MonitorSt
 // The one scraper the page shares: it polls /ui/metrics while anything on
 // the page listens, at the chosen interval while metrics answer and every
 // OFF_RETRY_MS while they don't, and scrapes again at once when the API key
-// changes. The history lives here, in memory; a reload starts it over.
+// changes. While the tab is hidden it sends nothing -- on a scale-to-zero
+// deployment every scrape counts as traffic and keeps the service awake -- and
+// it scrapes at once when the tab shows again. The history lives here, in memory; a reload starts it over.
 
 export type MonitorStore = {
   get: () => MonitorState;
@@ -14,16 +16,32 @@ export type MonitorStore = {
   setInterval: (ms: number) => void;
 };
 
-/** A scraper over `scrape`, re-scraping when `onKeyChange` fires. The page's one is `monitor` below. */
+const pageHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
+const onPageVisibility = (listener: () => void) => {
+  if (typeof document === "undefined") return () => {};
+  document.addEventListener("visibilitychange", listener);
+  return () => document.removeEventListener("visibilitychange", listener);
+};
+
+/** A scraper over `scrape`, re-scraping when `onKeyChange` fires and idle while `isHidden`. The page's one is `monitor` below. */
 export function createMonitorStore({
   scrape = fetchScrape,
   onKeyChange = subscribeAuth,
-}: { scrape?: () => Promise<ScrapeResult>; onKeyChange?: (listener: () => void) => () => void } = {}): MonitorStore {
+  isHidden = pageHidden,
+  onVisibility = onPageVisibility,
+}: {
+  scrape?: () => Promise<ScrapeResult>;
+  onKeyChange?: (listener: () => void) => () => void;
+  isHidden?: () => boolean;
+  onVisibility?: (listener: () => void) => () => void;
+} = {}): MonitorStore {
   let state = initialMonitor();
   const listeners = new Set<() => void>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inflight = false;
   let stopKeyWatch: (() => void) | undefined;
+  let stopVisibilityWatch: (() => void) | undefined;
 
   const update = (next: MonitorState) => {
     state = next;
@@ -32,12 +50,12 @@ export function createMonitorStore({
 
   const schedule = (delayMs: number) => {
     clearTimeout(timer);
-    if (listeners.size === 0 || state.paused) return;
+    if (listeners.size === 0 || state.paused || isHidden()) return;
     timer = setTimeout(() => void scrapeNow(), delayMs);
   };
 
   async function scrapeNow() {
-    if (inflight || state.paused) return;
+    if (inflight || state.paused || isHidden()) return;
     inflight = true;
     clearTimeout(timer);
     const started = performance.now();
@@ -53,6 +71,10 @@ export function createMonitorStore({
       listeners.add(listener);
       if (listeners.size === 1) {
         stopKeyWatch = onKeyChange(() => void scrapeNow());
+        stopVisibilityWatch = onVisibility(() => {
+          if (isHidden()) clearTimeout(timer);
+          else void scrapeNow();
+        });
         void scrapeNow();
       }
       return () => {
@@ -60,6 +82,7 @@ export function createMonitorStore({
         if (listeners.size > 0) return;
         clearTimeout(timer);
         stopKeyWatch?.();
+        stopVisibilityWatch?.();
       };
     },
     setPaused(paused) {
