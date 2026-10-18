@@ -20,13 +20,22 @@ import type { StreamOptions, StreamResult } from "./stream.ts";
 // When the socket cannot be opened, the browser does not say why: a probe of
 // GET /v1/models tells a missing key (the key prompt) from a server or proxy
 // without the socket, for which the page falls back to HTTP. The socket, the
-// clock and the probe's `fetch` are injectable, so all of it is testable
-// without a server.
+// clock, the probe's `fetch` and the page's visibility are injectable, so all
+// of it is testable without a server.
+//
+// A socket is opened by the turn that needs it and never held for its own
+// sake (GitHub #329): ignis closes one left idle (`server.socket_idle_close`),
+// and a hidden page closes the ones nothing uses after HIDDEN_CLOSE_MS, since
+// an open socket keeps a Knative pod, and its GPU, from scaling down. Either
+// way the next turn opens another and sends its whole history.
 
 export const RESPONSES_PATH = "/v1/responses";
 
 /** The named streams ignis lets one connection carry; past them the page opens another socket. */
 export const STREAMS_PER_SOCKET = 32;
+
+/** How long a hidden page keeps a socket no request is using before it closes it. */
+export const HIDDEN_CLOSE_MS = 60_000;
 
 /** The part of a WebSocket the transport uses; a test hands in a fake. */
 export type SocketLike = {
@@ -34,9 +43,12 @@ export type SocketLike = {
   close(): void;
   onopen: ((event: unknown) => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: ((event: { code: number }) => void) | null;
+  onclose: ((event: { code: number; reason?: string }) => void) | null;
   onerror: ((event: unknown) => void) | null;
 };
+
+/** Whether the page is hidden, and a way to hear when that changes; a test hands in its own. */
+export type Visibility = { hidden: () => boolean; onChange: (listener: () => void) => void };
 
 export type SocketDeps = {
   /** Opens a socket; may throw, as `new WebSocket` does for a key that is not a valid subprotocol. */
@@ -45,12 +57,23 @@ export type SocketDeps = {
   /** For the probe after a failed upgrade. */
   fetch?: typeof fetch;
   now?: () => number;
+  /** The page's; none outside a browser, where nothing is ever hidden. */
+  visibility?: Visibility;
 };
 
 /** What a request on the socket came to; `unavailable` when the socket cannot be opened and HTTP should carry it. */
 export type SocketResult = StreamResult | "unavailable";
 
 export type ResponsesSocket = { stream: (options: StreamOptions) => Promise<SocketResult> };
+
+/** The document's visibility, when there is a document. */
+function pageVisibility(): Visibility | undefined {
+  if (typeof document === "undefined") return undefined;
+  return {
+    hidden: () => document.visibilityState === "hidden",
+    onChange: (listener) => document.addEventListener("visibilitychange", listener),
+  };
+}
 
 /** The socket on the page's own origin, `wss` when the page is served over TLS. */
 function pageUrl(): string {
@@ -77,6 +100,8 @@ type Connection = {
   /** Resolves true once open, false when the socket closed before it opened. */
   ready: Promise<boolean>;
   closed: boolean;
+  /** What the close frame said, when it said anything. */
+  closeReason?: string;
   /** The named streams this connection has carried: ignis counts every id it has seen. */
   ids: Set<string>;
   /** Requests that picked this connection and have not settled; a full connection closes once there are none. */
@@ -112,11 +137,13 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
   const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
   const url = deps.url ?? pageUrl;
   const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
+  const visibility = deps.visibility ?? pageVisibility();
   const connections: Connection[] = [];
   // Per stream, the request before this one: a stream carries one at a time,
   // so every event on it belongs to the one request it has on the wire.
   const lines = new Map<string, Promise<void>>();
   let unnamed = 0;
+  let hiddenClose: ReturnType<typeof setTimeout> | undefined;
 
   function connect(): Connection {
     const connection: Connection = { socket: null, ready: Promise.resolve(false), closed: false, ids: new Set(), users: 0, listeners: new Map(), latest: new Map() };
@@ -132,10 +159,12 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
       connection.socket = socket;
       socket.onopen = () => resolve(true);
       socket.onerror = () => {};
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         connection.closed = true;
+        connection.closeReason = event.reason || undefined;
         resolve(false);
         for (const listener of [...connection.listeners.values()]) listener(null);
+        forget(connection);
       };
       socket.onmessage = (message) => {
         let event: ServerEvent;
@@ -163,16 +192,41 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
     return connection;
   }
 
-  /** A request is done with `connection`; a full one nobody is using goes, and its streams move to a new one. */
-  function leave(connection: Connection) {
-    connection.users--;
-    if (connection.users === 0 && connection.ids.size >= STREAMS_PER_SOCKET && !connection.closed) {
-      connection.closed = true;
-      connection.socket?.close();
-    }
+  /** A closed connection nobody is using is dropped. */
+  function forget(connection: Connection) {
     const at = connections.indexOf(connection);
     if (connection.closed && connection.users === 0 && at !== -1) connections.splice(at, 1);
   }
+
+  function close(connection: Connection) {
+    connection.closed = true;
+    connection.socket?.close();
+    forget(connection);
+  }
+
+  /** A request is done with `connection`; a full one nobody is using goes, and its streams move to a new one. */
+  function leave(connection: Connection) {
+    connection.users--;
+    if (connection.users === 0 && connection.ids.size >= STREAMS_PER_SOCKET && !connection.closed) close(connection);
+    forget(connection);
+    if (connection.users === 0) armHiddenClose();
+  }
+
+  /**
+   * While the page is hidden, the sockets no request is using are closed
+   * once HIDDEN_CLOSE_MS pass with none of them used; a request ending
+   * starts the wait again, and the page shown again ends it.
+   */
+  function armHiddenClose() {
+    clearTimeout(hiddenClose);
+    hiddenClose = undefined;
+    if (!visibility?.hidden() || !connections.some((c) => !c.closed && c.users === 0)) return;
+    hiddenClose = setTimeout(() => {
+      hiddenClose = undefined;
+      for (const connection of [...connections]) if (!connection.closed && connection.users === 0) close(connection);
+    }, HIDDEN_CLOSE_MS);
+  }
+  visibility?.onChange(armHiddenClose);
 
   async function probe(): Promise<Probe> {
     try {
@@ -225,7 +279,10 @@ export function createResponsesSocket(deps: SocketDeps = {}): ResponsesSocket {
       };
 
       connection.listeners.set(streamId, (event) => {
-        if (event === null) return end({ kind: "failed", message: "the connection to ignis closed before the reply finished" });
+        if (event === null) {
+          const why = connection.closeReason ? `: ${connection.closeReason}` : "";
+          return end({ kind: "failed", message: `the connection to ignis closed before the reply finished${why}` });
+        }
         const at = now();
         if (event.type === "response.created" && event.response) {
           responseId = event.response.id;
