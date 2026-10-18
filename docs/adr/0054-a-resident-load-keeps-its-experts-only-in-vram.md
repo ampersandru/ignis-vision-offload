@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-10-18), after the measurement in
+Accepted (2026-10-18, owner decision). Proposed the same day, after the measurement in
 [`docs/findings/2026-10-18-flash-next-experts-device-only.md`](../findings/2026-10-18-flash-next-experts-device-only.md);
 the owner asked for it ("se entrano tutti gli esperti in VRAM li togliamo dalla RAM e liberiamo
 quello spazio"). Amends [ADR 0045](0045-the-kv-pool-follows-residency-and-state-goes-down-to-disk.md)'s

@@ -14,7 +14,7 @@ shortage takes what is not decoding first), **ADR 0017** (`tier="disk"` is
 exported on a load that has the tier) and **spec core-05** (a reservation
 grows).
 
-**Amended by ADR 0054** (proposed 2026-10-18): a resident Flash-Next load
+**Amended by ADR 0054** (accepted 2026-10-18, owner decision): a resident Flash-Next load
 keeps its experts only in VRAM, with no host expert pool; the offloaded
 branch is unchanged.
 
