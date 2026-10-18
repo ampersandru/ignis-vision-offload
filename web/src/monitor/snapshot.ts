@@ -164,7 +164,7 @@ export type ExpertResidency = {
   bytesMoved: Record<ExpertPhase, number | null>;
   /** Seconds the expert kernels waited on their demand copies (GitHub #306; null from a server that does not time them). */
   stall: Record<ExpertPhase, number | null>;
-  /** Slots per class: reserved at load, and holding a projection now (null from a server without occupancy). */
+  /** The LRU's slots per class: reserved at load, a pinned hot set's not among them (ADR 0055), and holding a projection now (null from a server without occupancy). */
   slots: Record<ExpertClass, { capacity: number | null; inUse: number | null }>;
 };
 

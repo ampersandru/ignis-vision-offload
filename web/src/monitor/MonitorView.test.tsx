@@ -158,6 +158,9 @@ describe("MonitorView", () => {
     expect(html).toContain("gate_up_k4");
     // 2,999 of 3,000 down_k2 slots, both terms.
     expect(html).toContain("2,999");
+    // The capacity is the LRU's: a pinned hot set's slots are not in it (ADR 0055).
+    expect(html).toContain("LRU slots in use");
+    expect(html).toContain("A pinned hot set&#x27;s slots are not among them");
     // 0.1 s waited on demand copies over those 50 tokens and 10 s.
     expect(html).toContain("Stall per token");
     expect(html).toContain("2.0 ms");
