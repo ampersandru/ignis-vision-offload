@@ -163,8 +163,10 @@ an MTP load's own head lines are not in it):
 | 32 | 32 | 47.9 MB | 16.5 MB | 144.2 MB | 208.7 MB | +147.5 MB |
 
 At budgets 0, 2, 6 and 8 the plan lines are main's (0a810c0b) byte for
-byte -- no speculation, verify-only at 1-8 lanes, both KV formats -- checked
-against main's own build and pinned in the same CTest.
+byte -- no speculation and verify-only, 1-8 lanes and the default's, both KV
+formats: 96 planned cells, against main's own build (an MTP load is not
+plannable from these descriptors, which carry no head) -- and 15 of them are
+pinned in the same CTest.
 
 **Cost on the 5090** (`flash_next_mtp_bench mtp --draft-tokens 3 --lanes 8`,
 hq-e8-2b, 1,536-token prompts, 128 tokens, 16 GB expert cache; decode is

@@ -96,7 +96,8 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
   and its band are constants of the test's support module, measured on the RTX 5090 with these
   prompts. A change of the wide routes (a new GEMM tiling, option 2) or another card (the RTX
   PRO 6000 first) re-measures them, as the finding records.
-- The default's plan lines are main's byte for byte, pinned in `flash_next_bind` against main's
-  own build: nothing about a load that names no budget changes.
+- The default's plan lines are main's byte for byte (verify-only and no speculation, checked
+  against main's own build, a sample pinned in `flash_next_bind`): nothing about a load that
+  names no budget changes.
 - `out_logits` is appended to `ignis_decode_options` (ADR 0016's rule): a NULL costs nothing,
   a set one costs one host copy before the round's synchronize.
