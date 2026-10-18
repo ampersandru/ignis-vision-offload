@@ -116,7 +116,12 @@ The prefill-only deltas the decode numbers subtract are in
    has no CPU copy at all: the GPU reads the pinned pool directly. The
    candidates the item named do not reach the decode round: KV-RAM moves,
    n-gram staging from hot rows or from the artifact (unbuffered, so no
-   page cache), per-step pool copies.
+   page cache), per-step pool copies. A prefill's gather is serialized on
+   the same model thread too: `rows_for` (`flash_next_leaf.rs:610`)
+   gathers the whole span before any chunk launches. So it adds to its own
+   TTFT (finding 2026-10-07) but never overlaps another lane's decode round.
+   Only the driver's staging of each chunk's 11.8 MB of pageable rows
+   (`program.cu:829`) can run beside the previous chunk's compute.
 2. **The exposure is other DRAM traffic on the host, and it is large
    (observed).**
    - A paced 2 GB/s memcpy costs +1.5% / +1.9% ITL at 1 / 3 lanes, at the
@@ -199,6 +204,11 @@ Ranked proposals, with the expected gain:
   not checked. DRAM bytes for `copy` are inferred as 2x the bytes copied.
 - The rest-of-round growth under load is not split into prefetch-copy
   waits and host gap (no nsys run).
+- The 3-lane per-round columns assume every round ran all 3 lanes. They
+  divide by decoded tokens / 3. A few early rounds ran narrower while the
+  other prompts prefilled: lane 0's tok/s is 41-42 against 46. So the
+  3-lane stall and bytes per round are slightly overstated. ITL p50 is
+  unaffected.
 - No DRAM or uncore counters: Intel PCM is not installed. Finding 3's
   mechanism is a hypothesis.
 - The hot-0 cells come from a second load: load-to-load variance is
