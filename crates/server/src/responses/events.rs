@@ -38,7 +38,7 @@ use utoipa::ToSchema;
 
 use ignis_core::{FinishReason, SchedEvent, TokenId};
 
-use crate::deadline::TimeoutReply;
+use crate::deadline::{Timeout, TimeoutReply};
 use crate::decoder::{Channel, Delta, OutputDecoder};
 use crate::loop_guard::Rewound;
 use crate::toolcall::{ToolCall, ToolCallScanner, ToolEvent, ToolSchemas};
@@ -418,20 +418,23 @@ impl ResponseEvents {
     }
 
     /// The response's deadline passed (ADR 0058): what it produced so far is
-    /// closed out, and it ends as `reply` says — `incomplete` with
-    /// `max_output_tokens`, as a length limit ends one (the one truncation
-    /// reason the API defines, which every client reads), or `failed` with
-    /// `request_timeout` and `message`.
-    pub(crate) fn timed_out(&mut self, reply: TimeoutReply, message: String) -> Vec<JsonValue> {
+    /// closed out, and it ends as `reply` says — [`ResponseEvents::cut`], or
+    /// `failed` with `request_timeout`, naming `timeout`.
+    pub(crate) fn timed_out(&mut self, reply: TimeoutReply, timeout: Timeout) -> Vec<JsonValue> {
         match reply {
-            TimeoutReply::Partial => {
-                let mut out = Vec::new();
-                self.response.incomplete_details = Some(IncompleteDetails { reason: "max_output_tokens" });
-                self.finish(Ending::Incomplete, &mut out);
-                out
-            }
-            TimeoutReply::Error => self.failed("request_timeout", message),
+            TimeoutReply::Partial => self.cut(),
+            TimeoutReply::Error => self.failed("request_timeout", timeout.message()),
         }
+    }
+
+    /// The response ends where its deadline cut it, under `partial`:
+    /// `incomplete` with `max_output_tokens`, as a length limit ends one
+    /// (the one truncation reason the API defines, which every client reads).
+    pub(crate) fn cut(&mut self) -> Vec<JsonValue> {
+        let mut out = Vec::new();
+        self.response.incomplete_details = Some(IncompleteDetails { reason: "max_output_tokens" });
+        self.finish(Ending::Incomplete, &mut out);
+        out
     }
 
     /// The response failed after it was created — the request timed out, the

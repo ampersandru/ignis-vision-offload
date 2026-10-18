@@ -34,7 +34,7 @@ use utoipa::ToSchema;
 
 use super::budget::{self, Fitted};
 use super::enhance::Rewritten;
-use super::job::{self, Background, Deadline, ImageJob, JobContext, JobEnd, JobEvent, Phase, Progress};
+use super::job::{self, Background, ImageJob, JobContext, JobEnd, JobEvent, Phase, Progress};
 use super::{ImageModel, Running, Waiting};
 use crate::api::{
     bad_request_param, check_kind, check_served_kind, error_response, error_response_naming, implicit_switch_refused,
@@ -350,13 +350,7 @@ impl Refusal {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 error: ApiError::new("server_error", "model_stopped", MODEL_STOPPED_MESSAGE),
             },
-            Some(JobEnd::TimedOut(Deadline { timeout, streamed })) => Self {
-                status: StatusCode::GATEWAY_TIMEOUT,
-                error: ApiError::new("request_timeout", "request_timeout", &match streamed {
-                    true => crate::api::stream_timeout_message(timeout),
-                    false => crate::api::request_timeout_message(timeout),
-                }),
-            },
+            Some(JobEnd::TimedOut(timeout)) => Self { status: StatusCode::GATEWAY_TIMEOUT, error: timeout.error() },
             Some(JobEnd::Failed(over @ ImageError::OverBudget { .. })) => Self {
                 status: StatusCode::BAD_REQUEST,
                 error: ApiError::naming("invalid_request_error", "condition_budget_exceeded", &over.to_string(), Some(route.condition_param())),
@@ -760,11 +754,7 @@ async fn admit(
     }
     let waiting = admitted(&model, limits.queue_depth)?;
     // ADR 0058: counted from the job's turn, never from its queue.
-    let live = server.live();
-    let deadline = match request.stream {
-        true => Deadline { timeout: live.stream_timeout, streamed: true },
-        false => Deadline { timeout: live.request_timeout, streamed: false },
-    };
+    let timeout = crate::deadline::Timeout::of(&server.live(), request.stream);
     let context = JobContext {
         kind: match route {
             Route::Generations => "generation",
@@ -780,7 +770,7 @@ async fn admit(
         queued_at: std::time::Instant::now(),
         enhance: enhance_time,
         switch,
-        deadline,
+        timeout,
     };
     let ImageRequest { n, background, .. } = request;
     let Enhanced { prompt, revised, warnings } = enhanced;

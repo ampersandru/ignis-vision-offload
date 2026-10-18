@@ -720,9 +720,9 @@ async fn serve(
     // `--server-stream-timeout` counts from admission, never from queueing
     // (ADR 0058).
     let live = server.live();
-    let deadline = crate::deadline::after(live.stream_timeout);
+    let timeout = crate::deadline::Timeout::of(&live, true);
     let driven = tokio::select! {
-        driven = drive(&mut events, &mut scheduled, deadline, emit) => Some(driven),
+        driven = drive(&mut events, &mut scheduled, timeout.from_now(), emit) => Some(driven),
         () = &mut cancel => None,
     };
     if matches!(driven, Some(Driven::TimedOut)) {
@@ -739,8 +739,7 @@ async fn serve(
     match driven {
         Some(Driven::Ended) => guard.completed(),
         Some(Driven::TimedOut) => {
-            let message = api::stream_timeout_message(live.stream_timeout);
-            events.timed_out(live.timeout_reply, message).into_iter().for_each(emit);
+            events.timed_out(live.timeout_reply, timeout).into_iter().for_each(emit);
         }
         None => {
             // Dropping the guard unfinished cancels the engine request.

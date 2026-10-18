@@ -49,7 +49,7 @@ use ignis_core::{
 
 use crate::{ModelSource, ModelStatus, Server};
 use crate::decoder::{Channel, OutputDecoder};
-use crate::deadline::{StreamDeadline, TimeoutReply};
+use crate::deadline::{StreamDeadline, Timeout, TimeoutReply};
 use crate::engine::{CollectError, Completion, Engine, EventStream, RequestNotes, collect_completion, drain_tokens};
 use crate::media::{has_media, MediaRejection, MediaStats};
 use crate::openai_fields::{self, Surface};
@@ -1632,26 +1632,6 @@ pub(crate) fn bad_request_param(message: &str, param: &str) -> Response {
     )
 }
 
-/// The `504` body for a request `collect_completion` gave up on: names the
-/// timeout that fired (GitHub #95) so an operator reading the error knows
-/// what to raise with `--server-request-timeout`/`IGNIS_SERVER_REQUEST_TIMEOUT`, rather
-/// than suspecting a wedged engine when a healthy one just needed longer.
-pub(crate) fn request_timeout_message(timeout: std::time::Duration) -> String {
-    format!(
-        "the request did not complete within the server's {}s timeout (the engine may be wedged) — raise it with --server-request-timeout/IGNIS_SERVER_REQUEST_TIMEOUT",
-        timeout.as_secs()
-    )
-}
-
-/// [`request_timeout_message`] for a stream, whose deadline is
-/// `--server-stream-timeout` (ADR 0058).
-pub(crate) fn stream_timeout_message(timeout: std::time::Duration) -> String {
-    format!(
-        "the stream did not complete within the server's {}s timeout (the engine may be wedged) — raise it with --server-stream-timeout/IGNIS_SERVER_STREAM_TIMEOUT",
-        timeout.as_secs()
-    )
-}
-
 /// Map the engine's [`FinishReason`] to the OpenAI `finish_reason` string
 /// (GitHub #61 / P1-25): `stop` on the model's own EOS token, `length` on
 /// `max_tokens` or the engine's reservation cap, `error` when the engine
@@ -2326,20 +2306,13 @@ async fn chat_completions(
             ),
             prompt_tokens,
             include_usage,
-            StreamDeadline::after(live.stream_timeout, running, live.timeout_reply),
+            StreamDeadline::after(Timeout::of(&live, true), running, live.timeout_reply),
         )
         .with_rewound(rewound))
         .into_response();
     }
     // The 504 of a request its deadline cut (GitHub #327), once cancelled.
-    let timeout_error = || {
-        error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "request_timeout",
-            "request_timeout",
-            request_timeout_message(live.request_timeout),
-        )
-    };
+    let timeout_error = || Timeout::of(&live, false).response();
     // GitHub #327: an answer nobody waits for any more — past the request
     // timeout, or its client gone — is cancelled, as on the streaming path
     // and on `/v1/responses`. Left running it holds its lane to `max_tokens`,
@@ -3051,7 +3024,8 @@ impl CancelOnDrop {
         self.completed = true;
     }
 
-    /// The request is past `--server-request-timeout`: cancelled now, its
+    /// The request is past its deadline (`--server-request-timeout`, or
+    /// `--server-stream-timeout` for a stream, ADR 0058): cancelled now, its
     /// `ignis.request.cancelled` line saying `timeout` (GitHub #327) rather
     /// than the "its consumer let it go" a drop would.
     pub(crate) fn timed_out(&mut self) {
@@ -3124,7 +3098,7 @@ impl ChunkStream {
     /// `length` finish or, under `error`, the `request_timeout` error chunk
     /// naming `timeout`, then `[DONE]`. A stop sequence the owed tokens
     /// completed ends it `stop`, as it would have before the deadline.
-    fn end_at_deadline(&mut self, owed: &[ignis_core::TokenId], reply: TimeoutReply, timeout: std::time::Duration) {
+    fn end_at_deadline(&mut self, owed: &[ignis_core::TokenId], reply: TimeoutReply, timeout: Timeout) {
         let pieces = self.pipeline.push(owed);
         self.queue_pieces(pieces);
         let (pieces, _) = self.pipeline.finish();
@@ -3133,7 +3107,7 @@ impl ChunkStream {
         match (self.pipeline.fired(), reply) {
             (true, _) => self.queue_finish(resolve_finish_reason(FinishReason::Stop, self.pipeline.any_calls(), false), None, tokens),
             (false, TimeoutReply::Partial) => self.queue_finish(finish_reason_str(FinishReason::Length), None, tokens),
-            (false, TimeoutReply::Error) => self.pending.push_back(timeout_error_chunk(stream_timeout_message(timeout))),
+            (false, TimeoutReply::Error) => self.pending.push_back(timeout_error_chunk(timeout)),
         }
         self.stopped = true;
     }
@@ -3385,9 +3359,8 @@ fn engine_error_chunk() -> Event {
 /// The SSE event a chat stream its deadline cut ends with under
 /// `server.timeout_reply: error` (ADR 0058): the `504`'s body, in the shape
 /// an engine error ends a stream with ([`engine_error_chunk`]).
-fn timeout_error_chunk(message: String) -> Event {
-    let body = ApiError::new("request_timeout", "request_timeout", &message);
-    Event::default().data(serde_json::to_string(&body).expect("the error body serializes"))
+fn timeout_error_chunk(timeout: Timeout) -> Event {
+    Event::default().data(serde_json::to_string(&timeout.error()).expect("the error body serializes"))
 }
 
 /// The OpenAI error body (`{"error": {...}}`). Every failure on this

@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::http::{HeaderName, HeaderValue};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use ignis_core::{SchedEvent, TokenId};
 
 use crate::api::CancelOnDrop;
@@ -60,6 +60,59 @@ pub fn after(timeout: Duration) -> tokio::time::Instant {
     tokio::time::Instant::now() + if timeout.is_zero() { NO_DEADLINE } else { timeout }
 }
 
+/// The deadline a request is held to: how long, and whether it is the one
+/// of a request that streams. Where a request's being streamed picks
+/// `server.stream_timeout` over `server.request_timeout`, and where every
+/// `request_timeout` error is worded ([`Timeout::error`]). A zero `duration`
+/// is none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout {
+    pub duration: Duration,
+    pub streamed: bool,
+}
+
+impl Timeout {
+    /// No deadline.
+    pub const NONE: Self = Self { duration: Duration::ZERO, streamed: false };
+
+    /// The deadline `live` holds a request to: `stream_timeout` when it
+    /// streams, `request_timeout` when it is answered whole.
+    pub fn of(live: &crate::Live, streamed: bool) -> Self {
+        let duration = if streamed { live.stream_timeout } else { live.request_timeout };
+        Self { duration, streamed }
+    }
+
+    /// The instant it passes, counted from now ([`after`]).
+    pub fn from_now(self) -> tokio::time::Instant {
+        after(self.duration)
+    }
+
+    /// What a request past it is told: the deadline that passed and the flag
+    /// that raises it (GitHub #95), so an operator reading the error does
+    /// not suspect a wedged engine when a healthy one just needed longer.
+    pub fn message(self) -> String {
+        let (what, flag, env) = match self.streamed {
+            true => ("stream", "--server-stream-timeout", "IGNIS_SERVER_STREAM_TIMEOUT"),
+            false => ("request", "--server-request-timeout", "IGNIS_SERVER_REQUEST_TIMEOUT"),
+        };
+        format!(
+            "the {what} did not complete within the server's {}s timeout (the engine may be wedged) — raise it with {flag}/{env}",
+            self.duration.as_secs()
+        )
+    }
+
+    /// The `request_timeout` error body: a `504`'s, and the error a stream
+    /// that already answered `200` ends with.
+    pub(crate) fn error(self) -> crate::api::ApiError {
+        crate::api::ApiError::new("request_timeout", "request_timeout", &self.message())
+    }
+
+    /// The `504 request_timeout` of a request answered whole.
+    pub(crate) fn response(self) -> Response {
+        (axum::http::StatusCode::GATEWAY_TIMEOUT, axum::Json(self.error())).into_response()
+    }
+}
+
 /// The header a non-streaming answer its deadline cut carries, spelled as
 /// `x-ignis-class` is: `x-ignis-stopped-by: request_timeout`. A streamed one
 /// sent its headers before the deadline passed, and the request log's
@@ -80,7 +133,7 @@ pub(crate) struct StreamDeadline {
     /// The engine request generating, which a passed deadline stops.
     running: Running,
     sleep: Pin<Box<tokio::time::Sleep>>,
-    timeout: Duration,
+    timeout: Timeout,
     reply: TimeoutReply,
     /// The deadline passed and the loop guard sends what it held back: the
     /// stream's end ends the answer.
@@ -90,8 +143,9 @@ pub(crate) struct StreamDeadline {
 impl StreamDeadline {
     /// `timeout` from now, on the engine request `running` names, answered
     /// as `reply` says; none for a zero `timeout`.
-    pub(crate) fn after(timeout: Duration, running: Running, reply: TimeoutReply) -> Option<Self> {
-        (!timeout.is_zero()).then(|| Self { running, sleep: Box::pin(tokio::time::sleep(timeout)), timeout, reply, stopping: false })
+    pub(crate) fn after(timeout: Timeout, running: Running, reply: TimeoutReply) -> Option<Self> {
+        let sleep = || Box::pin(tokio::time::sleep(timeout.duration));
+        (!timeout.duration.is_zero()).then(|| Self { running, sleep: sleep(), timeout, reply, stopping: false })
     }
 
     fn passed(&self, owed: Vec<TokenId>) -> Next {
@@ -107,7 +161,7 @@ pub(crate) enum Next {
     Closed,
     /// The deadline passed and the request was cancelled: the answer ends
     /// after `owed`, the last tokens it was owed, as `reply` says.
-    Passed { owed: Vec<TokenId>, reply: TimeoutReply, timeout: Duration },
+    Passed { owed: Vec<TokenId>, reply: TimeoutReply, timeout: Timeout },
 }
 
 /// The next of a streamed answer's events — `held` first, the event that
@@ -170,5 +224,24 @@ mod tests {
         assert!(after(Duration::ZERO) > now + Duration::from_secs(365 * 24 * 3600), "zero is no deadline");
         let soon = after(Duration::from_secs(2));
         assert!(soon >= now + Duration::from_secs(2) && soon < now + Duration::from_secs(60));
+    }
+
+    /// A request is held to the stream's deadline when it streams and to the
+    /// whole answer's otherwise, and its `request_timeout` error names the
+    /// one that passed and the flag that raises it.
+    #[tokio::test]
+    async fn a_timeout_is_the_stream_s_or_the_whole_answer_s_and_its_error_names_it() {
+        let live = crate::Live { request_timeout: Duration::from_secs(30), stream_timeout: Duration::from_secs(60), ..crate::Live::default() };
+        let streamed = Timeout::of(&live, true);
+        let whole = Timeout::of(&live, false);
+        assert_eq!((streamed.duration, whole.duration), (Duration::from_secs(60), Duration::from_secs(30)));
+        assert!(streamed.message().contains("60s timeout") && streamed.message().contains("--server-stream-timeout/IGNIS_SERVER_STREAM_TIMEOUT"));
+        assert!(whole.message().contains("30s timeout") && whole.message().contains("--server-request-timeout/IGNIS_SERVER_REQUEST_TIMEOUT"));
+        let response = whole.response();
+        assert_eq!(response.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!((&body["error"]["type"], &body["error"]["code"]), (&serde_json::json!("request_timeout"), &serde_json::json!("request_timeout")));
+        assert_eq!(body["error"]["message"], whole.message());
     }
 }

@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -34,7 +33,7 @@ use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 
 use crate::api::{self, ApiError, CancelOnDrop};
-use crate::deadline::{self, Next, StreamDeadline, TimeoutReply};
+use crate::deadline::{self, Next, StreamDeadline, Timeout, TimeoutReply};
 use crate::engine::{drain_tokens, EventStream};
 use crate::loop_guard::Guarding;
 use ignis_core::SchedEvent;
@@ -196,8 +195,7 @@ pub(crate) async fn create_response(
     // ADR 0058: a stream is held to `--server-stream-timeout`, a response
     // answered whole to `--server-request-timeout`.
     let live = server.live();
-    let timeout = if stream { live.stream_timeout } else { live.request_timeout };
-    let deadline = crate::deadline::after(timeout);
+    let timeout = Timeout::of(&live, stream);
 
     if stream {
         let mut pending: VecDeque<JsonValue> = events.created(false).into();
@@ -213,7 +211,7 @@ pub(crate) async fn create_response(
         })
         .into_response();
     }
-    match drive(&mut events, &mut scheduled, deadline, drop).await {
+    match drive(&mut events, &mut scheduled, timeout.from_now(), drop).await {
         Driven::Ended => {
             cancel.completed();
             Json(events.response().clone()).into_response()
@@ -221,16 +219,11 @@ pub(crate) async fn create_response(
         Driven::TimedOut => {
             cancel.timed_out();
             if live.timeout_reply == TimeoutReply::Error {
-                return api::error_response(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "request_timeout",
-                    "request_timeout",
-                    api::request_timeout_message(timeout),
-                );
+                return timeout.response();
             }
             // What it generated, and what the loop guard held back of it.
             events.on_tokens(&api::owed_at_deadline(&running, &mut scheduled).await);
-            events.timed_out(TimeoutReply::Partial, api::request_timeout_message(timeout));
+            events.cut();
             crate::deadline::stopped_by_timeout(Json(events.response().clone()).into_response())
         }
     }
@@ -286,7 +279,7 @@ impl Stream for EventSse {
                 }
                 Poll::Ready(Next::Passed { owed, reply, timeout }) => {
                     this.pending.extend(this.events.on_tokens(&owed));
-                    this.pending.extend(this.events.timed_out(reply, api::stream_timeout_message(timeout)));
+                    this.pending.extend(this.events.timed_out(reply, timeout));
                     this.ended = true;
                     continue;
                 }

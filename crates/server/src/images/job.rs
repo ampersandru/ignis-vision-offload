@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use utoipa::ToSchema;
 
 use super::{ImageModel, Waiting};
+use crate::deadline::Timeout;
 use crate::metrics::{ImageJobEnd, ImageOutcome};
 
 /// What the client's `background` asks of the images' alpha.
@@ -121,7 +122,7 @@ pub enum JobEnd {
     /// ran.
     Stopped,
     /// Its deadline passed (ADR 0058), between two calls.
-    TimedOut(Deadline),
+    TimedOut(Timeout),
     /// The runner refused a call.
     Failed(ImageError),
 }
@@ -167,20 +168,6 @@ fn timed<T>(slot: &mut Duration, calls: impl FnOnce() -> T) -> T {
     out
 }
 
-/// A job's deadline (ADR 0058): `timeout` from the job's start, never from
-/// its queue — `server.stream_timeout` for a streamed request, else
-/// `server.request_timeout`. A zero `timeout` is none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Deadline {
-    pub timeout: Duration,
-    pub streamed: bool,
-}
-
-impl Deadline {
-    /// No deadline.
-    pub const NONE: Self = Self { timeout: Duration::ZERO, streamed: false };
-}
-
 /// What the log line of a finished job says of its request, known before
 /// the job runs (GitHub #324).
 #[derive(Debug, Clone)]
@@ -198,8 +185,9 @@ pub struct JobContext {
     /// Prompt enhancement's time, and that of the loads and switches before the job.
     pub enhance: Duration,
     pub switch: Duration,
-    /// The job's deadline from its start.
-    pub deadline: Deadline,
+    /// The job's deadline, counted from its start, never from its queue
+    /// (ADR 0058).
+    pub timeout: Timeout,
 }
 
 /// The next job's id in the log, `img-<n>`.
@@ -216,26 +204,26 @@ static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// thread.
 #[cfg(test)]
 fn run<E: From<JobEvent>>(model: &ImageModel, job: &ImageJob, events: &mpsc::UnboundedSender<E>) -> Result<(), JobEnd> {
-    run_timed(model, job, events, &mut Phases::default(), Deadline::NONE)
+    run_timed(model, job, events, &mut Phases::default(), Timeout::NONE)
 }
 
 /// Run `job`, adding where its time went to `phases`, whichever way it ends,
-/// held to `deadline` from now, its start.
+/// held to `timeout` from now, its start.
 pub fn run_timed<E: From<JobEvent>>(
     model: &ImageModel,
     job: &ImageJob,
     events: &mpsc::UnboundedSender<E>,
     phases: &mut Phases,
-    deadline: Deadline,
+    timeout: Timeout,
 ) -> Result<(), JobEnd> {
-    let ends = crate::deadline::after(deadline.timeout).into_std();
+    let ends = timeout.from_now().into_std();
     let go_on = || {
         if model.jobs.is_closed() {
             Err(JobEnd::Stopped)
         } else if events.is_closed() {
             Err(JobEnd::Cancelled)
         } else if Instant::now() >= ends {
-            Err(JobEnd::TimedOut(deadline))
+            Err(JobEnd::TimedOut(timeout))
         } else {
             Ok(())
         }
@@ -281,7 +269,7 @@ pub fn run_timed<E: From<JobEvent>>(
 /// that ends early sends why, unless its request is gone. Dropping the
 /// channel's receiver cancels the job: while it waits it leaves the queue at
 /// once; once it runs, at its next call. Its deadline counts from its turn
-/// (`context.deadline`, ADR 0058).
+/// (`context.timeout`, ADR 0058).
 ///
 /// A runner call that panics fails the model (322g's note): its request
 /// sees the channel close before its last image, the queue is closed — the
@@ -356,7 +344,7 @@ pub fn spawn<E: From<JobEvent> + Send + 'static>(
         let ran = tokio::task::spawn_blocking(move || {
             let mut phases = Phases::default();
             let began = Instant::now();
-            let run = || run_timed(&model, &job, &events, &mut phases, context.deadline);
+            let run = || run_timed(&model, &job, &events, &mut phases, context.timeout);
             let ended = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
                 Ok(ended) => ended,
                 Err(panic) => {
