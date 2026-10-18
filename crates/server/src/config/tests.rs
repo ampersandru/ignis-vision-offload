@@ -1587,10 +1587,29 @@ fn help_lists_the_speculation_flags() {
 // ── rope scaling as a load option (GitHub #227) ──────────────────────────
 
 #[test]
-fn rope_scaling_is_off_by_default() {
+fn rope_scaling_is_auto_by_default_and_none_at_the_default_context() {
     let config = config(&["--profile", "none"]);
+    assert!(config.rope_scaling_auto);
     assert_eq!(config.rope_scaling, RopeScaling::NONE);
     assert!(!config.rope_scaling.is_yarn());
+}
+
+#[test]
+fn auto_follows_the_context_and_an_explicit_value_overrides_it() {
+    for (context, factor) in [("524288", 2.0), ("786432", 3.0), ("1048576", 4.0), ("589824", 2.25)] {
+        let auto = config(&["--profile", "none", "--model-max-context", context]);
+        assert!(auto.rope_scaling_auto && auto.rope_scaling.is_yarn(), "{context}");
+        assert_eq!(auto.rope_scaling.factor(), factor, "{context}");
+    }
+    let at_trained = config(&["--profile", "none", "--model-max-context", "262144"]);
+    assert_eq!(at_trained.rope_scaling, RopeScaling::NONE);
+    let explicit = config(&["--profile", "none", "--model-max-context", "1048576", "--model-rope-scaling", "yarn:2"]);
+    assert!(!explicit.rope_scaling_auto);
+    assert_eq!(explicit.rope_scaling.factor(), 2.0);
+    let none = config(&["--profile", "none", "--model-max-context", "1048576", "--model-rope-scaling", "none"]);
+    assert_eq!(none.rope_scaling, RopeScaling::NONE);
+    let spelled = config(&["--profile", "none", "--model-max-context", "1048576", "--model-rope-scaling", "auto"]);
+    assert_eq!(spelled.rope_scaling.factor(), 4.0);
 }
 
 #[test]
@@ -1604,6 +1623,40 @@ fn the_rope_scaling_flag_and_env_carry_the_reference_grammar() {
     let env = env_map(&[("IGNIS_MODEL_ROPE_SCALING", "yarn:2")]);
     let none = expect_config(resolve(&args(&["--model-rope-scaling", "none"]), env).expect("resolve"));
     assert_eq!(none.rope_scaling, RopeScaling::NONE, "flag must win over env");
+}
+
+#[test]
+fn auto_at_a_million_and_an_explicit_yarn_four_are_the_same_load() {
+    use crate::runtime::EngineShape;
+    let base = ["--profile", "none", "--model-max-context", "1048576"];
+    let auto = EngineShape::from(&config(&base));
+    let explicit = EngineShape::from(&config(&[&base[..], &["--model-rope-scaling", "yarn:4"]].concat()));
+    assert!(auto.rope_scaling_from_auto.0 && !explicit.rope_scaling_from_auto.0);
+    assert_eq!(auto, explicit, "the switch's reload check and the retained pages key on the resolved table");
+}
+
+#[test]
+fn rope_scaling_auto_is_settable_from_a_file_and_a_patch_moves_the_factor_with_the_context() {
+    let files = MemFiles::with(&[("c.yaml", "model:
+  rope_scaling: auto
+  max_context: 786432
+")]);
+    let from_file = with_files(&["--profile", "none", "--config", "c.yaml"], no_env, &files).unwrap();
+    assert!(from_file.rope_scaling_auto);
+    assert_eq!(from_file.rope_scaling.factor(), 3.0);
+
+    // A context change under `auto` re-resolves; both fields are ReloadRequired.
+    assert!(schema::field("model", "max_context").unwrap().reload_required);
+    assert!(schema::field("model", "rope_scaling").unwrap().reload_required);
+    let wider = from_file.with_patch(&patch_of(&[("model", "max_context", "1048576")])).unwrap();
+    assert_eq!(wider.rope_scaling.factor(), 4.0);
+    // An explicit factor stays put under a smaller context; `auto` takes over again.
+    let pinned = from_file.with_patch(&patch_of(&[("model", "rope_scaling", "yarn:2"), ("model", "max_context", "65536")])).unwrap();
+    assert!(!pinned.rope_scaling_auto);
+    assert_eq!(pinned.rope_scaling.factor(), 2.0);
+    let back = pinned.with_patch(&patch_of(&[("model", "rope_scaling", "auto")])).unwrap();
+    assert!(back.rope_scaling_auto);
+    assert_eq!(back.rope_scaling, RopeScaling::NONE, "65,536 is inside the trained positions");
 }
 
 #[test]

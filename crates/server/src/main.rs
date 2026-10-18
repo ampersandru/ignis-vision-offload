@@ -192,6 +192,7 @@ async fn main() {
         // GitHub #227: read through `EngineShape`, like the other load-shape
         // knobs.
         rope_scaling: _,
+        rope_scaling_auto: _,
         media: _,
         request_timeout_secs,
         switch_drain_timeout_secs,

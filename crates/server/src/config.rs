@@ -412,10 +412,14 @@ pub struct Config {
     /// GitHub #177). `None` binds and reserves nothing of the vision tower.
     pub vision: Option<Vision>,
     /// The text rotary table, chosen at load (`--model-rope-scaling`, GitHub
-    /// #227). [`RopeScaling::NONE`] is the linear table the engine has always
+    /// #227), resolved against [`Self::max_context`] when it is `auto`.
+    /// [`RopeScaling::NONE`] is the linear table the engine has always
     /// used; a YaRN factor rescales the checkpoint's trained 262,144-position
     /// envelope, which is what a context past it needs.
     pub rope_scaling: RopeScaling,
+    /// Whether [`Self::rope_scaling`] was resolved from `auto` (the default)
+    /// rather than spelled out: only the load's log reads it.
+    pub rope_scaling_auto: bool,
     /// Media acquisition (`--media-allow-private-network`,
     /// `--media-cache-mib`, GitHub #179). Only nameable with vision on.
     pub media: MediaOptions,
@@ -1099,7 +1103,8 @@ fn derive(
         draft_rows: s.spec.draft_rows,
         decode_lanes: s.spec.decode_lanes,
         vision,
-        rope_scaling: s.model.rope_scaling,
+        rope_scaling: s.model.rope_scaling.resolve(s.model.max_context),
+        rope_scaling_auto: s.model.rope_scaling.is_auto(),
         media,
         request_timeout_secs: s.server.request_timeout,
         switch_drain_timeout_secs: s.switch.drain_timeout,

@@ -84,5 +84,27 @@ beta_fast 32, beta_slow 1) that is `low = 14`, `high = 22`.
 - ignis does not validate `--max-context` against either attention envelope
   (524,288 linear / 1,048,576 hq). That check is the reference's
   `layouts_impl.h` and does not exist here; it is worth its own ticket.
-- No automatic factor derived from `--max-context`. The operator names it,
-  as in the reference — YaRN degrades short contexts, so it stays opt-in.
+- ~~No automatic factor derived from `--max-context`~~ — done, see the
+  as-built note below.
+
+## As built: `auto` (the default)
+
+Owner's call (2026-10-18, "lo yarn:X sia calcolato automaticamente in base al
+contesto"): `model.rope_scaling` (`--model-rope-scaling`) takes `auto`, and
+`auto` is the default instead of `none`. The rule, `RopeSetting::resolve` in
+`crates/core/src/rope_scaling.rs`, per model, from its effective
+`model.max_context`: up to `TRAINED_POSITIONS` (262,144) the table is
+`RopeScaling::NONE`, byte for byte today's default (not YaRN at 1, which the
+rope op routes differently); above it, YaRN at the exact ratio
+`max_context / 262,144` with the default temperature and ramp (524,288 is 2,
+786,432 is 3, 1,048,576 is 4, 589,824 is 2.25). Any explicit value (flag,
+env, file, `PATCH /v1/config`) overrides it, and `auto` can be spelled to go
+back. The configured value (`GET /v1/config`, `config print`) stays `auto`;
+the `Config` and `EngineShape` carry the resolved table, so KV-disk
+identities, retained pages and the model switch's reload check key on it
+(`auto` at 1,048,576 and `yarn:4` are the same load; where it came from is
+logged in the `kv pool` line's `rope_scaling_source`, never compared). Both
+`max_context` and `rope_scaling` are reload-required, so a context change
+under `auto` reloads. The built-in profiles no longer name `yarn:4`: the
+`rtx5090` 27B now runs YaRN at 3 and Flash-Next at 2.25, the `rtxpro6000`
+stays at 4 ([ADR 0057](../../adr/0057-rope-scaling-is-auto-by-default.md)).

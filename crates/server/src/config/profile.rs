@@ -36,9 +36,10 @@ pub const NONE_PROFILE: &str = "none";
 /// tokens with speculation off instead. Flash-Next's leg holds its decode
 /// lanes at their own default (3) and raises `model.max_context` to
 /// 512K + 32K + 32K tokens, the floor the owner asked for on both the expert
-/// cache (>= 15 GiB; it measured ~16.6 GiB) and the context: both legs need
-/// `model.rope_scaling yarn:4` to reach past the checkpoint's trained
-/// 262,144-position envelope. `vram.headroom_bytes`'s 1536 MiB hardcoded
+/// cache (>= 15 GiB; it measured ~16.6 GiB) and the context. Past the
+/// checkpoint's trained 262,144 positions the text rotary table needs YaRN,
+/// which neither leg spells out: `model.rope_scaling` defaults to `auto`, the
+/// factor `max_context / 262,144` (3 for the 27B, 2.25 for Flash-Next). `vram.headroom_bytes`'s 1536 MiB hardcoded
 /// default (finding 2026-10-09-vram-headroom-wddm-paging) still holds for
 /// Flash-Next, which never needed to trade it down. Flash-Next also pins its
 /// calibration-hottest 2 GiB of experts in the expert cache
@@ -54,8 +55,8 @@ pub const NONE_PROFILE: &str = "none";
 /// first (2026-10-17), then measured on a Server Edition under Linux; the
 /// numbers are in the finding 2026-10-18-rtxpro6000-profile-measured. The
 /// measurement kept the derived choices and added one. Both families run at
-/// 1,048,576 tokens of context, `yarn:4` over the 262,144 trained positions
-/// and the 27B's whole hq-e8-2b attention envelope (the plan holds it; no
+/// 1,048,576 tokens of context, which `auto` rope scaling makes YaRN at 4
+/// over the 262,144 trained positions, and the 27B's whole hq-e8-2b attention envelope (the plan holds it; no
 /// request that long was run). The 27B leaves its headroom at the hardcoded
 /// default, since nothing has to be traded for vision any more, and drafts
 /// with DFlash2 at 7 tokens, which beat 4 in every cell measured but one.
@@ -82,7 +83,6 @@ const BUILT_IN: &str = r#"{
             "qwen38": { "headroom_bytes": "1200M" }
         },
         "model": {
-            "rope_scaling": "yarn:4",
             "qwen38": { "max_context": 786432 },
             "qwen38flashnext": { "max_context": 589824 }
         },
@@ -94,7 +94,6 @@ const BUILT_IN: &str = r#"{
     },
     "rtxpro6000": {
         "model": {
-            "rope_scaling": "yarn:4",
             "qwen38": { "max_context": 1048576 },
             "qwen38flashnext": { "max_context": 1048576 }
         },
@@ -155,7 +154,7 @@ mod tests {
         assert_eq!(rtx5090.get(max_context, Some(ModelFamily::FlashNext)).unwrap().raw, "589824");
 
         let rope = field("model", "rope_scaling").unwrap();
-        assert_eq!(rtx5090.get(rope, None).unwrap().raw, "yarn:4", "one rope table, both families");
+        assert!(rtx5090.get(rope, None).is_none(), "unset: `auto` follows each model's own context");
 
         let vision = field("vision", "enabled").unwrap();
         assert_eq!(rtx5090.get(vision, None).unwrap().raw, "true");
@@ -191,6 +190,25 @@ mod tests {
         assert_eq!(flash.settings.vram.pinned_expert_bytes, 2 << 30);
     }
 
+    /// `auto` rope scaling under each profile: the factor is the model's own
+    /// context over the trained 262,144 positions.
+    #[test]
+    fn the_profiles_rope_factor_follows_each_models_context() {
+        use super::super::source::{resolve_settings, Fit, Sources};
+        use ignis_core::compute::ModelFamily;
+
+        let factor = |profile: &str, family| {
+            let sources = Sources { profile: built_in()[profile].clone(), ..Sources::default() };
+            let s = resolve_settings(&sources, Some(family), Fit::Start).unwrap().settings;
+            assert!(s.model.rope_scaling.is_auto());
+            s.model.rope_scaling.resolve(s.model.max_context).factor()
+        };
+        assert_eq!(factor(DEFAULT_PROFILE, ModelFamily::Qwen38_27b), 3.0);
+        assert_eq!(factor(DEFAULT_PROFILE, ModelFamily::FlashNext), 2.25);
+        assert_eq!(factor("rtxpro6000", ModelFamily::Qwen38_27b), 4.0);
+        assert_eq!(factor("rtxpro6000", ModelFamily::FlashNext), 4.0);
+    }
+
     /// The RTX PRO 6000 Blackwell series (Workstation, Max-Q, Server Edition:
     /// 96 GB each, sm_120), measured on a Server Edition (2026-10-18).
     #[test]
@@ -205,7 +223,7 @@ mod tests {
         assert_eq!(pro.get(max_context, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "1048576");
         assert_eq!(pro.get(max_context, Some(ModelFamily::FlashNext)).unwrap().raw, "1048576");
         let rope = field("model", "rope_scaling").unwrap();
-        assert_eq!(pro.get(rope, None).unwrap().raw, "yarn:4");
+        assert!(pro.get(rope, None).is_none(), "unset: `auto` makes 1,048,576 tokens YaRN at 4");
 
         let lanes = field("spec", "decode_lanes").unwrap();
         assert_eq!(pro.get(lanes, None).unwrap().raw, "8", "every lane: on 96 GB a lane costs its state");
