@@ -592,6 +592,7 @@ class is refused whatever the flag says.
 | `--vram-budget-bytes <b>` | `IGNIS_VRAM_BUDGET_BYTES` | derived | The device memory the whole process may hold, weights included. More than is free refuses the start. |
 | `--vram-allow-oversubscription` | `IGNIS_VRAM_ALLOW_OVERSUBSCRIPTION` | off | With `--vram-budget-bytes` only: start above free memory (or below the plan's minimum) with a warning instead of a refusal. On Windows that pages. Both models. |
 | `--vram-allow-expert-cache-below-floor` | `IGNIS_VRAM_ALLOW_EXPERT_CACHE_BELOW_FLOOR` | off | Flash-Next only: start with an expert cache below its 12 GiB floor, with a warning ([above](#the-kv-pool)). The 27B, which has no expert cache, refuses it. (`make` knob `ALLOW_EXPERT_CACHE_BELOW_FLOOR=1`.) |
+| `--vram-pinned-expert-bytes <b>` | `IGNIS_VRAM_PINNED_EXPERT_BYTES` | `0` | Flash-Next only: the calibration-hottest experts held in the expert cache for the whole load, outside its LRU, with no copy in RAM, up to these bytes: the RAM the experts take shrinks by as much ([Host RAM for Flash-Next](#host-ram-for-flash-next)). `0` pins none. The 27B refuses it. (`make` knob `PINNED_EXPERT_BYTES`.) |
 | `--reuse-prompt <on\|off>` | `IGNIS_REUSE_PROMPT` | `on` | `off`: no prompt checkpoint is captured or reused, and no prefix is shared unless `--reuse-retained-device` or `--reuse-retained-host` gives slots for it. |
 | `--reuse-retained-device <n>` | `IGNIS_REUSE_RETAINED_DEVICE` | `0` | Retained slots in VRAM: reserved in the VRAM plan, copied device to device (~0.3 ms), and handed out before any host slot. A card with VRAM to spare can take `--reuse-retained-device 16 --reuse-retained-host 0`. |
 | `--reuse-retained-host <n>` | `IGNIS_REUSE_RETAINED_HOST` | two per decode lane (16); `0` with `--reuse-prompt off` | Retained slots in one pinned host block reserved at start, ~222 MiB each at the default load (3.5 GiB for 16): no VRAM, so the KV pool gets it; a capture and a claim each cost a PCIe copy (~15–19 ms). Both kinds hold the images of retained checkpoints and shared prefixes. When none is free, retained state gives one up — checkpoints before prefixes, `agent` before `interactive`, then least recently used; when nothing can, the publish or capture is skipped. `--retained-slots` was replaced by these two and now refuses the start. |
@@ -754,8 +755,27 @@ with what each costs:
 | `FN_KV_HOST_POOL_BYTES` | `--qwen38flashnext-reuse-kv-host-pool-bytes <n>` | up to the 2 GiB arena (`0` turns it off) | The KV-RAM tier holds fewer suspended requests: under VRAM pressure a request that cannot be parked there is evicted and prefilled again. |
 | `NGRAM_HOT_BYTES` | `--ngram-hot-bytes <n>` | up to the 1 GiB default (`0` holds none) | Each n-gram row not held in RAM is read from NVMe when a step needs it: more reads per token, and slower prefill. |
 | `HOST_MARGIN_BYTES` | `--model-host-margin-bytes <n>` | what it lowers the 4 GiB default by (`0` leaves none) | Less room for the rest of the machine to grow into: the plan's lines are pinned and cannot be paged, so once other applications outgrow what is left, Windows pages *them* out. |
+| `PINNED_EXPERT_BYTES` | `--vram-pinned-expert-bytes <n>` | about `<n>` of the experts line (off by default) | The pinned hot set (below): the LRU loses those slots. Measured on the 5090: nothing at `1G`, ~1% of three-lane decode at `2G`; the load takes ~2 s longer. |
 
 Check `make config MODEL=flash-next` for the lines a start will use.
+
+**The pinned hot set** (`--vram-pinned-expert-bytes`, `IGNIS_VRAM_PINNED_EXPERT_BYTES`,
+`vram.pinned_expert_bytes`; off by default, ADR 0055). On a card whose expert cache
+holds only part of the experts, as on a 32 GB one, the load can keep its
+calibration-hottest experts in the cache for its whole life: whole experts,
+hottest first, until they reach the bytes named. They sit outside the cache's
+LRU, are never evicted or copied, and have no copy in RAM: the `expert_pool`
+line, and the process's RAM, shrink by their bytes. The trade is the LRU's
+slots they take. On the RTX 5090 (2026-10-18,
+[finding](../findings/2026-10-18-pinned-hot-set-measured-on-the-5090.md)) `1G`
+gave back 1.075 GB for no measurable decode cost, and `2G` 2.149 GB for 0.1% of
+one-lane and 1.1% of three-lane decode; greedy output is the same either way.
+Past 2 GiB the cost climbs: the hottest experts are mostly 4-bit, and pinning
+them empties those classes' LRU. The records the pin keeps reach VRAM
+through a few buffers held while the experts load (the plan's `load_staging`
+line, ~0.3-0.5 GB). The load logs `ignis.runtime.flash_next_pinned_experts`
+with what it pinned. A card that holds every expert keeps none in RAM already
+and ignores the field; the 27B refuses it.
 
 A host with RAM to spare can go the other way: `--ngram-hot-bytes auto`
 (`make MODEL=flash-next NGRAM_HOT_BYTES=auto`) gives the hot rows what the
