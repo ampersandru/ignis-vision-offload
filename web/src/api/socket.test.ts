@@ -341,6 +341,27 @@ describe("a reply on the socket", () => {
     });
     expect(await result).toMatchObject({ ok: false, message: "request_timeout: the request timed out" });
   });
+
+  // ADR 0058: under `server.timeout_reply: partial`, the default, a reply its
+  // deadline cut ends `incomplete` with `max_output_tokens`, as a length cap
+  // ends one: the text so far stands, finished `length`, and nothing failed.
+  it("keeps a reply its deadline cut, finished length", async () => {
+    const h = harness();
+    const { events, result } = h.start([user("hi")], { streamId: "s" });
+    await tick();
+    h.sockets[0].accept();
+    await tick();
+    h.sockets[0].emit({ type: "response.created", stream_id: "s", response: { id: "r", status: "in_progress" } });
+    h.sockets[0].emit({ type: "response.output_text.delta", stream_id: "s", delta: "Half an ans" });
+    h.sockets[0].emit({
+      type: "response.incomplete",
+      stream_id: "s",
+      response: { id: "r", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] },
+    });
+    expect(await result).toMatchObject({ ok: true });
+    expect(events).toContainEqual({ kind: "content", text: "Half an ans" });
+    expect(events).toContainEqual({ kind: "finish", reason: "length" });
+  });
 });
 
 describe("queued replies", () => {
