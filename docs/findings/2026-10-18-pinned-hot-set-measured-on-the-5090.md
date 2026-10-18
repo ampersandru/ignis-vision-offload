@@ -39,8 +39,10 @@ thinking off, 320 tokens, three distinct prompts. Decode tok/s per request is
 stall are the `/metrics` decode counters around each phase. Reps 1-2 are
 averaged (rep 0 warms the phase). The first 1 GiB launch was disturbed: its
 reps ran 98-102 tok/s at one lane and 118-130 at three with unchanged hit
-rates, and the later launches ran at the others' speed; it is left out of
-the speed figures. Script and raw data: `.scratch/expert-pin/` in the
+rates, and the later launches ran at the others' speed. Another agent's
+kernel build (nvcc) ran on the CPU over it, 13:27-13:31, which that agent
+reported afterwards; the launch ended at 13:31. It is left out of the speed
+figures. Script and raw data: `.scratch/expert-pin/` in the
 `expert-pin` worktree (`measure.py`, one JSON and one log per launch,
 `summary.txt`).
 
