@@ -484,7 +484,7 @@ change does not reach and a `null` removes.
 | `--reuse-kv-host-pool-bytes <bytes>` | `IGNIS_REUSE_KV_HOST_POOL_BYTES` | `2G` | The KV-RAM host tier. Page-locked whole at start and held for the life of the load, so it is RAM the process holds even idle — and the figure Windows reports as shared GPU memory. `0` disables the host tier. (`make` sets `8G`, and Flash-Next's own `2G` as `--qwen38flashnext-reuse-kv-host-pool-bytes`: knob `FN_KV_HOST_POOL_BYTES`.) |
 | `--spec-backend <backend>` | `IGNIS_SPEC_BACKEND` | unset | Speculative decoding backend: `dflash2` (Qwen3.8-27B), `mtp` (Qwen3.8-Flash-Next, see [below](#flash-next-speculation-mtp)), `off`, or unset for none. |
 | `--spec-draft-tokens <n>` | `IGNIS_SPEC_DRAFT_TOKENS` | — | 1..7. Required with `--spec-backend dflash2`; with `--spec-backend mtp` the most drafts a lane verifies per round (default 2). |
-| `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..32. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only, and past 8 five to eight lanes draft too (`16`: 3 drafts up to four lanes, 2 at five, 1 from six to eight). A budget past 8 reserves the wider rounds' VRAM, taken from the expert cache: about 50 MB at 16 rows. Past 8 the round is held numerically equivalent to speculation off, not token for token: greedy output may differ from it where two tokens are nearly tied ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)). (`make` knob `DRAFT_ROWS`.) |
+| `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..32. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only, and past 8 five to eight lanes draft too (`16`: 3 drafts up to four lanes, 2 at five, 1 from six to eight). A budget past 8 reserves the wider rounds' VRAM, taken from the expert cache: about 50 MB at 16 rows. Past 8 the round is held numerically equivalent to speculation off, not token for token: greedy output may differ from it where two tokens are nearly tied ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)). Measured slower than 8 on both the RTX 5090 and the RTX PRO 6000 ([below](#flash-next-speculation-mtp)). (`make` knob `DRAFT_ROWS`.) |
 | `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head) or `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, +356 MB of VRAM). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
 | `--model-rope-scaling <spec>` | `IGNIS_MODEL_ROPE_SCALING` | none | `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]` rescales the checkpoint's trained 262,144-position envelope. `F` in (1, 64]. |
 
@@ -530,8 +530,11 @@ turns it on (below). Before turning it on:
   tied: the round is held to speculation off's logits within a tolerance,
   not to its text token for token
   ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md),
-  [finding](../findings/2026-10-18-flash-next-verify-rows-past-8.md)); what it
-  pays on this card is not measured. On an RTX PRO 6000 Server Edition
+  [finding](../findings/2026-10-18-flash-next-verify-rows-past-8.md)). On the
+  RTX PRO 6000 it does not pay: a verify round past 8 rows takes 64-80 ms against
+  ~19.5 ms at 8, so every wider budget runs 0.42-0.84x the default's 8
+  ([finding](../findings/2026-10-18-verify-rows-on-the-rtx-pro-6000.md)), and
+  the profile keeps 8. On an RTX PRO 6000 Server Edition
   ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)):
   - with every lane decoding at once (greedy, the 1 GiB n-gram default), one
     lane runs 1.85x speculation off on code and 1.44x on prose, two lanes
@@ -737,10 +740,13 @@ needs about **9 GB available** (the 4.7 GB of layer buffers, more than the
 ~4.3 GB of lines it keeps, and the 4 GiB margin), and `--ngram-hot-bytes auto`
 holds the whole n-gram table (28.8 GB) from about 37 GB available (36 GB of
 lines and `auto`'s 256 MiB headroom), which a 64 GB machine has. Both figures
-are arithmetic over the plan's logged lines, not measured on a card.
+are arithmetic over the plan's logged lines.
 Measured on an RTX PRO 6000 (2026-10-18): the pinned memory went from 41.1 to
 3.3 GB, decode and greedy text unchanged, the expert cache's hit rate 1.0
-instead of 0.994.
+instead of 0.994. On a 64 GiB host in a 56 GiB container `auto` planned the
+whole table; the experts are read through the page cache, so with the table
+in RAM a reload read them in ~31 s, and in 5 s only when the cache held them
+all ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)).
 
 A load below that is refused
 in GiB, with how far short it fell and the plan line to shrink:

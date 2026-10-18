@@ -60,6 +60,10 @@ bits per weight on average (2 to 4 bits per expert, from calibration error); a
 VRAM cache holds the hot ones and the rest stream from pinned host RAM, about
 **100 tok/s at one lane on a PCIe 3.0 board**
 ([weights and numbers](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis)).
+On a 96 GB RTX PRO 6000 every expert stays in VRAM with no copy in host RAM,
+and the built-in `rtxpro6000` profile drafts with the model's own MTP head:
+about 258 tok/s at one lane on code and 427 tok/s across eight
+([measured](docs/findings/2026-10-18-rtxpro6000-profile-measured.md)).
 And it makes pictures: **Qwen-Image-2.1-Turbo**, on FP8 GEMM and 8-bit
 attention kernels for the 5090, serves OpenAI's image generation and edit routes — a
 2048x2048 image in about 7.9 s end to end, an edit from up to ten input images,
@@ -357,7 +361,8 @@ Every number below is a measurement on a 5090.
   into the server, not a separate service.
 - **One declaration per setting**: every option is a flag, an `IGNIS_*`
   variable and a key in a YAML or JSON config file, with per-model values and
-  a measured `rtx5090` profile applied by default; `GET`/`PATCH /v1/config`
+  a measured `rtx5090` profile applied by default (and `rtxpro6000` for the
+  96 GB card); `GET`/`PATCH /v1/config`
   reads and changes the running server, reloading the model only for a field
   that needs it ([ADR 0046](docs/adr/0046-one-declaration-per-config-field.md)).
 - **`POST /v1/tokenize`** counts a chat body's prompt exactly as it would be
