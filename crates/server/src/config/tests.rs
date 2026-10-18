@@ -822,6 +822,28 @@ fn the_expert_cache_floor_opt_in_parses_and_refuses_the_27b() {
     assert!(err.0.contains("--vram-allow-expert-cache-below-floor") && err.0.contains("27B"), "{}", err.0);
 }
 
+/// GitHub #329 item 12: `--vram-pinned-expert-bytes` is Flash-Next's: 0 (no
+/// pin) by default, a byte count from the flag, the environment or a file,
+/// changed only through a reload, refused on the 27B and dropped by a switch
+/// to it.
+#[test]
+fn the_pinned_expert_budget_is_none_by_default_and_flash_next_s() {
+    assert_eq!(config(&[]).pinned_expert_bytes, 0);
+    let flag = config(&["--vram-pinned-expert-bytes", "1G"]);
+    assert_eq!(flag.pinned_expert_bytes, GIB);
+    let env = env_map(&[("IGNIS_VRAM_PINNED_EXPERT_BYTES", "2G")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("env")).pinned_expert_bytes, 2 * GIB);
+    let files = MemFiles::with(&[("c.yaml", "vram:\n  pinned_expert_bytes: 1536M\n")]);
+    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().pinned_expert_bytes, 1536 << 20);
+    let meta = schema::field("vram", "pinned_expert_bytes").expect("declared");
+    assert!(meta.visible && meta.patchable && meta.reload_required && !meta.scoped);
+    assert!(served_model_for(&flag, ModelFamily::FlashNext).is_ok());
+    let err = served_model_for(&flag, ModelFamily::Qwen38_27b).expect_err("no expert cache");
+    assert!(err.0.contains("--vram-pinned-expert-bytes") && err.0.contains("27B"), "{}", err.0);
+    let (fitted, dropped) = fit_to_family(&flag, ModelFamily::Qwen38_27b).unwrap();
+    assert_eq!((fitted.pinned_expert_bytes, dropped), (0, vec!["--vram-pinned-expert-bytes".to_owned()]));
+}
+
 #[test]
 fn the_help_says_lanes_share_the_pool_and_names_the_new_spellings() {
     // AC 40 (P1): a lane no longer holds its own whole context.

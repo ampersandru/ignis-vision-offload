@@ -92,6 +92,8 @@ lacks "loop guard default" "$(flags)" "--model-loop-guard"
 out="$(flags MODEL=flash-next ALLOW_EXPERT_CACHE_BELOW_FLOOR=1)"
 has "ALLOW_EXPERT_CACHE_BELOW_FLOOR=1" "$out" "--vram-allow-expert-cache-below-floor"
 lacks "floor default" "$(flags MODEL=flash-next)" "--vram-allow-expert-cache-below-floor"
+has "PINNED_EXPERT_BYTES=1G" "$(flags MODEL=flash-next PINNED_EXPERT_BYTES=1G)" "--vram-pinned-expert-bytes 1G"
+lacks "pin default" "$(flags MODEL=flash-next)" "--vram-pinned-expert-bytes"
 out="$(flags MODEL=flash-next KV_POOL_BYTES=512Ktok)"
 has "KV_POOL_BYTES=512Ktok" "$out" "--vram-kv-pool-bytes 512Ktok"
 

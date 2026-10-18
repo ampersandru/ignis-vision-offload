@@ -438,6 +438,13 @@ config_group! {
         /// Start Flash-Next with an expert cache below its 12 GiB floor, with
         /// a warning — decode slows sharply below it.
         allow_expert_cache_below_floor: Bool = false, NO_RULE, FLASH_NEXT_ONLY, [Visible, Patchable, ReloadRequired];
+        /// Flash-Next's calibration-hottest experts held in the expert cache
+        /// for the whole load, outside its LRU, with no copy in the pinned
+        /// host pool: whole experts, hottest first, until they reach this many
+        /// bytes. The pool takes that much less RAM; the LRU has those slots
+        /// fewer (replayed at under 1% of decode for 1-2 GB). 0 pins none. A card
+        /// that holds every expert keeps none in RAM anyway and ignores it.
+        pinned_expert_bytes: Bytes = 0, NO_RULE, FLASH_NEXT_ONLY, [Visible, Patchable, ReloadRequired];
     }
 }
 

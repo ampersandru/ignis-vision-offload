@@ -178,6 +178,12 @@ KV_POOL_BYTES ?=
 # floor (--vram-allow-expert-cache-below-floor), with a warning: below it decode
 # slows sharply. The 27B refuses it.
 ALLOW_EXPERT_CACHE_BELOW_FLOOR ?=
+# Flash-Next's pinned hot set (--vram-pinned-expert-bytes, GitHub #329 item 12):
+# the calibration-hottest experts held in the expert cache outside its LRU, with
+# no copy in the pinned host pool, which takes that much less RAM (1G-2G costs
+# under 1% of decode in the replay). Empty = the server's 0: none. The 27B
+# refuses it.
+PINNED_EXPERT_BYTES ?=
 # The VRAM budget (GitHub #210, ADR 0030). Empty = the server's default: the
 # memory free at start minus a 1536M headroom. VRAM_HEADROOM derives it with
 # another headroom; VRAM_BUDGET names it (the whole process, weights

@@ -50,6 +50,9 @@ pub struct EngineShape {
     /// `--vram-allow-expert-cache-below-floor` (ADR 0045): a Flash-Next load whose
     /// expert cache falls below its floor starts with a warning.
     pub allow_expert_cache_below_floor: bool,
+    /// `--vram-pinned-expert-bytes` (GitHub #329 item 12): a Flash-Next load's
+    /// pinned hot set, held in its expert cache with no copy in the host pool.
+    pub pinned_expert_bytes: u64,
     /// The KV-RAM host tier's budget, in bytes (`--reuse-kv-host-pool-bytes`,
     /// P4-07 GitHub #125): pinned host memory for evicted (suspended)
     /// request snapshots, independent of the GPU-resident pool above.
@@ -124,6 +127,7 @@ impl Default for EngineShape {
                 headroom_bytes: crate::config::DEFAULT_VRAM_HEADROOM_BYTES,
             },
             allow_expert_cache_below_floor: false,
+            pinned_expert_bytes: 0,
             host_pool_bytes: crate::config::DEFAULT_HOST_POOL_BYTES,
             host_margin_bytes: crate::config::DEFAULT_HOST_MARGIN_BYTES,
             prompt_reuse: crate::config::DEFAULT_PROMPT_REUSE,
@@ -156,6 +160,7 @@ impl From<&crate::config::Config> for EngineShape {
             kv_pool: config.kv_pool,
             vram: config.vram,
             allow_expert_cache_below_floor: config.allow_expert_cache_below_floor,
+            pinned_expert_bytes: config.pinned_expert_bytes,
             host_pool_bytes: config.host_pool_bytes,
             host_margin_bytes: config.host_margin_bytes,
             prompt_reuse: config.prompt_reuse,
@@ -553,6 +558,34 @@ pub fn log_flash_next_plan(
     );
 }
 
+/// `ignis.runtime.flash_next_pinned_experts` (GitHub #329 item 12): a load that
+/// asked for a pinned hot set (`--vram-pinned-expert-bytes`) says what it
+/// pinned -- the bytes the host pool no longer holds, the experts and
+/// projections, per class, and the LRU's slots left around them -- or, on a
+/// device-only load, that it pinned nothing, its pool being 0 already.
+pub fn log_flash_next_pinned_experts(
+    budget_bytes: u64, pinned: &ignis_core::residency::PinnedExperts, cache: &ignis_core::residency::ExpertCachePlan,
+    device_only: bool,
+) {
+    use ignis_core::residency::KClass;
+    let lru = pinned.lru_capacity(cache.capacity());
+    let per_class = |slots: &[u32; KClass::COUNT]| {
+        KClass::ALL.iter().map(|c| format!("{} {}", c.as_str(), slots[c.index()])).collect::<Vec<_>>().join(", ")
+    };
+    // hotpath-lint-allow: one line per model load.
+    tracing::info!(
+        name: "ignis.runtime.flash_next_pinned_experts",
+        pinned_expert_budget_bytes = budget_bytes,
+        pinned_bytes = pinned.bytes,
+        pinned_experts = pinned.experts(),
+        pinned_projections = pinned.projections.len(),
+        pinned_per_class = %per_class(&pinned.per_class),
+        lru_slots_per_class = %per_class(&lru),
+        device_only,
+        "flash-next pinned experts"
+    );
+}
+
 /// `ignis.runtime.expert_cache_below_floor` (ADR 0045): the WARN a Flash-Next
 /// load emits when `--vram-allow-expert-cache-below-floor` started it with an
 /// expert cache below `floor_bytes` -- the cache, the floor, and the knobs
@@ -866,8 +899,10 @@ pub(crate) fn flash_next_load(
     use ignis_artifact::flash_next::{self, FlashNextGeometry};
     use ignis_artifact::{CudaDevice, Reader};
     use ignis_core::compute::ModelConfig;
-    use ignis_core::flash_next::{class_minimum_slots, device_only, expert_traffic, EngineOptions, LOOKAHEAD_WIDTH};
-    use ignis_core::residency::load::{catalog, pool_layout, stream_staging_bytes};
+    use ignis_core::flash_next::{
+        class_minimum_slots, device_only, expert_traffic, pinned_experts, EngineOptions, LOOKAHEAD_WIDTH,
+    };
+    use ignis_core::residency::load::{catalog, pinned_staging_bytes, pool_layout, pool_layout_without, stream_staging_bytes};
     use ignis_core::ngram_table::NgramTable;
     use ignis_core::residency::{
         available_physical_bytes, ngram_hot_rows_room, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
@@ -931,6 +966,7 @@ pub(crate) fn flash_next_load(
         max_context_tokens: shape.max_context,
         kv_format: shape.kv_format,
         decode_lanes: lanes,
+        pinned_expert_bytes: shape.pinned_expert_bytes,
         capture_graphs: true,
         retained_device_slots: shape.retained_device_slots,
         retained_host_slots: shape.retained_host_slots,
@@ -1022,6 +1058,13 @@ pub(crate) fn flash_next_load(
     log_flash_next_plan(&vram, cache.expected_hit_rate, lanes, &speculation_text, process_held_bytes);
     options.kv_pool_pages = Some(vram.kv_page_count);
     options.expert_cache_bytes = vram.expert_cache_bytes;
+    // GitHub #329 item 12: the pinned hot set, as `build_residency` will pin
+    // it from the same split; logged only when asked for, so a default load's
+    // events are what they were.
+    let pinned = pinned_experts(&options, &cat, &traffic, &cache);
+    if shape.pinned_expert_bytes > 0 {
+        log_flash_next_pinned_experts(shape.pinned_expert_bytes, &pinned, &cache, device_only(&options, &cat));
+    }
     // Spec flash-next/05: what one sequence's reusable state costs, derived
     // from the topology -- the image a retained slot or a blob holds, and
     // what each token adds to the pages.
@@ -1050,8 +1093,16 @@ pub(crate) fn flash_next_load(
     // reads the n-gram hot rows (`FlashNextLeaf::open`).
     let (expert_pool_bytes, load_staging_bytes) = if device_only(&options, &cat) {
         (0, stream_staging_bytes(&plan.experts).map_err(|e| e.to_string())?)
-    } else {
+    } else if pinned.is_empty() {
         (pool_layout(&plan.experts).bytes, 0)
+    } else {
+        // The pool without the pinned records, which go to their slots
+        // through a few buffers held while the experts load.
+        let by_key = pinned.by_key(&cat);
+        (
+            pool_layout_without(&plan.experts, &by_key).bytes,
+            pinned_staging_bytes(&plan.experts, &by_key).map_err(|e| e.to_string())?,
+        )
     };
     let mut host_request = available_physical_bytes().map(|available| HostPlanRequest {
         available_physical_bytes: available,
@@ -1441,6 +1492,7 @@ mod tests {
             kv_pool: Some(ignis_core::KvPoolSize::Tokens(512 * 1024)),
             vram: EngineShape::default().vram,
             allow_expert_cache_below_floor: true,
+            pinned_expert_bytes: 0,
             host_pool_bytes: crate::config::DEFAULT_HOST_POOL_BYTES,
             host_margin_bytes: crate::config::DEFAULT_HOST_MARGIN_BYTES,
             prompt_reuse: true,
@@ -1829,6 +1881,58 @@ mod tests {
         assert_eq!(field("residency_fixed_bytes"), 3u64 << 20);
         let rest = (92u64 << 30) - lines.total() - (3 << 20) - (37 << 30);
         assert_eq!(field("kv_pool_pages"), (rest - 4_096) / PAGE);
+    }
+
+    /// GitHub #329 item 12: a load that asked for a pinned hot set says what
+    /// it pinned, by class, and what the LRU keeps around it.
+    #[test]
+    fn the_pinned_experts_event_names_the_bytes_the_host_pool_gives_up() {
+        use ignis_core::residency::{ClassPool, ExpertCachePlan, KClass, PinnedExperts, Projection, ProjectionId};
+        let mut pools = [ClassPool::default(); KClass::COUNT];
+        (pools[3], pools[7]) = (ClassPool { slots: 100, bytes: 0 }, ClassPool { slots: 90, bytes: 0 });
+        let cache = ExpertCachePlan {
+            cache_bytes: 18 << 30,
+            pools,
+            staging_ring_bytes: 0,
+            table_bytes: 0,
+            expected_hit_rate: 0.6,
+            below_floor: false,
+        };
+        let pinned = PinnedExperts {
+            projections: Projection::ALL.map(|p| ProjectionId::new(7, 3, p)).to_vec(),
+            per_class: [0, 0, 0, 1, 0, 0, 0, 1],
+            bytes: 1_646_592 + 827_392,
+        };
+        let event = |pinned: &PinnedExperts, device_only: bool| {
+            use tracing_subscriber::layer::SubscriberExt;
+            let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
+            let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
+            tracing::subscriber::with_default(subscriber, || log_flash_next_pinned_experts(1 << 30, pinned, &cache, device_only));
+            let records: Vec<serde_json::Value> =
+                sink.lines().iter().map(|line| serde_json::from_str(line).expect("json")).collect();
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert_eq!(records[0]["event_name"], "ignis.runtime.flash_next_pinned_experts", "{}", records[0]);
+            let event = records[0].clone();
+            move |name: &str| {
+                event.get(name).or_else(|| event["attributes"].get(name)).cloned().unwrap_or_else(|| panic!("no `{name}` in {event}"))
+            }
+        };
+        let field = event(&pinned, false);
+        assert_eq!(field("pinned_expert_budget_bytes"), 1u64 << 30);
+        assert_eq!(field("pinned_bytes"), 1_646_592 + 827_392);
+        assert_eq!(field("pinned_experts"), 1);
+        assert_eq!(field("pinned_projections"), 2);
+        assert_eq!(
+            field("pinned_per_class"),
+            "gate_up_k2 0, gate_up_k2_5 0, gate_up_k3 0, gate_up_k4 1, down_k2 0, down_k2_5 0, down_k3 0, down_k4 1"
+        );
+        assert_eq!(
+            field("lru_slots_per_class"),
+            "gate_up_k2 0, gate_up_k2_5 0, gate_up_k3 0, gate_up_k4 99, down_k2 0, down_k2_5 0, down_k3 0, down_k4 89"
+        );
+        assert_eq!(field("device_only"), false);
+        let field = event(&PinnedExperts::default(), true);
+        assert_eq!((field("pinned_bytes"), field("device_only")), (0.into(), true.into()));
     }
 
     #[test]

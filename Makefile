@@ -96,6 +96,7 @@ GPU_ENGINE_FLAGS = $(if $(ARTIFACT),--model-artifact $(ARTIFACT)) \
   $(if $(PREFILL_CHUNK),--model-prefill-chunk $(PREFILL_CHUNK))   $(if $(DECODE_SHARE),--model-decode-share $(DECODE_SHARE))   $(if $(LANES),--spec-decode-lanes $(LANES)) \
   $(if $(KV_POOL_BYTES),--vram-kv-pool-bytes $(KV_POOL_BYTES))   $(if $(VRAM_HEADROOM),--vram-headroom-bytes $(VRAM_HEADROOM))   $(if $(VRAM_BUDGET),--vram-budget-bytes $(VRAM_BUDGET))   $(if $(filter 1,$(ALLOW_VRAM_OVERSUBSCRIPTION)),--vram-allow-oversubscription) \
   $(if $(filter 1,$(ALLOW_EXPERT_CACHE_BELOW_FLOOR)),--vram-allow-expert-cache-below-floor) \
+  $(if $(PINNED_EXPERT_BYTES),--vram-pinned-expert-bytes $(PINNED_EXPERT_BYTES)) \
   $(if $(KV_HOST_POOL_BYTES),--reuse-kv-host-pool-bytes $(KV_HOST_POOL_BYTES))   $(if $(NGRAM_HOT_BYTES),--ngram-hot-bytes $(NGRAM_HOT_BYTES)) \
   $(if $(IMAGE_27B_KV_HOST_POOL_BYTES),--qwen38-reuse-kv-host-pool-bytes $(IMAGE_27B_KV_HOST_POOL_BYTES))   $(if $(FN_KV_HOST_POOL_BYTES),--qwen38flashnext-reuse-kv-host-pool-bytes $(FN_KV_HOST_POOL_BYTES))   $(if $(HOST_MARGIN_BYTES),--model-host-margin-bytes $(HOST_MARGIN_BYTES)) \
   $(if $(KV_DISK_BYTES),--kv-disk-bytes $(KV_DISK_BYTES))   $(if $(KV_DISK_PATH),--kv-disk-path $(KV_DISK_PATH)) \
