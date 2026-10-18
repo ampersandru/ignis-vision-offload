@@ -41,12 +41,16 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
     drafts, so each drafted column holds spec-off's token while the lane's committed text is
     spec-off's; each such row is held to spec-off's row at the same text index. Every logit
     within **64 BF16 ulps** at the spec-off row's largest magnitude, and a different pick only
-    where the spec-off row rates the two picks within 64 ulps. A lane whose pick moved leaves
-    the comparison after that round, so nothing cascades. 64 is 1.6x the default's own widest
-    measured drift (40 ulps), the next power of two above the wide budgets' (58). The rows of a
-    lane whose text left spec-off's at its second token, compared at the same indices anyway
-    (another context, what a row read from the wrong lane or position looks like), measured
-    33-202 ulps, median 104, 89% past 64.
+    where the spec-off row rates the two picks within **16 ulps** (a near tie). A lane whose
+    pick moved leaves the comparison after that round, so nothing cascades. 64 is the next
+    power of two above the wide budgets' widest measured drift (58.3, one tail logit): a margin
+    of only 1.1x on the RTX 5090 (1.6x over the default's own 40.2). It is kept that tight
+    because the discriminator is close: the rows of a lane whose text left spec-off's at its
+    second token, compared at the same indices anyway (another context, what a row read from
+    the wrong lane or position looks like), measured 33-202 ulps, median 104, 89% past 64 but
+    only 59% past 96. The RTX PRO 6000 run re-derives it before a profile takes a budget past
+    8. The pick bound is its own, not the logit tolerance (64 ulps at a top logit of 20 is 8
+    logits, no near tie): measured moved picks sat at gaps of 0-8 ulps, and 16 is 2x that.
   - **exact at any width**: every round of the teacher-forced run and of the head's run
     committed its own rows' picks (the drafts accepted are the longest prefix each the pick
     after the column before it; what stands pending is the pick after the run); the reject
@@ -54,13 +58,18 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
   - **determinism**: the same budget gives the same text, rounds, drafts, rows (hashed) and
     state run to run.
   - **quality**: the teacher-forced mean log-probability of spec-off's text within **0.02
-    nats a token** of spec-off's own (measured within 0.0117; spec-off's own greedy text
-    favours spec-off, so the check can only find the wide route worse), and the head's
-    first-draft acceptance at least **0.5** (measured 0.74-0.94; a round reading the wrong rows
-    accepts next to nothing).
-- The rows come from a measurement readout, `ignis_decode_options::out_logits`: a Flash-Next
-  round's head rows, host BF16, before the draw or the accept reads them. No serving path sets
-  it; the 27B and a round with a permitted set refuse it.
+    nats a token** of spec-off's own, either way (measured from -0.0117 to +0.0077, wide minus
+    spec-off: the verify rows read spec-off's own greedy text both less and more likely than
+    spec-off's rows do, so the check is two-sided); the head's first-draft acceptance at least
+    **0.5** (measured 0.74-0.94; a round reading the wrong rows accepts next to nothing) and
+    within **0.1** of the same prompts' at 8 rows, either way (the head run on them two lanes at
+    a time, whose rounds take 8 rows at any budget: the owner's band; measured within 0.066,
+    the default's own 4-lane cells 0.046).
+- The rows come from a measurement's copy of the round's logits,
+  `ignis_decode_options::out_logits`: a Flash-Next round's head rows, host BF16, before the
+  draw or the accept reads them. Not a **readout** (CONTEXT.md: named tokens, no draw): the
+  round still samples. No serving path sets it; the 27B and a round with a permitted set
+  refuse it, each by name and each tested.
 
 ## Considered options
 
@@ -83,8 +92,11 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
   The user README says so beside `--spec-draft-rows`; spec flash-next/07's oracle is this ADR's
   past 8 rows.
 - The near-tie rule stays the oracle up to 8 rows; nothing about the default changes.
-- The tolerance, the log-probability epsilon and the acceptance floor are constants of the
-  test's support module, measured on the RTX 5090 with these prompts. A change of the wide
-  routes (a new GEMM tiling, option 2) re-measures them, as the finding records.
+- The tolerance, the pick's near-tie bound, the log-probability epsilon, the acceptance floor
+  and its band are constants of the test's support module, measured on the RTX 5090 with these
+  prompts. A change of the wide routes (a new GEMM tiling, option 2) or another card (the RTX
+  PRO 6000 first) re-measures them, as the finding records.
+- The default's plan lines are main's byte for byte, pinned in `flash_next_bind` against main's
+  own build: nothing about a load that names no budget changes.
 - `out_logits` is appended to `ignis_decode_options` (ADR 0016's rule): a NULL costs nothing,
   a set one costs one host copy before the round's synchronize.

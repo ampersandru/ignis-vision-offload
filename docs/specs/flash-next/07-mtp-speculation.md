@@ -113,12 +113,13 @@ Four phases in one ticket, each gated by the previous one's numbers
 - **D. Draft with MTP inside the round's graph,** at a fixed k chosen at load.
   An adaptive width is a measured follow-up.
 
-Greedy speculation is lossless by construction. "Spec on equals spec off,
-token for token, up to the documented near-tie rule" is the correctness
-oracle for the whole of C and D, for a verify round of up to 8 rows. Past 8
-rows (GitHub #329 item 5) the oracle is numerical equivalence instead:
-spec-off's logits within a tolerance, teacher-forced, with the commit, the
-state and the run exact
+Greedy speculation is lossless by construction for a verify round of up
+to 8 rows (the default budget). "Spec on equals spec off, token for token,
+up to the documented near-tie rule" is the correctness oracle for the whole
+of C and D there. Past 8 rows (GitHub #329 item 5) a round's linears take
+their tensor-core routes, so it is numerically equivalent to spec off, not
+lossless: the oracle is spec-off's logits within a tolerance,
+teacher-forced, with the commit, the state and the run exact
 ([ADR 0056](../../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)).
 
 ## The MTP head
@@ -636,7 +637,8 @@ Where the build departs from the text above:
   near-tie rule (finding `2026-10-18-flash-next-verify-rows-past-8.md`), so
   a budget past 8 is held numerically equivalent to spec-off, not token for
   token (ADR 0056): its teacher-forced logits within 64 BF16 ulps of
-  spec-off's, its commit, state and run exact. `--spec mtp` defaults to 2 draft tokens (phase A's
+  spec-off's, a moved pick only at a near tie of 16, its commit, state and
+  run exact. `--spec mtp` defaults to 2 draft tokens (phase A's
   projection), `--draft-tokens` forces at most k, `--draft-rows` names the
   budget, `--spec off` turns it off. MTP is off unless `--spec mtp` names it
   (owner, 2026-10-07), and a named head without its companion refuses the
