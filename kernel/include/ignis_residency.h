@@ -38,7 +38,8 @@
  * `ignis_residency_admit_finish`) instead of filling a pool, and from then on no step misses, so
  * none copies anything. A step that would miss anyway is refused with
  * IGNIS_RESIDENCY_STATUS_NO_HOST and changes nothing (its projections stay ABSENT, so an expert op
- * run on it traps); a prefetch places nothing.
+ * run on it traps); a prefetch places nothing. Nothing stages either, so such a desc may name no
+ * staging ring (`staging_half_bytes` 0, GitHub #329): none is then allocated or planned.
  *
  * Every structure belongs to one `struct ignis_residency`, created at load and freed with the
  * model (no process-wide state; phase 2's model switch is a reload). A step allocates nothing,
@@ -88,7 +89,7 @@ struct ignis_residency_desc {
                                            * (a lane, or a verify round's column); the sum
                                            * saturates to no budget (GitHub #306) */
   uint64_t staging_half_bytes;  /* one half of the prefill staging ring (>= the heaviest layer;
-                                 * a multiple of 16) */
+                                 * a multiple of 16); a device-only desc may name 0 */
   uint64_t host_pool_bytes;     /* the pinned expert pool; 0: device-only (above) */
   uint32_t copy_blocks;         /* the copy kernel's grid; 0 = 16 */
   uint32_t report;              /* 1: keep each step's outcome for ignis_residency_last_report */

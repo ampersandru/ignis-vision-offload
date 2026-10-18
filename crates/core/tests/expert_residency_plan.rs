@@ -7,8 +7,8 @@ use ignis_core::residency::{
     ExpertCachePlanError, ExpertCacheRequest, ExpertCatalog, ExpertTraffic, DEFAULT_HOST_MARGIN_BYTES,
     HostPlanError, HostPlanRequest, KBits, MEASURED_ONE_ROW_PREFETCH_BUDGET_BYTES,
     MEASURED_THREE_ROW_PREFETCH_BUDGET_BYTES, Projection, ProjectionId, default_prefetch_budget, human_bytes,
-    min_slots_per_class, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
-    residency_table_bytes, warm_start_order,
+    holds_every_expert, min_slots_per_class, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
+    residency_table_bytes, staging_ring_bytes_for, warm_start_order,
 };
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -461,6 +461,21 @@ fn catalog() -> ExpertCatalog {
 fn the_staging_ring_holds_two_of_the_heaviest_layer() {
     // Layer 0: 3 x (200 + 100) = 900. Layer 1: 400+100 + 300+125 + 200+100 = 1,225.
     assert_eq!(prefill_staging_ring_bytes(&catalog()), 2 * 1_225);
+}
+
+/// GitHub #329 item 2: a cache that holds the whole catalog makes the
+/// residency device-only (ADR 0054): no step misses, so nothing stages and it
+/// reserves no ring. One byte short, a prefill miss can stage, and it needs
+/// the ring.
+#[test]
+fn a_cache_that_holds_every_expert_reserves_no_staging_ring() {
+    let catalog = catalog();
+    assert_eq!(catalog.total_bytes(), 900 + 1_225);
+    let at = |cache_bytes| (holds_every_expert(&catalog, cache_bytes), staging_ring_bytes_for(&catalog, cache_bytes));
+    assert_eq!(at(2_125), (true, 0));
+    assert_eq!(at(12 << 30), (true, 0));
+    assert_eq!(at(2_124), (false, 2 * 1_225));
+    assert_eq!(at(0), (false, 2 * 1_225));
 }
 
 #[test]

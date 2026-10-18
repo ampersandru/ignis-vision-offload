@@ -207,14 +207,19 @@ Eight vCPUs instead of sixteen cost nothing measurable.
   from a pageable buffer reached 3.9-9.6 GB/s and from a pinned one ~11-12.6
   (the Gen 3 link), so a layer in fewer, larger copies could cut the warm
   floor; only the warm case would see it.
-- The prefill staging ring (~1.5 GB of VRAM) is still reserved on a
-  device-only load, where no step can stage. Giving it to the KV pool is a
-  follow-up.
+- The runs above reserved the prefill staging ring (1.57 GB of VRAM) on the
+  device-only build too, where no step can stage. Since #329 item 2 such a
+  load reserves none (`staging_half_bytes` 0; the VRAM plan places the ring
+  on the offloaded branch only) and the KV pool takes its bytes: ~5,825 more
+  pages, ~372,800 tokens, +3.0% of a logged 8-lane plan's 191,888 pages
+  (MTP off), by the plan's arithmetic (1,574,895,616 / 270,336 bytes a
+  page). Not re-run on the card.
 
 ## Follow-ups
 
 Noted in https://github.com/gpillon/ignis/issues/329:
-- the prefill staging ring on a device-only load;
+- the prefill staging ring on a device-only load (done: none reserved, its
+  bytes to the KV pool, above);
 - the staging line charged beside the n-gram line (done: `load_staging`,
   above);
 - the MTP decode error that killed the first requests after a load;

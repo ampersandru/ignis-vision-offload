@@ -519,7 +519,9 @@ pub fn log_vram_warnings(plan: &ignis_core::VramPlan) {
 /// The startup report of a Flash-Next load's VRAM plan: one
 /// `ignis.runtime.flash_next_plan` event with the budget, the lines the load
 /// reports, the KV pool policy's branch with the pool's pages, tokens and
-/// bytes (ADR 0045), residency's fixed lines, the expert cache and the hit
+/// bytes (ADR 0045), residency's fixed lines and, of them, the prefill staging
+/// ring (0 on the resident branch, whose residency never stages: GitHub #329),
+/// the expert cache and the hit
 /// rate its split expects, the lanes and the speculation, and what of the free
 /// memory this process already held (GitHub #324).
 pub fn log_flash_next_plan(
@@ -539,6 +541,7 @@ pub fn log_flash_next_plan(
         kv_pool_bytes = plan.kv_pool_bytes,
         retained_device_bytes = lines.retained_slots,
         residency_fixed_bytes = plan.residency_bytes,
+        prefill_staging_bytes = plan.staging_ring_bytes,
         expert_cache_bytes = plan.expert_cache_bytes,
         expected_hit_rate,
         oversubscribed = plan.oversubscribed,
@@ -951,7 +954,6 @@ pub(crate) fn flash_next_load(
         u64::from(max_tokens),
         u64::from(LOOKAHEAD_WIDTH),
     );
-    let residency_fixed = staging_ring + tables;
     let lines = ignis_core::VramLines {
         weights: plan.plan.device_capacity_bytes + mtp_plan.as_ref().map_or(0, |p| p.plan.device_capacity_bytes),
         cuda_context: ignis_runtime::CUDA_CONTEXT_BYTES,
@@ -966,7 +968,9 @@ pub(crate) fn flash_next_load(
     };
     // ADR 0045: the KV pool follows residency -- offloaded on a card that
     // cannot hold every expert, 524,288 tokens reserved first and the rest to
-    // the expert cache; resident on one that can, the pool taking the rest.
+    // the expert cache; resident on one that can, the pool taking the rest,
+    // the staging ring's bytes included (a device-only residency never
+    // stages, ADR 0054: the plan places the ring on the offloaded branch only).
     // The arena reads a pool the leaf refuses to plan as one that never fits;
     // `pool_plan` above already surfaced that refusal by name.
     let vram = ignis_core::plan_vram(&ignis_core::VramRequest {
@@ -979,7 +983,8 @@ pub(crate) fn flash_next_load(
         kv_pool: shape.kv_pool,
         residency: ignis_core::Residency::Experts(ignis_core::ExpertResidency {
             expert_pool_bytes: cat.total_bytes(),
-            fixed_bytes: residency_fixed,
+            staging_ring_bytes: staging_ring,
+            table_bytes: tables,
             decode_lanes: lanes,
         }),
         embedding_pool_named: false,
@@ -992,12 +997,13 @@ pub(crate) fn flash_next_load(
     // plan left it, split by the calibration traffic as the leaf will split
     // it. Below the floor only with --vram-allow-expert-cache-below-floor; below
     // a class's minimum never. The plan's total holds the cache, so that
-    // total is the budget the cache's share is read against.
+    // total is the budget the cache's share is read against, and the ring is
+    // the one the plan placed (none on the resident branch).
     let traffic = expert_traffic(artifact_path, &cat)?;
     let cache = plan_expert_cache(&ExpertCacheRequest {
         budget_bytes: vram.total_bytes,
         planned_bytes: vram.total_bytes - vram.residency_bytes - vram.expert_cache_bytes,
-        staging_ring_bytes: staging_ring,
+        staging_ring_bytes: vram.staging_ring_bytes,
         table_bytes: tables,
         floor_bytes: EXPERT_CACHE_FLOOR_BYTES,
         allow_below_floor: shape.allow_expert_cache_below_floor,
@@ -1144,7 +1150,7 @@ pub(crate) fn flash_next_load(
         budget_bytes: vram.budget_bytes,
         kv_pool_pages: capacity_pages,
         kv_page_bytes: stats.kv_page_bytes,
-        residency_bytes: residency_fixed,
+        residency_bytes: vram.residency_bytes,
         expert_cache_bytes: vram.expert_cache_bytes,
         condition_budget_bytes: 0,
         kv_ram_arena_bytes: shape.host_pool_bytes,
@@ -1762,48 +1768,67 @@ mod tests {
         const PAGE: u64 = 4_224 * 64;
         let arena = |pages: u32| 4_096 + u64::from(pages) * PAGE;
         let lines = ignis_core::VramLines { weights: 5 << 30, workspace: 2 << 30, lane_state: 400 << 20, ..Default::default() };
-        let plan = ignis_core::plan_vram(&ignis_core::VramRequest {
-            mode: ignis_core::VramMode::Derived { headroom_bytes: 4 << 30 },
-            free_at_start_bytes: 31 << 30,
-            lines,
-            kv_page_bytes: PAGE,
-            max_context_tokens: 262_144,
-            retained_slots: 8,
-            kv_pool: None,
-            residency: ignis_core::Residency::Experts(ignis_core::ExpertResidency {
-                expert_pool_bytes: 37 << 30,
-                fixed_bytes: 1_500 << 20,
-                decode_lanes: 3,
-            }),
-            embedding_pool_named: false,
-            kv_arena_bytes: &arena,
-            can_page: true,
-        })
-        .expect("fits");
-        use tracing_subscriber::layer::SubscriberExt;
-        let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
-        let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
-        let held = ignis_runtime::CUDA_CONTEXT_BYTES;
-        tracing::subscriber::with_default(subscriber, || log_flash_next_plan(&plan, 0.5, 3, "off", held));
-        let records: Vec<serde_json::Value> =
-            sink.lines().iter().map(|line| serde_json::from_str(line).expect("json")).collect();
-        assert_eq!(records.len(), 1, "{records:?}");
-        let event = &records[0];
-        assert_eq!(event["event_name"], "ignis.runtime.flash_next_plan", "{event}");
-        let field = |name: &str| {
-            event.get(name).or_else(|| event["attributes"].get(name)).cloned().unwrap_or_else(|| panic!("no `{name}` in {event}"))
+        let plan_at = |free_at_start_bytes: u64| {
+            ignis_core::plan_vram(&ignis_core::VramRequest {
+                mode: ignis_core::VramMode::Derived { headroom_bytes: 4 << 30 },
+                free_at_start_bytes,
+                lines,
+                kv_page_bytes: PAGE,
+                max_context_tokens: 262_144,
+                retained_slots: 8,
+                kv_pool: None,
+                residency: ignis_core::Residency::Experts(ignis_core::ExpertResidency {
+                    expert_pool_bytes: 37 << 30,
+                    staging_ring_bytes: 1_497 << 20,
+                    table_bytes: 3 << 20,
+                    decode_lanes: 3,
+                }),
+                embedding_pool_named: false,
+                kv_arena_bytes: &arena,
+                can_page: true,
+            })
+            .expect("fits")
         };
+        let held = ignis_runtime::CUDA_CONTEXT_BYTES;
+        let event_of = |plan: &ignis_core::VramPlan| {
+            use tracing_subscriber::layer::SubscriberExt;
+            let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
+            let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
+            tracing::subscriber::with_default(subscriber, || log_flash_next_plan(plan, 0.5, 3, "off", held));
+            let records: Vec<serde_json::Value> =
+                sink.lines().iter().map(|line| serde_json::from_str(line).expect("json")).collect();
+            assert_eq!(records.len(), 1, "{records:?}");
+            let event = records[0].clone();
+            assert_eq!(event["event_name"], "ignis.runtime.flash_next_plan", "{event}");
+            move |name: &str| {
+                event.get(name).or_else(|| event["attributes"].get(name)).cloned().unwrap_or_else(|| panic!("no `{name}` in {event}"))
+            }
+        };
+        let plan = plan_at(31 << 30);
+        let field = event_of(&plan);
         assert_eq!(field("kv_pool_policy"), "offloaded");
         assert_eq!(field("kv_pool_pages"), 8_192);
         assert_eq!(field("kv_pool_tokens"), 524_288);
         assert_eq!(field("kv_pool_bytes"), arena(8_192));
         assert_eq!(field("expert_cache_bytes"), plan.expert_cache_bytes);
         assert_eq!(field("residency_fixed_bytes"), 1_500u64 << 20);
+        assert_eq!(field("prefill_staging_bytes"), 1_497u64 << 20);
         assert_eq!(field("budget_bytes"), 27u64 << 30);
         assert_eq!(field("pool_bytes"), arena(8_192) + (400 << 20));
         assert_eq!(field("lanes"), 3);
         assert_eq!(field("oversubscribed"), false);
         assert_eq!(field("process_held_bytes"), held);
+
+        // GitHub #329 item 2: resident, the residency is device-only and
+        // stages nothing, so the event shows no ring and the pool has its
+        // bytes: the budget less the lines, the tables and the experts.
+        let plan = plan_at(96 << 30);
+        let field = event_of(&plan);
+        assert_eq!(field("kv_pool_policy"), "resident");
+        assert_eq!(field("prefill_staging_bytes"), 0);
+        assert_eq!(field("residency_fixed_bytes"), 3u64 << 20);
+        let rest = (92u64 << 30) - lines.total() - (3 << 20) - (37 << 30);
+        assert_eq!(field("kv_pool_pages"), (rest - 4_096) / PAGE);
     }
 
     #[test]

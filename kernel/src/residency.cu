@@ -240,7 +240,9 @@ __device__ void stage(const Dev &d, uint32_t key, uint32_t h, uint32_t layer, Jo
                       uint32_t *n_jobs) {
   const unsigned long long bytes = d.record_bytes[d.cls[key]];
   const unsigned long long off = d.st->half_fill[h];
-  if (off + bytes > d.half_bytes) __trap();  // the plan sizes a half for a whole layer
+  // The plan sizes a half for a whole layer; a device-only residency's ring may be 0, and it never
+  // gets here (its steps refuse a miss, its prefetches place nothing).
+  if (off + bytes > d.half_bytes) __trap();
   d.st->half_fill[h] = off + bytes;
   d.st->half_layer[h] = layer;
   d.half_keys[h * 2 * d.experts + d.st->half_count[h]++] = key;
@@ -892,8 +894,9 @@ int32_t ignis_residency_create(const ignis_residency_desc *desc, const uint8_t *
     }
     heaviest = std::max(heaviest, layer_bytes);
   }
-  if (d.staging_half_bytes < heaviest) {
-    // A prefill can touch a whole layer; a smaller half could overflow mid-chunk.
+  if (!r->device_only && d.staging_half_bytes < heaviest) {
+    // A prefill can touch a whole layer; a smaller half could overflow mid-chunk. A device-only
+    // step never misses, so it never stages: there the ring may be 0, and none is allocated.
     delete r;
     return fail("residency: staging_half_bytes " + std::to_string(d.staging_half_bytes) +
                 " is below the heaviest layer's " + std::to_string(heaviest));

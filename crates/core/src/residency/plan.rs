@@ -585,7 +585,7 @@ pub fn plan_expert_cache(
     // floors each class's share: at exactly the catalog's bytes it left 244
     // projections slotless at one lane and 1,944 at eight (1.2 GB unused) on
     // the trellis-a25 artifact, so those were copied from RAM on a miss.
-    if cache >= catalog.total_bytes() {
+    if holds_every_expert(catalog, cache) {
         let pools = std::array::from_fn(|i| ClassPool { slots: projections[i] as u32, bytes: projections[i] * slot_bytes[i] });
         return Ok(ExpertCachePlan {
             cache_bytes: cache,
@@ -782,6 +782,21 @@ pub fn prefill_staging_ring_bytes(catalog: &ExpertCatalog) -> u64 {
         .max()
         .unwrap_or(0);
     2 * heaviest
+}
+
+/// Whether an expert cache of `cache_bytes` holds every projection of
+/// `catalog`: its residency is then device-only (ADR 0054) -- every
+/// projection has its slot, there is no host pool, and no step misses.
+pub fn holds_every_expert(catalog: &ExpertCatalog, cache_bytes: u64) -> bool {
+    cache_bytes >= catalog.total_bytes()
+}
+
+/// The prefill staging ring a residency with an expert cache of
+/// `cache_bytes` reserves: none when the cache [`holds_every_expert`], since
+/// with no miss nothing stages (GitHub #329 item 2), else
+/// [`prefill_staging_ring_bytes`].
+pub fn staging_ring_bytes_for(catalog: &ExpertCatalog, cache_bytes: u64) -> u64 {
+    if holds_every_expert(catalog, cache_bytes) { 0 } else { prefill_staging_ring_bytes(catalog) }
 }
 
 /// Per projection, what the leaf's residency keeps (`kernel/src/residency.cu`):

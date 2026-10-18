@@ -484,7 +484,12 @@ and the plan event says which branch it took (`kv_pool_policy`, with
 start):
 
 - **Resident** — the 27B always, and Flash-Next on a card that holds every
-  expert (around 96 GB): the pool takes the rest of the VRAM budget.
+  expert (around 96 GB): the pool takes the rest of the VRAM budget. On
+  Flash-Next that rest includes the 1.57 GB a prefill staging ring would
+  take: every expert has its slot, so nothing stages and the plan reserves
+  no ring (`prefill_staging_bytes` 0). That is ~5,825 pages, ~373K tokens,
+  more than a plan with the ring (arithmetic from the plan, not measured on
+  the card).
 - **Offloaded** — Flash-Next on a card whose experts stream over PCIe, as on
   a 32 GB 5090: the pool is reserved first, **524,288 tokens** shared by the
   lanes, and the expert cache takes the rest. The pool never holds more than

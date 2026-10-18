@@ -48,7 +48,8 @@ pub struct LoadReservations {
     /// One KV page's bytes.
     pub kv_page_bytes: u64,
     /// A Flash-Next load's two lines beyond [`ignis_core::VramLines`] (GitHub
-    /// #306): the expert residency's fixed bytes (ring and tables), and the
+    /// #306): the expert residency's fixed bytes (its tables, and its staging
+    /// ring on an offloaded load: a resident one stages nothing), and the
     /// VRAM expert cache that takes what the plan leaves. 0 on a 27B load.
     pub residency_bytes: u64,
     pub expert_cache_bytes: u64,

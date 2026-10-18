@@ -66,5 +66,10 @@ no host copy of any expert.**
   Admitting a layer in fewer, larger copies (4.9-12.6 GB/s measured) is the follow-up if the warm
   case matters.
 - The offloaded path (cache below the catalog) is untouched.
-- The prefill staging ring is still reserved on a device-only load, where nothing stages:
-  ~1.5 GB of VRAM the KV pool could take (a follow-up).
+- A device-only load reserves no prefill staging ring either (#329 item 2): nothing stages, so
+  the residency is created with `staging_half_bytes` 0 (refused beside a host pool, as before)
+  and the VRAM plan places the ring on the offloaded branch only. The resident branch's KV pool
+  takes its 1,574,895,616 bytes (two of the trellis-a25 artifact's heaviest layer): ~5,825 pages,
+  ~372,800 tokens at hq-e8-2b, +3.0% on an 8-lane rtxpro6000 plan the campaign logged (191,888
+  pages, MTP off). Arithmetic from the plan, not measured on the card. The resident threshold
+  drops by the same bytes.

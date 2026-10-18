@@ -88,9 +88,13 @@ pub struct ExpertResidency {
     /// Every expert projection, as the expert cache's class pools hold them
     /// all ([`crate::residency::ExpertCatalog::total_bytes`]).
     pub expert_pool_bytes: u64,
-    /// Residency's own VRAM lines, the prefill staging ring and the tables:
-    /// placed on either branch.
-    pub fixed_bytes: u64,
+    /// Residency's own VRAM lines: the prefill staging ring
+    /// ([`crate::residency::prefill_staging_ring_bytes`]), placed on the
+    /// offloaded branch only -- a resident load's residency is device-only
+    /// and never stages (ADR 0054, GitHub #329) -- and the tables
+    /// ([`crate::residency::residency_table_bytes`]), placed on either.
+    pub staging_ring_bytes: u64,
+    pub table_bytes: u64,
     /// The decode lanes: the offloaded default never exceeds their whole
     /// contexts, since a larger pool could only hold retained pages.
     pub decode_lanes: u32,
@@ -257,9 +261,13 @@ pub struct VramPlan {
     pub kv_page_count: u32,
     /// The KV pool's device bytes (planes and block tables).
     pub kv_pool_bytes: u64,
-    /// Residency's fixed lines ([`ExpertResidency::fixed_bytes`]); 0 on a
+    /// Residency's fixed lines: its tables, and its staging ring when the
+    /// branch places one ([`VramPlan::staging_ring_bytes`]); 0 on a
     /// [`Residency::Resident`] load.
     pub residency_bytes: u64,
+    /// Of those, the prefill staging ring: [`ExpertResidency::staging_ring_bytes`]
+    /// on the offloaded branch, 0 on the resident one, where no step stages.
+    pub staging_ring_bytes: u64,
     /// The VRAM expert cache: every expert projection on the resident
     /// branch, the rest of the budget on the offloaded one; 0 on a
     /// [`Residency::Resident`] load.
@@ -463,26 +471,29 @@ pub fn plan_vram(request: &VramRequest<'_>) -> Result<VramPlan, VramPlanError> {
     }
 
     // The policy (ADR 0045): resident when the budget holds every line,
-    // residency's own, every expert projection and the pool a named size or
-    // the floor asks for -- the 27B by construction -- else offloaded.
-    // Offloaded, the pool's default comes with the branch.
-    let (policy, residency_bytes, experts_bytes, offloaded_pages) = match request.residency {
-        Residency::Resident => (KvPoolPolicy::Resident, 0, 0, None),
+    // residency's tables, every expert projection and the pool a named size
+    // or the floor asks for -- the 27B by construction -- else offloaded.
+    // Offloaded, the pool's default comes with the branch, and so does the
+    // staging ring: a resident load's experts all have their slots, so no
+    // step misses and nothing stages (ADR 0054).
+    let (policy, staging_ring_bytes, table_bytes, experts_bytes, offloaded_pages) = match request.residency {
+        Residency::Resident => (KvPoolPolicy::Resident, 0, 0, 0, None),
         Residency::Experts(experts) => {
             let pool = arena(named_pages.unwrap_or(min_pages));
             let resident = fixed
-                .saturating_add(experts.fixed_bytes)
+                .saturating_add(experts.table_bytes)
                 .saturating_add(experts.expert_pool_bytes)
                 .saturating_add(pool)
                 <= budget;
             if resident {
-                (KvPoolPolicy::Resident, experts.fixed_bytes, experts.expert_pool_bytes, None)
+                (KvPoolPolicy::Resident, 0, experts.table_bytes, experts.expert_pool_bytes, None)
             } else {
                 let pages = offloaded_default_pages(request.max_context_tokens, experts.decode_lanes, min_pages);
-                (KvPoolPolicy::Offloaded, experts.fixed_bytes, 0, Some(pages))
+                (KvPoolPolicy::Offloaded, experts.staging_ring_bytes, experts.table_bytes, 0, Some(pages))
             }
         }
     };
+    let residency_bytes = staging_ring_bytes.saturating_add(table_bytes);
     // Everything placed beside the pool before it: on a whole load, the lines.
     let held = fixed.saturating_add(residency_bytes).saturating_add(experts_bytes);
 
@@ -539,6 +550,7 @@ pub fn plan_vram(request: &VramRequest<'_>) -> Result<VramPlan, VramPlanError> {
         kv_page_count,
         kv_pool_bytes,
         residency_bytes,
+        staging_ring_bytes,
         expert_cache_bytes,
         total_bytes,
         oversubscribed: total_bytes > free,
@@ -861,6 +873,13 @@ mod tests {
     const FN_BUDGET: u64 = 31_529_590_784;
     const FN_RESIDENCY: u64 = 1_577_852_928;
     const FN_EXPERTS: u64 = 37_795_446_784;
+    /// Those fixed lines apart: the tables at that run's 8,192-token chunk
+    /// (`residency_table_bytes(48, 512, 8192, 16)`), and the prefill staging
+    /// ring, two of the trellis-a25 artifact's heaviest layer (787,447,808
+    /// bytes). The rtxpro6000 campaign's plan (chunk 1,024) logged 1,577,394,176:
+    /// the same ring beside 2,498,560 bytes of tables.
+    const FN_TABLES: u64 = 2_957_312;
+    const FN_STAGING_RING: u64 = FN_RESIDENCY - FN_TABLES;
 
     /// The pool's arena: its pages, beside block tables and the indexer's
     /// per-slot tails, which are not.
@@ -895,7 +914,8 @@ mod tests {
             kv_pool: None,
             residency: Residency::Experts(ExpertResidency {
                 expert_pool_bytes: FN_EXPERTS,
-                fixed_bytes: FN_RESIDENCY,
+                staging_ring_bytes: FN_STAGING_RING,
+                table_bytes: FN_TABLES,
                 decode_lanes: lanes,
             }),
             embedding_pool_named: false,
@@ -933,6 +953,7 @@ mod tests {
             assert_eq!(plan.kv_page_count, pages, "{lanes} lanes");
             assert_eq!(plan.kv_pool_bytes, fn_arena(pages));
             assert_eq!(plan.residency_bytes, FN_RESIDENCY);
+            assert_eq!(plan.staging_ring_bytes, FN_STAGING_RING, "a miss may stage: the ring is placed");
             assert_eq!(
                 plan.expert_cache_bytes,
                 FN_BUDGET - fn_lines().total() - fn_arena(pages) - FN_RESIDENCY,
@@ -952,9 +973,11 @@ mod tests {
 
     #[test]
     fn a_budget_that_holds_every_expert_is_resident_and_the_pool_takes_the_rest() {
-        // AC 3: on the threshold -- every line, residency's, every expert and
-        // the floor pool -- the load is resident; one byte less, offloaded.
-        let threshold = fn_lines().total() + FN_RESIDENCY + FN_EXPERTS + fn_arena(FN_FLOOR);
+        // AC 3: on the threshold -- every line, residency's tables, every
+        // expert and the floor pool -- the load is resident; one byte less,
+        // offloaded. A resident load stages nothing (ADR 0054: no step
+        // misses), so the ring is no part of the threshold.
+        let threshold = fn_lines().total() + FN_TABLES + FN_EXPERTS + fn_arena(FN_FLOOR);
         let plan = plan_vram(&flash_next_at(threshold, 3)).expect("fits");
         assert_eq!(plan.kv_pool_policy, KvPoolPolicy::Resident);
         assert_eq!(plan.expert_cache_bytes, FN_EXPERTS, "the whole expert pool");
@@ -968,26 +991,58 @@ mod tests {
         let plan = plan_vram(&flash_next_at(card, 3)).expect("fits");
         assert_eq!(plan.kv_pool_policy, KvPoolPolicy::Resident);
         assert_eq!(plan.expert_cache_bytes, FN_EXPERTS);
-        let held = fn_lines().total() + FN_RESIDENCY + FN_EXPERTS;
+        let held = fn_lines().total() + FN_TABLES + FN_EXPERTS;
         assert_eq!(plan.total_bytes, held + plan.kv_pool_bytes);
         assert!(plan.total_bytes <= card);
         assert!(held + fn_arena(plan.kv_page_count + 1) > card);
     }
 
+    /// GitHub #329 item 2: a resident load's residency is device-only, which
+    /// never stages, so the plan places no prefill staging ring and the pool
+    /// takes its bytes. On a 96 GB card that is 5,826 pages more than a plan
+    /// that charged the ring: (96e9 - the lines, tables and experts - the
+    /// arena's 5 MiB + 3) / 270,336 = 186,887 pages, against 181,061 with
+    /// the ring's 1,574,895,616 bytes also taken -- 372,864 tokens.
+    #[test]
+    fn a_resident_load_reserves_no_staging_ring_and_the_pool_takes_its_bytes() {
+        let card = 96_000_000_000;
+        let plan = plan_vram(&flash_next_at(card, 3)).expect("fits");
+        assert_eq!(plan.kv_pool_policy, KvPoolPolicy::Resident);
+        assert_eq!(plan.staging_ring_bytes, 0, "nothing stages");
+        assert_eq!(plan.residency_bytes, FN_TABLES, "residency's tables alone");
+        assert_eq!(plan.kv_page_count, 186_887);
+        assert_eq!(plan.kv_token_capacity(), 186_887 * 64);
+
+        // Just above the old threshold, where the ring was charged, the
+        // ring's bytes are now the pool's: as many pages more as it holds.
+        let old_threshold = fn_lines().total() + FN_RESIDENCY + FN_EXPERTS + fn_arena(FN_FLOOR);
+        let plan = plan_vram(&flash_next_at(old_threshold, 3)).expect("fits");
+        assert_eq!(plan.kv_page_count, FN_FLOOR + (FN_STAGING_RING / FN_PAGE_BYTES) as u32);
+        assert_eq!(plan.total_bytes, old_threshold - FN_STAGING_RING % FN_PAGE_BYTES);
+    }
+
     /// ADR 0054: a load keeps its experts only in VRAM exactly when its cache
     /// holds every one (`flash_next::device_only`). Only the resident branch
     /// gives the cache that; the offloaded one gives it the budget less a pool
-    /// at least the floor the resident test failed at, so always less.
+    /// at least the floor the resident test failed at, so always less. The
+    /// staging ring follows the same line (GitHub #329 item 2): placed exactly
+    /// when the residency is not device-only, the one shape that can stage.
     #[test]
     fn only_a_resident_load_gets_a_cache_that_holds_every_expert() {
-        let threshold = fn_lines().total() + FN_RESIDENCY + FN_EXPERTS + fn_arena(FN_FLOOR);
+        let threshold = fn_lines().total() + FN_TABLES + FN_EXPERTS + fn_arena(FN_FLOOR);
         for lanes in [1, 3, 8] {
             for budget in [FN_BUDGET, threshold - 1, threshold, threshold + GIB, 96_000_000_000] {
                 let plan = plan_vram(&flash_next_at(budget, lanes)).expect("fits");
                 let at = format!("{lanes} lanes, {budget} bytes");
                 match plan.kv_pool_policy {
-                    KvPoolPolicy::Resident => assert_eq!(plan.expert_cache_bytes, FN_EXPERTS, "{at}"),
-                    KvPoolPolicy::Offloaded => assert!(plan.expert_cache_bytes < FN_EXPERTS, "{at}"),
+                    KvPoolPolicy::Resident => {
+                        assert_eq!(plan.expert_cache_bytes, FN_EXPERTS, "{at}");
+                        assert_eq!((plan.staging_ring_bytes, plan.residency_bytes), (0, FN_TABLES), "{at}");
+                    }
+                    KvPoolPolicy::Offloaded => {
+                        assert!(plan.expert_cache_bytes < FN_EXPERTS, "{at}");
+                        assert_eq!((plan.staging_ring_bytes, plan.residency_bytes), (FN_STAGING_RING, FN_RESIDENCY), "{at}");
+                    }
                 }
             }
         }
@@ -1080,7 +1135,7 @@ mod tests {
         assert_eq!(plan.expert_cache_bytes, FN_EXPERTS);
         assert!(plan.total_bytes < card, "the rest of the budget stays unused");
         // The residency test charges the named pool, not the floor.
-        let tight = fn_lines().total() + FN_RESIDENCY + FN_EXPERTS + fn_arena(16_384);
+        let tight = fn_lines().total() + FN_TABLES + FN_EXPERTS + fn_arena(16_384);
         assert_eq!(plan_vram(&named(tight)).unwrap().kv_pool_policy, KvPoolPolicy::Resident);
         assert_eq!(plan_vram(&named(tight - 1)).unwrap().kv_pool_policy, KvPoolPolicy::Offloaded);
     }

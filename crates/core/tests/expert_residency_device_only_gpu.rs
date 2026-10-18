@@ -1,5 +1,5 @@
 //! A device-only expert residency's Rust side (`host_pool_bytes` 0,
-//! ADR 0054, GitHub #329): no host pool, the three refusals `admit` makes
+//! ADR 0054, GitHub #329): no host pool and no staging ring, the three refusals `admit` makes
 //! before the FFI, `admit_finish` refusing while a projection is missing, and
 //! a step that hits once every projection is admitted.
 //!
@@ -13,7 +13,7 @@ use std::os::raw::c_void;
 use ignis_artifact::{CudaDevice, Device};
 use ignis_core::gpu_profile;
 use ignis_core::moe;
-use ignis_core::residency::device::{DeviceResidency, NO_BUDGET, ResidencyDesc};
+use ignis_core::residency::device::{plan_bytes, DeviceResidency, NO_BUDGET, ResidencyDesc};
 use ignis_core::residency::{KClass, Phase};
 
 const LAYERS: u32 = 2;
@@ -58,12 +58,8 @@ fn a_device_only_residency_admits_every_projection_then_hits() {
     for &c in &classes {
         capacity[c] += 1;
     }
-    let heaviest = (0..LAYERS)
-        .map(|l| {
-            (0..EXPERTS * 2).map(|i| RECORD_BYTES[classes[(l * EXPERTS * 2 + i) as usize]]).sum::<u64>()
-        })
-        .max()
-        .unwrap();
+    // No staging ring, as the load's desc (GitHub #329 item 2): no step
+    // misses, so nothing stages.
     let desc = ResidencyDesc {
         layers: LAYERS,
         experts: EXPERTS,
@@ -74,7 +70,7 @@ fn a_device_only_residency_admits_every_projection_then_hits() {
         prefill_lookahead_width: 2,
         prefetch_budget_one_row_bytes: NO_BUDGET,
         prefetch_budget_per_row_bytes: 0,
-        staging_half_bytes: heaviest,
+        staging_half_bytes: 0,
         host_pool_bytes: 0,
         copy_blocks: 4,
         report: 1,
@@ -88,6 +84,8 @@ fn a_device_only_residency_admits_every_projection_then_hits() {
         }
     };
     assert!(gpu.host_pool_mut().is_none(), "a device-only residency has no host pool");
+    assert_eq!(plan_bytes(&desc).expect("plan").staging, 0, "nor a ring in its plan");
+    assert_eq!(gpu.layout().expect("layout").ring_bytes, 0, "nor one allocated");
 
     // Every record at its own offset in one source buffer.
     let mut offsets = Vec::with_capacity(KEYS as usize);

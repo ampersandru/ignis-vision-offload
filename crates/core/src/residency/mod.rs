@@ -30,7 +30,8 @@
 //!   [`ExpertCatalog::total_bytes`], filled at load layer by layer from the
 //!   artifact's expert index (offset per (layer, expert, projection)).
 //! - **Device, reserved at load as [`ExpertCachePlan`]'s lines:** the eight
-//!   class pools; the prefill staging ring; the tables — per projection its
+//!   class pools; the prefill staging ring (none on a device-only load, which
+//!   never stages: [`staging_ring_bytes_for`]); the tables — per projection its
 //!   slot-table entry (`crate::moe::MoeSlot`, 16 bytes: device address and
 //!   `k2`, a layer's table indexed `expert · 2 + projection`, what spec 02's
 //!   expert kernels read) and its slot (or none), per slot its owner key and
@@ -84,9 +85,9 @@ pub use plan::{
     ClassPool, EXPERT_CACHE_FLOOR_BYTES, ExpertCachePlan, ExpertCachePlanError,
     ExpertCacheRequest, ExpertTraffic, DEFAULT_HOST_MARGIN_BYTES, HOST_PLAN_LINES, human_bytes, HostPlan, HostPlanError,
     HostPlanRequest, MEASURED_ONE_ROW_PREFETCH_BUDGET_BYTES, MEASURED_THREE_ROW_PREFETCH_BUDGET_BYTES,
-    TrafficMismatch, default_prefetch_budget, min_slots_per_class, ngram_hot_rows_room,
+    TrafficMismatch, default_prefetch_budget, holds_every_expert, min_slots_per_class, ngram_hot_rows_room,
     plan_expert_cache, plan_host, prefill_staging_ring_bytes, residency_table_bytes,
-    warm_start_order,
+    staging_ring_bytes_for, warm_start_order,
 };
 pub use policy::{
     Admission, DEFAULT_PREFETCH_WIDTH, LayerStep, Phase, PolicyConfig, PrefetchBudget, ResidencyModel,

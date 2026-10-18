@@ -4,6 +4,8 @@
 // A desc with host_pool_bytes 0 is device-only. Checked here, on a random catalog of synthetic
 // records:
 //   - creation refuses a class with fewer slots than projections, and needs no pool offsets;
+//   - it needs no staging ring either (GitHub #329 item 2): staging_half_bytes 0 is accepted, the
+//     plan and the layout show no ring, and the same desc with a host pool is refused;
 //   - a step, and the warm start, are refused until the admission is finished;
 //   - ignis_residency_admit refuses a key admitted twice; ignis_residency_admit_finish refuses
 //     while any projection is missing, and succeeds once all are;
@@ -140,7 +142,8 @@ int main() {
   desc.lookahead_width = kWidth;
   desc.prefill_lookahead_width = kWidth;
   desc.prefetch_budget_one_row_bytes = IGNIS_RESIDENCY_NO_BUDGET;
-  desc.staging_half_bytes = heaviest;
+  // No ring: a device-only step never misses, so nothing stages (the load's own desc).
+  desc.staging_half_bytes = 0;
   desc.host_pool_bytes = 0;
   desc.copy_blocks = 4;
   desc.report = 1;
@@ -157,10 +160,35 @@ int main() {
     check(r == nullptr, "a refused create hands out nothing");
   }
 
+  // With a host pool a prefill miss stages, so the ring must hold a whole layer: the same desc is
+  // refused there, before anything is allocated.
+  {
+    ignis_residency_desc pooled = desc;
+    std::vector<uint64_t> offsets(kKeys);
+    uint64_t at = 0;
+    for (uint32_t key = 0; key < kKeys; ++key) {
+      offsets[key] = at;
+      at += kRecord[class_of(key, k2[key])];
+    }
+    pooled.host_pool_bytes = at;
+    ignis_residency *r = nullptr;
+    refused(ignis_residency_create(&pooled, k2.data(), offsets.data(), &r), "no ring beside a host pool",
+            ("below the heaviest layer's " + std::to_string(heaviest)).c_str());
+    check(r == nullptr, "a refused create hands out nothing");
+  }
+
+  ignis_residency_plan plan{};
+  ok(ignis_residency_plan_bytes(&desc, &plan), "plan bytes");
+  check(plan.staging == 0, "the plan reserves no ring: " + std::to_string(plan.staging));
   ignis_residency *r = nullptr;
-  ok(ignis_residency_create(&desc, k2.data(), nullptr, &r), "create device-only");
+  ok(ignis_residency_create(&desc, k2.data(), nullptr, &r), "create device-only with no ring");
   if (r == nullptr) return 1;
   check(ignis_residency_host_pool(r) == nullptr, "no host pool");
+  {
+    ignis_residency_layout layout{};
+    ok(ignis_residency_get_layout(r, &layout), "layout");
+    check(layout.ring == nullptr && layout.ring_bytes == 0, "no ring allocated");
+  }
 
   cudaStream_t stream;
   CUDA_OK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));

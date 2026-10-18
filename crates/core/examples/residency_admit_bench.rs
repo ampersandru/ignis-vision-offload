@@ -123,7 +123,8 @@ fn main() {
         prefill_lookahead_width: 4,
         prefetch_budget_one_row_bytes: NO_BUDGET,
         prefetch_budget_per_row_bytes: 0,
-        staging_half_bytes: heaviest,
+        // As the load's: a device-only residency stages nothing (GitHub #329 item 2).
+        staging_half_bytes: 0,
         host_pool_bytes: 0,
         copy_blocks: 16,
         report: 0,

@@ -1096,5 +1096,6 @@ tickets.
   already carries what that would need.
 - **Deduplicating prefix bytes across blobs** (ADR 0024's chained blobs).
 - **Dropping the host expert pool or the prefill staging ring on a resident
-  Flash-Next load.** Spec flash-next/03 owns residency.
+  Flash-Next load.** Spec flash-next/03 owns residency. Both done since,
+  outside this spec: ADR 0054 and GitHub #329.
 - **A completion-port IO backend.**
