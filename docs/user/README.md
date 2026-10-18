@@ -475,7 +475,7 @@ turns it on (below). Before turning it on:
     the head's fixed cost);
   - sampled, one lane runs 1.9x on code and 1.3x on prose;
   - with simulated agents, whose lanes wait on tools and prefills between
-    turns, four agents generate 1.19x the tokens a second and eight 1.02x.
+    turns, four agents generate 1.21x the tokens a second and eight 1.05x.
   3 drafts tie with 4 over code and prose together and beat 2 and 5: more
   drafts help code and cost prose. A file's
   `spec: { qwen38flashnext: { backend: off } }` turns it off alone;

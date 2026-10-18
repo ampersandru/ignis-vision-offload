@@ -57,8 +57,8 @@ pub const NONE_PROFILE: &str = "none";
 /// of the KV pool. It drafts with its MTP head, 3 tokens a lane, which the
 /// 5090 leaves off because decode there is bound by the experts it copies
 /// over PCIe (finding 2026-10-07-flash-next-mtp-speculation-is-pcie-bound);
-/// here MTP pays at one to four active lanes and with four simulated agents,
-/// and ties with eight. The row budget stays the verify round's whole 8, so
+/// here MTP pays at one to four active lanes and with simulated agents at
+/// four and eight. The row budget stays the verify round's whole 8, so
 /// 3 drafts at one or two lanes, 1 at three or four, none from five on. Its
 /// n-gram hot rows are `auto`, the measured addition: the whole table in RAM
 /// keeps the disk out of every decode round, and `auto` takes it wherever

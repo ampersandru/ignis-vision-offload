@@ -78,9 +78,10 @@ cache 564-3,719 times and moved 2.2-13.5 GB to the device, a hit rate of
 | 4 | 317 | 268 | 1.19 | 292 | 260 | 1.12 |
 | 8 | 348 | 357 | 0.97 | 333 | 340 | 0.98 |
 
-At two and four lanes on code one rep of three lost a lane to the decode
-error below, so the median shown is the lower of the two clean reps: their
-mean is 284 (1.56x) at two lanes and 320 (1.19x) at four.
+At two and four lanes on code one rep of three had a request end with the
+decode error below; the client counted that request in chunks, not tokens,
+so the rep reads low and the median shown is the lower of the two clean
+reps. Their mean is 284 (1.56x) at two lanes and 320 (1.19x) at four.
 
 **MTP sampled** (one lane, the whole n-gram table):
 - code: 244 and 254 tok/s (two runs) against 130 off;
@@ -99,8 +100,8 @@ Acceptance falls from 0.80 (greedy code) to 0.75-0.77 sampled.
 
 The 4-draft code reps span 208-274 tok/s, so 3 and 4 tie over the two kinds.
 At two lanes 2 drafts ran 349 tok/s on code and 3 drafts 350; 3 drafts'
-third rep lost a lane to the decode error below, and its two clean reps
-average 360, so 3 drafts may be ahead there.
+third rep had a request end with the decode error below, and its two clean
+reps average 360, so 3 drafts may be ahead there.
 
 **Simulated agents** (`sweep.py --type agents`, phase 9). N agents, started
 0.3 s apart, each 8 turns of one growing conversation:
@@ -117,31 +118,40 @@ rates are within 4% of this build's (finding
 
 | agents | MTP 3 makespan | off makespan | MTP tokens | off tokens | MTP tok/s | off tok/s | x |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 4 | 55.45 s | 68.47 s | 9,864 | 10,240 | 177.9 | 149.6 | 1.19 |
-| 8 | 84.85 s | 88.92 s | 18,698 | 19,136 | 220.4 | 215.2 | 1.02 |
+| 4 | 55.45 s | 68.47 s | 10,071 | 10,240 | 181.6 | 149.6 | 1.21 |
+| 8 | 84.85 s | 88.92 s | 19,135 | 19,136 | 225.5 | 215.2 | 1.05 |
 
-The tok/s is the tokens over the makespan. 3 of the 96 MTP turns ended
-before their scheduled length, killed by the decode error below, and none
-with speculation off, so MTP's runs did 3.7% (4 agents) and 2.3% (8) less
-work; the tok/s column corrects for it. The median turn took 2.72 s against
+The tok/s is the tokens over the makespan. 3 of the 96 MTP turns ended with
+the decode error below, none with speculation off. The client counted those
+in chunks (94, 42, 330: an error carries no usage); the MTP tokens above
+take theirs from the server's `ignis.request.done` instead (255, 88, 767).
+So MTP's runs did the same work less 169 tokens at 4 agents (a lane cut
+mid-turn as collateral) and 1 at 8. The median turn took 2.72 s against
 3.83 s at 4 agents, and 5.19 s against 5.27 s at 8.
 
-**A decode error under MTP.** Nine requests across the campaign's logs, on
-both builds, ended mid-generation with `finish_reason: error` after one
+**A decode error under MTP.** Requests across the campaign's logs, on both
+builds, ended with `finish_reason: error` after one
 `ignis.runtime.leaf_error`, context `decode`:
 `ignis_program_decode: speculative_window 2 is not the window a round of 1
 lanes runs on this load (3)` (also window 2 at two lanes, and window 1 at
-two lanes). The lane died at a fixed token for a fixed prompt: every
-warm-up cell's second rep (one lane, 256 tokens) died at token 86 on every
-load. The host cuts a round's window near a sequence's capacity
-(`flash_next_window_within`, `crates/core/src/speculation.rs`), and the
-leaf accepts only the load's fixed window for that lane count
-(`program_verify`, `kernel/src/flash_next/speculative.cu`); that this is
-the trigger is an inference from the two code paths, under test on branch
-`fn-mtp-window`. Cells with an errored rep: the two MTP code cells above,
-3 drafts at two lanes, the agents' 3 turns, every warm-up, and two cells of
-the device-only comparison. No cell of speculation off or of the 27B has
-one.
+two lanes). Cause, found and fixed on branch `fn-mtp-window` (4c0ce315, a
+test, reproduced on the RTX 5090 before and gone after):
+- a request's reservation is its prompt plus `max_tokens`, rounded up to a
+  64-token page; an MTP-3 round writes 6 positions;
+- in the request's last few tokens, when that sum lands 0-5 tokens past a
+  page edge, the host cut the window to the room left
+  (`flash_next_window_within`), and the leaf runs only the load's window or
+  a plain step (`program_verify`), so it refused the round;
+- the request then died 1-4 tokens before its cap (255 of 256, 511 of 512,
+  767 of 768), and in a round of several lanes the others died with it,
+  mid-generation (88 of 256, 491 of 512);
+- the warm-up's second rep (prompt 61 + 256 = 317, capacity 320) hit it on
+  every load. The fix runs a round without room for its window as a plain
+  step.
+
+Cells with an errored request: the two MTP code cells above, 3 drafts at
+two lanes, the agents' 3 turns, every warm-up, and two cells of the
+device-only comparison. No cell of speculation off or of the 27B has one.
 
 **A recorded trace** (`ignis-bench replay` of a 4-agent load trace, phase 8,
 `replay-g4-*`) does not compare the two: the replay sends each recorded
@@ -206,14 +216,15 @@ mid-campaign, was:
     1.12-1.19x at four. At eight it drafts nothing (row budget 8) and costs
     2-3%. 8 lanes give the most aggregate.
   - With simulated agents, whose lanes wait on tools and prefills between
-    turns, MTP pays 1.19x at four agents and ties at eight (1.02x).
+    turns, MTP pays 1.21x at four agents and 1.05x at eight.
   - The 27B's DFlash2 at 7 drafts is 1.6-3.3x speculation off (1.6x on
     prose at eight requests, 3.3x on code at one). It beats 4 drafts in the
     three cells both ran except prose at eight requests (-6%).
 - **MTP as the profile sets it can kill a request.** A round whose window
-  the host cuts near a sequence's capacity is refused by the leaf, and the
-  request ends with an error (above). The profile's MTP needs that fix
-  before it serves; speculation off and the 27B are not affected.
+  the host cut near the end of a request's reservation was refused by the
+  leaf, and the request ended with an error a few tokens before its cap
+  (above). The profile's MTP needs that fix (branch `fn-mtp-window`) before
+  it serves; speculation off and the 27B are not affected.
 - **MTP's sign flips from the 5090 because almost no expert crosses PCIe.**
   On the 5090 a verify round copies more experts and loses at two lanes.
   Here the cache misses 0.02-0.07% of lookups and stalls at most 0.06 s a
@@ -278,8 +289,8 @@ mid-campaign, was:
 - Greedy everywhere except one sampled MTP pair; synthetic prompts (8 code,
   8 prose), 512 tokens, loop guard off.
 - The simulated agents ran on another build (device-only experts) and host
-  (64 GiB), once per configuration (no reps). MTP's run lost 3 turns to the
-  decode error (above).
+  (64 GiB), once per configuration (no reps). 3 of MTP's turns ended with
+  the decode error (above); their tokens are the server's count.
 - No recorded agent trace was replayed faithfully (above).
 - In phase 5 the first sampled spec-off pair ran with MTP on: its `PATCH`
   was refused, because a live `draft_tokens: 3` has nothing to configure
@@ -302,5 +313,6 @@ https://github.com/gpillon/ignis/issues/329, among them:
   read at most the container's `memory.max` (120,259,084,288 here) where it
   read the node's 126.7 GB. The walk is tested on file trees and the file
   layout was read in the pod, but the walk has not run on a live cgroup;
-- the MTP decode error (items 4 and 6 there are this one bug), under fix on
-  branch `fn-mtp-window`; the cells it touched can be re-run once fixed.
+- the MTP decode error (items 4 and 6 there are this one bug), fixed on
+  branch `fn-mtp-window` (4c0ce315); the cells it touched can be re-run once
+  merged.
