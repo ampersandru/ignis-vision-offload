@@ -82,3 +82,7 @@ required-features = ["cuda", "residual-tap"]
 [[example]]
 name = "flash_next_mtp_bench"
 required-features = ["cuda"]
+# GitHub #329 item 16: admission throughput of a device-only residency.
+[[example]]
+name = "residency_admit_bench"
+required-features = ["cuda"]

@@ -106,6 +106,23 @@ branch on the 4xlarge, 38.1 s, whose page cache state was not recorded. On
 the 2xlarge, whose 64 GiB cannot cache the artifact beside the whole n-gram
 table, every load of the branch took 24-33 s (`ignis-2x-test-current.log`).
 
+**Admission throughput** (`crates/core/examples/residency_admit_bench.rs`,
+raw output `.scratch/admit-bench/`): a synthetic device-only residency of
+Flash-Next's geometry on the RTX 5090 (12 layers, 12,288 records, 9.56 GB,
+mean record 778 KB, the artifact's eight record sizes, a K mix with K = 2 the
+most common), host RAM warm, 3 reps, median, two runs. The host is PCIe
+Gen 3 x16 (~12 GB/s pinned peak), so these are lower bounds for the card's
+Gen 5 link:
+
+| copy, same bytes | run 1 | run 2 |
+|---|---:|---:|
+| (a) `DeviceResidency::admit` a layer at a time, one pageable `cudaMemcpy` per record (the loader's path) | 3.52 GB/s | 3.74 GB/s |
+| (b) one pageable `cudaMemcpy` per layer | 4.91 GB/s (3.9-5.2) | 9.09 GB/s |
+| (c) one copy per layer from a `cudaHostAlloc` buffer | 11.39 GB/s | 12.61 GB/s |
+
+Over the six reps (a) ranged 3.15-4.70 GB/s and (b) 3.94-9.58; (c) stayed
+within 10.7-12.6.
+
 **On a g7e.2xlarge** (8 vCPU / 64 GiB, the same RTX PRO 6000): the branch
 loaded Flash-Next with the whole n-gram table. Host plan: 61.0 GB available,
 36.8 GB planned, 24.2 GB left. The develop image's plan, 69.9 GB, does not fit
@@ -161,8 +178,17 @@ Eight vCPUs instead of sixteen cost nothing measurable.
 - The staging line (4.7 GB) is charged for the whole plan, though the load
   frees it before serving.
 - Whether the device-only residency phase loads faster or slower than the
-  pool fill with the page cache warm is not settled (above). Its admission
-  makes one synchronous copy per record, from pageable buffers.
+  pool fill with the page cache warm was not measured end to end. Inference
+  from the admission bench (above): admission makes one synchronous copy per
+  record from pageable buffers and runs at ~3.5-3.7 GB/s on the 5090, so the
+  37.8 GB catalog takes ~10 s to admit if the card's host sustains the same
+  rate (its CPU and link were not measured), against the volume's 1,000 MiB/s (~1.05 GB/s,
+  ~38 s). On a cold page cache the load is disk-bound and admission cannot be
+  the bottleneck, which fits the one saved 38.1 s load; on a warm one admission would take ~10 s, and the develop image's 12.8 s warm residency
+  phase leaves little room for the branch to be slower. Per-layer copies
+  from a pageable buffer reached 3.9-9.6 GB/s and from a pinned one ~11-12.6
+  (the Gen 3 link), so a layer in fewer, larger copies could cut the warm
+  floor; only the warm case would see it.
 - The prefill staging ring (~1.5 GB of VRAM) is still reserved on a
   device-only load, where no step can stage. Giving it to the KV pool is a
   follow-up.
