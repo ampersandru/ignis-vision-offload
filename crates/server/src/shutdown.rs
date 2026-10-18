@@ -161,7 +161,7 @@ pub fn exit_now(code: i32) -> ! {
 /// to a live process (not portably doable from a Rust test, and Windows has
 /// no SIGTERM at all).
 fn emit_stopping() {
-    tracing::info!(name: "ignis.process.stopping", "graceful shutdown signal received");
+    tracing::info!(name: "ignis.process.stopping", "shutdown signal received");
 }
 
 /// The last line of a process a signal stopped before it served (spec §28's
