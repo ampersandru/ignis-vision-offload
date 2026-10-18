@@ -448,6 +448,70 @@ fn a_warm_start_fills_each_class_hottest_first_and_the_least_hot_goes_first() {
     assert!(step.hits.is_empty());
 }
 
+// ---- the pinned hot set (GitHub #329 item 12) --------------------------------
+
+#[test]
+fn a_pinned_projection_hits_for_free_and_takes_none_of_its_class_s_lru() {
+    let mut m = model(tight_downs(2), 0);
+    assert_eq!(m.pin(&[gate_up(0, 0), down(0, 0)]), 2);
+    assert_eq!(m.occupancy(), [0; 8], "a pinned projection is outside the LRU");
+    assert!(m.is_resident(gate_up(0, 0)) && m.is_resident(down(0, 0)));
+    let step = decode(&mut m, 0, &[0]);
+    assert_eq!(step.hits, vec![gate_up(0, 0), down(0, 0)]);
+    assert!(step.misses.is_empty() && step.prefetch_hits.is_empty());
+    assert_eq!(step.bytes_moved, 0);
+    assert_eq!(m.counters().hits[0][0] + m.counters().hits[4][0], 2, "a pinned use counts as a hit");
+    // Three downs selected, one of them pinned: the two-slot LRU holds the
+    // other two, where without the pin the step would be refused.
+    let step = decode(&mut m, 0, &[0, 1, 2]);
+    assert_eq!(step.hits, vec![gate_up(0, 0), down(0, 0)]);
+    assert_eq!(step.misses.len(), 4);
+    assert_eq!(m.occupancy()[4], 2);
+}
+
+#[test]
+fn a_pinned_projection_is_never_evicted_prefetched_or_staged() {
+    let mut m = model(tight_downs(1), 16);
+    m.pin(&[gate_up(1, 1), down(1, 1), down(0, 3)]);
+    // Decode: the one down slot turns over every step, the pinned downs stay.
+    for experts in [[0u16], [1], [2], [0]] {
+        let step = decode(&mut m, 0, &experts);
+        assert!(!step.evictions.contains(&down(0, 3)));
+    }
+    // A lookahead that ranks the pinned expert first skips it: nothing copied,
+    // nothing dropped, no budget spent on it.
+    let lane: &[u16] = &[1, 2];
+    let step = m.step(&LayerStep::decode(0, &[0]).lookahead(&[lane])).expect("step");
+    let touched: Vec<_> = step.prefetches.iter().map(|&(id, _)| id).chain(step.prefetch_dropped.iter().copied()).collect();
+    assert!(!touched.contains(&gate_up(1, 1)) && !touched.contains(&down(1, 1)), "{step:?}");
+    assert!(touched.contains(&down(1, 2)));
+    // Prefill with the down class full: the pinned down hits, nothing stages it.
+    let step = prefill(&mut m, 0, &[3, 2]);
+    assert!(step.hits.contains(&down(0, 3)));
+    assert!(!step.misses.iter().any(|&(id, _)| id == down(0, 3)));
+    let step = decode(&mut m, 1, &[1]);
+    assert_eq!(step.hits, vec![gate_up(1, 1), down(1, 1)]);
+    assert_eq!(step.bytes_moved, 0);
+}
+
+#[test]
+fn a_warm_start_skips_the_pinned_projections() {
+    let mut m = model(tight_downs(2), 0);
+    m.pin(&[down(0, 0)]);
+    let hottest_first = [down(0, 0), down(1, 3), down(1, 1), down(0, 2)];
+    assert_eq!(m.warm_start(&hottest_first), 2);
+    assert_eq!(m.occupancy()[4], 2);
+    assert!(m.is_resident(down(1, 3)) && m.is_resident(down(1, 1)) && !m.is_resident(down(0, 2)));
+}
+
+#[test]
+fn a_projection_outside_the_catalog_or_pinned_twice_is_pinned_once() {
+    let mut m = model(ROOMY, 0);
+    assert_eq!(m.pin(&[down(0, 1), down(0, 1), down(2, 0), gate_up(0, 9)]), 1);
+    assert!(m.is_pinned(down(0, 1)) && !m.is_pinned(gate_up(0, 1)));
+    assert_eq!(m.pinned_counts(), [0, 0, 0, 0, 1, 0, 0, 0]);
+}
+
 // ---- properties over random traces -----------------------------------------
 
 /// splitmix64: a fixed, dependency-free stream, so every trace below is the

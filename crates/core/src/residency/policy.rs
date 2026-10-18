@@ -61,6 +61,17 @@
 //! **Warm start** ([`ResidencyModel::warm_start`]) fills each pool from a
 //! hottest-first list before the first step; the hottest gets the most
 //! recent stamp, so the least hot is evicted first.
+//!
+//! **The pinned hot set** ([`ResidencyModel::pin`], GitHub #329 item 12): a
+//! load may keep some projections in VRAM for its whole life, each in a slot
+//! of its class's pool past the LRU's `capacity`. A pinned projection is a
+//! hit whenever it is selected (counted as one) and nothing else: it is
+//! never stamped, evicted, prefetched or staged, takes none of its class's
+//! capacity, and the warm start skips it. The LRU around the pins decides
+//! exactly what it would decide for a trace with the pinned experts taken out
+//! of every selection and, after the cut to the lookahead width, out of
+//! every lookahead ranking. Not the pin a step puts on what it stamped, which
+//! lasts until the step ends.
 
 use std::collections::BTreeSet;
 
@@ -293,14 +304,20 @@ pub struct ResidencyModel {
     lru: [BTreeSet<(u64, ProjectionId)>; KClass::COUNT],
     /// The staging ring's contents: this layer's and the next one's.
     staged: BTreeSet<ProjectionId>,
+    /// The pinned hot set, indexed as `resident`'s entries.
+    pinned: Vec<bool>,
+    pinned_counts: [u32; KClass::COUNT],
     counters: ResidencyCounters,
 }
 
 impl ResidencyModel {
-    /// A cold model: every pool empty.
+    /// A cold model: every pool empty, nothing pinned.
     pub fn new(catalog: ExpertCatalog, config: PolicyConfig) -> Self {
+        let resident = Resident::new(&catalog);
         Self {
-            resident: Resident::new(&catalog),
+            pinned: vec![false; resident.entries.len()],
+            pinned_counts: [0; KClass::COUNT],
+            resident,
             catalog,
             config,
             clock: 0,
@@ -323,9 +340,20 @@ impl ResidencyModel {
         std::array::from_fn(|i| self.lru[i].len() as u32)
     }
 
-    /// Whether a projection is in its class's pool now.
+    /// Whether a projection is in its class's pool now, pinned or in the LRU.
     pub fn is_resident(&self, id: ProjectionId) -> bool {
-        self.catalog.contains(id) && self.resident.contains_key(&id)
+        self.catalog.contains(id) && (self.resident.contains_key(&id) || self.pinned_at(&id))
+    }
+
+    /// Whether a projection is pinned ([`ResidencyModel::pin`]).
+    pub fn is_pinned(&self, id: ProjectionId) -> bool {
+        self.catalog.contains(id) && self.pinned_at(&id)
+    }
+
+    /// Pinned projections per class, indexed like [`KClass::ALL`]: the
+    /// slots each class's pool holds past the LRU's capacity.
+    pub fn pinned_counts(&self) -> [u32; KClass::COUNT] {
+        self.pinned_counts
     }
 
     /// Everything counted since the model was made.
@@ -333,17 +361,41 @@ impl ResidencyModel {
         &self.counters
     }
 
+    /// Pin `ids`, the load's pinned hot set (see the module documentation):
+    /// each keeps a slot of its own past its class's LRU for the model's
+    /// life. Meant for a cold model, before the warm start and the first
+    /// step; a projection outside the catalog, resident or already pinned is
+    /// skipped. Returns how many were pinned.
+    pub fn pin(&mut self, ids: &[ProjectionId]) -> usize {
+        let mut pinned = 0;
+        for &id in ids {
+            if !self.catalog.contains(id) || self.resident.contains_key(&id) || self.pinned_at(&id) {
+                continue;
+            }
+            let at = self.resident.at(&id);
+            self.pinned[at] = true;
+            self.pinned_counts[self.catalog.class_of(id).index()] += 1;
+            pinned += 1;
+        }
+        pinned
+    }
+
+    fn pinned_at(&self, id: &ProjectionId) -> bool {
+        self.pinned[self.resident.at(id)]
+    }
+
     /// Fill each pool from `hottest_first`, up to its capacity, skipping a
-    /// projection whose class is full. The hottest admitted projection gets
-    /// the most recent stamp. Returns how many were admitted. Meant for a
-    /// cold model, before the first step; nothing it admits counts as moved.
+    /// projection whose class is full or that is pinned. The hottest admitted
+    /// projection gets the most recent stamp. Returns how many were admitted.
+    /// Meant for a cold model, before the first step; nothing it admits
+    /// counts as moved.
     pub fn warm_start(&mut self, hottest_first: &[ProjectionId]) -> usize {
         let mut admitted = Vec::new();
         let mut room: [u32; KClass::COUNT] =
             std::array::from_fn(|i| self.config.capacity[i].saturating_sub(self.lru[i].len() as u32));
         let mut seen = BTreeSet::new();
         for &id in hottest_first {
-            if !self.catalog.contains(id) || self.resident.contains_key(&id) || !seen.insert(id) {
+            if !self.catalog.contains(id) || self.resident.contains_key(&id) || self.pinned_at(&id) || !seen.insert(id) {
                 continue;
             }
             let class = self.catalog.class_of(id).index();
@@ -395,7 +447,7 @@ impl ResidencyModel {
         };
         let (mut hits, mut misses) = (Vec::new(), Vec::new());
         for &id in &selected {
-            if self.resident.contains_key(&id) || self.staged.contains(&id) {
+            if self.resident.contains_key(&id) || self.staged.contains(&id) || self.pinned_at(&id) {
                 hits.push(id);
             } else {
                 misses.push(id);
@@ -415,6 +467,9 @@ impl ResidencyModel {
         for &id in &hits {
             let class = self.catalog.class_of(id).index();
             self.counters.hits[class][phase] += 1;
+            if self.pinned_at(&id) {
+                continue; // outside the LRU: no recency to refresh
+            }
             if let Some(entry) = self.resident.get(&id).copied() {
                 if entry.prefetched {
                     out.prefetch_hits.push(id);
@@ -453,7 +508,7 @@ impl ResidencyModel {
         };
         let mut spent = 0u64;
         for id in candidates {
-            if self.resident.contains_key(&id) || self.staged.contains(&id) {
+            if self.resident.contains_key(&id) || self.staged.contains(&id) || self.pinned_at(&id) {
                 continue;
             }
             let bytes = self.catalog.bytes(id);

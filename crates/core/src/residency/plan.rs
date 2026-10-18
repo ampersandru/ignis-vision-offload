@@ -816,6 +816,90 @@ pub fn residency_table_bytes(layers: u64, experts: u64, max_tokens: u64, lookahe
     keys * TABLE_BYTES_PER_PROJECTION + 2 * (2 * experts) * (24 + 4) + max_tokens * lookahead_width * 4 + 16 * 1024
 }
 
+/// The load's **pinned hot set** (GitHub #329 item 12,
+/// `docs/findings/2026-10-18-partial-exclusive-expert-pool.md`): experts held
+/// in VRAM for the load's whole life, each projection in a slot of its
+/// class's pool that the LRU gives up, so the host expert pool keeps no copy
+/// of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PinnedExperts {
+    /// Both projections of each pinned expert, gate/up first, hottest expert
+    /// first.
+    pub projections: Vec<ProjectionId>,
+    /// Pinned projections per class, indexed like [`KClass::ALL`].
+    pub per_class: [u32; KClass::COUNT],
+    /// What they weigh: the bytes the host pool no longer holds.
+    pub bytes: u64,
+}
+
+impl PinnedExperts {
+    pub fn is_empty(&self) -> bool {
+        self.projections.is_empty()
+    }
+
+    pub fn experts(&self) -> usize {
+        self.projections.len() / 2
+    }
+
+    /// The LRU's slots per class: `pools` (the split's
+    /// [`ExpertCachePlan::capacity`]) less the pinned ones.
+    pub fn lru_capacity(&self, pools: [u32; KClass::COUNT]) -> [u32; KClass::COUNT] {
+        std::array::from_fn(|i| pools[i].saturating_sub(self.per_class[i]))
+    }
+
+    /// Whether each projection of `catalog` is pinned, in key order
+    /// (`(layer · experts + expert) · 2 + projection`).
+    pub fn by_key(&self, catalog: &ExpertCatalog) -> Vec<bool> {
+        let experts = usize::from(catalog.experts());
+        let mut keys = vec![false; usize::from(catalog.layers()) * experts * 2];
+        for id in &self.projections {
+            keys[(usize::from(id.layer) * experts + usize::from(id.expert)) * 2 + usize::from(id.projection == Projection::Down)] =
+                true;
+        }
+        keys
+    }
+}
+
+/// The pinned hot set of pools of `capacity` slots per class: whole experts
+/// in [`warm_start_order`] (the calibration-hottest first) until their bytes
+/// reach `budget_bytes`, so the last one may pass it by less than one expert.
+/// Each class keeps at least `keep` slots for its LRU (the class minimum,
+/// [`min_slots_per_class`]): an expert that would take one below it is
+/// skipped and the walk goes on. Never-selected experts are never pinned.
+///
+/// The pins come out of the pools the cache split already made, as the
+/// study measured them (under 1% of three-lane decode for 1-2 GB on the
+/// rtx5090 profile's cache); splitting the rest again was not measured.
+pub fn pin_hot_experts(
+    catalog: &ExpertCatalog,
+    traffic: &ExpertTraffic,
+    capacity: [u32; KClass::COUNT],
+    keep: u32,
+    budget_bytes: u64,
+) -> PinnedExperts {
+    let mut room: [u32; KClass::COUNT] = std::array::from_fn(|i| capacity[i].saturating_sub(keep));
+    let mut pinned = PinnedExperts::default();
+    for expert in warm_start_order(traffic).chunks_exact(2) {
+        if pinned.bytes >= budget_bytes {
+            break;
+        }
+        let mut need = [0u32; KClass::COUNT];
+        for &id in expert {
+            need[catalog.class_of(id).index()] += 1;
+        }
+        if (0..KClass::COUNT).any(|c| need[c] > room[c]) {
+            continue;
+        }
+        for c in 0..KClass::COUNT {
+            room[c] -= need[c];
+            pinned.per_class[c] += need[c];
+        }
+        pinned.bytes += expert.iter().map(|&id| catalog.bytes(id)).sum::<u64>();
+        pinned.projections.extend_from_slice(expert);
+    }
+    pinned
+}
+
 /// The warm start's order: both projections of every selected expert,
 /// hottest first by calibration selections, ties in canonical key order.
 /// Never-selected experts are not warmed.
