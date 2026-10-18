@@ -93,18 +93,33 @@ Owner's call (2026-10-18, "lo yarn:X sia calcolato automaticamente in base al
 contesto"): `model.rope_scaling` (`--model-rope-scaling`) takes `auto`, and
 `auto` is the default instead of `none`. The rule, `RopeSetting::resolve` in
 `crates/core/src/rope_scaling.rs`, per model, from its effective
-`model.max_context`: up to `TRAINED_POSITIONS` (262,144) the table is
-`RopeScaling::NONE`, byte for byte today's default (not YaRN at 1, which the
-rope op routes differently); above it, YaRN at the exact ratio
-`max_context / 262,144` with the default temperature and ramp (524,288 is 2,
-786,432 is 3, 1,048,576 is 4, 589,824 is 2.25). Any explicit value (flag,
-env, file, `PATCH /v1/config`) overrides it, and `auto` can be spelled to go
-back. The configured value (`GET /v1/config`, `config print`) stays `auto`;
-the `Config` and `EngineShape` carry the resolved table, so KV-disk
-identities, retained pages and the model switch's reload check key on it
-(`auto` at 1,048,576 and `yarn:4` are the same load; where it came from is
-logged in the `kv pool` line's `rope_scaling_source`, never compared). Both
-`max_context` and `rope_scaling` are reload-required, so a context change
-under `auto` reloads. The built-in profiles no longer name `yarn:4`: the
-`rtx5090` 27B now runs YaRN at 3 and Flash-Next at 2.25, the `rtxpro6000`
-stays at 4 ([ADR 0057](../../adr/0057-rope-scaling-is-auto-by-default.md)).
+`model.max_context`: within the trained position envelope
+(`TRAINED_POSITION_ENVELOPE`, 262,144) the table is `RopeScaling::NONE`,
+byte for byte today's default (not YaRN at 1, which the rope op routes
+differently); above it, YaRN at the exact ratio `max_context / 262,144` with
+the default temperature and ramp (524,288 is 2, 786,432 is 3, 1,048,576 is
+4); past 64x the envelope (16,777,216 tokens) `auto` has no table, and the
+start is refused naming the context. Any explicit value (flag, env, file,
+`PATCH /v1/config`) overrides it, and `auto` can be spelled, or the key
+removed with a `PATCH` `null`, to go back.
+
+Flash-Next has no YaRN. Its kernel refuses a scaled table ("rotates at its
+own linear table") and its load passes none, which was already true of the
+`yarn:4` the profiles named before. So its table is `RopeScaling::NONE`
+under `auto` and under any explicit value alike (`rope_table` in
+`crates/server/src/config.rs`), and so is its KV-disk identity: past
+262,144 tokens Flash-Next runs the linear table unscaled. An explicit YaRN
+value that reaches it, in its own section or as a group value meant for the
+27B, is named as ignored in a WARN (`ignis.model.rope_scaling_ignored`), and
+the start goes on.
+
+The configured value (`GET /v1/config`, `config print`) stays as it was set;
+`Config` and `EngineShape` carry the resolved table, and the KV-disk
+identity, retained pages and the model switch's reload check key on it:
+`needs_reload` compares the table for this field, not its spelling, so
+`auto` and `yarn:4` at 1,048,576 are the same load and a patch between them
+applies live. The load's `ignis.model.loaded` line logs `rope_scaling` (the
+table run) beside `rope_scaling_setting` (`auto`, `none` or `yarn:F...`).
+The built-in profiles no longer name `yarn:4`: the `rtx5090` 27B now runs
+YaRN at 3, the `rtxpro6000` 27B stays at 4, and Flash-Next runs its linear
+table under both ([ADR 0057](../../adr/0057-rope-scaling-is-auto-by-default.md)).

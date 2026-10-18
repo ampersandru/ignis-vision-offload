@@ -91,15 +91,16 @@ changes code also publishes a rolling development build, **not a release**: the 
 `ghcr.io/gpillon/ignis:develop` and the `develop` prerelease.)
 
 ```
-ignis-server --model-max-context 524288 --model-rope-scaling yarn:2 \
+ignis-server --model-max-context 524288 \
   --spec-backend dflash2 --spec-draft-tokens 7 --vision-enabled
 ```
 
 No model yet? It offers to fetch one. Those flags set the 512K context `make`
-serves (YaRN x2), DFlash2 speculative decoding and image input; the Prometheus
+serves (YaRN x2, which the default `auto` rope scaling picks for it), DFlash2
+speculative decoding and image input; the Prometheus
 metrics the Playground's Monitor reads are on by default. A bare `ignis-server`
 already gets DFlash2 and image input from the built-in `rtx5090` profile, with
-a 768K context (YaRN x4). Flash-Next is `--model-id
+a 768K context (YaRN x3). Flash-Next is `--model-id
 qwen3.8-flash-next`; the flags `make` serves it with are on its
 [weights card](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis).
 The image model is `ignis-image-2.1-turbo`: once `ignis-server model download
