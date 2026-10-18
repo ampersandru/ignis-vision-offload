@@ -1662,7 +1662,8 @@ pub(crate) const ENGINE_ERROR_MESSAGE: &str =
     "the engine could not run the request; see the server log";
 
 /// The `500` a non-streaming request gets when the engine ended it with
-/// [`FinishReason::Error`] (GitHub #166): there is no completion to return.
+/// [`FinishReason::Error`] (GitHub #166), or let it go without a finish
+/// ([`CollectError::EngineGaveUp`]): there is no completion to return.
 fn engine_error_response() -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(engine_error_body())).into_response()
 }
@@ -2176,12 +2177,13 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
         (status = 200, description = "The completion. `application/json` when `stream` is false or absent; `text/event-stream` when it is true.", content(
             (ChatCompletion = "application/json"),
             (Chunk = "text/event-stream"),
-        )),
+        ), headers(("ignis-stopped-by" = String, description = "`request_timeout` on an answer its deadline cut, answered whole under `--server-timeout-reply partial` (ADR 0058); absent otherwise.")),),
         (status = 400, description = "The request is malformed: an empty `messages`, an unknown role, a sampling parameter out of range, a tool definition this template cannot take.", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
         (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
+        (status = 500, description = "A non-streaming request the engine could not run (`engine_error`): it ended the request with an error, or let it go without a finish. Never a deadline, which is the 504.", body = ApiError),
         (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
         (status = 504, description = "The engine did not finish a non-streaming request within `--server-request-timeout`, under `--server-timeout-reply error` (`request_timeout`). Under `partial`, the default, such a request is answered `200` with what it generated, `finish_reason: \"length\"`, and the header `ignis-stopped-by: request_timeout`.", body = ApiError),
     ),

@@ -135,7 +135,7 @@ telemetry consumer: the job itself records them (`images::job::spawn`), once,
 as it ends, into the same atomics; a scrape still formats atomics only. They
 take the decision family's exception: **absent until the image model has
 admitted a job**, then every series renders, zeros included. Fixed labels:
-`outcome=completed|cancelled|stopped|refused|failed|timed_out` (`timed_out` since ADR 0058), `phase=queued|encoding|
+`outcome=completed|cancelled|stopped|refused|failed`, `phase=queued|encoding|
 denoising|decoding`, `state=waiting|running`. A completed job's duration runs
 from its turn to its last image (the PNG encodes and the sends included: the log's
 `run_ms`), so the wait is the `queued` phase's alone. The queue gauge is set by the
@@ -208,6 +208,13 @@ two engine requests: its cancel counts once in
 Monitor's *Request flow* names the cancels that were rewinds, and a
 *Reasoning* card reads the families with the forced-close counter. A guard's
 close is prefilled, not forced, so it is never a forced close.
+Amended 2026-10-18 (ADR 0058): `outcome="timed_out"` joins
+`ignis_image_jobs_total`'s label set, a job its deadline ended between two
+calls (`server.request_timeout`, or `server.stream_timeout` when it streams,
+counted from its turn). Image jobs had no deadline before that ADR. No new
+family: the job records it as it records the other five outcomes, its
+`ignis.image.job` line says `outcome: timed_out`, and the Monitor's *Image
+jobs* card reads it with them.
 
 ## Context
 

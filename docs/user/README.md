@@ -921,7 +921,9 @@ is answered is `--server-timeout-reply`:
 
 `length` and `max_output_tokens` are the only values the two APIs define for
 an answer a limit cut, so every client already reads them; the header, on a
-whole answer, and the log say it was the deadline. A tool call the deadline cut
+whole answer, and the log say it was the deadline. A browser on another origin
+can read the header: the server exposes it, with `ignis-model-status` and
+`Retry-After` (`Access-Control-Expose-Headers`). A tool call the deadline cut
 mid-way is dropped whole. A decision has no partial answer, and an image cut
 short is no image, so those two are errors either way. A chat request's media
 acquisition keeps its own deadline, `--server-request-timeout` from its start;
@@ -930,7 +932,9 @@ at `0` only each fetch's timeout bounds it.
 Upgrading from 0.7.1: the default deadline is 40 minutes, not 120 seconds; a
 request past it is answered with what it generated, not a `504`, unless
 `--server-timeout-reply error`; a chat stream and an image job now have a
-deadline; `0` is accepted and means none.
+deadline; `0` is accepted and means none. A chat completion the engine let go
+of without a finish, answered whole, is a `500 engine_error`, no longer a
+`504 request_timeout` logged as a timeout.
 
 **Readiness.** A loaded model is not served the moment it is on the GPU: the
 server first runs one two-token request through the scheduler so the decode

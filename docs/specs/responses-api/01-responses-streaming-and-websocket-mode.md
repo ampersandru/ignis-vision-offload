@@ -191,6 +191,16 @@ HTTP it stays today's 504. Errors before the response exists (validation,
 unknown model, context exceeded, oversized) keep today's HTTP status and body
 on HTTP, and are an `error` event on the socket.
 
+*As built (2026-10-18, ADR 0058): the deadline's ending.* A stream (SSE or the
+socket) is held to `server.stream_timeout`, a response answered whole to
+`server.request_timeout`, both 2400 s by default and `0` for none. Past it,
+under `server.timeout_reply: partial` (the default), the response ends
+`incomplete` with `incomplete_details.reason: "max_output_tokens"` and what it
+generated, after what the loop guard held back: `response.incomplete` on a
+stream, a `200` with the header `ignis-stopped-by: request_timeout` answered
+whole. The `response.failed` with `request_timeout` and the 504 above are the
+`error` reply.
+
 **HTTP.** `stream: true` is served. `previous_response_id` on HTTP is a 400
 `previous_response_not_found` with `param: "previous_response_id"`: ignis
 stores no responses, so every id is unknown there (the same answer OpenAI
@@ -299,7 +309,8 @@ connection, and the client receives `response.created` (status `queued`) and
 retries admission; an admitted request emits `response.in_progress` and
 proceeds. Only "full" queues: context exceeded, oversized and unknown model
 are immediate `error` events. `--request-timeout` counts from admission, not
-from queueing. Closing a connection removes its queued requests. HTTP never
+from queueing (*as built, ADR 0058:* the socket's deadline is
+`--server-stream-timeout`, still from admission). Closing a connection removes its queued requests. HTTP never
 queues (503, as today).
 
 **Connection lifetime.** No 60-minute cap and no idle timeout: a local server

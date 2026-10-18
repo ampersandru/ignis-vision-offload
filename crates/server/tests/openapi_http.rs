@@ -164,6 +164,33 @@ fn the_config_route_documents_its_format_and_both_media_types() {
     assert!(get["responses"]["400"].is_object());
 }
 
+/// ADR 0058: the deadline is documented where a client reads it — the
+/// header a cut whole answer carries, declared on the `200` of chat
+/// completions and `/v1/responses`, and the two deadlines, `0` and the two
+/// replies in their descriptions, the WebSocket mode's included.
+#[test]
+fn the_deadline_is_documented_on_every_route_that_has_one() {
+    let document = document();
+    for path in ["/v1/chat/completions", "/v1/responses"] {
+        let post = &document["paths"][path]["post"];
+        let ok = &post["responses"]["200"];
+        assert_eq!(ok["headers"]["ignis-stopped-by"]["schema"]["type"], "string", "{path}: {ok}");
+        let description = post["description"].as_str().unwrap();
+        for words in ["--server-request-timeout", "--server-stream-timeout", "--server-timeout-reply", "`0`", "request_timeout"] {
+            assert!(description.contains(words), "{path} names {words}: {description}");
+        }
+    }
+    // A chat request the engine let go of is its engine error, never the 504.
+    let engine_error = document["paths"]["/v1/chat/completions"]["post"]["responses"]["500"]["description"].as_str().unwrap_or_default();
+    assert!(engine_error.contains("engine_error"), "{engine_error}");
+    let responses = document["paths"]["/v1/responses"]["post"]["description"].as_str().unwrap();
+    assert!(responses.contains("`max_output_tokens` or the deadline"), "{responses}");
+    let socket = document["paths"]["/v1/responses"]["get"]["description"].as_str().unwrap();
+    for words in ["--server-stream-timeout", "`0`", "response.incomplete", "request_timeout", "--server-timeout-reply"] {
+        assert!(socket.contains(words), "the socket names {words}: {socket}");
+    }
+}
+
 #[test]
 fn the_counting_routes_carry_their_schemas() {
     // GitHub #285: the request and response shapes are in the document, not
