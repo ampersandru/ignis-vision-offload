@@ -396,8 +396,8 @@ except the decode cells.
 
   Device weights took 7.4-7.5 s on every load. For comparison: the pinned-pool
   build on the 4xlarge read residency cold in 51.3 s and warm in 12.5-12.8 s
-  over 13 reloads; the device-only branch on this node type reloaded in
-  24-33 s (`.scratch/rtxpro6000-profile/ignis-tuning-server.log`,
+  over 13 reloads; the device-only branch on this node type read residency
+  in 24-33 s on its reloads (`.scratch/rtxpro6000-profile/ignis-tuning-server.log`,
   `ignis-2x-test-current.log`). The one replacement pod of item 17 below
   that finished residency, the volume still attached, read it in 13.5 s.
 - **Stop during a load (#329 item 17).** Three deletions, grace 120 s:
@@ -416,8 +416,8 @@ except the decode cells.
 - **Knative delete with an idle WebSocket open:** the queue-proxy's
   `preStop` drain returned after its fixed 30 s sleep, ignis got SIGTERM at
   +30.1 s and stopped 0.64 s later, the pod was gone 33 s after `oc delete
-  ksvc` (the pod's grace: 3,600 s). The client saw the socket end without a
-  close frame; the server sends none at shutdown (`ksvc-delete.out`,
+  ksvc` (the pod's grace: 3,600 s). No close frame reached the client: the
+  socket just ended (`ksvc-delete.out`,
   `ksvc-delete-ignis-tail.jsonl`, `ksvc-delete-qp-tail.txt`).
 
 **Inferred.**
@@ -439,6 +439,9 @@ except the decode cells.
   read the same table off the same volume in 27.8 s (~1.04 GB/s): the
   2xlarge's own EBS bandwidth, not the volume's 1,000 MiB/s. Not measured
   directly.
+- The missing close frame is ignis's: `crates/server` has no close-at-
+  shutdown path for a WebSocket (from the code; Kourier's Envoy sits in
+  between and was not ruled out).
 - An idle WebSocket alone does not hold a Knative pod: its drain ended at
   30 s, long before the 300 s idle close. The hour seen on 2026-10-18 needed
   more than that (a Playground tab also polls `/ui/metrics` every ~2 s);
