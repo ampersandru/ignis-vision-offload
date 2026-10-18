@@ -310,8 +310,8 @@ pub fn plan_host(request: &HostPlanRequest) -> Result<HostPlan, HostPlanError> {
 /// other line held while serving. The residency phase's layer buffers are
 /// freed before the rows are read, so they take none of it (GitHub #329);
 /// a residency phase that does not fit on its own leaves 0.
-/// `request.ngram_hot_rows_bytes` is not read, so a line no larger than this
-/// is one [`plan_host`] accepts.
+/// `request.ngram_hot_rows_bytes` is not read, so, when the residency phase
+/// fits, a line no larger than this is one [`plan_host`] accepts.
 pub fn ngram_hot_rows_room(request: &HostPlanRequest) -> u64 {
     let others = running_phases(&HostPlanRequest { ngram_hot_rows_bytes: 0, ..*request })[HOST_PLAN_LINES - 1];
     let usable = request

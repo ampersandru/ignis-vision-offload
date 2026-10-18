@@ -163,8 +163,9 @@ clone), GitHub #205 (the owner's Tier 2 header decision and its RoPE comment).
   KV pool is reserved first at a default size, and the expert cache takes the
   rest.**
 - **The test is plan arithmetic**, done before anything is allocated. A load is
-  resident when the budget holds its fixed lines, residency's fixed lines,
-  every expert projection and the minimum pool.
+  resident when the budget holds its fixed lines, residency's tables (no
+  prefill staging ring on a resident load, ADR 0054), every expert projection
+  and the minimum pool.
 - **The offloaded default is 524,288 tokens (owner)**, capped and floored
   *(agent proposal)*:
 

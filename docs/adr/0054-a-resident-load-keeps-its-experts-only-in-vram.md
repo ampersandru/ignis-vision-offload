@@ -56,7 +56,7 @@ no host copy of any expert.**
 
 - A machine with a 96 GB card serves Flash-Next with ~9 GB of RAM available instead of ~46 (the
   layer buffers are then the plan's peak), and the whole n-gram table fits beside it on 64 GB
-  (from ~37 GB available).
+  (from ~37 GB available). Both figures are arithmetic over the plan's lines, not measured.
 - Decode, TTFT and greedy text are unchanged or better (no miss left), measured on the card.
 - The load reads the artifact as before. Whether the residency phase is shorter (no second copy,
   pool to VRAM) or longer (one synchronous copy per record from pageable buffers) was not settled

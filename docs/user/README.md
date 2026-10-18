@@ -651,8 +651,9 @@ so the plan charges them only while the experts load, and holds at its peak
 the larger of that phase and the lines kept while serving. The same load then
 needs about **9 GB available** (the 4.7 GB of layer buffers, more than the
 ~4.3 GB of lines it keeps, and the 4 GiB margin), and `--ngram-hot-bytes auto`
-holds the whole n-gram table (28.8 GB) from about 37 GB available, which a
-64 GB machine has.
+holds the whole n-gram table (28.8 GB) from about 37 GB available (36 GB of
+lines and `auto`'s 256 MiB headroom), which a 64 GB machine has. Both figures
+are arithmetic over the plan's logged lines, not measured on a card.
 Measured on an RTX PRO 6000 (2026-10-18): the pinned memory went from 41.1 to
 3.3 GB, decode and greedy text unchanged, the expert cache's hit rate 1.0
 instead of 0.994.

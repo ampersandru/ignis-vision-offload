@@ -29,7 +29,7 @@ GitHub, not open questions.
 - Host refusal margin 6 GB (since 2026-10-12, the owner's call: 4 GiB by
   default, named by `--model-host-margin-bytes`); warm start exists and is off
   by default.
-- The prefill staging ring is sized for about two layers of one chunk's touched
+- The prefill staging ring (none on a device-only residency, ADR 0054) is sized for about two layers of one chunk's touched
   projections and is a plan line.
 - The trace replay uses the routing traces spec 01 records.
 
