@@ -1162,7 +1162,10 @@ async fn pings_do_not_keep_an_idle_socket_open() {
 async fn a_client_frame_restarts_the_idle_time() {
     let live = live(server(&Script::new(HashMap::new()), SchedulerConfig::default(), plain()).with_socket_idle_close(IDLE)).await;
     let mut socket = socket(&live).await;
-    tokio::time::sleep(IDLE * 2 / 3).await;
+    // A third of the idle time: the frame lands well before the close is
+    // due, and without the restart the close would come two thirds of one
+    // after it.
+    tokio::time::sleep(IDLE / 3).await;
     let spoke = std::time::Instant::now();
     send(&mut socket, json!({ "type": "response.unknown" })).await;
     assert_eq!(next_event(&mut socket).await["type"], "error");
