@@ -85,6 +85,17 @@ describe("computeFigures", () => {
     expect("thinkingForcedAt" in computeFigures(base)).toBe(false);
   });
 
+  // GitHub #330: chat completions say it under completion_tokens_details, /v1/responses under output_tokens_details.
+  it("keeps the tokens a loop-guard rewind took back, from either usage shape, and leaves them out when the response has none", () => {
+    const base = { sentAt: 0, firstTokenAt: 10, lastTokenAt: 50, endedAt: 60, finishReason: "stop", stopped: false };
+    const chat = computeFigures({ ...base, usage: { ...usage, completion_tokens_details: { rewound_tokens: 512 } } });
+    const responses = computeFigures({ ...base, usage: { ...usage, output_tokens_details: { rewound_tokens: 256 } } });
+    expect([chat.rewoundTokens, responses.rewoundTokens]).toEqual([512, 256]);
+    expect("rewoundTokens" in computeFigures({ ...base, usage })).toBe(false);
+    expect("rewoundTokens" in computeFigures({ ...base, usage: { ...usage, completion_tokens_details: {} } })).toBe(false);
+    expect("rewoundTokens" in computeFigures({ sentAt: 0, stopped: true })).toBe(false);
+  });
+
   it("has no TTFT when no token ever arrived", () => {
     const figures = computeFigures({ sentAt: 0, endedAt: 30, stopped: false });
     expect(figures.ttftMs).toBeNull();

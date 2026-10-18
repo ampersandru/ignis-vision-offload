@@ -127,7 +127,7 @@ export type ResponseObject = {
   id: string;
   status?: string;
   output?: OutputItem[];
-  usage?: { input_tokens: number; output_tokens: number; total_tokens: number } | null;
+  usage?: { input_tokens: number; output_tokens: number; total_tokens: number; output_tokens_details?: { rewound_tokens?: number } | null } | null;
   incomplete_details?: { reason?: string } | null;
   error?: { code?: string | null; message?: string } | null;
   /** ignis's forced-close extension (spec server/08), as on chat completions. */
@@ -188,7 +188,7 @@ export function parseResponseEvent(event: ServerEvent): ChunkEvent[] {
       return [
         { kind: "finish", reason, ...(forced ? { thinkingForcedAt: forcedAt } : {}) },
         ...(usage
-          ? [{ kind: "usage" as const, usage: { prompt_tokens: usage.input_tokens, completion_tokens: usage.output_tokens, total_tokens: usage.total_tokens } }]
+          ? [{ kind: "usage" as const, usage: { prompt_tokens: usage.input_tokens, completion_tokens: usage.output_tokens, total_tokens: usage.total_tokens, ...(usage.output_tokens_details ? { output_tokens_details: usage.output_tokens_details } : {}) } }]
           : []),
         { kind: "done" },
       ];

@@ -16,6 +16,7 @@ import {
   type Meter,
   type Ngram,
   type Images,
+  type Reasoning,
   type Speculation,
   RATE_SPAN_MS,
   TOKENS_PER_KV_PAGE,
@@ -26,6 +27,7 @@ import { bucketCounts } from "./quantile.ts";
 import type { MonitorState } from "./scrape.ts";
 import {
   IMAGE_OUTCOMES,
+  LOOP_OUTCOMES,
   REJECT_REASONS,
   type RejectReason,
   RETAINED_FAMILY_KEYS,
@@ -241,6 +243,12 @@ function Board({ dash, state }: { dash: Dashboard; state: MonitorState }) {
         <Card title="Request flow" subtitle={`Requests per minute, ${formatWindow(RATE_SPAN_MS)} rolling`}>
           <Legend series={flow} value={(s) => latestOf(s, formatNumber)} />
           <TimeChart label="Request flow per minute" {...chart} height={210} format={formatNumber} series={flow} />
+          {/* GitHub #330: a rewind cancels the engine request and submits a continuation, so the cancels above count it; say how many were that. */}
+          {dash.reasoning?.rewinds ? (
+            <p className="text-[11px] text-ash">
+              {formatCount(dash.reasoning.rewinds)} of these cancels {dash.reasoning.rewinds === 1 ? "was a loop-guard rewind" : "were loop-guard rewinds"}
+            </p>
+          ) : null}
         </Card>
       </div>
 
@@ -258,6 +266,9 @@ function Board({ dash, state }: { dash: Dashboard; state: MonitorState }) {
 
       {/* GitHub #307: only once a verify round ran -- a load without speculation shows nothing of it. */}
       {dash.speculation && <SpeculationCard speculation={dash.speculation} win={win} />}
+
+      {/* GitHub #330: only once the loop guard watched a request or the thinking budget closed a reasoning. */}
+      {dash.reasoning && <ReasoningCard reasoning={dash.reasoning} win={win} />}
 
       {/* GitHub #324: only once the image model admitted a job -- a text-only server shows nothing of it. */}
       {dash.images && <ImagesCard images={dash.images} win={win} />}
@@ -1127,6 +1138,75 @@ function SpeculationCard({ speculation, win }: { speculation: Speculation; win: 
         ]}
       />
       {positions.length > 0 && <Figures items={positions} />}
+    </Card>
+  );
+}
+
+/** A loop score as its bucket bound: 0.15, 1, +Inf. */
+const formatRatioBound = (le: number) => (le === Infinity ? "+Inf" : String(le));
+
+const LOOP_OUTCOME_LABEL: Record<(typeof LOOP_OUTCOMES)[number], string> = {
+  rewound: "Rewound",
+  closed: "Closed",
+  detected: "Only logged",
+  too_little_kept: "Held, too little kept",
+  no_room: "No room",
+  no_tokenizer: "No tokenizer",
+  submit_refused: "Resubmit refused",
+};
+
+/**
+ * The reasoning cut short (GitHub #330): what the loop guard did about the
+ * loops it saw, the tokens it took back and how close each watched turn came
+ * to the threshold, beside the thinking budget's own forced closes.
+ */
+function ReasoningCard({ reasoning, win }: { reasoning: Reasoning; win: string }) {
+  // Rewound and closed always, once the guard is on; the loops it could not act on only when there were some.
+  const outcomes = LOOP_OUTCOMES.filter((outcome) => outcome === "rewound" || outcome === "closed" || reasoning.outcomes[outcome].window);
+  return (
+    <Card title="Reasoning" subtitle={`Loops the guard saw and closes the budget forced · last ${win}`}>
+      <Figures
+        items={[
+          ...(reasoning.guard
+            ? [
+                ["Turns looped", `${formatCount(reasoning.looped.window)} of ${formatCount(reasoning.watched.window)}`] as [string, string],
+                ["Share looped", asShare(reasoning.loopedShare)] as [string, string],
+                ["Tokens taken back", formatCount(reasoning.rewoundTokens.window)] as [string, string],
+                ["Of tokens decoded", asShare(reasoning.rewoundShare)] as [string, string],
+              ]
+            : []),
+          ["Budget closes", formatCount(reasoning.forcedCloses.window)],
+        ]}
+      />
+      {reasoning.guard && (
+        <>
+          <dl className="grid grid-cols-3 gap-3 border-t border-line pt-3">
+            {outcomes.map((outcome) => (
+              <div key={outcome}>
+                <dt className="text-[11px] text-ash">{LOOP_OUTCOME_LABEL[outcome]}</dt>
+                <dd className="font-display text-lg leading-tight font-semibold">{formatCount(reasoning.outcomes[outcome].window)}</dd>
+              </div>
+            ))}
+          </dl>
+          <div>
+            <h4 className="font-display text-[11px] font-bold tracking-[0.14em] text-ash uppercase">Lowest loop score per turn</h4>
+            {reasoning.minRatio ? (
+              <Distribution
+                label="Lowest loop score per turn"
+                bounds={reasoning.minRatio.bounds}
+                counts={bucketCounts(reasoning.minRatio)}
+                color="var(--series-2)"
+                formatBound={formatRatioBound}
+                empty={`No turn scored in the last ${win}`}
+              />
+            ) : null}
+          </div>
+          <p className="text-[11px] text-ash">
+            A turn that scores under the guard's ratio has looped: the lower the bar, the closer to a rewind. A turn too short to fill one window is watched
+            but never scored. The budget's closes are the thinking budget's own, not the guard's.
+          </p>
+        </>
+      )}
     </Card>
   );
 }

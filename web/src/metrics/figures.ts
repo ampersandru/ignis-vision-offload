@@ -36,6 +36,8 @@ export type Figures = {
   thinkingForcedAt?: number;
   /** How long the request waited in the engine's queue; absent when it was admitted at once. Not part of TTFT. */
   queueMs?: number;
+  /** Generated tokens the loop guard's rewinds took back (GitHub #330), from the response's usage; absent when it carries none. */
+  rewoundTokens?: number;
   /** Stopped before the end: no usage, so no token counts or rate. */
   partial: boolean;
 };
@@ -64,6 +66,7 @@ export function computeFigures(t: Timeline): Figures {
     completion !== null && completion > 1 && decodeSpanMs > 0 ? (completion - 1) / (decodeSpanMs / 1000) : null;
   // Time in the engine's queue is back-pressure, not latency: TTFT leaves it out.
   const queueMs = t.queuedAt !== undefined && t.admittedAt !== undefined ? t.admittedAt - t.queuedAt : undefined;
+  const rewoundTokens = t.usage?.completion_tokens_details?.rewound_tokens ?? t.usage?.output_tokens_details?.rewound_tokens;
   return {
     ttftMs: t.firstTokenAt !== undefined ? t.firstTokenAt - t.sentAt - (queueMs ?? 0) : null,
     decodeTokensPerSec,
@@ -73,6 +76,7 @@ export function computeFigures(t: Timeline): Figures {
     finishReason: t.finishReason ?? null,
     ...(t.thinkingForcedAt !== undefined ? { thinkingForcedAt: t.thinkingForcedAt } : {}),
     ...(queueMs !== undefined ? { queueMs } : {}),
+    ...(rewoundTokens !== undefined ? { rewoundTokens } : {}),
     partial: t.stopped,
   };
 }

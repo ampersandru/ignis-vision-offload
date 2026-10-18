@@ -181,6 +181,18 @@ describe("parseResponseEvent", () => {
     ).toEqual(chatEvents(sse({ content: "Hi" }) + sse({}, "length") + usageChunk + "data: [DONE]\n\n"));
   });
 
+  it("carries the tokens a loop-guard rewind took back in the usage (GitHub #330)", () => {
+    const events = parseResponseEvent({
+      type: "response.completed",
+      response: { id: "r", status: "completed", output: [], usage: { ...usage, output_tokens_details: { rewound_tokens: 300 } } },
+    });
+    expect(events.find((e) => e.kind === "usage")).toMatchObject({ usage: { completion_tokens: 4, output_tokens_details: { rewound_tokens: 300 } } });
+    expect(parseResponseEvent({ type: "response.completed", response: { id: "r", status: "completed", output: [], usage } }).find((e) => e.kind === "usage")).toEqual({
+      kind: "usage",
+      usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+    });
+  });
+
   it("carries where the thinking budget closed the reasoning, as the chat stream does", () => {
     const events = parseResponseEvent({
       type: "response.completed",
