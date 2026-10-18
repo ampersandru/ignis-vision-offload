@@ -862,8 +862,8 @@ pub(crate) fn flash_next_load(
     use ignis_artifact::flash_next::{self, FlashNextGeometry};
     use ignis_artifact::{CudaDevice, Reader};
     use ignis_core::compute::ModelConfig;
-    use ignis_core::flash_next::{class_minimum_slots, expert_traffic, EngineOptions, LOOKAHEAD_WIDTH};
-    use ignis_core::residency::load::{catalog, pool_layout};
+    use ignis_core::flash_next::{class_minimum_slots, device_only, expert_traffic, EngineOptions, LOOKAHEAD_WIDTH};
+    use ignis_core::residency::load::{catalog, pool_layout, stream_staging_bytes};
     use ignis_core::ngram_table::NgramTable;
     use ignis_core::residency::{
         available_physical_bytes, ngram_hot_rows_room, plan_expert_cache, plan_host, prefill_staging_ring_bytes,
@@ -1037,11 +1037,19 @@ pub(crate) fn flash_next_load(
     // staging line when the tier is named.
     let kv_disk_bytes = shape.kv_disk_bytes_for(ignis_core::compute::ModelFamily::FlashNext);
     let kv_disk_staging_bytes = if kv_disk_bytes > 0 { ignis_runtime::kv_disk::STAGING_BYTES } else { 0 };
+    // A load whose cache holds every expert pins no expert pool: its records
+    // go from the file to their slots through a few layer buffers, the
+    // staging line's (`build_residency`).
+    let (expert_pool_bytes, expert_staging_bytes) = if device_only(&options, &cat) {
+        (0, stream_staging_bytes(&plan.experts).map_err(|e| e.to_string())?)
+    } else {
+        (pool_layout(&plan.experts).bytes, 0)
+    };
     let mut host_request = available_physical_bytes().map(|available| HostPlanRequest {
         available_physical_bytes: available,
-        expert_pool_bytes: pool_layout(&plan.experts).bytes,
+        expert_pool_bytes,
         ngram_hot_rows_bytes: 0,
-        staging_bytes: kv_disk_staging_bytes,
+        staging_bytes: kv_disk_staging_bytes + expert_staging_bytes,
         retained_host_slots_bytes: pool_plan.retained_host_bytes,
         kv_ram_arena_bytes: options.kv_ram_arena_bytes,
         margin_bytes: shape.host_margin_bytes,

@@ -632,7 +632,20 @@ Serving Flash-Next needs about **46-47 GB of available RAM**: 38 GB of pinned
 experts, 1 GB of n-gram hot rows, ~0.5 GB of staging (KV-disk's 64 MiB
 included: `--qwen38flashnext-kv-disk-bytes 0` drops it), ~1 GB of retained host
 slots, the 2 GiB KV-RAM arena and the 4 GiB margin the load refuses to dip into
-(`--model-host-margin-bytes`: it never lets reuse push Windows into paging). A load below that is refused
+(`--model-host-margin-bytes`: it never lets reuse push Windows into paging).
+
+**On a card that holds every expert** (around 96 GB: the VRAM plan's
+`kv_pool_policy: resident`) there are no pinned experts at all: every record is
+read from the artifact straight into its VRAM slot, a layer at a time, and no
+step ever copies an expert in, so the plan's `expert_pool` line is 0 and its
+staging line carries the layer buffers of the load instead (~4.7 GB, given
+back once the model is loaded). The same load then needs about **13 GB
+available** (~9 GB of lines and the 4 GiB margin), and the whole n-gram table
+(28.8 GB, `--ngram-hot-bytes auto`) fits beside it on a 64 GB machine. Measured on an RTX PRO 6000 (2026-10-18): the pinned memory went from
+41.1 to 3.3 GB, decode and greedy text unchanged, the expert cache's hit rate
+1.0 instead of 0.994.
+
+A load below that is refused
 in GiB, with how far short it fell and the plan line to shrink:
 
 ```

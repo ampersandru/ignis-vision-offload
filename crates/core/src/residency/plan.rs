@@ -501,6 +501,24 @@ pub fn plan_expert_cache(
     let catalog = request.catalog;
     let slot_bytes: [u64; KClass::COUNT] = std::array::from_fn(|i| catalog.slot_bytes(KClass::ALL[i]));
     let projections = catalog.class_counts();
+    // A cache that holds the whole catalog (ADR 0045's resident load) gives
+    // every class all of its projections. The split below models an LRU of
+    // calibration traffic, which holds no never-selected projection and
+    // floors each class's share: at exactly the catalog's bytes it left 244
+    // projections slotless at one lane and 1,944 at eight (1.2 GB unused) on
+    // the trellis-a25 artifact, so those were copied from RAM on every use.
+    if cache >= catalog.total_bytes() {
+        let pools = std::array::from_fn(|i| ClassPool { slots: projections[i] as u32, bytes: projections[i] * slot_bytes[i] });
+        return Ok(ExpertCachePlan {
+            cache_bytes: cache,
+            pools,
+            staging_ring_bytes: request.staging_ring_bytes,
+            table_bytes: request.table_bytes,
+            // Every projection resident: every selection hits.
+            expected_hit_rate: 1.0,
+            below_floor,
+        });
+    }
     let mut slots: [u64; KClass::COUNT] =
         std::array::from_fn(|i| u64::from(request.min_slots).min(projections[i]));
     let needed: u64 = (0..KClass::COUNT).map(|i| slots[i] * slot_bytes[i]).sum();

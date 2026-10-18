@@ -11,11 +11,17 @@
 //! `docs/findings/2026-10-09-flash-next-expert-pool-parallel-read.md`).
 //! [`fill_expert_pool`] opens [`READ_WORKERS`] handles on `path` and gives
 //! each a disjoint, round-robined set of layers.
+//!
+//! A device-only residency (every expert in VRAM, ADR 0045's resident load)
+//! has no pool: [`stream_expert_layers`] reads the same layers the same way,
+//! each into a buffer of its own, and hands them to the caller to admit, a
+//! one-layer queue bounding the RAM it holds ([`stream_staging_bytes`]).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::thread;
 
 use ignis_artifact::flash_next::{ExpertIndex, Projection as ArtifactProjection};
@@ -238,4 +244,91 @@ pub fn fill_expert_pool(path: &Path, index: &ExpertIndex, pool: &mut [u8]) -> st
         Ok(())
     })?;
     Ok(total.load(Ordering::Relaxed))
+}
+
+/// One layer's expert records, read into a buffer of their own for a
+/// device-only residency to admit: `keys[i]`'s record sits at `offsets[i]`
+/// in `bytes`, keys in key order.
+#[derive(Debug)]
+pub struct LayerRecords {
+    pub layer: usize,
+    pub keys: Vec<u32>,
+    pub offsets: Vec<u64>,
+    pub bytes: Vec<u8>,
+}
+
+/// The RAM [`stream_expert_layers`] holds at most at once: a layer for each
+/// reading worker, one waiting in the queue and one being admitted, each
+/// the size of the heaviest layer's slice of the pool layout.
+pub fn stream_staging_bytes(index: &ExpertIndex) -> std::io::Result<u64> {
+    let ranges = layer_pool_ranges(index, pool_layout(index).bytes as usize)?;
+    let heaviest = ranges.iter().map(|&(lo, hi)| hi - lo).max().unwrap_or(0);
+    Ok((stream_workers(ranges.len()) as u64 + 2) * heaviest)
+}
+
+fn stream_workers(layers: usize) -> usize {
+    READ_WORKERS.max(1).min(layers.max(1))
+}
+
+/// Reads every expert record of the artifact at `path` a layer at a time and
+/// hands each layer to `admit`, on the calling thread: what a device-only
+/// residency loads from instead of the pool [`fill_expert_pool`] fills. The
+/// layers are read as that fill reads them ([`READ_WORKERS`] handles,
+/// round-robined) but each into its own buffer, and a queue of one layer
+/// holds the RAM to [`stream_staging_bytes`]. The order layers arrive in is
+/// not fixed. Returns the bytes read; the first read error or `admit` error
+/// ends it, the readers stopping at their next layer.
+pub fn stream_expert_layers(
+    path: &Path,
+    index: &ExpertIndex,
+    mut admit: impl FnMut(LayerRecords) -> Result<(), String>,
+) -> Result<u64, String> {
+    let ranges = layer_pool_ranges(index, pool_layout(index).bytes as usize).map_err(|e| e.to_string())?;
+    let workers = stream_workers(ranges.len());
+    let experts = index.experts_per_layer();
+    let (tx, rx) = mpsc::sync_channel::<std::io::Result<(u64, LayerRecords)>>(1);
+    thread::scope(|scope| -> Result<u64, String> {
+        for worker in 0..workers {
+            let tx = tx.clone();
+            let ranges = &ranges;
+            scope.spawn(move || {
+                let mut file = match File::open(path) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                };
+                for layer in (worker..ranges.len()).step_by(workers) {
+                    let (lo, hi) = ranges[layer];
+                    let mut bytes = vec![0u8; (hi - lo) as usize];
+                    let message = fill_layer(&mut file, index, layer, lo, &mut bytes).map(|read| {
+                        let mut keys = Vec::with_capacity(experts * 2);
+                        let mut offsets = Vec::with_capacity(experts * 2);
+                        for expert in 0..experts {
+                            for (p, projection) in ArtifactProjection::ALL.into_iter().enumerate() {
+                                let r = index.get(layer, expert, projection).expect("indexed");
+                                keys.push(((layer * experts + expert) * 2 + p) as u32);
+                                offsets.push(r.pool_offset - lo);
+                            }
+                        }
+                        (read, LayerRecords { layer, keys, offsets, bytes })
+                    });
+                    let failed = message.is_err();
+                    // The receiver is gone once the caller's admit failed: stop.
+                    if tx.send(message).is_err() || failed {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        let mut total = 0u64;
+        for message in rx {
+            let (read, records) = message.map_err(|e| format!("read the expert records: {e}"))?;
+            total += read;
+            admit(records)?;
+        }
+        Ok(total)
+    })
 }

@@ -32,6 +32,14 @@
  * that hands the slot on) and after its staging is released. The expert ops trap on a selected
  * ABSENT entry in every build, so a stale address is never read as another projection's bytes.
  *
+ * Device-only: a desc with `host_pool_bytes` 0 has no host pool. It is for a card that holds every
+ * expert (ADR 0045's resident load): each class needs a slot for every projection of it, the loader
+ * admits every record from its own buffers (`ignis_residency_admit`, then
+ * `ignis_residency_admit_finish`) instead of filling a pool, and from then on no step misses, so
+ * none copies anything. A step that would miss anyway is refused with
+ * IGNIS_RESIDENCY_STATUS_NO_HOST and changes nothing (its projections stay ABSENT, so an expert op
+ * run on it traps); a prefetch places nothing.
+ *
  * Every structure belongs to one `struct ignis_residency`, created at load and freed with the
  * model (no process-wide state; phase 2's model switch is a reload). A step allocates nothing,
  * never synchronizes the host and is capturable in a CUDA graph: the resolve kernels and the
@@ -81,7 +89,7 @@ struct ignis_residency_desc {
                                            * saturates to no budget (GitHub #306) */
   uint64_t staging_half_bytes;  /* one half of the prefill staging ring (>= the heaviest layer;
                                  * a multiple of 16) */
-  uint64_t host_pool_bytes;     /* the pinned expert pool */
+  uint64_t host_pool_bytes;     /* the pinned expert pool; 0: device-only (above) */
   uint32_t copy_blocks;         /* the copy kernel's grid; 0 = 16 */
   uint32_t report;              /* 1: keep each step's outcome for ignis_residency_last_report */
 };
@@ -113,7 +121,9 @@ struct ignis_residency;
  * the pinned, mapped host pool (`host_pool_bytes`), which the loader then fills. `k2` is the K
  * map, `[layers][experts][2]` (4, 5, 6 or 8), and `pool_offsets` each record's offset in the
  * host pool, same order (the binder's expert index); a record of class c is
- * `record_bytes[c]` bytes and 16-byte aligned. */
+ * `record_bytes[c]` bytes and 16-byte aligned. Device-only (`host_pool_bytes` 0): no host pool,
+ * `pool_offsets` is not read (NULL is fine), and a class whose capacity is below its projections
+ * is refused. */
 int32_t ignis_residency_create(const struct ignis_residency_desc *desc, const uint8_t *k2,
                                const uint64_t *pool_offsets, struct ignis_residency **out);
 
@@ -133,6 +143,16 @@ const struct ignis_moe_slot *ignis_residency_slot_table(struct ignis_residency *
  * Writes how many were admitted to `*admitted`. */
 int32_t ignis_residency_warm_start(struct ignis_residency *r, const uint32_t *keys, uint32_t n,
                                    uint32_t *admitted);
+
+/* Device-only admission (`host_pool_bytes` 0), before the first step: each of the `n` `keys` takes
+ * the next free slot of its class, its record copied from `src + src_offsets[i]` (host memory,
+ * pageable or pinned; `record_bytes` of its class), and its slot-table entry is set. Synchronous;
+ * a key already admitted is refused. `ignis_residency_admit_finish` then checks that every
+ * projection was admitted -- a step before it is refused -- and leaves the residency as a warm
+ * start of every key would: every slot filled, the earliest admitted the oldest. */
+int32_t ignis_residency_admit(struct ignis_residency *r, const uint32_t *keys, uint32_t n,
+                              const uint8_t *src, const uint64_t *src_offsets);
+int32_t ignis_residency_admit_finish(struct ignis_residency *r);
 
 /* One layer step. `ids` is the router's selection, device int32 `[tokens][IGNIS_MOE_TOP_K]`
  * (decode: one row per lane; prefill: one per token of the chunk). `lookahead_logits` is the
@@ -232,13 +252,16 @@ int32_t ignis_residency_set_mirror(struct ignis_residency *r, struct ignis_resid
  * step changed nothing, so its missing projections stay ABSENT and an expert op run on it
  * traps), or
  * IGNIS_RESIDENCY_STATUS_INVALID for an expert id outside [0, experts) (the step changed nothing,
- * but for a split step's lookahead: see ignis_residency_step_demand). The six lists -- hits,
+ * but for a split step's lookahead: see ignis_residency_step_demand), or
+ * IGNIS_RESIDENCY_STATUS_NO_HOST for a device-only step that would miss (it changed nothing). The six lists -- hits,
  * prefetch hits, misses, evictions, prefetches, dropped -- go to `entries`, list `l` at
  * `entries + l * capacity`, each entry a key with bit 31 set for a staging admission (misses,
  * prefetches); hits, prefetch hits and misses are in key order, the rest in processing order.
  * A list longer than `capacity` is refused. Waits for residency's work. */
 #define IGNIS_RESIDENCY_LISTS 6
 #define IGNIS_RESIDENCY_STATUS_INVALID 0x100u
+/* A device-only residency's step that would miss: refused, nothing changed (see above). */
+#define IGNIS_RESIDENCY_STATUS_NO_HOST 0x200u
 #define IGNIS_RESIDENCY_STAGING_BIT 0x80000000u
 struct ignis_residency_report {
   uint32_t status;

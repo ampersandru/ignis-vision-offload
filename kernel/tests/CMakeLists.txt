@@ -722,6 +722,12 @@ add_test(NAME ignis_kernel_residency_graph_split_test COMMAND ignis_kernel_resid
 add_test(NAME ignis_kernel_residency_upload_order_test COMMAND ignis_kernel_residency_trace_test split)
 set_tests_properties(ignis_kernel_residency_upload_order_test PROPERTIES
   ENVIRONMENT "IGNIS_RESIDENCY_UPLOAD_DELAY_US=2000")
+# OURS -- a device-only residency (host_pool_bytes 0, ADR 0045's resident load): creation and
+# admission rules, every record's bytes in its slot, and steps -- eager, with either lookahead,
+# and captured -- that hit everything and copy nothing. GPU (ADR 0006: no SKIP_RETURN_CODE).
+add_executable(ignis_kernel_residency_device_only_test test_residency_device_only.cu)
+target_link_libraries(ignis_kernel_residency_device_only_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_residency_device_only_test COMMAND ignis_kernel_residency_device_only_test)
 # GitHub #306 (decode fusion, step 5): OURS -- residency's routed demand step (the router's selection
 # made in the resolve's launch) against the router and the demand step it replaces, bit for bit.
 # GPU (ADR 0006: no SKIP_RETURN_CODE).

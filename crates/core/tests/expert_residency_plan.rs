@@ -216,6 +216,31 @@ fn a_cache_larger_than_every_projection_holds_them_all() {
     assert_eq!(plan.capacity(), [10, 0, 0, 10, 10, 0, 0, 10]);
 }
 
+/// The resident load's cache is exactly the catalog's bytes. The LRU split
+/// holds no never-selected projection and floors each class's share, so it
+/// left projections slotless there with bytes unused (244 at one lane, 1,944
+/// at eight on the real artifact); every projection now gets its slot.
+#[test]
+fn a_cache_of_exactly_the_catalog_gives_every_projection_a_slot_selected_or_not() {
+    let (catalog, traffic) = hot_and_cold_with(0);
+    assert_eq!(catalog.total_bytes(), 4_000);
+    let request = ExpertCacheRequest {
+        budget_bytes: 4_000 + 1_000 + 500 + 300,
+        ..cache_request(&catalog, &traffic)
+    };
+    let plan = plan_expert_cache(&request).expect("fits");
+    assert_eq!(plan.cache_bytes, 4_000);
+    assert_eq!(plan.capacity(), [10, 0, 0, 10, 10, 0, 0, 10]);
+    assert_eq!(plan.pooled_bytes(), 4_000, "no byte of the cache left unassigned");
+    assert_eq!(plan.expected_hit_rate, 1.0);
+    // One slot's bytes short of the catalog the LRU split runs as before: one
+    // projection without a slot, every byte assigned.
+    let short = plan_expert_cache(&ExpertCacheRequest { budget_bytes: request.budget_bytes - 100, ..request })
+        .expect("fits");
+    assert_eq!(short.capacity().iter().sum::<u32>(), 39);
+    assert_eq!(short.pooled_bytes(), 3_900);
+}
+
 #[test]
 fn every_populated_class_gets_its_minimum_even_without_traffic() {
     let (catalog, traffic) = hot_and_cold_with(0);
