@@ -34,6 +34,7 @@ use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 
 use crate::api::{self, ApiError, CancelOnDrop};
+use crate::deadline::TimeoutReply;
 use crate::engine::{drain_tokens, EventStream};
 use crate::loop_guard::{Guarding, Running};
 use ignis_core::SchedEvent;
@@ -149,7 +150,7 @@ The reasoning-loop guard (`--model-loop-guard`, ADR 0052) watches a request that
         (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
         (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
-        (status = 504, description = "A non-streaming request the engine did not finish within `--server-request-timeout`.", body = ApiError),
+        (status = 504, description = "A non-streaming request the engine did not finish within `--server-request-timeout`, under `--server-timeout-reply error` (`request_timeout`). Under `partial`, the default, such a request is answered `200` with what it generated: `status: \"incomplete\"`, `incomplete_details.reason: \"max_output_tokens\"`, and the header `x-ignis-stopped-by: request_timeout`.", body = ApiError),
     ),
 )]
 pub(crate) async fn create_response(
@@ -192,7 +193,11 @@ pub(crate) async fn create_response(
     tracing::Span::current().record("request_id", request_id);
     let mut events = prepared.start.events(request_id.to_string(), created_at(&server)).with_rewound(rewound);
     let mut cancel = CancelOnDrop::following(engine, running.clone());
-    let deadline = tokio::time::Instant::now() + server.live().request_timeout;
+    // ADR 0058: a stream is held to `--server-stream-timeout`, a response
+    // answered whole to `--server-request-timeout`.
+    let live = server.live();
+    let timeout = if stream { live.stream_timeout } else { live.request_timeout };
+    let deadline = crate::deadline::after(timeout);
 
     if stream {
         let mut pending: VecDeque<JsonValue> = events.created(false).into();
@@ -203,7 +208,8 @@ pub(crate) async fn create_response(
             events,
             pending,
             deadline: Box::pin(tokio::time::sleep_until(deadline)),
-            timeout: server.live().request_timeout,
+            timeout,
+            reply: live.timeout_reply,
             running,
             stopping: false,
             ended: false,
@@ -218,21 +224,28 @@ pub(crate) async fn create_response(
         }
         Driven::TimedOut => {
             cancel.timed_out();
-            api::error_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                "request_timeout",
-                "request_timeout",
-                api::request_timeout_message(server.live().request_timeout),
-            )
+            if live.timeout_reply == TimeoutReply::Error {
+                return api::error_response(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "request_timeout",
+                    "request_timeout",
+                    api::request_timeout_message(timeout),
+                );
+            }
+            // What it generated, and what the loop guard held back of it.
+            events.on_tokens(&api::owed_at_deadline(&running, &mut scheduled).await);
+            events.timed_out(TimeoutReply::Partial, api::request_timeout_message(timeout));
+            crate::deadline::stopped_by_timeout(Json(events.response().clone()).into_response())
         }
     }
 }
 
 /// A streamed response: the request's scheduler stream through its
 /// [`ResponseEvents`], one server-sent event per Responses event, ended by
-/// the terminal one. The request's deadline ends it `failed` with
-/// `request_timeout`, after what the loop guard held back (ADR 0052); a
-/// client that hangs up cancels the request.
+/// the terminal one. The request's deadline (`--server-stream-timeout`)
+/// ends it as `reply` says, `incomplete` or `failed` with `request_timeout`
+/// (ADR 0058), after what the loop guard held back (ADR 0052); a client that
+/// hangs up cancels the request.
 struct EventSse {
     stream: EventStream,
     cancel: CancelOnDrop,
@@ -240,6 +253,7 @@ struct EventSse {
     pending: VecDeque<JsonValue>,
     deadline: Pin<Box<tokio::time::Sleep>>,
     timeout: std::time::Duration,
+    reply: TimeoutReply,
     /// The engine request generating, which the deadline stops.
     running: Running,
     /// The deadline passed and the loop guard sends what it held back: the
@@ -274,7 +288,12 @@ impl Stream for EventSse {
                     this.stopping = true;
                     continue;
                 }
-                this.pending.extend(this.events.failed("request_timeout", api::request_timeout_message(this.timeout)));
+                // No guard: the tokens already waiting, never one more.
+                let mut owed = Vec::new();
+                let _ = drain_tokens(&mut this.stream, &mut owed);
+                this.held = None;
+                this.pending.extend(this.events.on_tokens(&owed));
+                this.pending.extend(this.events.timed_out(this.reply, api::stream_timeout_message(this.timeout)));
                 this.ended = true;
                 continue;
             }
@@ -302,7 +321,7 @@ impl Stream for EventSse {
                 }
                 // Everything held back went out: the deadline's end.
                 Poll::Ready(None) if this.stopping => {
-                    this.pending.extend(this.events.failed("request_timeout", api::request_timeout_message(this.timeout)));
+                    this.pending.extend(this.events.timed_out(this.reply, api::stream_timeout_message(this.timeout)));
                     this.ended = true;
                     continue;
                 }

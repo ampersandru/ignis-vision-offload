@@ -19,6 +19,7 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use ignis_core::mock::GatedCompute;
 use ignis_core::{Compute, MockCompute, SchedulerConfig};
+use ignis_server::deadline::TimeoutReply;
 use ignis_server::images::job::base64;
 use ignis_server::loop_guard::{repair, LoopGuardMode, LoopGuardParams, TAG_PREFIX};
 use serde_json::{json, Value as JsonValue};
@@ -638,10 +639,13 @@ async fn a_full_engine_queues_socket_requests_in_arrival_order_across_connection
     metric_reaches(&metrics, "ignis_responses_queued_requests 0").await;
 }
 
+/// A socket's responses are held to `server.stream_timeout` (ADR 0058),
+/// counted from admission; one cut by it ends `incomplete`, as its default
+/// partial reply says.
 #[tokio::test]
-async fn the_request_timeout_counts_from_admission_not_from_queueing() {
+async fn the_stream_timeout_counts_from_admission_not_from_queueing() {
     let server = server(&Script::silent(), hog_config(1), plain())
-        .with_request_timeout(Duration::from_millis(400));
+        .with_stream_timeout(Duration::from_millis(400));
     let live = live(server).await;
     let mut socket = socket(&live).await;
     send(&mut socket, create(&hog(), Some("h"))).await;
@@ -650,8 +654,8 @@ async fn the_request_timeout_counts_from_admission_not_from_queueing() {
     next_of(&mut socket, Some("b"), "response.queued").await;
     // The hog times out mid-stream, a whole timeout after the queued request
     // arrived; that request still has its own timeout from admission.
-    let hog = next_of(&mut socket, Some("h"), "response.failed").await;
-    assert_eq!(hog["response"]["error"]["code"], "request_timeout");
+    let hog = next_of(&mut socket, Some("h"), "response.incomplete").await;
+    assert_eq!(hog["response"]["incomplete_details"]["reason"], "max_output_tokens");
     let after = stream_until_terminal(&mut socket, Some("b")).await;
     assert_eq!(after.last().unwrap()["type"], "response.incomplete", "{:?}", after.last());
 }
@@ -962,19 +966,24 @@ async fn a_rewound_response_is_continued_from_the_models_view() {
     assert_eq!(rendered.as_deref(), Some(model_view.as_str()));
 }
 
-/// A response cut short, by `response.cancel` or by its timeout, still gets
-/// what the holdback held back (ADR 0052): the reasoning item carries it,
-/// its deltas came first, `output_tokens` counts it, and a cancelled
-/// response continues from it. Here the holdback hid the rewind, so what it
-/// held is the kept reasoning and the nudge, the model's view, of which the
-/// client had received nothing.
+/// A response cut short, by `response.cancel` or by its timeout — answered
+/// either way `server.timeout_reply` says (ADR 0058) — still gets what the
+/// holdback held back (ADR 0052): the reasoning item carries it, its deltas
+/// came first, `output_tokens` counts it, and a cancelled response
+/// continues from it. Here the holdback hid the rewind, so what it held is
+/// the kept reasoning and the nudge, the model's view, of which the client
+/// had received nothing.
 #[tokio::test]
 async fn a_cancel_or_a_timeout_lets_what_the_holdback_held_reach_the_response() {
     let nudge = ignis_server::loop_guard::DEFAULT_NUDGE;
-    for timeout in [false, true] {
+    for reply in [None, Some(TimeoutReply::Partial), Some(TimeoutReply::Error)] {
+        let timeout = reply.is_some();
         let mock = Arc::new(MockCompute::new());
         let (server, script) = looping_server(&mock, hog_config(2), 6000);
-        let server = if timeout { server.with_request_timeout(Duration::from_millis(500)) } else { server };
+        let server = match reply {
+            Some(reply) => server.with_stream_timeout(Duration::from_millis(500)).with_timeout_reply(reply),
+            None => server,
+        };
         let live = live(server).await;
         let mut socket = socket(&live).await;
         let body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 1_000_000 });
@@ -988,9 +997,15 @@ async fn a_cancel_or_a_timeout_lets_what_the_holdback_held_reach_the_response() 
         }
         let events = stream_until_terminal(&mut socket, None).await;
         let ended = events.last().unwrap();
-        match timeout {
-            false => assert_eq!((&ended["type"], &ended["response"]["status"]), (&json!("response.incomplete"), &json!("cancelled"))),
-            true => assert_eq!((&ended["type"], &ended["response"]["error"]["code"]), (&json!("response.failed"), &json!("request_timeout"))),
+        match reply {
+            None => assert_eq!((&ended["type"], &ended["response"]["status"]), (&json!("response.incomplete"), &json!("cancelled"))),
+            Some(TimeoutReply::Partial) => assert_eq!(
+                (&ended["type"], &ended["response"]["incomplete_details"]["reason"]),
+                (&json!("response.incomplete"), &json!("max_output_tokens"))
+            ),
+            Some(TimeoutReply::Error) => {
+                assert_eq!((&ended["type"], &ended["response"]["error"]["code"]), (&json!("response.failed"), &json!("request_timeout")))
+            }
         }
         let deltas: String =
             events.iter().filter(|e| e["type"] == "response.reasoning_text.delta").map(|e| e["delta"].as_str().unwrap()).collect();
@@ -1124,13 +1139,13 @@ async fn a_peer_silent_after_the_idle_close_does_not_hold_the_connection() {
 
 /// A response running or queued keeps its socket open however long it
 /// takes, and the idle time counts from its end: here a hog runs out a
-/// request timeout of three idle times while a second socket's request
+/// stream timeout of three idle times while a second socket's request
 /// waits for its lane, and each socket closes only after its own response
 /// has ended.
 #[tokio::test]
 async fn a_response_running_or_queued_keeps_its_socket_open_and_the_idle_time_counts_from_its_end() {
     let timeout = IDLE * 3;
-    let server = server(&Script::silent(), hog_config(1), plain()).with_request_timeout(timeout).with_socket_idle_close(IDLE);
+    let server = server(&Script::silent(), hog_config(1), plain()).with_stream_timeout(timeout).with_socket_idle_close(IDLE);
     let live = live(server).await;
     let mut running = socket(&live).await;
     let mut queued = socket(&live).await;
@@ -1142,7 +1157,7 @@ async fn a_response_running_or_queued_keeps_its_socket_open_and_the_idle_time_co
     // A close frame here panics `next_event`: neither socket may close
     // before its response ends.
     let hog = stream_until_terminal(&mut running, None).await;
-    assert_eq!(hog.last().unwrap()["response"]["error"]["code"], "request_timeout", "{:?}", hog.last());
+    assert_eq!(hog.last().unwrap()["response"]["incomplete_details"]["reason"], "max_output_tokens", "{:?}", hog.last());
     let after = stream_until_terminal(&mut queued, None).await;
     assert_eq!(after.last().unwrap()["type"], "response.incomplete", "{:?}", after.last());
     closed(&mut running).await;

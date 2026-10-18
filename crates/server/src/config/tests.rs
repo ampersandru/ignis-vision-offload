@@ -1195,19 +1195,66 @@ fn the_request_timeout_flag_wins_over_its_env_var() {
 }
 
 #[test]
-fn a_request_timeout_outside_one_to_the_ceiling_is_a_usage_error() {
-    let err = refused(&["--server-request-timeout", "0"]);
-    assert!(err.contains("1..=3600") && err.contains("got 0"), "{err}");
+fn a_request_timeout_outside_zero_to_the_ceiling_is_a_usage_error() {
     assert!(refused(&["--server-request-timeout", "soon"]).contains("--server-request-timeout"));
     let err = refused(&["--server-request-timeout", "3601"]);
-    assert!(err.contains("3600") && err.contains("3601"), "the ceiling and the value: {err}");
-    let err = resolve(&[], env_map(&[("IGNIS_SERVER_REQUEST_TIMEOUT", "0")])).expect_err("must reject").0;
+    assert!(err.contains("0..=3600") && err.contains("3601"), "the range and the value: {err}");
+    let err = resolve(&[], env_map(&[("IGNIS_SERVER_REQUEST_TIMEOUT", "3601")])).expect_err("must reject").0;
     assert!(err.contains("IGNIS_SERVER_REQUEST_TIMEOUT"), "{err}");
 }
 
 #[test]
 fn help_lists_the_request_timeout_flag() {
     assert!(help().contains("--server-request-timeout"));
+}
+
+// ── request deadlines on every route (ADR 0058) ──────────────────────────
+
+/// `server.request_timeout` (non-streaming) and `server.stream_timeout`
+/// (streaming) both default to 40 minutes, take 0 for no deadline, stop at
+/// the same ceiling, and are visible and patchable with no reload; the live
+/// knobs carry them, and a server built without a config holds the same
+/// defaults.
+#[test]
+fn both_deadlines_default_to_forty_minutes_take_zero_and_share_the_ceiling() {
+    let defaults = config(&[]);
+    assert_eq!((defaults.request_timeout_secs, defaults.stream_timeout_secs), (2400, 2400));
+    let env = env_map(&[("IGNIS_SERVER_STREAM_TIMEOUT", "90")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).stream_timeout_secs, 90);
+    let env = env_map(&[("IGNIS_SERVER_STREAM_TIMEOUT", "90")]);
+    let zero = expect_config(resolve(&args(&["--server-stream-timeout", "0", "--server-request-timeout", "0"]), env).expect("resolve"));
+    assert_eq!((zero.stream_timeout_secs, zero.request_timeout_secs), (0, 0), "flag must win over env, and 0 is no deadline");
+    let err = refused(&["--server-stream-timeout", "3601"]);
+    assert!(err.contains("0..=3600") && err.contains("3601"), "{err}");
+    for name in ["request_timeout", "stream_timeout"] {
+        let field = schema::field("server", name).expect("declared");
+        assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "server:\n  stream_timeout: 45\n")]);
+    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().stream_timeout_secs, 45, "the file key is server.stream_timeout");
+    assert!(help().contains("--server-stream-timeout"));
+    let live = crate::Live::of(&config(&["--server-request-timeout", "30", "--server-stream-timeout", "0"]));
+    assert_eq!((live.request_timeout, live.stream_timeout), (std::time::Duration::from_secs(30), std::time::Duration::ZERO));
+    let built = crate::Live::default();
+    assert_eq!((built.request_timeout, built.stream_timeout), (std::time::Duration::from_secs(2400), std::time::Duration::from_secs(2400)));
+}
+
+/// `server.timeout_reply` says what a passed deadline answers: `partial`
+/// (the default) or `error`, any case, refused otherwise naming both; live.
+#[test]
+fn the_timeout_reply_is_partial_by_default_or_error() {
+    use crate::deadline::TimeoutReply;
+    assert_eq!(config(&[]).timeout_reply, TimeoutReply::Partial);
+    let env = env_map(&[("IGNIS_SERVER_TIMEOUT_REPLY", "Error")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).timeout_reply, TimeoutReply::Error);
+    let err = refused(&["--server-timeout-reply", "truncate"]);
+    assert!(err.contains("partial") && err.contains("error") && err.contains("truncate"), "{err}");
+    let field = schema::field("server", "timeout_reply").expect("declared");
+    assert!(field.visible && field.patchable && !field.reload_required, "{field:?}");
+    let files = MemFiles::with(&[("c.yaml", "server:\n  timeout_reply: error\n")]);
+    assert_eq!(with_files(&["--config", "c.yaml"], no_env, &files).unwrap().timeout_reply, TimeoutReply::Error);
+    assert_eq!(crate::Live::of(&config(&["--server-timeout-reply", "error"])).timeout_reply, TimeoutReply::Error);
+    assert_eq!(crate::Live::default().timeout_reply, TimeoutReply::Partial);
 }
 
 // ── the model switch (spec model-switch/01) ──────────────────────────────

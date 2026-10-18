@@ -115,7 +115,7 @@ async fn get_shows_the_visible_fields_and_never_the_key() {
     assert!(document["server"].get("api_key").is_none(), "{document}");
     assert!(!document.to_string().contains("sk-secret"));
     assert_eq!(document["server"]["bind"], "127.0.0.1:7777");
-    assert_eq!(document["server"]["request_timeout"], 120);
+    assert_eq!(document["server"]["request_timeout"], 2400);
 }
 
 #[tokio::test]
@@ -216,7 +216,7 @@ async fn a_patch_naming_an_unpatchable_field_applies_nothing() {
         assert_eq!(refused["error"]["code"], "config_field_not_patchable", "{refused}");
     }
     for (body, says) in [
-        (json!({ "server": { "request_timeout": 0 } }), "server.request_timeout"),
+        (json!({ "server": { "request_timeout": 3601 } }), "server.request_timeout"),
         (json!({ "vision": { "max_tokens": 8192 } }), "--vision-enabled"),
         (json!({ "server": { "nope": 1 } }), "server.nope"),
         (json!({ "profiles": {} }), "profiles"),
@@ -466,7 +466,7 @@ async fn a_pinned_request_keeps_the_live_knobs_it_began_with() {
     let app = server.app();
     let (status, _) = send(&app, Method::PATCH, "/v1/config", Some(json!({ "server": { "request_timeout": 61 } }))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(pinned.live().request_timeout, Duration::from_secs(120), "the request in flight keeps its own");
+    assert_eq!(pinned.live().request_timeout, Duration::from_secs(2400), "the request in flight keeps its own");
     assert_eq!(server.live().request_timeout, Duration::from_secs(61), "the next one gets the change");
 }
 

@@ -19,6 +19,7 @@ use ignis_core::{
     Compute, ComputeError, ConcreteScheduler, DecodeJob, DecodeOutcome, PrefillJob, PrefillOutcome,
     RequestId, SchedulerConfig,
 };
+use ignis_server::deadline::TimeoutReply;
 use ignis_server::engine::Engine;
 use ignis_server::instruction::{DeveloperMessagePolicy, InstructionPolicy, SystemMessagePolicy};
 use ignis_server::template::{
@@ -42,11 +43,12 @@ struct Harness {
     app: axum::Router,
 }
 
-/// Build a harness over `compute` with a given completion timeout (shared
-/// by [`harness_over`] and [`harness_gated_with_timeout`] — every harness
-/// bottoms out here so a timeout-specific test never has to hand-assemble
-/// the scheduler/engine/server chain itself).
-fn harness_over_with_timeout(compute: Arc<dyn Compute>, timeout: Duration) -> Harness {
+/// Build a harness over `compute` with a given completion timeout, a passed
+/// one answered as `reply` says (shared by [`harness_over`] and
+/// [`harness_gated_with_timeout`] — every harness bottoms out here so a
+/// timeout-specific test never has to hand-assemble the
+/// scheduler/engine/server chain itself).
+fn harness_over_with_timeout(compute: Arc<dyn Compute>, timeout: Duration, reply: TimeoutReply) -> Harness {
     let scheduler = ConcreteScheduler::with_config(
         SchedulerConfig {
             model: MODEL.into(),
@@ -59,12 +61,13 @@ fn harness_over_with_timeout(compute: Arc<dyn Compute>, timeout: Duration) -> Ha
         Box::new(SimpleTemplateProvider),
     )
     .with_request_timeout(timeout)
+    .with_timeout_reply(reply)
     .with_seedless_seed(0);
     Harness { app: server.app() }
 }
 
 fn harness_over(compute: Arc<dyn Compute>) -> Harness {
-    harness_over_with_timeout(compute, Duration::from_secs(5))
+    harness_over_with_timeout(compute, Duration::from_secs(5), TimeoutReply::default())
 }
 
 fn harness() -> Harness {
@@ -122,11 +125,12 @@ fn harness_gated() -> (Harness, Arc<GatedCompute>, GateController) {
     (h, gated, controller)
 }
 
-/// [`harness_gated`] with a shorter completion timeout — for a test that
-/// needs the timeout to actually fire, without waiting out the default 5 s.
+/// [`harness_gated`] with a shorter completion timeout, answered with the
+/// `504` (`server.timeout_reply: error`, ADR 0058) — for a test that needs
+/// the timeout to actually fire, without waiting out the default 5 s.
 fn harness_gated_with_timeout(timeout: Duration) -> (Harness, Arc<GatedCompute>, GateController) {
     let (gated, controller) = GatedCompute::new(Arc::new(MockCompute::new()));
-    let h = harness_over_with_timeout(gated.clone() as Arc<dyn Compute>, timeout);
+    let h = harness_over_with_timeout(gated.clone() as Arc<dyn Compute>, timeout, TimeoutReply::Error);
     (h, gated, controller)
 }
 
@@ -551,8 +555,9 @@ async fn chat_completions_streaming_with_include_usage_appends_a_usage_chunk() {
 
 /// A one-lane engine (`max_in_flight` 1) behind a gated compute that reports
 /// each request the scheduler releases: what a test needs to prove a request
-/// it stopped reading gives its lane back.
-fn one_lane_gated(timeout: Duration) -> (axum::Router, Arc<GatedCompute>, GateController, std::sync::mpsc::Receiver<RequestId>) {
+/// it stopped reading gives its lane back. A passed deadline is answered as
+/// `reply` says.
+fn one_lane_gated(timeout: Duration, reply: TimeoutReply) -> (axum::Router, Arc<GatedCompute>, GateController, std::sync::mpsc::Receiver<RequestId>) {
     let (released_tx, released_rx) = std::sync::mpsc::sync_channel(1);
     let observed = Arc::new(ReleaseObservedCompute {
         inner: MockCompute::new(),
@@ -572,6 +577,7 @@ fn one_lane_gated(timeout: Duration) -> (axum::Router, Arc<GatedCompute>, GateCo
         Box::new(SimpleTemplateProvider),
     )
     .with_request_timeout(timeout)
+    .with_timeout_reply(reply)
     .with_seedless_seed(0);
     (server.app(), gated, controller, released_rx)
 }
@@ -609,8 +615,8 @@ async fn the_only_lane_admits_a_new_request(app: &axum::Router, controller: &Gat
 
 #[tokio::test]
 async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot() {
-    // The streaming path has no deadline of its own: any timeout serves.
-    let (app, gated, controller, released_rx) = one_lane_gated(Duration::from_secs(60));
+    // The stream's deadline (`server.stream_timeout`) is far past this test.
+    let (app, gated, controller, released_rx) = one_lane_gated(Duration::from_secs(60), TimeoutReply::default());
 
     gated.arm();
     let first = Request::builder()
@@ -650,8 +656,9 @@ async fn dropping_a_streaming_response_cancels_the_request_and_releases_its_slot
 /// How the client of a non-streaming completion stops waiting for it.
 #[derive(Clone, Copy, Debug)]
 enum Abandon {
-    /// The completion outlives `--server-request-timeout`: the client gets a 504.
-    Timeout,
+    /// The completion outlives `--server-request-timeout`: the client gets
+    /// what it generated, cut (`partial`, ADR 0058), or a 504 (`error`).
+    Timeout(TimeoutReply),
     /// The client goes away before the answer: its handler is dropped.
     Disconnect,
 }
@@ -662,15 +669,16 @@ enum Abandon {
 /// Left running, it holds its lane to its last token: with one lane, the
 /// client's retry of the 504 meets `503 engine_full` until the orphan ends —
 /// how a single sequential agent client logged 24 retries in an external
-/// SWE run (fakoli/anvil-serving#660).
+/// SWE run (fakoli/anvil-serving#660). So does the partial answer a passed
+/// deadline gives by default (ADR 0058).
 async fn check_an_abandoned_completion_releases_its_lane(abandon: Abandon, stop: Option<&str>) {
-    // A disconnect gets a deadline it cannot race: the abort, not a 504,
-    // must be what leaves the request.
-    let timeout = match abandon {
-        Abandon::Timeout => Duration::from_secs(1),
-        Abandon::Disconnect => Duration::from_secs(600),
+    // A disconnect gets a deadline it cannot race: the abort, not the
+    // deadline, must be what leaves the request.
+    let (timeout, reply) = match abandon {
+        Abandon::Timeout(reply) => (Duration::from_secs(1), reply),
+        Abandon::Disconnect => (Duration::from_secs(600), TimeoutReply::default()),
     };
-    let (app, gated, controller, released_rx) = one_lane_gated(timeout);
+    let (app, gated, controller, released_rx) = one_lane_gated(timeout, reply);
 
     gated.arm();
     let mut first = serde_json::json!({
@@ -693,7 +701,12 @@ async fn check_an_abandoned_completion_releases_its_lane(abandon: Abandon, stop:
     // and never reaches its release.
     gated.arm();
     match abandon {
-        Abandon::Timeout => {
+        Abandon::Timeout(TimeoutReply::Partial) => {
+            let (status, body) = client.await.unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!((status, &v["choices"][0]["finish_reason"]), (200, &serde_json::json!("length")), "the held completion must be cut: {body}");
+        }
+        Abandon::Timeout(TimeoutReply::Error) => {
             let (status, body) = client.await.unwrap();
             assert_eq!(status, 504, "the held completion must time out: {body}");
         }
@@ -713,12 +726,22 @@ async fn check_an_abandoned_completion_releases_its_lane(abandon: Abandon, stop:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_timed_out_completion_releases_its_lane() {
-    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout, None).await;
+    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout(TimeoutReply::Partial), None).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_timed_out_completion_with_a_stop_sequence_releases_its_lane() {
-    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout, Some("zzz")).await;
+    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout(TimeoutReply::Partial), Some("zzz")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_completion_answered_with_a_504_releases_its_lane() {
+    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout(TimeoutReply::Error), None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_completion_with_a_stop_sequence_answered_with_a_504_releases_its_lane() {
+    check_an_abandoned_completion_releases_its_lane(Abandon::Timeout(TimeoutReply::Error), Some("zzz")).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -19,6 +19,7 @@ use ignis_core::{MockCompute, SchedulerConfig};
 use serde_json::{json, Value as JsonValue};
 use tower::ServiceExt;
 
+use ignis_server::deadline::TimeoutReply;
 use ignis_server::images::job::base64;
 use ignis_server::loop_guard::{repair, LoopGuardMode, LoopGuardParams, TAG_PREFIX};
 use responses::{server, sse_events, Script, MODEL};
@@ -715,11 +716,12 @@ async fn a_stop_sequence_after_a_rewind_stops_the_continuation_by_its_own_id() {
 }
 
 /// A streamed response its timeout cuts short still gets what the holdback
-/// held back (ADR 0052): `response.failed` carries it in the reasoning item,
-/// its deltas come first, and `output_tokens` counts it. Here the holdback
-/// is longer than the whole reasoning, so the client had none of it.
-#[tokio::test]
-async fn a_timeout_lets_what_the_holdback_held_reach_the_streamed_response() {
+/// held back (ADR 0052): its terminal event — `response.incomplete` under
+/// `server.timeout_reply: partial`, `response.failed` under `error` (ADR
+/// 0058) — carries it in the reasoning item, its deltas come first, and
+/// `output_tokens` counts it. Here the holdback is longer than the whole
+/// reasoning, so the client had none of it.
+async fn check_a_timeout_lets_what_the_holdback_held_reach_the_streamed_response(reply: TimeoutReply) {
     let mock = Arc::new(MockCompute::new());
     let reasoning = responses::prose(2000);
     let script = Script::encoding(responses::scripted_text(&mock, 0, &reasoning));
@@ -728,14 +730,23 @@ async fn a_timeout_lets_what_the_holdback_held_reach_the_streamed_response() {
     let config = SchedulerConfig { max_sequence_tokens: 2 << 20, kv_capacity_pages: (2 << 20) / 16 * 2, ..SchedulerConfig::default() };
     let app = server(&script, config, mock)
         .with_loop_guard(guard)
-        .with_request_timeout(std::time::Duration::from_millis(500))
+        .with_stream_timeout(std::time::Duration::from_millis(500))
+        .with_timeout_reply(reply)
         .app();
     let body = json!({ "model": MODEL, "input": "the whole history of Rome", "max_output_tokens": 1_000_000, "stream": true });
     let (status, _, text) = post(&app, "/v1/responses", body).await;
     assert_eq!(status, 200, "{text}");
     let events = sse_events(&text);
     let (name, failed) = events.last().unwrap();
-    assert_eq!((name.as_str(), &failed["response"]["error"]["code"]), ("response.failed", &json!("request_timeout")));
+    match reply {
+        TimeoutReply::Partial => assert_eq!(
+            (name.as_str(), &failed["response"]["incomplete_details"]["reason"]),
+            ("response.incomplete", &json!("max_output_tokens"))
+        ),
+        TimeoutReply::Error => {
+            assert_eq!((name.as_str(), &failed["response"]["error"]["code"]), ("response.failed", &json!("request_timeout")))
+        }
+    }
     let shown = failed["response"]["output"][0]["content"][0]["text"].as_str().unwrap_or_default();
     assert!(!shown.is_empty() && reasoning.starts_with(shown), "the held reasoning reaches the item: {shown:?}");
     let deltas: String =
@@ -743,4 +754,14 @@ async fn a_timeout_lets_what_the_holdback_held_reach_the_streamed_response() {
     assert_eq!(deltas, shown, "streamed before the end");
     let output_tokens = failed["response"]["usage"]["output_tokens"].as_u64().unwrap() as usize;
     assert!(output_tokens >= shown.chars().count() / 8, "{}", failed["response"]["usage"]);
+}
+
+#[tokio::test]
+async fn a_timeout_lets_what_the_holdback_held_reach_the_streamed_response() {
+    check_a_timeout_lets_what_the_holdback_held_reach_the_streamed_response(TimeoutReply::Partial).await;
+}
+
+#[tokio::test]
+async fn a_timeout_answered_with_an_error_lets_what_the_holdback_held_reach_the_streamed_response() {
+    check_a_timeout_lets_what_the_holdback_held_reach_the_streamed_response(TimeoutReply::Error).await;
 }

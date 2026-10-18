@@ -1,12 +1,14 @@
 //! The `ignis.request.cancelled` line's `cause` (GitHub #327): `timeout` for
-//! a request that hit `--server-request-timeout` on every path that answers
-//! one (chat completions, with and without a stop sequence, the Responses
-//! API, streamed, not, and over its WebSocket, and a decision's question),
-//! `consumer` for a
-//! client that hung up, `shutdown` for a request still in flight when its
-//! model thread stops. Each path twice: with no loop guard, and with one
-//! watching the request (a template that starts in the reasoning, as the
-//! real ones do), whose own cancel on a stop would otherwise come first.
+//! a request that hit its deadline (`--server-request-timeout`,
+//! `--server-stream-timeout`, ADR 0058) on every path that has one (chat
+//! completions, with and without a stop sequence, and streamed, the
+//! Responses API, streamed, not, and over its WebSocket, and a decision's
+//! question), whether the deadline is answered with what was generated or
+//! with an error; `consumer` for a client that hung up, `shutdown` for a
+//! request still in flight when its model thread stops. Each path with no
+//! loop guard, and with one watching the request (a template that starts in
+//! the reasoning, as the real ones do), whose own cancel on a stop would
+//! otherwise come first.
 //!
 //! A binary of its own with one test, which installs the process's
 //! subscriber: the line is written on the telemetry consumer's task, which a
@@ -24,6 +26,7 @@ use ignis_core::decision::{AnswerAlphabet, LabelTokenizer};
 use ignis_core::mock::MockCompute;
 use ignis_core::{ConcreteScheduler, RequestId, SchedulerConfig, TokenId};
 use ignis_logging::{JsonLayer, MemorySink};
+use ignis_server::deadline::TimeoutReply;
 use ignis_server::engine::Engine;
 use ignis_server::loop_guard::{LoopGuardMode, LoopGuardParams};
 use ignis_server::decoder::TokenDecoder;
@@ -168,13 +171,16 @@ fn post(path: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
-/// Every path once on a server over `template` with the loop guard in `mode`,
-/// the shutdown last; `seen` is how many cancelled lines `log` held before,
-/// and the count after is returned. Each request logs one line.
-async fn every_cause(template: Box<dyn TemplateProvider>, mode: LoopGuardMode, log: &MemorySink, seen: usize) -> usize {
+/// Every path once on a server over `template` with the loop guard in `mode`
+/// and a passed deadline answered as `reply` says, the shutdown last; `seen`
+/// is how many cancelled lines `log` held before, and the count after is
+/// returned. Each request logs one line.
+async fn every_cause(template: Box<dyn TemplateProvider>, mode: LoopGuardMode, reply: TimeoutReply, log: &MemorySink, seen: usize) -> usize {
     let engine = never_runs();
     let server = Server::new(engine.clone(), template)
         .with_request_timeout(Duration::from_millis(300))
+        .with_stream_timeout(Duration::from_millis(300))
+        .with_timeout_reply(reply)
         .with_loop_guard(LoopGuardParams { mode, ..LoopGuardParams::default() })
         .with_seedless_seed(0);
     let app = server.app();
@@ -194,18 +200,31 @@ async fn every_cause(template: Box<dyn TemplateProvider>, mode: LoopGuardMode, l
         ("/v1/responses", json!({ "model": MODEL, "input": "hi", "max_output_tokens": 8 })),
     ] {
         let response = app.clone().oneshot(post(path, body)).await.unwrap();
-        assert_eq!(response.status(), 504, "{path}");
+        let (status, stopped_by) = (response.status(), response.headers().get("x-ignis-stopped-by").cloned());
+        match reply {
+            TimeoutReply::Partial => assert!(status == 200 && stopped_by.is_some_and(|v| v == "request_timeout"), "{path}: {status}"),
+            TimeoutReply::Error => assert_eq!(status, 504, "{path}"),
+        }
         assert_eq!(nth_cause(log, n).await, "timeout", "{path}");
         n += 1;
     }
-    // A streamed response past its deadline ends `failed`.
-    let streamed = json!({ "model": MODEL, "input": "hi", "max_output_tokens": 8, "stream": true });
-    let response = app.clone().oneshot(post("/v1/responses", streamed)).await.unwrap();
-    assert_eq!(response.status(), 200);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert!(String::from_utf8_lossy(&body).contains("request_timeout"), "{body:?}");
-    assert_eq!(nth_cause(log, n).await, "timeout", "streamed /v1/responses");
-    n += 1;
+    // Streamed past the deadline: a chat stream ends `length` or with its
+    // error chunk, a response `incomplete` or `failed`.
+    let mut streamed_chat = chat.clone();
+    streamed_chat["stream"] = json!(true);
+    let streamed_response = json!({ "model": MODEL, "input": "hi", "max_output_tokens": 8, "stream": true });
+    let ended = match reply {
+        TimeoutReply::Partial => ["\"finish_reason\":\"length\"", "event: response.incomplete"],
+        TimeoutReply::Error => ["\"request_timeout\"", "\"request_timeout\""],
+    };
+    for ((path, body), ended) in [("/v1/chat/completions", streamed_chat), ("/v1/responses", streamed_response)].into_iter().zip(ended) {
+        let response = app.clone().oneshot(post(path, body)).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains(ended), "{path}: {body:?}");
+        assert_eq!(nth_cause(log, n).await, "timeout", "streamed {path}");
+        n += 1;
+    }
     // And one over the WebSocket.
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/responses")).await.unwrap();
     let create = json!({ "type": "response.create", "model": MODEL, "input": "hi", "max_output_tokens": 8 });
@@ -214,9 +233,17 @@ async fn every_cause(template: Box<dyn TemplateProvider>, mode: LoopGuardMode, l
         let frame = tokio::time::timeout(Duration::from_secs(10), socket.next()).await.expect("a frame").unwrap().unwrap();
         let Message::Text(text) = frame else { continue };
         let event: Value = serde_json::from_str(&text).unwrap();
-        if event["type"] == "response.failed" {
-            assert_eq!(event["response"]["error"]["code"], "request_timeout", "{event}");
-            break;
+        match (reply, event["type"].as_str()) {
+            (TimeoutReply::Error, Some("response.failed")) => {
+                assert_eq!(event["response"]["error"]["code"], "request_timeout", "{event}");
+                break;
+            }
+            (TimeoutReply::Partial, Some("response.incomplete")) => {
+                assert_eq!(event["response"]["incomplete_details"]["reason"], "max_output_tokens", "{event}");
+                break;
+            }
+            (_, Some("response.failed" | "response.incomplete" | "response.completed")) => panic!("{reply:?}: {event}"),
+            _ => {}
         }
     }
     assert_eq!(nth_cause(log, n).await, "timeout", "WebSocket /v1/responses");
@@ -256,8 +283,11 @@ async fn a_cancelled_request_says_why_it_was_cancelled() {
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(JsonLayer::new(log.clone())))
         .expect("the only subscriber this binary installs");
 
-    let seen = every_cause(Box::new(SimpleTemplateProvider), LoopGuardMode::Off, &log, 0).await;
-    let seen = every_cause(Box::new(ReasoningTemplate), LoopGuardMode::Rewind, &log, seen).await;
+    let mut seen = 0;
+    for reply in [TimeoutReply::Error, TimeoutReply::Partial] {
+        seen = every_cause(Box::new(SimpleTemplateProvider), LoopGuardMode::Off, reply, &log, seen).await;
+        seen = every_cause(Box::new(ReasoningTemplate), LoopGuardMode::Rewind, reply, &log, seen).await;
+    }
 
     // A decision's question past the deadline is answered `not_completed`.
     let app = Server::new(never_runs(), Box::new(DecidingTemplate)).with_request_timeout(Duration::from_millis(300)).app();

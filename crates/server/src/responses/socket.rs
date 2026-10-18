@@ -717,8 +717,10 @@ async fn serve(
     // Cancels the engine request generating now, a continuation after a
     // rewind (ADR 0052).
     let mut guard = CancelOnDrop::following(engine, running.clone());
-    // `--server-request-timeout` counts from admission, never from queueing.
-    let deadline = tokio::time::Instant::now() + server.live().request_timeout;
+    // `--server-stream-timeout` counts from admission, never from queueing
+    // (ADR 0058).
+    let live = server.live();
+    let deadline = crate::deadline::after(live.stream_timeout);
     let driven = tokio::select! {
         driven = drive(&mut events, &mut scheduled, deadline, emit) => Some(driven),
         () = &mut cancel => None,
@@ -730,15 +732,15 @@ async fn serve(
     }
     if !matches!(driven, Some(Driven::Ended)) {
         // Cut short: what the loop guard held back still reaches the
-        // response (ADR 0052).
-        let held = crate::loop_guard::held_back(&running, &mut scheduled).await;
-        events.on_tokens(&held).into_iter().for_each(emit);
+        // response (ADR 0052), and the tokens already waiting.
+        let owed = api::owed_at_deadline(&running, &mut scheduled).await;
+        events.on_tokens(&owed).into_iter().for_each(emit);
     }
     match driven {
         Some(Driven::Ended) => guard.completed(),
         Some(Driven::TimedOut) => {
-            let message = api::request_timeout_message(server.live().request_timeout);
-            events.failed("request_timeout", message).into_iter().for_each(emit);
+            let message = api::stream_timeout_message(live.stream_timeout);
+            events.timed_out(live.timeout_reply, message).into_iter().for_each(emit);
         }
         None => {
             // Dropping the guard unfinished cancels the engine request.

@@ -49,7 +49,8 @@ use ignis_core::{
 
 use crate::{ModelSource, ModelStatus, Server};
 use crate::decoder::{Channel, OutputDecoder};
-use crate::engine::{Completion, Engine, EventStream, RequestNotes, collect_completion, drain_tokens};
+use crate::deadline::TimeoutReply;
+use crate::engine::{CollectError, Completion, Engine, EventStream, RequestNotes, collect_completion, drain_tokens};
 use crate::media::{has_media, MediaRejection, MediaStats};
 use crate::openai_fields::{self, Surface};
 use crate::template::{
@@ -1640,6 +1641,15 @@ pub(crate) fn request_timeout_message(timeout: std::time::Duration) -> String {
     )
 }
 
+/// [`request_timeout_message`] for a stream, whose deadline is
+/// `--server-stream-timeout` (ADR 0058).
+pub(crate) fn stream_timeout_message(timeout: std::time::Duration) -> String {
+    format!(
+        "the stream did not complete within the server's {}s timeout (the engine may be wedged) — raise it with --server-stream-timeout/IGNIS_SERVER_STREAM_TIMEOUT",
+        timeout.as_secs()
+    )
+}
+
 /// Map the engine's [`FinishReason`] to the OpenAI `finish_reason` string
 /// (GitHub #61 / P1-25): `stop` on the model's own EOS token, `length` on
 /// `max_tokens` or the engine's reservation cap, `error` when the engine
@@ -2293,6 +2303,7 @@ async fn chat_completions(
     tracing::Span::current().record("request_id", request_id);
     let id = format!("chatcmpl-{request_id}");
     let created = now();
+    let live = server.live();
 
     if req.stream {
         // The SSE response: the request's event stream wrapped in the
@@ -2300,7 +2311,7 @@ async fn chat_completions(
         let include_usage = req.stream_options.is_some_and(|o| o.include_usage);
         return Sse::new(ChunkStream::new(
             stream,
-            CancelOnDrop::following(engine.clone(), running),
+            CancelOnDrop::following(engine.clone(), running.clone()),
             id,
             created,
             model,
@@ -2312,23 +2323,23 @@ async fn chat_completions(
             prompt_tokens,
             include_usage,
         )
-        .with_rewound(rewound))
+        .with_rewound(rewound)
+        .with_deadline(running, live.stream_timeout, live.timeout_reply))
         .into_response();
     }
-    // Cancelled for its deadline (GitHub #327), then answered 504.
-    let timed_out = |cancel: &mut CancelOnDrop| {
-        cancel.timed_out();
+    // The 504 of a request its deadline cut (GitHub #327), once cancelled.
+    let timeout_error = || {
         error_response(
             StatusCode::GATEWAY_TIMEOUT,
             "request_timeout",
             "request_timeout",
-            request_timeout_message(server.live().request_timeout),
+            request_timeout_message(live.request_timeout),
         )
     };
     // GitHub #327: an answer nobody waits for any more — past the request
     // timeout, or its client gone — is cancelled, as on the streaming path
     // and on `/v1/responses`. Left running it holds its lane to `max_tokens`,
-    // and with one lane the client's retry of the 504 meets `engine_full`.
+    // and with one lane the client's retry meets `engine_full`.
     let mut cancel = CancelOnDrop::following(engine.clone(), running.clone());
     if !stop.is_empty() {
         // Non-streaming with `stop`: the tokens go through the streaming
@@ -2340,52 +2351,91 @@ async fn chat_completions(
             schemas,
             stop,
         );
-        let answer = collect_answer(engine, &running, &mut stream, server.live().request_timeout, pipeline).await;
-        if answer.is_ok() {
-            cancel.completed();
-        }
+        let answer = collect_answer(&mut cancel, &running, &mut stream, live.request_timeout, pipeline).await;
         return match answer {
             Ok(Answer { ending: AnswerEnding::Done(FinishReason::Error), .. }) => engine_error_response(),
+            Ok(Answer { ending: AnswerEnding::DeadlinePassed, .. }) if live.timeout_reply == TimeoutReply::Error => timeout_error(),
             Ok(answer) => {
                 let (reasoning, content, calls) = answer.parts();
                 let finish_reason = match answer.ending {
                     AnswerEnding::Done(reason) => resolve_finish_reason(reason, !calls.is_empty(), answer.mid_call),
                     AnswerEnding::Stopped => resolve_finish_reason(FinishReason::Stop, !calls.is_empty(), false),
+                    AnswerEnding::DeadlinePassed => finish_reason_str(FinishReason::Length),
                 };
                 let usage = Usage::new(prompt_tokens, answer.completion_tokens, answer.cached_tokens).with_rewound(&rewound);
-                completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage)
+                let body = completion_body(id, created, model, reasoning, content, calls, finish_reason, answer.forced_at, usage);
+                match answer.ending {
+                    AnswerEnding::DeadlinePassed => crate::deadline::stopped_by_timeout(body),
+                    _ => body,
+                }
             }
-            Err(_) => timed_out(&mut cancel),
+            Err(_) => {
+                cancel.timed_out();
+                timeout_error()
+            }
         };
     }
-    // Non-streaming: collect the request's tokens to its completion (a
-    // timeout guards a wedged engine from hanging the client).
-    let completion = collect_completion(&mut stream, server.live().request_timeout).await;
-    if completion.is_ok() {
-        cancel.completed();
-    }
-    match completion {
-        Ok(Completion { reason: FinishReason::Error, .. }) => engine_error_response(),
-        Ok(Completion { tokens, reason, thinking: budget, cached_tokens }) => {
-            let (reasoning_content, content, tool_calls) =
-                split_reasoning_and_tools(loaded.template.as_ref(), &tokens, &thinking, schemas);
-            let completion_tokens = tokens.len() as u32;
-            let finish_reason = resolve_finish_reason(reason, !tool_calls.is_empty(), false);
-            let usage = Usage::new(prompt_tokens, completion_tokens, cached_tokens).with_rewound(&rewound);
-            completion_body(
-                id,
-                created,
-                model,
-                reasoning_content,
-                content,
-                tool_calls,
-                finish_reason,
-                budget.and_then(|b| b.forced_at),
-                usage,
-            )
+    // Non-streaming: collect the request's tokens to its completion, or to
+    // its deadline (ADR 0058).
+    let completion = collect_completion(&mut stream, live.request_timeout).await;
+    let (tokens, reason, budget, cached_tokens) = match completion {
+        Ok(Completion { reason: FinishReason::Error, .. }) => {
+            cancel.completed();
+            return engine_error_response();
         }
-        Err(_) => timed_out(&mut cancel),
+        Ok(Completion { tokens, reason, thinking: budget, cached_tokens }) => {
+            cancel.completed();
+            (tokens, Some(reason), budget, cached_tokens)
+        }
+        // The answer so far, and what the loop guard held back of it, as an
+        // answer a length limit cut.
+        Err(CollectError::DeadlinePassed(Completion { mut tokens, cached_tokens, .. })) => {
+            cancel.timed_out();
+            if live.timeout_reply == TimeoutReply::Error {
+                return timeout_error();
+            }
+            tokens.extend(owed_at_deadline(&running, &mut stream).await);
+            (tokens, None, None, cached_tokens)
+        }
+        Err(CollectError::NotCompleted) => {
+            cancel.timed_out();
+            return timeout_error();
+        }
+    };
+    let (reasoning_content, content, tool_calls) =
+        split_reasoning_and_tools(loaded.template.as_ref(), &tokens, &thinking, schemas);
+    let completion_tokens = tokens.len() as u32;
+    let finish_reason = match reason {
+        Some(reason) => resolve_finish_reason(reason, !tool_calls.is_empty(), false),
+        None => finish_reason_str(FinishReason::Length),
+    };
+    let usage = Usage::new(prompt_tokens, completion_tokens, cached_tokens).with_rewound(&rewound);
+    let body = completion_body(
+        id,
+        created,
+        model,
+        reasoning_content,
+        content,
+        tool_calls,
+        finish_reason,
+        budget.and_then(|b| b.forced_at),
+        usage,
+    );
+    match reason {
+        Some(_) => body,
+        None => crate::deadline::stopped_by_timeout(body),
     }
+}
+
+/// What the client of a request its deadline cut is still owed, once the
+/// request was cancelled (ADR 0058): with the loop guard watching it,
+/// everything the guard held back, read to the guard's end
+/// ([`crate::loop_guard::held_back`]); then any token already waiting on
+/// `stream`. Never waits on the engine, which may be what is wedged.
+pub(crate) async fn owed_at_deadline(running: &crate::loop_guard::Running, stream: &mut EventStream) -> Vec<ignis_core::TokenId> {
+    let mut tokens = crate::loop_guard::held_back(running, stream).await;
+    let _ = drain_tokens(stream, &mut tokens);
+    tokens
 }
 
 /// The request's one generation cap (spec server/09): `max_tokens`, or
@@ -2463,6 +2513,8 @@ enum AnswerEnding {
     Done(FinishReason),
     /// A stop sequence matched, and the request was stopped there.
     Stopped,
+    /// Its deadline passed, and the request was cancelled (ADR 0058).
+    DeadlinePassed,
 }
 
 /// A non-streaming answer, as [`collect_answer`] assembled it.
@@ -2495,23 +2547,42 @@ impl Answer {
 
 /// Drive a request with `stop` to its answer: each token through `pipeline`
 /// as it arrives, until the engine finishes the request or a stop sequence
-/// matches — then the engine request generating it, `request`'s, is
-/// stopped ([`Engine::stop`]) and nothing past that token is read. Bounded
-/// by `timeout`, as [`collect_completion`] is.
+/// matches — then the engine request generating it, `running`'s, is
+/// stopped through `cancel` ([`Engine::stop`]) and nothing past that token
+/// is read. Bounded by `timeout`, as [`collect_completion`] is: past it the
+/// request is cancelled, and the answer is what it had generated, with what
+/// the loop guard held back of it ([`owed_at_deadline`]). A stream that
+/// closes without a finish is left to the caller.
 async fn collect_answer(
-    engine: &Engine,
-    request: &crate::loop_guard::Running,
+    cancel: &mut CancelOnDrop,
+    running: &crate::loop_guard::Running,
     stream: &mut EventStream,
     timeout: std::time::Duration,
     mut pipeline: AnswerPipeline,
-) -> Result<Answer, crate::engine::CollectError> {
-    let deadline = tokio::time::Instant::now() + timeout;
+) -> Result<Answer, CollectError> {
+    let deadline = crate::deadline::after(timeout);
     let mut pieces = Vec::new();
     let mut cached_tokens = 0;
     loop {
         let event = match tokio::time::timeout_at(deadline, stream.recv()).await {
             Ok(Some(event)) => event,
-            Ok(None) | Err(_) => return Err(crate::engine::CollectError::NotCompleted),
+            Ok(None) => return Err(CollectError::NotCompleted),
+            Err(_) => {
+                cancel.timed_out();
+                join_pieces(&mut pieces, pipeline.push(&owed_at_deadline(running, stream).await));
+                // A stop sequence the owed tokens completed ends the answer
+                // there, as it would have before the deadline.
+                let (ending, mid_call) = match pipeline.fired() {
+                    true => (AnswerEnding::Stopped, false),
+                    false => {
+                        let (tail, mid_call) = pipeline.finish();
+                        join_pieces(&mut pieces, tail);
+                        (AnswerEnding::DeadlinePassed, mid_call)
+                    }
+                };
+                let completion_tokens = pipeline.consumed();
+                return Ok(Answer { pieces, ending, mid_call, completion_tokens, cached_tokens, forced_at: None });
+            }
         };
         let (ending, mid_call, forced_at) = match event {
             SchedEvent::Token { token, .. } => {
@@ -2519,10 +2590,11 @@ async fn collect_answer(
                 if !pipeline.fired() {
                     continue;
                 }
-                engine.stop(request.get(), pipeline.consumed());
+                cancel.stop(pipeline.consumed());
                 (AnswerEnding::Stopped, false, None)
             }
             SchedEvent::Done { reason, thinking, .. } => {
+                cancel.completed();
                 let (tail, mid_call) = pipeline.finish();
                 join_pieces(&mut pieces, tail);
                 (AnswerEnding::Done(pipeline.ended(reason)), mid_call, thinking.and_then(|b| b.forced_at))
@@ -2894,6 +2966,12 @@ impl From<ScannedToolCall> for ToolCallDelta {
 /// `data: {"choices":[{"delta":{"content":...}}]}` line; the final chunk
 /// carries `finish_reason: "stop"` and an empty `delta`; a terminal
 /// `data: [DONE]` line ends the stream.
+///
+/// Its deadline (`server.stream_timeout`, ADR 0058) cancels the request and
+/// ends the stream after what the loop guard held back: with a `length`
+/// finish chunk under `server.timeout_reply: partial`, with a
+/// `request_timeout` error chunk under `error` — as an engine error ends one
+/// (GitHub #296) — and `[DONE]` either way.
 struct ChunkStream {
     /// The request's event stream (closes on the request's completion).
     stream: EventStream,
@@ -2936,6 +3014,15 @@ struct ChunkStream {
     emitted_reasoning: bool,
     /// At least one `Content` delta or tool call was ever queued.
     emitted_content_or_call: bool,
+    /// The engine request generating, which the deadline stops.
+    running: crate::loop_guard::Running,
+    deadline: Pin<Box<tokio::time::Sleep>>,
+    /// `server.stream_timeout`, for the error's message.
+    timeout: std::time::Duration,
+    reply: TimeoutReply,
+    /// The deadline passed and the loop guard sends what it held back: the
+    /// stream's end ends the answer.
+    stopping: bool,
 }
 
 /// Cancels its request when dropped before the request has completed. An SSE
@@ -3023,6 +3110,11 @@ impl ChunkStream {
             held: None,
             emitted_reasoning: false,
             emitted_content_or_call: false,
+            running: crate::loop_guard::Running::new(0),
+            deadline: Box::pin(tokio::time::sleep_until(crate::deadline::after(std::time::Duration::ZERO))),
+            timeout: std::time::Duration::ZERO,
+            reply: TimeoutReply::default(),
+            stopping: false,
         }
     }
 
@@ -3030,6 +3122,36 @@ impl ChunkStream {
     fn with_rewound(mut self, rewound: crate::loop_guard::Rewound) -> Self {
         self.rewound = rewound;
         self
+    }
+
+    /// End the stream `timeout` from now, `running` being the engine request
+    /// generating it, as `reply` says (ADR 0058); a zero `timeout` is none.
+    fn with_deadline(mut self, running: crate::loop_guard::Running, timeout: std::time::Duration, reply: TimeoutReply) -> Self {
+        self.running = running;
+        self.deadline = Box::pin(tokio::time::sleep_until(crate::deadline::after(timeout)));
+        self.timeout = timeout;
+        self.reply = reply;
+        self
+    }
+
+    /// The deadline's end, once the request was cancelled and `owed` — what
+    /// the loop guard held back, or the tokens already waiting — read: the
+    /// answer's last pieces, a tool call left open dropped whole, then the
+    /// `length` finish or the `request_timeout` error chunk, then `[DONE]`.
+    /// A stop sequence the owed tokens completed ends it `stop`, as it
+    /// would have before the deadline.
+    fn end_at_deadline(&mut self, owed: &[ignis_core::TokenId]) {
+        let pieces = self.pipeline.push(owed);
+        self.queue_pieces(pieces);
+        let (pieces, _) = self.pipeline.finish();
+        self.queue_pieces(pieces);
+        let tokens = self.pipeline.consumed();
+        match (self.pipeline.fired(), self.reply) {
+            (true, _) => self.queue_finish(resolve_finish_reason(FinishReason::Stop, self.pipeline.any_calls(), false), None, tokens),
+            (false, TimeoutReply::Partial) => self.queue_finish(finish_reason_str(FinishReason::Length), None, tokens),
+            (false, TimeoutReply::Error) => self.pending.push_back(timeout_error_chunk(stream_timeout_message(self.timeout))),
+        }
+        self.stopped = true;
     }
 
     /// Queues each piece as its SSE chunk: reasoning and content as their
@@ -3169,11 +3291,34 @@ impl Stream for ChunkStream {
                 }
                 return Poll::Ready(None);
             }
+            // Checked before every event, for the reason
+            // `responses::drive` checks it first.
+            if !this.stopping && this.deadline.as_mut().poll(cx).is_ready() {
+                // Cancelled now, for its deadline: before a guard is stopped,
+                // whose own cancel would log its consumer letting it go.
+                this.cancel.timed_out();
+                // A guard sends what it held back, then ends the stream.
+                if this.running.stop() {
+                    this.stopping = true;
+                    continue;
+                }
+                // No guard: the tokens already waiting, never one more.
+                let mut owed = Vec::new();
+                let _ = drain_tokens(&mut this.stream, &mut owed);
+                this.held = None;
+                this.end_at_deadline(&owed);
+                continue;
+            }
             let polled = match this.held.take() {
                 Some(event) => Poll::Ready(Some(event)),
                 None => this.stream.poll_recv(cx),
             };
             match polled {
+                // Everything the guard held back went out: the deadline's end.
+                Poll::Ready(None) if this.stopping => {
+                    this.end_at_deadline(&[]);
+                    continue;
+                }
                 Poll::Ready(None) => {
                     // Stream closed (the request completed and the engine
                     // removed its route — or the engine stopped): the
@@ -3273,6 +3418,14 @@ fn engine_error_body() -> ApiError {
 /// with [`FinishReason::Error`] (GitHub #296).
 fn engine_error_chunk() -> Event {
     Event::default().data(serde_json::to_string(&engine_error_body()).expect("the error body serializes"))
+}
+
+/// The SSE event a chat stream its deadline cut ends with under
+/// `server.timeout_reply: error` (ADR 0058): the `504`'s body, in the shape
+/// an engine error ends a stream with ([`engine_error_chunk`]).
+fn timeout_error_chunk(message: String) -> Event {
+    let body = ApiError::new("request_timeout", "request_timeout", &message);
+    Event::default().data(serde_json::to_string(&body).expect("the error body serializes"))
 }
 
 /// The OpenAI error body (`{"error": {...}}`). Every failure on this

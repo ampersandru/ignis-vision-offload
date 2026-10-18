@@ -28,6 +28,7 @@ pub mod artifact_template;
 pub mod catalog_http;
 pub mod config;
 pub mod config_http;
+pub mod deadline;
 pub mod decide;
 pub mod decoder;
 pub mod download;
@@ -153,10 +154,15 @@ pub struct Server {
 /// only through a reload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Live {
-    /// How long a non-streaming request waits for its completion before the
-    /// handler gives up with a 504 (guards a wedged engine from hanging the
-    /// client forever; `--server-request-timeout`, GitHub #95).
+    /// The deadline of a request answered whole, from its admission
+    /// (`--server-request-timeout`, GitHub #95, ADR 0058); zero is none.
     pub request_timeout: Duration,
+    /// The deadline of a request that streams, from its admission
+    /// (`--server-stream-timeout`, ADR 0058); zero is none.
+    pub stream_timeout: Duration,
+    /// What a request past its deadline is answered
+    /// (`--server-timeout-reply`, ADR 0058).
+    pub timeout_reply: deadline::TimeoutReply,
     /// The `enable_thinking` a request's unset field falls back to
     /// (`--model-enable-thinking`, GitHub #68).
     pub default_enable_thinking: bool,
@@ -189,15 +195,18 @@ pub struct Live {
 }
 
 impl Default for Live {
-    /// What a server built without a config runs with: the timeout's
-    /// default, thinking on with no effort or budget, merge / inplace — and
-    /// no idle unload, no idle socket close and no loop guard: only a
-    /// configured server (`main`, a live `PATCH`) unloads its model, closes
-    /// an idle socket or rewinds a reasoning, so no test or in-process
-    /// harness meets a cold reload, a close or a rewind it did not ask for.
+    /// What a server built without a config runs with: the deadlines'
+    /// defaults and their partial reply, thinking on with no effort or
+    /// budget, merge / inplace — and no idle unload, no idle socket close and
+    /// no loop guard: only a configured server (`main`, a live `PATCH`)
+    /// unloads its model, closes an idle socket or rewinds a reasoning, so no
+    /// test or in-process harness meets a cold reload, a close or a rewind it
+    /// did not ask for.
     fn default() -> Self {
         Self {
             request_timeout: Duration::from_secs(crate::config::DEFAULT_REQUEST_TIMEOUT_SECS as u64),
+            stream_timeout: Duration::from_secs(u64::from(crate::config::DEFAULT_STREAM_TIMEOUT_SECS)),
+            timeout_reply: deadline::TimeoutReply::default(),
             default_enable_thinking: true,
             default_reasoning_effort: None,
             default_thinking_budget: None,
@@ -215,6 +224,8 @@ impl Live {
     pub fn of(config: &config::Config) -> Self {
         Self {
             request_timeout: Duration::from_secs(u64::from(config.request_timeout_secs)),
+            stream_timeout: Duration::from_secs(u64::from(config.stream_timeout_secs)),
+            timeout_reply: config.timeout_reply,
             default_enable_thinking: config.enable_thinking,
             default_reasoning_effort: config.reasoning_effort,
             default_thinking_budget: config.thinking_budget,
@@ -494,11 +505,25 @@ impl Server {
         )
     }
 
-    /// Set the non-streaming completion timeout (`main` wires this to
-    /// `--server-request-timeout`/`IGNIS_SERVER_REQUEST_TIMEOUT`, GitHub #95; the default
-    /// is 30 s).
+    /// Set the deadline of a request answered whole (`main` wires this to
+    /// `--server-request-timeout`/`IGNIS_SERVER_REQUEST_TIMEOUT`, GitHub #95,
+    /// ADR 0058); zero is none.
     pub fn with_request_timeout(self, timeout: Duration) -> Self {
         self.update_live(|live| live.request_timeout = timeout);
+        self
+    }
+
+    /// Set the deadline of a request that streams
+    /// (`--server-stream-timeout`, ADR 0058); zero is none.
+    pub fn with_stream_timeout(self, timeout: Duration) -> Self {
+        self.update_live(|live| live.stream_timeout = timeout);
+        self
+    }
+
+    /// Answer a request past its deadline as `reply` says
+    /// (`--server-timeout-reply`, ADR 0058).
+    pub fn with_timeout_reply(self, reply: deadline::TimeoutReply) -> Self {
+        self.update_live(|live| live.timeout_reply = reply);
         self
     }
 

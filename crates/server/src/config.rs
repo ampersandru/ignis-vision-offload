@@ -80,10 +80,17 @@ pub const DEFAULT_THINKING_BUDGET: u32 = 32_768;
 /// is no default: such a request may generate to the end of the context.
 pub const DEFAULT_MAX_TOKENS: u32 = 38_912;
 
-/// The default non-streaming completion timeout, in seconds (GitHub #95).
-/// 120 since GitHub #327: at 30 an agent's longer reasoning steps (a few
-/// thousand tokens) never reached the client, and were generated again.
-pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 120;
+/// The default deadline of a request answered whole, in seconds
+/// (`--server-request-timeout`, GitHub #95). 2400 since ADR 0058: at 120 an
+/// agent's long reasoning step was cut at two minutes, while an inference
+/// engine is expected to let a request run to its own end; forty minutes
+/// still ends one a wedged engine holds. 0 is no deadline.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 2400;
+
+/// The default deadline of a request that streams, in seconds
+/// (`--server-stream-timeout`, ADR 0058): the non-streaming one's, since a
+/// stream is the same generation read sooner. 0 is no deadline.
+pub const DEFAULT_STREAM_TIMEOUT_SECS: u32 = 2400;
 
 /// Whether the Playground is served without anyone saying so (GitHub #163,
 /// ADR 0026). On: a route, and no cost to a server nobody opens in a browser.
@@ -146,9 +153,9 @@ pub const MAX_SOCKET_IDLE_CLOSE_SECS: u32 = 7 * 24 * 3600;
 /// did not name.
 pub const DEFAULT_ALLOW_MODEL_SWITCH: bool = true;
 
-/// The upper bound `--server-request-timeout` accepts: a ceiling against a
-/// fat-fingered value, not a real operating point — a healthy request
-/// legitimately runs for minutes at a large `max_tokens`, never hours.
+/// The upper bound `--server-request-timeout` and `--server-stream-timeout`
+/// accept: an hour, a ceiling against a fat-fingered value above the
+/// forty-minute default; whoever wants no deadline says 0 (ADR 0058).
 pub const MAX_REQUEST_TIMEOUT_SECS: u32 = 3600;
 
 /// The upper bound `--vision-embedding-pool-mib` accepts (GitHub #243): a
@@ -419,9 +426,15 @@ pub struct Config {
     /// Media acquisition (`--media-allow-private-network`,
     /// `--media-cache-mib`, GitHub #179). Only nameable with vision on.
     pub media: MediaOptions,
-    /// How long a non-streaming request waits for its completion before the
-    /// handler gives up with a `504` (GitHub #95). In `[1, MAX_REQUEST_TIMEOUT_SECS]`.
+    /// The deadline of a request answered whole (`--server-request-timeout`,
+    /// GitHub #95, ADR 0058). In `[0, MAX_REQUEST_TIMEOUT_SECS]`; 0 is none.
     pub request_timeout_secs: u32,
+    /// The deadline of a request that streams (`--server-stream-timeout`,
+    /// ADR 0058). In `[0, MAX_REQUEST_TIMEOUT_SECS]`; 0 is none.
+    pub stream_timeout_secs: u32,
+    /// What a request past its deadline is answered
+    /// (`--server-timeout-reply`, ADR 0058).
+    pub timeout_reply: crate::deadline::TimeoutReply,
     /// How long a model switch (spec model-switch/01) waits for the old
     /// model's in-flight requests before it cancels them
     /// (`--switch-drain-timeout`). In `[0, MAX_SWITCH_DRAIN_TIMEOUT_SECS]`;
@@ -1102,6 +1115,8 @@ fn derive(
         rope_scaling: s.model.rope_scaling,
         media,
         request_timeout_secs: s.server.request_timeout,
+        stream_timeout_secs: s.server.stream_timeout,
+        timeout_reply: s.server.timeout_reply,
         switch_drain_timeout_secs: s.switch.drain_timeout,
         idle_unload_secs: s.model.idle_unload,
         socket_idle_close_secs: s.server.socket_idle_close,

@@ -38,6 +38,7 @@ use utoipa::ToSchema;
 
 use ignis_core::{FinishReason, SchedEvent, TokenId};
 
+use crate::deadline::TimeoutReply;
 use crate::decoder::{Channel, Delta, OutputDecoder};
 use crate::loop_guard::Rewound;
 use crate::toolcall::{ToolCall, ToolCallScanner, ToolEvent, ToolSchemas};
@@ -414,6 +415,23 @@ impl ResponseEvents {
         let mut out = Vec::new();
         self.finish(Ending::Cancelled, &mut out);
         out
+    }
+
+    /// The response's deadline passed (ADR 0058): what it produced so far is
+    /// closed out, and it ends as `reply` says — `incomplete` with
+    /// `max_output_tokens`, as a length limit ends one (the one truncation
+    /// reason the API defines, which every client reads), or `failed` with
+    /// `request_timeout` and `message`.
+    pub(crate) fn timed_out(&mut self, reply: TimeoutReply, message: String) -> Vec<JsonValue> {
+        match reply {
+            TimeoutReply::Partial => {
+                let mut out = Vec::new();
+                self.response.incomplete_details = Some(IncompleteDetails { reason: "max_output_tokens" });
+                self.finish(Ending::Incomplete, &mut out);
+                out
+            }
+            TimeoutReply::Error => self.failed("request_timeout", message),
+        }
     }
 
     /// The response failed after it was created — the request timed out, the

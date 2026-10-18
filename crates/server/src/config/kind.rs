@@ -481,6 +481,26 @@ impl FieldKind for DeveloperPolicy {
     }
 }
 
+/// What a request past its deadline is answered (ADR 0058).
+pub struct TimeoutReplyKind;
+
+impl FieldKind for TimeoutReplyKind {
+    type Value = crate::deadline::TimeoutReply;
+    const TAG: &'static str = "reply";
+
+    fn parse(raw: &str) -> Result<crate::deadline::TimeoutReply, String> {
+        let wanted = raw.to_ascii_lowercase();
+        crate::deadline::TimeoutReply::ALL.into_iter().find(|r| r.as_str() == wanted).ok_or_else(|| {
+            let accepted: Vec<&str> = crate::deadline::TimeoutReply::ALL.iter().map(|r| r.as_str()).collect();
+            format!("must be one of {}, got `{raw}`", accepted.join(", "))
+        })
+    }
+
+    fn render(value: &crate::deadline::TimeoutReply) -> Value {
+        Value::String(value.as_str().to_owned())
+    }
+}
+
 /// How the server is exposed beyond its bind address (ADR 0028).
 pub struct ExposeKind;
 
@@ -876,9 +896,11 @@ mod tests {
         assert!(SpecBackend::parse("eagle").unwrap_err().contains("eagle"));
         assert_eq!(DraftHead::parse("shortlist"), Ok(ProposalHead::Shortlist));
         assert_eq!(ExposeKind::parse("cloudflare-quick"), Ok(Expose::CloudflareQuick));
+        assert_eq!(TimeoutReplyKind::parse("Partial"), Ok(crate::deadline::TimeoutReply::Partial));
         round_trips::<KvFormatKind>(KvFormat::Bf16);
         round_trips::<SpecBackend>(SpecChoice::Off);
         round_trips::<DeveloperPolicy>(DeveloperMessagePolicy::IntoSystem);
+        round_trips::<TimeoutReplyKind>(crate::deadline::TimeoutReply::Error);
         round_trips::<Rope>(RopeScaling::NONE);
         round_trips::<Rope>(RopeScaling::parse("yarn:4,t=0.25").unwrap());
     }

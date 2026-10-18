@@ -194,6 +194,8 @@ async fn main() {
         rope_scaling: _,
         media: _,
         request_timeout_secs,
+        stream_timeout_secs,
+        timeout_reply,
         switch_drain_timeout_secs,
         idle_unload_secs,
         socket_idle_close_secs,
@@ -370,6 +372,8 @@ async fn main() {
     };
     let server = server
         .with_request_timeout(std::time::Duration::from_secs(request_timeout_secs as u64))
+        .with_stream_timeout(std::time::Duration::from_secs(u64::from(stream_timeout_secs)))
+        .with_timeout_reply(timeout_reply)
         .with_instruction_policy(instruction_policy)
         .with_idle_unload(std::time::Duration::from_secs(u64::from(idle_unload_secs)))
         .with_socket_idle_close(std::time::Duration::from_secs(u64::from(socket_idle_close_secs)))
