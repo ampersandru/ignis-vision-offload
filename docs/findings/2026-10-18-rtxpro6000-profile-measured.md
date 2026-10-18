@@ -150,8 +150,10 @@ test, reproduced on the RTX 5090 before and gone after):
   step.
 
 Cells with an errored request: the two MTP code cells above, 3 drafts at
-two lanes, the agents' 3 turns, every warm-up, and two cells of the
-device-only comparison. No cell of speculation off or of the 27B has one.
+two lanes, the agents' 3 turns, every warm-up, two first turns of the
+Flash-Next 64K host-slots cell (46 of 48 tokens; their second turns still
+restored), and two cells of the device-only comparison. No cell of
+speculation off or of the 27B has one.
 
 **A recorded trace** (`ignis-bench replay` of a 4-agent load trace, phase 8,
 `replay-g4-*`) does not compare the two: the replay sends each recorded
