@@ -120,6 +120,8 @@ pub enum JobEnd {
     /// The model was stopped (a switch, a reload) before it ran or while it
     /// ran.
     Stopped,
+    /// Its deadline passed (ADR 0058), between two calls.
+    TimedOut(Deadline),
     /// The runner refused a call.
     Failed(ImageError),
 }
@@ -165,6 +167,20 @@ fn timed<T>(slot: &mut Duration, calls: impl FnOnce() -> T) -> T {
     out
 }
 
+/// A job's deadline (ADR 0058): `timeout` from the job's start, never from
+/// its queue — `server.stream_timeout` for a streamed request, else
+/// `server.request_timeout`. A zero `timeout` is none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deadline {
+    pub timeout: Duration,
+    pub streamed: bool,
+}
+
+impl Deadline {
+    /// No deadline.
+    pub const NONE: Self = Self { timeout: Duration::ZERO, streamed: false };
+}
+
 /// What the log line of a finished job says of its request, known before
 /// the job runs (GitHub #324).
 #[derive(Debug, Clone)]
@@ -182,6 +198,8 @@ pub struct JobContext {
     /// Prompt enhancement's time, and that of the loads and switches before the job.
     pub enhance: Duration,
     pub switch: Duration,
+    /// The job's deadline from its start.
+    pub deadline: Deadline,
 }
 
 /// The next job's id in the log, `img-<n>`.
@@ -192,26 +210,32 @@ static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// PNG, every unit announced there as it starts ([`Progress`]). The runner
 /// is held one call at a time, so a shutdown waits for one call, never for a
 /// job; between any two calls the job stops when the model is closed
-/// ([`JobEnd::Stopped`]) or when `events` has no reader, its request gone
-/// ([`JobEnd::Cancelled`]). The prefix is released whichever way it ends.
-/// Blocking: it runs on a blocking thread.
+/// ([`JobEnd::Stopped`]), when `events` has no reader, its request gone
+/// ([`JobEnd::Cancelled`]), or past its deadline ([`JobEnd::TimedOut`]). The
+/// prefix is released whichever way it ends. Blocking: it runs on a blocking
+/// thread.
 #[cfg(test)]
 fn run<E: From<JobEvent>>(model: &ImageModel, job: &ImageJob, events: &mpsc::UnboundedSender<E>) -> Result<(), JobEnd> {
-    run_timed(model, job, events, &mut Phases::default())
+    run_timed(model, job, events, &mut Phases::default(), Deadline::NONE)
 }
 
-/// Run `job`, adding where its time went to `phases`, whichever way it ends.
+/// Run `job`, adding where its time went to `phases`, whichever way it ends,
+/// held to `deadline` from now, its start.
 pub fn run_timed<E: From<JobEvent>>(
     model: &ImageModel,
     job: &ImageJob,
     events: &mpsc::UnboundedSender<E>,
     phases: &mut Phases,
+    deadline: Deadline,
 ) -> Result<(), JobEnd> {
+    let ends = crate::deadline::after(deadline.timeout).into_std();
     let go_on = || {
         if model.jobs.is_closed() {
             Err(JobEnd::Stopped)
         } else if events.is_closed() {
             Err(JobEnd::Cancelled)
+        } else if Instant::now() >= ends {
+            Err(JobEnd::TimedOut(deadline))
         } else {
             Ok(())
         }
@@ -256,7 +280,8 @@ pub fn run_timed<E: From<JobEvent>>(
 /// ([`run_timed`]) on a blocking thread, its events sent to `events`, and a job
 /// that ends early sends why, unless its request is gone. Dropping the
 /// channel's receiver cancels the job: while it waits it leaves the queue at
-/// once; once it runs, at its next call.
+/// once; once it runs, at its next call. Its deadline counts from its turn
+/// (`context.deadline`, ADR 0058).
 ///
 /// A runner call that panics fails the model (322g's note): its request
 /// sees the channel close before its last image, the queue is closed — the
@@ -331,7 +356,8 @@ pub fn spawn<E: From<JobEvent> + Send + 'static>(
         let ran = tokio::task::spawn_blocking(move || {
             let mut phases = Phases::default();
             let began = Instant::now();
-            let ended = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_timed(&model, &job, &events, &mut phases))) {
+            let run = || run_timed(&model, &job, &events, &mut phases, context.deadline);
+            let ended = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
                 Ok(ended) => ended,
                 Err(panic) => {
                     // The prefix went as the job unwound (`Held`); the
@@ -350,6 +376,7 @@ pub fn spawn<E: From<JobEvent> + Send + 'static>(
                 Ok(()) => ImageOutcome::Completed,
                 Err(JobEnd::Cancelled) => ImageOutcome::Cancelled,
                 Err(JobEnd::Stopped) => ImageOutcome::Stopped,
+                Err(JobEnd::TimedOut(_)) => ImageOutcome::TimedOut,
                 Err(JobEnd::Failed(ImageError::Refused(_))) => ImageOutcome::Refused,
                 Err(JobEnd::Failed(_)) => ImageOutcome::Failed,
             };

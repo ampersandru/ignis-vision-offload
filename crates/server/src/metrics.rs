@@ -170,7 +170,8 @@ impl Rejection {
 }
 
 /// How an image job ended: `ignis_image_jobs_total`'s fixed `outcome` label
-/// (GitHub #324, ADR 0017's amendment of 2026-10-15).
+/// (GitHub #324, ADR 0017's amendment of 2026-10-15; `timed_out` since ADR
+/// 0058).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageOutcome {
     /// Every image was made.
@@ -183,10 +184,12 @@ pub enum ImageOutcome {
     Refused,
     /// The runner failed a call, or panicked.
     Failed,
+    /// Its deadline passed (ADR 0058).
+    TimedOut,
 }
 
 impl ImageOutcome {
-    const ALL: [ImageOutcome; 5] = [Self::Completed, Self::Cancelled, Self::Stopped, Self::Refused, Self::Failed];
+    const ALL: [ImageOutcome; 6] = [Self::Completed, Self::Cancelled, Self::Stopped, Self::Refused, Self::Failed, Self::TimedOut];
 
     /// As the series and the log line spell it.
     pub fn label(self) -> &'static str {
@@ -196,6 +199,7 @@ impl ImageOutcome {
             Self::Stopped => "stopped",
             Self::Refused => "refused",
             Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
         }
     }
 }

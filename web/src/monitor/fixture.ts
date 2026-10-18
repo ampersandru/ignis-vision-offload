@@ -276,6 +276,7 @@ ignis_image_jobs_total{outcome="cancelled"} 1
 ignis_image_jobs_total{outcome="stopped"} 0
 ignis_image_jobs_total{outcome="refused"} 0
 ignis_image_jobs_total{outcome="failed"} 1
+ignis_image_jobs_total{outcome="timed_out"} 0
 # HELP ignis_image_images_total Images the image jobs made.
 # TYPE ignis_image_images_total counter
 ignis_image_images_total 21

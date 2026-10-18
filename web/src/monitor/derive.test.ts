@@ -477,7 +477,7 @@ describe("deriveReasoning", () => {
 // GitHub #324: the image jobs are read over the window, with the time's shares.
 describe("deriveDashboard images", () => {
   const images = (completed: number, failed: number, made: number, denoising: number, decoding: number) => ({
-    jobs: { completed, cancelled: 0, stopped: 0, refused: 0, failed },
+    jobs: { completed, cancelled: 0, stopped: 0, refused: 0, failed, timed_out: 0 },
     images: made,
     phaseSeconds: { queued: 0, encoding: 0, denoising, decoding },
     duration: null,

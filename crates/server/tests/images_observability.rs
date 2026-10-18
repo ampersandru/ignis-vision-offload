@@ -25,10 +25,12 @@ use tracing_subscriber::layer::SubscriberExt;
 const IMAGE: &str = "ignis-image-2.1-turbo";
 
 /// The fake runner whose decode fails while `fail_decode` is set: a job that
-/// ends in `failed`.
+/// ends in `failed`; and whose encode takes a twentieth of a second while
+/// `slow_encode` is: a job its deadline can end.
 struct Flaky {
     inner: FakeImageRunner,
     fail_decode: Arc<AtomicBool>,
+    slow_encode: Arc<AtomicBool>,
 }
 
 impl ImageRunner for Flaky {
@@ -41,6 +43,9 @@ impl ImageRunner for Flaky {
     }
 
     fn encode_condition(&mut self, condition: &ImageCondition) -> Result<ConditionId, ImageError> {
+        if self.slow_encode.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         self.inner.encode_condition(condition)
     }
 
@@ -100,15 +105,16 @@ fn sample(text: &str, series: &str) -> String {
 
 /// A job that makes every image is one log line saying what the request
 /// was, and moves the families; a job that fails is one more line and one
-/// more count. A request refused after it was admitted leaves no job in the
-/// queue gauge (review-324serving F1).
+/// more count, and so is one its deadline ended (`timed_out`, ADR 0058). A
+/// request refused after it was admitted leaves no job in the queue gauge
+/// (review-324serving F1).
 #[tokio::test]
 async fn a_finished_image_job_logs_one_line_and_moves_the_image_families() {
     let log = std::sync::Arc::new(MemorySink::new());
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(JsonLayer::new(log.clone()))).expect("the only subscriber of this binary");
 
-    let fail_decode = Arc::new(AtomicBool::new(false));
-    let runner = Flaky { inner: FakeImageRunner::new(fake_plan()), fail_decode: Arc::clone(&fail_decode) };
+    let (fail_decode, slow_encode) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let runner = Flaky { inner: FakeImageRunner::new(fake_plan()), fail_decode: Arc::clone(&fail_decode), slow_encode: Arc::clone(&slow_encode) };
     let server = Server::from_active(ActiveModel::image(ImageModel::new(IMAGE, Box::new(runner)))).with_metrics();
     server.update_live(|live| live.image.sizes = vec![ImageSize::new(64, 64)]);
     let (app, metrics) = (server.app(), server.metrics_app().expect("metrics are on"));
@@ -181,5 +187,24 @@ async fn a_finished_image_job_logs_one_line_and_moves_the_image_families() {
     let text = scrape(&metrics).await;
     assert_eq!(sample(&text, "ignis_image_jobs_total{outcome=\"failed\"}"), "1", "{text}");
     assert_eq!(sample(&text, "ignis_image_job_duration_seconds_count"), "1", "{text}");
+    assert_eq!(sample(&text, "ignis_image_queue_jobs{state=\"running\"}"), "0", "{text}");
+
+    // A job its deadline ends, past its encode, is one more line,
+    // `timed_out`, and one more count; its request is a 504.
+    fail_decode.store(false, Ordering::SeqCst);
+    slow_encode.store(true, Ordering::SeqCst);
+    server.update_live(|live| live.request_timeout = std::time::Duration::from_millis(10));
+    let (status, refused) = post(&app, "/v1/images/generations", &json!({ "prompt": "a red fox", "size": "64x64", "seed": 3 })).await;
+    assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::GATEWAY_TIMEOUT, Some("request_timeout")), "{refused}");
+    let outcomes: Vec<Value> = log
+        .lines()
+        .iter()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .filter(|event| event["event_name"] == "ignis.image.job")
+        .map(|event| event.get("outcome").or_else(|| event["attributes"].get("outcome")).cloned().unwrap_or(Value::Null))
+        .collect();
+    assert_eq!(outcomes, [json!("completed"), json!("failed"), json!("timed_out")]);
+    let text = scrape(&metrics).await;
+    assert_eq!(sample(&text, "ignis_image_jobs_total{outcome=\"timed_out\"}"), "1", "{text}");
     assert_eq!(sample(&text, "ignis_image_queue_jobs{state=\"running\"}"), "0", "{text}");
 }

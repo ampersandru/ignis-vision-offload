@@ -34,7 +34,7 @@ use utoipa::ToSchema;
 
 use super::budget::{self, Fitted};
 use super::enhance::Rewritten;
-use super::job::{self, Background, ImageJob, JobContext, JobEnd, JobEvent, Phase, Progress};
+use super::job::{self, Background, Deadline, ImageJob, JobContext, JobEnd, JobEvent, Phase, Progress};
 use super::{ImageModel, Running, Waiting};
 use crate::api::{
     bad_request_param, check_kind, check_served_kind, error_response, error_response_naming, implicit_switch_refused,
@@ -337,17 +337,25 @@ struct Refusal {
 
 impl Refusal {
     /// A job that ended as `end` — `None` when its thread went away without
-    /// saying why, a panic: `503 model_stopped` for a stopped model, `400
-    /// condition_budget_exceeded` for a prefix the runner found past the
-    /// budget (the fit trusts the runner's count, so a drift between the two
-    /// is still the request's size, not an engine fault), `400 image_refused`
-    /// in the runner's words for a request it refuses (spec image-model/04),
-    /// `500 engine_error` otherwise.
+    /// saying why, a panic: `503 model_stopped` for a stopped model, `504
+    /// request_timeout` past its deadline (ADR 0058: an image cut short is no
+    /// image, so never a partial answer), `400 condition_budget_exceeded` for
+    /// a prefix the runner found past the budget (the fit trusts the runner's
+    /// count, so a drift between the two is still the request's size, not an
+    /// engine fault), `400 image_refused` in the runner's words for a request
+    /// it refuses (spec image-model/04), `500 engine_error` otherwise.
     fn of(end: Option<JobEnd>, route: Route) -> Self {
         match end {
             Some(JobEnd::Stopped) => Self {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 error: ApiError::new("server_error", "model_stopped", MODEL_STOPPED_MESSAGE),
+            },
+            Some(JobEnd::TimedOut(Deadline { timeout, streamed })) => Self {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                error: ApiError::new("request_timeout", "request_timeout", &match streamed {
+                    true => crate::api::stream_timeout_message(timeout),
+                    false => crate::api::request_timeout_message(timeout),
+                }),
             },
             Some(JobEnd::Failed(over @ ImageError::OverBudget { .. })) => Self {
                 status: StatusCode::BAD_REQUEST,
@@ -393,7 +401,7 @@ struct Prepared {
 
 ignis adds `seed` (image `i` starts from `seed + i`; absent, one is drawn and returned in `seed`) and `prompt_enhancement`. OpenAI's other fields are listed at the end.
 
-One job runs at a time and up to `image.queue_depth` wait, in order; past that the answer is `503 engine_full` with `Retry-After`. A client that disconnects cancels its job, while it waits or between two denoising steps.
+One job runs at a time and up to `image.queue_depth` wait, in order; past that the answer is `503 engine_full` with `Retry-After`. A client that disconnects cancels its job, while it waits or between two denoising steps. A job is held to a deadline from its start, never from its queue: `--server-request-timeout`, or `--server-stream-timeout` when it streams (ADR 0058, 0 = none). Past it the job ends between two denoising steps and the request is `504 request_timeout`, or, streamed, its `error` event after the images already completed; always an error, whatever `--server-timeout-reply` says.
 
 `stream: false` answers one JSON body. `stream: true` answers `text/event-stream`, each event an `event:` named by its `type` and a `data:` object: `image_generation.progress` (`{phase, image, step, total}`) as each unit of work starts -- `switching`, `loading` and `enhancing` first when the request waits on a switch, a load or a rewrite, then `encoding` once, then per image one `denoising` per step and its `decoding` -- and one `image_generation.completed` per image with its `b64_json`, as soon as it is made. A job that ends early sends one `error` event (`{type, error}`) instead of the rest; so does a refusal that comes once a stream waiting on a switch, a load or a rewrite has begun.
 
@@ -412,6 +420,7 @@ Prompt enhancement (`prompt_enhancement: true`, or `image.prompt_enhancement` wh
         (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
         (status = 500, description = "The image model failed a call (`engine_error`).", body = ApiError),
         (status = 503, description = "The queue is full (`engine_full`, with `Retry-After`); a model switch is under way (`model_switching`, with `Retry-After`) or did not land (`model_switch_failed`, also when a prompt enhancement visit could not switch back to the image model); the image model was stopped before the job finished (`model_stopped`, with `Retry-After`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
+        (status = 504, description = "The job ran past `--server-request-timeout` from its start (`request_timeout`), whatever `--server-timeout-reply` says: an image cut short is no image.", body = ApiError),
     ),
 )]
 pub(crate) async fn create_image(State(server): State<Arc<Server>>, Json(fields): Json<GenerationRequest>) -> Response {
@@ -445,6 +454,7 @@ Each condition image is resized to 1024x1024 pixels of area at its own aspect ra
         (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`).", body = ApiError),
         (status = 500, description = "The image model failed a call (`engine_error`).", body = ApiError),
         (status = 503, description = "As for a generation: `engine_full`, `model_switching`, `model_switch_failed`, `model_stopped`, `model_load_failed`, `server_stopping`.", body = ApiError),
+        (status = 504, description = "As for a generation: the job ran past its deadline (`request_timeout`).", body = ApiError),
     ),
 )]
 pub(crate) async fn create_image_edit(State(server): State<Arc<Server>>, multipart: Multipart) -> Response {
@@ -749,6 +759,12 @@ async fn admit(
         model.jobs.report_to(metrics);
     }
     let waiting = admitted(&model, limits.queue_depth)?;
+    // ADR 0058: counted from the job's turn, never from its queue.
+    let live = server.live();
+    let deadline = match request.stream {
+        true => Deadline { timeout: live.stream_timeout, streamed: true },
+        false => Deadline { timeout: live.request_timeout, streamed: false },
+    };
     let context = JobContext {
         kind: match route {
             Route::Generations => "generation",
@@ -764,6 +780,7 @@ async fn admit(
         queued_at: std::time::Instant::now(),
         enhance: enhance_time,
         switch,
+        deadline,
     };
     let ImageRequest { n, background, .. } = request;
     let Enhanced { prompt, revised, warnings } = enhanced;

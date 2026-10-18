@@ -152,8 +152,8 @@ ignis_retained_state_hits_total{tier="tape",kind="prefix"} 1
     // 8 plain counters, 3 reject reasons, 36 retained series (disk's 12 null without the tier), 3 skips, 4 KV-disk, then
     // Flash-Next's 32 expert hit and miss series, 2 prefetch, 2 bytes, 2
     // stall (GitHub #306), 2 n-gram rows, 2 reads, the 3 speculative totals
-    // (GitHub #307), the image jobs' 5 outcomes, images, 4 phases and duration count (GitHub #324), the loop guard's watched, looped, 7 outcomes, tokens and score count with the budget's closes (GitHub #330), and 2 histogram counts.
-    expect(counterValues(empty)).toHaveLength(124);
+    // (GitHub #307), the image jobs' 6 outcomes (timed_out since ADR 0058), images, 4 phases and duration count (GitHub #324), the loop guard's watched, looped, 7 outcomes, tokens and score count with the budget's closes (GitHub #330), and 2 histogram counts.
+    expect(counterValues(empty)).toHaveLength(125);
     expect(counterValues(moved).filter((v) => v !== null)).toHaveLength(40);
     const flashNext = readSnapshot(parseExposition(FLASH_NEXT_EXPOSITION));
     expect(counterValues(flashNext).filter((v) => v !== null)).toHaveLength(82);
@@ -235,7 +235,7 @@ ignis_retained_state_hits_total{tier="tape",kind="prefix"} 1
     const s = readSnapshot(parseExposition(IMAGE_EXPOSITION));
     expect(s.unknown).toEqual([]);
     expect(s.images).toMatchObject({
-      jobs: { completed: 10, cancelled: 1, stopped: 0, refused: 0, failed: 1 },
+      jobs: { completed: 10, cancelled: 1, stopped: 0, refused: 0, failed: 1, timed_out: 0 },
       images: 21,
       phaseSeconds: { queued: 5, encoding: 3, denoising: 14, decoding: 3 },
       waiting: 2,

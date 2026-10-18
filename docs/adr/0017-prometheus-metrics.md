@@ -135,7 +135,7 @@ telemetry consumer: the job itself records them (`images::job::spawn`), once,
 as it ends, into the same atomics; a scrape still formats atomics only. They
 take the decision family's exception: **absent until the image model has
 admitted a job**, then every series renders, zeros included. Fixed labels:
-`outcome=completed|cancelled|stopped|refused|failed`, `phase=queued|encoding|
+`outcome=completed|cancelled|stopped|refused|failed|timed_out` (`timed_out` since ADR 0058), `phase=queued|encoding|
 denoising|decoding`, `state=waiting|running`. A completed job's duration runs
 from its turn to its last image (the PNG encodes and the sends included: the log's
 `run_ms`), so the wait is the `queued` phase's alone. The queue gauge is set by the
@@ -382,7 +382,7 @@ The initial stable metric contract is:
 | `ignis_loop_guard_rewound_tokens_total` | counter | none | Generated tokens the guard's rewinds took back, closes included: the usage's `rewound_tokens`, summed |
 | `ignis_loop_guard_min_ratio` | histogram | none | Per watched request that scored a window: the lowest normalized loop score it reached, across its rewinds. Buckets `0.1, 0.15, … 0.5` by 0.05, then `1` and `+Inf`; `le="1"` below `_count` would be a score that is not a ratio |
 | `ignis_tokenize_requests_total` | counter | `route=tokenize\|detokenize` | Calls to `POST /v1/tokenize` and `/v1/detokenize`, whatever they answered (#285, spec server/10). Not requests of the lifecycle above: they never enter the scheduler. **Absent until the first one** |
-| `ignis_image_jobs_total` | counter | `outcome=completed\|cancelled\|stopped\|refused\|failed` | Image jobs ended, by how (#324, spec image-model/05). A request that went away is `cancelled`, a model stopped under it `stopped`, a runner that refused its condition `refused`, a failed or panicked call `failed`. **Absent until the image model admitted a job**, as the four below |
+| `ignis_image_jobs_total` | counter | `outcome=completed\|cancelled\|stopped\|refused\|failed\|timed_out` | Image jobs ended, by how (#324, spec image-model/05). A request that went away is `cancelled`, a model stopped under it `stopped`, a runner that refused its condition `refused`, a failed or panicked call `failed`, a job past its deadline `timed_out` (ADR 0058). **Absent until the image model admitted a job**, as the four below |
 | `ignis_image_images_total` | counter | none | Images the image jobs made, including those of a job that ended before its last (#324) |
 | `ignis_image_job_duration_seconds` | histogram | none | A **completed** job's time from its turn to its last image, buckets 0.1 s to 600 s (#324) |
 | `ignis_image_job_phase_seconds_total` | counter | `phase=queued\|encoding\|denoising\|decoding` | Seconds the jobs of every outcome spent waiting for their turn, encoding the condition, denoising and decoding (#324). A phase's share of the total is computed by the reader |

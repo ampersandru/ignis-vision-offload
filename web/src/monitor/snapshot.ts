@@ -176,7 +176,7 @@ export type Ngram = {
 };
 
 /** How an image job ended (GitHub #324): `ignis_image_jobs_total`'s `outcome` label. */
-export const IMAGE_OUTCOMES = ["completed", "cancelled", "stopped", "refused", "failed"] as const;
+export const IMAGE_OUTCOMES = ["completed", "cancelled", "stopped", "refused", "failed", "timed_out"] as const;
 export type ImageOutcome = (typeof IMAGE_OUTCOMES)[number];
 
 /** Where an image job's time goes (GitHub #324): `ignis_image_job_phase_seconds_total`'s `phase` label. */

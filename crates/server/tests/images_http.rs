@@ -92,6 +92,9 @@ struct Faults {
     /// `condition_tokens` says the runner has no room for it (its arena); 0
     /// is no limit.
     room_cells: AtomicUsize,
+    /// How many denoising steps, across the runner's life, pass without
+    /// waiting at the gate: a job that gets that far, then waits.
+    free_steps: AtomicUsize,
 }
 
 /// `FakeImageRunner`, logging each call, each step behind `gate`.
@@ -139,7 +142,9 @@ impl ImageRunner for Recording {
         sigma_next: f32,
         velocity: Option<&mut Vec<f32>>,
     ) -> Result<(), ImageError> {
-        self.gate.pass();
+        if self.steps >= self.faults.free_steps.load(Ordering::SeqCst) {
+            self.gate.pass();
+        }
         self.steps += 1;
         if self.faults.panic_at_step.compare_exchange(self.steps, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
             panic!("a leaf fault at step {}", self.steps);
@@ -694,6 +699,90 @@ async fn a_disconnect_cancels_its_job_between_steps_or_before_it_starts() {
     assert!(!calls.contains(&Call::Decode), "no image was decoded");
     assert_eq!(calls.last(), Some(&Call::Release));
     assert_eq!(harness.encodes(), ["streamed"], "the queued job never started");
+}
+
+/// ADR 0058: a job is held to `server.request_timeout` from its start, never
+/// from its queue. Past it the job ends between two steps, its prefix
+/// released and the runner free, and its request is `504 request_timeout` —
+/// always an error, whatever `server.timeout_reply` says: a cut image is no
+/// image. The job queued behind it, whose own deadline only began with its
+/// turn, runs to its end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_past_its_deadline_is_a_504_and_the_one_behind_it_runs() {
+    let gate = Gate::shut();
+    let harness = Harness::new(Arc::clone(&gate));
+    harness.server.update_live(|live| live.request_timeout = Duration::from_secs(1));
+    let jobs = harness.jobs();
+    let request = |prompt: &str| json_request("/v1/images/generations", &json!({ "prompt": prompt, "n": 2, "size": "64x64" }));
+    let cut = tokio::spawn(harness.app.clone().oneshot(request("cut")));
+    until("the job runs", || harness.held.load(Ordering::SeqCst) == 1).await;
+    let behind = tokio::spawn(harness.app.clone().oneshot(request("behind")));
+    until("the second job waits", || jobs.in_flight().waiting == 1).await;
+    // Time passing is the point here, not a synchronization.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    gate.open();
+    let response = cut.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["error"]["code"], "request_timeout", "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("--server-request-timeout"), "{body}");
+    let (status, body) = {
+        let response = behind.await.unwrap().unwrap();
+        let status = response.status();
+        (status, response.into_body().collect().await.unwrap().to_bytes())
+    };
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let calls = harness.calls();
+    let first_job = calls.iter().position(|call| *call == Call::Release).expect("the cut job released its prefix");
+    assert_eq!(calls[..first_job].iter().filter(|call| **call == Call::Step).count(), 1, "cut after the step it was in: {calls:?}");
+    assert!(!calls[..first_job].contains(&Call::Decode), "no image was decoded");
+    until("the runner is free", || harness.held.load(Ordering::SeqCst) == 0 && jobs.in_flight().is_idle()).await;
+}
+
+/// ADR 0058: a streamed job is held to `server.stream_timeout`. The images
+/// it completed have gone out; then its `error` event says
+/// `request_timeout`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_streamed_job_past_its_deadline_sends_its_images_then_a_request_timeout_error() {
+    let gate = Gate::shut();
+    let harness = Harness::new(Arc::clone(&gate));
+    harness.server.update_live(|live| {
+        live.request_timeout = Duration::from_secs(600);
+        live.stream_timeout = Duration::from_secs(1);
+    });
+    // The whole first image, then the job waits in the second's first step.
+    harness.faults.free_steps.store(8, Ordering::SeqCst);
+    let body = json!({ "prompt": "two moons", "n": 2, "size": "64x64", "stream": true });
+    let response = harness.app.clone().oneshot(json_request("/v1/images/generations", &body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = tokio::spawn(events_of(response));
+    until("the second image's first step runs", || harness.calls().iter().filter(|call| **call == Call::Step).count() == 8).await;
+    // Time passing is the point here, not a synchronization.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    gate.open();
+    let events = events.await.unwrap();
+    let completed: Vec<u64> = events.iter().filter(|(event, _)| event.ends_with("completed")).map(|(_, data)| data["image"].as_u64().unwrap()).collect();
+    assert_eq!(completed, [0], "the first image went out");
+    let (last, data) = events.last().unwrap();
+    assert_eq!(last, "error", "{events:?}");
+    assert_eq!(data["error"]["code"], "request_timeout", "{data}");
+    assert!(data["error"]["message"].as_str().unwrap().contains("--server-stream-timeout"), "{data}");
+    until("the prefix released", || harness.held.load(Ordering::SeqCst) == 0 && harness.jobs().in_flight().is_idle()).await;
+}
+
+/// `0` is no deadline for a job either: one held well past a zero-length
+/// deadline makes its image.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_zero_request_timeout_leaves_a_job_to_its_images() {
+    let gate = Gate::shut();
+    let harness = Harness::new(Arc::clone(&gate));
+    harness.server.update_live(|live| live.request_timeout = Duration::ZERO);
+    let answer = tokio::spawn(harness.app.clone().oneshot(json_request("/v1/images/generations", &json!({ "prompt": "x", "size": "64x64" }))));
+    until("the job runs", || harness.held.load(Ordering::SeqCst) == 1).await;
+    // Time passing is the point here, not a synchronization.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    gate.open();
+    assert_eq!(answer.await.unwrap().unwrap().status(), StatusCode::OK);
 }
 
 /// A model switch's stop (`ImageJobs::close`) ends the running job between
