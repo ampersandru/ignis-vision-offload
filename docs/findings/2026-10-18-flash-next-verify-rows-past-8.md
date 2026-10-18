@@ -84,7 +84,10 @@ drafts, budget 8 -> 16): verify round 13.2 -> 24.0 MB, sampling 4.6 -> 8.6 MB
 (the head's logits, one row a column), decode graph 40.8 -> 75.3 MB (the QSA
 listed hq rows of every column); workspace and activations unchanged, the
 MoE workspace's decode regions kept at 8 tokens. A budget no round reaches
-reserves nothing (3 lanes at 12 rows and at 32 plan alike).
+reserves nothing (3 lanes at 12 rows and at 32 plan alike). The three lines
+grow linearly in the rows (1.35, 0.5 and 4.3 MB a row here), so a round of
+32 rows would reserve about 150 MB over the default's -- extrapolated from
+the plan's linear terms, not measured.
 
 **Cost on the 5090** (`flash_next_mtp_bench mtp --draft-tokens 3 --lanes 8`,
 hq-e8-2b, 1,536-token prompts, 128 tokens, 16 GB expert cache; decode is
