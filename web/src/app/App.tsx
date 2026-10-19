@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { forgetKey, useAuth } from "../api/auth.ts";
 import { canChat, canSend, loadUnderWay, type ModelState, useModel } from "../api/model.ts";
 import { Composer } from "../conversation/Composer.tsx";
@@ -14,7 +14,7 @@ import { useMonitor, useMonitorVisible } from "../monitor/useMonitor.ts";
 import { SessionLog } from "../sessions/SessionLog.tsx";
 import { SessionsPanel } from "../sessions/SessionsPanel.tsx";
 import { StorePictures } from "../image/pictures.tsx";
-import { pictureName, type PoolImage } from "../image/sessions.ts";
+import { imagesOf, pictureName, type PoolImage } from "../image/sessions.ts";
 import { fileFromDataUrl } from "../image/studio.ts";
 import type { Mark, MarkedPicture } from "../markup/markup.ts";
 import { MarkupEditor } from "../markup/MarkupEditor.tsx";
@@ -23,6 +23,7 @@ import { useImageSessions } from "../image/useImageSessions.ts";
 import { ServerView } from "../server/ServerView.tsx";
 import { useServer, useTick } from "../server/useServer.ts";
 import { DEFAULT_SETTINGS, type PlaygroundSettings } from "../settings/defaults.ts";
+import type { ImageId } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { SettingsPanel } from "../settings/SettingsPanel.tsx";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
@@ -38,7 +39,8 @@ import { useConversation } from "./useConversation.ts";
 // The Playground (GitHub #164): a streaming chat against ignis — over its
 // Responses WebSocket, or /v1/chat/completions (GitHub #283) — with
 // per-request figures measured in the browser.
-// Sessions, settings and figures live in memory; a reload starts over, apart
+// The chat's, the Decide tab's and the Image view's sessions are kept in this
+// browser's store and come back on a reload; settings live in memory, apart
 // from the switches this browser stores (`storedFlag.ts`).
 // This is the page's layout; the conversation loop is useConversation.
 // The header switches between the chat, the Decide tab (GitHub #247), —
@@ -83,7 +85,9 @@ export function App() {
   const [decideDrawer, setDecideDrawer] = useState<DecideDrawer>(null);
   // The model the next message goes to: the one loaded, unless the owner picks another or the image model is loaded.
   const nextModel = useNextModel(model);
-  const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel });
+  // The pictures the Image view's sessions name, for the chat's deletes: the view is held below the chat.
+  const studioPictures = useRef<() => Iterable<ImageId>>(() => []);
+  const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel, elsewhere: () => studioPictures.current() });
   const { active } = chat;
   const monitoring = view === "monitor" && monitorVisible;
   const deciding = view === "decide";
@@ -96,7 +100,9 @@ export function App() {
   const [imageOpened, setImageOpened] = useState(false);
   const [imageDrawer, setImageDrawer] = useState<StudioDrawer>(null);
   // Held here, not in the view: the chat hands pictures to it.
-  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging);
+  // Each keeps the pictures the other names when it deletes a session: the store holds both views' pictures once.
+  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures });
+  studioPictures.current = () => studio.sessions.flatMap((s) => [...imagesOf(s)]);
   const [chatMarking, setChatMarking] = useState<ChatMarking | null>(null);
   // A switch or a load runs the header's flame and heat bar as a reply does (spec playground/05).
   const busy = chat.busy || loadUnderWay(model);
@@ -288,6 +294,7 @@ export function App() {
             onNew={newSession}
             onSelect={selectSession}
             onRemove={chat.deleteSession}
+            notice={chat.storeError}
           />
 
           <main className="flex min-w-0 flex-1 flex-col">

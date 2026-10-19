@@ -11,6 +11,8 @@ export function SessionsPanel(props: {
   onNew: () => void;
   onSelect: (id: number) => void;
   onRemove: (id: number) => void;
+  /** What keeping the sessions in this browser ran into. */
+  notice?: string | null;
 }) {
   return (
     <aside
@@ -39,6 +41,11 @@ export function SessionsPanel(props: {
           />
         ))}
       </ul>
+      {props.notice && (
+        <p role="status" className="border-t border-line px-3 py-2 text-xs text-fault">
+          {props.notice}
+        </p>
+      )}
     </aside>
   );
 }

@@ -10,6 +10,7 @@ export function Sessions({
   onSelect,
   onRemove,
   open,
+  notice,
 }: {
   list: DecisionList;
   onNew: () => void;
@@ -17,6 +18,8 @@ export function Sessions({
   onRemove: (id: number) => void;
   /** Below `lg` the column is a drawer; this is whether it is out. */
   open: boolean;
+  /** What keeping the decisions in this browser ran into. */
+  notice?: string | null;
 }) {
   return (
     <aside
@@ -44,6 +47,11 @@ export function Sessions({
           />
         ))}
       </ul>
+      {notice && (
+        <p role="status" className="border-t border-line px-3 py-2 text-xs text-fault">
+          {notice}
+        </p>
+      )}
     </aside>
   );
 }

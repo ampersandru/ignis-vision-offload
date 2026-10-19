@@ -10,6 +10,7 @@
 // URI, which is what leaves the engine a media prefix to reuse.
 
 import type { Mark } from "../markup/markup.ts";
+import type { ImageId } from "../store/imageStore.ts";
 
 /** An image attached to one prompt, as the wire carries it. */
 export type PromptImage = {
@@ -21,11 +22,17 @@ export type PromptImage = {
   height: number;
   /**
    * The picture as it was picked, at its own size, where the chat keeps it: the picture tool edits this one, not
-   * the redraw for the vision tower. In memory only; it reaches the page's store when sent to the Image view.
+   * the redraw for the vision tower. It reaches the page's store when the prompt is sent (`kept`), or when the
+   * picture is sent to the Image view.
    */
   full?: Blob;
   /** The marks it was drawn with, over `source`, the picture before them; `region` is the area they mark. */
   markup?: { source: Blob; marks: Mark[]; keepOutside: boolean; region: Blob };
+  /**
+   * Where the page's store keeps `full` and the markup's pictures, by id, once the prompt is sent: the session is
+   * kept without its Blobs, and a reload reads them back from here (sessions/stored.ts).
+   */
+  kept?: { full?: ImageId; markup?: { source: ImageId; region: ImageId; marks: Mark[]; keepOutside: boolean } };
 };
 
 /** A picture of the conversation as its actions take it: the user's, or one the picture tool made. */

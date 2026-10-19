@@ -1,42 +1,132 @@
 # Playground: keep the chat history
 
+GitHub: #171
+
 ## Why
 
 Sessions live in React state only: a reload, a closed tab or a new build
 of the page loses every conversation, with its tool runs, figures and
 attachments. Memory notes already survive (localStorage); the chats do
-not.
+not. The Decide tab's decisions are lost the same way. The Image view's
+sessions already survive (spec playground/06, the image store).
 
-## What has to be decided
+## Decisions (2026-10-19, the owner)
 
-- **Where it lives.**
-  - Browser only: IndexedDB (localStorage is too small once replies,
-    reasoning, tool results and attachments pile up). Private to the
-    browser, works with the static `/ui/` page and `--expose` as is.
-  - On ignis: a small session store behind `/v1` (or `/ui/api`), shared
-    across browsers and devices, but new server surface, storage on the
-    host, and it must sit behind the API key.
-  - Both: browser first, optional sync later.
-- **What is kept.** Messages with reasoning, tool calls and results,
-  agent runs, web and local runs, questions, figures and log rows,
-  settings per session? Attachments (possibly MBs of PDF text) — kept,
-  capped, or dropped with a note?
-- **Lifecycle.** Save while streaming or at the end of each turn; what a
-  reply that was streaming at reload time becomes (stopped); a schema
-  version and migrations for later changes; delete one session, delete
-  all, quota handling when the browser refuses more space.
-- **Portability.** Export and import a session (JSON, maybe Markdown) so
-  a chat can move between browsers without a server.
-- **Privacy.** With `--expose`, anyone with the key uses the same page:
-  browser storage keeps each visitor's chats in their own browser;
-  server storage would mix them unless sessions are keyed per user.
+- **Where it lives: the browser only.** The page's image store
+  (`web/src/store/`, IndexedDB; spec playground/06) holds the chat's sessions
+  as documents of `chat-sessions` and the decisions as documents of
+  `decide-sessions`, beside `image-sessions`. Private to the browser and the
+  origin, so `--expose` mixes nobody's chats, and the static `/ui/` page works
+  as is. A store on ignis stays open.
+- **What is kept: everything, whole.** Messages with reasoning, tool calls and
+  results, agent, web, local and picture runs, questions, figures, the
+  session's log, attached files (a PDF's text included), and a decision's
+  draft, set-aside evidence, last answer and refusal — a loaded log of up to
+  32 MB included. No cap: a store that refuses is said, not worked around.
+- **Chat pictures: in the image store by SHA-256.** A prompt image keeps its
+  redraw (the data URI the wire carries) inline; the picture beside it — the
+  file at its own size, and a marked picture's source and marked area — goes
+  into the image store when the prompt is sent, named on the image by id
+  (`PromptImage.kept`). One copy however many sessions, chat or image, name it;
+  deleting a session deletes only what no remaining session of either view
+  names.
+- **Export and import: later**, not in this work.
 
-## Acceptance (draft)
+## Solution
 
-- Reload the page mid-conversation: the sessions list, the active session
-  and every finished turn come back as they were; a reply that was
-  streaming comes back stopped with the text it had.
-- Deleting a session removes it from storage.
-- A stored schema from the previous version still loads.
-- Unit tests for the store (save, load, delete, migrate) and for
-  serialising a session with tool runs.
+- **A key per session.** A UUID under which the document is written
+  (`store/docs.ts`). The page's numeric ids stay its own and are handed out
+  again at each load, past every id the page has given: two tabs counting from
+  the same place would otherwise write each other's sessions.
+- **Written as it changes.** Every change makes a new session object; each
+  changed one is written 400 ms after its last change, and no later than 1 s
+  from the first one waiting while changes never pause (a reply streaming).
+  What is waiting is written when the page goes away (`pagehide`). A session
+  with nothing in it (chat: no message and no file; Decide: untouched) is never
+  written. A session the list no longer holds is deleted from the store; its
+  pending write is dropped first. The session each view has open is noted under
+  `active-session` (`chat`, `decide`).
+- **Read once, when the view mounts.** Newest first, in the order the list
+  showed them; the session that was open opens again. What the page did before
+  the store answered stays on top, and open. A turn does not wait for the
+  store: the ids the stored sessions come back with are past the page's.
+- **Settled on reading.** A page that went away mid-turn left nothing running:
+  a reply streaming comes back stopped with its text; agent, web, local and
+  picture runs under way come back stopped; a waiting question skipped; a
+  switch under way stopped; every call left without a result is answered as
+  stopped, right after the results it has, so the next turn sends a
+  well-formed history. A decision being asked comes back not running, its
+  earlier answers kept, with a refusal saying the page closed before the
+  answers came back. A decision's question uids are reserved, so the next
+  question added is not numbered as one of them.
+- **A schema version per document.** `version: 1`; a document of a later
+  version was written by a newer page and is left out, unread and untouched.
+  Reads are tolerant of fields an older writer did not write.
+- **A store that refuses.** The write fails, the session list says what the
+  browser answered, and the page goes on in memory.
+
+## Seams
+
+- `web/src/store/` — `saver.ts` (when a session is written), `docs.ts` (keys,
+  order, merge), `useStoredSessions.ts` (the glue between a view's list and the
+  store).
+- `web/src/sessions/stored.ts` — the chat's document: to and from, settle,
+  pictures named, pictures kept and read back.
+- `web/src/decide/stored.ts` — the decision's document; `decide/model.ts`
+  `reserveUids`.
+- `web/src/app/useConversation.ts`, `web/src/decide/DecideView.tsx` — the
+  views; `web/src/app/App.tsx` — each view keeps the other's pictures when it
+  deletes a session (`useImageSessions` `live`, `useConversation` `elsewhere`).
+
+## Acceptance
+
+1. A chat session is stored as plain data — no Blob, no Date — and reads back
+   equal, the pictures beside the redraw left to the store by id.
+   (sessions/stored.test)
+2. Stored sessions read back newest first, with new ids above every stored
+   message id and the page's own; a later schema and what is not a session are
+   left out; a document without a log or files reads. (sessions/stored.test,
+   store/docs.test)
+3. Reading settles a session left mid-turn: the streaming reply stopped with
+   its text, runs stopped, a waiting question skipped, a switch stopped, every
+   unanswered call answered right after its results. (sessions/stored.test)
+4. A sent prompt's full-size picture and markup pictures go into the store and
+   are named on the image; a store that refuses leaves the redraw alone; a
+   session names its stored pictures; they read back beside the redraw, and a
+   missing one is left out. (sessions/stored.test)
+5. A decision is stored as plain data and reads back equal; one being asked
+   reads back not running with its answers and a refusal; the next question
+   is numbered past the stored ones; a later schema is left out.
+   (decide/stored.test)
+6. Writes wait 400 ms after the last change, at most 1 s while changes never
+   pause, per session; a forgotten session is never written; the page going
+   away writes what waits. (store/saver.test)
+7. The stored sessions join the page: what the page did first stays on top and
+   open, else the session last open opens, else the newest; an empty store
+   leaves the page as it is. (store/docs.test)
+8. Reload the page mid-conversation: the sessions list, the active session and
+   every finished turn come back; a streaming reply comes back stopped with its
+   text; the same in the Decide tab; deleting a session removes it from the
+   store and its pictures no other session names. (the owner's, live: the hook
+   glue has no effect-running tests)
+
+## As built (2026-10-19, `main`)
+
+- No IndexedDB schema bump: `docs` was already keyed by collection, so the
+  database stays at version 1 and the Image view's store is read as before.
+- The chat's stored pictures are read back into memory for every session when
+  the page opens (`withPictures`), not when a session is opened: simple, and a
+  cost that grows with the pictures kept. A store-side reference read on use is
+  the step if it shows.
+- A picture the model made (`make_image`) stays inline in the session, as the
+  data URI the chat shows: a session with several is several MB, rewritten on
+  each write while a reply in it streams.
+- Two tabs of one origin write distinct keys, but each holds the list it read:
+  a session deleted in one tab is written again by the other if it changes
+  there, and a picture deletion in one tab does not see sessions only the other
+  has. The Image view has the same limits.
+- A reply stopped by a reload carries no figures and no mark of its own: it
+  reads as a reply that ended there.
+- Settling is not written back: a session is written again when it next
+  changes, and read settled each time until then.
+- Open: export and import (JSON, maybe Markdown); a store on ignis.

@@ -1,5 +1,8 @@
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PromptImage } from "../conversation/images.ts";
+import { mergeLoaded } from "../store/docs.ts";
+import { pageStore } from "../store/index.ts";
+import { useStoredSessions } from "../store/useStoredSessions.ts";
 import { caption } from "../ui/classes.ts";
 import { IconPaperclip } from "../ui/icons.tsx";
 import { Answers } from "./Answers.tsx";
@@ -22,6 +25,7 @@ import {
 import { decide } from "./request.ts";
 import { activeOf, type Decision, freeDecisionId, openDecision, removeDecision, startList, updateDecision } from "./sessions.ts";
 import { Sessions } from "./Sessions.tsx";
+import { DECIDE_SESSIONS, restoreDecisions, toStored, worthKeeping } from "./stored.ts";
 
 // The Decide tab (GitHub #247), in the chat's three-column shape: the decisions
 // on the left, what came back in the middle, and the bench that writes the
@@ -35,6 +39,9 @@ import { Sessions } from "./Sessions.tsx";
 //
 // A file dropped anywhere on the tab becomes the evidence (`evidenceFile.ts`):
 // a reader holding a log does not want to aim it at one textarea in a drawer.
+//
+// The decisions are kept in the page's store and read back on the next load
+// (stored.ts, store/useStoredSessions.ts).
 
 /** Which side drawer is out, below `lg`. */
 export type Drawer = "sessions" | "settings" | null;
@@ -58,6 +65,26 @@ export function DecideView({ ready, drawer, onDrawer }: { ready: boolean; drawer
   // One per decision in flight, so a send in one session can be stopped while
   // another is still running.
   const controllers = useRef(new Map<number, AbortController>());
+  const listNow = useRef(list);
+  listNow.current = list;
+  const kept = useStoredSessions({
+    store: pageStore(),
+    collection: DECIDE_SESSIONS,
+    view: "decide",
+    items: list.decisions,
+    activeId: list.activeId,
+    toStored,
+    worthKeeping,
+    adopt: async (values, activeKey) => {
+      const restored = restoreDecisions(values, freeDecisionId(listNow.current));
+      const reopened = [...restored.keys].find(([, key]) => key === activeKey)?.[0];
+      setList((l) => {
+        const merged = mergeLoaded(l.decisions, l.activeId, restored.decisions, reopened, worthKeeping);
+        return { decisions: merged.items, activeId: merged.activeId };
+      });
+      return { loaded: restored.decisions, keys: restored.keys };
+    },
+  });
 
   const active = activeOf(list);
   const faults = useMemo(() => validate(active.draft), [active.draft]);
@@ -223,7 +250,7 @@ export function DecideView({ ready, drawer, onDrawer }: { ready: boolean; drawer
       {drawer && <div className="fixed inset-0 z-30 bg-[#1c2026]/60 lg:hidden" onClick={() => onDrawer(null)} aria-hidden />}
       {dropping && <DropOverlay />}
 
-      <Sessions list={list} open={drawer === "sessions"} onNew={newDecision} onSelect={select} onRemove={remove} />
+      <Sessions list={list} open={drawer === "sessions"} onNew={newDecision} onSelect={select} onRemove={remove} notice={kept.error} />
 
       <main aria-label="Answers" className="flex min-w-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 md:px-6">

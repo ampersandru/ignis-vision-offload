@@ -1673,6 +1673,19 @@ message goes to and what sending does first (nothing, a load or a switch);
 with the image model loaded, the next message goes back to a text model on
 its own.
 
+The **chat's sessions** and the **Decide tab's decisions** are stored in the
+browser too (IndexedDB, GitHub #171), with the image sessions, and come back
+after a reload with the session that was open: every message with its
+reasoning, tool runs, figures and log, the attached files, and the decisions'
+drafts, evidence and answers. A reply that was streaming comes back stopped
+with the text it had got, and a call it left running is answered as stopped. A
+picture sent in the chat is stored at its own size (with its marks), once,
+beside the Image view's pictures; deleting a session deletes the pictures no
+other session — chat or image — still names. The store belongs to the browser
+and the origin: the dev server on :5173 and the page on `/ui/` keep separate
+ones, and nothing goes to the server. When the browser refuses the space, the
+session list says so and the page goes on without saving.
+
 A model [unloaded while idle](#idle-unload) shows as **unloaded** under its id
 — in the header and the Server view, not as an error — and the page does not
 poll it; **Load** on it loads it now, and a message sent meanwhile loads it and

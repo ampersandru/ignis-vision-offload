@@ -1,5 +1,6 @@
 // Where the Playground keeps pictures, and the documents that name them (the
-// image view's sessions). Two kinds of thing, kept apart:
+// sessions of the Image view, the chat and the Decide tab). Two kinds of
+// thing, kept apart:
 //   - images: bytes named by their SHA-256, so the same picture is stored
 //     once however many sessions use it, with a small thumbnail beside;
 //   - documents: JSON values by collection and id, naming images by id.

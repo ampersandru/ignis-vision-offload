@@ -8,8 +8,8 @@
 // rules for opening, removing and the active one — spelled the same way, so a
 // reader who knows one knows the other.
 //
-// They live in memory only; a reload starts over. Every function returns a new
-// list and leaves the one it was given alone.
+// The page's store keeps them across a reload (stored.ts). Every function
+// returns a new list and leaves the one it was given alone.
 
 import { asText } from "./json.ts";
 import { type Draft, EMPTY_DRAFT, EMPTY_SPARE, type Spare } from "./model.ts";

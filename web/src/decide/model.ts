@@ -305,6 +305,18 @@ export type Draft = {
 let counter = 0;
 const nextUid = () => `q${++counter}`;
 
+/**
+ * Uids a draft read back from the store already holds: the next question is
+ * numbered past them, since the count restarts with the page and a uid handed
+ * out twice in one draft is two questions under one key.
+ */
+export function reserveUids(uids: Iterable<string>): void {
+  for (const uid of uids) {
+    const n = /^q(\d+)$/.exec(uid);
+    if (n) counter = Math.max(counter, Number(n[1]));
+  }
+}
+
 export function newQuestion(kind: Primitive, id: string): Question {
   return {
     uid: nextUid(),

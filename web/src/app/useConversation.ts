@@ -7,6 +7,11 @@ import { switchAndWait } from "../api/switching.ts";
 import type { NextModel } from "../conversation/nextModel.ts";
 import type { PromptImage } from "../conversation/images.ts";
 import { computeFigures } from "../metrics/figures.ts";
+import { mergeLoaded } from "../store/docs.ts";
+import { type ImageId, type ImageStore, unreferenced } from "../store/imageStore.ts";
+import { pageStore } from "../store/index.ts";
+import { keepPlain } from "../store/pictures.ts";
+import { useStoredSessions } from "../store/useStoredSessions.ts";
 import { createFrameBatch, type FrameBatch } from "./frameBatch.ts";
 import {
   addAttachments,
@@ -25,6 +30,7 @@ import {
   type TurnSwitch,
   updateMessage,
 } from "../sessions/sessions.ts";
+import { CHAT_SESSIONS, keepPictures, picturesOf, restoreChats, toStored, withPictures, worthKeeping } from "../sessions/stored.ts";
 import type { PlaygroundSettings } from "../settings/defaults.ts";
 import { type AgentRun, parseAgentCall, runAgents, toolResult } from "../tools/agents/agents.ts";
 import { askToolResult, parseAskCall } from "../tools/ask/ask.ts";
@@ -37,7 +43,11 @@ import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
 
 // The conversation loop: the sessions, the replies streaming into them, and
-// the tools a reply calls. Sessions live in memory; a reload starts over.
+// the tools a reply calls. The sessions are kept in the page's store and read
+// back on the next load (sessions/stored.ts, store/useStoredSessions.ts). A
+// turn does not wait for them: they come back with ids past every one the page
+// has handed out, below what it was doing meanwhile, and a store that never
+// answers leaves the chat as it was before it kept anything.
 //
 // A session streams one reply at a time — its history is a line, and two
 // replies writing into it would fork it. Whether *other* sessions may stream
@@ -77,6 +87,8 @@ export function useConversation({
   settings,
   tools,
   parallel,
+  store = pageStore(),
+  elsewhere,
 }: {
   model: ModelState;
   /** The model the next turn goes to, and whether it switches there first (the composer's model picker). */
@@ -87,6 +99,9 @@ export function useConversation({
   tools: ToolsState;
   /** Sessions other than the one streaming may start their own turn. */
   parallel: boolean;
+  store?: ImageStore;
+  /** The store's pictures something else names (the Image view's sessions): deleting a chat session keeps them. */
+  elsewhere?: () => Iterable<ImageId>;
 }) {
   // Session and message ids. The counter lives in a ref, not in a module
   // variable: a hot reload keeps component state but re-runs the module, and
@@ -104,6 +119,34 @@ export function useConversation({
     commitList(update);
   };
   const setSoon = (key: string, update: (l: SessionList) => SessionList) => frames.current?.set(key, update);
+  const listNow = useRef(list);
+  listNow.current = list;
+  const kept = useStoredSessions({
+    store,
+    collection: CHAT_SESSIONS,
+    view: "chat",
+    items: list.sessions,
+    activeId: list.activeId,
+    toStored,
+    worthKeeping,
+    adopt: async (values, activeKey) => {
+      const restored = restoreChats(values, ids.current);
+      ids.current = restored.nextId;
+      // A picture the store cannot read leaves its image with the redraw alone, not the session unread.
+      const loaded = await Promise.all(restored.sessions.map((s) => withPictures(s, (id) => store.getImage(id).catch(() => null))));
+      const reopened = [...restored.keys].find(([, key]) => key === activeKey)?.[0];
+      setList((l) => {
+        const merged = mergeLoaded(l.sessions, l.activeId, loaded, reopened, worthKeeping);
+        return { sessions: merged.items, activeId: merged.activeId };
+      });
+      return { loaded, keys: restored.keys };
+    },
+    // Only the pictures no session left names, and nothing the Image view's sessions hold, go with it.
+    onRemoved: (gone, left) => {
+      const keep = new Set<ImageId>([...left.flatMap((s) => [...picturesOf(s)]), ...(elsewhere?.() ?? [])]);
+      for (const id of unreferenced(picturesOf(gone), keep)) void store.deleteImage(id).catch(() => {});
+    },
+  });
   // The sessions a reply is streaming into, for the render.
   const [streaming, setStreaming] = useState<ReadonlySet<number>>(() => new Set());
   // The same, as the turns themselves see it: a ref settles two Sends in one
@@ -215,6 +258,7 @@ export function useConversation({
         ...(stamp ? { dateTime: stamp } : {}),
       };
       setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, [user]) }));
+      void keepSent(sessionId, user);
       conversation = [...conversation, user];
       switchOn = user.id;
     }
@@ -474,6 +518,17 @@ export function useConversation({
     return addToolResults(sessionId, calls.map((c) => ({ callId: c.id, content: results.get(c.id) ?? "" })));
   }
 
+  /** The pictures beside a sent prompt's redraws, into the store, and named on its images once there. */
+  async function keepSent(sessionId: number, message: Message) {
+    const images = await keepPictures(message.images ?? [], (blob) => keepPlain(store, blob).then((p) => p.id));
+    if (images) setList((l) => ({ ...l, sessions: updateMessage(l.sessions, sessionId, message.id, (m) => ({ ...m, images })) }));
+  }
+
+  /** The store's pictures the chat's sessions name: what deleting an Image view session must keep. */
+  function pictures(): Set<ImageId> {
+    return new Set(listNow.current.sessions.flatMap((s) => [...picturesOf(s)]));
+  }
+
   function addToolResults(sessionId: number, results: { callId: string; content: string }[]): Message[] {
     const messages = results.map(
       (r): Message => ({ id: newId(), role: "tool", content: r.content, toolCallId: r.callId, reasoning: "", streaming: false }),
@@ -569,5 +624,8 @@ export function useConversation({
     detach,
     attachError,
     stop,
+    pictures,
+    /** What the store refused, when it did: the sessions go on in memory. */
+    storeError: kept.error,
   };
 }

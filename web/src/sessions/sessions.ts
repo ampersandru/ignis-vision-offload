@@ -11,7 +11,7 @@ import type { LocalRun } from "../tools/local/local.ts";
 import type { WebRun } from "../tools/web/web.ts";
 
 // Playground sessions: separate conversations, each with its own log of
-// per-reply figures. They live in memory only; a reload starts over.
+// per-reply figures. The page's store keeps them across a reload (stored.ts).
 // Every function returns a new list and leaves the one it was given alone.
 
 export type Message = {
