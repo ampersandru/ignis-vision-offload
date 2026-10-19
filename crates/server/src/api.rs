@@ -1661,6 +1661,27 @@ pub(crate) fn finish_reason_str(reason: FinishReason) -> &'static str {
 pub(crate) const ENGINE_ERROR_MESSAGE: &str =
     "the engine could not run the request; see the server log";
 
+/// What a whole chat answer does once its collector gave up. A deadline that
+/// passed is cancelled and, under `partial`, hands back what was generated to
+/// answer as a length limit; under `error` it is the 504 (GitHub #327). A
+/// stream the engine closed without a finish is `500 engine_error`, with
+/// nothing to cancel: the engine already let it go.
+fn collect_gave_up<Cut>(error: CollectError<Cut>, cancel: &mut CancelOnDrop, live: &crate::Live) -> Result<Cut, Response> {
+    match error {
+        CollectError::DeadlinePassed(cut) => {
+            cancel.timed_out();
+            if live.timeout_reply == TimeoutReply::Error {
+                return Err(Timeout::of(live, false).response());
+            }
+            Ok(cut)
+        }
+        CollectError::EngineGaveUp => {
+            cancel.completed();
+            Err(engine_error_response())
+        }
+    }
+}
+
 /// The `500` a non-streaming request gets when the engine ended it with
 /// [`FinishReason::Error`] (GitHub #166), or let it go without a finish
 /// ([`CollectError::EngineGaveUp`]): there is no completion to return.
@@ -2321,8 +2342,6 @@ async fn chat_completions(
         .with_rewound(rewound))
         .into_response();
     }
-    // The 504 of a request its deadline cut (GitHub #327), once cancelled.
-    let timeout_error = || Timeout::of(&live, false).response();
     // GitHub #327: an answer nobody waits for any more — past the request
     // timeout, or its client gone — is cancelled, as on the streaming path
     // and on `/v1/responses`. Left running it holds its lane to `max_tokens`,
@@ -2348,18 +2367,10 @@ async fn chat_completions(
             }
             // The answer so far, and what the loop guard held back of it, as
             // an answer a length limit cut.
-            Err(CollectError::DeadlinePassed(cut)) => {
-                cancel.timed_out();
-                if live.timeout_reply == TimeoutReply::Error {
-                    return timeout_error();
-                }
-                cut.finish(&owed_at_deadline(&running, &mut stream).await)
-            }
-            // The engine already let it go: nothing to cancel.
-            Err(CollectError::EngineGaveUp) => {
-                cancel.completed();
-                return engine_error_response();
-            }
+            Err(error) => match collect_gave_up(error, &mut cancel, &live) {
+                Ok(cut) => cut.finish(&owed_at_deadline(&running, &mut stream).await),
+                Err(reply) => return reply,
+            },
         };
         if answer.ending == AnswerEnding::Done(FinishReason::Error) {
             return engine_error_response();
@@ -2391,19 +2402,13 @@ async fn chat_completions(
         }
         // The answer so far, and what the loop guard held back of it, as an
         // answer a length limit cut.
-        Err(CollectError::DeadlinePassed(Generated { mut tokens, cached_tokens })) => {
-            cancel.timed_out();
-            if live.timeout_reply == TimeoutReply::Error {
-                return timeout_error();
+        Err(error) => match collect_gave_up(error, &mut cancel, &live) {
+            Ok(Generated { mut tokens, cached_tokens }) => {
+                tokens.extend(owed_at_deadline(&running, &mut stream).await);
+                (tokens, None, None, cached_tokens)
             }
-            tokens.extend(owed_at_deadline(&running, &mut stream).await);
-            (tokens, None, None, cached_tokens)
-        }
-        // The engine already let it go: nothing to cancel.
-        Err(CollectError::EngineGaveUp) => {
-            cancel.completed();
-            return engine_error_response();
-        }
+            Err(reply) => return reply,
+        },
     };
     let (reasoning_content, content, tool_calls) =
         split_reasoning_and_tools(loaded.template.as_ref(), &tokens, &thinking, schemas);
