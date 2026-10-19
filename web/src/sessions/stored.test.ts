@@ -77,9 +77,10 @@ const counter = (from: number) => {
 
 describe("a chat session in the store", () => {
   it("is plain data: no Blob and no Date reaches the store", () => {
-    const stored = toStored(finished(), "key-1");
+    const stored = toStored(finished(), { key: "key-1", order: 1 });
     expect(JSON.parse(JSON.stringify(stored))).toEqual(stored);
-    expect(stored).toMatchObject({ version: CHAT_VERSION, key: "key-1", id: 4, startedAt: Date.parse("2026-10-19T08:00:00Z") });
+    expect(stored).toMatchObject({ version: CHAT_VERSION, key: "key-1", order: 1, startedAt: Date.parse("2026-10-19T08:00:00Z") });
+    expect(stored).not.toHaveProperty("id");
     const image = stored.messages[0].images![0];
     expect(image).not.toHaveProperty("full");
     expect(image).not.toHaveProperty("markup");
@@ -88,7 +89,7 @@ describe("a chat session in the store", () => {
 
   it("comes back as it was, the pictures beside the redraw still to read", () => {
     const original = finished();
-    const [back] = restoreChats([toStored(original, "key-1")], 1).sessions;
+    const [back] = restoreChats([toStored(original, { key: "key-1", order: 1 })], 1).sessions;
     const { full: _full, markup: _markup, ...redraw } = original.messages[0].images![0];
     expect(back).toEqual({
       ...original,
@@ -113,30 +114,30 @@ describe("a chat session in the store", () => {
 
 describe("reading the chat sessions back", () => {
   it("lists them newest first, with new ids above every message id kept", () => {
-    const older = toStored({ ...finished(3), title: "older" }, "a");
-    const newer = toStored({ ...finished(7), title: "newer", messages: [msg(50, "user", "hi")] }, "b");
-    const { sessions, keys, nextId } = restoreChats([older, newer], 2);
+    const older = toStored({ ...finished(9), title: "older" }, { key: "a", order: 3 });
+    const newer = toStored({ ...finished(2), title: "newer", messages: [msg(50, "user", "hi")] }, { key: "b", order: 7 });
+    const { sessions, stamps, nextId } = restoreChats([newer, older], 2);
     expect(sessions.map((s) => s.title)).toEqual(["newer", "older"]);
     expect(sessions.map((s) => s.id)).toEqual([52, 51]);
     expect(nextId).toBe(53);
-    expect(keys.get(52)).toBe("b");
-    expect(keys.get(51)).toBe("a");
+    expect(stamps.get(52)).toEqual({ key: "b", order: 7 });
+    expect(stamps.get(51)).toEqual({ key: "a", order: 3 });
   });
 
   it("starts above the page's own ids when those are higher", () => {
-    const { sessions, nextId } = restoreChats([toStored(finished(), "a")], 100);
+    const { sessions, nextId } = restoreChats([toStored(finished(), { key: "a", order: 1 })], 100);
     expect(sessions[0].id).toBe(100);
     expect(nextId).toBe(101);
   });
 
   it("leaves out what it cannot read: a newer page's schema, or something that is not a session", () => {
-    const newer = { ...toStored(finished(), "a"), version: CHAT_VERSION + 1 };
-    const { sessions } = restoreChats([newer, null, "x", { version: 1 }, toStored(finished(), "b")], 1);
+    const newer = { ...toStored(finished(), { key: "a", order: 1 }), version: CHAT_VERSION + 1 };
+    const { sessions } = restoreChats([newer, null, "x", { version: 1 }, toStored(finished(), { key: "b", order: 1 })], 1);
     expect(sessions).toHaveLength(1);
   });
 
   it("reads a session without a log or files, as an older page could have written it", () => {
-    const { log: _log, attachments: _files, ...bare } = toStored(finished(), "a");
+    const { log: _log, attachments: _files, ...bare } = toStored(finished(), { key: "a", order: 1 });
     const [back] = restoreChats([bare], 1).sessions;
     expect(back.log).toEqual([]);
     expect(back.attachments).toEqual([]);

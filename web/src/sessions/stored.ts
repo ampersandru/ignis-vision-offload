@@ -1,5 +1,5 @@
 import type { PromptImage } from "../conversation/images.ts";
-import { restoreOrder } from "../store/docs.ts";
+import { restoreOrder, type Stamp } from "../store/docs.ts";
 import { type ImageId, unreferenced } from "../store/imageStore.ts";
 import type { AgentRun } from "../tools/agents/agents.ts";
 import type { Question } from "../tools/ask/ask.ts";
@@ -30,8 +30,8 @@ export type StoredMessage = Omit<Message, "images"> & { images?: StoredImage[] }
 export type StoredChat = {
   version: typeof CHAT_VERSION;
   key: string;
-  /** The page's id when written: the order the sessions were opened in. */
-  id: number;
+  /** Where it sorts (store/docs.ts). */
+  order: number;
   title: string;
   /** `Session.startedAt`, in milliseconds. */
   startedAt: number;
@@ -48,11 +48,11 @@ export const worthKeeping = (s: Session): boolean => s.messages.length > 0 || s.
 
 const storedImage = ({ full: _full, markup: _markup, ...image }: PromptImage): StoredImage => image;
 
-export function toStored(s: Session, key: string): StoredChat {
+export function toStored(s: Session, { key, order }: Stamp): StoredChat {
   return {
     version: CHAT_VERSION,
     key,
-    id: s.id,
+    order,
     title: s.title,
     startedAt: s.startedAt.getTime(),
     messages: s.messages.map(({ images, ...m }) => (images ? { ...m, images: images.map(storedImage) } : m)),
@@ -87,29 +87,29 @@ export function freedBy(gone: Session, left: Session[], elsewhere: Iterable<Imag
 function readStored(value: unknown): StoredChat | null {
   if (typeof value !== "object" || value === null) return null;
   const doc = value as Partial<StoredChat>;
-  if (doc.version !== CHAT_VERSION || typeof doc.key !== "string" || typeof doc.id !== "number" || !Array.isArray(doc.messages)) return null;
+  if (doc.version !== CHAT_VERSION || typeof doc.key !== "string" || typeof doc.order !== "number" || !Array.isArray(doc.messages)) return null;
   return { ...doc, title: doc.title ?? "", startedAt: doc.startedAt ?? Date.now(), log: doc.log ?? [], attachments: doc.attachments ?? [] } as StoredChat;
 }
 
 /**
  * The stored sessions, newest first and settled, with new ids from the page's
  * `nextId` up — and above every message id they hold, since the page's one
- * counter hands out both — and the key of each by its new id. Their pictures
+ * counter hands out both — and the stamp of each by its new id. Their pictures
  * are still in the store (`withPictures`).
  */
-export function restoreChats(values: unknown[], nextId: number): { sessions: Session[]; keys: Map<number, string>; nextId: number } {
+export function restoreChats(values: unknown[], nextId: number): { sessions: Session[]; stamps: Map<number, Stamp>; nextId: number } {
   const docs = values.map(readStored).filter((d): d is StoredChat => d !== null);
   const highest = Math.max(0, ...docs.flatMap((d) => d.messages.map((m) => m.id)));
   const ordered = restoreOrder(docs, Math.max(nextId, highest + 1));
   const { items } = ordered;
   let next = ordered.nextId;
   const newId = () => next++;
-  const keys = new Map<number, string>();
+  const stamps = new Map<number, Stamp>();
   const sessions = items.map((doc) => {
-    keys.set(doc.id, doc.key);
+    stamps.set(doc.id, { key: doc.key, order: doc.order });
     return settle({ id: doc.id, title: doc.title, startedAt: new Date(doc.startedAt), messages: doc.messages, log: doc.log, attachments: doc.attachments }, newId);
   });
-  return { sessions, keys, nextId: next };
+  return { sessions, stamps, nextId: next };
 }
 
 /** `items` with `stop` applied to each, or `items` itself when it changed none. */

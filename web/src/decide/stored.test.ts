@@ -28,9 +28,10 @@ function answered(id = 3): Decision {
 describe("a decision in the store", () => {
   it("is plain data, and comes back as it was", () => {
     const original = answered();
-    const stored = toStored(original, "key-1");
+    const stored = toStored(original, { key: "key-1", order: 1 });
     expect(JSON.parse(JSON.stringify(stored))).toEqual(stored);
-    expect(stored).toMatchObject({ version: DECIDE_VERSION, key: "key-1", id: 3 });
+    expect(stored).toMatchObject({ version: DECIDE_VERSION, key: "key-1", order: 1 });
+    expect(stored).not.toHaveProperty("id");
     const [back] = restoreDecisions([stored], 1).decisions;
     expect(back).toEqual({ ...original, id: back.id });
   });
@@ -43,24 +44,24 @@ describe("a decision in the store", () => {
 
 describe("reading the decisions back", () => {
   it("lists them newest first, with new ids from the page's next one up", () => {
-    const older = toStored({ ...answered(2) }, "a");
-    const newer = toStored({ ...answered(9) }, "b");
-    const { decisions, keys, nextId } = restoreDecisions([newer, older], 5);
+    const older = toStored({ ...answered(9) }, { key: "a", order: 2 });
+    const newer = toStored({ ...answered(2) }, { key: "b", order: 9 });
+    const { decisions, stamps, nextId } = restoreDecisions([newer, older], 5);
     expect(decisions.map((d) => d.id)).toEqual([6, 5]);
-    expect(keys.get(6)).toBe("b");
-    expect(keys.get(5)).toBe("a");
+    expect(stamps.get(6)).toEqual({ key: "b", order: 9 });
+    expect(stamps.get(5)).toEqual({ key: "a", order: 2 });
     expect(nextId).toBe(7);
   });
 
   it("brings a decision that was being asked back stopped, its earlier answers kept, and says why", () => {
-    const { decisions } = restoreDecisions([toStored({ ...answered(), running: true }, "a")], 1);
+    const { decisions } = restoreDecisions([toStored({ ...answered(), running: true }, { key: "a", order: 1 })], 1);
     expect(decisions[0].running).toBe(false);
     expect(decisions[0].refusal).toBe(CLOSED_MID_RUN);
     expect(decisions[0].answer).not.toBeNull();
   });
 
   it("numbers the next question past the ones read back", () => {
-    const stored = toStored(answered(), "a");
+    const stored = toStored(answered(), { key: "a", order: 1 });
     const uid = Number(stored.draft.questions[0].uid.slice(1));
     const far = { ...stored, draft: { ...stored.draft, questions: [{ ...stored.draft.questions[0], uid: `q${uid + 1000}` }] } };
     restoreDecisions([far], 1);
@@ -68,7 +69,7 @@ describe("reading the decisions back", () => {
   });
 
   it("leaves out what it cannot read: a newer page's schema, or something that is not a decision", () => {
-    const newer = { ...toStored(answered(), "a"), version: DECIDE_VERSION + 1 };
-    expect(restoreDecisions([newer, null, 7, { version: 1 }, toStored(answered(), "b")], 1).decisions).toHaveLength(1);
+    const newer = { ...toStored(answered(), { key: "a", order: 1 }), version: DECIDE_VERSION + 1 };
+    expect(restoreDecisions([newer, null, 7, { version: 1 }, toStored(answered(), { key: "b", order: 1 })], 1).decisions).toHaveLength(1);
   });
 });

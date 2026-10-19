@@ -35,10 +35,13 @@ sessions already survive (spec playground/06, the image store).
 
 ## Solution
 
-- **A key per session.** A UUID under which the document is written
-  (`store/docs.ts`). The page's numeric ids stay its own and are handed out
-  again at each load, past every id the page has given: two tabs counting from
-  the same place would otherwise write each other's sessions.
+- **A stamp per session**, given when the store first hears of it and kept
+  for good (`store/docs.ts`): a UUID key the document is written under, and an
+  order — the moment it was stamped, after every stamp before it — the list
+  is sorted by. The page's numeric ids stay its own and are handed out again
+  at each load, past every id the page has given: two tabs counting from the
+  same place would otherwise write each other's sessions, and a session
+  written since a load would sort by its new id.
 - **Written as it changes.** Every change makes a new session object; each
   changed one is written 400 ms after its last change, and no later than 1 s
   from the first one waiting while changes never pause (a reply streaming).
@@ -91,9 +94,11 @@ sessions already survive (spec playground/06, the image store).
 1. A chat session is stored as plain data — no Blob, no Date — and reads back
    equal, the pictures beside the redraw left to the store by id.
    (sessions/stored.test)
-2. Stored sessions read back newest first, with new ids above every stored
-   message id and the page's own; a later schema and what is not a session are
-   left out; a document without a log or files reads. (sessions/stored.test,
+2. Stored sessions read back newest first by their stamp, whatever ids they
+   had, with new ids above every stored message id and the page's own; the
+   order holds through a second load; a stamp given after a load sorts after
+   every stamp read; a later schema and what is not a session are left out; a
+   document without a log or files reads. (sessions/stored.test,
    store/docs.test)
 3. Reading settles a session left mid-turn: the streaming reply stopped with
    its text, runs stopped, a waiting question skipped, a switch stopped, every
@@ -141,8 +146,6 @@ sessions already survive (spec playground/06, the image store).
   reads as a reply that ended there.
 - Settling is not written back: a session is written again when it next
   changes, and read settled each time until then.
-- A session begun before the store answered shows on top, but keeps the id it
-  had, below the stored ones': the next load lists it below them.
 - A picture is stored at send a moment before the message names it; an Image
   view delete in that moment can remove it, and the image keeps its redraw.
   While the other view has not read its sessions, a delete leaves its

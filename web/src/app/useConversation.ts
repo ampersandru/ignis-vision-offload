@@ -137,12 +137,12 @@ export function useConversation({
       ids.current = restored.nextId;
       // A picture the store cannot read leaves its image with the redraw alone, not the session unread.
       const loaded = await Promise.all(restored.sessions.map((s) => withPictures(s, (id) => store.getImage(id).catch(() => null))));
-      const reopened = [...restored.keys].find(([, key]) => key === activeKey)?.[0];
+      const reopened = [...restored.stamps].find(([, stamp]) => stamp.key === activeKey)?.[0];
       setList((l) => {
         const merged = mergeLoaded(l.sessions, l.activeId, loaded, reopened, worthKeeping);
         return { sessions: merged.items, activeId: merged.activeId };
       });
-      return { loaded, keys: restored.keys };
+      return { loaded, stamps: restored.stamps };
     },
     onRemoved: (gone, left) => {
       for (const id of freedBy(gone, left, live ? live() : [])) void store.deleteImage(id).catch(() => {});

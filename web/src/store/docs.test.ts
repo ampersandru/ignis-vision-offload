@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listChanges, mergeLoaded, newKey, restoreOrder } from "./docs.ts";
+import { listChanges, mergeLoaded, newKey, newStamp, restoreOrder } from "./docs.ts";
 
 // The order sessions come back in, and how they join what the page did
 // before the store answered: the chat's and the Decide tab's alike.
@@ -7,17 +7,32 @@ import { listChanges, mergeLoaded, newKey, restoreOrder } from "./docs.ts";
 describe("restoreOrder", () => {
   it("lists the stored sessions newest first, renumbered from the page's next id, oldest lowest", () => {
     const stored = [
-      { key: "b", id: 9 },
-      { key: "a", id: 2 },
-      { key: "c", id: 40 },
+      { key: "b", order: 9 },
+      { key: "a", order: 2 },
+      { key: "c", order: 40 },
     ];
     const { items, nextId } = restoreOrder(stored, 5);
     expect(items).toEqual([
-      { key: "c", id: 7 },
-      { key: "b", id: 6 },
-      { key: "a", id: 5 },
+      { key: "c", order: 40, id: 7 },
+      { key: "b", order: 9, id: 6 },
+      { key: "a", order: 2, id: 5 },
     ]);
     expect(nextId).toBe(8);
+  });
+
+  it("keeps the order through a second load, whichever sessions were written in between", () => {
+    const older = newStamp();
+    const newer = newStamp();
+    // The older one is written again on the next page, under a new id: its stamp goes with it.
+    const first = restoreOrder([older, newer], 1).items;
+    const second = restoreOrder([{ ...first[1] }, { ...first[0] }], 50).items;
+    expect(second.map((s) => s.key)).toEqual([newer.key, older.key]);
+  });
+
+  it("stamps a new session after every one read back, however far ahead their clock was", () => {
+    const ahead = { key: "x", order: Date.now() + 86_400_000 };
+    restoreOrder([ahead], 1);
+    expect(newStamp().order).toBeGreaterThan(ahead.order);
   });
 });
 
@@ -69,5 +84,12 @@ describe("mergeLoaded", () => {
 describe("newKey", () => {
   it("hands out a different key each time", () => {
     expect(newKey()).not.toBe(newKey());
+  });
+});
+
+describe("newStamp", () => {
+  it("orders each stamp after the one before, within one millisecond too", () => {
+    const stamps = Array.from({ length: 5 }, newStamp);
+    for (let i = 1; i < stamps.length; i++) expect(stamps[i].order).toBeGreaterThan(stamps[i - 1].order);
   });
 });

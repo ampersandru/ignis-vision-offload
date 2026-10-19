@@ -77,12 +77,12 @@ export function DecideView({ ready, drawer, onDrawer }: { ready: boolean; drawer
     worthKeeping,
     adopt: async (values, activeKey) => {
       const restored = restoreDecisions(values, freeDecisionId(listNow.current));
-      const reopened = [...restored.keys].find(([, key]) => key === activeKey)?.[0];
+      const reopened = [...restored.stamps].find(([, stamp]) => stamp.key === activeKey)?.[0];
       setList((l) => {
         const merged = mergeLoaded(l.decisions, l.activeId, restored.decisions, reopened, worthKeeping);
         return { decisions: merged.items, activeId: merged.activeId };
       });
-      return { loaded: restored.decisions, keys: restored.keys };
+      return { loaded: restored.decisions, stamps: restored.stamps };
     },
   });
 
