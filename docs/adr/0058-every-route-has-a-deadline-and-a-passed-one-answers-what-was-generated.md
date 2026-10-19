@@ -116,6 +116,9 @@ error event follows them.
   relied on the 504 sets `--server-timeout-reply error`. A chat stream now has
   a deadline (`--server-stream-timeout`), and so does an image job. `0` is
   accepted and means none (it was refused).
+  A chat completion the engine drops (its stream closes without a finish) is
+  now `500 engine_error`; before, it was a `504 request_timeout`, logged as a
+  timeout.
 - A `length` from a deadline and one from `max_tokens` read the same in the
   body. A whole answer carries `ignis-stopped-by: request_timeout`, spelled as
   the server's other custom response header is (`ignis-model-status`, on
