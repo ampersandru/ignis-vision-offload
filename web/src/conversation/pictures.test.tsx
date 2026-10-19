@@ -39,6 +39,21 @@ describe("pictures of the conversation", () => {
     expect(renderToStaticMarkup(<ImageStrip runs={[run]} />)).not.toContain("Mark made-1.png");
   });
 
+  it("open a picture the tool made full screen, and its whole prompt on asking", () => {
+    const run = {
+      callId: "c",
+      prompt: "a fox in the snow, at dusk",
+      references: [],
+      transparent: false,
+      count: 1,
+      status: "done" as const,
+      made: [{ name: "made-1", url: "data:image/png;base64,AAA", size: "2048x2048" }],
+    };
+    const html = renderToStaticMarkup(<ImageStrip runs={[run]} />);
+    expect(html).toContain('aria-label="Open made-1 full screen"');
+    expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*>.*a fox in the snow, at dusk/);
+  });
+
   it("mark a picture of the prompt box where it is, the marked one shown so", () => {
     const props = {
       value: "",

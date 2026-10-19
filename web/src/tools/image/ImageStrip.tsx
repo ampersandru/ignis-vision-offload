@@ -1,7 +1,9 @@
+import { useState } from "react";
 import type { ChatPicture, PictureAction } from "../../conversation/images.ts";
-import { downloadImage, progressShare, sidesOf } from "../../image/studio.ts";
 import { PictureTools } from "../../conversation/UserTurn.tsx";
-import { IconDownload } from "../../ui/icons.tsx";
+import { downloadImage, progressShare, sidesOf } from "../../image/studio.ts";
+import { IconChevron, IconDownload } from "../../ui/icons.tsx";
+import { Lightbox } from "../../ui/Lightbox.tsx";
 import { StatusMark } from "../agents/status.tsx";
 import { type ImageRun, type ImageStatus, imageSummary, type MadePicture } from "./image.ts";
 
@@ -45,14 +47,27 @@ function PictureCall({ run, onPicture }: { run: ImageRun; onPicture?: OnPicture 
   const made = run.made ?? [];
   const working = run.status === "switching" || run.status === "making" || run.status === "returning" || run.status === "queued";
   const share = run.progress ? progressShare(run.progress, run.count) : 0;
+  // The prompt on one line, or all of it: the model's prompts run to paragraphs.
+  const [whole, setWhole] = useState(false);
   return (
     <li className="monitor-kiln cut @container flex flex-col text-[#eae8e4] [--cut-size:14px]">
-      <div className="flex min-w-0 items-center gap-2 px-3 py-2">
-        <StatusMark status={markOf(run.status)} />
-        <p className="min-w-0 flex-1 truncate text-sm" title={run.prompt}>
-          {run.prompt || "make_image"}
-        </p>
-        <span className={`shrink-0 font-display text-xs ${run.status === "failed" ? "text-[#ff7b6b]" : "text-[#939ba4]"}`}>
+      <div className="flex min-w-0 items-start gap-2 px-3 py-2">
+        <span className="grid h-5 shrink-0 place-items-center">
+          <StatusMark status={markOf(run.status)} />
+        </span>
+        <button
+          type="button"
+          aria-expanded={whole}
+          title={whole ? "Show the prompt on one line" : "Show the whole prompt"}
+          onClick={() => setWhole((w) => !w)}
+          className="flex min-w-0 flex-1 items-start gap-1.5 text-left text-sm hover:text-white"
+        >
+          <span className={`min-w-0 ${whole ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "truncate"}`}>{run.prompt || "make_image"}</span>
+          <span className="grid h-5 shrink-0 place-items-center text-[#939ba4]">
+            <IconChevron className={`transition-transform motion-reduce:transition-none ${whole ? "" : "rotate-180"}`} />
+          </span>
+        </button>
+        <span className={`shrink-0 font-display text-xs leading-5 ${run.status === "failed" ? "text-[#ff7b6b]" : "text-[#939ba4]"}`}>
           {run.line ?? STATUS_WORDS[run.status]}
         </span>
       </div>
@@ -82,18 +97,28 @@ function PictureCall({ run, onPicture }: { run: ImageRun; onPicture?: OnPicture 
 }
 
 // Marking and the Image view sit over the picture, as on the user's own
-// (PictureTools); the line under it wraps a whole piece at a time, so two
-// pictures side by side never break a name or a seed.
+// (PictureTools), and a click on it opens it full screen; the line under it
+// wraps a whole piece at a time, so two pictures side by side never break a
+// name or a seed.
 function Picture({ picture, onPicture }: { picture: MadePicture; onPicture?: OnPicture }) {
   const chat: ChatPicture = { name: `${picture.name}.png`, url: picture.url };
+  const alt = picture.revisedPrompt ?? picture.name;
+  const [full, setFull] = useState(false);
   return (
     <li className="flex min-w-0 flex-col">
       <div className="flex justify-center bg-[#23282f] p-2">
         <span className="group/pic relative block max-w-full">
-          <img src={picture.url} alt={picture.revisedPrompt ?? picture.name} className="stage-checker block max-h-[28rem] max-w-full object-contain" />
+          <button type="button" aria-label={`Open ${picture.name} full screen`} title="Full screen" className="block max-w-full cursor-zoom-in" onClick={() => setFull(true)}>
+            <img src={picture.url} alt={alt} className="stage-checker block max-h-[28rem] max-w-full object-contain" />
+          </button>
           {onPicture && <PictureTools picture={chat} onPicture={onPicture} />}
         </span>
       </div>
+      {full && (
+        <Lightbox onClose={() => setFull(false)}>
+          <img src={picture.url} alt={alt} className="stage-checker block max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain" />
+        </Lightbox>
+      )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-xs whitespace-nowrap text-[#939ba4] tabular-nums">
         <span className="font-display font-semibold text-[#eae8e4]">{picture.name}</span>
         <span>{sidesOf(picture.size)}</span>

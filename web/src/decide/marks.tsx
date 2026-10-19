@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import type { PromptImage } from "../conversation/images.ts";
-import { IconClose, IconExpand } from "../ui/icons.tsx";
+import { IconExpand } from "../ui/icons.tsx";
+import { Lightbox } from "../ui/Lightbox.tsx";
 import type { DigitDraw } from "./request.ts";
 
 // The marks the answers are drawn with (GitHub #247), in the palette's tokens
@@ -259,33 +260,6 @@ export function ImageMark({
       </button>
       {open && <Lightbox onClose={() => setOpen(false)}>{plate("max-h-[82vh]")}</Lightbox>}
     </>
-  );
-}
-
-/**
- * A picture at its own size, over the page. Escape and a click outside close
- * it; nothing under it moves, so going back is exactly where you were.
- */
-export function Lightbox({ onClose, children }: { onClose: () => void; children: ReactNode }) {
-  useEffect(() => {
-    const key = (e: globalThis.KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-[#1c2026]/88 p-4" onClick={onClose} role="presentation">
-      <div className="relative max-h-full max-w-full" onClick={(e) => e.stopPropagation()}>
-        {children}
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close the picture"
-          className="absolute right-0 top-0 grid size-8 place-items-center bg-kiln text-[#eae8e4] hover:bg-ember"
-        >
-          <IconClose />
-        </button>
-      </div>
-    </div>
   );
 }
 
