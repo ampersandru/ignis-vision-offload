@@ -272,8 +272,9 @@ struct ignis_model_load_options {
    * legacy FP32 angle route -- and a factor in (1, 64] builds the YaRN table
    * over the checkpoint's 262,144-position trained envelope, which is what
    * lets a context past that envelope mean anything. The three below are the
-   * ramp's and are read only with a factor: `temperature` scales the q-side
-   * attention factor (`temperature * ln(factor) + 1`), `beta_fast` /
+   * ramp's and are read only with a factor: `temperature` scales the
+   * attention factor (`temperature * ln(factor) + 1`; the 27B's op takes it on
+   * q, Flash-Next's kernels on q and k, ADR 0059), `beta_fast` /
    * `beta_slow` place the blend band. Zero-filling them with no factor is
    * accepted; with a factor they must be positive and finite, and
    * beta_fast > beta_slow. Text only: the DFlash2 drafter keeps its own

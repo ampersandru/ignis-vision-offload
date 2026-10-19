@@ -27,6 +27,9 @@ inline constexpr float kTextRopeTheta = 1.0e7F;
 inline constexpr std::int32_t kTextRotaryDim = 64;
 // The checkpoint's trained position envelope: the range the linear table is
 // correct over, and the denominator every YaRN ramp bound is measured in.
+// Flash-Next names its own, flash_next::kOriginalPositions (the same
+// 262,144); `auto` resolves both models' factor against Rust's
+// TRAINED_POSITION_ENVELOPE (crates/core/src/rope_scaling.rs), this number.
 inline constexpr std::uint32_t kTextOriginalPositions = 262144;
 // The widest scaling a load accepts. 64x the trained envelope is already
 // past every attention envelope the engine can serve
@@ -91,9 +94,13 @@ inline std::string rope_scaling_rejection(const RopeScaling &scaling) {
  * constants (theta 1e7, rotary_dim 64, original 262144, beta_fast 32,
  * beta_slow 1) that is low = 14, high = 22.
  *
- * `attention_factor = temperature * ln(factor) + 1` is the q-side
- * temperature: it travels squared on the q rows and leaves cached K
- * factor-free, so a sequence's keys stay valid whatever a later round does.
+ * `attention_factor = temperature * ln(factor) + 1` is YaRN's attention
+ * factor m, and the two models apply it differently. The 27B's vendored op
+ * (`ops::rope`) takes it as a q-side temperature, m^2 on the q rows, and
+ * leaves cached K factor-free, so a sequence's keys stay valid whatever a
+ * later round does. Flash-Next's kernels fold m into cos and sin on q and k
+ * alike, as the model's references do (ADR 0059). A score's rotated part
+ * scales by m^2 either way.
  *
  * The caller has already passed `rope_scaling_rejection`; a factor at or
  * below 1 here would divide the table by something meaningless, so it is the
@@ -133,14 +140,21 @@ inline ninfer::ops::RopeFrequencies rope_yarn_frequencies(float theta, int rotar
   return frequencies;
 }
 
-// The table the text layers rotate at under this scaling: the legacy linear
-// one when the load asked for no scaling (bit-for-bit the engine before
-// #227), the YaRN one otherwise.
+// The table a load rotates at under this scaling, over a checkpoint's rotary
+// constants: the legacy linear one when the load asked for no scaling, the
+// YaRN one otherwise. Both models' text tables are this choice
+// (text_rope_frequencies, flash_next::text_rope).
+inline ninfer::ops::RopeFrequencies rope_frequencies(float theta, int rotary_dim,
+                                                     std::uint32_t original_positions,
+                                                     const RopeScaling &scaling) {
+  return scaling.is_yarn() ? rope_yarn_frequencies(theta, rotary_dim, original_positions, scaling)
+                           : ninfer::ops::rope_linear_frequencies(theta, rotary_dim);
+}
+
+// The table the 27B's text layers rotate at under this scaling: the linear
+// one without scaling is bit-for-bit the engine before #227.
 inline ninfer::ops::RopeFrequencies text_rope_frequencies(const RopeScaling &scaling) {
-  return scaling.is_yarn()
-             ? rope_yarn_frequencies(kTextRopeTheta, kTextRotaryDim, kTextOriginalPositions,
-                                     scaling)
-             : ninfer::ops::rope_linear_frequencies(kTextRopeTheta, kTextRotaryDim);
+  return rope_frequencies(kTextRopeTheta, kTextRotaryDim, kTextOriginalPositions, scaling);
 }
 
 } // namespace ignis

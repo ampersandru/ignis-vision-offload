@@ -572,7 +572,8 @@ FlashNextModel::~FlashNextModel() {
 std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, uint64_t count,
                                            const ignis_topology &topology, uint32_t prefill_chunk_tokens,
                                            uint32_t max_context_tokens, int32_t kv_format,
-                                           const ignis_model_load_options *options, std::string *error) {
+                                           const ignis_model_load_options *options, const RopeScaling &rope_scaling,
+                                           std::string *error) {
   auto fn = std::make_unique<FlashNextModel>();
   fn->g = Geometry::from(topology);
   fn->kv_format = kv_format;
@@ -589,19 +590,6 @@ std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, ui
   if (fn->decode_lanes > max_decode_lanes()) {
     *error = "decode_lanes " + std::to_string(fn->decode_lanes) + " is more than the " +
              std::to_string(max_decode_lanes()) + " a Flash-Next round serves";
-    return nullptr;
-  }
-  // ADR 0059: the load's rotary table, YaRN or linear (text_rope); a scaling that builds none is
-  // refused by name, as ignis_model_load refuses it.
-  RopeScaling rope_scaling{};
-  if (options != nullptr) {
-    rope_scaling.factor = options->rope_scaling_factor;
-    rope_scaling.temperature = options->rope_scaling_temperature;
-    rope_scaling.beta_fast = options->rope_scaling_beta_fast;
-    rope_scaling.beta_slow = options->rope_scaling_beta_slow;
-  }
-  if (const std::string why = rope_scaling_rejection(rope_scaling); !why.empty()) {
-    *error = why;
     return nullptr;
   }
   // The binder first: a set of descriptors is right or wrong whatever the

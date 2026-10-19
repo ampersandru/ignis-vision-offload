@@ -17,6 +17,7 @@
 #include "qsa.h"
 
 #include "fusion.h"
+#include "rope.cuh"
 
 #include "ignis_fp8_linear.h"
 #include "ignis_seq_internal.h"
@@ -80,12 +81,7 @@ __global__ void __launch_bounds__((kQHeads + kKvHeads) * 32) prepare_kernel(Prep
   const float r = 1.0F / sqrtf(warp_sum(ss) / static_cast<float>(kHeadDim) + a.eps);
 #pragma unroll
   for (int s = 0; s < 8; ++s) x[s] = round_bf16((x[s] * r) * (1.0F + __bfloat162float(w[s * 32 + lane])));
-  const float phi = static_cast<float>(row_position(a.positions, a.tokens, row)) * a.rope.inv_freq[lane];
-  const float c = round_bf16(cosf(phi) * a.rope.scale);
-  const float sn = round_bf16(sinf(phi) * a.rope.scale);
-  const float x1 = x[0], x2 = x[1];
-  x[0] = round_bf16(round_bf16(x1 * c) + round_bf16(-x2 * sn));
-  x[1] = round_bf16(round_bf16(x2 * c) + round_bf16(x1 * sn));
+  indexer::rope_pair(x[0], x[1], a.rope, row_position(a.positions, a.tokens, row), lane);
   __nv_bfloat16 *dst = is_q ? a.q + (static_cast<int64_t>(row) * kQHeads + head) * kHeadDim
                             : a.k + (static_cast<int64_t>(row) * kKvHeads + head) * kHeadDim;
 #pragma unroll

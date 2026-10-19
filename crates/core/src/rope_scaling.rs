@@ -22,7 +22,12 @@
 
 /// The trained position envelope: the rotary positions the checkpoints are
 /// trained over. Past it a context needs a scaled table, and `auto`
-/// ([`RopeSetting::Auto`]) scales by the ratio.
+/// ([`RopeSetting::Auto`]) scales by the ratio -- for both models, against
+/// this one envelope. The leaf names it per model, the same 262,144: the
+/// 27B's `kTextOriginalPositions` (`kernel/src/rope_scaling.h`) and
+/// Flash-Next's `flash_next::kOriginalPositions`
+/// (`kernel/src/flash_next/flash_next_internal.h`); a checkpoint trained over
+/// another envelope would need its own here too.
 pub const TRAINED_POSITION_ENVELOPE: u32 = 262_144;
 
 /// The widest factor a load accepts (`kMaxYarnFactor`,
@@ -32,7 +37,7 @@ pub const TRAINED_POSITION_ENVELOPE: u32 = 262_144;
 pub const MAX_YARN_FACTOR: f32 = 64.0;
 
 /// The attention-temperature coefficient YaRN's own paper uses, and HF's
-/// default: the q-side factor is `temperature * ln(factor) + 1`.
+/// default: the attention factor is `temperature * ln(factor) + 1`.
 pub const DEFAULT_YARN_TEMPERATURE: f32 = 0.1;
 
 /// The ramp's fast bound: the pair below which frequencies extrapolate

@@ -1125,7 +1125,8 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     }
     std::string error;
     auto program = ignis::flash_next::bind_model(tensors, count, *topology, prefill_chunk_tokens,
-                                                 max_context_tokens, kv_format, options, &error);
+                                                 max_context_tokens, kv_format, options, rope_scaling,
+                                                 &error);
     if (program == nullptr) {
       set_error("ignis_model_load: " + error);
       return nullptr;
