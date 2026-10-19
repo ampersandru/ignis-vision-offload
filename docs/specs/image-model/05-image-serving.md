@@ -403,6 +403,12 @@ docs and the Playground are the agents after it.
 - **Not applied.** `server.request_timeout` (a text knob, 120 s by default since GitHub #327)
   does not bound an image request. `prompt_enhancement` is parsed and has no
   effect until 322c.
+  *As built (2026-10-18, ADR 0058):* an image job is now held to
+  `server.request_timeout`, or `server.stream_timeout` when it streams, both
+  2400 s by default and `0` for none, from the job's start, never its queue.
+  Past it the job ends between two steps, its runner free for the next: a
+  `504 request_timeout`, or, streamed, the images already made and then an
+  `error` event with `request_timeout`, under either `server.timeout_reply`.
 - **Tests.**
   - `crates/server/tests/images_http.rs`: AC 3-7, the `409` with a text
     model loaded, and the edit's body limit.
