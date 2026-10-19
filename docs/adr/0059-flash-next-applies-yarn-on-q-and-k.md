@@ -6,8 +6,8 @@ Accepted (2026-10-19, owner decision: "lo implementiamo assolutamente"). D1-D3 b
 the coordinator's, taken on the research's recommendations
 (`.scratch/orchestra-2026-10-18/fn-yarn/research.md`, untracked). Spec
 [`rope-scaling/02`](../specs/rope-scaling/02-flash-next.md) is the implementation.
-Supersedes, for Flash-Next only, the "Flash-Next takes no scaled table" of ADR 0057:
-Flash-Next now runs the table `model.rope_scaling` resolves to.
+Lands with ADR 0057 (rope scaling is `auto` by default): Flash-Next runs the table
+`model.rope_scaling` resolves to, as the 27B does.
 
 ## Context
 
@@ -46,18 +46,18 @@ differently: the vendored `ops::rope` scales q's rotated dims by `m^2` and leave
 indexer and the MTP head alike: one table per load, on `Context::rope`.
 
 - **D1: the factor is folded into cos and sin on both q and k.** Both Flash-Next rope sites
-  (`qsa.cu` `prepare_kernel`, `indexer.cu` `rope_row`) compute
-  `c = round_bf16(cosf(phi) * m)` and the same for `s`: the HF convention, rounded where HF
-  rounds. `indexer::Rope` carries `m` as `scale`, copied from the table's
+  (`qsa.cu` `prepare_kernel`, `indexer.cu` `rope_row`, through one helper in `rope.cuh`)
+  compute `c = round_bf16(cosf(phi) * m)` and the same for `s`: the HF convention, rounded
+  where HF rounds. `indexer::Rope` carries `m` as `scale`, copied from the table's
   `attention_factor`. The refusal of an attention factor in `fn_qsa_attention` is gone.
 - **D2: the angle stays an FP32 product**, as all three references compute it and as the
   Flash-Next kernels already did.
 - **D3: the table is `ignis::rope_yarn_frequencies(topology.rope_theta, topology.rotary_dim,
   262144, scaling)`**, the 27B's own builder (`flash_next::text_rope`), and `rope_from` turns it
-  into the kernels' FP32 table as before: within 1 FP32 ulp of HF's formula evaluated in FP64 at
-  factors 2, 2.25, 3 and 4. The 262,144 is `flash_next::kOriginalPositions`, named for
-  Flash-Next: `ignis_topology` carries no `max_position_embeddings`, and the artifact names
-  none.
+  into the kernels' FP32 table as before: measured within 1 FP32 ulp of HF's formula evaluated
+  in FP64 at factors 2, 2.25, 3 and 4, and held to 2 ulps by its CTest (spec AC 3). The 262,144
+  is `flash_next::kOriginalPositions`, named for Flash-Next: `ignis_topology` carries no
+  `max_position_embeddings`, and the artifact names none.
 - **`none` is bit-identical.** No scaling still builds `rope_linear_frequencies`, untouched,
   and its scale is exactly 1.0f, so the new multiply is an IEEE identity: a `none` load's
   logits are the bytes they were before. Measured 2026-10-19 on the RTX 5090: all 2,560 rows
@@ -102,7 +102,7 @@ cached K's rotated dims carry `m`) and in BF16 rounding.
 ## Consequences
 
 - A Flash-Next load past 262,144 tokens rotates at YaRN once `model.rope_scaling` resolves
-  to it (`auto` on `yarn-auto`, ADR 0057; an explicit `yarn:F` anywhere). Short contexts at a
+  to it (`auto` past 262,144 tokens, ADR 0057; an explicit `yarn:F` anywhere). Short contexts at a
   YaRN factor change too, since `m` multiplies every position: the cost every reference and
   the model card warn about. Measured, not judged: on 2,560 real-text tokens a `yarn:4` load
   picked `none`'s argmax on 2,337 rows (91.3%), and at factor 4 the indexer selected other

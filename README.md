@@ -348,11 +348,13 @@ Every number below is a measurement on a 5090.
 
 ### A context you can rescale
 
-- The checkpoint is trained to **262,144 positions**; `--model-rope-scaling yarn:F`
-  rescales that envelope, `yarn:4` putting the ceiling at **1,048,576**
-  (factor up to 64). What a long-context probe must ask is a question about
-  *relative* position — a literal needle at 320K is recalled with the flag and
-  without it.
+- **`auto` by default**: both models are trained to **262,144 positions**, and
+  rope scaling follows each model's context — no scaling up to 262,144, then
+  YaRN at `max_context / 262,144` (3 for the 27B's 786,432 on the 5090, 4 at
+  **1,048,576**; factor up to 64) ([ADR 0057](docs/adr/0057-rope-scaling-is-auto-by-default.md)).
+  `--model-rope-scaling yarn:F` or `none` overrides it. What a long-context
+  probe must ask is a question about *relative* position — a literal needle
+  at 320K is recalled with YaRN and without it.
 
 ### Batteries in the binary
 

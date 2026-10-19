@@ -17,21 +17,25 @@ The table, built once per load, and the two places Flash-Next's kernels rotate.
 
 - **Rust.** `EngineOptions::rope_scaling` (default `RopeScaling::NONE`).
   `flash_next_options(.., rope_scaling)` crosses its four scalars exactly as the 27B's
-  `load_options` does; `plan_flash_next_reservations` and `load_flash_next` take it.
+  `load_options` does; `plan_flash_next_reservations` and `load_flash_next` take it in one
+  `FlashNextLoadShape` (`EngineOptions::load_shape`), beside the other values both are asked
+  under.
   `FlashNextEngine`, `FlashNextLeaf` and the server's Flash-Next plan and load pass the one
   value the load was configured with (`EngineShape::rope_scaling`), and the server's KV-disk
   identity takes the leaf's own.
-- **Leaf load** (`flash_next::bind_model`). The four scalars become an `ignis::RopeScaling`;
-  `flash_next::text_rope` builds the linear table without scaling (`rope_linear_frequencies`,
-  untouched) and `ignis::rope_yarn_frequencies(topology.rope_theta, topology.rotary_dim,
-  kOriginalPositions, scaling)` with it. `kOriginalPositions` is Flash-Next's own 262,144,
-  never the 27B's constant. `ignis_model_load` has already refused an unusable scaling by name
-  (`ignis::rope_scaling_rejection`).
+- **Leaf load** (`flash_next::bind_model`). It takes the `ignis::RopeScaling` that
+  `ignis_model_load` read off the four scalars and has already refused by name if unusable
+  (`ignis::rope_scaling_rejection`); `flash_next::text_rope` builds the linear table without
+  scaling (`rope_linear_frequencies`, untouched) and `ignis::rope_yarn_frequencies(
+  topology.rope_theta, topology.rotary_dim, kOriginalPositions, scaling)` with it, the choice
+  the 27B's table makes too (`ignis::rope_frequencies`). `kOriginalPositions` is Flash-Next's
+  own 262,144, never the 27B's constant.
 - **Kernels.** `indexer::Rope` gains `scale` (1.0f by default); `rope_from` copies the table's
   `attention_factor` into it. `prepare_kernel` (`qsa.cu`: 24 q heads and 2 k heads) and
   `rope_row` (`indexer.cu`: queries, and pooled block keys at the block's first position)
   round `cosf(phi) * scale` and `sinf(phi) * scale` to BF16, where they rounded `cosf(phi)` and
-  `sinf(phi)`. `fn_qsa_attention` no longer refuses an attention factor.
+  `sinf(phi)`, both through one device helper (`indexer::rope_pair`, `rope.cuh`).
+  `fn_qsa_attention` no longer refuses an attention factor.
 - **MTP.** Nothing of its own: its attention layer and its indexer read the trunk's
   `Context::rope` (`views_of`, `program.cu`; `mtp::layer`, `mtp.cu`).
 
@@ -72,7 +76,18 @@ the 27B's table, op and convention are untouched.
     first differs from the `none` capture. The first stays the capture's: it attends to itself
     alone, and a softmax over one key is 1 whatever the table makes of its score. *(GPU, same
     test)*
-11. The existing Flash-Next CTests and GPU tests pass unchanged on a `none` load.
+11. The existing Flash-Next CTests and GPU tests pass unchanged on a `none` load. **Met
+    2026-10-19** on the RTX 5090 (driver 610.88), with the review fixes' kernel, under
+    `IGNIS_GPU_PROFILE=1`: the 22 `flash_next|rope` CTests, `flash_next_forward_gpu`,
+    `flash_next_pinned_gpu`, `flash_next_counters_gpu`, `flash_next_residual_tap_gpu`,
+    `flash_next_reuse_gpu`, `flash_next_serving_gpu` and `flash_next_acceptance_gpu` (G1
+    102/102, every KLD under its limit, MMLU-Pro 70.82% against the accepted floor miss), and
+    this spec's logits test against its committed capture. One serving test,
+    `the_default_plan_is_offloaded_at_524288_tokens_and_the_floor_opt_in_warns`, first missed
+    its margin (an expert cache 2 GiB past the floor) by 110 MB with the desktop's VRAM on the
+    card, and passed alone once the derived budget read 27.24 GB instead of 26.43 GB: its plan
+    lines besides the cache are the bytes they were on 2026-10-08, and it missed the same way
+    on 2026-10-10.
 12. The KV-disk spec records that reusing files across restarts must bump
     `FORMAT_VERSION`: files written before this change label linear-rotated pages `yarn:4`.
 
