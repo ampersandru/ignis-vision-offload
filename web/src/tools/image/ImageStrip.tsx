@@ -1,6 +1,7 @@
 import type { ChatPicture, PictureAction } from "../../conversation/images.ts";
 import { downloadImage, progressShare, sidesOf } from "../../image/studio.ts";
-import { IconBrush, IconDownload, IconImage } from "../../ui/icons.tsx";
+import { PictureTools } from "../../conversation/UserTurn.tsx";
+import { IconDownload } from "../../ui/icons.tsx";
 import { StatusMark } from "../agents/status.tsx";
 import { type ImageRun, type ImageStatus, imageSummary, type MadePicture } from "./image.ts";
 
@@ -45,7 +46,7 @@ function PictureCall({ run, onPicture }: { run: ImageRun; onPicture?: OnPicture 
   const working = run.status === "switching" || run.status === "making" || run.status === "returning" || run.status === "queued";
   const share = run.progress ? progressShare(run.progress, run.count) : 0;
   return (
-    <li className="monitor-kiln cut flex flex-col text-[#eae8e4] [--cut-size:14px]">
+    <li className="monitor-kiln cut @container flex flex-col text-[#eae8e4] [--cut-size:14px]">
       <div className="flex min-w-0 items-center gap-2 px-3 py-2">
         <StatusMark status={markOf(run.status)} />
         <p className="min-w-0 flex-1 truncate text-sm" title={run.prompt}>
@@ -68,7 +69,8 @@ function PictureCall({ run, onPicture }: { run: ImageRun; onPicture?: OnPicture 
         </p>
       )}
       {made.length > 0 && (
-        <ul className={`grid gap-px border-t border-[#2e343c] ${made.length > 1 ? "sm:grid-cols-2" : ""}`}>
+        // Side by side only when the reply itself is wide enough, whatever the window: the side columns narrow it.
+        <ul className={`grid gap-px border-t border-[#2e343c] ${made.length > 1 ? "@2xl:grid-cols-2" : ""}`}>
           {made.map((picture) => (
             <Picture key={picture.name} picture={picture} onPicture={onPicture} />
           ))}
@@ -79,34 +81,27 @@ function PictureCall({ run, onPicture }: { run: ImageRun; onPicture?: OnPicture 
   );
 }
 
+// Marking and the Image view sit over the picture, as on the user's own
+// (PictureTools); the line under it wraps a whole piece at a time, so two
+// pictures side by side never break a name or a seed.
 function Picture({ picture, onPicture }: { picture: MadePicture; onPicture?: OnPicture }) {
-  const tool = "flex items-center gap-1.5 font-display font-medium text-[#b9bec4] hover:text-white";
   const chat: ChatPicture = { name: `${picture.name}.png`, url: picture.url };
   return (
     <li className="flex min-w-0 flex-col">
       <div className="flex justify-center bg-[#23282f] p-2">
-        <img src={picture.url} alt={picture.revisedPrompt ?? picture.name} className="stage-checker block max-h-[28rem] max-w-full object-contain" />
+        <span className="group/pic relative block max-w-full">
+          <img src={picture.url} alt={picture.revisedPrompt ?? picture.name} className="stage-checker block max-h-[28rem] max-w-full object-contain" />
+          {onPicture && <PictureTools picture={chat} onPicture={onPicture} />}
+        </span>
       </div>
-      <div className="flex items-center gap-3 px-3 py-1.5 text-xs text-[#939ba4] tabular-nums">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-xs whitespace-nowrap text-[#939ba4] tabular-nums">
         <span className="font-display font-semibold text-[#eae8e4]">{picture.name}</span>
         <span>{sidesOf(picture.size)}</span>
         {picture.seed !== undefined && <span>Seed {picture.seed}</span>}
         {picture.kept && <span>Marked area only</span>}
-        {onPicture && (
-          <>
-            <button type="button" className={`${tool} ml-auto`} title="Mark the area to change, into the prompt box" onClick={() => onPicture(chat, "mark")}>
-              <IconBrush />
-              Mark
-            </button>
-            <button type="button" className={tool} title="Open in the Image view, in a new session" onClick={() => onPicture(chat, "image")}>
-              <IconImage />
-              Image view
-            </button>
-          </>
-        )}
         <button
           type="button"
-          className={`${tool} ${onPicture ? "" : "ml-auto"}`}
+          className="ml-auto flex items-center gap-1.5 font-display font-medium text-[#b9bec4] hover:text-white"
           onClick={() =>
             downloadImage({ id: 0, url: picture.url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })
           }

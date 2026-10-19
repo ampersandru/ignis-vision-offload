@@ -22,7 +22,7 @@ describe("pictures of the conversation", () => {
     expect(renderToStaticMarkup(<UserTurn message={message} actions={actions} onResend={none} />)).not.toContain("Mark room.jpg");
   });
 
-  it("offer the same on a picture the tool made, and say when it kept to a marked area", () => {
+  it("offer the same on a picture the tool made, over the picture as on the user's, and say when it kept to a marked area", () => {
     const run = {
       callId: "c",
       prompt: "a fox",
@@ -33,10 +33,10 @@ describe("pictures of the conversation", () => {
       made: [{ name: "made-1", url: "data:image/png;base64,AAA", size: "2048x2048", kept: true as const }],
     };
     const html = renderToStaticMarkup(<ImageStrip runs={[run]} onPicture={none} />);
-    expect(html).toContain(">Mark<");
-    expect(html).toContain(">Image view<");
+    expect(html).toContain('aria-label="Mark made-1.png"');
+    expect(html).toContain('aria-label="Open made-1.png in the Image view"');
     expect(html).toContain("Marked area only");
-    expect(renderToStaticMarkup(<ImageStrip runs={[run]} />)).not.toContain(">Mark<");
+    expect(renderToStaticMarkup(<ImageStrip runs={[run]} />)).not.toContain("Mark made-1.png");
   });
 
   it("mark a picture of the prompt box where it is, the marked one shown so", () => {
