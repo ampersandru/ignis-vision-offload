@@ -3,8 +3,8 @@
 ## Status
 
 Accepted (2026-10-19, owner decision: "lo implementiamo assolutamente"). D1-D3 below are
-the coordinator's, taken on the research's recommendations
-(`.scratch/orchestra-2026-10-18/fn-yarn/research.md`, untracked). Spec
+the coordinator's, taken on the research's recommendations (finding
+[Flash-Next YaRN in the reference engines](../findings/2026-10-19-flash-next-yarn-in-the-reference-engines.md)). Spec
 [`rope-scaling/02`](../specs/rope-scaling/02-flash-next.md) is the implementation.
 Lands with ADR 0057 (rope scaling is `auto` by default): Flash-Next runs the table
 `model.rope_scaling` resolves to, as the 27B does.

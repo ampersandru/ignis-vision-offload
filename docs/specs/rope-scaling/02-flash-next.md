@@ -99,6 +99,10 @@ the 27B's table, op and convention are untouched.
   (589,824, `auto` giving 2.25) and at 1,048,576 on the RTX PRO 6000 (factor 4, MTP on), each
   beside a `none` control that must degrade past 262,144. A later agent runs them on the merged
   result; Flash-Next's prefill there also needs the request timeout raised past 900 s.
+  The ~512K leg ran on 2026-10-19 (hq-e8-2b, speculation off, one question per cell):
+  `auto` 5/5 needles and 1/2 chains, `none` 4/5 and the same 1/2, so the `none` control did
+  not degrade past 262,144 on this probe. The 1M leg is open
+  ([finding](../../findings/2026-10-19-flash-next-yarn-in-the-reference-engines.md)).
 - **hq-e8-2b under `m`-scaled K** is measured by those legs at both KV formats, not here.
 - **`original_max_position_embeddings` on the topology.** A named constant until a
   checkpoint differs.
