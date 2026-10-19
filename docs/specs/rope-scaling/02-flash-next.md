@@ -82,8 +82,10 @@ the 27B's table, op and convention are untouched.
     `flash_next_pinned_gpu`, `flash_next_counters_gpu`, `flash_next_residual_tap_gpu`,
     `flash_next_reuse_gpu`, `flash_next_serving_gpu` and `flash_next_acceptance_gpu` (G1
     102/102, every KLD under its limit, MMLU-Pro 70.82% against the accepted floor miss), and
-    this spec's logits test against its committed capture. One serving test,
-    `the_default_plan_is_offloaded_at_524288_tokens_and_the_floor_opt_in_warns`, first missed
+    this spec's logits test against its committed capture. `flash_next_speculative_gpu` and
+    `flash_next_reload_gpu` last ran on 2e352391, before the rope sites shared a helper; that
+    refactor moved no bit (the logits capture 0 of 2,560 rows, forward G1 102/102). One serving
+    test, `the_default_plan_is_offloaded_at_524288_tokens_and_the_floor_opt_in_warns`, first missed
     its margin (an expert cache 2 GiB past the floor) by 110 MB with the desktop's VRAM on the
     card, and passed alone once the derived budget read 27.24 GB instead of 26.43 GB: its plan
     lines besides the cache are the bytes they were on 2026-10-08, and it missed the same way
