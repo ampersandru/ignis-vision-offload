@@ -101,7 +101,11 @@ the 27B's table, op and convention are untouched.
   result; Flash-Next's prefill there also needs the request timeout raised past 900 s.
   The ~512K leg ran on 2026-10-19 (hq-e8-2b, speculation off, one question per cell):
   `auto` 5/5 needles and 1/2 chains, `none` 4/5 and the same 1/2, so the `none` control did
-  not degrade past 262,144 on this probe. The 1M leg is open
+  not degrade past 262,144 on this probe. The 1M leg ran the same day on the RTX PRO 6000
+  (1,048,576, hq-e8-2b, MTP 3 on, one question per cell): `auto` (`yarn:4`) 4/5 needles and
+  0/2 chains, `none` 5/5 and 1/2. The control did not degrade there either, and `auto`'s extra
+  misses are the deepest facts (948.9K, 970.6K), each answered with another fact's number. MTP
+  ran on the scaled table with no error. Neither leg separates the tables: one seed, one filler
   ([finding](../../findings/2026-10-19-flash-next-yarn-in-the-reference-engines.md)).
 - **hq-e8-2b under `m`-scaled K** is measured by those legs at both KV formats, not here.
 - **`original_max_position_embeddings` on the topology.** A named constant until a

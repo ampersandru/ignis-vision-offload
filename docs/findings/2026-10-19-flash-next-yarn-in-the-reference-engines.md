@@ -5,7 +5,7 @@
 - Observed: 2026-10-19
 - Last verified: 2026-10-19
 - Scope: kernel / Flash-Next rope sites (`kernel/src/flash_next/qsa.cu`, `indexer.cu`, `rope.cuh`), the shared YaRN table builder (`kernel/src/rope_scaling.h`, `crates/core/src/rope_scaling.rs`)
-- Related: [ADR 0059](../adr/0059-flash-next-applies-yarn-on-q-and-k.md), [ADR 0057](../adr/0057-rope-scaling-is-auto-by-default.md), [spec rope-scaling/02](../specs/rope-scaling/02-flash-next.md), `.scratch/orchestra-2026-10-18/fn-yarn/research.md` (the full read, with every line cited), `.scratch/fn-needle/RESULTS-5090.md` (the ~500K probe)
+- Related: [ADR 0059](../adr/0059-flash-next-applies-yarn-on-q-and-k.md), [ADR 0057](../adr/0057-rope-scaling-is-auto-by-default.md), [spec rope-scaling/02](../specs/rope-scaling/02-flash-next.md), `.scratch/orchestra-2026-10-18/fn-yarn/research.md` (the full read, with every line cited), `.scratch/fn-needle/RESULTS-5090.md` (the ~500K probe), `.scratch/cluster-072/REPORT.md` (the 1M probe)
 - Superseded by: none
 
 ## Question
@@ -67,6 +67,15 @@ retrieved 5/5 single needles (24.6K to 475.2K) and 1/2 three-hop chains;
 failed chain answering the other chain's number under both. Cold prefill was
 the same under both tables (~720 tok/s, 688-694 s).
 
+A second probe ran at 1,048,576 on the RTX PRO 6000 (release 0.7.2, hq-e8-2b
+KV, MTP 3 on, temperature 0, one question per cell, seed 1, ~1,000K prompt
+tokens): `auto` (YaRN 4) retrieved 4/5 needles and 0/2 chains, missing the
+needle at 948.9K and both chains (last hops at 970.6K and 928.1K); `none`
+retrieved 5/5 and 1/2, missing the same 928.1K chain. Every miss answered
+another fact's number from the same prompt. Cold prefill was ~3,200 tok/s
+(312-313 s) under both tables, and MTP drafted and accepted on the scaled
+table with no error.
+
 ## Finding
 
 Observed (code): the three reference engines agree on the table, the ramp, the
@@ -83,8 +92,11 @@ Inferred: under that recipe vLLM's MTP head runs the linear table past
 SGLang are.
 
 Observed (probe): with YaRN 2.25 Flash-Next answers single-needle retrieval
-up to 475K and loses nothing against the unscaled table on this probe. It is
-one question per cell and separates nothing statistically.
+up to 475K and loses nothing against the unscaled table on this probe. At 1M,
+YaRN 4 scored 4/7 against the unscaled table's 6/7, its extra misses at the
+deepest positions. Each probe is one question per cell, the two point opposite
+ways, and neither separates the tables statistically. The unscaled table did
+not degrade past 262,144 on either.
 
 ## Implications
 
@@ -100,12 +112,15 @@ one question per cell and separates nothing statistically.
 - Line citations are to the revisions above; later revisions may move them.
 - vLLM's MTP behaviour past 262,144 (an out-of-bounds gather or a mismatched
   table) is inferred from the code and was not run.
-- The probe ran at ~500K without MTP and with hq-e8-2b only. MTP on a scaled
-  table, BF16 KV, and 1,048,576 at factor 4 are not covered by it.
-- At ~500K every question re-prefilled the whole prompt (`cached_tokens` 0);
-  why prefix reuse did not engage at that size was not investigated.
+- The probes ran with hq-e8-2b only, one seed and one filler (the repo's own
+  text). BF16 KV is not covered, and neither probe can tell whether factor 4
+  costs retrieval at depth.
+- At ~500K and at 1M every question re-prefilled the whole prompt
+  (`cached_tokens` 0); why prefix reuse did not engage at those sizes was not
+  investigated.
 
 ## Follow-ups
 
-- The 1M needle and multi-hop run with MTP on, on the RTX PRO 6000, with a
-  `none` control (spec rope-scaling/02).
+- A second seed and a second filler at 1,048,576, if the `auto` default needs
+  a retrieval number behind it. Today it rests on the model card and the
+  reference engines, not on these probes.
