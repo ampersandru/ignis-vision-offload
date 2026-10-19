@@ -3113,3 +3113,96 @@ async fn a_zero_request_timeout_leaves_a_question_to_its_answer() {
     assert_eq!(status, 200, "{body}");
     assert!(body["answers"]["is_urgent"]["noul"].is_number(), "{body}");
 }
+
+const NUMBER_QUESTION: &str = r#"{"state":"The queue is backing up.",
+    "questions":{"depth":{"type":"number","instructions":"How many items are waiting?"}}}"#;
+
+/// The mock, its first prefill held until a test opens it.
+struct HeldPrefill {
+    inner: MockCompute,
+    /// `(entered, open)`.
+    gate: Arc<(std::sync::Mutex<(bool, bool)>, std::sync::Condvar)>,
+}
+
+impl ignis_core::Compute for HeldPrefill {
+    fn prefill_step(
+        &self,
+        jobs: &[ignis_core::PrefillJob],
+    ) -> Result<Vec<ignis_core::PrefillOutcome>, ignis_core::ComputeError> {
+        let (state, changed) = &*self.gate;
+        let mut state = state.lock().unwrap();
+        state.0 = true;
+        changed.notify_all();
+        while !state.1 {
+            state = changed.wait(state).unwrap();
+        }
+        drop(state);
+        self.inner.prefill_step(jobs)
+    }
+
+    fn decode_step(
+        &self,
+        jobs: &[ignis_core::DecodeJob],
+    ) -> Result<Vec<ignis_core::DecodeOutcome>, ignis_core::ComputeError> {
+        self.inner.decode_step(jobs)
+    }
+}
+
+/// A question the engine let go of -- its stream closed without a finish --
+/// is `engine_gave_up`, not `not_completed`: the engine did not run out of
+/// time, it dropped the request (ADR 0058).
+async fn check_a_dropped_question_says_the_engine_gave_up(body: &str, name: &str) {
+    let gate = Arc::new((std::sync::Mutex::new((false, false)), std::sync::Condvar::new()));
+    let server = server_over(Arc::new(HeldPrefill { inner: MockCompute::new(), gate: gate.clone() }))
+        .with_request_timeout(std::time::Duration::from_secs(600));
+    let app = server.app();
+    let body = body.to_owned();
+    let reply = tokio::spawn(async move { decide(&app, &body).await });
+    let waiting = gate.clone();
+    tokio::task::spawn_blocking(move || {
+        let (state, changed) = &*waiting;
+        let mut state = state.lock().unwrap();
+        while !state.0 {
+            state = changed.wait(state).unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    // The scheduler releases a cancelled request without a `Done`.
+    server.active().text_engine().cancel(0);
+    gate.0.lock().unwrap().1 = true;
+    gate.1.notify_all();
+    let (status, body) = reply.await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["answers"][name]["code"], "engine_gave_up", "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_readout_its_engine_dropped_says_the_engine_gave_up() {
+    check_a_dropped_question_says_the_engine_gave_up(JEV_NOUL, "is_urgent").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_constrained_run_its_engine_dropped_says_the_engine_gave_up() {
+    check_a_dropped_question_says_the_engine_gave_up(NUMBER_QUESTION, "depth").await;
+}
+
+/// A question its deadline cut is still `not_completed`, on both sites.
+async fn check_a_question_past_its_deadline_is_not_completed(body: &str, name: &str) {
+    let app = server_over(Arc::new(SlowPrefill(MockCompute::new())))
+        .with_request_timeout(std::time::Duration::from_millis(10))
+        .app();
+    let (status, body) = decide(&app, body).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["answers"][name]["code"], "not_completed", "{body}");
+}
+
+#[tokio::test]
+async fn a_readout_past_its_deadline_is_not_completed() {
+    check_a_question_past_its_deadline_is_not_completed(JEV_NOUL, "is_urgent").await;
+}
+
+#[tokio::test]
+async fn a_constrained_run_past_its_deadline_is_not_completed() {
+    check_a_question_past_its_deadline_is_not_completed(NUMBER_QUESTION, "depth").await;
+}

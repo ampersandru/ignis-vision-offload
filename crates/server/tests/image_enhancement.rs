@@ -776,6 +776,56 @@ async fn a_failing_enhancer_falls_back_to_the_prompt_as_sent_with_a_warning() {
     assert_eq!((loader.loads(), loader.encoded_prompts()), (vec![IMAGE.to_owned()], vec!["engine fault".to_owned()]));
 }
 
+/// An enhancer whose rewrite waits at the gate, behind a request that names
+/// the image model: `release` runs once the rewrite is held, and the answer
+/// is the request's, which fell back to its prompt as sent.
+async fn a_held_rewrite_falls_back(request_timeout: Option<Duration>, release: impl FnOnce(&Server) -> Duration) -> Value {
+    let loader = MockLoader::new();
+    let (model, gated, gate) = loader.gated_model("mock-a");
+    gated.arm();
+    let mut server = Server::from_active(model)
+        .with_switcher(Switcher::new(Arc::clone(&loader) as _, PATIENT).with_known_models(known(&["mock-a", IMAGE])));
+    if let Some(timeout) = request_timeout {
+        server = server.with_request_timeout(timeout);
+    }
+    enhancing_with(&server, "mock-a");
+    let app = server.app();
+    let body = json!({ "prompt": "held", "model": IMAGE, "size": "1024x1024", "prompt_enhancement": true });
+    let reply = tokio::spawn(async move { send_generation(&app, body).await });
+    gate.wait_entered();
+    tokio::time::sleep(release(&server)).await;
+    gate.release();
+    let (status, answer) = reply.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(answer["data"][0].get("revised_prompt").is_none(), "{answer}");
+    assert_eq!(loader.encoded_prompts(), ["held"], "the job ran on the prompt as sent");
+    answer
+}
+
+/// A rewrite its deadline cut falls back to the prompt as sent, the warning
+/// saying the deadline passed (ADR 0058).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rewrite_past_its_deadline_falls_back_saying_so() {
+    let answer = a_held_rewrite_falls_back(Some(Duration::from_millis(200)), |_| Duration::from_millis(600)).await;
+    let warning = answer["warnings"][0].as_str().unwrap_or_default();
+    assert!(warning.contains("did not finish the rewrite within server.request_timeout"), "{answer}");
+}
+
+/// A rewrite its engine dropped falls back the same way, the warning saying
+/// the engine dropped it and not that time ran out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rewrite_its_engine_dropped_falls_back_saying_so() {
+    let answer = a_held_rewrite_falls_back(None, |server| {
+        // The scheduler releases a cancelled request without a `Done`.
+        server.active().text_engine().cancel(0);
+        Duration::ZERO
+    })
+    .await;
+    let warning = answer["warnings"][0].as_str().unwrap_or_default();
+    assert!(warning.contains("engine dropped the rewrite"), "{answer}");
+    assert!(!warning.contains("request_timeout"), "{answer}");
+}
+
 /// An enhanced edit naming the image model, with one 64x64 condition image.
 fn enhanced_edit() -> Request<Body> {
     const BOUNDARY: &str = "ignis-enhancement-boundary";

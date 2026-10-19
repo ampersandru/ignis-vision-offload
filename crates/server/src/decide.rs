@@ -3741,13 +3741,7 @@ async fn ask(
                             "the engine finished this `locate` without the heads' rows over the state: the keys were not where an armed layer's attention materialized them, or the prefill itself failed".to_owned(),
                         ))
                     }
-                    Err(_) => {
-                        guard.timed_out();
-                        Err(failed(
-                            "not_completed",
-                            "the engine did not answer this question in time".to_owned(),
-                        ))
-                    }
+                    Err(error) => Err(collect_failed(&mut guard, error)),
                 },
             ));
         }
@@ -3778,13 +3772,7 @@ async fn ask(
                         "the engine finished this question without the heads' attention over the image: the keys were not where an armed layer's attention materialized them, or the prefill itself failed".to_owned(),
                     )
                 }
-                Err(_) => {
-                    guard.timed_out();
-                    failed(
-                        "not_completed",
-                        "the engine did not answer this question in time".to_owned(),
-                    )
-                }
+                Err(error) => collect_failed(&mut guard, error),
             },
         ));
     }
@@ -3806,13 +3794,7 @@ async fn ask(
                     }
                     constrained_answer_for(question, &drawn, pixels)
                 }
-                Err(_) => {
-                    guard.timed_out();
-                    failed(
-                        "not_completed",
-                        "the engine did not answer this question in time".to_owned(),
-                    )
-                }
+                Err(error) => collect_failed(&mut guard, error),
             },
         ));
     }
@@ -3830,13 +3812,7 @@ async fn ask(
                 }
                 answer_for(question, &readout)
             }
-            Err(_) => {
-                guard.timed_out();
-                failed(
-                    "not_completed",
-                    "the engine did not answer this question in time".to_owned(),
-                )
-            }
+            Err(error) => collect_failed(&mut guard, error),
         },
     ))
 }
@@ -4030,6 +4006,23 @@ async fn concurrently<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output>
 
 fn failed(code: &str, message: String) -> Answer {
     Answer::Error { code: code.to_owned(), message }
+}
+
+/// The answer to a question whose collector gave up. A deadline that passed
+/// is `not_completed` and logged a timeout; a stream the engine closed without
+/// an answer is `engine_gave_up`, the engine's own doing and no timeout
+/// (ADR 0058).
+fn collect_failed(guard: &mut crate::api::CancelOnDrop, error: crate::engine::CollectError) -> Answer {
+    match error {
+        crate::engine::CollectError::DeadlinePassed(()) => {
+            guard.timed_out();
+            failed("not_completed", "the engine did not answer this question in time".to_owned())
+        }
+        crate::engine::CollectError::EngineGaveUp => {
+            guard.completed();
+            failed("engine_gave_up", "the engine dropped this question before it answered".to_owned())
+        }
+    }
 }
 
 /// A refusal, as the 422 Jev documents for a body that fails validation.
