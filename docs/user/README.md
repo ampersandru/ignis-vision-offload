@@ -1829,7 +1829,8 @@ and the YaRN table that stretches the envelope to match (the gate legs ran at
 `SPEC=dflash2` with
 `DRAFT_TOKENS=7`, `KV_HOST_POOL_BYTES=8G` (the 27B's; Flash-Next's own arena
 is `FN_KV_HOST_POOL_BYTES=2G`, passed on every start so a switch to it gets it
-too), `REQUEST_TIMEOUT=1800`. `HOST_MARGIN_BYTES` sets Flash-Next's host
+too). `REQUEST_TIMEOUT` and `STREAM_TIMEOUT` are empty: the server's 2400 s
+deadlines ([Deadlines](#deadlines)). `HOST_MARGIN_BYTES` sets Flash-Next's host
 margin (empty: the server's 4G).
 `KV_DISK_BYTES` and `KV_DISK_PATH` set [KV-disk](#kv-disk) (`make config`
 prints its budget and directory). `SPEC=off` turns

@@ -158,7 +158,10 @@ has "UNCENSORED=1 MODEL=mine" "$(flags UNCENSORED=1 MODEL=mine)" "--model-id min
 out="$(flags MODEL=image)"
 has "MODEL=image" "$out" "--model-artifact F:/ai/models/ignis-image-2.1-turbo/ignis_image_2_1_turbo-v2.ninfer"
 has "MODEL=image" "$out" "--model-id ignis-image-2.1-turbo"
-has "MODEL=image" "$out" "--server-request-timeout 1800"
+lacks "MODEL=image" "$out" "--server-request-timeout"
+lacks "MODEL=image" "$out" "--server-stream-timeout"
+has "MODEL=image REQUEST_TIMEOUT" "$(flags MODEL=image REQUEST_TIMEOUT=900)" "--server-request-timeout 900"
+has "MODEL=image STREAM_TIMEOUT" "$(flags MODEL=image STREAM_TIMEOUT=1200)" "--server-stream-timeout 1200"
 for text_knob in --model-max-context --model-prefill-chunk --model-decode-share --model-kv-format --model-rope-scaling                  --spec-decode-lanes --spec-backend --spec-draft-tokens --vision-enabled --reuse-kv-host-pool-bytes --kv-disk; do
     lacks "MODEL=image" "$out" "$text_knob"
 done
