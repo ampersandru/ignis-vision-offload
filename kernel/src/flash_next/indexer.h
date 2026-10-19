@@ -14,8 +14,8 @@
 //   selection(row) = the min(512, blocks) best blocks + the row's incomplete block's tokens
 //
 // Numerics kept from the checkpoint: every RMSNorm in fp32 rounded once to BF16; rope in BF16
-// arithmetic as torch runs it (cos/sin rounded to BF16, each product rounded to BF16, then their
-// sum), with the checkpoint's fp32 frequency table (1.0f / (float)theta^(2i/rotary), which is not
+// arithmetic as torch runs it (cos/sin times the table's YaRN attention factor rounded to BF16,
+// each product rounded to BF16, then their sum), with the checkpoint's fp32 frequency table (1.0f / (float)theta^(2i/rotary), which is not
 // (float) of the double table for 15 of the 32 pairs) and phi = fp32(position) * inv_freq in fp32;
 // the pooled key's mean in fp32 rounded to BF16; dot products exact BF16 products summed in fp32;
 // the 1/sqrt(head_dim) applied as torch CUDA applies a division by a host scalar (a multiplication
@@ -54,12 +54,16 @@ struct Paged {
   __nv_bfloat16 *tail_keys = nullptr;     // [slot][kCompress - 1][kHeadDim]
 };
 
-// The checkpoint's rope frequencies, fp32, one per rotary pair.
+// The checkpoint's rope frequencies, fp32, one per rotary pair, and the YaRN attention factor
+// that multiplies cos and sin on queries and keys alike (HF's `attention_scaling`, ADR 0059):
+// 1.0f, an exact multiply, without scaling.
 struct Rope {
   float inv_freq[kRotaryDim / 2] = {};
+  float scale = 1.0F;
 };
 
-// The checkpoint's fp32 table from the load's double table: 1.0f / (float)(1 / inv_frequency[i]).
+// The checkpoint's fp32 table from the load's double table: 1.0f / (float)(1 / inv_frequency[i]),
+// and its attention_factor as the scale.
 Rope rope_from(const ninfer::ops::RopeFrequencies &frequencies);
 
 // A stage returns nullptr, or a static message naming what it refused or what failed.

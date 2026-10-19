@@ -31,7 +31,7 @@ use std::path::PathBuf;
 
 use ignis_core::compute::ModelFamily;
 use ignis_core::ngram_cache::CacheLocation;
-use ignis_core::{KvFormat, RopeScaling};
+use ignis_core::{KvFormat, RopeSetting};
 use serde_json::{Map, Value};
 
 use super::field::{Applicability, Attr, FieldMeta, Validator};
@@ -409,10 +409,13 @@ config_group! {
         /// The sentence every later rewind puts there, until
         /// `loop_guard_retries` nudges close the reasoning.
         loop_guard_nudge_again: Text = crate::loop_guard::DEFAULT_NUDGE_AGAIN.to_owned(), NO_RULE, ALL, [Visible, Patchable];
-        /// The text rotary table: `none` (the linear table) or
-        /// `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's
-        /// trained 262,144-position envelope — what a context past it needs.
-        rope_scaling: Rope = RopeScaling::NONE, NO_RULE, ALL, [Visible, Patchable, ReloadRequired, Scoped];
+        /// The text rotary table: `auto` (the default), `none` (the linear
+        /// table) or `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the
+        /// checkpoint's trained 262,144-position envelope — what a context
+        /// past it needs. `auto` decides per model from its
+        /// `model.max_context`: none up to 262,144, else YaRN at
+        /// `max_context / 262,144`. Both models run the table.
+        rope_scaling: Rope = RopeSetting::Auto, NO_RULE, ALL, [Visible, Patchable, ReloadRequired, Scoped];
         /// Seconds with no request using the model after which it is unloaded
         /// — VRAM, pinned host memory and KV-RAM given back — while the server
         /// stays up; the next request loads it again and waits for it. 0 never

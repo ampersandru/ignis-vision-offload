@@ -139,11 +139,14 @@ struct FlashNextModel {
 
 // Binds a Flash-Next load's weights and checks every option and geometry it
 // runs, allocating nothing: the half of a load ignis_model_plan_reservations
-// shares. Null and *error on any refusal.
+// shares. `rope_scaling` is the load's rotary table (ADR 0059), already read
+// off `options` and refused by name if it builds none (validate_and_bind,
+// model.cu). Null and *error on any refusal.
 std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, uint64_t count,
                                            const ignis_topology &topology, uint32_t prefill_chunk_tokens,
                                            uint32_t max_context_tokens, int32_t kv_format,
-                                           const ignis_model_load_options *options, std::string *error);
+                                           const ignis_model_load_options *options, const RopeScaling &rope_scaling,
+                                           std::string *error);
 
 // The load's plan lines, from a bound model.
 ignis_model_reservations reservations(const FlashNextModel &fn);

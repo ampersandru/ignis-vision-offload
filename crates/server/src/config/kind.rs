@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use ignis_core::image::ImageSize;
 use ignis_core::ngram_cache::CacheLocation;
 use ignis_core::ngram_table::HotBudget;
-use ignis_core::{KvFormat, KvPoolSize, ProposalHead, RopeScaling, SpeculativeBackend};
+use ignis_core::{KvFormat, KvPoolSize, ProposalHead, RopeSetting, SpeculativeBackend};
 use serde_json::Value;
 
 use super::{ApiKey, ApiKeySetting, Expose, SpecChoice};
@@ -425,18 +425,19 @@ impl FieldKind for Effort {
 }
 
 /// The text rotary table (GitHub #227), in the reference's grammar: `none`
-/// or `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]`.
+/// or `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]`, or `auto`, which the context
+/// decides at load.
 pub struct Rope;
 
 impl FieldKind for Rope {
-    type Value = RopeScaling;
+    type Value = RopeSetting;
     const TAG: &'static str = "rope scaling";
 
-    fn parse(raw: &str) -> Result<RopeScaling, String> {
-        RopeScaling::parse(raw).map_err(|e| e.to_string())
+    fn parse(raw: &str) -> Result<RopeSetting, String> {
+        RopeSetting::parse(raw).map_err(|e| e.to_string())
     }
 
-    fn render(value: &RopeScaling) -> Value {
+    fn render(value: &RopeSetting) -> Value {
         Value::String(value.to_string())
     }
 }
@@ -798,6 +799,7 @@ impl FieldKind for Sizes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ignis_core::RopeScaling;
 
     /// A written value reads back to itself: the round trip a generated
     /// config file depends on, for every kind.
@@ -901,8 +903,9 @@ mod tests {
         round_trips::<SpecBackend>(SpecChoice::Off);
         round_trips::<DeveloperPolicy>(DeveloperMessagePolicy::IntoSystem);
         round_trips::<TimeoutReplyKind>(crate::deadline::TimeoutReply::Error);
-        round_trips::<Rope>(RopeScaling::NONE);
-        round_trips::<Rope>(RopeScaling::parse("yarn:4,t=0.25").unwrap());
+        round_trips::<Rope>(RopeSetting::Auto);
+        round_trips::<Rope>(RopeSetting::Fixed(RopeScaling::NONE));
+        round_trips::<Rope>(RopeSetting::parse("yarn:4,t=0.25").unwrap());
     }
 
     #[test]

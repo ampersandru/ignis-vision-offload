@@ -54,7 +54,7 @@ ifeq ($(MODEL_FAMILY),flash-next)
   # lane's pool is one context and two lanes or more share 524,288, so one
   # lane leaves the cache ~1 GiB more.
   LANES ?= 3
-  ROPE_SCALING ?= none
+  ROPE_SCALING ?=
   PREFILL_CHUNK ?= 8192
   # The part of the model's time decoding lanes keep while a prompt prefills
   # (--model-decode-share, percent, 0-99). Empty = the server's: 25 on both models (0 = one decode round per chunk).
@@ -154,7 +154,7 @@ LOOP_GUARD ?=
 
 # The GPU engine configuration (CUDA=1 only; the CPU mock gets none of it).
 # Defaults: a 524288-token context -- twice the checkpoint's trained 262,144
-# positions, which is why ROPE_SCALING below defaults to yarn:2 -- then
+# positions, which the server's auto rope scaling answers with yarn:2 -- then
 # hq-e8-2b KV, DFlash2 speculation with a 7-token draft window. The G5 gate
 # legs (docs/specs/runtime/05) ran at MAX_CONTEXT=262144 ROPE_SCALING=none.
 # Empty = leave the flag off (the server's default); SPEC=off turns speculation
@@ -207,14 +207,15 @@ RETAINED_HOST ?=
 # (--vision-max-tokens); empty = the server's own envelope.
 VISION ?=
 VISION_MAX_TOKENS ?=
-# RoPE scaling (--model-rope-scaling, GitHub #227): the text rotary table. `none`
-# (or empty) is the linear table the checkpoint was trained with, correct
-# through 262,144 positions; `yarn:F` rescales that envelope by F, which is
-# what a MAX_CONTEXT past it needs to mean anything. The full spelling is
-# `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]`. Defaults to yarn:2, the envelope
-# MAX_CONTEXT=524288 needs; it rescales every request's table, short ones
-# included, so MAX_CONTEXT=262144 wants ROPE_SCALING=none beside it.
-ROPE_SCALING ?= yarn:2
+# RoPE scaling (--model-rope-scaling, GitHub #227): the text rotary table.
+# Empty (or `auto`) is the server's default: none up to 262,144 positions, the
+# linear table the checkpoint was trained with, else YaRN at MAX_CONTEXT /
+# 262,144 -- MAX_CONTEXT=524288 gets yarn:2 without being told. `none` forces
+# the linear table; `yarn:F` rescales the envelope by F, whatever the context.
+# The full spelling is `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]`. A YaRN table
+# rescales every request's table, short ones included. Both models take it
+# (ADR 0057, ADR 0059).
+ROPE_SCALING ?=
 # The KV-RAM host tier's budget (--reuse-kv-host-pool-bytes, P4-07, GitHub #125):
 # 0 disables the host tier entirely (no evict-to-RAM overflow path). The
 # 27B's: Flash-Next takes FN_KV_HOST_POOL_BYTES instead.

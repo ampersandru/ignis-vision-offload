@@ -62,6 +62,13 @@ attn-tap = []
 # production build; the only production-side trace is the disarmed flag check
 # in the Flash-Next prefill.
 residual-tap = []
+# Test-only: gates `tests/flash_next_rope_logits_gpu.rs`, which holds a
+# Flash-Next load's logits bit for bit to the capture committed under
+# `tests/fixtures/flash_next/` (ADR 0059), on the card and driver that
+# recorded it. A later kernel change may move those bits legitimately, so the
+# GPU profile never builds it; `make check CUDA=1` and testing.md's Done-means
+# check do. Gates no library code.
+logits-capture = []
 # The KLD measurement's engine side (2026-09-24): every position's logits
 # for a set of token windows, via `step::prefill_program_span_logits`.
 [[example]]

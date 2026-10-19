@@ -1,0 +1,29 @@
+{
+  "argmax": "the lowest vocabulary index among the row's largest BF16 logits",
+  "artifact_bytes": 71760711680,
+  "artifact_path": "F:/ai/models/Qwen3.8-Flash-Next-ignis/qwen3_8_flash_next_trellis_a25-v2.ninfer",
+  "build": "67f8d2e5",
+  "build_note": "established afterwards from the fn-yarn worktree's logs, not recorded by the test: that worktree sat at main 67f8d2e5 (its reflog) with the test added; its kernel was built in full at 2026-10-19 00:25 +0200, the test binary at 00:29 and the capture taken at 00:30, and its next kernel build, at 00:43, is the one that recompiled ADR 0059's indexer.cu, qsa.cu and program.cu",
+  "capture_unix_seconds": 1792362640,
+  "captured_by": "crates/core/tests/flash_next_rope_logits_gpu.rs (IGNIS_RECORD_FLASH_NEXT_LOGITS=1)",
+  "cuda_driver_api": "13.3",
+  "cuda_toolkit": "13.1.80",
+  "driver": "610.88",
+  "gpu": "NVIDIA GeForce RTX 5090",
+  "options": {
+    "capture_graphs": false,
+    "kv_format": "bf16",
+    "max_context_tokens": 8192,
+    "prefill_chunk_tokens": 1024,
+    "rope_scaling": "none"
+  },
+  "prompt": "references/long8192/tokens.u32 under the artifact's directory, window 0, tokens [0, 2560)",
+  "row_format": "one line per prompt position, LF-terminated: `<row> <SHA-256 of the row's BF16 logits as little-endian u16, hex> <argmax>`",
+  "rows": 2560,
+  "txt_bytes": 189358,
+  "txt_sha256": "4a7b5ad1b0579b3af645a3bb4d7692e9ad53c5147b621ba552a8567f94f08dd7",
+  "verified_on": [
+    "2e352391 (fn-yarn, after ADR 0059's kernel change): 0 of 2560 rows differ",
+    "a9fff065 (yarn-integration): 0 of 2560 rows differ"
+  ]
+}

@@ -418,10 +418,13 @@ pub struct Config {
     /// Vision, chosen at load (`--vision-enabled` / `--vision-max-tokens`,
     /// GitHub #177). `None` binds and reserves nothing of the vision tower.
     pub vision: Option<Vision>,
-    /// The text rotary table, chosen at load (`--model-rope-scaling`, GitHub
-    /// #227). [`RopeScaling::NONE`] is the linear table the engine has always
+    /// The text rotary table the load runs (`--model-rope-scaling`, GitHub
+    /// #227): the setting [`Self::settings`] holds, resolved for the family
+    /// against [`Self::max_context`] when it is `auto` (ADR
+    /// 0057). [`RopeScaling::NONE`] is the linear table the engine has always
     /// used; a YaRN factor rescales the checkpoint's trained 262,144-position
-    /// envelope, which is what a context past it needs.
+    /// envelope, which is what a context past it needs. Both models run it
+    /// (ADR 0059).
     pub rope_scaling: RopeScaling,
     /// Media acquisition (`--media-allow-private-network`,
     /// `--media-cache-mib`, GitHub #179). Only nameable with vision on.
@@ -1041,6 +1044,9 @@ fn derive(
         let fitted = FamilyFit { model: &mut model, speculation: &mut speculation, dropped: &mut dropped };
         fit_family(fitted, &resolution, family, fit, &spelled)?;
     }
+    let rope_scaling = s.model.rope_scaling.resolve(s.model.max_context).map_err(|e| {
+        ConfigError(format!("`{} {}`: {e}", spelled("model", "max_context"), s.model.max_context))
+    })?;
 
     let config = Config {
         model,
@@ -1112,7 +1118,7 @@ fn derive(
         draft_rows: s.spec.draft_rows,
         decode_lanes: s.spec.decode_lanes,
         vision,
-        rope_scaling: s.model.rope_scaling,
+        rope_scaling,
         media,
         request_timeout_secs: s.server.request_timeout,
         stream_timeout_secs: s.server.stream_timeout,

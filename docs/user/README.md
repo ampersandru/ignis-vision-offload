@@ -383,7 +383,7 @@ built-in defaults. Two are built in:
 - `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
   Server Edition, 96 GB each), measured on a Server Edition under Linux
   ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). Both
-  models get 1,048,576 tokens of context (`yarn:4`). Flash-Next gets 8 decode
+  models get 1,048,576 tokens of context (both with YaRN at 4, which `auto` rope scaling picks for them). Flash-Next gets 8 decode
   lanes, MTP speculation with 3 draft tokens
   ([below](#flash-next-speculation-mtp)) and `--ngram-hot-bytes auto`: the
   whole n-gram table in RAM when the host plan leaves room for it
@@ -488,7 +488,7 @@ change does not reach and a `null` removes.
 | `--spec-draft-tokens <n>` | `IGNIS_SPEC_DRAFT_TOKENS` | — | 1..7. Required with `--spec-backend dflash2`; with `--spec-backend mtp` the most drafts a lane verifies per round (default 2). |
 | `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..32. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only, and past 8 five to eight lanes draft too (`16`: 3 drafts up to four lanes, 2 at five, 1 from six to eight). A budget past 8 reserves the wider rounds' VRAM, taken from the expert cache: about 50 MB at 16 rows. Past 8 the round is held numerically equivalent to speculation off, not token for token: greedy output may differ from it where two tokens are nearly tied ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)). Measured slower than 8 on both the RTX 5090 and the RTX PRO 6000 ([below](#flash-next-speculation-mtp)). (`make` knob `DRAFT_ROWS`.) |
 | `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head) or `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, +356 MB of VRAM). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
-| `--model-rope-scaling <spec>` | `IGNIS_MODEL_ROPE_SCALING` | none | `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]` rescales the checkpoint's trained 262,144-position envelope. `F` in (1, 64]. |
+| `--model-rope-scaling <spec>` | `IGNIS_MODEL_ROPE_SCALING` | `auto` | `auto` decides from the model's `--model-max-context`: no scaling up to the checkpoint's trained 262,144 positions, else YaRN at `max_context / 262,144` (524,288 is 2, 786,432 is 3, 1,048,576 is 4); past 64x (16,777,216 tokens) the start is refused. `none` is the linear table whatever the context; `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]` rescales the envelope by `F` in (1, 64]. An explicit value overrides `auto`. Both models apply it; on Flash-Next one table serves attention, its sparse-attention indexer and the MTP head, with YaRN's attention factor on queries and keys alike, as the model's reference implementations apply it ([ADR 0059](../adr/0059-flash-next-applies-yarn-on-q-and-k.md)). The load log (`ignis.model.loaded`) names the table run (`rope_scaling`) beside the setting (`rope_scaling_setting`). (`make` knob `ROPE_SCALING`.) |
 
 ### Flash-Next speculation (MTP)
 
@@ -1823,9 +1823,9 @@ the settings every model shares (`BIND`, `API_KEY`, `IDLE_UNLOAD`, ...) apply as
 before. `make config MODEL=image` prints the server command.
 
 With `CUDA=1` the server starts with `MAX_CONTEXT=524288` and
-`ROPE_SCALING=yarn:2` -- twice the checkpoint's trained 262,144 positions,
-and the YaRN table that stretches the envelope to match (the gate legs ran at
-`MAX_CONTEXT=262144 ROPE_SCALING=none`) -- `KV_FORMAT=hq-e8-2b`,
+the server's `auto` rope scaling (here `yarn:2`) -- twice the checkpoint's
+trained 262,144 positions, and the YaRN table that stretches the envelope to
+match (the gate legs ran at `MAX_CONTEXT=262144 ROPE_SCALING=none`) -- `KV_FORMAT=hq-e8-2b`,
 `SPEC=dflash2` with
 `DRAFT_TOKENS=7`, `KV_HOST_POOL_BYTES=8G` (the 27B's; Flash-Next's own arena
 is `FN_KV_HOST_POOL_BYTES=2G`, passed on every start so a switch to it gets it
@@ -1837,8 +1837,8 @@ prints its budget and directory). `SPEC=off` turns
 speculation off (`SPEC=` leaves it to the server, and the `rtx5090` profile
 speculates with dflash2). `VISION=1` loads the tower; `UNCENSORED=1` loads
 [the uncensored variant](#the-uncensored-variant) in place of the default
-image, served as `qwen3.8-27b-abliterated`; `ROPE_SCALING=yarn:4` rescales the
-envelope further (`none` keeps the trained table); the metrics listener is on (`METRICS=0` starts without it); `API_KEY=` and `EXPOSE=` set
+image, served as `qwen3.8-27b-abliterated`; `ROPE_SCALING=yarn:4` pins the
+factor (empty is `auto`, from `MAX_CONTEXT`; `none` keeps the trained table); the metrics listener is on (`METRICS=0` starts without it); `API_KEY=` and `EXPOSE=` set
 the access flags; `IDLE_UNLOAD=<secs>` sets [idle unload](#idle-unload)
 (`IDLE_UNLOAD=0` for a measurement); `LOOP_GUARD=off` turns the reasoning
 loop guard off (the server's default rewinds a loop; a measurement passes

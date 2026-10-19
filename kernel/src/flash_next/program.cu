@@ -572,7 +572,8 @@ FlashNextModel::~FlashNextModel() {
 std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, uint64_t count,
                                            const ignis_topology &topology, uint32_t prefill_chunk_tokens,
                                            uint32_t max_context_tokens, int32_t kv_format,
-                                           const ignis_model_load_options *options, std::string *error) {
+                                           const ignis_model_load_options *options, const RopeScaling &rope_scaling,
+                                           std::string *error) {
   auto fn = std::make_unique<FlashNextModel>();
   fn->g = Geometry::from(topology);
   fn->kv_format = kv_format;
@@ -589,10 +590,6 @@ std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, ui
   if (fn->decode_lanes > max_decode_lanes()) {
     *error = "decode_lanes " + std::to_string(fn->decode_lanes) + " is more than the " +
              std::to_string(max_decode_lanes()) + " a Flash-Next round serves";
-    return nullptr;
-  }
-  if (options != nullptr && options->rope_scaling_factor != 0.0F && options->rope_scaling_factor != 1.0F) {
-    *error = "Qwen3.8-Flash-Next rotates at its own linear table, not a scaled one";
     return nullptr;
   }
   // The binder first: a set of descriptors is right or wrong whatever the
@@ -638,8 +635,7 @@ std::unique_ptr<FlashNextModel> bind_model(const ignis_bound_tensor *tensors, ui
     fn->decode_rows = verify::decode_rows(fn->decode_lanes, fn->draft_tokens, fn->draft_row_budget);
   }
   try {
-    fn->rope = ninfer::ops::rope_linear_frequencies(static_cast<float>(topology.rope_theta),
-                                                    static_cast<int>(topology.rotary_dim));
+    fn->rope = text_rope(topology, rope_scaling);
     fn->sizes = plan_sizes(*fn);
   } catch (const std::exception &e) {
     *error = std::string("Qwen3.8-Flash-Next's plan: ") + e.what();

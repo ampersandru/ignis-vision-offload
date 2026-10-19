@@ -36,9 +36,12 @@ pub const NONE_PROFILE: &str = "none";
 /// tokens with speculation off instead. Flash-Next's leg holds its decode
 /// lanes at their own default (3) and raises `model.max_context` to
 /// 512K + 32K + 32K tokens, the floor the owner asked for on both the expert
-/// cache (>= 15 GiB; it measured ~16.6 GiB) and the context: both legs need
-/// `model.rope_scaling yarn:4` to reach past the checkpoint's trained
-/// 262,144-position envelope. `vram.headroom_bytes`'s 1536 MiB hardcoded
+/// cache (>= 15 GiB; it measured ~16.6 GiB) and the context. Past the
+/// checkpoint's trained 262,144 positions the 27B's text rotary table needs
+/// YaRN, which its leg does not spell out: `model.rope_scaling` defaults to
+/// `auto`, the factor `max_context / 262,144` (3 at 786,432). Flash-Next
+/// resolves the same way over its 589,824: 2.25 (ADR 0057, ADR 0059).
+/// `vram.headroom_bytes`'s 1536 MiB hardcoded
 /// default (finding 2026-10-09-vram-headroom-wddm-paging) still holds for
 /// Flash-Next, which never needed to trade it down. Flash-Next also pins its
 /// calibration-hottest 2 GiB of experts in the expert cache
@@ -54,9 +57,10 @@ pub const NONE_PROFILE: &str = "none";
 /// first (2026-10-17), then measured on a Server Edition under Linux; the
 /// numbers are in the finding 2026-10-18-rtxpro6000-profile-measured. The
 /// measurement kept the derived choices and added one. Both families run at
-/// 1,048,576 tokens of context, `yarn:4` over the 262,144 trained positions
-/// and the 27B's whole hq-e8-2b attention envelope (the plan holds it; no
-/// request that long was run). The 27B leaves its headroom at the hardcoded
+/// 1,048,576 tokens of context, the 27B's whole hq-e8-2b attention envelope
+/// (the plan holds it; no request that long was run): `auto` rope scaling
+/// makes both models' tables YaRN at 4 over the 262,144 trained positions
+/// (ADR 0057, ADR 0059). The 27B leaves its headroom at the hardcoded
 /// default, since nothing has to be traded for vision any more, and drafts
 /// with DFlash2 at 7 tokens, which beat 4 in every cell measured but one.
 /// Flash-Next runs 8 decode lanes, where its aggregate peaks: its expert
@@ -82,7 +86,6 @@ const BUILT_IN: &str = r#"{
             "qwen38": { "headroom_bytes": "1200M" }
         },
         "model": {
-            "rope_scaling": "yarn:4",
             "qwen38": { "max_context": 786432 },
             "qwen38flashnext": { "max_context": 589824 }
         },
@@ -94,7 +97,6 @@ const BUILT_IN: &str = r#"{
     },
     "rtxpro6000": {
         "model": {
-            "rope_scaling": "yarn:4",
             "qwen38": { "max_context": 1048576 },
             "qwen38flashnext": { "max_context": 1048576 }
         },
@@ -155,7 +157,7 @@ mod tests {
         assert_eq!(rtx5090.get(max_context, Some(ModelFamily::FlashNext)).unwrap().raw, "589824");
 
         let rope = field("model", "rope_scaling").unwrap();
-        assert_eq!(rtx5090.get(rope, None).unwrap().raw, "yarn:4", "one rope table, both families");
+        assert!(rtx5090.get(rope, None).is_none(), "unset: `auto` follows the 27B's own context");
 
         let vision = field("vision", "enabled").unwrap();
         assert_eq!(rtx5090.get(vision, None).unwrap().raw, "true");
@@ -191,6 +193,28 @@ mod tests {
         assert_eq!(flash.settings.vram.pinned_expert_bytes, 2 << 30);
     }
 
+    /// `auto` rope scaling under each profile, as a load of each model
+    /// resolves it: each model's factor is its own context over the trained
+    /// position envelope (ADR 0057), Flash-Next's too (ADR 0059).
+    #[test]
+    fn the_profiles_rope_table_follows_each_models_context() {
+        use ignis_core::compute::ModelFamily;
+
+        let table = |profile: &str, family| {
+            let args = ["--profile".to_owned(), profile.to_owned()];
+            let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(&args, |_| None).unwrap() else {
+                panic!("a config")
+            };
+            let fitted = config.for_family(family).unwrap();
+            assert!(fitted.settings().model.rope_scaling.is_auto());
+            fitted.rope_scaling
+        };
+        assert_eq!(table(DEFAULT_PROFILE, ModelFamily::Qwen38_27b).factor(), 3.0);
+        assert_eq!(table(DEFAULT_PROFILE, ModelFamily::FlashNext).factor(), 2.25, "589,824 / 262,144");
+        assert_eq!(table("rtxpro6000", ModelFamily::Qwen38_27b).factor(), 4.0);
+        assert_eq!(table("rtxpro6000", ModelFamily::FlashNext).factor(), 4.0);
+    }
+
     /// The RTX PRO 6000 Blackwell series (Workstation, Max-Q, Server Edition:
     /// 96 GB each, sm_120), measured on a Server Edition (2026-10-18).
     #[test]
@@ -200,12 +224,12 @@ mod tests {
         let profiles = built_in();
         let pro = &profiles["rtxpro6000"];
         let max_context = field("model", "max_context").unwrap();
-        // yarn:4 over the checkpoints' 262,144 trained positions: the most
-        // either model can be asked for.
+        // The 27B's whole hq-e8-2b envelope, YaRN at 4 under `auto`; so is
+        // Flash-Next's (ADR 0057, ADR 0059).
         assert_eq!(pro.get(max_context, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "1048576");
         assert_eq!(pro.get(max_context, Some(ModelFamily::FlashNext)).unwrap().raw, "1048576");
         let rope = field("model", "rope_scaling").unwrap();
-        assert_eq!(pro.get(rope, None).unwrap().raw, "yarn:4");
+        assert!(pro.get(rope, None).is_none(), "unset: `auto` makes the 27B's 1,048,576 tokens YaRN at 4");
 
         let lanes = field("spec", "decode_lanes").unwrap();
         assert_eq!(pro.get(lanes, None).unwrap().raw, "8", "every lane: on 96 GB a lane costs its state");

@@ -71,6 +71,9 @@ endif
 CARGO_TARGET := --target $(TARGET_TRIPLE)
 SERVER_CARGO_FLAGS := -p ignis-server $(CARGO_TARGET) --profile $(PROFILE) $(if $(filter 1,$(CUDA)),--features cuda)
 WORKSPACE_FEATURES := $(if $(filter 1,$(CUDA)),--features ignis-server/cuda)
+# `make check` also compiles the GPU test no other target builds: the one behind
+# ignis-core's test-only `logits-capture` feature (docs/agents/testing.md, Done means).
+CHECK_FEATURES := $(WORKSPACE_FEATURES) $(if $(filter 1,$(CUDA)),--features ignis-core/logits-capture)
 
 BIN_DIR := $(CARGO_TARGET_DIR)/$(TARGET_TRIPLE)/$(PROFILE_DIR)
 SERVER_BIN := $(BIN_DIR)/ignis-server$(EXE)
@@ -203,7 +206,7 @@ config: ## Print the resolved knobs and paths
 	@echo "METRICS         $(METRICS)  $(if $(filter 0,$(METRICS)),(off),(Prometheus: $(METRICS_URL)/metrics; Playground: /ui/metrics$(if $(or $(API_KEY),$(EXPOSE)), behind the API key)))"
 	@echo "ARTIFACT        $(ARTIFACT)"
 	@echo "UNCENSORED      $(if $(filter 1,$(UNCENSORED)),1  (default ARTIFACT is the huihui-abliterated image, served as qwen3.8-27b-abliterated),off)"
-	@echo "engine (CUDA=1) context=$(or $(MAX_CONTEXT),default) kv=$(or $(KV_FORMAT),default) chunk=$(or $(PREFILL_CHUNK),default) pool=$(KV_POOL_PLAN) host_pool=$(or $(KV_HOST_POOL_BYTES),default) (flash-next $(or $(FN_KV_HOST_POOL_BYTES),default)) timeout=$(or $(REQUEST_TIMEOUT),default) stream_timeout=$(or $(STREAM_TIMEOUT),default) spec=$(or $(SPEC),$(if $(filter flash-next,$(MODEL_FAMILY)),off (SPEC=mtp turns the MTP head on),server default (the rtx5090 profile: dflash2)))$(if $(filter-out off,$(SPEC)),/$(DRAFT_TOKENS)$(if $(DRAFT_HEAD),/$(DRAFT_HEAD)))$(if $(DRAFT_ROWS), rows=$(DRAFT_ROWS)) rope=$(or $(ROPE_SCALING),none)"
+	@echo "engine (CUDA=1) context=$(or $(MAX_CONTEXT),default) kv=$(or $(KV_FORMAT),default) chunk=$(or $(PREFILL_CHUNK),default) pool=$(KV_POOL_PLAN) host_pool=$(or $(KV_HOST_POOL_BYTES),default) (flash-next $(or $(FN_KV_HOST_POOL_BYTES),default)) timeout=$(or $(REQUEST_TIMEOUT),default) stream_timeout=$(or $(STREAM_TIMEOUT),default) spec=$(or $(SPEC),$(if $(filter flash-next,$(MODEL_FAMILY)),off (SPEC=mtp turns the MTP head on),server default (the rtx5090 profile: dflash2)))$(if $(filter-out off,$(SPEC)),/$(DRAFT_TOKENS)$(if $(DRAFT_HEAD),/$(DRAFT_HEAD)))$(if $(DRAFT_ROWS), rows=$(DRAFT_ROWS)) rope=$(or $(ROPE_SCALING),auto)"
 	@echo "PLAN            $(if $(filter image,$(MODEL_FAMILY)),(image model: no context, lanes, prefill chunk, speculation, KV pool or vision; the server plans its own VRAM),$(if $(filter flash-next,$(MODEL_FAMILY)),lanes=$(LANES) context/lane=$(or $(MAX_CONTEXT),default) kv=$(or $(KV_FORMAT),default) prefill_chunk=$(or $(PREFILL_CHUNK),default) decode_share=$(if $(DECODE_SHARE),$(DECODE_SHARE)%,25% (default)) retained_host=$(or $(RETAINED_HOST),8 (Flash-Next default)) kv_ram_arena=$(or $(FN_KV_HOST_POOL_BYTES),default) host_margin=$(or $(HOST_MARGIN_BYTES),4G (default)) kv_pool=$(KV_POOL_PLAN) expert_cache_floor=$(if $(filter 1,$(ALLOW_EXPERT_CACHE_BELOW_FLOOR)),12G (below it allowed with a warning),12G (refused below)) ngram_hot=$(or $(NGRAM_HOT_BYTES),1G (default; auto = what the host plan leaves)),(Flash-Next only: the plan is the server's for the 27B)))"
 	@echo "KV-DISK (CUDA=1) $(if $(filter 0,$(KV_DISK_BUDGET)),off$(if $(KV_DISK_BYTES),, (the 27B's default; KV_DISK_BYTES=4G turns it on)),budget=$(KV_DISK_BUDGET) (cut at start to the volume's free space less 10 GiB) dir=$(KV_DISK_LOCATION)/ignis-kv-disk/<pid>-<nonce>)"
 	@echo "VISION (CUDA=1) $(if $(filter 1,$(VISION)),on  max_tokens=$(or $(VISION_MAX_TOKENS),(server default)),off  (image parts are refused with vision_disabled))"
@@ -480,7 +483,7 @@ typecheck-web: $(WEB_DEPS) ## Playground TypeScript check
 
 .PHONY: check
 check: ## cargo check, every target of every crate
-	$(CARGO) check --workspace --all-targets $(CARGO_TARGET) $(WORKSPACE_FEATURES)
+	$(CARGO) check --workspace --all-targets $(CARGO_TARGET) $(CHECK_FEATURES)
 
 .PHONY: clippy
 clippy: ## cargo clippy, every target of every crate

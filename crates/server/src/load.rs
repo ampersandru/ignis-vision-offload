@@ -532,6 +532,10 @@ fn cuda_scheduler_for(
             || "off".to_owned(),
             |v| format!("max_tokens={} item_max_tokens={}", v.max_tokens(), v.item_max_tokens())
         ),
+        // ADR 0057: the table the load runs, beside the setting it came
+        // from (`auto`, `none` or `yarn:F...`, as configured).
+        rope_scaling = %shape.rope_scaling,
+        rope_scaling_setting = %config.settings().model.rope_scaling,
         "model loaded on the GPU"
     );
     Ok((Box::new(scheduler), reserved))

@@ -410,12 +410,8 @@ impl StepLeaf for FlashNextLeaf {
             &self.plan,
             &self.geometry,
             self.weights.artifact(),
-            o.prefill_chunk_tokens,
-            o.max_context_tokens,
-            o.kv_format,
-            o.decode_lanes,
+            o.load_shape(),
             &self.residency,
-            o.speculation,
             self.mtp.as_ref(),
         )
         .map_err(|e| leaf_error("model load", e))?;

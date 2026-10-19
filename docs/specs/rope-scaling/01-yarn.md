@@ -84,5 +84,40 @@ beta_fast 32, beta_slow 1) that is `low = 14`, `high = 22`.
 - ignis does not validate `--max-context` against either attention envelope
   (524,288 linear / 1,048,576 hq). That check is the reference's
   `layouts_impl.h` and does not exist here; it is worth its own ticket.
-- No automatic factor derived from `--max-context`. The operator names it,
-  as in the reference — YaRN degrades short contexts, so it stays opt-in.
+- ~~No automatic factor derived from `--max-context`~~ — done, see the
+  as-built note below.
+
+## As built: `auto` (the default)
+
+Owner's call (2026-10-18, "lo yarn:X sia calcolato automaticamente in base al
+contesto"): `model.rope_scaling` (`--model-rope-scaling`) takes `auto`, and
+`auto` is the default instead of `none`. The rule, `RopeSetting::resolve` in
+`crates/core/src/rope_scaling.rs`, per model, from its effective
+`model.max_context`: within the trained position envelope
+(`TRAINED_POSITION_ENVELOPE`, 262,144) the table is `RopeScaling::NONE`,
+byte for byte today's default (not YaRN at 1, which the rope op routes
+differently); above it, YaRN at the exact ratio `max_context / 262,144` with
+the default temperature and ramp (524,288 is 2, 786,432 is 3, 1,048,576 is
+4); past 64x the envelope (16,777,216 tokens) `auto` has no table, and the
+start is refused naming the context. Any explicit value (flag, env, file,
+`PATCH /v1/config`) overrides it, and `auto` can be spelled, or the key
+removed with a `PATCH` `null`, to go back.
+
+**Amended 2026-10-19 (ADR 0059):** Flash-Next runs the same resolved table
+as the 27B, under `auto` and under any explicit value, and so is its KV-disk
+identity (spec [`02`](02-flash-next.md) is the kernel side). Written when
+Flash-Next had no YaRN, this spec said its table was always `NONE` and named
+an explicit YaRN value for it as ignored in a WARN; neither holds any more,
+and a context `auto` cannot scale (past 16,777,216 tokens) is refused for it
+as for the 27B.
+
+The configured value (`GET /v1/config`, `config print`) stays as it was set;
+`Config` and `EngineShape` carry the resolved table, and the KV-disk
+identity, retained pages and the model switch's reload check key on it:
+`needs_reload` compares the table for this field, not its spelling, so
+`auto` and `yarn:4` at 1,048,576 are the same load and a patch between them
+applies live. The load's `ignis.model.loaded` line logs `rope_scaling` (the
+table run) beside `rope_scaling_setting` (`auto`, `none` or `yarn:F...`).
+The built-in profiles no longer name `yarn:4`: the `rtx5090` 27B now runs
+YaRN at 3 and Flash-Next at 2.25, the `rtxpro6000` runs both at 4
+([ADR 0057](../../adr/0057-rope-scaling-is-auto-by-default.md)).

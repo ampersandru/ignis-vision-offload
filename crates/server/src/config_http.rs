@@ -634,7 +634,12 @@ pub fn needs_reload(running: &Config, next: &Config) -> bool {
     let plans_host = running.basis.family().is_none_or(|family| family == ModelFamily::FlashNext);
     all_fields()
         .filter(|meta| meta.reload_required && (plans_host || meta.name != "host_margin_bytes"))
-        .any(|meta| value(&before, meta) != value(&after, meta))
+        .any(|meta| match (meta.group, meta.name) {
+            // ADR 0057: the table the load runs, not the setting's spelling:
+            // `auto` and the factor it resolves to are the same load.
+            ("model", "rope_scaling") => running.rope_scaling != next.rope_scaling,
+            _ => value(&before, meta) != value(&after, meta),
+        })
 }
 
 /// The checks a start makes on the thinking defaults, made again on the
@@ -944,6 +949,81 @@ mod tests {
         assert!(reloads(&running, json!({ "server": { "request_timeout": 60 }, "reuse": { "qwen38flashnext": { "prompt": false }, "prompt": false } })));
         let own = running.with_patch(&read_patch(&json!({ "reuse": { "qwen38": { "kv_host_pool_bytes": "4G" } } })).unwrap()).unwrap();
         assert!(!reloads(&own, json!({ "reuse": { "kv_host_pool_bytes": "1G" } })), "a group value the running family overrides");
+    }
+
+    /// ADR 0057: the reload check keys on the table the load runs, not on
+    /// the setting's spelling: `auto` and the factor it resolves to at the
+    /// load's context are the same load, for either model. A change of the
+    /// table still reloads.
+    #[test]
+    fn a_rope_scaling_change_reloads_only_when_the_table_the_load_runs_changes() {
+        let reloads = |running: &Config, body: Value| needs_reload(running, &running.with_patch(&read_patch(&body).unwrap()).unwrap());
+        let rope = |value: &str| json!({ "model": { "rope_scaling": value } });
+        let at = |context: &str, family| {
+            config(&["--profile", "none", "--model-max-context", context, "--model-kv-format", "hq-e8-2b"]).for_family(family).unwrap()
+        };
+        let million = at("1048576", ModelFamily::Qwen38_27b);
+        assert!(!reloads(&million, rope("yarn:4")), "auto is yarn:4 at 1,048,576");
+        assert!(reloads(&million, rope("yarn:2")));
+        assert!(reloads(&million, rope("none")));
+        let pinned = million.with_patch(&read_patch(&rope("yarn:4")).unwrap()).unwrap();
+        assert!(!reloads(&pinned, rope("auto")), "and back");
+        let three = at("786432", ModelFamily::Qwen38_27b);
+        assert!(!reloads(&three, rope("yarn:3")), "auto is yarn:3 at 786,432");
+        assert!(reloads(&three, rope("yarn:4")));
+        // Under `auto` a context change moves the table, and reloads.
+        assert!(reloads(&three, json!({ "model": { "max_context": 1048576 } })));
+        let flash_next = at("1048576", ModelFamily::FlashNext);
+        assert!(!reloads(&flash_next, rope("yarn:4")), "auto is yarn:4 at 1,048,576 for Flash-Next too");
+        assert!(reloads(&flash_next, rope("yarn:2")));
+        assert!(reloads(&flash_next, rope("none")));
+    }
+
+    /// ADR 0057, ADR 0059: patching Flash-Next's own context while it runs
+    /// re-resolves its `auto` table against the new context, and reloads; the
+    /// 27B's context, patched meanwhile, moves nothing Flash-Next runs.
+    #[test]
+    fn a_patch_of_flash_nexts_context_re_resolves_its_rope_table_and_reloads() {
+        let running = config(&["--profile", "none", "--qwen38flashnext-model-max-context", "589824"])
+            .for_family(ModelFamily::FlashNext)
+            .unwrap();
+        assert_eq!(running.rope_scaling.factor(), 2.25);
+        let patch = |body: Value| running.with_patch(&read_patch(&body).unwrap()).unwrap();
+        let wider = patch(json!({ "model": { "qwen38flashnext": { "max_context": 1048576 } } }));
+        assert_eq!((wider.max_context, wider.rope_scaling.factor()), (1_048_576, 4.0));
+        assert!(needs_reload(&running, &wider));
+        let trained = patch(json!({ "model": { "qwen38flashnext": { "max_context": 262144 } } }));
+        assert_eq!(trained.rope_scaling, ignis_core::RopeScaling::NONE, "inside the trained position envelope");
+        assert!(needs_reload(&running, &trained));
+        let other = patch(json!({ "model": { "qwen38": { "max_context": 1048576 } } }));
+        assert_eq!(other.rope_scaling, running.rope_scaling);
+        assert!(!needs_reload(&running, &other), "the 27B's context is not Flash-Next's");
+    }
+
+    /// Spec playground/05: a `null` takes the patched key away, so
+    /// `model.rope_scaling` is the default `auto` again and the table the
+    /// load runs follows the context once more.
+    #[test]
+    fn a_null_rope_scaling_returns_to_auto_and_the_table_follows_the_context() {
+        let running = config(&["--profile", "none", "--model-max-context", "1048576", "--model-kv-format", "hq-e8-2b"])
+            .for_family(ModelFamily::Qwen38_27b)
+            .unwrap();
+        let pinned = running.with_patch(&read_patch(&json!({ "model": { "rope_scaling": "yarn:2" } })).unwrap()).unwrap();
+        assert_eq!(pinned.settings().model.rope_scaling.to_string(), "yarn:2");
+        assert_eq!(pinned.rope_scaling.factor(), 2.0);
+        let removal = read_patch(&json!({ "model": { "rope_scaling": null } })).unwrap();
+        let back = pinned.with_patch(&removal).unwrap();
+        assert!(back.settings().model.rope_scaling.is_auto());
+        assert_eq!(back.rope_scaling.factor(), 4.0, "auto at 1,048,576");
+        assert!(needs_reload(&pinned, &back), "the table changed: 2 -> 4");
+
+        // From a config file too: the key leaves the file and `auto` runs.
+        let files = MemFiles::with(&[("c.yaml", "model:\n  rope_scaling: none\n  max_context: 786432\n")]);
+        let on_disk = on_file(&files, &["--profile", "none", "--config", "c.yaml"], &[]).for_family(ModelFamily::Qwen38_27b).unwrap();
+        assert_eq!(on_disk.rope_scaling, ignis_core::RopeScaling::NONE);
+        let back = on_disk.with_patch(&removal).unwrap();
+        assert!(back.settings().model.rope_scaling.is_auto());
+        assert_eq!(back.rope_scaling.factor(), 3.0, "auto at 786,432");
     }
 
     /// The host margin is read by Flash-Next's host plan alone: patching it

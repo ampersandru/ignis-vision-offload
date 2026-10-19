@@ -186,9 +186,15 @@ When output names a domain concept, use the term as defined here.
   load and frozen for its life. Either *none* — the linear table, correct
   through the **trained position envelope** — or **YaRN** at a factor, which
   rescales that envelope: the high-frequency pairs keep extrapolating, the low
-  ones interpolate at `1/factor`, a ramp blends the band between, and a q-side
-  attention factor rides along. Text only: the DFlash2 drafter keeps its own
-  unscaled table at window-local positions, and vision its 2-D one.
+  ones interpolate at `1/factor`, a ramp blends the band between, and an
+  attention factor `m` rides along. Where it rides differs by model: on
+  Flash-Next `m` multiplies cos and sin on q and k alike (ADR 0059); on the
+  27B the vendored op puts `m²` on q alone and keeps cached K factor-free.
+  The setting has a third value, *auto*, the default (ADR 0057): resolved at
+  load from the model's context, *none* within the envelope and YaRN at
+  `max_context / 262,144` past it. Both models run it. Text only:
+  the DFlash2 drafter keeps its own unscaled table at window-local positions,
+  and vision its 2-D one.
 - **Hot reload** — in-place model reload without restarting the server; the model
   lifecycle is decoupled from the server lifecycle.
 - **Performance-first** — the organizing principle: correctness (a self-check

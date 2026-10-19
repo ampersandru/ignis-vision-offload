@@ -672,7 +672,8 @@ half an hour; never lower it to "make a run finish".
 
 1. every new or changed behavior has a test that covers it
 2. `cargo test` passes workspace-wide (machine-local skips allowed)
-3. `cargo check --workspace --features cuda --tests` is clean. The
+3. `cargo check --workspace --features cuda,logits-capture --tests` is
+   clean (`make check CUDA=1`). The
    cuda-gated test targets (`#![cfg(feature = "cuda")]`) are the ones
    `cargo test` never compiles, so a signature change can leave them
    uncompilable and nothing says so until someone runs the GPU profile
@@ -682,6 +683,9 @@ half an hour; never lower it to "make a run finish".
    profile outright (found and fixed in #119). This check costs ~30s,
    needs no GPU, and reports *every* broken site rather than stopping at
    the first — which is how the second of those two was found at all.
+   `logits-capture` adds the one GPU test the profile never builds
+   (`flash_next_rope_logits_gpu.rs`, bit-exact on the card that recorded
+   its capture, ADR 0059), which nothing else would compile.
 4. kernel changes: `kernel/build.ps1` clean + the leaf's op tests green +
    the GPU profile green on a free 5090 (`scripts/gpu-profile.ps1` —
    preflight passed, `IGNIS_GPU_PROFILE=1` for the run — never a skip)
