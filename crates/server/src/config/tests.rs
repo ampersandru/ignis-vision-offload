@@ -1686,6 +1686,26 @@ fn flash_next_runs_the_table_rope_scaling_resolves_to() {
     assert_eq!(qwen(&["--model-rope-scaling", "yarn:2"]).factor(), 2.0);
 }
 
+/// ADR 0057, ADR 0059: a switch resolves `auto` for the family it switches
+/// to, against that family's own context, and the shape it loads carries
+/// that table -- the 27B at 786,432 runs 3, Flash-Next at 589,824 runs
+/// 2.25, and back again. The `rtx5090` profile's two contexts are this case.
+#[test]
+fn a_switch_resolves_each_familys_rope_table_against_its_own_context() {
+    use crate::runtime::EngineShape;
+    let scoped = ["--profile", "none", "--qwen38-model-max-context", "786432", "--qwen38flashnext-model-max-context", "589824", "--model-kv-format", "hq-e8-2b"];
+    for started in [config(&scoped), config(&[])] {
+        let qwen = started.for_family(ModelFamily::Qwen38_27b).unwrap();
+        assert_eq!((qwen.max_context, qwen.rope_scaling.factor()), (786_432, 3.0));
+        let (flash_next, _) = fit_to_family(&qwen, ModelFamily::FlashNext).unwrap();
+        assert_eq!((flash_next.max_context, flash_next.rope_scaling.factor()), (589_824, 2.25));
+        assert_eq!(EngineShape::from(&flash_next).rope_scaling, flash_next.rope_scaling);
+        let (back, _) = fit_to_family(&flash_next, ModelFamily::Qwen38_27b).unwrap();
+        assert_eq!((back.max_context, back.rope_scaling.factor()), (786_432, 3.0));
+        assert_eq!(EngineShape::from(&back).rope_scaling, back.rope_scaling);
+    }
+}
+
 // ── the loaded model's family (spec flash-next/04, GitHub #302) ──────────
 
 #[test]

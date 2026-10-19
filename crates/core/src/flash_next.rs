@@ -19,7 +19,7 @@ use ignis_artifact::{materialize, CudaDevice, Device, MaterializedArtifact, Read
 
 use crate::compute::ModelConfig;
 use crate::kv_format::KvFormat;
-use crate::model_load::{load_flash_next, plan_flash_next_reservations, IgnisModelReservations, Model};
+use crate::model_load::{load_flash_next, plan_flash_next_reservations, FlashNextLoadShape, IgnisModelReservations, Model};
 use crate::ngram::NgramContext;
 use crate::ngram_table::{NgramTable, NgramTableOptions};
 use crate::residency::device::{budget_words, DeviceResidency, ResidencyDesc};
@@ -106,6 +106,19 @@ impl EngineOptions {
             self.decode_lanes = DEFAULT_DECODE_LANES;
         }
         self
+    }
+
+    /// What the reservation plan and the leaf's load are both asked under
+    /// (ADR 0059): one value of each, read off these options.
+    pub fn load_shape(&self) -> FlashNextLoadShape {
+        FlashNextLoadShape {
+            prefill_chunk_tokens: self.prefill_chunk_tokens,
+            max_context_tokens: self.max_context_tokens,
+            kv_format: self.kv_format,
+            decode_lanes: self.decode_lanes,
+            speculation: self.speculation,
+            rope_scaling: self.rope_scaling,
+        }
     }
 
     /// The rows one decode step carries at most: the lanes, or a verify
@@ -516,17 +529,8 @@ impl FlashNextEngine {
             )?),
             None => None,
         };
-        let planned = plan_flash_next_reservations(
-            &plan,
-            &geometry,
-            options.prefill_chunk_tokens,
-            options.max_context_tokens,
-            options.kv_format,
-            options.decode_lanes,
-            options.speculation,
-            options.rope_scaling,
-            mtp.as_ref().map(|head| head.plan()),
-        )?;
+        let planned =
+            plan_flash_next_reservations(&plan, &geometry, options.load_shape(), mtp.as_ref().map(|head| head.plan()))?;
 
         let weights = DeviceWeights::place(&reader, &plan)?;
         let residency = build_residency(&path, &plan, &options)?;
@@ -534,19 +538,7 @@ impl FlashNextEngine {
         let table = NgramTable::from_cached_artifact(
             &path, reader, &plan, ngram, options.ngram, &options.ngram_cache,
         )?;
-        let model = load_flash_next(
-            &plan,
-            &geometry,
-            weights.artifact(),
-            options.prefill_chunk_tokens,
-            options.max_context_tokens,
-            options.kv_format,
-            options.decode_lanes,
-            &residency,
-            options.speculation,
-            options.rope_scaling,
-            mtp.as_ref(),
-        )?;
+        let model = load_flash_next(&plan, &geometry, weights.artifact(), options.load_shape(), &residency, mtp.as_ref())?;
         // The pool is planned against what is free before it is created, so a
         // context the card cannot hold is a refusal naming it, not an
         // allocation failure.

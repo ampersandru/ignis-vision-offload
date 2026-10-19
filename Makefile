@@ -71,6 +71,9 @@ endif
 CARGO_TARGET := --target $(TARGET_TRIPLE)
 SERVER_CARGO_FLAGS := -p ignis-server $(CARGO_TARGET) --profile $(PROFILE) $(if $(filter 1,$(CUDA)),--features cuda)
 WORKSPACE_FEATURES := $(if $(filter 1,$(CUDA)),--features ignis-server/cuda)
+# `make check` also compiles the GPU test no other target builds: the one behind
+# ignis-core's test-only `logits-capture` feature (docs/agents/testing.md, Done means).
+CHECK_FEATURES := $(WORKSPACE_FEATURES) $(if $(filter 1,$(CUDA)),--features ignis-core/logits-capture)
 
 BIN_DIR := $(CARGO_TARGET_DIR)/$(TARGET_TRIPLE)/$(PROFILE_DIR)
 SERVER_BIN := $(BIN_DIR)/ignis-server$(EXE)
@@ -480,7 +483,7 @@ typecheck-web: $(WEB_DEPS) ## Playground TypeScript check
 
 .PHONY: check
 check: ## cargo check, every target of every crate
-	$(CARGO) check --workspace --all-targets $(CARGO_TARGET) $(WORKSPACE_FEATURES)
+	$(CARGO) check --workspace --all-targets $(CARGO_TARGET) $(CHECK_FEATURES)
 
 .PHONY: clippy
 clippy: ## cargo clippy, every target of every crate

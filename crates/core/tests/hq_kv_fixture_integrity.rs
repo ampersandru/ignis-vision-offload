@@ -64,3 +64,28 @@ fn flash_next_kv_fixture_bin_matches_its_provenance_sha256() {
          re-run flash_next_kv_fixture_capture_gpu.rs to regenerate both files together"
     );
 }
+
+/// The same check for Flash-Next's `none` logits capture (ADR 0059, spec
+/// rope-scaling/02 AC 9), recorded by `flash_next_rope_logits_gpu.rs`: a text
+/// file, so also the guard against a checkout that rewrote its line endings.
+#[test]
+fn flash_next_none_logits_capture_matches_its_provenance_sha256() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/flash_next");
+    let txt_path = dir.join("none_logits_2560.txt");
+    let provenance_path = dir.join("none_logits_2560.provenance.json");
+    let txt_bytes = fs::read(&txt_path).unwrap_or_else(|e| panic!("read {}: {e}", txt_path.display()));
+    let provenance_text = fs::read_to_string(&provenance_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", provenance_path.display()));
+    let provenance: serde_json::Value = serde_json::from_str(&provenance_text)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", provenance_path.display()));
+    let recorded_sha256 = provenance["txt_sha256"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{} has no string \"txt_sha256\" field", provenance_path.display()));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&txt_bytes)),
+        recorded_sha256,
+        "crates/core/tests/fixtures/flash_next/none_logits_2560.txt does not match the SHA-256 in its \
+         provenance -- a CRLF checkout, or an edit; re-record both files together with \
+         flash_next_rope_logits_gpu.rs"
+    );
+}

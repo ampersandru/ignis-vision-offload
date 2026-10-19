@@ -797,6 +797,21 @@ pub fn mtp_bound_tensors(
     bound_tensors(&flash_next::mtp_entries(geometry), &plan.handles, placement)
 }
 
+/// What a Flash-Next plan and its load are both asked under: one value of
+/// each, so the two cannot disagree (ADR 0059). Built from the engine's
+/// options ([`crate::flash_next::EngineOptions::load_shape`]).
+#[derive(Debug, Clone, Copy)]
+pub struct FlashNextLoadShape {
+    pub prefill_chunk_tokens: u32,
+    pub max_context_tokens: u32,
+    pub kv_format: KvFormat,
+    pub decode_lanes: u32,
+    /// Speculative decoding (spec flash-next/07); `None`: today's rounds only.
+    pub speculation: Option<FlashNextSpeculation>,
+    /// The text rotary table (ADR 0059).
+    pub rope_scaling: RopeScaling,
+}
+
 /// A Flash-Next load's options: its decode lanes, its borrowed residency
 /// (null when only planning), its speculation (spec flash-next/07) and its
 /// rotary table (ADR 0059); nothing else of the 27B's.
@@ -829,25 +844,20 @@ fn flash_next_options(
 
 /// Load a Flash-Next artifact whose non-expert tensors `artifact` holds on
 /// the device (`fn_plan` and `geometry` as
-/// [`ignis_artifact::flash_next::bind`] took them), with `decode_lanes`
-/// decode lanes, the expert residency it borrows, its speculation (spec
-/// flash-next/07; `None`: today's rounds only) and its rotary table (ADR
-/// 0059). The returned model must be dropped before `residency` and
-/// `artifact` (GitHub #302).
-#[allow(clippy::too_many_arguments)]
+/// [`ignis_artifact::flash_next::bind`] took them), under `shape` (its
+/// decode lanes, its speculation and its rotary table among them), with the
+/// expert residency it borrows. The returned model must be dropped before
+/// `residency` and `artifact` (GitHub #302).
 pub fn load_flash_next(
     fn_plan: &FlashNextPlan,
     geometry: &FlashNextGeometry,
     artifact: &MaterializedArtifact,
-    prefill_chunk_tokens: u32,
-    max_context_tokens: u32,
-    kv_format: KvFormat,
-    decode_lanes: u32,
+    shape: FlashNextLoadShape,
     residency: &crate::residency::device::DeviceResidency,
-    speculation: Option<FlashNextSpeculation>,
-    rope_scaling: RopeScaling,
     mtp: Option<&crate::flash_next_mtp::MtpHead>,
 ) -> Result<Model, String> {
+    let FlashNextLoadShape { prefill_chunk_tokens, max_context_tokens, kv_format, decode_lanes, speculation, rope_scaling } =
+        shape;
     validate_prefill_config(prefill_chunk_tokens, max_context_tokens)?;
     let placement = |handle: ObjectHandle| {
         let view = artifact.device_view(handle).map_err(|e| e.to_string())?;
@@ -882,25 +892,21 @@ pub fn load_flash_next(
     Ok(Model { handle })
 }
 
-/// What a load of a Flash-Next artifact would reserve beside the weights,
-/// asked before the weights are on the device: `fn_plan` is what
-/// [`ignis_artifact::flash_next::bind`] returned for `reader` and
+/// What a load of a Flash-Next artifact under `shape` would reserve beside
+/// the weights, asked before the weights are on the device: `fn_plan` is
+/// what [`ignis_artifact::flash_next::bind`] returned for `reader` and
 /// `geometry`. The topology is the geometry's
 /// ([`ModelConfig::flash_next_from`]). The leaf binds the descriptors
 /// first and then checks the geometry its program runs, so a reduced
 /// fixture's refusal still says its descriptors bind.
-#[allow(clippy::too_many_arguments)]
 pub fn plan_flash_next_reservations(
     fn_plan: &FlashNextPlan,
     geometry: &FlashNextGeometry,
-    prefill_chunk_tokens: u32,
-    max_context_tokens: u32,
-    kv_format: KvFormat,
-    decode_lanes: u32,
-    speculation: Option<FlashNextSpeculation>,
-    rope_scaling: RopeScaling,
+    shape: FlashNextLoadShape,
     mtp: Option<&ignis_artifact::flash_next::mtp::MtpPlan>,
 ) -> Result<IgnisModelReservations, String> {
+    let FlashNextLoadShape { prefill_chunk_tokens, max_context_tokens, kv_format, decode_lanes, speculation, rope_scaling } =
+        shape;
     validate_prefill_config(prefill_chunk_tokens, max_context_tokens)?;
     let placement = |handle: ObjectHandle| {
         fn_plan
@@ -972,9 +978,16 @@ mod tests {
         let reader = Reader::open(&tree.artifact_path()).expect("open the fixture artifact");
         let fn_plan = flash_next::bind(&reader, &tree.geometry).expect("bind the fixture artifact");
         for scaling in [RopeScaling::NONE, RopeScaling::yarn(4.0).unwrap()] {
-            let err =
-                plan_flash_next_reservations(&fn_plan, &tree.geometry, 128, 1024, KvFormat::HqE8_2b, 3, None, scaling, None)
-                    .expect_err("the fixture's geometry is not one the program runs");
+            let shape = FlashNextLoadShape {
+                prefill_chunk_tokens: 128,
+                max_context_tokens: 1024,
+                kv_format: KvFormat::HqE8_2b,
+                decode_lanes: 3,
+                speculation: None,
+                rope_scaling: scaling,
+            };
+            let err = plan_flash_next_reservations(&fn_plan, &tree.geometry, shape, None)
+                .expect_err("the fixture's geometry is not one the program runs");
             assert!(err.contains("does not run this geometry (its weights bind)"), "{scaling}: {err}");
         }
     }

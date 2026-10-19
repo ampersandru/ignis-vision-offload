@@ -986,17 +986,8 @@ pub(crate) fn flash_next_load(
     // expert cache, which the plan below decides: one budget for the pool the
     // plan charges and the pool the leaf builds.
     let mut options = flash_next_engine_options(&shape, lanes, speculation, ngram_cache);
-    let reserved = ignis_core::model_load::plan_flash_next_reservations(
-        &plan,
-        &geometry,
-        shape.prefill_chunk,
-        shape.max_context,
-        shape.kv_format,
-        lanes,
-        speculation,
-        options.rope_scaling,
-        mtp_plan.as_ref(),
-    )?;
+    let reserved =
+        ignis_core::model_load::plan_flash_next_reservations(&plan, &geometry, options.load_shape(), mtp_plan.as_ref())?;
     let config = ModelConfig::flash_next_from(&geometry);
     // The sequence pool at any page count (ADR 0045): the lanes' state, the
     // retained slots, the residual window and the n-gram state do not move
@@ -1268,10 +1259,12 @@ mod tests {
     /// the one value its reservation plan is asked under, its leaf loads with
     /// and KV-disk's identity reads back off the leaf; the identity's rope
     /// bits are then the four scalars the leaf's load crosses
-    /// (`model_load::flash_next_options`, pinned in ignis-core).
+    /// (`model_load::flash_next_options`, pinned in ignis-core). The plan
+    /// and the load are both asked under the options' one load shape, the
+    /// shape's own chunk, context and KV format among it.
     #[cfg(feature = "cuda")]
     #[test]
-    fn a_flash_next_load_runs_and_labels_its_shapes_rope_table() {
+    fn flash_next_engine_options_carry_the_shapes_rope_table_to_the_kv_disk_identity() {
         use ignis_core::RopeScaling;
         for (scaling, scalars) in [
             (RopeScaling::NONE, [0.0f32, 0.1, 32.0, 1.0]),
@@ -1280,6 +1273,12 @@ mod tests {
             let shape = EngineShape { rope_scaling: scaling, ..EngineShape::default() };
             let options = flash_next_engine_options(&shape, 3, None, Default::default());
             assert_eq!(options.rope_scaling, scaling, "{scaling}");
+            let load = options.load_shape();
+            assert_eq!(
+                (load.prefill_chunk_tokens, load.max_context_tokens, load.kv_format, load.decode_lanes, load.rope_scaling),
+                (shape.prefill_chunk, shape.max_context, shape.kv_format, 3, scaling),
+                "{scaling}"
+            );
             let identity = ignis_runtime::kv_disk::DiskIdentity::of_load(
                 "qwen3.8-flash-next",
                 &ignis_core::BlobIdentity::UNSET,

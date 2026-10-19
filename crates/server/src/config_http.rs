@@ -979,6 +979,27 @@ mod tests {
         assert!(reloads(&flash_next, rope("none")));
     }
 
+    /// ADR 0057, ADR 0059: patching Flash-Next's own context while it runs
+    /// re-resolves its `auto` table against the new context, and reloads; the
+    /// 27B's context, patched meanwhile, moves nothing Flash-Next runs.
+    #[test]
+    fn a_patch_of_flash_nexts_context_re_resolves_its_rope_table_and_reloads() {
+        let running = config(&["--profile", "none", "--qwen38flashnext-model-max-context", "589824"])
+            .for_family(ModelFamily::FlashNext)
+            .unwrap();
+        assert_eq!(running.rope_scaling.factor(), 2.25);
+        let patch = |body: Value| running.with_patch(&read_patch(&body).unwrap()).unwrap();
+        let wider = patch(json!({ "model": { "qwen38flashnext": { "max_context": 1048576 } } }));
+        assert_eq!((wider.max_context, wider.rope_scaling.factor()), (1_048_576, 4.0));
+        assert!(needs_reload(&running, &wider));
+        let trained = patch(json!({ "model": { "qwen38flashnext": { "max_context": 262144 } } }));
+        assert_eq!(trained.rope_scaling, ignis_core::RopeScaling::NONE, "inside the trained position envelope");
+        assert!(needs_reload(&running, &trained));
+        let other = patch(json!({ "model": { "qwen38": { "max_context": 1048576 } } }));
+        assert_eq!(other.rope_scaling, running.rope_scaling);
+        assert!(!needs_reload(&running, &other), "the 27B's context is not Flash-Next's");
+    }
+
     /// Spec playground/05: a `null` takes the patched key away, so
     /// `model.rope_scaling` is the default `auto` again and the table the
     /// load runs follows the context once more.
