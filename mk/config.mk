@@ -212,8 +212,8 @@ VISION_MAX_TOKENS ?=
 # 262,144 -- MAX_CONTEXT=524288 gets yarn:2 without being told. `none` forces
 # the linear table; `yarn:F` rescales the envelope by F, whatever the context.
 # The full spelling is `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]`. A YaRN table
-# rescales every request's table, short ones included. The 27B's knob:
-# Flash-Next rotates at its own linear table whatever it says (ADR 0057).
+# rescales every request's table, short ones included. Both models take it
+# (ADR 0057, ADR 0059).
 ROPE_SCALING ?=
 # The KV-RAM host tier's budget (--reuse-kv-host-pool-bytes, P4-07, GitHub #125):
 # 0 disables the host tier entirely (no evict-to-RAM overflow path). The

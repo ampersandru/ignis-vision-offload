@@ -23,6 +23,10 @@ its own linear table", `kernel/src/flash_next/program.cu`) and its load
 (`flash_next_options`) passes none, so the `yarn:4` the profiles named
 before never reached it either.
 
+**Amended 2026-10-19 (ADR 0059):** this held until Flash-Next's kernel learned
+YaRN. It now takes the scaled table, and the `yarn:4` the profiles named
+before reaches it.
+
 ## Decision
 
 **`model.rope_scaling` accepts `auto`, the new default.** Resolved at load,
@@ -40,6 +44,10 @@ runs the linear table, with no YaRN. An explicit YaRN value that reaches it,
 in its own section or as a group value meant for the 27B, is named as
 ignored in a WARN at load (`ignis.model.rope_scaling_ignored`), never
 refused: a value for the 27B must not break a Flash-Next start.
+
+**Amended 2026-10-19 (ADR 0059):** superseded for Flash-Next. Its table is
+what `model.rope_scaling` resolves to, as the 27B's is, so the WARN is gone
+and a context `auto` cannot scale is refused for it too.
 
 The built-in profiles drop their `yarn:4`: the `rtx5090` now runs the 27B
 (786,432) at 3, and the `rtxpro6000` runs it (1,048,576) at 4 as before.
@@ -74,6 +82,7 @@ asked for. The 27B's 3 on the `rtx5090` profile is unmeasured against the
   setting (`rope_scaling_setting`: `auto`, `none` or `yarn:F...`).
 - Flash-Next past 262,144 tokens (589,824 on the `rtx5090`, 1,048,576 on the
   `rtxpro6000`) runs its linear table unscaled. This ADR records it and
-  changes no kernel.
+  changes no kernel. **Amended 2026-10-19 (ADR 0059):** it runs YaRN there, at
+  2.25 and 4.
 - The `make` knob `ROPE_SCALING` defaults to empty (the server's `auto`);
   `MAX_CONTEXT=524288` still gets `yarn:2`.

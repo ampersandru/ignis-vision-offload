@@ -58,8 +58,8 @@ pub struct RopeScaling {
 /// is decided per load from the context it serves ([`Self::resolve`]).
 /// `auto` is the default, so the 27B asked for 1,048,576 tokens of context
 /// runs YaRN at 4 without being told, and at the trained 262,144 the linear
-/// table it always has. (Flash-Next rotates at its own linear table whatever
-/// this says: the server's config resolves its table, ADR 0057.)
+/// table it always has. (Both models run the table the server's config
+/// resolves, ADR 0057, ADR 0059.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RopeSetting {
     #[default]

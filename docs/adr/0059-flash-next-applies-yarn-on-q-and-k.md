@@ -6,8 +6,8 @@ Accepted (2026-10-19, owner decision: "lo implementiamo assolutamente"). D1-D3 b
 the coordinator's, taken on the research's recommendations
 (`.scratch/orchestra-2026-10-18/fn-yarn/research.md`, untracked). Spec
 [`rope-scaling/02`](../specs/rope-scaling/02-flash-next.md) is the implementation.
-Supersedes, for Flash-Next only, the "Flash-Next takes no scaled table" of ADR 0057
-(branch `yarn-auto`): Flash-Next now runs the table `model.rope_scaling` resolves to.
+Supersedes, for Flash-Next only, the "Flash-Next takes no scaled table" of ADR 0057:
+Flash-Next now runs the table `model.rope_scaling` resolves to.
 
 ## Context
 

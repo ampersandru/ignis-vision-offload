@@ -103,15 +103,13 @@ start is refused naming the context. Any explicit value (flag, env, file,
 `PATCH /v1/config`) overrides it, and `auto` can be spelled, or the key
 removed with a `PATCH` `null`, to go back.
 
-Flash-Next has no YaRN. Its kernel refuses a scaled table ("rotates at its
-own linear table") and its load passes none, which was already true of the
-`yarn:4` the profiles named before. So its table is `RopeScaling::NONE`
-under `auto` and under any explicit value alike (`rope_table` in
-`crates/server/src/config.rs`), and so is its KV-disk identity: past
-262,144 tokens Flash-Next runs the linear table unscaled. An explicit YaRN
-value that reaches it, in its own section or as a group value meant for the
-27B, is named as ignored in a WARN (`ignis.model.rope_scaling_ignored`), and
-the start goes on.
+**Amended 2026-10-19 (ADR 0059):** Flash-Next runs the same resolved table
+as the 27B, under `auto` and under any explicit value, and so is its KV-disk
+identity (spec [`02`](02-flash-next.md) is the kernel side). Written when
+Flash-Next had no YaRN, this spec said its table was always `NONE` and named
+an explicit YaRN value for it as ignored in a WARN; neither holds any more,
+and a context `auto` cannot scale (past 16,777,216 tokens) is refused for it
+as for the 27B.
 
 The configured value (`GET /v1/config`, `config print`) stays as it was set;
 `Config` and `EngineShape` carry the resolved table, and the KV-disk
@@ -121,5 +119,5 @@ identity, retained pages and the model switch's reload check key on it:
 applies live. The load's `ignis.model.loaded` line logs `rope_scaling` (the
 table run) beside `rope_scaling_setting` (`auto`, `none` or `yarn:F...`).
 The built-in profiles no longer name `yarn:4`: the `rtx5090` 27B now runs
-YaRN at 3, the `rtxpro6000` 27B stays at 4, and Flash-Next runs its linear
-table under both ([ADR 0057](../../adr/0057-rope-scaling-is-auto-by-default.md)).
+YaRN at 3 and Flash-Next at 2.25, the `rtxpro6000` runs both at 4
+([ADR 0057](../../adr/0057-rope-scaling-is-auto-by-default.md)).

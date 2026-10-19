@@ -383,7 +383,7 @@ built-in defaults. Two are built in:
 - `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
   Server Edition, 96 GB each), measured on a Server Edition under Linux
   ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). Both
-  models get 1,048,576 tokens of context (the 27B with YaRN at 4, which `auto` rope scaling picks for it; Flash-Next at its own linear table). Flash-Next gets 8 decode
+  models get 1,048,576 tokens of context (both with YaRN at 4, which `auto` rope scaling picks for them). Flash-Next gets 8 decode
   lanes, MTP speculation with 3 draft tokens
   ([below](#flash-next-speculation-mtp)) and `--ngram-hot-bytes auto`: the
   whole n-gram table in RAM when the host plan leaves room for it

@@ -1657,30 +1657,29 @@ fn a_bad_rope_scaling_is_a_startup_error_naming_the_flag() {
 }
 
 /// ADR 0057: past 64x the trained position envelope `auto` has no table, and
-/// the start says so rather than run the linear one. Only a model that takes
-/// a scaled table can reach it: Flash-Next's own context is not refused.
+/// the start says so rather than run the linear one, for either model.
 #[test]
 fn auto_past_the_widest_yarn_factor_is_a_startup_error_naming_the_context() {
     let refusal = refused(&["--profile", "none", "--model-max-context", "16777217"]);
     assert!(refusal.contains("--model-max-context 16777217") && refusal.contains("at most 16777216 tokens"), "{refusal}");
     assert_eq!(config(&["--profile", "none", "--model-max-context", "16777216"]).rope_scaling.factor(), 64.0);
-    let flash_next = config(&["--profile", "none", "--qwen38flashnext-model-max-context", "16777217"]);
-    assert_eq!(flash_next.for_family(ModelFamily::FlashNext).unwrap().rope_scaling, RopeScaling::NONE);
+    let flash_next = refused(&["--profile", "none", "--qwen38flashnext-model-max-context", "16777217"]);
+    assert!(flash_next.contains("--qwen38flashnext-model-max-context 16777217") && flash_next.contains("at most 16777216 tokens"), "{flash_next}");
 }
 
-/// ADR 0057: Flash-Next rotates at its own linear table -- its kernel
-/// refuses a scaled one -- so its load's table, and the KV-disk identity
-/// read from it, is `none` under `auto` and under an explicit value alike,
-/// its own or the group's. The 27B under the same values runs them.
+/// ADR 0057, ADR 0059: Flash-Next runs the table its setting resolves to,
+/// as the 27B does -- `auto` from its context, an explicit value as given,
+/// its own or the group's -- and the shape the plan and the KV-disk identity
+/// read carries that table.
 #[test]
-fn flash_next_runs_its_own_linear_table_whatever_rope_scaling_says() {
+fn flash_next_runs_the_table_rope_scaling_resolves_to() {
     use crate::runtime::EngineShape;
     let base = ["--profile", "none", "--model-max-context", "1048576", "--model-kv-format", "hq-e8-2b"];
-    for extra in [&[][..], &["--model-rope-scaling", "yarn:4"], &["--qwen38flashnext-model-rope-scaling", "yarn:2"]] {
+    for (extra, factor) in [(&[][..], 4.0), (&["--model-rope-scaling", "yarn:3"], 3.0), (&["--qwen38flashnext-model-rope-scaling", "yarn:2"], 2.0), (&["--model-rope-scaling", "none"], 0.0)] {
         let flags = [&base[..], extra].concat();
         let flash_next = config(&flags).for_family(ModelFamily::FlashNext).unwrap();
-        assert_eq!(flash_next.rope_scaling, RopeScaling::NONE, "{extra:?}");
-        assert_eq!(EngineShape::from(&flash_next).rope_scaling, RopeScaling::NONE, "{extra:?}");
+        assert_eq!(flash_next.rope_scaling.factor(), factor, "{extra:?}");
+        assert_eq!(EngineShape::from(&flash_next).rope_scaling, flash_next.rope_scaling, "{extra:?}");
     }
     let qwen = |extra: &[&str]| config(&[&base[..], extra].concat()).for_family(ModelFamily::Qwen38_27b).unwrap().rope_scaling;
     assert_eq!(qwen(&[]).factor(), 4.0);

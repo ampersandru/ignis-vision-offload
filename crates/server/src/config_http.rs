@@ -953,8 +953,8 @@ mod tests {
 
     /// ADR 0057: the reload check keys on the table the load runs, not on
     /// the setting's spelling: `auto` and the factor it resolves to at the
-    /// load's context are the same load, and Flash-Next runs its own linear
-    /// table whatever the setting. A change of the table still reloads.
+    /// load's context are the same load, for either model. A change of the
+    /// table still reloads.
     #[test]
     fn a_rope_scaling_change_reloads_only_when_the_table_the_load_runs_changes() {
         let reloads = |running: &Config, body: Value| needs_reload(running, &running.with_patch(&read_patch(&body).unwrap()).unwrap());
@@ -974,9 +974,9 @@ mod tests {
         // Under `auto` a context change moves the table, and reloads.
         assert!(reloads(&three, json!({ "model": { "max_context": 1048576 } })));
         let flash_next = at("1048576", ModelFamily::FlashNext);
-        for value in ["yarn:4", "yarn:2", "none"] {
-            assert!(!reloads(&flash_next, rope(value)), "Flash-Next runs its linear table under {value}");
-        }
+        assert!(!reloads(&flash_next, rope("yarn:4")), "auto is yarn:4 at 1,048,576 for Flash-Next too");
+        assert!(reloads(&flash_next, rope("yarn:2")));
+        assert!(reloads(&flash_next, rope("none")));
     }
 
     /// Spec playground/05: a `null` takes the patched key away, so

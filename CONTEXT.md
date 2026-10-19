@@ -178,8 +178,8 @@ When output names a domain concept, use the term as defined here.
   ones interpolate at `1/factor`, a ramp blends the band between, and a q-side
   attention factor rides along. The setting has a third value, *auto*, the
   default (ADR 0057): resolved at load from the model's context, *none* within
-  the envelope and YaRN at `max_context / 262,144` past it. Flash-Next has no
-  YaRN: it rotates at its own linear table whatever the setting. Text only:
+  the envelope and YaRN at `max_context / 262,144` past it. Both models run it
+  (ADR 0059). Text only:
   the DFlash2 drafter keeps its own unscaled table at window-local positions,
   and vision its 2-D one.
 - **Hot reload** — in-place model reload without restarting the server; the model
