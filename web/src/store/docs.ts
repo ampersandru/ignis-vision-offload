@@ -29,6 +29,19 @@ export function restoreOrder<T extends Ordered>(stored: T[], firstId: number): {
 }
 
 /**
+ * What changed between two looks at a list: the ids of the sessions that are
+ * new or another object — every change to a session makes a new one — and the
+ * sessions no longer there.
+ */
+export function listChanges<T extends { id: number }>(before: ReadonlyMap<number, T>, after: T[]): { changed: number[]; removed: T[] } {
+  const ids = new Set(after.map((item) => item.id));
+  return {
+    changed: after.filter((item) => before.get(item.id) !== item).map((item) => item.id),
+    removed: [...before.values()].filter((item) => !ids.has(item.id)),
+  };
+}
+
+/**
  * The list a page shows once its stored sessions are read: what was done
  * before they came — any session worth keeping — on top, the stored ones
  * below. The session open stays open when it holds something; otherwise the

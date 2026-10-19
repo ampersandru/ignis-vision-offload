@@ -8,7 +8,7 @@ import type { NextModel } from "../conversation/nextModel.ts";
 import type { PromptImage } from "../conversation/images.ts";
 import { computeFigures } from "../metrics/figures.ts";
 import { mergeLoaded } from "../store/docs.ts";
-import { type ImageId, type ImageStore, unreferenced } from "../store/imageStore.ts";
+import type { ImageId, ImageStore } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { keepPlain } from "../store/pictures.ts";
 import { useStoredSessions } from "../store/useStoredSessions.ts";
@@ -30,7 +30,7 @@ import {
   type TurnSwitch,
   updateMessage,
 } from "../sessions/sessions.ts";
-import { CHAT_SESSIONS, keepPictures, picturesOf, restoreChats, toStored, withPictures, worthKeeping } from "../sessions/stored.ts";
+import { CHAT_SESSIONS, freedBy, keepPictures, picturesOf, restoreChats, toStored, withPictures, worthKeeping } from "../sessions/stored.ts";
 import type { PlaygroundSettings } from "../settings/defaults.ts";
 import { type AgentRun, parseAgentCall, runAgents, toolResult } from "../tools/agents/agents.ts";
 import { askToolResult, parseAskCall } from "../tools/ask/ask.ts";
@@ -88,7 +88,7 @@ export function useConversation({
   tools,
   parallel,
   store = pageStore(),
-  elsewhere,
+  live,
 }: {
   model: ModelState;
   /** The model the next turn goes to, and whether it switches there first (the composer's model picker). */
@@ -100,8 +100,11 @@ export function useConversation({
   /** Sessions other than the one streaming may start their own turn. */
   parallel: boolean;
   store?: ImageStore;
-  /** The store's pictures something else names (the Image view's sessions): deleting a chat session keeps them. */
-  elsewhere?: () => Iterable<ImageId>;
+  /**
+   * The store's pictures the Image view's sessions name now, or null while it has not read them: deleting a chat
+   * session keeps them, and while null deletes no picture.
+   */
+  live?: () => Iterable<ImageId> | null;
 }) {
   // Session and message ids. The counter lives in a ref, not in a module
   // variable: a hot reload keeps component state but re-runs the module, and
@@ -121,7 +124,7 @@ export function useConversation({
   const setSoon = (key: string, update: (l: SessionList) => SessionList) => frames.current?.set(key, update);
   const listNow = useRef(list);
   listNow.current = list;
-  const kept = useStoredSessions({
+  const storage = useStoredSessions({
     store,
     collection: CHAT_SESSIONS,
     view: "chat",
@@ -141,10 +144,8 @@ export function useConversation({
       });
       return { loaded, keys: restored.keys };
     },
-    // Only the pictures no session left names, and nothing the Image view's sessions hold, go with it.
     onRemoved: (gone, left) => {
-      const keep = new Set<ImageId>([...left.flatMap((s) => [...picturesOf(s)]), ...(elsewhere?.() ?? [])]);
-      for (const id of unreferenced(picturesOf(gone), keep)) void store.deleteImage(id).catch(() => {});
+      for (const id of freedBy(gone, left, live ? live() : [])) void store.deleteImage(id).catch(() => {});
     },
   });
   // The sessions a reply is streaming into, for the render.
@@ -524,9 +525,9 @@ export function useConversation({
     if (images) setList((l) => ({ ...l, sessions: updateMessage(l.sessions, sessionId, message.id, (m) => ({ ...m, images })) }));
   }
 
-  /** The store's pictures the chat's sessions name: what deleting an Image view session must keep. */
-  function pictures(): Set<ImageId> {
-    return new Set(listNow.current.sessions.flatMap((s) => [...picturesOf(s)]));
+  /** The store's pictures the chat's sessions name — what deleting an Image view session must keep — or null until they are read. */
+  function pictures(): Set<ImageId> | null {
+    return storage.loaded ? new Set(listNow.current.sessions.flatMap((s) => [...picturesOf(s)])) : null;
   }
 
   function addToolResults(sessionId: number, results: { callId: string; content: string }[]): Message[] {
@@ -626,6 +627,6 @@ export function useConversation({
     stop,
     pictures,
     /** What the store refused, when it did: the sessions go on in memory. */
-    storeError: kept.error,
+    storeError: storage.error,
   };
 }

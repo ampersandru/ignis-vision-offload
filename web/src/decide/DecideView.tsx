@@ -146,19 +146,19 @@ export function DecideView({ ready, drawer, onDrawer }: { ready: boolean; drawer
     onDrawer(null);
   }
 
+  // Both change the list as it is when the update lands, not as this render saw it: the stored decisions may have
+  // joined it since, and a list set from before they did would delete them from the store.
   function newDecision() {
-    const next = openDecision(list, freeDecisionId(list));
-    setList(next);
-    reread(activeOf(next));
+    setList((l) => openDecision(l, freeDecisionId(l)));
+    reread(activeOf(openDecision(list, freeDecisionId(list))));
     onDrawer(null);
   }
 
   function remove(id: number) {
     controllers.current.get(id)?.abort();
     controllers.current.delete(id);
-    const next = removeDecision(list, id, freeDecisionId(list));
-    setList(next);
-    reread(activeOf(next));
+    setList((l) => removeDecision(l, id, freeDecisionId(l)));
+    reread(activeOf(removeDecision(list, id, freeDecisionId(list))));
   }
 
   async function pick(example: Example) {

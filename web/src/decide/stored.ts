@@ -41,15 +41,20 @@ function readStored(value: unknown): StoredDecision | null {
   return { answer: null, refusal: null, running: false, ...doc } as StoredDecision;
 }
 
-/** The stored decisions, newest first and settled, with new ids from `firstId` up, and the key of each by its new id. */
-export function restoreDecisions(values: unknown[], firstId: number): { decisions: Decision[]; keys: Map<number, string>; nextId: number } {
+/**
+ * The stored decisions, newest first and settled, with new ids from the page's
+ * `nextId` up, and the key of each by its new id. The question uids they hold
+ * are reserved on the way (`reserveUids`): the page's count is a module's.
+ */
+export function restoreDecisions(values: unknown[], nextId: number): { decisions: Decision[]; keys: Map<number, string>; nextId: number } {
   const docs = values.map(readStored).filter((d): d is StoredDecision => d !== null);
-  const { items, nextId } = restoreOrder(docs, firstId);
+  const ordered = restoreOrder(docs, nextId);
+  const { items } = ordered;
   const keys = new Map<number, string>();
   const decisions = items.map(({ version: _version, key, ...d }): Decision => {
     keys.set(d.id, key);
     reserveUids([...d.draft.questions, ...(d.answer?.draft.questions ?? [])].map((q) => q.uid));
     return d.running ? { ...d, running: false, refusal: CLOSED_MID_RUN } : d;
   });
-  return { decisions, keys, nextId };
+  return { decisions, keys, nextId: ordered.nextId };
 }

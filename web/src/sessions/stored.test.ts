@@ -4,7 +4,7 @@ import type { Mark } from "../markup/markup.ts";
 import type { Figures } from "../metrics/figures.ts";
 import type { Message, Session } from "./sessions.ts";
 import { sha256 } from "../store/imageStore.ts";
-import { CHAT_VERSION, keepPictures, picturesOf, restoreChats, settle, toStored, withPictures, worthKeeping } from "./stored.ts";
+import { CHAT_VERSION, freedBy, keepPictures, picturesOf, restoreChats, settle, toStored, withPictures, worthKeeping } from "./stored.ts";
 
 // A chat session as the page's store keeps it (spec playground-enhancements/03):
 // plain data, Blobs left to the image store by id; read back newest first with
@@ -201,6 +201,17 @@ describe("settling a session a page left mid-turn", () => {
     expect(settled[3].content).toMatch(/stopped/i);
   });
 
+  it("leaves a failed reply's calls unanswered, as the turn loop does: the history drops the reply", () => {
+    const s: Session = {
+      ...finished(),
+      messages: [
+        msg(1, "user", "go"),
+        msg(2, "assistant", "", { toolCalls: [{ id: "c1", name: "web_search", arguments: "{}" }], error: "The stream broke." }),
+      ],
+    };
+    expect(settle(s, counter(100))).toBe(s);
+  });
+
   it("leaves a finished session as it was", () => {
     const s = finished();
     expect(settle(s, counter(100))).toBe(s);
@@ -265,5 +276,20 @@ describe("keeping a sent prompt's pictures", () => {
       throw new Error("QuotaExceededError");
     };
     expect(await keepPictures([{ ...image, full: bytes(1) }], keep)).toBeNull();
+  });
+});
+
+describe("the pictures deleting a session frees", () => {
+  const naming = (id: number, ...full: string[]): Session => ({
+    ...finished(id),
+    messages: full.map((f, i) => msg(i + 1, "user", "x", { images: [{ name: "p", url: "data:,", width: 1, height: 1, kept: { full: f } }] })),
+  });
+
+  it("are the ones no session left names, nor the Image view's sessions", () => {
+    expect(freedBy(naming(1, "a", "b", "c", "d"), [naming(2, "b")], ["c"])).toEqual(["a", "d"]);
+  });
+
+  it("are none while the Image view has not read its sessions", () => {
+    expect(freedBy(naming(1, "a"), [], null)).toEqual([]);
   });
 });

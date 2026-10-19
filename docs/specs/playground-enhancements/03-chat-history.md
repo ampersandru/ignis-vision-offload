@@ -30,7 +30,8 @@ sessions already survive (spec playground/06, the image store).
   (`PromptImage.kept`). One copy however many sessions, chat or image, name it;
   deleting a session deletes only what no remaining session of either view
   names.
-- **Export and import: later**, not in this work.
+- **Export and import: later**, not in this work. So are "delete all" and
+  settings per session: the settings stay the page's, as before.
 
 ## Solution
 
@@ -59,19 +60,26 @@ sessions already survive (spec playground/06, the image store).
   earlier answers kept, with a refusal saying the page closed before the
   answers came back. A decision's question uids are reserved, so the next
   question added is not numbered as one of them.
-- **A schema version per document.** `version: 1`; a document of a later
-  version was written by a newer page and is left out, unread and untouched.
-  Reads are tolerant of fields an older writer did not write.
+- **A schema version per document.** `version: 1`, the first: there is no
+  older one to migrate from. A document of a later version was written by a
+  newer page and is left out, unread and untouched. Reads are tolerant of
+  fields an older writer did not write; a version 2 adds its migration to the
+  read (`readStored`).
+- **Pictures across the two views.** Deleting a chat session deletes the
+  pictures no remaining chat session names and no Image view session names;
+  deleting an Image view session the same the other way. While the other view
+  has not read its sessions yet, a delete removes no picture: one only those
+  sessions name would go.
 - **A store that refuses.** The write fails, the session list says what the
   browser answered, and the page goes on in memory.
 
 ## Seams
 
 - `web/src/store/` — `saver.ts` (when a session is written), `docs.ts` (keys,
-  order, merge), `useStoredSessions.ts` (the glue between a view's list and the
-  store).
+  order, what changed, merge), `useStoredSessions.ts` (the glue between a
+  view's list and the store).
 - `web/src/sessions/stored.ts` — the chat's document: to and from, settle,
-  pictures named, pictures kept and read back.
+  pictures named, kept, read back and freed.
 - `web/src/decide/stored.ts` — the decision's document; `decide/model.ts`
   `reserveUids`.
 - `web/src/app/useConversation.ts`, `web/src/decide/DecideView.tsx` — the
@@ -89,11 +97,14 @@ sessions already survive (spec playground/06, the image store).
    store/docs.test)
 3. Reading settles a session left mid-turn: the streaming reply stopped with
    its text, runs stopped, a waiting question skipped, a switch stopped, every
-   unanswered call answered right after its results. (sessions/stored.test)
+   unanswered call answered right after its results — but not a failed
+   reply's, which the history drops. (sessions/stored.test)
 4. A sent prompt's full-size picture and markup pictures go into the store and
    are named on the image; a store that refuses leaves the redraw alone; a
    session names its stored pictures; they read back beside the redraw, and a
-   missing one is left out. (sessions/stored.test)
+   missing one is left out. Deleting a session frees the pictures no chat or
+   Image view session names, and none while the Image view has not read its
+   sessions. (sessions/stored.test)
 5. A decision is stored as plain data and reads back equal; one being asked
    reads back not running with its answers and a refusal; the next question
    is numbered past the stored ones; a later schema is left out.
@@ -103,7 +114,8 @@ sessions already survive (spec playground/06, the image store).
    away writes what waits. (store/saver.test)
 7. The stored sessions join the page: what the page did first stays on top and
    open, else the session last open opens, else the newest; an empty store
-   leaves the page as it is. (store/docs.test)
+   leaves the page as it is. A look at the list names the sessions changed, by
+   identity, and the ones gone. (store/docs.test)
 8. Reload the page mid-conversation: the sessions list, the active session and
    every finished turn come back; a streaming reply comes back stopped with its
    text; the same in the Decide tab; deleting a session removes it from the
@@ -129,4 +141,13 @@ sessions already survive (spec playground/06, the image store).
   reads as a reply that ended there.
 - Settling is not written back: a session is written again when it next
   changes, and read settled each time until then.
+- A session begun before the store answered shows on top, but keeps the id it
+  had, below the stored ones': the next load lists it below them.
+- A picture is stored at send a moment before the message names it; an Image
+  view delete in that moment can remove it, and the image keeps its redraw.
+  While the other view has not read its sessions, a delete leaves its
+  pictures in the store, unnamed; nothing sweeps them.
+- The Image view keeps its own save timers (`useImageSessions`): it writes at
+  its own moments (a step's end at once), and moving it onto
+  `useStoredSessions` is a change of its own.
 - Open: export and import (JSON, maybe Markdown); a store on ignis.

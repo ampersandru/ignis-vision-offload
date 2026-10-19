@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeLoaded, newKey, restoreOrder } from "./docs.ts";
+import { listChanges, mergeLoaded, newKey, restoreOrder } from "./docs.ts";
 
 // The order sessions come back in, and how they join what the page did
 // before the store answered: the chat's and the Decide tab's alike.
@@ -18,6 +18,23 @@ describe("restoreOrder", () => {
       { key: "a", id: 5 },
     ]);
     expect(nextId).toBe(8);
+  });
+});
+
+describe("listChanges", () => {
+  it("names the sessions new or changed, by identity, and hands back the ones gone", () => {
+    const a = { id: 1 };
+    const b = { id: 2 };
+    const c = { id: 3 };
+    const before = new Map([
+      [1, a],
+      [2, b],
+      [3, c],
+    ]);
+    const changedB = { id: 2 };
+    const added = { id: 4 };
+    expect(listChanges(before, [added, changedB, a])).toEqual({ changed: [4, 2], removed: [c] });
+    expect(listChanges(before, [a, b, c])).toEqual({ changed: [], removed: [] });
   });
 });
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ACTIVE, newKey } from "./docs.ts";
+import { ACTIVE, listChanges, newKey } from "./docs.ts";
 import type { ImageStore } from "./imageStore.ts";
 import { createSaver, type Saver } from "./saver.ts";
 
@@ -17,7 +17,7 @@ const SAVE_DELAY_MS = 400;
 /** A reply streaming never pauses: this is the most of it a reload can lose. */
 const SAVE_MAX_WAIT_MS = 1000;
 
-export type StoredSessionsOptions<T> = {
+type StoredSessionsOptions<T> = {
   store: ImageStore;
   collection: string;
   /** The view's name under ACTIVE. */
@@ -89,19 +89,18 @@ export function useStoredSessions<T extends { id: number }>(options: StoredSessi
   useEffect(() => {
     const before = seen.current;
     if (!loaded || !before) return;
-    const after = new Map(items.map((item) => [item.id, item]));
-    for (const [id, item] of after) if (before.get(id) !== item) saver.current?.schedule(keyOf(id));
-    for (const [id, item] of before) {
-      if (after.has(id)) continue;
-      const key = keys.current.get(id);
+    const { changed, removed } = listChanges(before, items);
+    for (const id of changed) saver.current?.schedule(keyOf(id));
+    for (const item of removed) {
+      const key = keys.current.get(item.id);
       if (key) {
         saver.current?.forget(key);
-        keys.current.delete(id);
+        keys.current.delete(item.id);
         void store.deleteDoc(collection, key).catch(refuse);
       }
       now.current.onRemoved?.(item, items);
     }
-    seen.current = after;
+    seen.current = new Map(items.map((item) => [item.id, item]));
   }, [items, loaded, store, collection]);
 
   useEffect(() => {

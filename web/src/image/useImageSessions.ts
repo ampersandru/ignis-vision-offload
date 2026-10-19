@@ -129,7 +129,8 @@ export function useImageSessions(
   model: ModelState,
   refreshModel: () => void,
   visible: boolean,
-  options: { store?: ImageStore; live?: () => Iterable<ImageId> } = {},
+  /** `live`: the store's pictures the chat's sessions name now, or null while it has not read them — then no picture goes. */
+  options: { store?: ImageStore; live?: () => Iterable<ImageId> | null } = {},
 ): [ImageSessionsState, ImageSessionsActions] {
   const store = options.store ?? pageStore();
   const [enhanceDefault, rememberEnhance] = useStoredFlag(STORED_FLAGS.imageEnhance, false);
@@ -439,8 +440,9 @@ export function useImageSessions(
     try {
       await store.deleteDoc(SESSIONS, id);
       // Only what no other session names, and nothing the chat holds now, goes with it.
-      const keep = new Set<ImageId>([...list.current.flatMap((s) => [...imagesOf(s)]), ...(options.live?.() ?? [])]);
-      for (const image of unreferenced(imagesOf(gone), keep)) await store.deleteImage(image);
+      const live = options.live ? options.live() : [];
+      const keep = new Set<ImageId>([...list.current.flatMap((s) => [...imagesOf(s)]), ...(live ?? [])]);
+      if (live !== null) for (const image of unreferenced(imagesOf(gone), keep)) await store.deleteImage(image);
     } finally {
       refreshUsage();
     }

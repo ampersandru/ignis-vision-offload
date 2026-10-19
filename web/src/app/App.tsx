@@ -86,8 +86,8 @@ export function App() {
   // The model the next message goes to: the one loaded, unless the owner picks another or the image model is loaded.
   const nextModel = useNextModel(model);
   // The pictures the Image view's sessions name, for the chat's deletes: the view is held below the chat.
-  const studioPictures = useRef<() => Iterable<ImageId>>(() => []);
-  const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel, elsewhere: () => studioPictures.current() });
+  const studioPictures = useRef<() => Iterable<ImageId> | null>(() => null);
+  const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel, live: () => studioPictures.current() });
   const { active } = chat;
   const monitoring = view === "monitor" && monitorVisible;
   const deciding = view === "decide";
@@ -102,7 +102,7 @@ export function App() {
   // Held here, not in the view: the chat hands pictures to it.
   // Each keeps the pictures the other names when it deletes a session: the store holds both views' pictures once.
   const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures });
-  studioPictures.current = () => studio.sessions.flatMap((s) => [...imagesOf(s)]);
+  studioPictures.current = () => (studio.loaded ? studio.sessions.flatMap((s) => [...imagesOf(s)]) : null);
   const [chatMarking, setChatMarking] = useState<ChatMarking | null>(null);
   // A switch or a load runs the header's flame and heat bar as a reply does (spec playground/05).
   const busy = chat.busy || loadUnderWay(model);

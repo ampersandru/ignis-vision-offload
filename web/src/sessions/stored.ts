@@ -1,7 +1,9 @@
 import type { PromptImage } from "../conversation/images.ts";
 import { restoreOrder } from "../store/docs.ts";
-import type { ImageId } from "../store/imageStore.ts";
+import { type ImageId, unreferenced } from "../store/imageStore.ts";
 import type { AgentRun } from "../tools/agents/agents.ts";
+import type { Question } from "../tools/ask/ask.ts";
+import type { ImageRun } from "../tools/image/image.ts";
 import type { LocalRun } from "../tools/local/local.ts";
 import type { WebRun } from "../tools/web/web.ts";
 import type { LogRow, Message, Session } from "./sessions.ts";
@@ -70,6 +72,17 @@ export function picturesOf(s: Session): Set<ImageId> {
   return ids;
 }
 
+/**
+ * The pictures deleting `gone` frees: those no session `left` names, nor
+ * anything `elsewhere` holds (the Image view's sessions). None while
+ * `elsewhere` cannot say yet — the other view has not read its sessions, and a
+ * picture only they name would go.
+ */
+export function freedBy(gone: Session, left: Session[], elsewhere: Iterable<ImageId> | null): ImageId[] {
+  if (elsewhere === null) return [];
+  return unreferenced(picturesOf(gone), new Set<ImageId>([...left.flatMap((s) => [...picturesOf(s)]), ...elsewhere]));
+}
+
 /** A stored value read as a session document of this page's schema, or null. */
 function readStored(value: unknown): StoredChat | null {
   if (typeof value !== "object" || value === null) return null;
@@ -79,16 +92,17 @@ function readStored(value: unknown): StoredChat | null {
 }
 
 /**
- * The stored sessions, newest first and settled, with new ids from `counter` up
- * — above every message id they hold, since the page's one counter hands out
- * both — and the key of each by its new id. Their pictures are still in the
- * store (`withPictures`).
+ * The stored sessions, newest first and settled, with new ids from the page's
+ * `nextId` up — and above every message id they hold, since the page's one
+ * counter hands out both — and the key of each by its new id. Their pictures
+ * are still in the store (`withPictures`).
  */
-export function restoreChats(values: unknown[], counter: number): { sessions: Session[]; keys: Map<number, string>; nextId: number } {
+export function restoreChats(values: unknown[], nextId: number): { sessions: Session[]; keys: Map<number, string>; nextId: number } {
   const docs = values.map(readStored).filter((d): d is StoredChat => d !== null);
   const highest = Math.max(0, ...docs.flatMap((d) => d.messages.map((m) => m.id)));
-  const { items, nextId } = restoreOrder(docs, Math.max(counter, highest + 1));
-  let next = nextId;
+  const ordered = restoreOrder(docs, Math.max(nextId, highest + 1));
+  const { items } = ordered;
+  let next = ordered.nextId;
   const newId = () => next++;
   const keys = new Map<number, string>();
   const sessions = items.map((doc) => {
@@ -98,58 +112,66 @@ export function restoreChats(values: unknown[], counter: number): { sessions: Se
   return { sessions, keys, nextId: next };
 }
 
-const stopAgent = (run: AgentRun): AgentRun => ({
-  ...run,
-  status: run.status === "queued" || run.status === "running" ? "stopped" : run.status,
-  ...(run.web ? { web: run.web.map(stopWeb) } : {}),
-  ...(run.local ? { local: run.local.map(stopLocal) } : {}),
-});
+/** `items` with `stop` applied to each, or `items` itself when it changed none. */
+function mapSame<T>(items: T[] | undefined, stop: (item: T) => T): T[] | undefined {
+  const next = items?.map(stop);
+  return next && next.some((item, i) => item !== items![i]) ? next : items;
+}
+
 const stopWeb = (run: WebRun): WebRun => (run.status === "running" ? { ...run, status: "stopped" } : run);
 const stopLocal = (run: LocalRun): LocalRun => (run.status === "running" || run.status === "checking" ? { ...run, status: "stopped" } : run);
+const skipQuestion = (q: Question): Question => (q.status === "waiting" ? { ...q, status: "skipped" } : q);
+const stopPicture = (run: ImageRun): ImageRun => (run.status === "done" || run.status === "failed" || run.status === "stopped" ? run : { ...run, status: "stopped" });
 
+function stopAgent(run: AgentRun): AgentRun {
+  const web = mapSame(run.web, stopWeb);
+  const local = mapSame(run.local, stopLocal);
+  const status = run.status === "queued" || run.status === "running" ? "stopped" : run.status;
+  if (status === run.status && web === run.web && local === run.local) return run;
+  return { ...run, status, ...(web ? { web } : {}), ...(local ? { local } : {}) };
+}
+
+/** `m` with nothing left running, or `m` itself when nothing was. */
 function settleMessage(m: Message): Message {
+  const agents = mapSame(m.agents, stopAgent);
+  const web = mapSame(m.web, stopWeb);
+  const local = mapSame(m.local, stopLocal);
+  const questions = mapSame(m.questions, skipQuestion);
+  const imageRuns = mapSame(m.imageRuns, stopPicture);
+  const switching = m.switch?.status === "switching";
+  const runs = agents === m.agents && web === m.web && local === m.local && questions === m.questions && imageRuns === m.imageRuns;
+  if (!m.streaming && !m.queued && !switching && runs) return m;
   const { queued: _queued, ...rest } = m;
   return {
     ...rest,
     streaming: false,
-    ...(m.switch?.status === "switching" ? { switch: { ...m.switch, status: "stopped" } } : {}),
-    ...(m.agents ? { agents: m.agents.map(stopAgent) } : {}),
-    ...(m.web ? { web: m.web.map(stopWeb) } : {}),
-    ...(m.local ? { local: m.local.map(stopLocal) } : {}),
-    ...(m.questions ? { questions: m.questions.map((q) => (q.status === "waiting" ? { ...q, status: "skipped" as const } : q)) } : {}),
-    ...(m.imageRuns
-      ? { imageRuns: m.imageRuns.map((r) => (r.status === "done" || r.status === "failed" || r.status === "stopped" ? r : { ...r, status: "stopped" as const })) }
-      : {}),
+    ...(switching && m.switch ? { switch: { ...m.switch, status: "stopped" } } : {}),
+    ...(agents ? { agents } : {}),
+    ...(web ? { web } : {}),
+    ...(local ? { local } : {}),
+    ...(questions ? { questions } : {}),
+    ...(imageRuns ? { imageRuns } : {}),
   };
 }
-
-/** Anything in `m` a page that went away left running. */
-const unsettled = (m: Message): boolean =>
-  m.streaming ||
-  m.queued === true ||
-  m.switch?.status === "switching" ||
-  (m.agents ?? []).some((a) => a.status === "queued" || a.status === "running" || (a.web ?? []).some((w) => w.status === "running") || (a.local ?? []).some((l) => l.status === "running" || l.status === "checking")) ||
-  (m.web ?? []).some((w) => w.status === "running") ||
-  (m.local ?? []).some((l) => l.status === "running" || l.status === "checking") ||
-  (m.questions ?? []).some((q) => q.status === "waiting") ||
-  (m.imageRuns ?? []).some((r) => r.status !== "done" && r.status !== "failed" && r.status !== "stopped");
 
 /**
  * `s` as a page that is no longer there left it: a reply streaming is stopped
  * with the text it had, a run or a switch under way is stopped, a question
  * waiting is skipped, and every call left without a result is answered right
  * after the results it has — the history the next turn sends must hold a
- * result for each call, as the turn loop keeps it. A settled session is
- * handed back as it was.
+ * result for each call, as the turn loop keeps it. A reply that failed keeps
+ * its calls unanswered, as the loop leaves them: the history drops it
+ * (`conversationTurns`). A settled session is handed back as it was.
  */
 export function settle(s: Session, newId: () => number): Session {
   let changed = false;
   const messages: Message[] = [];
   for (let i = 0; i < s.messages.length; i++) {
     const m = s.messages[i];
-    if (unsettled(m)) changed = true;
-    messages.push(unsettled(m) ? settleMessage(m) : m);
-    if (m.role !== "assistant" || !m.toolCalls?.length) continue;
+    const settled = settleMessage(m);
+    if (settled !== m) changed = true;
+    messages.push(settled);
+    if (m.role !== "assistant" || !m.toolCalls?.length || m.error !== undefined) continue;
     const answered = new Set<string>();
     while (s.messages[i + 1]?.role === "tool") {
       const result = s.messages[++i];
