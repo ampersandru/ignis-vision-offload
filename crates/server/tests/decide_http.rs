@@ -1359,6 +1359,10 @@ struct RecordingScheduler {
 }
 
 impl ignis_core::Scheduler for RecordingScheduler {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.inner.share_request_ids(ids)
+    }
+
     fn submit(
         &mut self,
         input: ignis_core::types::RequestInput,

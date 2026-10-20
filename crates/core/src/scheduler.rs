@@ -891,12 +891,10 @@ pub trait Scheduler: Send {
 
     /// Draw request ids from `ids` from now on, instead of a count of the
     /// scheduler's own from 0: what a server hands every load's scheduler
-    /// before its first submission. The default ignores `ids`: only a
-    /// scheduler that issues ids has a count to replace (a test's wrapper
-    /// hands its inner scheduler the ids before it wraps it).
-    fn share_request_ids(&mut self, ids: crate::types::RequestIds) {
-        let _ = ids;
-    }
+    /// before its first submission. No default, so no scheduler leaves it by
+    /// omission and counts from 0 on every load again; a wrapper hands it to
+    /// the scheduler it wraps.
+    fn share_request_ids(&mut self, ids: crate::types::RequestIds);
 
     /// Abort an in-flight request. The scheduler must stop dealing it work
     /// and release its resources no later than the next [`Scheduler::advance`].

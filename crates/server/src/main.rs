@@ -33,10 +33,9 @@ use std::sync::Arc;
 use ignis_server::{
     config::{self, Config, ConfigOutcome},
     download,
-    load::{mock_scheduler, start_engine},
-    template::SimpleTemplateProvider,
+    load::placeholder_model,
     thinking::{self, ThinkingDefaults},
-    ActiveModel, Served, Server,
+    Served, Server,
 };
 
 /// Flush pending logging before an immediate exit (GitHub #80): every
@@ -364,8 +363,7 @@ async fn main() {
     } else {
         // Why there is no artifact was said once, with its reason, where the
         // decision was made (`ignis.model.placeholder_template` above).
-        let (engine, driver) = start_engine(mock_scheduler(&model, default_max_tokens));
-        (Server::from_active(ActiveModel::new(engine, Arc::new(SimpleTemplateProvider)).with_driver(driver)), start_options.clone())
+        (Server::from_active(placeholder_model(&model, default_max_tokens)), start_options.clone())
     };
     let server = server
         .with_request_timeout(std::time::Duration::from_secs(request_timeout_secs as u64))

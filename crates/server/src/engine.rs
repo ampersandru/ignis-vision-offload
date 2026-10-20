@@ -1206,6 +1206,7 @@ mod tests {
     }
 
     impl Scheduler for ProtectedBatchScheduler {
+        fn share_request_ids(&mut self, _: ignis_core::RequestIds) {}
         fn submit(
             &mut self,
             _input: RequestInput,
@@ -1278,6 +1279,7 @@ mod tests {
     }
 
     impl Scheduler for PrefixReuseBatchScheduler {
+        fn share_request_ids(&mut self, _: ignis_core::RequestIds) {}
         fn submit(
             &mut self,
             _input: RequestInput,
@@ -1623,6 +1625,9 @@ mod tests {
     }
 
     impl Scheduler for Recording {
+        fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+            self.inner.share_request_ids(ids)
+        }
         fn submit(&mut self, input: RequestInput, class: RequestClass) -> Result<RequestId, SubmitError> {
             let id = self.inner.submit(input, class)?;
             let _ = self.admitted.send(id);

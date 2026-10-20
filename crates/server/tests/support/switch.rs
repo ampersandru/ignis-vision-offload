@@ -289,6 +289,9 @@ struct Failing {
 }
 
 impl Scheduler for Failing {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.inner.share_request_ids(ids)
+    }
     fn submit(&mut self, input: RequestInput, class: RequestClass) -> Result<RequestId, SubmitError> {
         let request = self.inner.submit(input, class)?;
         self.taken.push(request);

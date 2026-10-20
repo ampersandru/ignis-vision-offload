@@ -119,6 +119,9 @@ struct Recording {
 }
 
 impl Scheduler for Recording {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.inner.share_request_ids(ids)
+    }
     fn submit(&mut self, input: RequestInput, class: RequestClass) -> Result<RequestId, SubmitError> {
         self.submitted.lock().unwrap().push(input.clone());
         self.inner.submit(input, class)

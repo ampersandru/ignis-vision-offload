@@ -41,7 +41,7 @@ pub fn mock_scheduler(model: &str, default_max_tokens: u32) -> Box<dyn ignis_cor
 /// a switch or a reload builds a new scheduler, and its requests go on from
 /// where the last load's stopped, so a `request_id` in the log names one
 /// request for the process's life (ADR 0012), not one per load.
-pub fn process_request_ids() -> ignis_core::RequestIds {
+fn process_request_ids() -> ignis_core::RequestIds {
     static IDS: std::sync::OnceLock<ignis_core::RequestIds> = std::sync::OnceLock::new();
     IDS.get_or_init(ignis_core::RequestIds::default).clone()
 }
@@ -49,10 +49,17 @@ pub fn process_request_ids() -> ignis_core::RequestIds {
 /// The engine over a loaded `scheduler`, its request ids drawn from
 /// [`process_request_ids`], and its model thread's handle: how every model
 /// this process serves text with starts — the start-up load, a switch's, a
-/// reload's, and the placeholder's.
-pub fn start_engine(mut scheduler: Box<dyn ignis_core::Scheduler>) -> (crate::engine::Engine, std::thread::JoinHandle<()>) {
+/// reload's ([`load_model`]), and the placeholder ([`placeholder_model`]).
+fn start_engine(mut scheduler: Box<dyn ignis_core::Scheduler>) -> (crate::engine::Engine, std::thread::JoinHandle<()>) {
     scheduler.share_request_ids(process_request_ids());
     crate::engine::Engine::with_clock_and_driver(scheduler, Arc::new(crate::telemetry::SystemClock))
+}
+
+/// What a start with no artifact serves as `model`: the mock compute under
+/// the plain template, its engine started as a load's is.
+pub fn placeholder_model(model: &str, default_max_tokens: u32) -> crate::ActiveModel {
+    let (engine, driver) = start_engine(mock_scheduler(model, default_max_tokens));
+    crate::ActiveModel::new(engine, Arc::new(crate::template::SimpleTemplateProvider)).with_driver(driver)
 }
 
 /// Why loading a model refused (spec model-switch/01): each variant is one
@@ -583,16 +590,51 @@ mod tests {
         engine.submit(input, ignis_core::RequestClass::Interactive).await.expect("admitted").0
     }
 
-    /// Every load's engine starts with a scheduler of its own; its requests
-    /// go on from the last load's ids instead of from 0 again.
+    /// A text model's load prepared over a fixture artifact that holds only
+    /// its frontend: on a build without `cuda`, [`load_model`] serves it on
+    /// the mock compute, through the path a GPU load takes.
+    fn prepared(model: &str) -> (ignis_artifact::fixture::TempArtifact, PreparedModel) {
+        use ignis_artifact::fixture::{self, FixtureObject};
+        let tokenizer = r#"{"version":"1.0","pre_tokenizer":{"type":"Whitespace"},"model":{"type":"WordLevel","vocab":{"user":0,"unk":1},"unk_token":"unk"}}"#;
+        let resources: [(&'static str, &[u8]); 6] = [
+            ("frontend/tokenizer.json", tokenizer.as_bytes()),
+            ("frontend/tokenizer_config.json", b"{}"),
+            ("frontend/chat_template.jinja", b"{%- for m in messages -%}{{ m.role }} {{ m.content }} {%- endfor -%}"),
+            ("frontend/generation_config.json", b"{}"),
+            ("frontend/preprocessor_config.json", b"{}"),
+            ("frontend/video_preprocessor_config.json", b"{}"),
+        ];
+        let (mut objects, mut payload) = (Vec::new(), Vec::new());
+        for (name, bytes) in resources {
+            objects.push(FixtureObject::Resource { name, encoding: "raw-bytes-v1", offset: payload.len() as u64, bytes: bytes.len() as u64 });
+            payload.extend_from_slice(bytes);
+        }
+        let artifact = fixture::write_fixture(&objects, &payload, "load-request-ids").expect("fixture");
+        let reader = ignis_artifact::Reader::open(&artifact.path).expect("open fixture artifact");
+        let provider = crate::artifact_template::ArtifactTemplateProvider::new(ignis_artifact::FrontendSet::from_reader(&reader).expect("frontend set"));
+        let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(&[], |_| None).expect("the options resolve") else {
+            panic!("a config")
+        };
+        let text = PreparedText { provider, acquirer: None, item_bound: None, thinking_close: None, eos: None };
+        let prepared = PreparedModel { artifact: artifact.path.clone(), model: model.into(), family: ModelFamily::Qwen38_27b, config, text: Some(text) };
+        (artifact, prepared)
+    }
+
+    /// Every model the process serves text with starts its engine as a
+    /// load's does: the placeholder, then two loads ([`load_model`], the
+    /// start-up load's path and a switch's or a reload's), and each one's
+    /// requests go on from the one before's ids instead of from 0 again.
     #[tokio::test]
-    async fn a_later_loads_request_ids_go_on_from_the_earlier_loads() {
-        let (first, _driver) = start_engine(mock_scheduler("m", 16));
-        let earlier = [submitted(&first).await, submitted(&first).await];
-        drop(first);
-        let (second, _driver) = start_engine(mock_scheduler("m", 16));
-        let later = submitted(&second).await;
-        assert!(earlier[0] < earlier[1] && earlier[1] < later, "{earlier:?} then {later}");
+    async fn every_loads_request_ids_go_on_from_the_load_before() {
+        let placeholder = placeholder_model("m", 16);
+        let mut ids = vec![submitted(placeholder.text_engine()).await];
+        drop(placeholder);
+        for _ in 0..2 {
+            let (_artifact, prepared) = prepared("m");
+            let loaded = load_model(prepared).expect("the mock loads");
+            ids.push(submitted(loaded.model.text_engine()).await);
+        }
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");
     }
 
     /// Review-321d F2: a size of `image.sizes` past `image.max_target_cells`

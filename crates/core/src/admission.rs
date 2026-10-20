@@ -40,7 +40,8 @@
 //! to core-06 / core-07 and is deliberately not part of this module.
 //!
 //! *Deviations from the reference, documented per ADR 0004:*
-//! - ignis request ids are 0-based (`next_id` starts at 0), so the
+//! - ignis request ids are 0-based (a scheduler's own count of
+//!   `RequestIds` starts at 0), so the
 //!   reference's `request_id == 0` invalid-state checks are dropped; all
 //!   other snapshot validations are ported.
 //! - The reference's three request classes (Main / Agents / Classifier)

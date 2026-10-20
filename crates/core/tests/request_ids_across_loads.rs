@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use ignis_core::{ConcreteScheduler, DecodeParams, MockCompute, RequestClass, RequestIds, RequestInput, Scheduler, SchedulerConfig};
+use ignis_core::{ConcreteScheduler, DecodeParams, MockCompute, RequestClass, RequestId, RequestIds, RequestInput, Scheduler, SchedulerConfig};
 
 fn scheduler() -> ConcreteScheduler {
     ConcreteScheduler::with_config(SchedulerConfig { model: "m".into(), ..SchedulerConfig::default() }, Arc::new(MockCompute::new()))
@@ -29,7 +29,7 @@ fn input() -> RequestInput {
     }
 }
 
-fn submit(scheduler: &mut ConcreteScheduler) -> u64 {
+fn submit(scheduler: &mut ConcreteScheduler) -> RequestId {
     scheduler.submit(input(), RequestClass::Interactive).expect("admitted")
 }
 
@@ -43,6 +43,8 @@ fn schedulers_sharing_request_ids_continue_one_count() {
     let mut second = scheduler();
     second.share_request_ids(ids);
     assert_eq!((earlier, submit(&mut second)), ([0, 1], 2));
+    // An earlier load's id is none of this scheduler's: unknown, not reaped.
+    assert_eq!(second.request_state(earlier[0]), None);
 }
 
 #[test]

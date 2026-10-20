@@ -706,6 +706,9 @@ async fn an_abandoned_completion_with_a_stop_sequence_releases_its_lane() {
 struct NoRoom(ConcreteScheduler);
 
 impl ignis_core::Scheduler for NoRoom {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.0.share_request_ids(ids)
+    }
     fn submit(&mut self, _: ignis_core::RequestInput, _: ignis_core::RequestClass) -> Result<RequestId, ignis_core::SubmitError> {
         Err(ignis_core::SubmitError::Full)
     }
@@ -774,6 +777,9 @@ async fn a_full_engine_answers_503_engine_full_with_retry_after() {
 struct NeverRuns(ConcreteScheduler);
 
 impl ignis_core::Scheduler for NeverRuns {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.0.share_request_ids(ids)
+    }
     fn submit(&mut self, input: ignis_core::RequestInput, class: ignis_core::RequestClass) -> Result<RequestId, ignis_core::SubmitError> {
         self.0.submit(input, class)
     }

@@ -38,6 +38,9 @@ fn model_on(scheduler: Box<dyn Scheduler>) -> ActiveModel {
 struct Stalled(ConcreteScheduler);
 
 impl Scheduler for Stalled {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.0.share_request_ids(ids)
+    }
     fn submit(&mut self, input: RequestInput, class: RequestClass) -> Result<RequestId, SubmitError> {
         self.0.submit(input, class)
     }

@@ -618,8 +618,10 @@ pub struct ConcreteScheduler {
     /// Where its request ids come from: its own count, or the one a
     /// server's loads share ([`Scheduler::share_request_ids`]).
     request_ids: RequestIds,
-    /// One past the latest id it issued.
-    next_id: RequestId,
+    /// The ids it issued, from its first to one past its latest: empty
+    /// before its first. A shared count started elsewhere, so an id below
+    /// them is another load's, not one this scheduler reaped.
+    issued: std::ops::Range<RequestId>,
     requests: Vec<Request>,
     free_lanes: Vec<LaneId>,
     /// The last hard compute error (kernel fault) hit by an advance, if
@@ -790,7 +792,7 @@ impl ConcreteScheduler {
             config,
             compute,
             request_ids: RequestIds::default(),
-            next_id: 0,
+            issued: 0..0,
             requests: Vec::new(),
             free_lanes: (0..N_DECODE_LANES).collect(),
             last_error: None,
@@ -2389,7 +2391,7 @@ impl ConcreteScheduler {
     pub fn request_state(&self, request: RequestId) -> Option<RequestState> {
         match self.requests.iter().find(|r| r.id == request) {
             Some(r) => Some(r.state),
-            None if request < self.next_id => Some(RequestState::Done),
+            None if self.issued.contains(&request) => Some(RequestState::Done),
             None => None,
         }
     }
@@ -4015,7 +4017,10 @@ impl Scheduler for ConcreteScheduler {
             resident_slots: 1,
         };
         let id = self.request_ids.next();
-        self.next_id = id + 1;
+        if self.issued.is_empty() {
+            self.issued.start = id;
+        }
+        self.issued.end = id + 1;
         // P4-10 (GitHub #126): the shareable head of this prompt, decided
         // now rather than after its prefill. A prefix is published at the
         // chunk boundary that lands on it, so the chunk decomposition has to

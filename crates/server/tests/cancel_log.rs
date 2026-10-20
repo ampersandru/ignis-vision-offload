@@ -49,6 +49,9 @@ const MODEL: &str = "test-model";
 struct NeverRuns(ConcreteScheduler);
 
 impl ignis_core::Scheduler for NeverRuns {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.0.share_request_ids(ids)
+    }
     fn submit(&mut self, input: ignis_core::RequestInput, class: ignis_core::RequestClass) -> Result<RequestId, ignis_core::SubmitError> {
         self.0.submit(input, class)
     }
