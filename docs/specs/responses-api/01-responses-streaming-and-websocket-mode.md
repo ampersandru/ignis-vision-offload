@@ -141,9 +141,11 @@ and one `function_call` item per scanned tool call (`id`, `call_id`, `name`,
 response: 32 random hex digits, given when the response is created, queued or
 not. The `ignis.response.admitted` line pairs the response id with the request
 id the engine's lines carry (ADR 0012). As built until 2026-10-20 the suffix
-was the request id, which every model load counts from the start again: two
-streams of one socket came to hold latest responses with one id, and a
-`previous_response_id` was answered on the other stream's history.
+was the request id, which every model load then counted from the start
+again: two streams of one socket came to hold latest responses with one id,
+and a `previous_response_id` was answered on the other stream's history.
+Request ids now go on from load to load (`load::process_request_ids`), but a
+response id does not lean on that.
 `thinking_budget_forced_at` stays as today's top-level extension.
 
 **Input items.** `input` is a string (one user message) or a list of items:

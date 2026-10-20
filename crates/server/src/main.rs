@@ -33,10 +33,8 @@ use std::sync::Arc;
 use ignis_server::{
     config::{self, Config, ConfigOutcome},
     download,
-    engine::Engine,
-    load::mock_scheduler,
+    load::{mock_scheduler, start_engine},
     template::SimpleTemplateProvider,
-    telemetry::SystemClock,
     thinking::{self, ThinkingDefaults},
     ActiveModel, Served, Server,
 };
@@ -366,8 +364,7 @@ async fn main() {
     } else {
         // Why there is no artifact was said once, with its reason, where the
         // decision was made (`ignis.model.placeholder_template` above).
-        let (engine, driver) =
-            Engine::with_clock_and_driver(mock_scheduler(&model, default_max_tokens), Arc::new(SystemClock));
+        let (engine, driver) = start_engine(mock_scheduler(&model, default_max_tokens));
         (Server::from_active(ActiveModel::new(engine, Arc::new(SimpleTemplateProvider)).with_driver(driver)), start_options.clone())
     };
     let server = server

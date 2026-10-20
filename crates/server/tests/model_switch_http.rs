@@ -378,11 +378,12 @@ async fn a_response_naming_a_known_model_is_answered_by_it_after_the_switch_over
     assert_eq!(loader.loads(), ["mock-b", "mock-a"]);
 }
 
-/// A socket outlives the loads under it, and each load counts its requests
-/// from the start again: a response's id is not its request's (spec
-/// responses-api/01, Output items), so the latest responses of two streams on
-/// one socket — the Playground's sessions — never share one, and a
-/// continuation on a stream continues that stream's latest. Seven other
+/// A socket outlives the loads under it, and the mock's loads count their
+/// requests from 0 each, as the server's did until 2026-10-20: a response's
+/// id is not its request's (spec responses-api/01, Output items), so the
+/// latest responses of two streams on one socket — the Playground's
+/// sessions — never share one, and a continuation on a stream continues that
+/// stream's latest. Seven other
 /// streams, each answered on a load of its own, on three sockets: a lookup
 /// that could pick another stream's history would pick it 511 times in 512.
 #[tokio::test]

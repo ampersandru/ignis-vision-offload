@@ -37,6 +37,24 @@ pub fn mock_scheduler(model: &str, default_max_tokens: u32) -> Box<dyn ignis_cor
     ))
 }
 
+/// The one count of request ids every model this process loads draws from:
+/// a switch or a reload builds a new scheduler, and its requests go on from
+/// where the last load's stopped, so a `request_id` in the log names one
+/// request for the process's life (ADR 0012), not one per load.
+pub fn process_request_ids() -> ignis_core::RequestIds {
+    static IDS: std::sync::OnceLock<ignis_core::RequestIds> = std::sync::OnceLock::new();
+    IDS.get_or_init(ignis_core::RequestIds::default).clone()
+}
+
+/// The engine over a loaded `scheduler`, its request ids drawn from
+/// [`process_request_ids`], and its model thread's handle: how every model
+/// this process serves text with starts — the start-up load, a switch's, a
+/// reload's, and the placeholder's.
+pub fn start_engine(mut scheduler: Box<dyn ignis_core::Scheduler>) -> (crate::engine::Engine, std::thread::JoinHandle<()>) {
+    scheduler.share_request_ids(process_request_ids());
+    crate::engine::Engine::with_clock_and_driver(scheduler, Arc::new(crate::telemetry::SystemClock))
+}
+
 /// Why loading a model refused (spec model-switch/01): each variant is one
 /// of the refusals the start-up load has always logged under its own event
 /// name ([`LoadError::log`], which `main` calls before it exits). The model
@@ -377,7 +395,7 @@ pub fn load_model(prepared: PreparedModel) -> Result<LoadedModel, LoadError> {
         );
         (mock_scheduler(&model, config.default_max_tokens), None)
     };
-    let (engine, driver) = crate::engine::Engine::with_clock_and_driver(scheduler, Arc::new(crate::telemetry::SystemClock));
+    let (engine, driver) = start_engine(scheduler);
     let mut active = crate::ActiveModel::new(engine, Arc::new(provider))
         .with_driver(driver)
         .with_family(family)
@@ -545,6 +563,37 @@ fn cuda_scheduler_for(
 mod tests {
     use super::*;
     use ignis_core::image::ImageSize;
+
+    /// A request on `engine`'s model: its id.
+    async fn submitted(engine: &crate::engine::Engine) -> ignis_core::RequestId {
+        let input = ignis_core::RequestInput {
+            decision: None,
+            multimodal: None,
+            opener_tokens: None,
+            user_turn_tokens: None,
+            system_block_tokens: None,
+            reuse_boundaries: Vec::new(),
+            model: "m".into(),
+            tokens: vec![1, 2, 3],
+            params: ignis_core::DecodeParams { max_tokens: Some(1), ..Default::default() },
+            constrained: None,
+            forced_literal: None,
+            warm_up: false,
+        };
+        engine.submit(input, ignis_core::RequestClass::Interactive).await.expect("admitted").0
+    }
+
+    /// Every load's engine starts with a scheduler of its own; its requests
+    /// go on from the last load's ids instead of from 0 again.
+    #[tokio::test]
+    async fn a_later_loads_request_ids_go_on_from_the_earlier_loads() {
+        let (first, _driver) = start_engine(mock_scheduler("m", 16));
+        let earlier = [submitted(&first).await, submitted(&first).await];
+        drop(first);
+        let (second, _driver) = start_engine(mock_scheduler("m", 16));
+        let later = submitted(&second).await;
+        assert!(earlier[0] < earlier[1] && earlier[1] < later, "{earlier:?} then {later}");
+    }
 
     /// Review-321d F2: a size of `image.sizes` past `image.max_target_cells`
     /// neither grows the load's largest target nor is served, and the load

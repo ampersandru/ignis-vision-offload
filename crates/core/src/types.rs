@@ -8,6 +8,20 @@
 /// Opaque id for a request admitted by the scheduler.
 pub type RequestId = u64;
 
+/// One count of request ids, shared by every scheduler it is handed
+/// ([`crate::Scheduler::share_request_ids`]): the server's loads each build
+/// a scheduler, and sharing one count makes a request id name one request
+/// for the process's life rather than for one load's (ADR 0012).
+#[derive(Clone, Debug, Default)]
+pub struct RequestIds(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl RequestIds {
+    /// The next id of the count.
+    pub fn next(&self) -> RequestId {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Index of a resident decode lane (0..`N_DECODE_LANES`).
 pub type LaneId = usize;
 

@@ -148,6 +148,6 @@ pub use vram::{
 };
 pub use types::{
     BackfillClass, ComputeError, DecisionRead, DecodeParams, EngineMode, FinishReason, LaneId, N_DECODE_LANES,
-    RequestClass, RequestId, RequestInput, RequestState, SchedEvent, SpecCounters, SubmitError,
+    RequestClass, RequestId, RequestIds, RequestInput, RequestState, SchedEvent, SpecCounters, SubmitError,
     TokenId,
 };

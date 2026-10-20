@@ -1238,7 +1238,12 @@ When output names a domain concept, use the term as defined here.
 - **`request.id`** — reused as the OTel `trace_id` for the request's span
   tree (root span at HTTP ingress, children per admission/prefill/**decode
   round**/MTP verify/completion); one identifier for the same causal unit
-  across fairness, logs, and spans (ADR 0012). Spans stop at decode-round
+  across fairness, logs, and spans (ADR 0012). One count for the process's
+  life: every load's scheduler draws from it, so a switch's or a reload's
+  requests go on from the last load's ids instead of from 0
+  (`load::process_request_ids`). Not a response's id: that is `resp_` and
+  32 random hex digits, paired with its request by
+  `ignis.response.admitted`. Spans stop at decode-round
   granularity, never per-token — a per-token span is hot-path logging by
   another name.
 - **Hot-path logging constraint** — normal INFO operation must not emit one

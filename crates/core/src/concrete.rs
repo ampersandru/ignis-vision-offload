@@ -152,7 +152,7 @@ use crate::scheduler::{
 };
 use crate::types::{
     BackfillClass, BoundaryLifetime, ComputeError, DecisionRead, DecodeParams, EngineMode,
-    FanOutId, FinishReason, LaneId, N_DECODE_LANES, RequestClass, RequestId, RequestInput,
+    FanOutId, FinishReason, LaneId, N_DECODE_LANES, RequestClass, RequestId, RequestIds, RequestInput,
     RequestState, SchedEvent, SubmitError, TokenId,
 };
 
@@ -615,6 +615,10 @@ enum Restore {
 pub struct ConcreteScheduler {
     config: SchedulerConfig,
     compute: Arc<dyn Compute>,
+    /// Where its request ids come from: its own count, or the one a
+    /// server's loads share ([`Scheduler::share_request_ids`]).
+    request_ids: RequestIds,
+    /// One past the latest id it issued.
     next_id: RequestId,
     requests: Vec<Request>,
     free_lanes: Vec<LaneId>,
@@ -785,6 +789,7 @@ impl ConcreteScheduler {
             transfer_pass_micros: 0,
             config,
             compute,
+            request_ids: RequestIds::default(),
             next_id: 0,
             requests: Vec::new(),
             free_lanes: (0..N_DECODE_LANES).collect(),
@@ -3954,6 +3959,10 @@ impl ConcreteScheduler {
 }
 
 impl Scheduler for ConcreteScheduler {
+    fn share_request_ids(&mut self, ids: RequestIds) {
+        self.request_ids = ids;
+    }
+
     fn refusal(&self, input: &RequestInput) -> Option<SubmitError> {
         if input.model != self.config.model {
             return Some(SubmitError::UnknownModel(input.model.clone()));
@@ -4005,8 +4014,8 @@ impl Scheduler for ConcreteScheduler {
             backend_pages: 0,
             resident_slots: 1,
         };
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.request_ids.next();
+        self.next_id = id + 1;
         // P4-10 (GitHub #126): the shareable head of this prompt, decided
         // now rather than after its prefill. A prefix is published at the
         // chunk boundary that lands on it, so the chunk decomposition has to
