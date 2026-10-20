@@ -73,9 +73,8 @@ pub(crate) fn wire_number(value: f32) -> f64 {
 /// lifecycle event and the terminal event carry, and the non-streaming body.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub(crate) struct ResponseObject {
-    /// `resp_<suffix>`, the suffix being the request id (ADR 0012) — or, for
-    /// a socket request that was queued before the scheduler gave it one, the
-    /// queue ticket (`q<n>`).
+    /// `resp_` and 32 random hex digits, given when the response is
+    /// created, queued or not.
     pub id: String,
     pub object: &'static str,
     pub created_at: u64,

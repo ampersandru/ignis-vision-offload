@@ -11,10 +11,12 @@
 //! completions ([`crate::loop_guard::Guarding`]).
 
 pub(crate) mod events;
+pub(crate) mod ids;
 pub(crate) mod input;
 pub(crate) mod queue;
 pub(crate) mod socket;
 
+pub use ids::ResponseIds;
 pub use queue::Hub;
 
 use std::collections::VecDeque;
@@ -192,7 +194,8 @@ pub(crate) async fn create_response(
     let (mut scheduled, running) = guarding.guard(ops, request_id, scheduled);
     // GitHub #81 / ADR 0012: see the matching comment in `chat_completions`.
     tracing::Span::current().record("request_id", request_id);
-    let mut events = prepared.start.events(request_id.to_string(), created_at(&server)).with_rewound(rewound);
+    let mut events = prepared.start.events(server.response_ids.next_suffix(), created_at(&server)).with_rewound(rewound);
+    ids::log_admitted(events.id(), request_id);
     let mut cancel = CancelOnDrop::following(engine, running.clone());
     // ADR 0058: a stream is held to `--server-stream-timeout`, a response
     // answered whole to `--server-request-timeout`.

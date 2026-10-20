@@ -378,6 +378,65 @@ async fn a_response_naming_a_known_model_is_answered_by_it_after_the_switch_over
     assert_eq!(loader.loads(), ["mock-b", "mock-a"]);
 }
 
+/// A socket outlives the loads under it, and each load counts its requests
+/// from the start again: a response's id is not its request's (spec
+/// responses-api/01, Output items), so the latest responses of two streams on
+/// one socket — the Playground's sessions — never share one, and a
+/// continuation on a stream continues that stream's latest. Seven other
+/// streams, each answered on a load of its own, on three sockets: a lookup
+/// that could pick another stream's history would pick it 511 times in 512.
+#[tokio::test]
+async fn a_continuation_continues_its_own_stream_after_responses_on_other_streams_and_loads() {
+    let loader = MockLoader::new();
+    let server = implicit_on(&loader, &["mock-a", "mock-b"]);
+    let live = responses::live(server.clone()).await;
+    let long = vec!["limoncello"; 40].join(" ");
+    let mut model = "mock-a";
+    for round in 0..3 {
+        let mut socket = responses::socket(&live).await;
+        let mut ids = Vec::new();
+        let mut other_input_tokens = 0;
+        for n in 0..8 {
+            // Every response on a load of its own: the request names the model not loaded.
+            model = if model == "mock-a" { "mock-b" } else { "mock-a" };
+            let (stream, input) = if n == 7 { ("own".to_owned(), "hello there") } else { (format!("other-{n}"), long.as_str()) };
+            let create = json!({
+                "type": "response.create", "stream_id": stream, "model": model, "input": input,
+                "max_output_tokens": 3, "enable_thinking": false,
+            });
+            responses::send(&mut socket, create).await;
+            let events = responses::events_until(&mut socket, responses::terminal).await;
+            let last = events.last().expect("a terminal event");
+            assert!(matches!(last["type"].as_str(), Some("response.completed" | "response.incomplete")), "{events:?}");
+            ids.push(last["response"]["id"].as_str().unwrap().to_owned());
+            if n < 7 {
+                other_input_tokens = last["response"]["usage"]["input_tokens"].as_u64().unwrap();
+            }
+        }
+        for id in &ids {
+            let hex = id.strip_prefix("resp_").unwrap_or_default();
+            assert!(hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "resp_<32 hex>: {id}");
+        }
+        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len(), "round {round}: one id per response, whatever load answered it: {ids:?}");
+
+        let create = json!({
+            "type": "response.create", "stream_id": "own", "model": model, "input": "and then?",
+            "previous_response_id": ids[7], "max_output_tokens": 3, "enable_thinking": false,
+        });
+        responses::send(&mut socket, create).await;
+        let events = responses::events_until(&mut socket, responses::terminal).await;
+        let last = events.last().expect("a terminal event");
+        assert!(matches!(last["type"].as_str(), Some("response.completed" | "response.incomplete")), "{events:?}");
+        let input_tokens = last["response"]["usage"]["input_tokens"].as_u64().unwrap();
+        assert!(
+            input_tokens < other_input_tokens,
+            "round {round}: the continuation read {input_tokens} tokens, at least another stream's whole first prompt \
+             ({other_input_tokens}): it continued that stream's history, not its own"
+        );
+    }
+}
+
 /// `/v1/decide` pulls a switch too, ahead of the refusal a Flash-Next load
 /// gives every decision: naming the 27B there moves the server back to the
 /// model that serves it.

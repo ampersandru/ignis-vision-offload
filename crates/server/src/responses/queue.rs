@@ -74,14 +74,6 @@ pub(crate) struct Ticket {
     number: u64,
 }
 
-impl Ticket {
-    /// The ticket's number, unique for the server's life: what names a
-    /// response the scheduler has not given a request id yet.
-    pub(crate) fn number(&self) -> u64 {
-        self.number
-    }
-}
-
 impl Drop for Ticket {
     fn drop(&mut self) {
         self.queue.leave(self.number);

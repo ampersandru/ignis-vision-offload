@@ -136,8 +136,14 @@ channel produced text (`content: [{type: "reasoning_text", text}]`,
 `include: ["reasoning.encrypted_content"]`), a `message` item with one
 `output_text` part (`annotations: []`) when the content channel produced text,
 and one `function_call` item per scanned tool call (`id`, `call_id`, `name`,
-`arguments` as a JSON string, `status`). Ids are `resp_<request id>`,
-`msg_...`, `rs_...`, `fc_...`, derived from the request id (ADR 0012).
+`arguments` as a JSON string, `status`). Ids are `resp_<suffix>`,
+`msg_...`, `rs_...`, `fc_...` and `call_...`, derived from one suffix per
+response: 32 random hex digits, given when the response is created, queued or
+not. The `ignis.response.admitted` line pairs the response id with the request
+id the engine's lines carry (ADR 0012). As built until 2026-10-20 the suffix
+was the request id, which every model load counts from the start again: two
+streams of one socket came to hold latest responses with one id, and a
+`previous_response_id` was answered on the other stream's history.
 `thinking_budget_forced_at` stays as today's top-level extension.
 
 **Input items.** `input` is a string (one user message) or a list of items:

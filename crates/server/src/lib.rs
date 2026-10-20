@@ -114,6 +114,11 @@ pub struct Server {
     /// The wall clock a response's `created_at` is read from (a fixed clock
     /// keeps a test's events byte-for-byte reproducible).
     pub wall_clock: std::sync::Arc<dyn telemetry::TelemetryClock>,
+    /// Where a response's id comes from: random, the default, so no two
+    /// responses share one whatever load served them; counted keeps a
+    /// test's events byte-for-byte reproducible, as a fixed `wall_clock`
+    /// keeps their `created_at`.
+    pub response_ids: std::sync::Arc<responses::ResponseIds>,
     /// The seed a request that sends none draws with: `None`, the default,
     /// is a fresh one per request (spec server/12); a fixed one keeps a
     /// test's mock token streams reproducible, as a fixed `wall_clock` keeps
@@ -321,6 +326,7 @@ impl Server {
             next_fan_out: std::sync::Arc::default(),
             responses: std::sync::Arc::default(),
             wall_clock: std::sync::Arc::new(telemetry::SystemClock),
+            response_ids: std::sync::Arc::default(),
             seedless_seed: None,
             status: std::sync::Arc::new(StatusCell::new(ModelStatus::Serving)),
             usage: std::sync::Arc::default(),
@@ -649,6 +655,13 @@ impl Server {
     /// Read a response's `created_at` from `clock` instead of the wall.
     pub fn with_wall_clock(mut self, clock: std::sync::Arc<dyn telemetry::TelemetryClock>) -> Self {
         self.wall_clock = clock;
+        self
+    }
+
+    /// Count response ids from 0 instead of drawing them (see
+    /// [`Server::response_ids`]).
+    pub fn with_counted_response_ids(mut self) -> Self {
+        self.response_ids = std::sync::Arc::new(responses::ResponseIds::counted());
         self
     }
 

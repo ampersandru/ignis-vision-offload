@@ -117,10 +117,11 @@ async fn a_streamed_response_is_the_standard_event_sequence() {
     let event = |at: usize| &events[at].1;
     assert_eq!(event(0)["response"]["status"], "in_progress");
     assert!(event(0)["response"]["usage"].is_null());
-    assert_eq!(event(0)["response"]["id"], "resp_0");
+    let first = "0".repeat(32);
+    assert_eq!(event(0)["response"]["id"], format!("resp_{first}"));
     assert_eq!(event(2)["item"]["type"], "reasoning");
     assert_eq!(event(4)["delta"], "planning");
-    assert_eq!(event(4)["item_id"], "rs_0");
+    assert_eq!(event(4)["item_id"], format!("rs_{first}"));
     assert_eq!(event(8)["item"]["type"], "message");
     assert_eq!(event(10)["delta"], "Reading it. ");
     assert_eq!(event(10)["output_index"], 1);
@@ -131,8 +132,8 @@ async fn a_streamed_response_is_the_standard_event_sequence() {
     assert_eq!(event(14)["output_index"], 2);
     assert_eq!(event(16)["name"], "read_file");
     assert_eq!(event(16)["arguments"], r#"{"path":"a.txt"}"#);
-    assert_eq!(event(17)["item"]["call_id"], "call_0_0");
-    assert_eq!(event(17)["item"]["id"], "fc_0_0");
+    assert_eq!(event(17)["item"]["call_id"], format!("call_{first}_0"));
+    assert_eq!(event(17)["item"]["id"], format!("fc_{first}_0"));
     let done = &event(18)["response"];
     assert_eq!(done["status"], "completed");
     let types: Vec<&str> = done["output"].as_array().unwrap().iter().map(|i| i["type"].as_str().unwrap()).collect();
@@ -186,10 +187,12 @@ async fn text_after_a_call_opens_a_new_message_item() {
         .filter(|(name, _)| name.starts_with("response.output_item."))
         .map(|(name, e)| (name.trim_start_matches("response.output_item.").to_owned(), e["item"]["id"].as_str().unwrap().to_owned()))
         .collect();
+    let first = "0".repeat(32);
+    let (message, call, after) = (format!("msg_{first}"), format!("fc_{first}_0"), format!("msg_{first}_1"));
     let pairs = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
     assert_eq!(
         items,
-        pairs(&[("added", "msg_0"), ("done", "msg_0"), ("added", "fc_0_0"), ("done", "fc_0_0"), ("added", "msg_0_1"), ("done", "msg_0_1")])
+        pairs(&[("added", &message), ("done", &message), ("added", &call), ("done", &call), ("added", &after), ("done", &after)])
     );
     let output = events.last().unwrap().1["response"]["output"].clone();
 
@@ -199,7 +202,7 @@ async fn text_after_a_call_opens_a_new_message_item() {
         json!({ "model": MODEL, "max_tokens": 1, "messages": [
             { "role": "user", "content": "go" },
             { "role": "assistant", "content": "before  after",
-              "tool_calls": [{ "id": "call_0_0", "type": "function", "function": { "name": "a", "arguments": "{}" } }] }
+              "tool_calls": [{ "id": format!("call_{first}_0"), "type": "function", "function": { "name": "a", "arguments": "{}" } }] }
         ] }),
         json!({ "model": MODEL, "max_output_tokens": 1, "input": conversation }),
     )

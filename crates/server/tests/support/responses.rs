@@ -179,12 +179,14 @@ impl TokenDecoder for Decoder {
     }
 }
 
-/// A server over `compute` and `script`, with a fixed wall clock.
+/// A server over `compute` and `script`, with a fixed wall clock and
+/// response ids counted from 0.
 pub fn server(script: &Arc<Script>, config: SchedulerConfig, compute: Arc<dyn Compute>) -> Server {
     let scheduler = ConcreteScheduler::with_config(SchedulerConfig { model: MODEL.into(), ..config }, compute);
     Server::new(Engine::new(Box::new(scheduler)), Box::new(Handle(Arc::clone(script))))
         .with_request_timeout(Duration::from_secs(5))
         .with_wall_clock(Arc::new(FixedClock::new(CREATED_AT_MS)))
+        .with_counted_response_ids()
         .with_seedless_seed(0)
 }
 

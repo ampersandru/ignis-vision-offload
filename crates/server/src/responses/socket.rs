@@ -53,6 +53,7 @@ use tracing::Instrument;
 
 use crate::api::{self, ApiError, CancelOnDrop};
 use crate::responses::events::{Ending, ResponseEvents};
+use crate::responses::ids;
 use crate::responses::input::{self, CreateResponse, Prepared};
 use crate::responses::queue::{Admission, Hub, QueuedOps};
 use crate::loop_guard::Guarding;
@@ -667,6 +668,7 @@ async fn serve(
     let engine = server.active().text_engine().clone();
     let guarding = Guarding::new(server.live().loop_guard.clone(), &input, starts_in_reasoning, server.metrics.clone());
     let rewound = guarding.rewound();
+    let suffix = server.response_ids.next_suffix();
     let (mut events, request, scheduled) = match queue.submit(&engine, &input, class, notes).await {
         Admission::Refused(refused) => {
             emit(refusal_event(api::submit_error(server, refused)).await);
@@ -674,15 +676,15 @@ async fn serve(
         }
         Admission::Admitted(request, scheduled) => {
             tracing::Span::current().record("request_id", request);
-            let mut events = start.events(request.to_string(), created_at(server)).with_rewound(rewound);
+            let mut events = start.events(suffix, created_at(server)).with_rewound(rewound);
+            ids::log_admitted(events.id(), request);
             let _ = outbox.send(Outgoing::Named { key, id: events.id().to_owned() });
             events.created(false).into_iter().for_each(emit);
             emit(events.in_progress());
             (events, request, scheduled)
         }
         Admission::Queued(ticket) => {
-            // No request id yet: the ticket names the response.
-            let mut events = start.events(format!("q{}", ticket.number()), created_at(server)).with_rewound(rewound);
+            let mut events = start.events(suffix, created_at(server)).with_rewound(rewound);
             let _ = outbox.send(Outgoing::Named { key, id: events.id().to_owned() });
             events.created(true).into_iter().for_each(emit);
             let admitted = tokio::select! {
@@ -695,7 +697,7 @@ async fn serve(
             match admitted {
                 Ok((request, scheduled)) => {
                     tracing::Span::current().record("request_id", request);
-                    tracing::info!(response_id = events.id(), request_id = request, "queued response admitted");
+                    ids::log_admitted(events.id(), request);
                     emit(events.in_progress());
                     (events, request, scheduled)
                 }
