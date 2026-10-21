@@ -1,6 +1,8 @@
 # 01 - the 27B's prefill on the 5090: the fixed part
 
-GitHub: #341. Companion of #335 (the attention term).
+GitHub: #341 (levers 1 and 2: findings 2026-10-21-the-bf16-exception-tensors-in-fp8 and
+2026-10-21-the-27b-prefill-chunk-at-2048, ADR 0065), #342 (levers 3, 4 and 5). Companion of #335 (the attention
+term).
 
 The 27B's cold prefill per token, from the 2026-10-13 measurements (8K / 46K / 105K), is two terms:
 - a **fixed part of ~97 µs**: GEMMs, GDN, norms, quantization, everything but attention;
