@@ -71,7 +71,8 @@ pub const NONE_PROFILE: &str = "none";
 /// makes both models' tables YaRN at 4 over the 262,144 trained positions
 /// (ADR 0057, ADR 0059). The 27B leaves its headroom at the hardcoded
 /// default, since nothing has to be traded for vision any more, and drafts
-/// with DFlash2 at 7 tokens, which beat 4 in every cell measured but one.
+/// with DFlash2 at 7 tokens, which beat 4 in every cell measured but one,
+/// and prefills 2,048 tokens a chunk, as on the 5090 (GitHub #341).
 /// Flash-Next runs 8 decode lanes, where its aggregate peaks: its expert
 /// cache holds nearly every expert, so a lane costs its state and its share
 /// of the KV pool. It drafts with its MTP head, 3 tokens a lane, which the
@@ -106,7 +107,7 @@ const BUILT_IN: &str = r#"{
     },
     "rtxpro6000": {
         "model": {
-            "qwen38": { "max_context": 1048576 },
+            "qwen38": { "max_context": 1048576, "prefill_chunk": 2048 },
             "qwen38flashnext": { "max_context": 1048576 }
         },
         "vision": { "enabled": true },
@@ -202,11 +203,11 @@ mod tests {
         assert_eq!(flash.settings.vram.pinned_expert_bytes, 2 << 30);
     }
 
-    /// GitHub #341: the 27B prefills 2,048 tokens a chunk under `rtx5090`,
-    /// free there because vision's encoder sizes the arena; Flash-Next and a
-    /// start without the profile keep the hardcoded width.
+    /// GitHub #341: the 27B prefills 2,048 tokens a chunk under both built-in
+    /// profiles, free there because vision's encoder sizes the arena;
+    /// Flash-Next and a start without a profile keep the hardcoded width.
     #[test]
-    fn under_the_rtx5090_profile_the_27b_prefills_2048_tokens_a_chunk() {
+    fn under_the_built_in_profiles_the_27b_prefills_2048_tokens_a_chunk() {
         use super::super::source::{resolve_settings, Fit, Sources};
         use crate::config::DEFAULT_PREFILL_CHUNK;
         use ignis_core::compute::ModelFamily;
@@ -218,7 +219,8 @@ mod tests {
         assert_eq!(flash.settings.model.prefill_chunk, DEFAULT_PREFILL_CHUNK);
         let bare = resolve_settings(&Sources::default(), Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
         assert_eq!(bare.settings.model.prefill_chunk, DEFAULT_PREFILL_CHUNK);
-        assert!(built_in()["rtxpro6000"].get(field("model", "prefill_chunk").unwrap(), Some(ModelFamily::Qwen38_27b)).is_none(), "not measured there");
+        let pro = Sources { profile: built_in()["rtxpro6000"].clone(), ..Sources::default() };
+        assert_eq!(resolve_settings(&pro, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap().settings.model.prefill_chunk, 2048);
     }
 
     /// `auto` rope scaling under each profile, as a load of each model
