@@ -56,7 +56,8 @@ fn new_pool() -> SeqPool {
 }
 
 /// Materialize `plan`, load it, check where the leaf found the table, and
-/// run the prompt; the device memory is released before returning.
+/// run the prompt; the device memory is released before returning. `None`:
+/// the upload met a busy card outside the GPU profile, a skip.
 fn run(
     device: &mut CudaDevice,
     reader: &Reader,
@@ -64,9 +65,19 @@ fn run(
     handles: &[ObjectHandle],
     prompt: &[i32],
     mapped: bool,
-) -> Output {
+) -> Option<Output> {
     let label = if mapped { "host-mapped" } else { "on-device" };
-    let mut artifact = materialize(reader, plan, device, None).unwrap_or_else(|e| panic!("{label}: materialize: {e}"));
+    // The upload is where a busy card surfaces: the profile's call, as in
+    // `model_load_gpu.rs`.
+    let mut artifact = match materialize(reader, plan, device, None) {
+        Ok(artifact) => artifact,
+        Err(e) => {
+            if gpu_profile::skip_or_fail(&format!("{label}: materialize: {e}")) {
+                return None;
+            }
+            unreachable!("skip_or_fail panics under the profile");
+        }
+    };
     let table = artifact.device_view(handles[0]).expect("the token embedding's view");
     assert_eq!(table.name, "text/token_embedding");
     assert_eq!(table.residence, if mapped { Residence::HostMapped } else { Residence::Device });
@@ -112,7 +123,7 @@ fn run(
         Output { span_logits, eager, graph }
     };
     artifact.release_arena(device).expect("release");
-    output
+    Some(output)
 }
 
 #[test]
@@ -152,8 +163,12 @@ fn the_host_mapped_token_embedding_computes_what_the_device_one_does() {
             unreachable!();
         }
     };
-    let on_device = run(&mut device, &reader, &device_plan, &device_handles, &prompt, false);
-    let host_mapped = run(&mut device, &reader, &mapped_plan, &handles, &prompt, true);
+    let Some(on_device) = run(&mut device, &reader, &device_plan, &device_handles, &prompt, false) else {
+        return;
+    };
+    let Some(host_mapped) = run(&mut device, &reader, &mapped_plan, &handles, &prompt, true) else {
+        return;
+    };
     let differing = on_device.span_logits.iter().zip(&host_mapped.span_logits).filter(|(a, b)| a != b).count();
     assert_eq!(differing, 0, "span logits differ at {differing} of {} positions x vocab", prompt.len());
     assert_eq!(on_device.eager, host_mapped.eager, "eager greedy tokens");
