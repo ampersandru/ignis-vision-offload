@@ -31,7 +31,9 @@ The token embedding, `text/token_embedding`, W8G32 `[248320, 5120]`:
 
 1. **An hq prefill attention that reads the paged codec.** It is our own adapted op (ADR 0051).
    - Each CTA decodes a K/V tile of the visible history into shared memory once, exactly as the decode route decodes a
-     key, and attends its block of the chunk's queries against it.
+     key, and attends its block of the chunk's queries against it. *(Amended 2026-10-21, owner: the history is decoded
+     once per chunk and layer into a fixed 8-bit band instead, since a CTA holds too few queries to pay for its own
+     decode; ADR 0061 "As built".)*
    - Online softmax across tiles.
    - The residual window (sinks, ring, the chunk itself) is served exact, as today (ADR 0037's ring-before-append
      included).
@@ -57,7 +59,7 @@ The token embedding, `text/token_embedding`, W8G32 `[248320, 5120]`:
      GeForce runs at half rate.
    - **The target is FP8** (owner, 2026-10-21: "l'fp8 subito"). Q·Kᵀ and P·V run on the block-scaled FP8 MMAs
      (E4M3, `mxf8f6f4` at full rate on SM120). It is the serving default once it passes the agreement and KLD
-     criteria (ACs 2-3).
+     criteria (ACs 2-3). *(As built: Q·Kᵀ runs on the INT8 MMA instead, P·V on the E4M3 one; ADR 0061 "As built".)*
    - **The fallback is FP16 accumulate:** QK and PV in FP16 on the tensor cores, the softmax running max and sum in
      FP32, a fold into FP32 per key block. It ships as the default instead only if FP8 fails those criteria, and it
      stays available behind a load option either way.
@@ -109,8 +111,9 @@ The token embedding, `text/token_embedding`, W8G32 `[248320, 5120]`:
 ## Acceptance
 
 1. Under hq-e8-2b no prefill chunk materializes prompt planes. The VRAM plan's workspace no longer depends on
-   `max_context` through them. At 524,288 the workspace drops by ≥ 1,073,741,824 bytes against today's plan for the
-   same configuration.
+   `max_context` through them. At 524,288 the attention's workspace (`ignis_gqa_attention_workspace_bytes`) drops by
+   ≥ 1,000,000,000 bytes against today's plan for the same configuration. *(Amended 2026-10-21, owner: from
+   1,073,741,824, since the fixed band keeps 64 MiB.)*
 2. Route agreement (median relative L2 and cosine on the test's contexts) is at least as close as today's prompt
    route's.
 3. Serving KLD on the 2026-09-24 suite within noise of today's (0.0513 ± the bootstrap interval of the finding).

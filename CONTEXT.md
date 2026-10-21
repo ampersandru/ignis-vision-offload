@@ -378,8 +378,9 @@ When output names a domain concept, use the term as defined here.
 - **Prompt attention** — ignis's own hq-e8-2b prefill attention (an adapted op,
   ADR 0051/0061): two passes sharing one online softmax, the **residual window**
   in BF16 and every other key through the **band** in 8 bits (or FP16 with FP16
-  accumulate, the fallback). Its workspace stops growing with the context at one
-  band.
+  accumulate, the fallback; the load option `--model-prefill-attention` picks
+  one, `fp8` naming the 8-bit band). Its workspace stops growing with the
+  context at one band.
 - **Band** — the fixed buffer the prompt attention decodes the codec's keys
   into, once per chunk and layer: 32,768 keys of INT8 K and E4M3 V^T (64 MiB)
   with a scale per 32-key tile, walked band after band over a longer
