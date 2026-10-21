@@ -545,6 +545,19 @@ pub fn log_qwen27b_host_plan_refused(refusal: &ignis_core::residency::HostPlanEr
     );
 }
 
+/// ADR 0062: a pin the host plan let through but the host then refused --
+/// the plan reads the memory available, and the OS may still decline to lock
+/// it. The materialize error, followed by the host plan's own figures, so the
+/// refusal reads as the plan's and says what it had counted on.
+pub fn qwen27b_pin_refused(error: &str, request: &ignis_core::residency::HostPlanRequest, planned_bytes: u64) -> String {
+    format!(
+        "materialize weights: {error}; the host plan had counted {planned_bytes} bytes of pinned host memory \
+         (the token embedding {} bytes) against {} bytes available and a {}-byte margin \
+         (--{}-model-host-margin-bytes)",
+        request.token_embedding_bytes, request.available_physical_bytes, request.margin_bytes, request.scope
+    )
+}
+
 /// Why a 27B load failed: its host plan's refusal (ADR 0062), kept whole so
 /// a switch can report it in bytes as Flash-Next's is, or anything else, as
 /// the text it always was.
@@ -840,6 +853,7 @@ pub(crate) fn qwen27b_load(
     // margin, or the start is refused naming the line that crosses it, as
     // Flash-Next's is. A host whose available memory cannot be read starts
     // unplanned, as Flash-Next does.
+    let mut host_planned = None;
     if let Some(available) = ignis_core::residency::available_physical_bytes() {
         let request =
             qwen27b_host_request(available, plan.host_mapped_capacity_bytes, reservations.retained_host_bytes, &shape);
@@ -861,10 +875,13 @@ pub(crate) fn qwen27b_load(
             kv_ram_arena_bytes = request.kv_ram_arena_bytes,
             "qwen3.8-27b host plan"
         );
+        host_planned = Some((request, host.total_bytes));
     }
 
-    let artifact = materialize(&reader, &plan, &mut device, None)
-        .map_err(|e| format!("materialize weights: {e}"))?;
+    let artifact = materialize(&reader, &plan, &mut device, None).map_err(|e| match &host_planned {
+        Some((request, planned_bytes)) => qwen27b_pin_refused(&e.to_string(), request, *planned_bytes),
+        None => format!("materialize weights: {e}"),
+    })?;
 
     let leaf_config = leaf_config_for_shape(shape, vram.kv_budget_bytes(shape.kv_format, geometry));
 
@@ -1922,6 +1939,22 @@ mod tests {
         let refusal = ignis_core::residency::plan_host(&qwen27b_host_request(1 << 30, TABLE, 0, &shape))
             .expect_err("a GiB cannot hold the table beside the margin");
         assert!(refusal.to_string().contains("(--qwen38-model-host-margin-bytes)"), "{refusal}");
+    }
+
+    /// A pin the host refuses after its plan passed (the OS may decline to lock
+    /// memory it reports available) fails with the plan's own figures and flag
+    /// beside the materialize error, not the bare error.
+    #[test]
+    fn a_pin_the_host_refuses_after_the_plan_passed_reads_with_the_plans_figures() {
+        let shape = EngineShape { host_pool_bytes: 8 << 30, ..EngineShape::default() };
+        let request = qwen27b_host_request(64 << 30, 1_350_864_896, 0, &shape);
+        let host = ignis_core::residency::plan_host(&request).expect("64 GiB holds the plan");
+        let message = qwen27b_pin_refused("the host cannot pin that much memory", &request, host.total_bytes);
+        assert!(message.starts_with("materialize weights: the host cannot pin that much memory; "), "{message}");
+        assert!(message.contains(&format!("{} bytes of pinned host memory", host.total_bytes)), "{message}");
+        assert!(message.contains("the token embedding 1350864896 bytes"), "{message}");
+        assert!(message.contains(&format!("{} bytes available", 64u64 << 30)), "{message}");
+        assert!(message.contains("(--qwen38-model-host-margin-bytes)"), "{message}");
     }
 
     /// The one event [`log_qwen27b_host_plan_refused`] logs: the 27B's lines

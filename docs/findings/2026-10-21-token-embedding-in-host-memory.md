@@ -1,4 +1,4 @@
-# The 27B's token embedding in mapped host memory: 1.35 GB of VRAM for ~146K more KV tokens, decode and prefill within noise
+# The 27B's token embedding in mapped host memory: 1.35 GB of VRAM for ~146K more KV tokens, at ~1 µs per prompt token
 
 - Kind: experiment
 - Status: current
@@ -98,7 +98,8 @@ neither more than the other beyond one sample (the branch's 8K, 1.02 s).
 **Correctness on the card** (`crates/core/tests/host_embedding_gpu.rs`, GPU profile): a host-mapped load and the
 all-on-device load give the same 89,891,840 span logits of a 362-token, three-chunk prefill bit for bit, and the same
 16 greedy tokens eagerly and replayed from the decode graphs; the leaf finds exactly the table's bytes in host memory.
-The leaf's CTest (132 tests, `test_host_mapped_embedding` among them) passed.
+The leaf's CTest (132 tests, `test_host_mapped_embedding` among them) passed, and `cargo test --workspace` 3,333 tests
+(0 failed, 7 ignored).
 
 ## Finding
 
@@ -117,15 +118,18 @@ Observed:
 
 Inferred:
 
-- ADR 0062's acceptance (decode and cold prefill within noise of today's) holds. The cost that exists is the
-  gather's ~1 µs per token over a Gen 3 link, below the noise of every cell but the shortest.
+- ADR 0062's acceptance (decode and cold prefill within noise of today's) holds at one lane and from 14K up. Two
+  cells sit at or past the edge of the noise: eight lanes (−0.4% warm, −1.0% over every round, against a 0.4%
+  round-to-round spread) and the 8K prompt (−1.9%, 20 ms, against main's 1.0% launch spread). That is the gather's
+  ~1 µs per token over a Gen 3 link, measured rather than noise; whether it is acceptable is the owner's call.
 - The gather reads at about half the link's rate because the vendored kernel loads a byte per thread; an adapted
   gather with 16-byte loads would roughly halve the prefill cost. At 0.5-1% of prefill that is not worth an op now.
 - A Gen 4 or Gen 5 host shrinks the cost further; nothing here was measured on one.
 
 ## Implications
 
-- AC 7 of spec 27b-16gb/03 passes for the embedding: ship the host placement on every card class, as ADR 0062 says.
+- AC 7 of spec 27b-16gb/03 passes for the embedding with that measured cost, ~1-2% on an 8K prompt and 0.4-1.0% at
+  eight lanes: ship the host placement on every card class, as ADR 0062 says, unless the owner rejects the cost.
 - The ~146K tokens are AC 8's to spend: the `rtx5090` profile's re-measure starts from a pool 1.35 GB larger.
 - The 27B now has a host plan: a start whose RAM cannot hold the table, the host retained slots and the KV-RAM arena
   beside the 4 GiB margin is refused, naming the 27B's own flags. Under the make defaults that is ~18 GB available,

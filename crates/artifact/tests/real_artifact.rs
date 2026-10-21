@@ -12,10 +12,10 @@
 use std::path::Path;
 
 use ignis_artifact::{
-    bind_model_scope_27b, bind_model_scope_27b_on_device, bind_model_scope_27b_with, bind_text_scope_27b,
-    dflash2_scope_27b, materialize, text_scope_27b, vision_scope_27b, Binder, CpuDevice, DraftModule,
-    MaterializationPlan, ModelScope, NumericFormat, Object, OUT_OF_SCOPE_TEXT_NAMES, Reader, Residence,
-    StorageLayout,
+    bind_model_scope_27b, bind_model_scope_27b_with, bind_text_scope_27b, dflash2_scope_27b,
+    materialize, text_scope_27b, vision_scope_27b, Binder, CpuDevice, DraftModule,
+    MaterializationPlan, ModelScope, NumericFormat, Object, OUT_OF_SCOPE_TEXT_NAMES, Reader,
+    StorageLayout, bind_model_scope_27b_on_device, Residence,
 };
 #[cfg(feature = "cuda")]
 use ignis_artifact::CudaDevice;
