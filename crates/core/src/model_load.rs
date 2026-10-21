@@ -584,9 +584,9 @@ fn build_bound_tensors(
 /// the returned handle (P4-05, GitHub #123). It is a load argument, not
 /// something the leaf reads off the pool, because the attention workspace is
 /// part of the scratch reservation and its size depends on the format: the
-/// hq-e8-2b prompt route materializes the envelope's visible history into two
-/// rotated-frame BF16 scratch planes that BF16's own prompt route has no
-/// counterpart for. A pool built in the other format is refused by the
+/// hq-e8-2b prompt attention decodes the visible history into a fixed band
+/// (GitHub #335; the vendored route's rotated-frame BF16 planes before it)
+/// that BF16's own prompt route has no counterpart for. A pool built in the other format is refused by the
 /// layer entry points rather than run against an arena sized for this one —
 /// the format is fixed for the life of a load (ADR 0022).
 pub fn load_qwen38_27b(
