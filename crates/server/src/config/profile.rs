@@ -36,7 +36,13 @@ pub const NONE_PROFILE: &str = "none";
 /// tokens with speculation off instead. Re-measured the same way on
 /// 2026-10-21 (GitHub #335), once the prompt planes were gone and the token
 /// embedding had moved to host memory: 917,504 holds, 950,272 is refused by
-/// 59 MB (finding 2026-10-21-prefill-attention-without-prompt-planes). Flash-Next's leg holds its decode
+/// 59 MB (finding 2026-10-21-prefill-attention-without-prompt-planes). The
+/// 27B prefills 2,048 tokens a chunk (GitHub #341): with vision on the
+/// encoder sizes the workspace arena, so the plan is the same byte for byte
+/// as at 1,024, and against 1,024 it measured +1.9% / +2.2% cold prefill at
+/// 46K / 105K, the same at 8K / 14K, a lower 4K KLD and decode unchanged; a
+/// decoding lane's longest pause while a prompt prefills grows ~65% (finding
+/// 2026-10-21-the-27b-prefill-chunk-at-2048). Flash-Next's leg holds its decode
 /// lanes at their own default (3) and raises `model.max_context` to
 /// 512K + 32K + 32K tokens, the floor the owner asked for on both the expert
 /// cache (>= 15 GiB; it measured ~16.6 GiB) and the context. Past the
@@ -89,7 +95,7 @@ const BUILT_IN: &str = r#"{
             "qwen38": { "headroom_bytes": "1200M" }
         },
         "model": {
-            "qwen38": { "max_context": 917504 },
+            "qwen38": { "max_context": 917504, "prefill_chunk": 2048 },
             "qwen38flashnext": { "max_context": 589824 }
         },
         "vision": { "enabled": true },
@@ -194,6 +200,25 @@ mod tests {
         assert!(qwen.dropped.is_empty(), "passed over, not dropped: {:?}", qwen.dropped);
         let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
         assert_eq!(flash.settings.vram.pinned_expert_bytes, 2 << 30);
+    }
+
+    /// GitHub #341: the 27B prefills 2,048 tokens a chunk under `rtx5090`,
+    /// free there because vision's encoder sizes the arena; Flash-Next and a
+    /// start without the profile keep the hardcoded width.
+    #[test]
+    fn under_the_rtx5090_profile_the_27b_prefills_2048_tokens_a_chunk() {
+        use super::super::source::{resolve_settings, Fit, Sources};
+        use crate::config::DEFAULT_PREFILL_CHUNK;
+        use ignis_core::compute::ModelFamily;
+
+        let sources = Sources { profile: built_in()[DEFAULT_PROFILE].clone(), ..Sources::default() };
+        let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
+        assert_eq!(qwen.settings.model.prefill_chunk, 2048);
+        let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
+        assert_eq!(flash.settings.model.prefill_chunk, DEFAULT_PREFILL_CHUNK);
+        let bare = resolve_settings(&Sources::default(), Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
+        assert_eq!(bare.settings.model.prefill_chunk, DEFAULT_PREFILL_CHUNK);
+        assert!(built_in()["rtxpro6000"].get(field("model", "prefill_chunk").unwrap(), Some(ModelFamily::Qwen38_27b)).is_none(), "not measured there");
     }
 
     /// `auto` rope scaling under each profile, as a load of each model

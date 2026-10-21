@@ -379,7 +379,9 @@ built-in defaults. Two are built in:
   Flash-Next pins its calibration-hottest 2 GiB of experts in VRAM
   (`--vram-pinned-expert-bytes 2G`, [the pinned hot set](#host-ram-for-flash-next)):
   2.1 GB less RAM for at most ~1% of three-lane decode. `--vram-pinned-expert-bytes 0`
-  turns it off.
+  turns it off. The 27B prefills 2,048 tokens a chunk (`--model-prefill-chunk`):
+  with vision on that costs no VRAM, and long prompts prefill ~2% faster
+  ([finding](../findings/2026-10-21-the-27b-prefill-chunk-at-2048.md)).
 - `rtxpro6000` is the RTX PRO 6000 Blackwell series (Workstation, Max-Q,
   Server Edition, 96 GB each), measured on a Server Edition under Linux
   ([finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). Both
@@ -478,7 +480,7 @@ change does not reach and a `null` removes.
 |---|---|---|---|
 | `--model-max-context <tokens>` | `IGNIS_MODEL_MAX_CONTEXT` | `40960` | Max per-sequence context (prompt + generation). The KV pool must be able to hold one of them or the load is refused. On the 27B the attention bounds it too: at most 524,288 on `bf16`, 1,048,576 on `hq-e8-2b`; past that the start is refused. Flash-Next has no such bound. |
 | `--model-default-max-tokens <n\|0>` | `IGNIS_MODEL_DEFAULT_MAX_TOKENS` | `38912` | The `max_tokens` of a request that sends none (see [Chat completions](#chat-completions)), its reasoning included, on both models. Never more than what the prompt leaves of `--model-max-context`, so a long prompt is never refused for it. An explicit cap always wins. `0` = none: such a request may generate to the end of the context, as before. (`make` knob `DEFAULT_MAX_TOKENS`.) |
-| `--model-prefill-chunk <tokens>` | `IGNIS_MODEL_PREFILL_CHUNK` | `1024` | The prefill chunk width, a nonzero multiple of 128. The program's prefill scratch is reserved for it at load. |
+| `--model-prefill-chunk <tokens>` | `IGNIS_MODEL_PREFILL_CHUNK` | `1024`; `2048` for the 27B under the `rtx5090` profile | The prefill chunk width, a nonzero multiple of 128. The program's prefill scratch is reserved for it at load. |
 | `--spec-decode-lanes <n>` | `IGNIS_SPEC_DECODE_LANES` | `3` | Flash-Next only, `1..=8`: the sequences decoded at once. The lanes share the KV pool ([below](#the-kv-pool)): min(524,288 tokens, lanes × `--model-max-context`), never below one `--model-max-context` sequence and a page per retained slot. At `make`'s 262,144 tokens that is one context at one lane and 524,288 tokens from two lanes on, so one lane leaves the expert cache about 1 GiB more, and further lanes cost only their state; at 131,072 tokens three lanes get 393,216. The 27B serves a fixed 8 lanes and refuses the flag. `make MODEL=flash-next` runs 3 lanes at up to 262,144 tokens each (the checkpoint's trained positions); the `make` knob is `LANES`. |
 | `--model-decode-share <percent>` | `IGNIS_MODEL_DECODE_SHARE` | `25` on both models | The part of the time decoding lanes keep while a prompt prefills, 0-99: after a chunk that took `t`, the next chunk of the same prompt waits `t * s / (1 - s)` of wall time while they decode, and nothing waits when no lane decodes or after the prompt's last chunk. It trades the prefilling request's TTFT (about x1.33 at 25, x2 at 50, only while lanes decode) for the lanes' rate (15.6-18.3 tok/s on Flash-Next instead of ~1; why 25: [ADR 0018](../adr/0018-chunk-level-prefill-decode-interleaving.md)). `--model-decode-share 0` restores one decode round per chunk, the pacing before [#92](../findings/2026-10-07-27b-prefill-chunk-width.md); 50 splits time evenly. A prompt alone is unaffected. |
 | `--model-kv-format <fmt>` | `IGNIS_MODEL_KV_FORMAT` | `hq-e8-2b` | `hq-e8-2b` (serving) or `bf16` (retained; the format every correctness oracle runs against — [ADR 0022](../adr/0022-two-kv-formats-bf16-as-oracle.md)). Decides what a pool byte budget is worth in tokens. |
@@ -1868,7 +1870,7 @@ the server's `auto` rope scaling (here `yarn:2`) -- twice the checkpoint's
 trained 262,144 positions, and the YaRN table that stretches the envelope to
 match (the gate legs ran at `MAX_CONTEXT=262144 ROPE_SCALING=none`) -- `KV_FORMAT=hq-e8-2b`,
 `SPEC=dflash2` with
-`DRAFT_TOKENS=7`, `KV_HOST_POOL_BYTES=8G` (the 27B's; Flash-Next's own arena
+`DRAFT_TOKENS=7`, `PREFILL_CHUNK` empty (the server's: the `rtx5090` profile's 2048), `KV_HOST_POOL_BYTES=8G` (the 27B's; Flash-Next's own arena
 is `FN_KV_HOST_POOL_BYTES=2G`, passed on every start so a switch to it gets it
 too). `REQUEST_TIMEOUT` and `STREAM_TIMEOUT` are empty: the server's 2400 s
 deadlines ([Deadlines](#deadlines)). `HOST_MARGIN_BYTES` sets Flash-Next's host

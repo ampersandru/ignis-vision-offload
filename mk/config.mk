@@ -159,9 +159,11 @@ LOOP_GUARD ?=
 # legs (docs/specs/runtime/05) ran at MAX_CONTEXT=262144 ROPE_SCALING=none.
 # Empty = leave the flag off (the server's default); SPEC=off turns speculation
 # off (SPEC= leaves it to the server, and the rtx5090 profile speculates).
+# PREFILL_CHUNK is left to the server too: the rtx5090 profile's 2048 (GitHub
+# #341; free there, vision's encoder sizes the arena), 1024 without it.
 MAX_CONTEXT ?= 524288
 KV_FORMAT ?= hq-e8-2b
-PREFILL_CHUNK ?= 1024
+PREFILL_CHUNK ?=
 DECODE_SHARE ?=
 REQUEST_TIMEOUT ?=
 STREAM_TIMEOUT ?=

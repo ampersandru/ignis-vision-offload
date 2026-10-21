@@ -241,6 +241,10 @@ calls:
   `DEFAULT_PREFILL_CHUNK = 1024`): no width is measured-better (Finding items
   1, 2 and 4). This holds for the shape measured: one long prompt against two
   decoding lanes that commit one token per round.
+  - 2026-10-21, after #335 removed the prompt planes: 2,048 is measured-better
+    on the rtx5090 profile (free in VRAM with vision on, +2% at 46K-105K, lower
+    KLD), which now prefills the 27B at 2,048
+    ([finding](2026-10-21-the-27b-prefill-chunk-at-2048.md)).
 - **The decode share, not the width, is the 27B's knob for prompt-versus-lanes
   priority.** The width moves priority as a side effect (one round per chunk)
   and lengthens the gap. The share moves priority alone, but only toward the

@@ -65,13 +65,16 @@ Each lever is an A/B on the 5090, kept only if it is faster and passes the quali
 
 1. Each lever's A/B is recorded in a finding: kept or dropped, with the numbers.
 2. *(proposed)* With the kept levers, the fixed part is ≤ 85 µs/token: cold prefill at 8K ≥ +12% against today's.
-   Together with #335's attention, the estimate at 60-73K is:
-   - **~9,000-10,500 tok/s with FP8 attention.** That assumes ~0.65 ns per key, the 60-70% of the FP8 peak a real
-     flash kernel reaches: mkyt's 0.93 ns at 400 W, scaled to default clocks.
-   - **~8,500-9,000 with FP16 accumulate only.**
-   - At 19K, ~11,000-12,000.
-   - 12,500 at 60K would need a fixed part of ~66 µs on top of FP8 attention. That push past ≤ 85 µs is **phase 2**
-     (owner, 2026-10-21; `docs/specs/27b-16gb/phase2-notes.md`). This ticket stops at AC 2's target.
+   Together with #335's attention as measured, 0.86-0.92 ns per key·token (its 8-bit band), the estimate at a fixed
+   part of 85 µs is (recomputed 2026-10-21, finding 2026-10-21-the-27b-prefill-chunk-at-2048):
+   - **~8,400-9,000 tok/s at 60-73K**, ~10,700 at 19K. The first estimate, ~9,000-10,500 and ~11,000-12,000,
+     assumed ~0.65 ns per key (60-70% of the FP8 peak; mkyt's 0.93 ns at 400 W scaled to default clocks).
+   - Measured with the 2,048 chunk: the fixed part is already ~82-85 µs at 46K-105K and ~106 µs at the 8K cell,
+     whose excess is per request (~80 ms) and whose request is the first after the load. The 8K criterion above
+     measures that, not the per-token term.
+   - 12,500 at 60K would need a fixed part of ~53 µs at the measured attention (~66 at 0.65 ns). That push past
+     ≤ 85 µs is **phase 2** (owner, 2026-10-21; `docs/specs/27b-16gb/phase2-notes.md`). This ticket stops at AC 2's
+     target.
 3. Serving KLD within noise of today's for every kept speed lever. Decode unchanged.
 4. Lever 5: the KLD of the GPTQ-encoded weights against today's encoding, reported, with a recommendation for or
    against a new 32 GB artifact.

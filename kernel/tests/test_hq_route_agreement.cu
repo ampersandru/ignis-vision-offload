@@ -1260,7 +1260,9 @@ int main() {
   // through the 8-bit band: against BF16 next to A1's route, as the chunk cut into several bands
   // (a 1,024-key band instead of 32,768) and into every split count, both of which must leave
   // the answer where the partial states' rounding puts it. The second arm starts mid-block
-  // (3,000 = 46 x 64 + 56) and is a full serving-width chunk.
+  // (3,000 = 46 x 64 + 56) and is a full serving-width chunk. GitHub #341: the same at the
+  // wider chunks, whose own keys (the window pass's fresh rows) are more of what a query
+  // sees -- 2,048 (the rtx5090 profile's) and 4,096.
   {
     struct LongArm {
       const char *name;
@@ -1271,6 +1273,9 @@ int main() {
         {"prefill W=200 at 4096", 200, 4096},
         {"prefill W=1024 at 3000", 1024, 3000},
         {"prefill W=1024 at 32000", 1024, 32000},
+        {"prefill W=2048 at 3000", 2048, 3000},
+        {"prefill W=2048 at 32000", 2048, 32000},
+        {"prefill W=4096 at 32000", 4096, 32000},
     };
     for (const LongArm &arm : arms) {
       Inputs in;

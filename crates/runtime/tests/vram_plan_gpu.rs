@@ -250,6 +250,23 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
     assert_eq!(bounded.workspace, narrow_bounded.workspace, "one arena, sized by the bounded encoder alone");
     assert_eq!(bounded.media_embedding, with_vision.media_embedding, "the pool keeps the envelope's floor");
 
+    // GitHub #341: the rtx5090 profile prefills 2,048 tokens a chunk. Its text scratch is still
+    // below the bounded encoder, so with vision on the wider chunk costs no byte; at 4,096 the
+    // scratch passes the encoder and the arena grows.
+    let wide_text = reserved(2048, MAX_CONTEXT, None);
+    let wide_bounded = reserved(2048, MAX_CONTEXT, Some(vision.with_item_max_tokens(ITEM_BOUND)));
+    let widest_bounded = reserved(4096, MAX_CONTEXT, Some(vision.with_item_max_tokens(ITEM_BOUND)));
+    eprintln!(
+        "workspace: text at a 2,048-token chunk {}, bounded vision at 2,048 {} and at 4,096 {}",
+        wide_text.workspace, wide_bounded.workspace, widest_bounded.workspace
+    );
+    // ~399 KB per chunk token: 12,128,000 B short of the bounded encoder at 2,048, 669,716,736 B
+    // past it at 4,096 (the same arena the rtx5090 profile plans at 917,504 tokens).
+    assert_eq!(wide_text.workspace, 870_055_680 + text_room);
+    assert!(wide_text.workspace < bounded.workspace, "at 2,048 the bounded encoder is still the larger");
+    assert_eq!(wide_bounded.workspace, bounded.workspace, "with vision on, the 2,048 chunk is free");
+    assert_eq!(widest_bounded.workspace, 1_578_309_632, "at 4,096 the text scratch is the larger");
+
     // A short context caps the envelope, and with it the item, below the
     // prefill scratch the same way -- and caps the text span too, to the
     // same 2,048 keys, so a head point's readout is the text room already.
