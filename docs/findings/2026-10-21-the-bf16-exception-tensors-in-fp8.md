@@ -94,6 +94,29 @@ The scalar `balance` (truth −0.75): BF16 −0.75 at an uncertainty of 0.0001; 
 BF16 activations. Every other GPU test of the profile set is green under FP8 as the default (CTest 133/133, core,
 runtime, the attention taps).
 
+**Which of the nine** (owner, 2026-10-21: find which one loses the sign; a temporary name filter on the conversion,
+both decision tests per subset, `.scratch/341/bisect-round*.txt`). The scalar's −0.75 and the entailment's cases 1 / 17:
+
+| converted | case 1 | case 17 | balance |
+|---|---:|---:|---|
+| all nine | −0.750 | +0.250 | 0.75 (unc 0.038) |
+| the six qkgv | −0.500 | 0.000 | −0.75 |
+| attention/output, L3 and L7 | +1.875 | −0.625 | 0.75 (0.123) |
+| gdn/output, L4 | +0.375 | +1.750 | −0.75 |
+| attention/output L3 | +4.875 | +0.125 | 0.75 (0.093) |
+| attention/output L7 | +3.375 | −1.250 | −0.75 |
+| qkgv + gdn (seven) | +4.625 | +1.500 | 0.75 (0.038) |
+| all but attention/output L3 (eight) | +3.000 | +2.125 | 0.75 (0.213) |
+| qkgv 11-23 + attention/output L7 + gdn | +0.750 | +0.375 | −0.75 |
+| qkgv 11-23 | +3.625 | +0.250 | 0.75 (0.255) |
+| qkgv 11-23 + gdn | +1.125 | −0.125 | 0.75 (0.252) |
+
+No single matrix carries it. The sign is lost by the L3 output alone, by the four late qkgv alone, and by the qkgv
+with the GDN output (seven), but kept by each of the six qkgv, the GDN output or the L7 output alone. Adding a
+matrix to a passing set can lose it, and adding one to a losing set can restore it. Under any of these perturbations
+the read's uncertainty rises from BF16's 0.0001 to 0.04-0.25, and past that the sign behaves like a coin. The one
+subset that keeps every fixture (late qkgv + L7 output + GDN output) is that coin, not a criterion.
+
 **A false alarm on the way** (kept for the method). `fp8_exceptions_gpu`'s first acceptance was the two loads'
 top-1 agreement over a 362-token prompt (one sentence eight times): 0.635, mean KL 2.28 nats, positions at 17 nats.
 Every kernel was exonerated by rerunning with BF16 activations everywhere and then with the GEMV in 8-token slices:
@@ -161,6 +184,6 @@ Inferred:
 ## Follow-ups
 
 - Owner: FP8 as the default (and the two fixtures re-registered), or opt-in as built; accept or amend ADR 0065.
-- If the default should be FP8 with the decision quality kept: which of the nine carries the scalar's sign (a bisection
-  over the blocks; the qkgv carry ~85% of the speed).
+- The bisection (above) finds no single matrix: a decision on the default is one on how much this fixture's
+  knife-edge weighs against +3% prefill, not a choice of which matrices to convert.
 - The 917,504 profile's margin against the desktop (with the chunk lever's finding).
