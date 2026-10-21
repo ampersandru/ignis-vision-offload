@@ -467,8 +467,8 @@ impl AttentionScores {
 
 /// The fewest tokens the chunk carrying an [`AttentionQuery`] may hold.
 ///
-/// The leaf reads the keys where the layer's attention materialized them,
-/// and under hq-e8-2b only the prompt route materializes them: a chunk of 8
+/// The leaf reads the keys where the layer's attention read them, and under
+/// hq-e8-2b only the prompt attention says where (GitHub #335): a chunk of 8
 /// tokens or fewer takes the small-T route, which decodes keys in registers
 /// and leaves nothing to read. The scheduler keeps an attention readout's
 /// last chunk above that, and the leaf fails the question if it ever meets

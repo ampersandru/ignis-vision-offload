@@ -96,7 +96,7 @@ int32_t ignis_attn_tap_arm(const int32_t *gqa_ordinals, int32_t n_layers,
  * [dim]), receiving the keys [0, visible) ignis's prompt attention read
  * (kernel/include/ignis_hq_prompt_attention.h, GitHub #335) in the codec's
  * **rotated** frame, as BF16 rows -- before the attention's band rounds the
- * codec's ones to E4M3. Nothing is written for a layer whose query chunk did
+ * codec's ones to 8 bits. Nothing is written for a layer whose query chunk did
  * not take that attention (a BF16 or INT8 cache, a small-T width);
  * `consumed_rows` reports 0 for it.
  *

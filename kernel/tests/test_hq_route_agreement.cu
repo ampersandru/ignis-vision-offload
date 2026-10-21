@@ -32,6 +32,13 @@
 // That order is the reference's and ignis patches it (ADR 0037); these arms
 // are the test that tells the two apart.
 //
+// GitHub #335 (ADR 0061): the prefill arms run a second time through ignis's
+// prompt attention (`ignis_hq_prompt_attention`), the route every hq-e8-2b
+// prefill chunk takes now; A1's Prompt route stays here as its oracle. Its
+// distance from BF16 is held to A1's on the same keys (spec 27b-16gb/03
+// acceptance 2), and past the residual window the band's cuts (band size, key
+// splits) and its FP16 fallback are held to one another.
+//
 // Rows are the committed real-activation fixture from P4-03
 // (kernel/tests/fixtures/hq_kv_rows_27b.bin, captured from a real prefill of
 // the 27B artifact): the tolerance below is derived from the codec error
@@ -1018,20 +1025,29 @@ void check_causal(const std::string &arm, const std::vector<std::uint16_t> &same
 // ---- ignis's prompt attention against A1's own route (GitHub #335) --------
 //
 // ADR 0061 / spec 27b-16gb/03 acceptance 2: the prompt attention without prompt planes is held
-// to the codec's bounds above like A1's route, and its agreement with BF16 is printed beside
-// A1's on the same keys, so the two numbers are in one report. The window it reads exact goes
+// to the codec's bounds above like A1's route, and its median distance from BF16 to A1's on the
+// same keys, printed side by side. Acceptance 2 asks for "at least as close"; the bound leaves
+// 1% for the reduction order and the band's own rounding (measured x0.986-1.005 on every arm,
+// the FP16 band x0.998-1.001), and fails the E4M3 Q K^T this replaced (x1.062-1.066 at 32K). The window it reads exact goes
 // through the BF16 tensor cores as the prompt planes did; the keys only the codec holds go
-// through E4M3, whose rounding (~2-4% of a value) sits under the codec's own row error.
+// through the 8-bit band (INT8 Q K^T, E4M3 P V), whose rounding (~1% of a row) sits under the
+// codec's own row error.
+constexpr double kPromptAttentionMedianRatio = 1.01;
+
 void report_routes(const std::string &arm, const Agreement &vendored, const Agreement &ignis) {
+  const double ratio = vendored.median() > 0.0 ? ignis.median() / vendored.median() : 0.0;
   std::printf("[%s] against BF16: A1 median %.6f cosine %.6f | ignis median %.6f cosine %.6f "
               "(median x%.4f)\n",
               arm.c_str(), vendored.median(), vendored.cosine(), ignis.median(), ignis.cosine(),
-              vendored.median() > 0.0 ? ignis.median() / vendored.median() : 0.0);
+              ratio);
+  check(ratio <= kPromptAttentionMedianRatio,
+        arm + ": the prompt attention's median distance from BF16 is x" + std::to_string(ratio) +
+            " of A1's, past x" + std::to_string(kPromptAttentionMedianRatio));
 }
 
 // Two runs of ignis's prompt attention that differ only in how the keys are cut -- the band, the
 // key splits -- read the same keys with the same arithmetic per key; what moves is where the
-// partial states are rounded to BF16 between passes and the order they are summed in.
+// partial states are rounded to FP16 between passes and the order they are summed in.
 constexpr double kCutMedianRelL2 = 0.01;
 constexpr double kCutRowRelL2    = 0.05;
 
@@ -1241,7 +1257,7 @@ int main() {
   // ---- ignis's prompt attention past the window (GitHub #335) --------------
   //
   // A history longer than the residual window, so the keys between the sinks and the ring go
-  // through the E4M3 band: against BF16 next to A1's route, as the chunk cut into several bands
+  // through the 8-bit band: against BF16 next to A1's route, as the chunk cut into several bands
   // (a 1,024-key band instead of 32,768) and into every split count, both of which must leave
   // the answer where the partial states' rounding puts it. The second arm starts mid-block
   // (3,000 = 46 x 64 + 56) and is a full serving-width chunk.

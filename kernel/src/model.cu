@@ -880,8 +880,8 @@ struct LoadOptions {
   ignis::RopeScaling rope_scaling{};
   // GitHub #275: the most keys of a text span an attention readout reads.
   uint32_t attention_text_max_keys = 0;
-  // GitHub #335: the prompt attention's precision, 0 = 8-bit, 1 = FP16.
-  uint32_t prefill_attention = 0;
+  // GitHub #335: the prompt attention's precision (enum ignis_prefill_attention).
+  uint32_t prefill_attention = IGNIS_PREFILL_ATTENTION_FP8;
 };
 
 // GitHub #243: one embedding pool page, in bytes -- the width every side of
@@ -1060,9 +1060,9 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     draft_row_budget = options->draft_row_budget;
     prefill_attention = options->prefill_attention;
   }
-  // GitHub #335: 0 = 8-bit, 1 = FP16 accumulate; a value the leaf does not
-  // know is refused rather than run as one of the two.
-  if (prefill_attention > 1) {
+  // GitHub #335: a value the leaf does not know is refused rather than run as
+  // one of the two.
+  if (prefill_attention != IGNIS_PREFILL_ATTENTION_FP8 && prefill_attention != IGNIS_PREFILL_ATTENTION_FP16) {
     set_error("ignis_model_load: prefill_attention " + std::to_string(prefill_attention) +
               " is not 0 (8-bit) or 1 (FP16 accumulate)");
     return nullptr;
@@ -1138,7 +1138,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   // no drafter, vision tower or attention readouts. Its decode lanes and its
   // residency are its options alone.
   if (flash_next) {
-    if (prefill_attention != 0) {
+    if (prefill_attention != IGNIS_PREFILL_ATTENTION_FP8) {
       set_error("ignis_model_load: prefill_attention is the 27B's; Qwen3.8-Flash-Next's attention is QSA");
       return nullptr;
     }

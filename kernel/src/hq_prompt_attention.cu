@@ -35,7 +35,7 @@
 //     Upstream's E4M3 Q costs ~2.5% of each query's value, the same for every key it scores: a
 //     bias, not noise, measured at 32K keys as the median row x1.06 of A1's distance from BF16.
 //   - The attention runs in the codec's rotated frame: Q is rotated once per call (and rounded
-//     to BF16 for the window, quantized to E4M3 with a per-row scale for the band), the output
+//     to BF16 for the window, quantized to INT8 with a per-row scale for the band), the output
 //     is un-rotated once per row by the merge.
 //   - Both passes run in base 2 with P = 2^(s - m + 8), so O and l carry one scale throughout.
 //   - Key splits: each CTA attends one of `splits` equal parts of its keys in every pass and
@@ -96,7 +96,7 @@ constexpr int kRowThreads = 256;  // prep / merge: one warp per (token, head) ro
 static_assert(kGroup % kHeadsPerCta == 0, "a CTA's heads share one KV group");
 static_assert(kFaThreads == 256, "the FA CTA is 8 warps");
 
-// A tile's K and V bytes in one pass: E4M3 rows of 256 bytes, or BF16 rows of 512.
+// A tile's K and V bytes in one pass: 8-bit rows of 256 bytes, or 16-bit rows of 512.
 template <bool kFp8>
 constexpr int kKTileBytes = kTile * kHeadDim * (kFp8 ? 1 : 2);
 template <bool kFp8>
@@ -290,9 +290,9 @@ __global__ void __launch_bounds__(kRowThreads) prep_q_kernel(const __nv_bfloat16
 
 // ---- a pass's keys: one 32-key tile of one KV head and role per CTA ---------------------------
 
-// Where a pass's tiles live. FP8: k = E4M3 [kv_head][capacity][256], v = V^T
-// [kv_head][capacity / 32][256 dims x 32 keys], scale = [role][kv_head][capacity / 32] powers of
-// two. BF16: k, v = [kv_head][capacity][256], no scale.
+// Where a pass's tiles live. 8-bit: k = INT8 [kv_head][capacity][256], v = E4M3 V^T
+// [kv_head][capacity / 32][256 dims x 32 keys], scale = [role][kv_head][capacity / 32] (K's
+// amax / 127, V's a power of two). BF16 / FP16: k, v = [kv_head][capacity][256], no scale.
 struct PassBuffers {
   std::uint8_t *k;
   std::uint8_t *v;
@@ -356,7 +356,7 @@ __global__ void __launch_bounds__(256) tile_kernel(IgnisHqPromptKeys src, Column
   }
 }
 
-// The FP8 half of tile_kernel: the tile's scale, then K rows or V^T segments in E4M3.
+// The 8-bit half of tile_kernel: the tile's scale, then K rows in INT8 or V^T segments in E4M3.
 __device__ __forceinline__ void store_fp8_tile(const __nv_bfloat16 *tile, bool role_v, int head,
                                                int tile_index, PassBuffers buf, float *warp_amax,
                                                float &tile_scale) {
@@ -463,7 +463,8 @@ struct Queries {
   const __nv_bfloat16 *q16; // BF16 [token][head][256]
 };
 
-// kFp8: the E4M3 band; kHalf: the FP16-accumulate fallback band; neither: the BF16 window.
+// kFp8: the 8-bit band (INT8 Q K^T, E4M3 P V); kHalf: the FP16-accumulate fallback band; neither:
+// the BF16 window.
 template <bool kFp8, bool kHalf = false>
 __global__ void __launch_bounds__(kFaThreads, 1)
     fa_kernel(Queries qs, int start, int width, float scale, Columns cols, PassBuffers buf,
@@ -893,7 +894,7 @@ struct BandArea {
 BandArea band_area(std::int32_t width, std::uint32_t visible_keys, std::uint32_t band_keys,
                    std::uint32_t window) {
   BandArea a{};
-  // Either band's plane: E4M3 at band_keys, FP16 at half of them.
+  // Either band's plane: 8-bit at band_keys, FP16 at half of them.
   const std::size_t fp8_plane = aligned(std::max(
       static_cast<std::size_t>(kKvHeads) *
           band_capacity(visible_keys, band_keys, IgnisHqPromptPrecision::kFp8) * kHeadDim,
@@ -910,7 +911,8 @@ BandArea band_area(std::int32_t width, std::uint32_t visible_keys, std::uint32_t
 }
 
 struct Workspace {
-  ninfer::Tensor q8, q_scale, area, band_scale, carry_o, carry_m, carry_l;
+  // q_band: the band's Q, INT8 (the 8-bit band) or FP16 (the fallback), sized for FP16.
+  ninfer::Tensor q_band, q_scale, area, band_scale, carry_o, carry_m, carry_l;
 };
 
 // One allocation order for the op and for its size query, so the two cannot drift.
@@ -921,7 +923,7 @@ Workspace allocate(Allocator &arena, std::int32_t width, std::uint32_t visible_k
   const std::uint32_t band = band_capacity(visible_keys, band_keys, IgnisHqPromptPrecision::kFp8);
   const BandArea a = band_area(width, visible_keys, band_keys, window_capacity(width, visible_keys));
   Workspace w;
-  w.q8 = arena.alloc(ninfer::DType::U8, {2 * kHeadDim, kQHeads, width, 1});
+  w.q_band = arena.alloc(ninfer::DType::U8, {2 * kHeadDim, kQHeads, width, 1});
   w.q_scale = arena.alloc(ninfer::DType::FP32, {kQHeads, width, 1, 1});
   w.area = arena.alloc(ninfer::DType::U8, {static_cast<std::int32_t>(a.bytes), 1, 1, 1});
   w.band_scale = arena.alloc(ninfer::DType::FP32,
@@ -1084,9 +1086,9 @@ void ignis_hq_prompt_attention(const ninfer::Tensor &q, const ninfer::Tensor &k,
   const IgnisHqPromptKeys src = ignis_hq_prompt_keys(cache, k, v, start_position);
 
   Queries qs{};
-  qs.q8 = half_band ? nullptr : static_cast<const std::uint8_t *>(ws.q8.data);
+  qs.q8 = half_band ? nullptr : static_cast<const std::uint8_t *>(ws.q_band.data);
   qs.q_scale = static_cast<const float *>(ws.q_scale.data);
-  qs.qh = half_band ? static_cast<const __half *>(ws.q8.data) : nullptr;
+  qs.qh = half_band ? static_cast<const __half *>(ws.q_band.data) : nullptr;
   qs.q16 = window_pass ? reinterpret_cast<const __nv_bfloat16 *>(area_base + area.q16) : nullptr;
   const int rows = width * kQHeads;
   const int row_blocks = (rows + kRowThreads / 32 - 1) / (kRowThreads / 32);
@@ -1120,7 +1122,7 @@ void ignis_hq_prompt_attention(const ninfer::Tensor &q, const ninfer::Tensor &k,
     resume = 1;
   }
 
-  // The band pass: every key only the codec holds, a band at a time, in E4M3.
+  // The band pass: every key only the codec holds, a band at a time, in 8 bits (or FP16).
   const std::int32_t codec_begin = window_pass ? sinks : 0;
   const std::int32_t codec_end =
       window_pass ? std::min(ring_from, static_cast<std::int32_t>(visible))

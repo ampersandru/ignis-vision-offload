@@ -328,9 +328,9 @@ config_group! {
             [Visible, Patchable, ReloadRequired, Scoped];
         /// The 27B's prompt attention precision (GitHub #335): `fp8` (the
         /// default, the band pass in 8 bits) or `fp16` (the FP16-accumulate
-        /// fallback). Flash-Next's attention is QSA: it takes the field and ignores it.
-        prefill_attention: PrefillAttentionKind = PrefillAttention::default(), Validator::OneOf(&PrefillAttention::NAMES), ALL,
-            [Visible, Patchable, ReloadRequired, Scoped];
+        /// fallback). Flash-Next's attention is QSA and has no such pass.
+        prefill_attention: PrefillAttentionKind = PrefillAttention::default(), Validator::OneOf(&PrefillAttention::NAMES), QWEN38_ONLY,
+            [Visible, Patchable, ReloadRequired];
         /// The prefill chunk width, in tokens.
         prefill_chunk: Tokens = super::DEFAULT_PREFILL_CHUNK, Validator::MultipleOf(super::PREFILL_CHUNK_ALIGNMENT as u64), ALL,
             [Visible, Patchable, ReloadRequired, Scoped];

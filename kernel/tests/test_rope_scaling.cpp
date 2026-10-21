@@ -273,7 +273,8 @@ int main() {
       check(contains(m, "prefill_attention"),
             "precision " + std::to_string(precision) + " is refused by name: " + m);
     }
-    for (const uint32_t precision : {0u, 1u}) {
+    for (const uint32_t precision : {static_cast<uint32_t>(IGNIS_PREFILL_ATTENTION_FP8),
+                                     static_cast<uint32_t>(IGNIS_PREFILL_ATTENTION_FP16)}) {
       ignis_model_load_options options = scaled(0.0F, 0.1F, 32.0F, 1.0F);
       options.prefill_attention = precision;
       const std::string m = load_error(options);

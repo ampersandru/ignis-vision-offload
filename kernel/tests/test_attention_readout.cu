@@ -18,7 +18,7 @@
 //   pages        a block table that is not the identity and a span that
 //                starts mid-page, so a kernel that ignored the indirection
 //                or the page offset reads the wrong rows.
-//   plane        the hq keys read against the host-rotated query, the keys
+//   hq keys      the hq keys read against the host-rotated query, the keys
 //                being the rotation of known ones, where the score must come
 //                back as the frame-free q . k -- which is the property the
 //                readout rests on (the codec's rotation is orthonormal),
@@ -31,14 +31,14 @@
 //                scoring the wrong keys: no prompt attention, keys past the
 //                history -- and the one geometry it refuses outright.
 //   set          GitHub #263 (ADR 0039): the fused launch over a head set,
-//                on the plane and on the pages -- each head's argmax against
+//                on the hq keys and on the pages -- each head's argmax against
 //                the host's, an excluded key scoring above everything
 //                skipped, an exact tie won by the larger key, the pointing
 //                head's row equal to the single-head kernel's whether or not
 //                it is one of the set, and the guards.
 //   rows         GitHub #275 (ADR 0041): a set read in whole rows over a text
 //                span, with no grid -- every head's row against the host's, on
-//                the plane and on the pages, and a set with nowhere to put
+//                the hq keys and on the pages, and a set with nowhere to put
 //                what it reads refused.
 //
 // ADR 0006 / docs/agents/testing.md: no SKIP_RETURN_CODE, so a missing or
@@ -188,7 +188,7 @@ std::vector<double> query_of(const Scene &scene) {
 
 // GitHub #335: hq keys as ignis's prompt attention reads them. Every key is
 // the chunk's own row -- `rows`, un-rotated, [position][kv_head][256] -- which
-// the fetch rotates into the codec's frame; `plane` is what the attention's
+// the fetch rotates into the codec's frame; `fetched_rows` is what the attention's
 // own fetch returns, [kv_head][position][256], the rows a score is held to.
 struct HqKeys {
   explicit HqKeys(const std::vector<std::uint16_t> &rows, std::int64_t visible) : chunk(rows) {
@@ -199,11 +199,11 @@ struct HqKeys {
     Device<std::uint16_t> fetched(static_cast<std::size_t>(kKvHeads) * visible * kHeadDim);
     ignis_hq_prompt_fetch_rows(keys, /*values=*/false, 0, keys.width, fetched.p, nullptr);
     CUDA_FATAL(cudaDeviceSynchronize());
-    plane = fetched.read();
+    fetched_rows = fetched.read();
   }
   Device<std::uint16_t> chunk;
   IgnisHqPromptKeys keys;
-  std::vector<std::uint16_t> plane;
+  std::vector<std::uint16_t> fetched_rows;
 };
 
 std::vector<std::uint16_t> gaussian_rows(std::int64_t visible, std::mt19937 &rng) {
@@ -293,8 +293,8 @@ void the_pages_are_read_through_the_block_table(std::mt19937 &rng) {
   check(worst < 1e-4, "the BF16 scores are q . k / 16 of the table's rows");
 }
 
-void the_plane_is_read_in_the_codec_frame(std::mt19937 &rng) {
-  std::printf("plane: hq keys in the rotated frame\n");
+void the_hq_keys_are_read_in_the_codec_frame(std::mt19937 &rng) {
+  std::printf("hq keys: in the rotated frame\n");
   const Scene scene = make_scene(rng);
   const std::int64_t span = scene.visible;
   const int kv_head = scene.query_head / (kQHeads / kKvHeads);
@@ -314,7 +314,7 @@ void the_plane_is_read_in_the_codec_frame(std::mt19937 &rng) {
     double rotated = 0.0;
     double plain = 0.0;
     for (int d = 0; d < kHeadDim; ++d) {
-      rotated += rq[d] * from_bf16(hq.plane[(static_cast<std::size_t>(kv_head) * span + position) * kHeadDim + d]);
+      rotated += rq[d] * from_bf16(hq.fetched_rows[(static_cast<std::size_t>(kv_head) * span + position) * kHeadDim + d]);
       plain += q[d] * from_bf16(rows[(static_cast<std::size_t>(position) * kKvHeads + kv_head) * kHeadDim + d]);
     }
     in_frame[static_cast<std::size_t>(k)] = rotated * kScale;
@@ -356,7 +356,7 @@ void a_span_past_one_band_is_read(std::mt19937 &rng) {
     const std::int64_t row = scene.key_begin - kStart + k;
     double dot = 0.0;
     for (int d = 0; d < kHeadDim; ++d) {
-      dot += rq[d] * from_bf16(hq.plane[(static_cast<std::size_t>(kv_head) * width + row) * kHeadDim + d]);
+      dot += rq[d] * from_bf16(hq.fetched_rows[(static_cast<std::size_t>(kv_head) * width + row) * kHeadDim + d]);
     }
     want[static_cast<std::size_t>(k)] = dot * kScale;
   }
@@ -530,8 +530,8 @@ struct Planted {
   std::int64_t tie_high = 700;
 };
 
-void the_set_is_read_in_one_launch_off_the_plane(std::mt19937 &rng) {
-  std::printf("set/plane: hq keys, every head of the set\n");
+void the_set_is_read_in_one_launch_off_the_hq_keys(std::mt19937 &rng) {
+  std::printf("set/hq: hq keys, every head of the set\n");
   const Scene scene = make_scene(rng);
   const Planted planted;
   const std::int64_t span = scene.visible;
@@ -565,14 +565,14 @@ void the_set_is_read_in_one_launch_off_the_plane(std::mt19937 &rng) {
   const std::vector<std::int32_t> excluded = {0, static_cast<std::int32_t>(planted.excluded_key),
                                               static_cast<std::int32_t>(scene.key_count - 1)};
   const KeyAt key = [&](int kv, std::int64_t position, int d) {
-    return from_bf16(hq.plane[(static_cast<std::size_t>(kv) * span + position) * kHeadDim + d]);
+    return from_bf16(hq.fetched_rows[(static_cast<std::size_t>(kv) * span + position) * kHeadDim + d]);
   };
 
   const SetRun got = run_set(scene, kSetHeads, scene.query_head, excluded, cache, &hq.keys);
-  check_set(scene, got, kSetHeads, excluded, key, /*hq=*/true, "plane");
+  check_set(scene, got, kSetHeads, excluded, key, /*hq=*/true, "hq keys");
   for (std::size_t i = 0; i < kSetHeads.size(); ++i) {
     check((got.best[i] & 0xffffffffULL) == static_cast<unsigned long long>(planted.tie_high),
-          "plane: head " + std::to_string(kSetHeads[i]) +
+          "hq keys: head " + std::to_string(kSetHeads[i]) +
               " breaks the planted tie toward the larger key");
   }
   // The pointing head's row, written in the same pass, is the single-head
@@ -584,7 +584,7 @@ void the_set_is_read_in_one_launch_off_the_plane(std::mt19937 &rng) {
                                 std::max(1.0, static_cast<double>(std::fabs(alone.scores[k]))));
   }
   std::printf("  pointing row against the single-head kernel: worst relative %.2e\n", worst);
-  check(worst < 1e-5, "plane: the pointing head's row is the single-head kernel's");
+  check(worst < 1e-5, "hq keys: the pointing head's row is the single-head kernel's");
 }
 
 void the_set_is_read_in_one_launch_off_the_pages(std::mt19937 &rng) {
@@ -725,11 +725,11 @@ void the_set_is_read_in_rows_over_a_text_span(std::mt19937 &rng) {
   const HqKeys keys(gaussian_rows(span, rng), span);
   ninfer::PagedKVBatchLayerView hq;
   hq.dtype = ninfer::DType::U8;
-  const KeyAt plane_key = [&](int kv, std::int64_t position, int d) {
-    return from_bf16(keys.plane[(static_cast<std::size_t>(kv) * span + position) * kHeadDim + d]);
+  const KeyAt hq_key = [&](int kv, std::int64_t position, int d) {
+    return from_bf16(keys.fetched_rows[(static_cast<std::size_t>(kv) * span + position) * kHeadDim + d]);
   };
-  check_rows(scene, run_rows(scene, kSetHeads, hq, &keys.keys), kSetHeads, plane_key,
-             /*hq=*/true, "rows/plane");
+  check_rows(scene, run_rows(scene, kSetHeads, hq, &keys.keys), kSetHeads, hq_key,
+             /*hq=*/true, "rows/hq keys");
 
   const int pages = static_cast<int>((scene.visible + kPage - 1) / kPage);
   std::vector<std::int32_t> table(pages);
@@ -793,10 +793,10 @@ int main() {
   }
   std::mt19937 rng(20260922);
   the_pages_are_read_through_the_block_table(rng);
-  the_plane_is_read_in_the_codec_frame(rng);
+  the_hq_keys_are_read_in_the_codec_frame(rng);
   a_span_past_one_band_is_read(rng);
   a_read_that_cannot_be_made_is_left_unread(rng);
-  the_set_is_read_in_one_launch_off_the_plane(rng);
+  the_set_is_read_in_one_launch_off_the_hq_keys(rng);
   the_set_is_read_in_one_launch_off_the_pages(rng);
   a_set_that_cannot_be_read_is_left_unread(rng);
   the_set_is_read_in_rows_over_a_text_span(rng);

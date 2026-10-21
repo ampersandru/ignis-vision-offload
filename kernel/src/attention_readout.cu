@@ -332,56 +332,57 @@ __global__ void attention_set_readout_kernel(const SetReadoutArgs args) {
   for (std::int64_t k0 = (static_cast<std::int64_t>(blockIdx.x) * kWarpsPerBlock + warp) * per_warp;
        k0 < args.key_count;
        k0 += static_cast<std::int64_t>(gridDim.x) * kWarpsPerBlock * per_warp) {
-   if (kHq) {
-     fetch_span_rows(args.keys, kv_head, args.key_begin, args.key_count, k0, stage, warp);
-   }
-   for (int r = 0; r < per_warp && k0 + r < args.key_count; ++r) {
-    const std::int64_t k = k0 + r;
-    const std::int64_t position = args.key_begin + k;
-    const __nv_bfloat16 *row =
-        kHq ? stage.rows[warp][r]
-            : args.k_pages + ninfer::ops::paged_kv_element_offset<kHeadDim, kKvHeads>(
-                                 args.block_table, kv_head, static_cast<std::int32_t>(position), 0);
-    float key[kHeadDim / 32];
-#pragma unroll
-    for (int j = 0; j < kHeadDim / 32; ++j) {
-      key[j] = __bfloat162float(row[lane + 32 * j]);
+    if (kHq) {
+      fetch_span_rows(args.keys, kv_head, args.key_begin, args.key_count, k0, stage, warp);
     }
-    bool excluded = false;
-    for (int e = 0; e < args.excluded_count; ++e) {
-      excluded = excluded || args.excluded[e] == k;
-    }
+    for (int r = 0; r < per_warp && k0 + r < args.key_count; ++r) {
+      const std::int64_t k = k0 + r;
+      const std::int64_t position = args.key_begin + k;
+      const __nv_bfloat16 *row =
+          kHq ? stage.rows[warp][r]
+              : args.k_pages +
+                    ninfer::ops::paged_kv_element_offset<kHeadDim, kKvHeads>(
+                        args.block_table, kv_head, static_cast<std::int32_t>(position), 0);
+      float key[kHeadDim / 32];
 #pragma unroll
-    for (int m = 0; m < kGroup; ++m) {
-      if (m < armed) { // warp-uniform
-        float acc = 0.0F;
+      for (int j = 0; j < kHeadDim / 32; ++j) {
+        key[j] = __bfloat162float(row[lane + 32 * j]);
+      }
+      bool excluded = false;
+      for (int e = 0; e < args.excluded_count; ++e) {
+        excluded = excluded || args.excluded[e] == k;
+      }
 #pragma unroll
-        for (int j = 0; j < kHeadDim / 32; ++j) {
-          acc += q[m][lane + 32 * j] * key[j];
-        }
+      for (int m = 0; m < kGroup; ++m) {
+        if (m < armed) { // warp-uniform
+          float acc = 0.0F;
 #pragma unroll
-        for (int offset = 16; offset > 0; offset >>= 1) {
-          acc += __shfl_down_sync(0xffffffffu, acc, offset);
-        }
-        if (lane == 0) {
-          const float score = acc * args.scale;
-          if (m == mine_row) {
-            args.scores[k] = score;
+          for (int j = 0; j < kHeadDim / 32; ++j) {
+            acc += q[m][lane + 32 * j] * key[j];
           }
-          // GitHub #275: a set read in rows keeps every score it forms, at
-          // its head's slot of the whole set.
-          if (args.rows != nullptr && mine_slot[m] >= 0) {
-            args.rows[static_cast<std::int64_t>(mine_slot[m]) * args.key_count + k] = score;
+#pragma unroll
+          for (int offset = 16; offset > 0; offset >>= 1) {
+            acc += __shfl_down_sync(0xffffffffu, acc, offset);
           }
-          if (!excluded && mine_slot[m] >= 0) {
-            const unsigned long long packed = pack_score(score, static_cast<std::uint32_t>(k));
-            best[m] = packed > best[m] ? packed : best[m];
+          if (lane == 0) {
+            const float score = acc * args.scale;
+            if (m == mine_row) {
+              args.scores[k] = score;
+            }
+            // GitHub #275: a set read in rows keeps every score it forms, at
+            // its head's slot of the whole set.
+            if (args.rows != nullptr && mine_slot[m] >= 0) {
+              args.rows[static_cast<std::int64_t>(mine_slot[m]) * args.key_count + k] = score;
+            }
+            if (!excluded && mine_slot[m] >= 0) {
+              const unsigned long long packed = pack_score(score, static_cast<std::uint32_t>(k));
+              best[m] = packed > best[m] ? packed : best[m];
+            }
           }
         }
       }
     }
-   }
-   __syncwarp();  // the warp's rows are read before the next fetch rewrites them
+    __syncwarp();  // the warp's rows are read before the next fetch rewrites them
   }
   if (lane == 0) {
 #pragma unroll

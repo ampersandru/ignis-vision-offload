@@ -42,8 +42,9 @@ inline constexpr std::uint32_t kIgnisHqPromptTileKeys = 32;
 struct IgnisHqPromptKeys;
 
 // How the band pass multiplies (spec 27b-16gb/03 Solution 6): in 8 bits, the default -- Q K^T on
-// the INT8 MMA, exact in int32, P V in E4M3 on the block-scaled FP8 MMA; or the fallback, FP16 operands with FP16 accumulate inside each 32-key tile, folded
-// into FP32 -- its band holds half the keys in the same bytes. The window pass is BF16 either way.
+// the INT8 MMA, exact in int32, P V in E4M3 on the block-scaled FP8 MMA; or the fallback, FP16
+// operands with FP16 accumulate inside each 32-key tile, folded into FP32 -- its band holds half
+// the keys in the same bytes. The window pass is BF16 either way.
 enum class IgnisHqPromptPrecision { kFp8, kFp16 };
 
 struct IgnisHqPromptOptions {

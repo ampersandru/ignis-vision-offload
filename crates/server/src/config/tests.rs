@@ -744,11 +744,16 @@ fn the_prefill_attention_is_fp8_unless_named_and_flag_beats_env() {
     assert_eq!(flag.prefill_attention, PrefillAttention::Fp8);
 }
 
+/// The field is the 27B's alone (Flash-Next's QSA has no band pass): an
+/// explicit value reaches the 27B and refuses a Flash-Next start by name.
 #[test]
-fn the_scoped_prefill_attention_reaches_the_27b() {
-    let scoped = config(&["--profile", "none", "--qwen38-model-prefill-attention", "fp16"]);
-    assert_eq!(scoped.for_family(ModelFamily::Qwen38_27b).unwrap().prefill_attention, PrefillAttention::Fp16);
-    assert_eq!(scoped.for_family(ModelFamily::FlashNext).unwrap().prefill_attention, PrefillAttention::Fp8);
+fn the_prefill_attention_is_the_27bs_and_refuses_flash_next() {
+    let fp16 = config(&["--model-prefill-attention", "fp16"]);
+    assert_eq!(fp16.for_family(ModelFamily::Qwen38_27b).unwrap().prefill_attention, PrefillAttention::Fp16);
+    assert!(served_model_for(&fp16, ModelFamily::Qwen38_27b).is_ok());
+    let err = served_model_for(&fp16, ModelFamily::FlashNext).expect_err("the 27B's").0;
+    assert!(err.contains("--model-prefill-attention") && err.contains("Qwen3.8-Flash-Next"), "{err}");
+    assert!(served_model_for(&config(&[]), ModelFamily::FlashNext).is_ok(), "unnamed, it is no one's business");
 }
 
 #[test]

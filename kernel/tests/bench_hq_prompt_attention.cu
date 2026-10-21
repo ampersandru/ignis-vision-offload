@@ -14,7 +14,7 @@
 //   ignis_hq_prompt_bench --ctx 46080 [--width 1024] [--iters 10] [--codec-only] [--band KEYS]
 //                         [--splits S] [--ignis-only] [--fp16]
 //
-// --fp16 runs the prompt attention's FP16-accumulate fallback band instead of the E4M3 one.
+// --fp16 runs the prompt attention's FP16-accumulate fallback band instead of the 8-bit one.
 
 #include "ignis_gqa_workspace.h"
 #include "ignis_hq_prompt_attention.h"

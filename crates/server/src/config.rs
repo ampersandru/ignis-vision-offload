@@ -429,7 +429,8 @@ pub struct Config {
     pub rope_scaling: RopeScaling,
     /// The 27B's prompt attention precision (`--model-prefill-attention`,
     /// GitHub #335): the 8-bit band by default, or the FP16-accumulate fallback. Fixed
-    /// for the life of the load; Flash-Next's QSA ignores it.
+    /// for the life of the load; the 27B's alone, so a Flash-Next start
+    /// refuses an explicit value.
     pub prefill_attention: PrefillAttention,
     /// Media acquisition (`--media-allow-private-network`,
     /// `--media-cache-mib`, GitHub #179). Only nameable with vision on.
