@@ -788,6 +788,12 @@ pub fn cuda_scheduler_with_thinking_close(
     qwen27b_load(artifact_path, model_id, eos, shape, thinking_close, kv_disk_location).map_err(|e| e.to_string())
 }
 
+/// GitHub #341: what a wider prefill chunk's workspace takes from the KV pool, if anything.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn workspace_saving(workspace: u64, default_workspace: u64) -> Option<u64> {
+    (workspace > default_workspace).then(|| workspace - default_workspace)
+}
+
 /// The 27B's binder scope for `shape` (GitHub #177, #341): the drafter and
 /// the vision tower when asked for, and how the exception tensors are held.
 #[cfg(feature = "cuda")]
@@ -831,6 +837,20 @@ pub(crate) fn qwen27b_load(
     let geometry = ignis_core::KvGeometry::qwen38_27b();
     let planning = leaf_config_for_shape(shape, 0);
     let reservations = planning.plan_reservations(&reader, &plan, &handles)?;
+    if shape.prefill_chunk > ignis_runtime::DEFAULT_PREFILL_CHUNK {
+        let narrow = EngineShape { prefill_chunk: ignis_runtime::DEFAULT_PREFILL_CHUNK, ..shape };
+        let narrow = leaf_config_for_shape(narrow, 0).plan_reservations(&reader, &plan, &handles)?;
+        if let Some(bytes) = workspace_saving(reservations.reserved.workspace, narrow.reserved.workspace) {
+            // hotpath-lint-allow: one line per model load.
+            tracing::info!(
+                name: "ignis.runtime.prefill_chunk_hint",
+                prefill_chunk = shape.prefill_chunk,
+                freed_bytes = bytes,
+                freed_tokens = bytes / shape.kv_format.page_bytes(geometry) * 64,
+                "--model-prefill-chunk {} frees VRAM for the KV pool", ignis_runtime::DEFAULT_PREFILL_CHUNK
+            );
+        }
+    }
     // Asked once where its error can surface: the plan below reads a pool the
     // leaf refuses to plan as one that never fits.
     planning.kv_pool_arena_bytes(1)?;
@@ -1439,6 +1459,12 @@ mod tests {
         assert_eq!(EngineShape::default().prefill_attention, ignis_core::PrefillAttention::Fp8);
         #[cfg(feature = "cuda")]
         assert_eq!(leaf_config_for_shape(shape, 0).prefill_attention, ignis_core::PrefillAttention::Fp16);
+    }
+
+    #[test]
+    fn a_wider_chunk_hints_only_when_its_workspace_grows() {
+        assert_eq!(workspace_saving(896_464_896, 487_837_184), Some(408_627_712));
+        assert_eq!(workspace_saving(908_592_896, 908_592_896), None, "vision's encoder sizes both");
     }
 
     /// GitHub #341: `--model-exception-weights` reaches the shape, and from it
