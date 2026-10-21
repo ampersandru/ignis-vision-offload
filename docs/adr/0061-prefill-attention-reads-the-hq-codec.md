@@ -130,7 +130,8 @@ The options costed:
     +0.00301]); the E4M3-Q kernel read 0.05123, the gap between the two carried by one window's tail;
   - cold prefill against main, one session: +7.2% at 8K, +9.4% at 14K, +29.7% at 46K, +53.1% at 105K (the host
     embedding of ADR 0062 included); decode +0.1% at one lane and +1.5% at eight, the time per round 2-4% lower;
-  - VRAM at 524,288 keys: the attention's workspace −1,020,474,240 bytes (1,164,194,688 → 143,720,448). The plan's
-    workspace line drops less, −599,718,656 bytes, because a GDN layer's prefill scratch is now the largest one.
+  - VRAM at 524,288 keys: the attention's workspace −1,020,474,240 bytes (1,164,194,688 → 143,720,448), and a
+    text-only load's workspace line as much. With vision on, the line is now the item-bounded vision encoder's
+    (908,592,896 bytes), so it drops by 599,718,656.
 - **The 5090's profile spends it on context**: the 27B's `model.max_context` 786,432 → 917,504, raised until the plan
   refused (950,272 is 59 MB short), which moves `auto` rope scaling from YaRN 3 to 3.5.

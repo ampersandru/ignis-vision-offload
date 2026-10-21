@@ -222,10 +222,11 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
     let text_room = text_scores + HEAD_SET_BYTES + aligned(32 * text_keys * 4);
     assert_eq!(text_room, 26_409_216, "200,000 keys: 800,000 B of scores, 9,216 of set results, 25,600,000 of rows");
 
-    // A text load reserves what it did before #212 -- the `prefill_scratch`
-    // line the plan logged at these options on 2026-09-17 -- and the text
-    // readout's room beside it.
-    assert_eq!(text.workspace, 1_481_902_336 + text_room);
+    // A text load reserves its layers' prefill scratch and the text
+    // readout's room beside it. GitHub #335 (ADR 0061): without the prompt
+    // planes that scratch is 461,427,968 B, where the plan logged
+    // 1,481,902,336 at these options on 2026-09-17.
+    assert_eq!(text.workspace, 461_427_968 + text_room);
     assert_eq!(text.media_embedding, 0);
     assert!(with_vision.media_embedding > 0, "the media embedding keeps its own reservation");
 
@@ -236,19 +237,17 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
 
     // The serving load's item bound: this artifact's processor lets no item
     // through past 16,384 merged tokens, and the encoder holds one at a
-    // time. Sized for that, the encoder falls below the prefill scratch --
-    // where the unbounded envelope reserved 2,219,837,184 B.
+    // time. Sized for that, the encoder fell below the prefill scratch while
+    // the prompt planes were in it; without them (GitHub #335) it is the
+    // larger again, and the arena is the encoder's alone -- still far below
+    // the unbounded envelope's.
     const ITEM_BOUND: u32 = 16_384;
     let bounded = reserved(1024, MAX_CONTEXT, Some(vision.with_item_max_tokens(ITEM_BOUND)));
-    // GitHub #278: the text room's scores, sized for the shortlist's
-    // 200,000-key window, already hold an item's 16,384 — so the bounded
-    // encoder adds nothing at all beside them.
-    assert_eq!(
-        bounded.workspace,
-        text.workspace + (u64::from(ITEM_BOUND) * 4).saturating_sub(text_scores),
-        "an item-bounded encoder fits the prefill scratch"
-    );
-    assert_eq!(bounded.workspace, text.workspace, "the item's scores fit the text room's");
+    let narrow_bounded = reserved(128, MAX_CONTEXT, Some(vision.with_item_max_tokens(ITEM_BOUND)));
+    eprintln!("workspace: vision with a {ITEM_BOUND}-token item bound {}", bounded.workspace);
+    assert!(bounded.workspace > text.workspace, "the item-bounded encoder is the larger without the planes");
+    assert!(bounded.workspace < with_vision.workspace, "the item bound shrinks the encoder's workspace");
+    assert_eq!(bounded.workspace, narrow_bounded.workspace, "one arena, sized by the bounded encoder alone");
     assert_eq!(bounded.media_embedding, with_vision.media_embedding, "the pool keeps the envelope's floor");
 
     // A short context caps the envelope, and with it the item, below the

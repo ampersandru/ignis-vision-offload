@@ -33,8 +33,9 @@ close to BF16 as A1's (agreement, KLD)? Is cold prefill faster and decode no slo
 - Cold prefill: the 2026-10-13 `client.py` and `slices.json` (8,232 warm after nothing, then 14K / 46K / 105K twice,
   each opened by its own nonce; `cached_tokens` 0 on every request). Decode: `ab.py --phases c1,c8`, the 2026-09-24
   coding prompts, greedy, thinking off, 512 tokens.
-- Raw data: `.scratch/335/` in the worktree (untracked): `ab335.py`, `ab_summary.py`, `ab/<leg>.*`, the bench and
-  agreement logs, `kld335*.out`; the dumps on `Y:/kld-335/`.
+- Raw data: `.scratch/335/` in the main checkout (untracked): `ab335.py`, `ab_summary.py`, `profile_probe.py`,
+  `ab/<leg>.*`, `probe-*.json`, the bench and agreement logs, `kld335*.out`; the decode results in
+  `.scratch/sota-quick-wins/results/`; the dumps on `Y:/kld-335/`.
 
 **The attention alone** (`kernel/tests/bench_hq_prompt_attention.cu`: one 1,024-token chunk at the end of a history
 of the given length appended through the codec, Gaussian rows; the time over 16 layers, in ns per key already seen per
@@ -98,9 +99,11 @@ build in the same session:
 
 The budgets differ by at most 71 MB (29.91-29.98 GB, what NVML reports free at the start).
 
-The plan's workspace line takes the largest layer scratch, and without the prompt planes that is a GDN layer's prefill
-scratch: the line drops by the difference between the two, not by the planes. It is the same 908,592,896 bytes at
-917,504 tokens of context (below): it no longer grows with the context.
+The workspace line is one arena, sized by the largest of its users. With the planes that was the text layers'
+prefill scratch, 1,508,311,552 bytes, vision on or off. Without them a text-only load's line drops by the attention's
+saving, to 487,837,184 (`vram_plan_gpu`, 262,144 keys: −1,020,474,368), and with the profile's vision the arena is
+the vision encoder's, sized for one 16,384-token item: 908,592,896 bytes, at 917,504 tokens of context too (below).
+Neither grows with the context any more.
 
 **Cold prefill** (tok/s, the mean of the samples: two reps per launch but at 8K; branch = the merged build):
 
@@ -155,8 +158,9 @@ refused 950,272.
 Observed:
 
 1. **No prefill chunk materializes prompt planes.** The attention's workspace stops growing with the context at one
-   band: 143,720,448 bytes at any history past 32,768 keys, 1,020,474,240 fewer than A1's at 524,288. The VRAM plan's
-   workspace line drops less (−599.7 MB), because the largest scratch is now a GDN layer's.
+   band: 143,720,448 bytes at any history past 32,768 keys, 1,020,474,240 fewer than A1's at 524,288. A text-only
+   load's workspace line drops by as much (−1,020,474,368); with vision on, the line is the item-bounded vision
+   encoder's 908.6 MB, so it drops by 599.7 MB.
 2. **The 8-bit attention is 2.3-2.5× A1's speed** per key already seen, 0.86-0.92 ns per key and token over 16
    layers; the FP16 fallback 1.4×.
 3. **Its output is as close to BF16 as A1's to within half a percent of the median row**, ×0.986-1.005 over every
@@ -174,15 +178,15 @@ Observed:
 Inferred:
 
 - Spec 03's acceptance on the measured side: AC 1 holds for the attention's own workspace (−1,020,474,240 bytes against
-  the amended ≥ 1.0e9); AC 3 holds (KLD within noise); AC 4 holds with the FP8 thresholds (+29.7% ≥ +13% at 46K,
+  the amended ≥ 1.0e9), and for a text-only load's plan line; AC 3 holds (KLD within noise); AC 4 holds with the FP8 thresholds (+29.7% ≥ +13% at 46K,
   +53.1% ≥ +24% at 105K; decode no slower). AC 2 as written, "at least as close", holds for the FP16 fallback on every
   arm (×0.998-1.001) and for the 8-bit band on every arm but the 32K one, where it is ×1.005 (+0.5% on the median
   row, cosine 1.3e-5 lower). Whether that half percent counts is the owner's call; the band ships 8-bit by default
   and FP16 behind `--model-prefill-attention fp16`.
 - The 8-bit band's own error is ~1% of a row against the codec's ~9%: the hq-e8-2b codec, not the attention, is what
   separates the prefill from BF16.
-- The plan's workspace line now follows a GDN layer's prefill scratch (908.6 MB at chunk 1,024, independent of the
-  context); it is the next workspace term to shrink on a 16 GB card.
+- With vision on, the workspace line now follows the vision encoder (908.6 MB for a 16,384-token item): the next
+  term to shrink on a 16 GB card that serves images. A text-only load already gets the whole 1.02 GB.
 - The prefill estimate of spec 03 (FP8: ~10.0K tok/s at 46K, ~8.3K at 105K, from ~7.6K and ~5.2K) is reached within
   3-8% at 46K (9.2-9.7K) and 5-10% at 105K (7.5-7.9K): the attention measured 0.86-0.92 ns, not the assumed 0.65.
 

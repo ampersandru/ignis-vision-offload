@@ -31,8 +31,8 @@ allocation look to WDDM, and does a host under load change the answer?
   follows the decode phase, so it is warm.
 - VRAM: the plan's event (`ignis.runtime.vram_plan`) and the per-process WDDM counters `Dedicated Usage` and
   `Shared Usage`.
-- Raw data: `.scratch/ab/` in the worktree (untracked): `leg.sh`, `run_all.sh`, `analyze.py`, each leg's
-  `server.log`, `decode.txt`, `prefill.jsonl`, `vram.txt`, `results/<leg>.json`, `gather-bench.txt`.
+- Raw data: `.scratch/335-embedding-ab/` in the main checkout (untracked): `leg.sh`, `run_all.sh`, `analyze.py`,
+  each leg's `server.log`, `decode.txt`, `prefill.jsonl`, `vram.txt`, `results/<leg>.json`, `gather-bench.txt`.
 
 **The gather alone** (`kernel/tests/bench_host_mapped_embedding.cu`, the whole table, ids spread over the vocabulary,
 median of 200 launches):
