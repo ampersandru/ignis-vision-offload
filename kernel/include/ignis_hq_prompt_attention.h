@@ -9,8 +9,8 @@
 //     itself -- in BF16, its rows exact as before (the ring slots a rollback cleared through the
 //     codec, as before);
 //   - every other key, which only the codec holds, decoded once per chunk and layer into a fixed
-//     band of `band_keys` keys in E4M3 (2,048 bytes per key) and attended on the block-scaled
-//     FP8 MMAs, band after band.
+//     band of `band_keys` keys in 8 bits (2,048 bytes per key: K in INT8, V in E4M3) and
+//     attended on the INT8 MMA (Q K^T) and the block-scaled FP8 MMA (P V), band after band.
 // Without the residual window every key takes the FP8 pass.
 //
 // The call is A1's for one sequence (B = 1) on an hq-e8-2b cache, with the same order of append
@@ -32,7 +32,7 @@
 #include <cstdint>
 #include <functional>
 
-// The keys one band holds: 2,048 bytes each (E4M3 K and V over 4 KV heads), so 64 MiB.
+// The keys one band holds: 2,048 bytes each (INT8 K and E4M3 V over 4 KV heads), so 64 MiB.
 inline constexpr std::uint32_t kIgnisHqPromptBandKeys = 32768;
 // The most key splits a launch runs; each keeps its own online-softmax state across bands.
 inline constexpr std::int32_t kIgnisHqPromptMaxSplits = 5;
@@ -41,8 +41,8 @@ inline constexpr std::uint32_t kIgnisHqPromptTileKeys = 32;
 
 struct IgnisHqPromptKeys;
 
-// How the band pass multiplies (spec 27b-16gb/03 Solution 6): E4M3 on the block-scaled FP8 MMAs,
-// the default; or the fallback, FP16 operands with FP16 accumulate inside each 32-key tile, folded
+// How the band pass multiplies (spec 27b-16gb/03 Solution 6): in 8 bits, the default -- Q K^T on
+// the INT8 MMA, exact in int32, P V in E4M3 on the block-scaled FP8 MMA; or the fallback, FP16 operands with FP16 accumulate inside each 32-key tile, folded
 // into FP32 -- its band holds half the keys in the same bytes. The window pass is BF16 either way.
 enum class IgnisHqPromptPrecision { kFp8, kFp16 };
 
@@ -86,7 +86,7 @@ IgnisHqPromptKeys ignis_hq_prompt_keys(const ninfer::PagedKVLayerView &cache,
 
 // Writes the rows of keys [key_begin, key_begin + count) -- K, or V with `values` -- into `dst`,
 // BF16 [4 KV heads][count][256] in the codec's rotated frame: the values the attention reads
-// before its band rounds them to E4M3. Enqueued on `stream`; call it before an attend-first
+// before its band rounds them to 8 bits. Enqueued on `stream`; call it before an attend-first
 // append, while the ring still holds the keys before the chunk.
 void ignis_hq_prompt_fetch_rows(const IgnisHqPromptKeys &keys, bool values,
                                 std::int32_t key_begin, std::int32_t count, void *dst,

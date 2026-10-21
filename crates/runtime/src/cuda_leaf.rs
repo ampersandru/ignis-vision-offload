@@ -103,7 +103,7 @@ pub struct CudaLeafConfig {
     /// cached keys are rotated with it.
     pub rope_scaling: ignis_core::RopeScaling,
     /// The prompt attention's band-pass precision (`--model-prefill-attention`,
-    /// GitHub #335): E4M3 by default, or the FP16-accumulate fallback. Fixed
+    /// GitHub #335): the 8-bit band by default, or the FP16-accumulate fallback. Fixed
     /// for the life of the load; Flash-Next's QSA ignores it.
     pub prefill_attention: ignis_core::PrefillAttention,
 }

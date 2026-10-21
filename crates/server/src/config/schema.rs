@@ -327,7 +327,7 @@ config_group! {
         kv_format: KvFormatKind = KvFormat::default(), Validator::OneOf(&["bf16", "hq-e8-2b", "hq_e8_2b", "hq"]), ALL,
             [Visible, Patchable, ReloadRequired, Scoped];
         /// The 27B's prompt attention precision (GitHub #335): `fp8` (the
-        /// default, the band pass in E4M3) or `fp16` (the FP16-accumulate
+        /// default, the band pass in 8 bits) or `fp16` (the FP16-accumulate
         /// fallback). Flash-Next's attention is QSA: it takes the field and ignores it.
         prefill_attention: PrefillAttentionKind = PrefillAttention::default(), Validator::OneOf(&PrefillAttention::NAMES), ALL,
             [Visible, Patchable, ReloadRequired, Scoped];

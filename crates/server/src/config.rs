@@ -428,7 +428,7 @@ pub struct Config {
     /// (ADR 0059).
     pub rope_scaling: RopeScaling,
     /// The 27B's prompt attention precision (`--model-prefill-attention`,
-    /// GitHub #335): E4M3 by default, or the FP16-accumulate fallback. Fixed
+    /// GitHub #335): the 8-bit band by default, or the FP16-accumulate fallback. Fixed
     /// for the life of the load; Flash-Next's QSA ignores it.
     pub prefill_attention: PrefillAttention,
     /// Media acquisition (`--media-allow-private-network`,

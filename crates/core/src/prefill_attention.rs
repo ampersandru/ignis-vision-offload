@@ -1,5 +1,5 @@
 //! The precision of the 27B's prompt attention band pass (GitHub #335, spec
-//! 27b-16gb/03 solution 6): E4M3 by default, the FP16-accumulate fallback
+//! 27b-16gb/03 solution 6): the 8-bit band by default, the FP16-accumulate fallback
 //! behind a load option. A load argument, fixed for the life of the load:
 //! `kernel/src/gqa_layer.cu` hands it to every hq-e8-2b prefill chunk.
 
@@ -8,7 +8,7 @@ use std::fmt;
 /// `--model-prefill-attention`: `fp8` (the default) or `fp16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PrefillAttention {
-    /// The band pass in E4M3.
+    /// The band pass in 8 bits: Q·Kᵀ in INT8, P·V in E4M3.
     #[default]
     Fp8,
     /// The FP16-accumulate fallback.
@@ -19,7 +19,7 @@ impl PrefillAttention {
     /// The spellings `parse` accepts, canonical first.
     pub const NAMES: [&'static str; 2] = ["fp8", "fp16"];
 
-    /// `struct ignis_model_load_options::prefill_attention`: 0 = E4M3,
+    /// `struct ignis_model_load_options::prefill_attention`: 0 = 8-bit,
     /// 1 = FP16 accumulate.
     pub const fn abi_code(self) -> u32 {
         match self {

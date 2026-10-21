@@ -106,7 +106,7 @@ pub(crate) mod ffi {
         /// backend (host `[512 * 2]` [`IgnisMoeSlot`]s), null otherwise.
         pub mtp_expert_slots: *const IgnisMoeSlot,
         /// GitHub #335: the 27B's prompt attention band pass,
-        /// [`crate::prefill_attention::PrefillAttention::abi_code`]: 0 = E4M3,
+        /// [`crate::prefill_attention::PrefillAttention::abi_code`]: 0 = 8-bit,
         /// 1 = FP16 accumulate. Flash-Next's attention is QSA and takes 0.
         pub prefill_attention: u32,
     }
@@ -676,7 +676,7 @@ pub fn load_qwen38_27b_with_options(
 }
 
 /// [`load_qwen38_27b_with_options`] with the prompt attention's precision
-/// chosen at load too (GitHub #335, `--model-prefill-attention`): E4M3 by
+/// chosen at load too (GitHub #335, `--model-prefill-attention`): 8-bit by
 /// default, or the FP16-accumulate fallback. Fixed for the life of the load.
 #[allow(clippy::too_many_arguments)]
 pub fn load_qwen38_27b_with_prefill_attention(
@@ -1291,7 +1291,7 @@ mod tests {
 
     #[test]
     fn the_prefill_attention_option_crosses_only_when_it_is_not_the_default() {
-        assert_eq!(load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8), None, "E4M3 is the NULL options' own");
+        assert_eq!(load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8), None, "8-bit is the NULL options' own");
         let fp16 = load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp16).expect("options");
         assert_eq!(fp16.prefill_attention, 1);
         let with_vision = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8)

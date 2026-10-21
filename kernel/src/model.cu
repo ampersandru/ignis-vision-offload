@@ -880,7 +880,7 @@ struct LoadOptions {
   ignis::RopeScaling rope_scaling{};
   // GitHub #275: the most keys of a text span an attention readout reads.
   uint32_t attention_text_max_keys = 0;
-  // GitHub #335: the prompt attention's precision, 0 = E4M3, 1 = FP16.
+  // GitHub #335: the prompt attention's precision, 0 = 8-bit, 1 = FP16.
   uint32_t prefill_attention = 0;
 };
 
@@ -1060,11 +1060,11 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     draft_row_budget = options->draft_row_budget;
     prefill_attention = options->prefill_attention;
   }
-  // GitHub #335: 0 = E4M3, 1 = FP16 accumulate; a value the leaf does not
+  // GitHub #335: 0 = 8-bit, 1 = FP16 accumulate; a value the leaf does not
   // know is refused rather than run as one of the two.
   if (prefill_attention > 1) {
     set_error("ignis_model_load: prefill_attention " + std::to_string(prefill_attention) +
-              " is not 0 (E4M3) or 1 (FP16 accumulate)");
+              " is not 0 (8-bit) or 1 (FP16 accumulate)");
     return nullptr;
   }
   // GitHub #227: a scaling that cannot build a table is refused by name --
