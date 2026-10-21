@@ -233,9 +233,10 @@ When output names a domain concept, use the term as defined here.
   token, gated by a sigmoid.
 - **Expert projection** — an expert's fused gate/up plane or its down plane:
   the unit the artifact stores contiguously and residency moves.
-- **K** — an expert projection's bit width in the trellis format, one of
-  2, 2.5, 3, 4, chosen per expert by **allocation** on calibration distortion
-  (mean 2.5 bits per weight).
+- **K** — a matrix's bit width in the **trellis** format, chosen by
+  **allocation** on calibration distortion: per expert projection on
+  Flash-Next (one of 2, 2.5, 3, 4; mean 2.5 bits per weight), per projection
+  on a 27B artifact whose **body format** is trellis (2 to 6).
 - **K class** — expert projections of one shape and one K, hence one byte
   size: eight classes, each with its own slot pool in the expert cache.
 - **Expert pool** — every expert projection, in pinned host RAM for the life of
@@ -341,10 +342,18 @@ When output names a domain concept, use the term as defined here.
 
 ## Weights & artifact
 
-- **Artifact** — the `.ninfer` container: the native NInfer model artifact
-  (base objects + grafted DFlash2 module). Carries NVFP4 tensors, BF16 exception
-  tensors, W8G32 endpoints (embedding, output head), and frontend objects
-  (tokenizer / chat template).
+- **Artifact** — the `.ninfer` container a model is served from: its weights
+  in the artifact's **body format**, its endpoints (token embedding, output
+  head), an optional grafted DFlash2 module, and frontend objects (tokenizer /
+  chat template). The 27B's 32 GB artifact carries NVFP4 tensors, BF16
+  exception tensors and W8G32 endpoints. Several artifacts share one **model
+  family**.
+- **Body format** — the weight format of an artifact's transformer layers:
+  **NVFP4**, or **trellis**. Read from the artifact, never configured.
+  _Avoid_: "3-bit model", "small model" (the family is the same).
+- **Trellis** — the EXL3 weight code (16×16 tiles, the `mul1` codebook,
+  Hadamard rotation with per-channel scales on both sides), bit-compatible with
+  exllamav3's records, at a **K** per matrix.
 - **Object** — the unit inside an artifact. The binder must consume every object
   at bind time; an unconsumed object is a load failure.
 - **Device view** — the artifact crate's export for a bound tensor: device
@@ -359,6 +368,10 @@ When output names a domain concept, use the term as defined here.
   metadata bytes per (token, KV head). Fixed bytes per token, so page
   addressing and CUDA-graph address stability are unchanged. 9,216 bytes per
   sequence-token against BF16's 65,536 — a factor of 7.11.
+- **Prompt planes** — the BF16 copies of a GQA layer's visible keys and values
+  that the hq-e8-2b prompt route decodes the cache into before a prefill chunk
+  attends: prefill-only scratch, 4,096 bytes per context token up to 262,144
+  keys (one band). Not used by a decode or verify round, which read the codec.
 - **Residual window** — the keys hq-e8-2b attention reads exact instead of
   decoding: a sequence's first 32 keys (the **sinks**), a 512-slot **ring** of
   recent keys, and the prefill chunk being attended. Per slot, not per page,
@@ -397,14 +410,19 @@ When output names a domain concept, use the term as defined here.
   id when none is named. It tells artifacts of one family apart; the family
   never does.
   _Avoid_: model name
+- **Alias** — a served id one catalog entry also answers to: its family's
+  default id, on a **card class** below the default entry's (ADR 0064). It
+  resolves only within one model family, and only to an entry the card can
+  load.
 - **Catalog** — the models the server knows how to fetch: the **built-in
   catalog**, shipped inside the binary, plus the **operator catalog**, a
   separate file the config names.
   _Avoid_: registry (that word is the remote server, as in "a private
   registry"), model list
 - **Catalog entry** — one published model: its served id, repo, revision, the
-  artifact to load, and every file it needs with its byte count and SHA-256
-  pinned. An operator entry never reuses a built-in id.
+  artifact to load, every file it needs with its byte count and SHA-256
+  pinned, and the smallest **card class** it loads on (ADR 0064). An operator
+  entry never reuses a built-in id.
 - **Endpoint** — the server a catalog entry's files are fetched from: Hugging
   Face by default, or a mirror answering the same repo/revision/file paths.
   Chosen per machine, not per entry.
@@ -785,7 +803,8 @@ When output names a domain concept, use the term as defined here.
   path that does receive logits, and it draws no sample — it has no seed, no
   RNG and no penalty history to disturb, so the independence above is a
   property of decode that the readout cannot violate.
-- **N-lane concurrency** — 8 resident decode lanes (N=8), with overflow to the
+- **N-lane concurrency** — the resident decode lanes a load runs at once: 8
+  (N=8) on a 32 GB **card class**, fewer on a smaller one, with overflow to the
   host KV-RAM tier; sized for a ~10-subagent concurrent coding workload. Real
   at long context only under hq-e8-2b: eight lanes at a 40,960-token context
   are ~20 GiB of BF16 KV against ~3.02 GB of hq (**KV format**).
@@ -1187,12 +1206,19 @@ When output names a domain concept, use the term as defined here.
   A tiebreaker *within* each source, not a source of its own: the command line
   wins whatever its scope.
 - **Applicability** — the families a field means anything for (`Only(Flash-Next)`
-  for the decode lanes, `Only(27B)` for vision). An explicit value for a family
+  for the expert cache's floor, `Only(27B)` for vision). An explicit value for a family
   that cannot take it is refused at start and dropped, with a log line, on a
   switch; a value equal to the field's default is neither.
+- **Card class** — the device memory a profile is shaped for: 32 GB (RTX
+  5090), 96 GB (RTX PRO 6000), 16 GB (RTX 5060 Ti / 5070 Ti / 5080). It decides
+  which artifact, how many lanes and what context the profile defaults to.
+  _Avoid_: GPU tier.
 - **Profile** — a named bundle of hardware-shaped field defaults (`--profile`,
   built-in `rtx5090`, or a config file's `profiles:`): below the config file,
-  above the hardcoded defaults — a default, never an override.
+  above the hardcoded defaults — a default, never an override. `auto` picks
+  the built-in profile of the card's **card class** (ADR 0063).
+- **Adaptation** — a load lowering its profile's defaults, in a fixed order,
+  until its VRAM plan fits (ADR 0063). An explicit value never adapts.
 - **Live change** / **reload** — the two ways `PATCH /v1/config` applies a
   change, never both in one patch: a live change touches only server-level
   values (timeouts, message policies, thinking defaults, switch knobs) and no
