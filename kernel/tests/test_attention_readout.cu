@@ -25,6 +25,8 @@
 //                checked on the device's own rotation.
 //   head         a query head other than the first of its KV group, so a
 //                kernel that took the wrong query column or KV head fails.
+//   past a band  GitHub #335: a span past 262,144 keys, which the prompt
+//                planes' single band could not hold, read like any other.
 //   unread       every guard that leaves the readout unread instead of
 //                scoring the wrong keys: no prompt attention, keys past the
 //                history -- and the one geometry it refuses outright.
@@ -327,6 +329,40 @@ void the_plane_is_read_in_the_codec_frame(std::mt19937 &rng) {
   // that rounding, and a query left unrotated would miss it by the whole
   // score.
   check(frame < 2e-2, "the device's rotation is the codec's: R q . R k == q . k");
+}
+
+// GitHub #335 (spec 27b-16gb/03 acceptance 5): the prompt planes held one band
+// of 262,144 keys, and a readout past it was left unread. The keys are now
+// fetched where the attention read them, so a span far past that is scored
+// like any other: here the chunk's own rows at 300,000.
+void a_span_past_one_band_is_read(std::mt19937 &rng) {
+  std::printf("past one band: hq keys at 300,000\n");
+  Scene scene = make_scene(rng);
+  constexpr std::int64_t kStart = 300'000;
+  const std::int64_t width = scene.visible;
+  const std::vector<std::uint16_t> rows = gaussian_rows(width, rng);
+  HqKeys hq(rows, width);
+  hq.keys.start = static_cast<std::int32_t>(kStart);
+  scene.visible = kStart + width;
+  scene.key_begin = kStart + 37;
+  ninfer::PagedKVBatchLayerView cache;
+  cache.dtype = ninfer::DType::U8;
+  const Run got = run(scene, cache, &hq.keys);
+  check(got.rc == 0 && got.read, "a span past 262,144 keys is read");
+  const int kv_head = scene.query_head / (kQHeads / kKvHeads);
+  const std::vector<double> rq = rotate(query_of(scene));
+  std::vector<double> want(static_cast<std::size_t>(scene.key_count));
+  for (std::int64_t k = 0; k < scene.key_count; ++k) {
+    const std::int64_t row = scene.key_begin - kStart + k;
+    double dot = 0.0;
+    for (int d = 0; d < kHeadDim; ++d) {
+      dot += rq[d] * from_bf16(hq.plane[(static_cast<std::size_t>(kv_head) * width + row) * kHeadDim + d]);
+    }
+    want[static_cast<std::size_t>(k)] = dot * kScale;
+  }
+  const double worst = worst_relative(got.scores, want);
+  std::printf("  worst relative error %.2e against R q . the fetched rows\n", worst);
+  check(worst < 1e-4, "the scores past one band are the rotated query against the rows read");
 }
 
 void a_read_that_cannot_be_made_is_left_unread(std::mt19937 &rng) {
@@ -758,6 +794,7 @@ int main() {
   std::mt19937 rng(20260922);
   the_pages_are_read_through_the_block_table(rng);
   the_plane_is_read_in_the_codec_frame(rng);
+  a_span_past_one_band_is_read(rng);
   a_read_that_cannot_be_made_is_left_unread(rng);
   the_set_is_read_in_one_launch_off_the_plane(rng);
   the_set_is_read_in_one_launch_off_the_pages(rng);
