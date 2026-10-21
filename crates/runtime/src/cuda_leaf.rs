@@ -102,6 +102,10 @@ pub struct CudaLeafConfig {
     /// Frozen for the life of the load, like the two above: a sequence's
     /// cached keys are rotated with it.
     pub rope_scaling: ignis_core::RopeScaling,
+    /// The prompt attention's band-pass precision (`--model-prefill-attention`,
+    /// GitHub #335): E4M3 by default, or the FP16-accumulate fallback. Fixed
+    /// for the life of the load; Flash-Next's QSA ignores it.
+    pub prefill_attention: ignis_core::PrefillAttention,
 }
 
 impl Default for CudaLeafConfig {
@@ -133,6 +137,7 @@ impl Default for CudaLeafConfig {
             speculation: None,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
+            prefill_attention: ignis_core::PrefillAttention::default(),
         }
     }
 }
@@ -278,6 +283,7 @@ impl CudaLeafConfig {
             self.speculation,
             self.vision,
             self.rope_scaling,
+            self.prefill_attention,
         )?;
         let pool = self.pool_plan(1)?;
         Ok(PlannedReservations {
@@ -507,7 +513,7 @@ impl StepLeaf for CudaLeaf {
         // GQA layers refuse a pool built in the other one.
         // GitHub #177: the vision reservation is taken inside this load, so it
         // is on the device before the pool below is built.
-        let model = model_load::load_qwen38_27b_with_options(
+        let model = model_load::load_qwen38_27b_with_prefill_attention(
             &self.reader,
             &self.artifact,
             &self.handles,
@@ -517,6 +523,7 @@ impl StepLeaf for CudaLeaf {
             self.config.speculation,
             self.config.vision,
             self.config.rope_scaling,
+            self.config.prefill_attention,
         )
         .map_err(|e| leaf_error("model load", e))?;
         let cfg = ModelConfig::qwen38_27b();

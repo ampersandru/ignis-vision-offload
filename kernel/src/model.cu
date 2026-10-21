@@ -1037,6 +1037,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   uint64_t vision_embedding_pool_request = 0;
   uint32_t attention_text_max_keys = 0;
   uint32_t draft_row_budget = 0;
+  uint32_t prefill_attention = 0;
   ignis::RopeScaling rope_scaling{};
   if (options != nullptr) {
     if (options->size != sizeof(struct ignis_model_load_options)) {
@@ -1055,6 +1056,14 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     rope_scaling.beta_slow = options->rope_scaling_beta_slow;
     attention_text_max_keys = options->attention_text_max_keys;
     draft_row_budget = options->draft_row_budget;
+    prefill_attention = options->prefill_attention;
+  }
+  // GitHub #335: 0 = E4M3, 1 = FP16 accumulate; a value the leaf does not
+  // know is refused rather than run as one of the two.
+  if (prefill_attention > 1) {
+    set_error("ignis_model_load: prefill_attention " + std::to_string(prefill_attention) +
+              " is not 0 (E4M3) or 1 (FP16 accumulate)");
+    return nullptr;
   }
   // GitHub #227: a scaling that cannot build a table is refused by name --
   // the alternative is a load that silently rotates at a different one.
@@ -1126,6 +1135,10 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   // no drafter, vision tower or attention readouts. Its decode lanes and its
   // residency are its options alone.
   if (flash_next) {
+    if (prefill_attention != 0) {
+      set_error("ignis_model_load: prefill_attention is the 27B's; Qwen3.8-Flash-Next's attention is QSA");
+      return nullptr;
+    }
     if (vision_max_tokens != 0 || attention_text_max_keys != 0) {
       set_error("ignis_model_load: Qwen3.8-Flash-Next has no vision or attention readouts");
       return nullptr;
@@ -1536,6 +1549,9 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // P4-05 (GitHub #123): what the two arenas below are reserved for, and
   // what `kernel/src/gqa_layer.cu` checks a sequence pool against.
   model->kv_format = kv_format;
+  // GitHub #335: the prompt attention's precision, read by every hq-e8-2b
+  // prefill chunk (`kernel/src/gqa_layer.cu`).
+  model->prefill_attention = prefill_attention;
 
   // GitHub #210: every reservation below is sized here, once, by the same
   // computation `ignis_model_plan_reservations` reports.

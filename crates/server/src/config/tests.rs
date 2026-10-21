@@ -732,6 +732,31 @@ fn an_unknown_kv_format_is_a_usage_error() {
     assert!(err.contains("--model-kv-format") && err.contains("fp8") && err.contains("bf16"), "{err}");
 }
 
+// ── the prompt attention precision (GitHub #335) ─────────────────────────
+
+#[test]
+fn the_prefill_attention_is_fp8_unless_named_and_flag_beats_env() {
+    assert_eq!(config(&[]).prefill_attention, PrefillAttention::Fp8);
+    let env = env_map(&[("IGNIS_MODEL_PREFILL_ATTENTION", "fp16")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).prefill_attention, PrefillAttention::Fp16);
+    let env = env_map(&[("IGNIS_MODEL_PREFILL_ATTENTION", "fp16")]);
+    let flag = expect_config(resolve(&args(&["--model-prefill-attention", "FP8"]), env).expect("resolve"));
+    assert_eq!(flag.prefill_attention, PrefillAttention::Fp8);
+}
+
+#[test]
+fn the_scoped_prefill_attention_reaches_the_27b() {
+    let scoped = config(&["--profile", "none", "--qwen38-model-prefill-attention", "fp16"]);
+    assert_eq!(scoped.for_family(ModelFamily::Qwen38_27b).unwrap().prefill_attention, PrefillAttention::Fp16);
+    assert_eq!(scoped.for_family(ModelFamily::FlashNext).unwrap().prefill_attention, PrefillAttention::Fp8);
+}
+
+#[test]
+fn an_unknown_prefill_attention_is_a_usage_error() {
+    let err = refused(&["--model-prefill-attention", "fp4"]);
+    assert!(err.contains("--model-prefill-attention") && err.contains("fp4") && err.contains("fp16"), "{err}");
+}
+
 #[test]
 fn the_same_named_budget_buys_more_tokens_under_hq() {
     // The format is a real option: one budget, two capacities. This is the
