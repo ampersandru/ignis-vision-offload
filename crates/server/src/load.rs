@@ -18,7 +18,7 @@ use ignis_core::image::ImageRunner;
 use ignis_core::{ConcreteScheduler, SchedulerConfig, TokenId};
 
 #[cfg(feature = "cuda")]
-use crate::runtime::{cuda_scheduler_with_thinking_close, EngineShape};
+use crate::runtime::EngineShape;
 
 /// The mock-backed scheduler (ADR 0006, CPU-only): what serves when no
 /// artifact is configured, or the binary was not built with `--features
@@ -96,10 +96,21 @@ pub enum LoadError {
     EosMissing,
     /// The GPU load itself failed (`ignis.model.load_failed`).
     LoadFailed(String),
-    /// Flash-Next's host plan refused the load: not enough RAM for its
-    /// pinned lines and the margin (`ignis.model.load_failed`; the lines in
-    /// bytes are `ignis.runtime.flash_next_host_plan_refused`'s).
+    /// A host plan refused the load -- Flash-Next's, or the 27B's (ADR
+    /// 0062): not enough RAM for its pinned lines and the margin
+    /// (`ignis.model.load_failed`; the lines in bytes are
+    /// `ignis.runtime.flash_next_host_plan_refused`'s or
+    /// `ignis.runtime.qwen27b_host_plan_refused`'s).
     HostPlan(ignis_core::residency::HostPlanError),
+}
+
+impl From<crate::runtime::Qwen27bLoadError> for LoadError {
+    fn from(error: crate::runtime::Qwen27bLoadError) -> Self {
+        match error {
+            crate::runtime::Qwen27bLoadError::HostPlan(refusal) => Self::HostPlan(refusal),
+            crate::runtime::Qwen27bLoadError::Other(message) => Self::LoadFailed(message),
+        }
+    }
 }
 
 impl From<crate::runtime::FlashNextLoadError> for LoadError {
@@ -523,7 +534,7 @@ fn cuda_scheduler_for(
             &config.kv_disk_location,
         )
         .map_err(|error| LoadError::from_flash_next(error, config)),
-        ModelFamily::Qwen38_27b => cuda_scheduler_with_thinking_close(
+        ModelFamily::Qwen38_27b => crate::runtime::qwen27b_load(
             artifact,
             model.into(),
             eos,
@@ -531,7 +542,7 @@ fn cuda_scheduler_for(
             thinking_close,
             &config.kv_disk_location,
         )
-        .map_err(LoadError::LoadFailed),
+        .map_err(LoadError::from),
         // The image model has no token scheduler: `load_image_model` loads
         // it, never this.
         ModelFamily::QwenImage21 => Err(LoadError::LoadFailed(format!("{} has no token scheduler", family.name()))),

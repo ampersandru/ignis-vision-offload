@@ -322,6 +322,8 @@ struct ignis_model {
   ninfer::Weight output_head;
   std::vector<LayerWeights> layers;
   uint64_t vram_bytes = 0;
+  // ADR 0062: what of the bound tensors lives in mapped host memory.
+  uint64_t host_mapped_bytes = 0;
   uint64_t bound_tensor_count = 0;
 
   // Program-layer resources (ADR 0009, GitHub #54): the step ABI's stream

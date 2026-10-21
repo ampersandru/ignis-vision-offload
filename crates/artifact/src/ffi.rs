@@ -78,6 +78,21 @@ unsafe extern "C" {
     /// device or pointer is a no-op.
     pub fn ignis_device_free(d: *mut IgnisDevice, ptr: *mut c_void);
 
+    /// Allocate `bytes` of mapped pinned host memory (ADR 0062:
+    /// `cudaHostAllocMapped | cudaHostAllocPortable`): `out_host` receives the
+    /// page-aligned host pointer, `out_device` the pointer a kernel reads it
+    /// through. Returns 0 on success, -1 on a CUDA error or a bad argument.
+    pub fn ignis_device_host_alloc_mapped(
+        d: *mut IgnisDevice,
+        bytes: u64,
+        out_host: *mut *mut c_void,
+        out_device: *mut *mut c_void,
+    ) -> i32;
+
+    /// Free a host allocation returned by [`ignis_device_host_alloc_mapped`]
+    /// (its host pointer). NULL device or pointer is a no-op.
+    pub fn ignis_device_host_free(d: *mut IgnisDevice, host: *mut c_void);
+
     /// Destroy the context (drains the load stream first). NULL is a no-op.
     pub fn ignis_device_destroy(d: *mut IgnisDevice);
 }

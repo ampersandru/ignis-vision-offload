@@ -57,8 +57,9 @@ pub struct EngineShape {
     /// P4-07 GitHub #125): pinned host memory for evicted (suspended)
     /// request snapshots, independent of the GPU-resident pool above.
     pub host_pool_bytes: u64,
-    /// What Flash-Next's host plan must leave of the physical memory
-    /// available at load (`--model-host-margin-bytes`).
+    /// What a text model's host plan must leave of the physical memory
+    /// available at load (`--model-host-margin-bytes`): Flash-Next's, and the
+    /// 27B's (ADR 0062).
     pub host_margin_bytes: u64,
     /// Cross-request state reuse (`--reuse-prompt`, GitHub #186, ADR 0029).
     pub prompt_reuse: bool,
@@ -461,6 +462,7 @@ pub fn log_host_plan_refused(refusal: &ignis_core::residency::HostPlanError) {
         margin_bytes,
         crossing_line,
         lines,
+        ..
     } = refusal;
     let line = |name: &str| lines.iter().find(|(line, _)| *line == name).map_or(0, |(_, bytes)| *bytes);
     // hotpath-lint-allow: one line per refused load.
@@ -480,6 +482,104 @@ pub fn log_host_plan_refused(refusal: &ignis_core::residency::HostPlanError) {
         kv_ram_arena_bytes = line("kv_ram_arena"),
         "{refusal}"
     );
+}
+
+/// The 27B's host plan request (ADR 0062): what its load pins for its life
+/// -- the token embedding's mapped table (`token_embedding_bytes`, the plan's
+/// mapped allocation), KV-disk's staging windows when the tier is on, the
+/// host retained slots and the KV-RAM arena -- against the shape's margin
+/// (`model.host_margin_bytes`). No experts and no n-gram table.
+pub fn qwen27b_host_request(
+    available_physical_bytes: u64,
+    token_embedding_bytes: u64,
+    retained_host_slots_bytes: u64,
+    shape: &EngineShape,
+) -> ignis_core::residency::HostPlanRequest {
+    let family = ignis_core::compute::ModelFamily::Qwen38_27b;
+    let kv_disk_on = shape.kv_disk_bytes_for(family) > 0;
+    ignis_core::residency::HostPlanRequest {
+        available_physical_bytes,
+        scope: crate::config::field::scope(family),
+        token_embedding_bytes,
+        expert_pool_bytes: 0,
+        load_staging_bytes: 0,
+        ngram_hot_rows_bytes: 0,
+        staging_bytes: if kv_disk_on { ignis_runtime::kv_disk::STAGING_BYTES } else { 0 },
+        retained_host_slots_bytes,
+        kv_ram_arena_bytes: shape.host_pool_bytes,
+        margin_bytes: shape.host_margin_bytes,
+    }
+}
+
+/// A 27B load the host plan refused (ADR 0062), as an agent reads it: one
+/// `ignis.runtime.qwen27b_host_plan_refused` event with the 27B's lines, the
+/// memory available, the margin, what the plan needed and how far short it
+/// fell, in exact bytes. Its message is the refusal as a person reads it, the
+/// text the load then fails with.
+pub fn log_qwen27b_host_plan_refused(refusal: &ignis_core::residency::HostPlanError) {
+    let ignis_core::residency::HostPlanError::BelowMargin {
+        available_bytes,
+        planned_bytes,
+        margin_bytes,
+        crossing_line,
+        lines,
+        ..
+    } = refusal;
+    let line = |name: &str| lines.iter().find(|(line, _)| *line == name).map_or(0, |(_, bytes)| *bytes);
+    // hotpath-lint-allow: one line per refused load.
+    tracing::warn!(
+        name: "ignis.runtime.qwen27b_host_plan_refused",
+        available_bytes = *available_bytes,
+        planned_bytes = *planned_bytes,
+        margin_bytes = *margin_bytes,
+        needed_bytes = refusal.needed_bytes(),
+        short_bytes = refusal.short_bytes(),
+        crossing_line = *crossing_line,
+        // Not `token_embedding_bytes`: a key with a bare `token` reads as a
+        // credential and is redacted (ignis-logging's record.rs).
+        embedding_table_bytes = line("token_embedding"),
+        staging_bytes = line("staging"),
+        retained_host_slots_bytes = line("retained_host_slots"),
+        kv_ram_arena_bytes = line("kv_ram_arena"),
+        "{refusal}"
+    );
+}
+
+/// ADR 0062: a pin the host plan let through but the host then refused --
+/// the plan reads the memory available, and the OS may still decline to lock
+/// it. The materialize error, followed by the host plan's own figures, so the
+/// refusal reads as the plan's and says what it had counted on.
+pub fn qwen27b_pin_refused(error: &str, request: &ignis_core::residency::HostPlanRequest, planned_bytes: u64) -> String {
+    format!(
+        "materialize weights: {error}; the host plan had counted {planned_bytes} bytes of pinned host memory \
+         (the token embedding {} bytes) against {} bytes available and a {}-byte margin \
+         (--{}-model-host-margin-bytes)",
+        request.token_embedding_bytes, request.available_physical_bytes, request.margin_bytes, request.scope
+    )
+}
+
+/// Why a 27B load failed: its host plan's refusal (ADR 0062), kept whole so
+/// a switch can report it in bytes as Flash-Next's is, or anything else, as
+/// the text it always was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Qwen27bLoadError {
+    HostPlan(ignis_core::residency::HostPlanError),
+    Other(String),
+}
+
+impl From<String> for Qwen27bLoadError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl std::fmt::Display for Qwen27bLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HostPlan(refusal) => refusal.fmt(f),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
 }
 
 /// Why a Flash-Next load failed: its host plan's refusal, kept whole so a
@@ -674,6 +774,21 @@ pub fn cuda_scheduler_with_thinking_close(
     thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
     kv_disk_location: &ignis_core::ngram_cache::CacheLocation,
 ) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations), String> {
+    qwen27b_load(artifact_path, model_id, eos, shape, thinking_close, kv_disk_location).map_err(|e| e.to_string())
+}
+
+/// [`cuda_scheduler_with_thinking_close`], with a host plan's refusal kept
+/// whole ([`Qwen27bLoadError::HostPlan`], ADR 0062): the server's load reads
+/// it.
+#[cfg(feature = "cuda")]
+pub(crate) fn qwen27b_load(
+    artifact_path: &std::path::Path,
+    model_id: String,
+    eos: TokenId,
+    shape: EngineShape,
+    thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
+    kv_disk_location: &ignis_core::ngram_cache::CacheLocation,
+) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations), Qwen27bLoadError> {
     use ignis_artifact::{CudaDevice, Reader, bind_model_scope_27b_with, materialize};
     use ignis_runtime::{CudaLeaf, KV_PAGE_TOKENS};
 
@@ -732,9 +847,41 @@ pub fn cuda_scheduler_with_thinking_close(
         },
         process_held_bytes,
     );
+    // ADR 0062: the host plan, measured before the first pinned allocation
+    // (the token embedding's, at materialization): the table, KV-disk's
+    // staging, the host retained slots and the KV-RAM arena must leave the
+    // margin, or the start is refused naming the line that crosses it, as
+    // Flash-Next's is. A host whose available memory cannot be read starts
+    // unplanned, as Flash-Next does.
+    let mut host_planned = None;
+    if let Some(available) = ignis_core::residency::available_physical_bytes() {
+        let request =
+            qwen27b_host_request(available, plan.host_mapped_capacity_bytes, reservations.retained_host_bytes, &shape);
+        let host = ignis_core::residency::plan_host(&request).map_err(|refusal| {
+            log_qwen27b_host_plan_refused(&refusal);
+            Qwen27bLoadError::HostPlan(refusal)
+        })?;
+        // hotpath-lint-allow: one line per model load.
+        tracing::info!(
+            name: "ignis.runtime.qwen27b_host_plan",
+            available_bytes = request.available_physical_bytes,
+            planned_bytes = host.total_bytes,
+            left_bytes = host.left_bytes,
+            margin_bytes = request.margin_bytes,
+            embedding_table_bytes = request.token_embedding_bytes,
+            staging_bytes = request.staging_bytes,
+            retained_host_slots = shape.retained_host_slots,
+            retained_host_bytes = request.retained_host_slots_bytes,
+            kv_ram_arena_bytes = request.kv_ram_arena_bytes,
+            "qwen3.8-27b host plan"
+        );
+        host_planned = Some((request, host.total_bytes));
+    }
 
-    let artifact = materialize(&reader, &plan, &mut device, None)
-        .map_err(|e| format!("materialize weights: {e}"))?;
+    let artifact = materialize(&reader, &plan, &mut device, None).map_err(|e| match &host_planned {
+        Some((request, planned_bytes)) => qwen27b_pin_refused(&e.to_string(), request, *planned_bytes),
+        None => format!("materialize weights: {e}"),
+    })?;
 
     let leaf_config = leaf_config_for_shape(shape, vram.kv_budget_bytes(shape.kv_format, geometry));
 
@@ -788,7 +935,8 @@ pub fn cuda_scheduler_with_thinking_close(
         return Err(format!(
             "the load holds {:?} beside its weights, not the {:?} its VRAM plan laid out",
             stats.reserved, planned
-        ));
+        )
+        .into());
     }
     // What NVML says the load took, beside what the plan said it would
     // (GitHub #210): every line, the retained slots included -- since GitHub
@@ -1127,6 +1275,8 @@ pub(crate) fn flash_next_load(
     };
     let mut host_request = available_physical_bytes().map(|available| HostPlanRequest {
         available_physical_bytes: available,
+        scope: crate::config::field::scope(ignis_core::compute::ModelFamily::FlashNext),
+        token_embedding_bytes: 0,
         expert_pool_bytes,
         load_staging_bytes,
         ngram_hot_rows_bytes: 0,
@@ -1705,6 +1855,8 @@ mod tests {
     fn starved_plan() -> ignis_core::residency::HostPlanError {
         ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
             available_physical_bytes: 41_632_530_432,
+            scope: "qwen38flashnext",
+            token_embedding_bytes: 0,
             expert_pool_bytes: 37_795_446_784,
             load_staging_bytes: 0,
             ngram_hot_rows_bytes: 1 << 30,
@@ -1754,6 +1906,89 @@ mod tests {
         assert_eq!(attributes["crossing_line"], "expert_pool");
     }
 
+    /// ADR 0062: the 27B's host plan holds its token embedding, the host
+    /// retained slots and the KV-RAM arena it pins, KV-disk's staging only
+    /// with the tier on, against the shape's margin; the refusal names the
+    /// 27B's own flags.
+    #[test]
+    fn the_27b_host_plan_holds_its_table_its_reuse_lines_and_kv_disks_staging_when_on() {
+        const TABLE: u64 = 1_350_860_800;
+        let shape = EngineShape {
+            host_pool_bytes: 8 << 30,
+            host_margin_bytes: 3 << 30,
+            ..EngineShape::default()
+        };
+        let request = qwen27b_host_request(64 << 30, TABLE, 2_080_000_000, &shape);
+        assert_eq!(request.scope, "qwen38");
+        assert_eq!(request.token_embedding_bytes, TABLE);
+        assert_eq!(request.retained_host_slots_bytes, 2_080_000_000);
+        assert_eq!(request.kv_ram_arena_bytes, 8 << 30);
+        assert_eq!(request.margin_bytes, 3 << 30);
+        assert_eq!(request.staging_bytes, 0, "KV-disk is off on the 27B unless named");
+        assert_eq!(
+            (request.expert_pool_bytes, request.load_staging_bytes, request.ngram_hot_rows_bytes),
+            (0, 0, 0),
+            "no experts and no n-gram table"
+        );
+        let with_disk = EngineShape { kv_disk_bytes: Some(4 << 30), ..shape };
+        assert_eq!(
+            qwen27b_host_request(64 << 30, TABLE, 0, &with_disk).staging_bytes,
+            ignis_runtime::kv_disk::STAGING_BYTES
+        );
+
+        let refusal = ignis_core::residency::plan_host(&qwen27b_host_request(1 << 30, TABLE, 0, &shape))
+            .expect_err("a GiB cannot hold the table beside the margin");
+        assert!(refusal.to_string().contains("(--qwen38-model-host-margin-bytes)"), "{refusal}");
+    }
+
+    /// A pin the host refuses after its plan passed (the OS may decline to lock
+    /// memory it reports available) fails with the plan's own figures and flag
+    /// beside the materialize error, not the bare error.
+    #[test]
+    fn a_pin_the_host_refuses_after_the_plan_passed_reads_with_the_plans_figures() {
+        let shape = EngineShape { host_pool_bytes: 8 << 30, ..EngineShape::default() };
+        let request = qwen27b_host_request(64 << 30, 1_350_864_896, 0, &shape);
+        let host = ignis_core::residency::plan_host(&request).expect("64 GiB holds the plan");
+        let message = qwen27b_pin_refused("the host cannot pin that much memory", &request, host.total_bytes);
+        assert!(message.starts_with("materialize weights: the host cannot pin that much memory; "), "{message}");
+        assert!(message.contains(&format!("{} bytes of pinned host memory", host.total_bytes)), "{message}");
+        assert!(message.contains("the token embedding 1350864896 bytes"), "{message}");
+        assert!(message.contains(&format!("{} bytes available", 64u64 << 30)), "{message}");
+        assert!(message.contains("(--qwen38-model-host-margin-bytes)"), "{message}");
+    }
+
+    /// The one event [`log_qwen27b_host_plan_refused`] logs: the 27B's lines
+    /// in bytes beside the person's message.
+    #[test]
+    fn a_refused_27b_host_plan_logs_its_lines_in_bytes_beside_the_persons_message() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let shape = EngineShape { host_pool_bytes: 8 << 30, ..EngineShape::default() };
+        let refusal = ignis_core::residency::plan_host(&qwen27b_host_request(10 << 30, 1_350_860_800, 1 << 30, &shape))
+            .expect_err("short of the arena");
+        let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
+        let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
+        tracing::subscriber::with_default(subscriber, || log_qwen27b_host_plan_refused(&refusal));
+        let events: Vec<serde_json::Value> =
+            sink.lines().iter().map(|line| serde_json::from_str(line).expect("valid json")).collect();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event["event_name"], "ignis.runtime.qwen27b_host_plan_refused");
+        assert_eq!(event["severity_text"], "WARN");
+        assert_eq!(event["body"], refusal.to_string());
+        let attributes = &event["attributes"];
+        for (field, bytes) in [
+            ("available_bytes", 10u64 << 30),
+            ("embedding_table_bytes", 1_350_860_800),
+            ("staging_bytes", 0),
+            ("retained_host_slots_bytes", 1 << 30),
+            ("kv_ram_arena_bytes", 8 << 30),
+            ("margin_bytes", 4 << 30),
+        ] {
+            assert_eq!(attributes[field], bytes, "{field}: {attributes}");
+        }
+        assert_eq!(attributes["crossing_line"], "kv_ram_arena");
+    }
+
     /// A device-only load (ADR 0054) on a machine with 8.5 GB available: its
     /// ~4.7 GB of layer buffers, the peak, do not fit. The event names them
     /// apart from KV-disk's staging (GitHub #329 item 3).
@@ -1761,6 +1996,8 @@ mod tests {
     fn a_refused_device_only_plan_logs_its_layer_buffers_apart_from_kv_disks_staging() {
         let refusal = ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
             available_physical_bytes: 8_500_000_000,
+            scope: "qwen38flashnext",
+            token_embedding_bytes: 0,
             expert_pool_bytes: 0,
             load_staging_bytes: 4_700_000_000,
             ngram_hot_rows_bytes: 1 << 30,

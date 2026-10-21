@@ -137,6 +137,7 @@ pub(crate) mod ffi {
     #[repr(C)]
     #[derive(Debug, Clone, Copy, Default)]
     pub struct IgnisModelStats {
+        /// The bound tensors' bytes in device memory.
         pub vram_bytes: u64,
         pub bound_tensor_count: u64,
         /// GitHub #177, #212: what vision adds beside a text load -- the
@@ -146,6 +147,9 @@ pub(crate) mod ffi {
         /// GitHub #210: what the load holds beside the weights, read off its
         /// own buffers.
         pub reserved: IgnisModelReservations,
+        /// ADR 0062: the bound tensors' bytes the leaf found in mapped host
+        /// memory (the 27B's token embedding), apart from `vram_bytes`.
+        pub host_mapped_bytes: u64,
     }
 
     unsafe extern "C" {
@@ -436,19 +440,21 @@ fn device_placement(
 /// The placements a materialization plan will make, before any device
 /// memory exists (GitHub #210): each tensor's inventory shape and planned
 /// bytes, with no data pointers -- enough for the leaf to size a load, which
-/// is all `ignis_model_plan_reservations` reads.
+/// is all `ignis_model_plan_reservations` reads. A host-mapped tensor (ADR
+/// 0062) is placed as surely as a device one.
 fn planned_placement(
     plan: &MaterializationPlan,
 ) -> impl Fn(ObjectHandle, &InventoryEntry) -> Result<TensorPlacement, String> + '_ {
     move |handle, entry| {
-        let placed = plan
-            .device_objects
-            .iter()
-            .find(|placed| placed.handle == handle)
-            .ok_or_else(|| format!("{}: not a device object of the materialization plan", entry.name))?;
+        let device = plan.device_objects.iter().find(|placed| placed.handle == handle).map(|placed| placed.bytes);
+        let host_mapped =
+            || plan.host_mapped_objects.iter().find(|placed| placed.handle == handle).map(|placed| placed.bytes);
+        let bytes = device
+            .or_else(host_mapped)
+            .ok_or_else(|| format!("{}: not a tensor the materialization plan places", entry.name))?;
         Ok(TensorPlacement {
             shape: entry.shape.to_vec(),
-            bytes: placed.bytes,
+            bytes,
             qdata: std::ptr::null(),
             qhigh: std::ptr::null(),
             scales: std::ptr::null(),
@@ -1006,6 +1012,45 @@ mod tests {
         assert_eq!(offset_of!(ffi::IgnisMoeSlot, reserved), size_of::<usize>() + 4);
     }
 
+    /// ADR 0062: the reservation plan reads a host-mapped tensor's planned
+    /// bytes as it reads a device one's, and refuses one the plan never
+    /// placed.
+    #[test]
+    fn a_planned_placement_is_found_on_the_device_or_in_mapped_host_memory() {
+        let artifact = ignis_artifact::fixture::write_fixture(
+            &ignis_artifact::fixture::all_layout_objects(),
+            &ignis_artifact::fixture::all_layout_payload(),
+            "planned-host-mapped",
+        )
+        .expect("fixture");
+        let reader = Reader::open(&artifact.path).expect("open fixture");
+        let mut binder = ignis_artifact::Binder::new(&reader);
+        let entry = |name: &'static str, format, layout, shape: &'static [u64]| InventoryEntry {
+            name,
+            format,
+            layout,
+            shape,
+            residence: ignis_artifact::Residence::Device,
+        };
+        let bf16 = entry("w/bf16", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8]);
+        let q4 = entry("w/q4", NumericFormat::Q4G64F16S, StorageLayout::RowSplitK128V1, &[128, 128]);
+        let fp8 = entry("w/fp8", NumericFormat::Fp8E4M3FnRowBf16S, StorageLayout::RowScaleV1, &[128, 64]);
+        let on_device = binder.require_tensor(bf16.name, bf16.format, bf16.layout, bf16.shape).expect("bf16");
+        binder.materialize_on_device(on_device).expect("device");
+        let mapped = binder.require_tensor(q4.name, q4.format, q4.layout, q4.shape).expect("q4");
+        binder.place_in_host_mapped(mapped).expect("host mapped");
+        let unplaced = binder.require_tensor(fp8.name, fp8.format, fp8.layout, fp8.shape).expect("fp8");
+        let plan = binder.plan();
+
+        let placed = planned_placement(&plan);
+        assert_eq!(placed(on_device, &bf16).expect("device").bytes, 64);
+        let host = placed(mapped, &q4).expect("host mapped");
+        assert_eq!((host.bytes, host.shape.as_slice()), (8704, [128u64, 128].as_slice()));
+        assert!(host.qdata.is_null(), "a plan has no addresses yet");
+        let err = placed(unplaced, &fp8).err().expect("never placed");
+        assert!(err.contains("w/fp8: not a tensor the materialization plan places"), "{err}");
+    }
+
     #[test]
     fn validate_prefill_config_accepts_the_default_chunk() {
         assert!(validate_prefill_config(1024, 4096).is_ok());
@@ -1216,9 +1261,11 @@ mod tests {
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, residency), 56);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, draft_row_budget), 64);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, mtp_expert_slots), 72);
-        // uint64 x 3, then (GitHub #210) the six uint64 reservation lines and
-        // (GitHub #302) the seventh, Flash-Next's activations.
-        assert_eq!(std::mem::size_of::<IgnisModelStats>(), 80);
+        // uint64 x 3, then (GitHub #210) the six uint64 reservation lines,
+        // (GitHub #302) the seventh, Flash-Next's activations, and (ADR 0062)
+        // the uint64 host-mapped bytes.
+        assert_eq!(std::mem::size_of::<IgnisModelStats>(), 88);
+        assert_eq!(std::mem::offset_of!(IgnisModelStats, host_mapped_bytes), 80);
     }
 
     #[test]

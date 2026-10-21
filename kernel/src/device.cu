@@ -336,6 +336,47 @@ extern "C" void ignis_device_free(struct ignis_device *d, void *ptr) {
   }
 }
 
+// ADR 0062: the 27B's token embedding, read by the gather in place over the
+// bus. Mapped for the device pointer, portable so any context reads it (the
+// Flash-Next expert pool's flags, residency.cu).
+extern "C" int32_t ignis_device_host_alloc_mapped(struct ignis_device *d, uint64_t bytes,
+                                                  void **out_host, void **out_device) {
+  if (d == nullptr || out_host == nullptr || out_device == nullptr || bytes == 0) {
+    return -1;
+  }
+  if (!ensure_device(d)) {
+    return -1;
+  }
+  void *host = nullptr;
+  cudaError_t err = cudaHostAlloc(&host, static_cast<std::size_t>(bytes),
+                                  cudaHostAllocMapped | cudaHostAllocPortable);
+  if (err != cudaSuccess) {
+    return log_cuda_error(-1, "cudaHostAlloc(mapped)", err);
+  }
+  void *device = nullptr;
+  err = cudaHostGetDevicePointer(&device, host, 0);
+  if (err != cudaSuccess) {
+    cudaFreeHost(host);
+    return log_cuda_error(-1, "cudaHostGetDevicePointer", err);
+  }
+  *out_host = host;
+  *out_device = device;
+  return 0;
+}
+
+extern "C" void ignis_device_host_free(struct ignis_device *d, void *host) {
+  if (d == nullptr || host == nullptr) {
+    return;
+  }
+  if (!ensure_device(d)) {
+    return;
+  }
+  cudaError_t err = cudaFreeHost(host);
+  if (err != cudaSuccess) {
+    log_cuda_error(0, "cudaFreeHost", err);
+  }
+}
+
 extern "C" void ignis_device_destroy(struct ignis_device *d) {
   if (d == nullptr) {
     return;

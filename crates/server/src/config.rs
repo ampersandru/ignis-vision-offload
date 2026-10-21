@@ -365,11 +365,12 @@ pub struct Config {
     /// snapshot's fixed GDN floor (~145 MiB) is paid regardless of prompt
     /// length.
     pub host_pool_bytes: u64,
-    /// What Flash-Next's host plan must leave of the physical memory
+    /// What a text model's host plan must leave of the physical memory
     /// available at load (`--model-host-margin-bytes`,
     /// [`DEFAULT_HOST_MARGIN_BYTES`]): a load whose pinned lines leave less
-    /// is refused, naming the line to shrink. The 27B and the image model
-    /// make no host plan: their starts carry it for a switch to Flash-Next.
+    /// is refused, naming the line to shrink -- Flash-Next's, and the 27B's
+    /// since its token embedding lives in pinned host memory (ADR 0062). The
+    /// image model makes no host plan: its start carries it for a switch.
     pub host_margin_bytes: u64,
     /// Cross-request state reuse (`--reuse-prompt`, GitHub #186, ADR 0029).
     /// On by default. Off means a request captures no prompt checkpoint and

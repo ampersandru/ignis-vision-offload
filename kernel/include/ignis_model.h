@@ -364,7 +364,8 @@ struct ignis_model_reservations {
 };
 
 struct ignis_model_stats {
-  uint64_t vram_bytes;        /* sum of every bound tensor's payload bytes */
+  /* Sum of the payload bytes of every bound tensor in device memory. */
+  uint64_t vram_bytes;
   uint64_t bound_tensor_count;
   /* What vision reserves beside the weights (GitHub #177, #212): the
    * per-item output transient, plus whatever the encoder workspace grows
@@ -374,6 +375,10 @@ struct ignis_model_stats {
   /* What this load holds beside the weights, read off its own buffers
    * (GitHub #210). */
   struct ignis_model_reservations reserved;
+  /* Sum of the payload bytes of every bound tensor in mapped host memory
+   * (ADR 0062: the 27B's token embedding), which `vram_bytes` leaves out:
+   * the load asks the runtime where each tensor's data lives. */
+  uint64_t host_mapped_bytes;
 };
 
 /* What `ignis_model_load` would reserve beside the weights for the same

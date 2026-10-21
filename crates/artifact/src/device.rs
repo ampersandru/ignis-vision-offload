@@ -59,6 +59,50 @@ impl DeviceBuffer {
     }
 }
 
+/// A mapped pinned host allocation (ADR 0062): page-locked host memory the
+/// device reads in place through [`HostMappedBuffer::device_ptr`]. The host
+/// writes it through [`HostMappedBuffer::host_ptr`], once, at load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMappedBuffer {
+    host: *mut u8,
+    device: *const u8,
+    bytes: u64,
+}
+
+impl HostMappedBuffer {
+    pub(crate) fn new(host: *mut u8, device: *const u8, bytes: u64) -> Self {
+        Self { host, device, bytes }
+    }
+
+    /// The host side, [`crate::DIRECT_IO_ALIGNMENT`]-aligned.
+    pub fn host_ptr(&self) -> *mut u8 {
+        self.host
+    }
+
+    /// The pointer a kernel reads it through.
+    pub fn device_ptr(&self) -> *const u8 {
+        self.device
+    }
+
+    /// Exact length of this allocation in bytes.
+    pub fn len(&self) -> u64 {
+        self.bytes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
+
+    /// The whole allocation, writable from the host.
+    ///
+    /// # Safety
+    /// The buffer must still be allocated, and nothing else may read or write
+    /// it while the slice lives: no kernel in flight reading it.
+    pub unsafe fn host_slice_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.host, self.bytes as usize) }
+    }
+}
+
 /// A device memory allocator + copy engine (the materializer's contract).
 pub trait Device {
     /// Allocate a `bytes`-byte region (the materializer's arena).
@@ -83,6 +127,13 @@ pub trait Device {
         Ok(())
     }
 
+    /// Allocate `bytes` of mapped pinned host memory (ADR 0062), its host
+    /// side [`crate::DIRECT_IO_ALIGNMENT`]-aligned.
+    fn allocate_host_mapped(&mut self, bytes: u64) -> Result<HostMappedBuffer>;
+
+    /// Release a mapped host buffer this device produced.
+    fn free_host_mapped(&mut self, buffer: HostMappedBuffer) -> Result<()>;
+
     /// Free memory in bytes (None: the implementation cannot report it).
     fn free_bytes(&self) -> Option<u64> {
         None
@@ -103,6 +154,9 @@ pub trait Device {
 pub struct CpuDevice {
     storage: Vec<Vec<u8>>,
     used: u64,
+    /// The "mapped" host buffers and the bytes each was asked for: aligned
+    /// heap memory the mock's "device" reads through the same address.
+    host_mapped: Vec<(crate::AlignedBuffer, u64)>,
 }
 
 impl CpuDevice {
@@ -113,6 +167,11 @@ impl CpuDevice {
     /// Total bytes allocated across all arenas.
     pub fn used_bytes(&self) -> u64 {
         self.used
+    }
+
+    /// Bytes of the mapped host buffers still allocated.
+    pub fn host_mapped_bytes(&self) -> u64 {
+        self.host_mapped.iter().map(|(_, bytes)| bytes).sum()
     }
 
     fn storage_at(&self, base: *const u8) -> Option<&Vec<u8>> {
@@ -169,6 +228,24 @@ impl Device for CpuDevice {
     }
 
     fn synchronize(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn allocate_host_mapped(&mut self, bytes: u64) -> Result<HostMappedBuffer> {
+        let len = usize::try_from(bytes).map_err(|_| fail("host-mapped allocation size overflows usize"))?;
+        let mut buffer = crate::AlignedBuffer::new(len)?;
+        let host = buffer.as_mut_slice().as_mut_ptr();
+        self.host_mapped.push((buffer, bytes));
+        Ok(HostMappedBuffer::new(host, host, bytes))
+    }
+
+    fn free_host_mapped(&mut self, buffer: HostMappedBuffer) -> Result<()> {
+        let index = self
+            .host_mapped
+            .iter()
+            .position(|(b, _)| b.as_slice().as_ptr() == buffer.host_ptr() as *const u8)
+            .ok_or_else(|| fail("host-mapped buffer was not allocated by this device"))?;
+        self.host_mapped.swap_remove(index);
         Ok(())
     }
 }
@@ -369,6 +446,23 @@ impl Device for CudaDevice {
         unsafe { crate::ffi::ignis_device_free(self.handle, buffer.base_ptr() as *mut c_void) };
         Ok(())
     }
+
+    fn allocate_host_mapped(&mut self, bytes: u64) -> Result<HostMappedBuffer> {
+        let mut host: *mut c_void = std::ptr::null_mut();
+        let mut device: *mut c_void = std::ptr::null_mut();
+        let rc = unsafe { crate::ffi::ignis_device_host_alloc_mapped(self.handle, bytes, &mut host, &mut device) };
+        if rc != 0 || host.is_null() || device.is_null() {
+            return Err(fail(format!(
+                "ignis_device_host_alloc_mapped({bytes}) failed (rc={rc}): the host cannot pin that much memory"
+            )));
+        }
+        Ok(HostMappedBuffer::new(host as *mut u8, device as *const u8, bytes))
+    }
+
+    fn free_host_mapped(&mut self, buffer: HostMappedBuffer) -> Result<()> {
+        unsafe { crate::ffi::ignis_device_host_free(self.handle, buffer.host_ptr() as *mut c_void) };
+        Ok(())
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -418,6 +512,26 @@ mod tests {
         let buffer = DeviceBuffer::new(base, 8);
         assert!(device.copy_h2d(&buffer, 0, &[1u8, 2]).is_err());
         let _ = foreign; // keep the foreign buffer alive (pointee)
+    }
+
+    /// ADR 0062: a mapped host buffer is writable through its host pointer
+    /// and read through its device pointer; on the mock they are one, the
+    /// address is direct-I/O aligned, and none of it counts as device memory.
+    #[test]
+    fn cpu_device_host_mapped_buffer_reads_where_it_is_written() {
+        let mut device = CpuDevice::new();
+        let mut mapped = device.allocate_host_mapped(5000).expect("host mapped");
+        assert_eq!(mapped.len(), 5000);
+        assert_eq!(mapped.host_ptr() as usize % 4096, 0, "a direct read lands in it");
+        assert_eq!(mapped.device_ptr(), mapped.host_ptr() as *const u8);
+        let host = unsafe { mapped.host_slice_mut() };
+        host[4999] = 7;
+        assert_eq!(unsafe { *mapped.device_ptr().add(4999) }, 7);
+        assert_eq!(device.used_bytes(), 0, "host memory, not the device's");
+        assert_eq!(device.host_mapped_bytes(), 5000);
+        device.free_host_mapped(mapped).expect("free");
+        assert_eq!(device.host_mapped_bytes(), 0);
+        assert!(device.free_host_mapped(mapped).is_err(), "a buffer is freed once");
     }
 
     #[test]

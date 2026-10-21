@@ -50,13 +50,13 @@ pub mod kv_budget;
 
 pub use binding::{Binding, Bf16View, Nvfp4View};
 pub use binder::{
-    Binder, DevicePlacement, ExpertPoolPlacement, HostPlacement, MaterializationPlan, ObjectHandle,
-    StreamedPlacement,
+    Binder, DevicePlacement, ExpertPoolPlacement, HostMappedPlacement, HostPlacement, MaterializationPlan,
+    ObjectHandle, Residence, StreamedPlacement,
 };
 pub use checksum::{
     verify, ChecksumReport, GraftedSource, Nvfp4Record, ObjectCheck, Outcome, Sidecar,
 };
-pub use device::{CpuDevice, Device, DeviceBuffer};
+pub use device::{CpuDevice, Device, DeviceBuffer, HostMappedBuffer};
 pub use direct::{AlignedBuffer, DirectReader, DirectWriter, volume_free_bytes};
 #[cfg(feature = "cuda")]
 pub use device::CudaDevice;
@@ -71,7 +71,8 @@ pub use writer::{directory_json, ContainerWriter, WriterState};
 pub use materializer::{materialize, MaterializationStats, MaterializedArtifact, TensorView};
 pub use normalize::{normalize_tensor, NormalizedTensor};
 pub use inventory::{
-    bind_model_scope_27b, bind_model_scope_27b_with, bind_text_scope_27b, dflash2_scope_27b,
+    bind_model_scope_27b, bind_model_scope_27b_on_device, bind_model_scope_27b_with, bind_text_scope_27b,
+    dflash2_scope_27b,
     draft_head_scope_27b,
     model_scope_27b, model_scope_27b_with, vision_scope_27b, DraftModule, InventoryEntry,
     ModelScope, DFLASH2_LAYERS, OUT_OF_SCOPE_TEXT_NAMES, VISION_LAYERS, text_scope_27b,

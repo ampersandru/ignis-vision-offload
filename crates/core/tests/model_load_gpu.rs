@@ -54,8 +54,11 @@ fn the_real_artifact_loads_and_its_program_scratch_tracks_the_prefill_chunk() {
     // the leaf ever sees a descriptor.
     let (plan, handles) =
         bind_text_scope_27b(&reader).unwrap_or_else(|e| panic!("bind text scope: {e}"));
-    assert_eq!(plan.device_objects.len(), 906, "the full text-scope inventory");
-    assert_eq!(plan.host_objects.len(), 0, "every text-scope tensor is a device tensor");
+    // ADR 0062: all but the token embedding, which lives in mapped host
+    // memory.
+    assert_eq!(plan.device_objects.len(), 905, "the text-scope inventory but the token embedding");
+    assert_eq!(plan.host_mapped_objects.len(), 1, "the token embedding");
+    assert_eq!(plan.host_objects.len(), 0, "no text-scope tensor is a host resource");
 
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,

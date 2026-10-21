@@ -12,10 +12,12 @@
 //!
 //! The device arena is a single allocation (the reference `DeviceArena`
 //! sub-allocation pattern): one `allocate(capacity)`, each device object
-//! lives at its plan offset inside it.
+//! lives at its plan offset inside it. Host-mapped tensors (ADR 0062) get one
+//! mapped pinned host allocation the same way, read into from the file
+//! directly, with no staging copy and no upload.
 
-use crate::binder::MaterializationPlan;
-use crate::device::{Device, DeviceBuffer};
+use crate::binder::{MaterializationPlan, Residence};
+use crate::device::{Device, DeviceBuffer, HostMappedBuffer};
 use crate::direct::AlignedBuffer;
 use crate::{
     block_scale_geometry, checked_add, fail, row_scale_geometry, row_split_geometry, Reader,
@@ -30,6 +32,9 @@ pub struct MaterializationStats {
     pub file_bytes: u64,
     /// Host->device bytes copied (sum of device-object payload bytes).
     pub h2d_bytes: u64,
+    /// Payload bytes of the host-mapped tensors (ADR 0062), read into mapped
+    /// pinned host memory and never copied to the device.
+    pub host_mapped_bytes: u64,
     /// Device arena size (the plan's `device_capacity_bytes`).
     pub device_capacity_bytes: u64,
     /// Bytes of host-retained resources (decremented by
@@ -48,15 +53,19 @@ pub struct MaterializationStats {
     pub upload_seconds: f64,
 }
 
-/// A typed, non-owning view of a device-placed tensor.
+/// A typed, non-owning view of a tensor the kernels read.
 ///
-/// `base` points into the device arena (the kernel entry point); the plane
-/// offsets are relative to `base` and come from the reader's storage-layout
-/// geometry (ADR 0002: geometry is the container's, not the model's).
+/// `base` points into the device arena, or into the mapped host allocation
+/// through its device pointer (`residence`, ADR 0062): either way it is the
+/// kernel entry point. The plane offsets are relative to `base` and come
+/// from the reader's storage-layout geometry (ADR 0002: geometry is the
+/// container's, not the model's).
 #[derive(Debug)]
 pub struct TensorView {
     /// The object's directory name.
     pub name: String,
+    /// Where `base` points: the device arena or the mapped host allocation.
+    pub residence: Residence,
     pub format: crate::NumericFormat,
     pub layout: StorageLayout,
     pub shape: Vec<u64>,
@@ -66,7 +75,7 @@ pub struct TensorView {
     /// Exact payload length (the layout's encoded size).
     pub bytes: u64,
     /// Offset of this tensor inside the device arena (for d2h
-    /// verification).
+    /// verification), or inside the mapped host allocation.
     pub offset_in_arena: u64,
     /// Row-split high-plane offset relative to `base` (row-split layouts).
     pub high_plane_offset: Option<u64>,
@@ -115,6 +124,9 @@ enum MaterializedObject {
 #[derive(Debug)]
 pub struct MaterializedArtifact {
     arena: Option<DeviceBuffer>,
+    /// The mapped pinned host allocation of the host-mapped tensors (ADR
+    /// 0062), freed with the arena.
+    host_mapped: Option<HostMappedBuffer>,
     objects: Vec<MaterializedObject>,
     stats: MaterializationStats,
 }
@@ -179,14 +191,23 @@ impl MaterializedArtifact {
         self.arena.as_ref()
     }
 
-    /// Release the device arena through `device` (the same one
-    /// [`materialize`] built it on — the buffer is invalid on any other
-    /// device). Every [`TensorView`] into it is dangling afterward; the
-    /// caller must not read through one again. Idempotent: a second call
-    /// finds `arena` already `None` and does nothing.
+    /// The mapped pinned host allocation the host-mapped tensors live in
+    /// (ADR 0062), if the plan placed any.
+    pub fn host_mapped(&self) -> Option<&HostMappedBuffer> {
+        self.host_mapped.as_ref()
+    }
+
+    /// Release the device arena and the mapped host allocation through
+    /// `device` (the same one [`materialize`] built them on — the buffers
+    /// are invalid on any other device). Every [`TensorView`] into them is
+    /// dangling afterward; the caller must not read through one again.
+    /// Idempotent: a second call finds both already `None` and does nothing.
     pub fn release_arena<D: Device>(&mut self, device: &mut D) -> Result<()> {
         if let Some(arena) = self.arena.take() {
             device.deallocate(arena)?;
+        }
+        if let Some(mapped) = self.host_mapped.take() {
+            device.free_host_mapped(mapped)?;
         }
         Ok(())
     }
@@ -259,6 +280,54 @@ pub fn materialize<D: Device>(
         stats.file_bytes =
             checked_add(stats.file_bytes, bytes.len() as u64, "artifact read bytes overflow u64")?;
         objects[host.handle.index] = MaterializedObject::HostTensor(bytes);
+    }
+
+    // --- host-mapped tensors (ADR 0062): direct I/O into pinned memory -----
+    // One mapped pinned allocation; each tensor's aligned file span is read
+    // straight into it at its 4096-aligned span offset, so the bytes are
+    // written once and never staged or copied to the device.
+    let mut host_mapped = if plan.host_mapped_capacity_bytes == 0 {
+        None
+    } else {
+        Some(device.allocate_host_mapped(plan.host_mapped_capacity_bytes)?)
+    };
+    for mapped in &plan.host_mapped_objects {
+        let object = reader
+            .objects()
+            .get(mapped.handle.index)
+            .ok_or_else(|| fail("host-mapped placement handle is out of range"))?;
+        let span = reader.payload_at(object)?;
+        let span_end = checked_add(mapped.span_offset, mapped.span_bytes, "host-mapped span end")?;
+        if object.bytes() != mapped.bytes
+            || span.absolute_offset != mapped.span_file_offset + (mapped.offset - mapped.span_offset)
+        {
+            return Err(fail(format!("materialization plan does not match artifact payload: {}", object.name())));
+        }
+        let tensor = match object {
+            crate::Object::Tensor(t) => t,
+            crate::Object::Resource(_) => {
+                return Err(fail(format!("resource cannot be placed in mapped host memory: {}", object.name())))
+            }
+        };
+        let buffer = match host_mapped.as_mut() {
+            Some(buffer) if span_end <= buffer.len() => buffer,
+            _ => return Err(fail(format!("host-mapped span extends beyond the allocation: {}", object.name()))),
+        };
+        // SAFETY: the allocation was made above and no kernel can read it yet.
+        let host = unsafe { buffer.host_slice_mut() };
+        let read = reader.read_direct(mapped.span_file_offset, &mut host[mapped.span_offset as usize..span_end as usize])?;
+        if (read as u64) < mapped.offset - mapped.span_offset + mapped.bytes {
+            return Err(fail(format!(
+                "direct artifact read ended before the planned tensor range: {}",
+                object.name()
+            )));
+        }
+        stats.file_bytes = checked_add(stats.file_bytes, read as u64, "artifact read bytes overflow u64")?;
+        stats.host_mapped_bytes = checked_add(stats.host_mapped_bytes, mapped.bytes, "host-mapped bytes overflow u64")?;
+        let base = unsafe { buffer.device_ptr().add(mapped.offset as usize) };
+        let mut view = tensor_view(tensor, mapped.offset, base, mapped.bytes)?;
+        view.residence = Residence::HostMapped;
+        objects[mapped.handle.index] = MaterializedObject::Tensor(view);
     }
 
     // --- device objects: direct I/O -> bounded staging pool -> device ------
@@ -394,6 +463,7 @@ pub fn materialize<D: Device>(
 
     Ok(MaterializedArtifact {
         arena,
+        host_mapped,
         objects,
         stats,
     })
@@ -447,6 +517,7 @@ fn tensor_view(
     };
     Ok(TensorView {
         name: tensor.name.clone(),
+        residence: Residence::Device,
         format: tensor.format,
         layout: tensor.layout,
         shape: tensor.shape.clone(),
@@ -645,6 +716,60 @@ mod tests {
         );
         drop(reader);
         let _ = handles;
+    }
+
+    /// ADR 0062: a host-mapped tensor is read from the file straight into
+    /// the mapped allocation, once; its view points at the allocation's
+    /// device side and says where it lives, the device arena holds only the
+    /// rest, and releasing the arena releases the mapped memory too.
+    #[test]
+    fn a_host_mapped_tensor_lands_in_the_mapped_allocation_not_the_arena() {
+        let fixture =
+            fixture::write_fixture(&fixture::all_layout_objects(), &fixture::all_layout_payload(), "host-mapped")
+                .expect("fixture");
+        let reader = Reader::open(&fixture.path).expect("open fixture");
+        let mut binder = Binder::new(&reader);
+        let resource = binder
+            .require_resource("frontend/tokenizer.json", ResourceEncoding::RawBytesV1)
+            .expect("resource");
+        binder.retain_on_host(resource).expect("retain");
+        let bf16 = binder
+            .require_tensor("w/bf16", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8])
+            .expect("bf16");
+        binder.materialize_on_device(bf16).expect("device");
+        let q4 = binder
+            .require_tensor("w/q4", NumericFormat::Q4G64F16S, StorageLayout::RowSplitK128V1, &[128, 128])
+            .expect("q4");
+        binder.place_in_host_mapped(q4).expect("host mapped");
+        let plan = binder.plan();
+
+        let mut device = CpuDevice::new();
+        let mut artifact = materialize(&reader, &plan, &mut device, None).expect("materialize");
+        assert_eq!(artifact.arena().expect("arena").len(), 64, "the BF16 tensor alone");
+        let mapped = artifact.host_mapped().expect("a mapped allocation");
+        assert_eq!(mapped.len(), plan.host_mapped_capacity_bytes);
+        assert_eq!(device.host_mapped_bytes(), 12288);
+
+        let view = artifact.device_view(q4).expect("view");
+        assert_eq!(view.residence, crate::Residence::HostMapped);
+        assert_eq!(view.base, unsafe { mapped.device_ptr().add(1024) });
+        assert_eq!(view.offset_in_arena, 1024, "its offset inside the mapped allocation");
+        assert_eq!(view.bytes, 8704);
+        // The row-split planes follow the payload, as on the device.
+        assert!(view.scale_plane().is_some());
+        let payload = unsafe { std::slice::from_raw_parts(view.base, view.bytes as usize) };
+        assert!(payload.iter().all(|&b| b == 0x04), "the stored bytes, read where a kernel reads them");
+        assert_eq!(artifact.device_view(bf16).expect("view").residence, crate::Residence::Device);
+
+        let stats = artifact.stats();
+        assert_eq!(stats.h2d_bytes, 64, "nothing of the mapped tensor crosses as a copy");
+        assert_eq!(stats.host_mapped_bytes, 8704);
+        assert_eq!(stats.tensor_count, 1, "the device's");
+
+        artifact.release_arena(&mut device).expect("release");
+        assert!(artifact.host_mapped().is_none());
+        assert_eq!(device.host_mapped_bytes(), 0, "the mapped memory goes with the arena");
+        drop(reader);
     }
 
     #[test]

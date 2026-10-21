@@ -518,6 +518,18 @@ add_executable(ignis_kernel_dflash2_topk_test test_dflash2_topk.cu)
 target_link_libraries(ignis_kernel_dflash2_topk_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_dflash2_topk_test COMMAND ignis_kernel_dflash2_topk_test)
 
+# ADR 0062: the token embedding in mapped pinned host memory (OURS: the
+# device surface's allocation), gathered by the vendored W8 op bit for bit as
+# from device memory, eager and graph-replayed. GPU; no SKIP_RETURN_CODE
+# (ADR 0006).
+add_executable(ignis_kernel_host_mapped_embedding_test test_host_mapped_embedding.cu)
+target_link_libraries(ignis_kernel_host_mapped_embedding_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_host_mapped_embedding_test COMMAND ignis_kernel_host_mapped_embedding_test)
+# The same gather timed from the mapped table against device memory: a tool,
+# NOT a CTest (the 2026-10-21 host-embedding finding).
+add_executable(ignis_kernel_host_mapped_embedding_bench bench_host_mapped_embedding.cu)
+target_link_libraries(ignis_kernel_host_mapped_embedding_bench PRIVATE ignis_kernel ignis_vendor)
+
 # OURS, not vendored: the A16 NVFP4 linear's tensor-core route
 # (kernel/include/ignis_nvfp4_a16_mma.h), which takes every A16 call of 64
 # columns or more (128 below 4,096 output rows). Driven through the leaf's

@@ -19,7 +19,7 @@
 //! FP32, 247 NVFP4 (the 27B model's GEMM weights + the norms / GDN
 //! params / `*_input_scale_divisor` scalars).
 
-use crate::binder::{Binder, MaterializationPlan, ObjectHandle};
+use crate::binder::{Binder, MaterializationPlan, ObjectHandle, Residence};
 use crate::{NumericFormat, Reader, Result, StorageLayout};
 
 // ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ use crate::{NumericFormat, Reader, Result, StorageLayout};
 // ---------------------------------------------------------------------------
 
 /// One text-scope tensor entry (the container's directory projection:
-/// `name` + `format` + `layout` + `shape`).
+/// `name` + `format` + `layout` + `shape`), and where the model keeps it.
 ///
 /// The `name` is a `'static` string (the layer-templated names are leaked
 /// once by the generator — bounded by the table size, a one-time cost).
@@ -39,6 +39,9 @@ pub struct InventoryEntry {
     pub layout: StorageLayout,
     /// The stored shape (rank-0 for the `*_input_scale_divisor` scalars).
     pub shape: &'static [u64],
+    /// Where the load places it: the device, but for the token embedding,
+    /// which lives in mapped host memory (ADR 0062).
+    pub residence: Residence,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +174,12 @@ pub fn text_scope_27b() -> Vec<InventoryEntry> {
     let mut entries = Vec::with_capacity(906);
     // The directory order: `token_embedding` first, then the 64 layers,
     // then the top-level tails (the container's actual order).
-    entries.push(mk("text/token_embedding", NumericFormat::W8G32F16S, StorageLayout::RowSplitK128V1, &SH_EMBED));
+    // ADR 0062: a token reads one 5,440-byte row of the 1.35 GB table, so the
+    // table lives in mapped host memory and the gather reads it over the bus.
+    entries.push(InventoryEntry {
+        residence: Residence::HostMapped,
+        ..mk("text/token_embedding", NumericFormat::W8G32F16S, StorageLayout::RowSplitK128V1, &SH_EMBED)
+    });
     for i in 0..64usize {
         // Layer `i` is GQA iff `(i + 1) % 4 == 0` (the model constant).
         entries.extend(if (i + 1) % 4 == 0 { gqa_layer(i) } else { gdn_layer(i) });
@@ -182,7 +190,8 @@ pub fn text_scope_27b() -> Vec<InventoryEntry> {
 }
 
 /// Bind every text-scope tensor ([`text_scope_27b`]) against `reader`,
-/// materializing each on the device (P1-17, GitHub #53).
+/// materializing each on the device (P1-17, GitHub #53) but the token
+/// embedding, placed in mapped host memory (ADR 0062).
 ///
 /// Loudly rejects a missing or mis-shaped text-scope object (a
 /// [`Binder::require_tensor`] mismatch): the exact (format, layout, shape)
@@ -411,7 +420,27 @@ pub fn bind_model_scope_27b_with(
     Ok((binder.plan(), handles))
 }
 
-/// Require and place each entry on the device, in order.
+/// [`bind_model_scope_27b_with`] with every tensor on the device, the token
+/// embedding included: the placement before ADR 0062, kept as the oracle a
+/// host-mapped load's output is checked against. The handles are in the
+/// same order.
+pub fn bind_model_scope_27b_on_device(
+    reader: &Reader,
+    scope: ModelScope,
+) -> Result<(MaterializationPlan, Vec<ObjectHandle>)> {
+    let entries = all_on_device(&model_scope_27b_with(scope));
+    let mut binder = Binder::new(reader);
+    let mut handles = Vec::with_capacity(entries.len());
+    bind_entries(&mut binder, &entries, &mut handles)?;
+    Ok((binder.plan(), handles))
+}
+
+/// `entries`, every one on the device.
+fn all_on_device(entries: &[InventoryEntry]) -> Vec<InventoryEntry> {
+    entries.iter().map(|e| InventoryEntry { residence: Residence::Device, ..*e }).collect()
+}
+
+/// Require and place each entry where it lives, in order.
 fn bind_entries(
     binder: &mut Binder,
     entries: &[InventoryEntry],
@@ -419,20 +448,24 @@ fn bind_entries(
 ) -> Result<()> {
     for entry in entries {
         let handle = binder.require_tensor(entry.name, entry.format, entry.layout, entry.shape)?;
-        binder.materialize_on_device(handle)?;
+        match entry.residence {
+            Residence::Device => binder.materialize_on_device(handle)?,
+            Residence::HostMapped => binder.place_in_host_mapped(handle)?,
+        }
         handles.push(handle);
     }
     Ok(())
 }
 
-/// Build an entry, leaking the (templated) name into a `'static` string
-/// (the generator runs once; the leak is bounded by the table size).
+/// Build a device entry, leaking the (templated) name into a `'static`
+/// string (the generator runs once; the leak is bounded by the table size).
 fn mk(name: &str, format: NumericFormat, layout: StorageLayout, shape: &'static [u64]) -> InventoryEntry {
     InventoryEntry {
         name: Box::leak(name.to_string().into_boxed_str()),
         format,
         layout,
         shape,
+        residence: Residence::Device,
     }
 }
 
@@ -505,6 +538,61 @@ mod tests {
             };
             assert_eq!(e.layout, want, "{} carries an unexpected layout", e.name);
         }
+    }
+
+    /// ADR 0062: the token embedding is the one tensor of any 27B scope that
+    /// lives in mapped host memory; everything else, the output head
+    /// included, is on the device.
+    #[test]
+    fn the_token_embedding_is_the_one_host_mapped_tensor_of_every_scope() {
+        for scope in [
+            ModelScope::default(),
+            ModelScope { draft: Some(DraftModule::Dflash2ShortlistHead), vision: true },
+        ] {
+            let host: Vec<&str> = model_scope_27b_with(scope)
+                .iter()
+                .filter(|e| e.residence == Residence::HostMapped)
+                .map(|e| e.name)
+                .collect();
+            assert_eq!(host, ["text/token_embedding"], "{scope:?}");
+        }
+    }
+
+    /// `bind_entries` places each entry where the inventory says it lives,
+    /// and the all-on-device binding (the placement before ADR 0062, the
+    /// oracle a host-mapped load is checked against) moves it to the device.
+    #[test]
+    fn a_host_mapped_entry_binds_into_the_mapped_allocation_unless_all_go_on_the_device() {
+        let artifact = crate::fixture::write_fixture(
+            &crate::fixture::all_layout_objects(),
+            &crate::fixture::all_layout_payload(),
+            "inventory-host-mapped",
+        )
+        .expect("write fixture");
+        let reader = Reader::open(&artifact.path).expect("open fixture");
+        let entries = [
+            mk("w/bf16", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8]),
+            InventoryEntry {
+                residence: Residence::HostMapped,
+                ..mk("w/q4", NumericFormat::Q4G64F16S, StorageLayout::RowSplitK128V1, &[128, 128])
+            },
+        ];
+        let mut binder = Binder::new(&reader);
+        let mut handles = Vec::new();
+        bind_entries(&mut binder, &entries, &mut handles).expect("bind");
+        let plan = binder.plan();
+        assert_eq!(plan.device_objects.len(), 1);
+        assert_eq!(plan.device_objects[0].handle, handles[0]);
+        assert_eq!(plan.host_mapped_objects.len(), 1);
+        assert_eq!(plan.host_mapped_objects[0].handle, handles[1]);
+
+        let mut binder = Binder::new(&reader);
+        let mut handles = Vec::new();
+        bind_entries(&mut binder, &all_on_device(&entries), &mut handles).expect("bind");
+        let plan = binder.plan();
+        assert_eq!(plan.device_objects.len(), 2);
+        assert!(plan.host_mapped_objects.is_empty());
+        assert_eq!(plan.host_mapped_capacity_bytes, 0);
     }
 
     /// The generated table has no duplicate names (the reader's

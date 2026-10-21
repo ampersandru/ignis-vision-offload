@@ -207,7 +207,9 @@ impl Drop for CudaLeaf {
         // only tears down its load stream/event, never this allocation).
         // Without this, every load leaks its ~19 GB arena for the rest of
         // the process (the fault this fixes: multiple GPU tests in one
-        // process accumulate one arena per `harness()` call).
+        // process accumulate one arena per `harness()` call). The token
+        // embedding's mapped host table (ADR 0062) goes with it: an idle
+        // unload or a switch gives its pinned RAM back.
         let _ = self.artifact.release_arena(&mut self.device);
     }
 }
