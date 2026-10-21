@@ -135,3 +135,5 @@ The options costed:
     (908,592,896 bytes), so it drops by 599,718,656.
 - **The 5090's profile spends it on context**: the 27B's `model.max_context` 786,432 → 917,504, raised until the plan
   refused (950,272 is 59 MB short), which moves `auto` rope scaling from YaRN 3 to 3.5.
+- **Owner, 2026-10-21, closing #335**: the 8-bit band stays the default, its agreement held to ×1.01 of A1 (acceptance
+  2 read with that tolerance), and the profile keeps 917,504.

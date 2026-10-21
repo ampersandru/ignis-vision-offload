@@ -181,8 +181,8 @@ Inferred:
   the amended ≥ 1.0e9), and for a text-only load's plan line; AC 3 holds (KLD within noise); AC 4 holds with the FP8 thresholds (+29.7% ≥ +13% at 46K,
   +53.1% ≥ +24% at 105K; decode no slower). AC 2 as written, "at least as close", holds for the FP16 fallback on every
   arm (×0.998-1.001) and for the 8-bit band on every arm but the 32K one, where it is ×1.005 (+0.5% on the median
-  row, cosine 1.3e-5 lower). Whether that half percent counts is the owner's call; the band ships 8-bit by default
-  and FP16 behind `--model-prefill-attention fp16`.
+  row, cosine 1.3e-5 lower). The owner accepted that half percent (2026-10-21): the band ships 8-bit by default,
+  held to ×1.01 of A1 by the test, and FP16 behind `--model-prefill-attention fp16`.
 - The 8-bit band's own error is ~1% of a row against the codec's ~9%: the hq-e8-2b codec, not the attention, is what
   separates the prefill from BF16.
 - With vision on, the workspace line now follows the vision encoder (908.6 MB for a 16,384-token item): the next
@@ -196,8 +196,8 @@ Inferred:
   8-bit band by default; the vendored route stays the agreement test's oracle.
 - The `rtx5090` profile's 27B context goes from 786,432 to 917,504 (`crates/server/src/config/profile.rs`). Under
   `auto` rope scaling that moves its YaRN factor from 3 to 3.5, which ADR 0057 notes costs short contexts a little;
-  the alternative is to keep 786,432 and let the KV pool take the ~1.95 GB (+~210K tokens) for concurrent and retained
-  sequences. The `rtxpro6000` values do not move: both families are already at the 1,048,576-token envelope.
+  the alternative was to keep 786,432 and let the KV pool take the ~1.95 GB (+~210K tokens) for concurrent and
+  retained sequences. The owner chose the context (2026-10-21). The `rtxpro6000` values do not move: both families are already at the 1,048,576-token envelope.
 
 ## Limits and unknowns
 
