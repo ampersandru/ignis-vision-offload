@@ -448,7 +448,7 @@ change does not reach and a `null` removes.
 | `--switch-drain-timeout <secs>` | `IGNIS_SWITCH_DRAIN_TIMEOUT` | `30` (max `3600`) | How long a model switch lets the old model's running requests finish before it cancels them (`0` cancels at once). |
 | `--model-idle-unload <secs>` | `IGNIS_MODEL_IDLE_UNLOAD` | `300` (max `604800`) | Seconds with no request using the model before it is unloaded, the server staying up; the next request loads it again ([below](#idle-unload)). `0` never unloads. Patchable live. |
 | `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `300` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
-| `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What Flash-Next's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next)). Per family as `--qwen38flashnext-model-host-margin-bytes`, which a 27B or image-model start takes for a later switch; neither makes a host plan. (`make` knob `HOST_MARGIN_BYTES`.) |
+| `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What a text model's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next), [for the 27B](#host-ram-for-the-27b)). Per family as `--qwen38-model-host-margin-bytes` and `--qwen38flashnext-model-host-margin-bytes`; an image-model start, which makes no host plan, takes them for a later switch. (`make` knob `HOST_MARGIN_BYTES`.) |
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is. `POST /v1/models/switch` is not affected. |
 | `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
 | `--config <path>` | `IGNIS_CONFIG` | discovered | The config file ([above](#configuration)). |
@@ -1013,8 +1013,9 @@ answers during a switch and while one has failed, and carries no path.
 `outcome` is `switched`, `refused` (nothing was torn down), `restored` (the
 old model was loaded again) or `failed` (nothing serves), with a `reason` for
 every outcome but the first. A reload from `PATCH /v1/config` is reported the
-same way, with `from` equal to `to`. When Flash-Next's
-[host plan](#host-ram-for-flash-next) refused the target, `host_plan` holds
+same way, with `from` equal to `to`. When a text model's host plan
+([Flash-Next's](#host-ram-for-flash-next), [the 27B's](#host-ram-for-the-27b))
+refused the target, `host_plan` holds
 it in exact bytes for an agent (`available_bytes`, `margin_bytes`,
 `planned_bytes`, `needed_bytes`, `short_bytes`, `crossing_line`, and every
 line as `{name, bytes}`), while `reason` says it for a person.

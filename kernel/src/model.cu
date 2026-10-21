@@ -138,6 +138,21 @@ ninfer::Weight to_weight(const ignis_bound_tensor &t) {
   return w;
 }
 
+// ADR 0062: whether `data` is page-locked host memory -- a mapped table the
+// kernels read in place over the bus -- rather than device memory. A pointer
+// the runtime does not know (none of the leaf's own) reads as not host.
+bool in_host_memory(const void *data) {
+  if (data == nullptr) {
+    return false;
+  }
+  cudaPointerAttributes attributes{};
+  if (cudaPointerGetAttributes(&attributes, data) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  return attributes.type == cudaMemoryTypeHost;
+}
+
 bool shape_matches(const ignis_bound_tensor &t, std::initializer_list<int64_t> want) {
   if (t.ndim != want.size()) {
     return false;
@@ -1482,12 +1497,16 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   model->speculative_backend = speculative_backend;
   model->draft_tokens = draft_tokens;
 
+  // ADR 0062: a tensor bound from mapped pinned host memory (the 27B's
+  // token embedding) takes no VRAM; the runtime says where each one lives.
   uint64_t vram_bytes = 0;
+  uint64_t host_mapped_bytes = 0;
   for (uint64_t i = 0; i < count; ++i) {
-    vram_bytes += tensors[i].bytes;
+    (in_host_memory(tensors[i].qdata) ? host_mapped_bytes : vram_bytes) += tensors[i].bytes;
   }
   model->bound_tensor_count = count;
   model->vram_bytes = vram_bytes;
+  model->host_mapped_bytes = host_mapped_bytes;
 
   // GitHub #302: a Flash-Next load reserves and prepares its own program.
   if (model->flash_next) {
@@ -1718,6 +1737,7 @@ extern "C" int32_t ignis_model_stats(const struct ignis_model *model,
     return -1;
   }
   out_stats->vram_bytes = model->vram_bytes;
+  out_stats->host_mapped_bytes = model->host_mapped_bytes;
   out_stats->bound_tensor_count = model->bound_tensor_count;
   out_stats->vision_reserved_bytes = model->vision_reserved_bytes();
   out_stats->reserved = model->flash_next ? ignis::flash_next::reserved(*model) : reserved_of(*model);

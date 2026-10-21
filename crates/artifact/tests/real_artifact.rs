@@ -12,9 +12,9 @@
 use std::path::Path;
 
 use ignis_artifact::{
-    bind_model_scope_27b, bind_model_scope_27b_with, bind_text_scope_27b, dflash2_scope_27b,
-    materialize, text_scope_27b, vision_scope_27b, Binder, CpuDevice, DraftModule,
-    MaterializationPlan, ModelScope, NumericFormat, Object, OUT_OF_SCOPE_TEXT_NAMES, Reader,
+    bind_model_scope_27b, bind_model_scope_27b_on_device, bind_model_scope_27b_with, bind_text_scope_27b,
+    dflash2_scope_27b, materialize, text_scope_27b, vision_scope_27b, Binder, CpuDevice, DraftModule,
+    MaterializationPlan, ModelScope, NumericFormat, Object, OUT_OF_SCOPE_TEXT_NAMES, Reader, Residence,
     StorageLayout,
 };
 #[cfg(feature = "cuda")]
@@ -220,14 +220,19 @@ fn real_nvfp4full_dflash2_plan_extends_the_text_plan() {
     };
     // Today's binding spelled out here, independently of the code under test
     // (which `bind_text_scope_27b` now delegates to): require + place every
-    // text-scope entry in inventory order.
+    // text-scope entry in inventory order, the token embedding in mapped host
+    // memory (ADR 0062).
     let mut binder = Binder::new(&reader);
     let mut text_handles = Vec::new();
     for e in text_scope_27b() {
         let handle = binder
             .require_tensor(e.name, e.format, e.layout, e.shape)
             .unwrap_or_else(|err| panic!("{}: {err}", e.name));
-        binder.materialize_on_device(handle).expect("place");
+        if e.name == "text/token_embedding" {
+            binder.place_in_host_mapped(handle).expect("place");
+        } else {
+            binder.materialize_on_device(handle).expect("place");
+        }
         text_handles.push(handle);
     }
     let text_plan = binder.plan();
@@ -278,6 +283,42 @@ fn real_nvfp4full_dflash2_plan_extends_the_text_plan() {
         .map(|p| reader.objects()[p.handle.index].name())
         .collect();
     assert_eq!(head_names, OUT_OF_SCOPE_TEXT_NAMES);
+}
+
+/// ADR 0062 on the real artifact: the token embedding, and only it, leaves
+/// the device arena for the mapped host allocation -- the VRAM plan's weights
+/// line drops by the table's 1,350,860,800 bytes (5,440 per row), while the
+/// mapped allocation holds the table's aligned file span. Every other tensor
+/// keeps its bytes and order. Tier 1: binding plans placements.
+#[test]
+fn real_nvfp4full_the_token_embedding_leaves_the_device_arena() {
+    let reader = match open_or_skip() {
+        Some(r) => r,
+        None => return,
+    };
+    const TABLE_BYTES: u64 = 248_320 * 5_440;
+    for scope in [ModelScope::default(), ModelScope { draft: Some(DraftModule::Dflash2), vision: true }] {
+        let (mapped, handles) = bind_model_scope_27b_with(&reader, scope).expect("bind");
+        let (on_device, device_handles) = bind_model_scope_27b_on_device(&reader, scope).expect("bind on device");
+        assert_eq!(handles, device_handles, "the same objects, in the same order");
+        assert_eq!(mapped.host_mapped_objects.len(), 1);
+        let table = mapped.host_mapped_objects[0];
+        assert_eq!(reader.objects()[table.handle.index].name(), "text/token_embedding");
+        assert_eq!(table.bytes, TABLE_BYTES);
+        assert!(
+            (TABLE_BYTES..TABLE_BYTES + 8192).contains(&mapped.host_mapped_capacity_bytes),
+            "the table's aligned span: {}",
+            mapped.host_mapped_capacity_bytes
+        );
+        assert_eq!(on_device.host_mapped_capacity_bytes, 0);
+        assert_eq!(mapped.device_objects.len() + 1, on_device.device_objects.len());
+        let saved = on_device.device_capacity_bytes - mapped.device_capacity_bytes;
+        assert!((TABLE_BYTES..TABLE_BYTES + 256).contains(&saved), "{scope:?}: {saved}");
+    }
+    for entry in text_scope_27b() {
+        let host = entry.residence == Residence::HostMapped;
+        assert_eq!(host, entry.name == "text/token_embedding", "{}", entry.name);
+    }
 }
 
 /// The vision tower's table (`inventory::vision_scope_27b`, GitHub #177)

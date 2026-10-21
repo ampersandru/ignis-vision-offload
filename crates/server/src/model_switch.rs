@@ -1837,6 +1837,8 @@ mod tests {
     fn a_host_plan_refusal_reaches_the_switch_whole() {
         let refusal = ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
             available_physical_bytes: 41_632_530_432,
+            scope: "qwen38flashnext",
+            token_embedding_bytes: 0,
             expert_pool_bytes: 37_795_446_784,
             load_staging_bytes: 0,
             ngram_hot_rows_bytes: 1 << 30,
@@ -1853,6 +1855,29 @@ mod tests {
         assert_eq!(failure.reason, refusal.to_string());
         let other = LoadFailure::from(crate::load::LoadError::from(crate::runtime::FlashNextLoadError::from("no MTP head")));
         assert_eq!(other, LoadFailure { reason: "no MTP head".to_owned(), host_plan: None });
+    }
+
+    /// ADR 0062: the 27B's host plan refusal reaches the switch whole too,
+    /// any other 27B load error as its text alone.
+    #[test]
+    fn a_27b_host_plan_refusal_reaches_the_switch_whole() {
+        let shape = crate::runtime::EngineShape::default();
+        let refusal = ignis_core::residency::plan_host(&crate::runtime::qwen27b_host_request(
+            1 << 30,
+            1_350_860_800,
+            0,
+            &shape,
+        ))
+        .expect_err("short of RAM");
+        let load = crate::load::LoadError::from(crate::runtime::Qwen27bLoadError::HostPlan(refusal.clone()));
+        assert_eq!(load, crate::load::LoadError::HostPlan(refusal.clone()));
+        let failure = LoadFailure::from(load);
+        assert_eq!(failure.host_plan.as_ref(), Some(&refusal));
+        assert_eq!(failure.reason, refusal.to_string());
+        let other = LoadFailure::from(crate::load::LoadError::from(crate::runtime::Qwen27bLoadError::from(
+            "materialize weights: out of memory".to_owned(),
+        )));
+        assert_eq!(other, LoadFailure { reason: "materialize weights: out of memory".to_owned(), host_plan: None });
     }
 
     fn logged(run: impl FnOnce()) -> Vec<serde_json::Value> {

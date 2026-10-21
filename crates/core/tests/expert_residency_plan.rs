@@ -18,6 +18,8 @@ const GIB: u64 = 1024 * 1024 * 1024;
 fn host(available: u64) -> HostPlanRequest {
     HostPlanRequest {
         available_physical_bytes: available,
+        scope: "qwen38flashnext",
+        token_embedding_bytes: 0,
         expert_pool_bytes: 38 * GIB,
         load_staging_bytes: 0,
         ngram_hot_rows_bytes: 2 * GIB,
@@ -34,7 +36,7 @@ fn the_host_plan_adds_its_lines_and_says_what_it_leaves() {
     let names: Vec<_> = plan.entries().iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        ["expert_pool", "load_staging", "ngram_hot_rows", "staging", "retained_host_slots", "kv_ram_arena"]
+        ["token_embedding", "expert_pool", "load_staging", "ngram_hot_rows", "staging", "retained_host_slots", "kv_ram_arena"]
     );
     assert_eq!(plan.total_bytes, 41 * GIB);
     assert_eq!(plan.left_bytes, 11 * GIB);
@@ -152,6 +154,8 @@ fn the_staging_line_crossing_names_staging_and_its_own_remedy() {
 fn device_only(available: u64) -> HostPlanRequest {
     HostPlanRequest {
         available_physical_bytes: available,
+        scope: "qwen38flashnext",
+        token_embedding_bytes: 0,
         expert_pool_bytes: 0,
         load_staging_bytes: 5 * GIB,
         ngram_hot_rows_bytes: GIB,
@@ -185,12 +189,12 @@ fn a_residency_phase_short_of_room_names_the_layer_buffers() {
     let HostPlanError::BelowMargin { planned_bytes, crossing_line, lines, .. } = &err;
     assert_eq!((*crossing_line, *planned_bytes), ("load_staging", 5 * GIB));
     assert_eq!((err.needed_bytes(), err.short_bytes()), (9 * GIB, GIB / 2));
-    assert_eq!(lines[1], ("load_staging", 5 * GIB), "the exact bytes name it");
+    assert_eq!(lines[2], ("load_staging", 5 * GIB), "the exact bytes name it");
     let message = err.to_string();
     for needle in [
         "the load holds 5 GiB and keeps 4 GiB free for the system, so it needs 9 GiB",
         "The experts' layer buffers do not fit while the load reads them into VRAM: close other applications",
-        "Plan: experts 0 bytes, expert layer buffers 5 GiB (while the experts load), n-gram hot rows 1 GiB, \
+        "Plan: expert layer buffers 5 GiB (while the experts load), n-gram hot rows 1 GiB, \
          staging 64 MiB, retained host slots 1 GiB, KV-RAM arena 2 GiB; margin 4 GiB",
     ] {
         assert!(message.contains(needle), "{needle} missing: {message}");

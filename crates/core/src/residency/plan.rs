@@ -1,8 +1,9 @@
 //! Expert residency's reservations as **plan lines** computed at load (ADR
-//! 0030): the host plan (the pinned expert pool or a device-only load's layer
-//! buffers, the n-gram hot rows, KV-disk's staging buffers, and prompt reuse's
-//! host retained slots and KV-RAM arena) with its refusal margin, charged at
-//! its peak, and the VRAM lines — the expert cache,
+//! 0030): the host plan (the 27B's mapped token embedding, ADR 0062; the
+//! pinned expert pool or a device-only load's layer buffers, the n-gram hot
+//! rows, KV-disk's staging buffers, and prompt reuse's host retained slots
+//! and KV-RAM arena) with its refusal margin, charged at its peak, and the
+//! VRAM lines — the expert cache,
 //! split into eight K-class pools, the prefill staging ring and residency's
 //! tables.
 //!
@@ -36,6 +37,13 @@ pub struct HostPlanRequest {
     /// Physical memory available at load (`MEMORYSTATUSEX::ullAvailPhys`),
     /// measured before the first pinned allocation.
     pub available_physical_bytes: u64,
+    /// The config scope of the model whose load this plans (`qwen38`,
+    /// `qwen38flashnext`): a refusal names that model's own flags.
+    pub scope: &'static str,
+    /// The 27B's token embedding in mapped pinned host memory, for the life
+    /// of the load (ADR 0062); 0 on Flash-Next, whose embedding is on the
+    /// device.
+    pub token_embedding_bytes: u64,
     /// The expert pool, pinned for the life of the load: every expert
     /// projection ([`ExpertCatalog::total_bytes`] of the artifact) but a
     /// pinned hot set's, which have no host copy (ADR 0055). 0 on a
@@ -85,11 +93,12 @@ impl HostPlan {
 }
 
 /// The host plan's lines.
-pub const HOST_PLAN_LINES: usize = 6;
+pub const HOST_PLAN_LINES: usize = 7;
 
 /// When a line holds its bytes, in the order a Flash-Next load allocates
 /// them (`FlashNextLeaf::open`, then the server's load): the residency phase
-/// (the expert pool, or a device-only load's layer buffers); then the n-gram
+/// (the 27B's token embedding, which a Flash-Next load has none of, and the
+/// expert pool, or a device-only load's layer buffers); then the n-gram
 /// hot rows and the KV-RAM arena; the model's sequence pool with the retained
 /// host slots; KV-disk's staging last. Nothing the plan holds is freed before
 /// the model drops but the layer buffers, which are gone when the residency
@@ -112,6 +121,7 @@ enum Held {
 fn held_lines(request: &HostPlanRequest) -> [(&'static str, u64, Held); HOST_PLAN_LINES] {
     use Held::*;
     [
+        ("token_embedding", request.token_embedding_bytes, FromResidency),
         ("expert_pool", request.expert_pool_bytes, FromResidency),
         ("load_staging", request.load_staging_bytes, DuringResidency),
         ("ngram_hot_rows", request.ngram_hot_rows_bytes, AfterResidency),
@@ -162,6 +172,8 @@ pub enum HostPlanError {
     /// The plan leaves less than the request's margin of the available
     /// physical memory.
     BelowMargin {
+        /// The request's [`HostPlanRequest::scope`].
+        scope: &'static str,
         available_bytes: u64,
         /// What the load holds at its peak ([`HostPlan::total_bytes`]).
         planned_bytes: u64,
@@ -194,12 +206,14 @@ impl HostPlanError {
 impl std::fmt::Display for HostPlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self::BelowMargin {
+            scope,
             available_bytes,
             planned_bytes,
             margin_bytes,
             crossing_line,
             lines,
         } = self;
+        let line = |name: &str| lines.iter().find(|(line, _)| *line == name).map_or(0, |(_, bytes)| *bytes);
         write!(
             f,
             "not enough RAM: the load holds {} and keeps {} free for the system, so it needs {} \
@@ -211,39 +225,60 @@ impl std::fmt::Display for HostPlanError {
             human_bytes(self.short_bytes()),
         )?;
         match *crossing_line {
-            "expert_pool" => write!(f, "Even the experts alone ({}) do not fit: close other applications", human_bytes(lines[0].1)),
+            "token_embedding" => write!(
+                f,
+                "Even the token embedding alone ({}) does not fit in pinned memory: close other applications",
+                human_bytes(line("token_embedding"))
+            ),
+            "expert_pool" => write!(
+                f,
+                "Even the experts alone ({}) do not fit: close other applications",
+                human_bytes(line("expert_pool"))
+            ),
             "load_staging" => f.write_str(
                 "The experts' layer buffers do not fit while the load reads them into VRAM: close other applications",
             ),
             "ngram_hot_rows" => f.write_str(
                 "The experts fit, the n-gram hot rows do not: hold fewer (--ngram-hot-bytes) or close other applications",
             ),
-            "staging" => f.write_str(
-                "The experts and the n-gram hot rows fit, KV-disk's staging buffers do not: \
-                 --qwen38flashnext-kv-disk-bytes 0 drops them, or close other applications",
-            ),
-            "retained_host_slots" => f.write_str(
+            "staging" => {
+                let fits = if line("token_embedding") > 0 {
+                    "The token embedding fits"
+                } else {
+                    "The experts and the n-gram hot rows fit"
+                };
+                write!(
+                    f,
+                    "{fits}, KV-disk's staging buffers do not: --{scope}-kv-disk-bytes 0 drops them, or close \
+                     other applications"
+                )
+            }
+            "retained_host_slots" => write!(
+                f,
                 "The model fits, prompt reuse's retained host slots do not: fewer of them \
-                 (--qwen38flashnext-reuse-retained-host) or close other applications",
+                 (--{scope}-reuse-retained-host) or close other applications",
             ),
-            "kv_ram_arena" => f.write_str(
+            "kv_ram_arena" => write!(
+                f,
                 "The model and its retained slots fit, the KV-RAM arena does not: a smaller one \
-                 (--qwen38flashnext-reuse-kv-host-pool-bytes, 0 turns it off) or close other applications",
+                 (--{scope}-reuse-kv-host-pool-bytes, 0 turns it off) or close other applications",
             ),
             _ => f.write_str("Close other applications"),
         }?;
         f.write_str(". Plan: ")?;
-        // The layer buffers only where a load streams experts through them
-        // (device-only, or a pinned hot set's), and said apart: the peak does
-        // not add them to the lines serving holds.
-        let listed = lines.iter().filter(|&&(name, bytes)| name != "load_staging" || bytes > 0);
+        // The lines the load holds: the model's own (the 27B's table, or
+        // Flash-Next's experts) and what it was configured to pin. The layer
+        // buffers only where a load streams experts through them (device-only,
+        // or a pinned hot set's), and said apart: the peak does not add them to
+        // the lines serving holds.
+        let listed = lines.iter().filter(|&&(_, bytes)| bytes > 0);
         for (i, (name, bytes)) in listed.enumerate() {
             write!(f, "{}{} {}", if i == 0 { "" } else { ", " }, line_label(name), human_bytes(*bytes))?;
             if *name == "load_staging" {
                 f.write_str(" (while the experts load)")?;
             }
         }
-        write!(f, "; margin {} (--qwen38flashnext-model-host-margin-bytes).", human_bytes(*margin_bytes))
+        write!(f, "; margin {} (--{scope}-model-host-margin-bytes).", human_bytes(*margin_bytes))
     }
 }
 
@@ -252,6 +287,7 @@ impl std::error::Error for HostPlanError {}
 /// A plan line as the refusal names it to a person.
 fn line_label(name: &str) -> &str {
     match name {
+        "token_embedding" => "token embedding",
         "expert_pool" => "experts",
         "load_staging" => "expert layer buffers",
         "ngram_hot_rows" => "n-gram hot rows",
@@ -296,6 +332,7 @@ pub fn plan_host(request: &HostPlanRequest) -> Result<HostPlan, HostPlanError> {
             .find(|(_, phases)| phases.peak() > usable)
             .map_or(lines[0].0, |((name, _), _)| *name);
         return Err(HostPlanError::BelowMargin {
+            scope: request.scope,
             available_bytes: request.available_physical_bytes,
             planned_bytes: total,
             margin_bytes: request.margin_bytes,
