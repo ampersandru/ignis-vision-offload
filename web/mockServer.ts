@@ -213,15 +213,18 @@ export function createServerSim() {
     return entries;
   }
 
-  // The servable rest of GET /v1/models (spec model-switch/03): every row on disk but the loaded one, in catalog
-  // order; `kind` only for a family's own id (the built-in ones here), as the server reads no header there.
+  // The kind a family's own id names (`ModelFamily::of_model_id`): all the
+  // server says of a model it has not loaded, since it reads no header there.
+  const FAMILY_KINDS: Record<string, string> = { "qwen3.8-27b": "text", "qwen3.8-flash-next": "text", "ignis-image-2.1-turbo": "image" };
+  // The servable rest of GET /v1/models (spec model-switch/03): every row on
+  // disk but the loaded one, in catalog order.
   const servable = () =>
     CATALOG.filter((row) => row.on_disk === "complete" && row.id !== loaded).map((row) => ({
       id: row.id,
       object: "model",
       owned_by: "ignis",
       active: false,
-      ...(row.source === "built-in" ? { kind: "text" } : {}),
+      ...(FAMILY_KINDS[row.id] ? { kind: FAMILY_KINDS[row.id] } : {}),
     }));
 
   return {

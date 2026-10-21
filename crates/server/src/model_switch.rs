@@ -623,7 +623,8 @@ impl Switcher {
     /// The servable models besides `active` (spec model-switch/03), what
     /// `GET /v1/models` lists after it: the ids a request may name and be
     /// served by now without a download — the catalog's entries in catalog
-    /// order, then the known models that are not one in id order, each once,
+    /// order, then the known models that are not catalog entries, in id order
+    /// ([`Switcher::known_models`] is a `BTreeMap`), each once,
     /// kept when [`Switcher::known`] resolves it to a file. Blocking (one
     /// `stat` per candidate); no artifact is opened. `known` folds
     /// `switch.allow_implicit` in: off, nothing is servable but `active`.
