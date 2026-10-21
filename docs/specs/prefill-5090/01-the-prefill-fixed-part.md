@@ -65,7 +65,12 @@ Each lever is an A/B on the 5090, kept only if it is faster and passes the quali
 
 1. Each lever's A/B is recorded in a finding: kept or dropped, with the numbers.
 2. *(proposed)* With the kept levers, the fixed part is ≤ 85 µs/token: cold prefill at 8K ≥ +12% against today's.
-   Together with #335's attention, the estimate is ~8,500-9,500 tok/s at 60-73K.
+   Together with #335's attention, the estimate at 60-73K is:
+   - **~9,000-10,500 tok/s with FP8 attention.** That assumes ~0.65 ns per key, the 60-70% of the FP8 peak a real
+     flash kernel reaches: mkyt's 0.93 ns at 400 W, scaled to default clocks.
+   - **~8,500-9,000 with FP16 accumulate only.**
+   - At 19K, ~11,000-12,000.
+   - 12,500 at 60K would need a fixed part of ~66 µs on top of FP8 attention.
 3. Serving KLD within noise of today's for every kept speed lever. Decode unchanged.
 4. Lever 5: the KLD of the GPTQ-encoded weights against today's encoding, reported, with a recommendation for or
    against a new 32 GB artifact.
