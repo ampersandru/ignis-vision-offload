@@ -254,8 +254,6 @@ const PAGE_HTML: &str = r##"<!doctype html>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn the_document_declares_the_bearer_scheme() {
         // The `--server-api-key` contract, stated where a client generator and the

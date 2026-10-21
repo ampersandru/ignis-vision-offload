@@ -241,6 +241,7 @@ impl MockState {
 /// `127.0.0.1` port by a background multi-threaded tokio runtime.
 pub struct MockEngine {
     /// The mock's shared state (the accessors above + `set_fail_503`).
+    #[allow(dead_code)] // each test binary uses a subset of the mock
     pub state: MockState,
     /// The base URL to point an `HttpEndpoint` at.
     url: String,
@@ -390,7 +391,7 @@ async fn completions(
     let refused_once = state
         .inner
         .fail_503_budget
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
         .is_ok();
     if refused_once || state.inner.fail_503.load(Ordering::Relaxed) {
         let mut res = error_response(

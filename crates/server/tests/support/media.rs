@@ -2,6 +2,10 @@
 //! the real vision processor over a word-level tokenizer, and a gated
 //! preparer a test can hold, count and cancel.
 
+// Each binary that includes this file (via `support/mod.rs` or directly via
+// `#[path]`) uses a subset of it.
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
