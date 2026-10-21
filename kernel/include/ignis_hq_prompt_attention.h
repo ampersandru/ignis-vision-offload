@@ -41,12 +41,18 @@ inline constexpr std::uint32_t kIgnisHqPromptTileKeys = 32;
 
 struct IgnisHqPromptKeys;
 
+// How the band pass multiplies (spec 27b-16gb/03 Solution 6): E4M3 on the block-scaled FP8 MMAs,
+// the default; or the fallback, FP16 operands with FP16 accumulate inside each 32-key tile, folded
+// into FP32 -- its band holds half the keys in the same bytes. The window pass is BF16 either way.
+enum class IgnisHqPromptPrecision { kFp8, kFp16 };
+
 struct IgnisHqPromptOptions {
   // Keys per band, a multiple of `kIgnisHqPromptTileKeys`. Tests narrow it to walk several
   // bands at a small context; the engine keeps the default.
   std::uint32_t band_keys = kIgnisHqPromptBandKeys;
   // Key splits, 1..kIgnisHqPromptMaxSplits; 0 lets the op pick them to fill the card.
   std::int32_t splits = 0;
+  IgnisHqPromptPrecision precision = IgnisHqPromptPrecision::kFp8;
   // Runs on the host after the attention is enqueued and before an attend-first append, while
   // every key the attention read is still where it read it, and is told where they are (the
   // attention readout, GitHub #260, and the test-only tap).
@@ -87,7 +93,8 @@ void ignis_hq_prompt_fetch_rows(const IgnisHqPromptKeys &keys, bool values,
                                 cudaStream_t stream);
 
 // The transient arena one call of `width` tokens bumps when `visible_keys` keys (the chunk's
-// included) are visible, in bytes. It depends on the context only up to one band.
+// included) are visible, in bytes, under either precision. It depends on the context only up to
+// one band.
 std::size_t ignis_hq_prompt_workspace_bytes(std::int32_t width, std::uint32_t visible_keys,
                                             std::uint32_t band_keys = kIgnisHqPromptBandKeys);
 

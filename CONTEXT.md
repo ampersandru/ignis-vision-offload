@@ -369,9 +369,21 @@ When output names a domain concept, use the term as defined here.
   addressing and CUDA-graph address stability are unchanged. 9,216 bytes per
   sequence-token against BF16's 65,536 — a factor of 7.11.
 - **Prompt planes** — the BF16 copies of a GQA layer's visible keys and values
-  that the hq-e8-2b prompt route decodes the cache into before a prefill chunk
-  attends: prefill-only scratch, 4,096 bytes per context token up to 262,144
-  keys (one band). Not used by a decode or verify round, which read the codec.
+  that the vendored hq-e8-2b prompt route decodes the cache into before a
+  prefill chunk attends: prefill-only scratch, 4,096 bytes per context token up
+  to 262,144 keys (one band). Not used by a decode or verify round, which read
+  the codec. Gone from serving since #335 (ADR 0061): every hq prefill chunk
+  takes the **prompt attention** instead, and the vendored route survives only
+  as the oracle the route agreement test holds it against.
+- **Prompt attention** — ignis's own hq-e8-2b prefill attention (an adapted op,
+  ADR 0051/0061): two passes sharing one online softmax, the **residual window**
+  in BF16 and every other key through the **band** in E4M3 (or FP16 with FP16
+  accumulate, the fallback). Its workspace stops growing with the context at one
+  band.
+- **Band** — the fixed buffer the prompt attention decodes the codec's keys
+  into, once per chunk and layer: 32,768 keys of E4M3 K and V^T (64 MiB) with a
+  power-of-two scale per 32-key tile, walked band after band over a longer
+  history. Not the prompt planes' "band", which was their 262,144-key ceiling.
 - **Residual window** — the keys hq-e8-2b attention reads exact instead of
   decoding: a sequence's first 32 keys (the **sinks**), a 512-slot **ring** of
   recent keys, and the prefill chunk being attended. Per slot, not per page,

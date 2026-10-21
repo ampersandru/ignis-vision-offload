@@ -1110,6 +1110,19 @@ int main() {
         "prefill W=200 B=1 codec only ignis", ignis_codec,
         run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis codec only hostile",
                   WorkspaceFill::Hostile, Window::CodecOnly, Route::Ignis));
+    // The FP16-accumulate fallback (spec 27b-16gb/03 Solution 6) on the same codec-only keys.
+    IgnisHqPromptOptions half;
+    half.precision = IgnisHqPromptPrecision::kFp16;
+    const std::vector<std::uint16_t> ignis_half =
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis fp16 codec only",
+                  WorkspaceFill::Zero, Window::CodecOnly, Route::Ignis, half);
+    check_agreement("prefill W=200 B=1 codec only ignis fp16", compare(bf16, ignis_half));
+    report_routes("prefill W=200 B=1 codec only (fp16 band)", compare(bf16, hq_codec),
+                  compare(bf16, ignis_half));
+    check_workspace_independent(
+        "prefill W=200 B=1 codec only ignis fp16", ignis_half,
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis fp16 codec only hostile",
+                  WorkspaceFill::Hostile, Window::CodecOnly, Route::Ignis, half));
   }
 
   // ---- prefill at the narrow Prompt widths ---------------------------------
@@ -1284,6 +1297,21 @@ int main() {
                                              (label + " ignis split").c_str(), WorkspaceFill::Zero,
                                              window, Route::Ignis, split)));
         }
+        // The FP16-accumulate fallback: against BF16 beside A1, and cut into 512-key bands.
+        IgnisHqPromptOptions half;
+        half.precision = IgnisHqPromptPrecision::kFp16;
+        const std::vector<std::uint16_t> ignis_half =
+            run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (label + " ignis fp16").c_str(),
+                      WorkspaceFill::Zero, window, Route::Ignis, half);
+        check_agreement((label + " ignis fp16").c_str(), compare(bf16, ignis_half));
+        report_routes(label + " (fp16 band)", compare(bf16, hq), compare(bf16, ignis_half));
+        IgnisHqPromptOptions half_banded = half;
+        half_banded.band_keys = 1024;
+        check_cut(label + " ignis fp16, 512-key bands",
+                  compare(ignis_half, run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in,
+                                                (label + " ignis fp16 banded").c_str(),
+                                                WorkspaceFill::Zero, window, Route::Ignis,
+                                                half_banded)));
       }
     }
   }

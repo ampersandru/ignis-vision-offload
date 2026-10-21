@@ -112,6 +112,42 @@ encoder's causal GQA 32/8 attention, FlashAttention-2's forward.
   > NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
   > SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+### `kernel/src/hq_prompt_attention.cu` (spec 27b-16gb/03, ADR 0061, GitHub #335)
+The 27B's hq-e8-2b prefill attention without prompt planes (`ignis_hq_prompt_attention`).
+- Upstream: `mkyt/qwen3-27b-5090`, commit `0594e77ca099f397ccefed0c68c981e32869989f`, MIT,
+  "Copyright (c) 2026 Masahiro Kiyota":
+  - `engine/src/attention.cu`: `attention_fa_kernel`, its BF16 path and its FP8 path (the CTA
+    of two query heads by 64 tokens, Q in registers, 32-key tiles in two cp.async stages, the
+    online softmax with P from the S accumulators, P as 256 p in E4M3 in V^T's permuted key
+    order, the mask on diagonal tiles only, query tiles aligned to absolute 64-token blocks and
+    launched longest first) and its `sw8` / `tc_swz` / `vt_off` swizzles;
+  - `engine/src/mma.cuh`: the block-scaled `mxf8f6f4` MMA form, `exp2_e4m3x2`, `sum_e4m3x4`,
+    `ldmatrix`.
+- Changed here: the keys are the hq-e8-2b codec's, read in two passes sharing one online
+  softmax -- the residual window in BF16, every other key decoded once per chunk and layer into
+  a fixed E4M3 band with power-of-two tile scales (V's on the MMA's block scale) -- in the
+  codec's rotated frame; key splits carry their state across passes and a merge un-rotates;
+  an FP16-accumulate fallback band; one geometry. The file header lists the changes.
+- The decode, the side-plane copy and the chunk's rotation are the vendored reference's
+  (`kernel/vendor`), called from `kernel/src/hq_prompt_keys.cuh`, not copied.
+- mkyt/qwen3-27b-5090's licence, whose conditions apply to the parts taken:
+
+  > Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  > software and associated documentation files (the "Software"), to deal in the Software
+  > without restriction, including without limitation the rights to use, copy, modify, merge,
+  > publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+  > to whom the Software is furnished to do so, subject to the following conditions:
+  >
+  > The above copyright notice and this permission notice shall be included in all copies or
+  > substantial portions of the Software.
+  >
+  > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  > INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+  > PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+  > FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  > OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  > DEALINGS IN THE SOFTWARE.
+
 ## Per-file provenance (pre-#42 adaptations, superseded by ADR 0010)
 
 ### `kernel/src/nvfp4_gemm_decode.cuh` (ticket 03)

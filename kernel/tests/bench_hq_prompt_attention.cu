@@ -12,7 +12,9 @@
 // docs/findings/2026-10-13-cold-prefill-27b-vs-flash-next.md).
 //
 //   ignis_hq_prompt_bench --ctx 46080 [--width 1024] [--iters 10] [--codec-only] [--band KEYS]
-//                         [--splits S] [--ignis-only]
+//                         [--splits S] [--ignis-only] [--fp16]
+//
+// --fp16 runs the prompt attention's FP16-accumulate fallback band instead of the E4M3 one.
 
 #include "ignis_gqa_workspace.h"
 #include "ignis_hq_prompt_attention.h"
@@ -80,7 +82,7 @@ double median(std::vector<double> v) {
 int main(int argc, char **argv) {
   std::int32_t ctx = 46080, width = 1024, iters = 10, splits = 0;
   std::uint32_t band = kIgnisHqPromptBandKeys;
-  bool codec_only = false, ignis_only = false;
+  bool codec_only = false, ignis_only = false, fp16 = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() { return i + 1 < argc ? std::atoi(argv[++i]) : 0; };
@@ -91,6 +93,7 @@ int main(int argc, char **argv) {
     else if (a == "--splits") splits = next();
     else if (a == "--codec-only") codec_only = true;
     else if (a == "--ignis-only") ignis_only = true;
+    else if (a == "--fp16") fp16 = true;
     else {
       std::fprintf(stderr, "unknown argument %s\n", a.c_str());
       return 2;
@@ -182,6 +185,7 @@ int main(int argc, char **argv) {
   IgnisHqPromptOptions options;
   options.band_keys = band;
   options.splits = splits;
+  if (fp16) options.precision = IgnisHqPromptPrecision::kFp16;
   const double pairs = static_cast<double>(width) * start + 0.5 * width * (width + 1.0);
   cudaEvent_t e0, e1;
   CUDA_FATAL(cudaEventCreate(&e0));
@@ -211,7 +215,7 @@ int main(int argc, char **argv) {
                                       out, nullptr);
          });
   }
-  time("ignis", ignis_hq_prompt_workspace_bytes(width, static_cast<std::uint32_t>(ctx), band),
+  time(fp16 ? "ignis16" : "ignis", ignis_hq_prompt_workspace_bytes(width, static_cast<std::uint32_t>(ctx), band),
        [&](ninfer::DeviceArena &ws) {
          ignis_hq_prompt_attention(q, k, v, pos, start, gate, scale, layer, ws, out, nullptr, options);
        });
