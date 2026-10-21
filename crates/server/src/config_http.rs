@@ -629,9 +629,10 @@ pub fn shadowed_at_restart(patch: &Layer, running: &Config) -> Vec<String> {
 pub fn needs_reload(running: &Config, next: &Config) -> bool {
     let (before, after) = (running.settings().render(), next.settings().render());
     let value = |groups: &serde_json::Map<String, Value>, meta: &FieldMeta| groups.get(meta.group).and_then(|group| group.get(meta.name)).cloned();
-    // The host margin is read by Flash-Next's host plan alone; the other
-    // families carry it for a later switch, and are not reloaded for it.
-    let plans_host = running.basis.family().is_none_or(|family| family == ModelFamily::FlashNext);
+    // The host margin is read by the text models' host plans (Flash-Next's,
+    // and the 27B's since ADR 0062); the image model carries it for a later
+    // switch, and is not reloaded for it.
+    let plans_host = running.basis.family().is_none_or(|family| family != ModelFamily::QwenImage21);
     all_fields()
         .filter(|meta| meta.reload_required && (plans_host || meta.name != "host_margin_bytes"))
         .any(|meta| match (meta.group, meta.name) {
@@ -1026,21 +1027,27 @@ mod tests {
         assert_eq!(back.rope_scaling.factor(), 3.0, "auto at 786,432");
     }
 
-    /// The host margin is read by Flash-Next's host plan alone: patching it
-    /// reloads that family, and leaves the 27B and the image model running.
+    /// The host margin is read by the text models' host plans -- Flash-Next's
+    /// and, since ADR 0062 put its token embedding in pinned host memory, the
+    /// 27B's: patching it reloads the family it names, and leaves the image
+    /// model, which plans no host memory, running.
     #[test]
-    fn the_host_margin_reloads_only_the_family_that_plans_host_memory() {
+    fn the_host_margin_reloads_only_the_families_that_plan_host_memory() {
         let patch = |running: &Config, body: Value| needs_reload(running, &running.with_patch(&read_patch(&body).unwrap()).unwrap());
         let general = json!({ "model": { "host_margin_bytes": "8G" } });
-        let scoped = json!({ "model": { "qwen38flashnext": { "host_margin_bytes": "8G" } } });
+        let flash_next_scoped = json!({ "model": { "qwen38flashnext": { "host_margin_bytes": "8G" } } });
+        let qwen_scoped = json!({ "model": { "qwen38": { "host_margin_bytes": "8G" } } });
         let flash_next = config(&["--profile", "none"]).for_family(ModelFamily::FlashNext).unwrap();
         assert!(patch(&flash_next, general.clone()), "Flash-Next reads the general margin");
-        assert!(patch(&flash_next, scoped.clone()), "and its own");
-        for family in [ModelFamily::Qwen38_27b, ModelFamily::QwenImage21] {
-            let running = config(&["--profile", "none"]).for_family(family).unwrap();
-            assert!(!patch(&running, general.clone()), "{family:?} never reads the margin");
-            assert!(!patch(&running, scoped.clone()), "{family:?}: the other family's key");
-        }
+        assert!(patch(&flash_next, flash_next_scoped.clone()), "and its own");
+        assert!(!patch(&flash_next, qwen_scoped.clone()), "not the 27B's");
+        let qwen = config(&["--profile", "none"]).for_family(ModelFamily::Qwen38_27b).unwrap();
+        assert!(patch(&qwen, general.clone()), "the 27B reads the general margin");
+        assert!(patch(&qwen, qwen_scoped.clone()), "and its own");
+        assert!(!patch(&qwen, flash_next_scoped.clone()), "not Flash-Next's");
+        let image = config(&["--profile", "none"]).for_family(ModelFamily::QwenImage21).unwrap();
+        assert!(!patch(&image, general), "the image model never reads the margin");
+        assert!(!patch(&image, flash_next_scoped), "the image model: another family's key");
     }
 
     #[test]

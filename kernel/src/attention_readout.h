@@ -15,6 +15,7 @@
 
 #include "core/paged_kv_cache.h"
 #include "ignis_gqa_workspace.h"
+#include "ignis_hq_prompt_attention.h"
 #include "ignis_seq_internal.h"
 #include "ignis_step.h"
 
@@ -94,11 +95,13 @@ struct AttentionReadoutTarget {
 // `rotated_query` is the layer's BF16 [q_heads * 256, tokens] query after its
 // norm and rotary embedding; the query is its column `tokens - 1`. The keys:
 //
-// - under hq-e8-2b (`cache.dtype == U8`), the prompt route's materialized
-//   key plane at the base of `attention_workspace` -- BF16 [kv_heads][span]
-//   [256] in the codec's rotated frame, rows at absolute positions (one band,
-//   `span` = the band's row count) -- read only when `hq_prompt_scratch` says
-//   the prompt route ran and materialized a single band covering the span.
+// - under hq-e8-2b (`cache.dtype == U8`), the keys ignis's prompt attention
+//   read (GitHub #335, kernel/include/ignis_hq_prompt_attention.h), fetched
+//   row by row as it fetched them -- the chunk's own rows, the sinks and the
+//   ring before the chunk exact, every other key through the codec -- in the
+//   codec's rotated frame, from wherever `hq_keys` says they are; read only
+//   when `hq_keys` is given, which is when that attention ran, and called
+//   before its attend-first append. Any span of the history, however long.
 //   The query is rotated into the same frame first (signs, a natural-order
 //   256-point Walsh-Hadamard transform, 1/16: the codec's orthonormal
 //   rotation), so the dot product is unchanged by the frame;
@@ -121,6 +124,5 @@ int32_t ignis_attention_readout_run(const AttentionReadoutTarget &target,
                                     const void *rotated_query, int32_t q_heads, int32_t kv_heads,
                                     int32_t tokens, int64_t visible_keys,
                                     const ninfer::PagedKVBatchLayerView &cache,
-                                    bool hq_prompt_scratch, const void *attention_workspace,
-                                    int64_t span, float scale, cudaStream_t stream,
-                                    const char **error);
+                                    const IgnisHqPromptKeys *hq_keys, float scale,
+                                    cudaStream_t stream, const char **error);

@@ -84,6 +84,21 @@ int32_t ignis_device_nvml_mem_info(int device_id, uint64_t *free_bytes, uint64_t
  * pointer is a no-op. */
 void ignis_device_free(struct ignis_device *d, void *ptr);
 
+/* Allocate `bytes` of mapped pinned host memory (ADR 0062): one
+ * cudaHostAlloc(cudaHostAllocMapped | cudaHostAllocPortable), never a
+ * registration of pageable memory. `*out_host` receives the page-aligned host
+ * pointer the loader writes the bytes through, `*out_device` the pointer a
+ * kernel reads them through, in place over the bus. Not counted by the
+ * allocation counter (ignis_seq.h): it is made once, at load. Returns 0 on
+ * success, -1 on a CUDA error (the host cannot pin that much), a zero size or
+ * a bad argument. */
+int32_t ignis_device_host_alloc_mapped(struct ignis_device *d, uint64_t bytes, void **out_host,
+                                       void **out_device);
+
+/* Free a host allocation returned by ignis_device_host_alloc_mapped, by its
+ * host pointer. NULL device or pointer is a no-op. */
+void ignis_device_host_free(struct ignis_device *d, void *host);
+
 /* Destroy the context: drain the load stream, then free the event and stream,
  * then release the handle. NULL is a no-op. */
 void ignis_device_destroy(struct ignis_device *d);

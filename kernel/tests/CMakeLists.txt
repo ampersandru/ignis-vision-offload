@@ -368,6 +368,12 @@ target_compile_definitions(ignis_hq_codec_kv_rows_flash_next_test PRIVATE
 target_link_libraries(ignis_hq_codec_kv_rows_flash_next_test PRIVATE ignis_vendor)
 add_test(NAME ignis_hq_codec_kv_rows_flash_next_test COMMAND ignis_hq_codec_kv_rows_flash_next_test)
 
+# GitHub #335 (ADR 0061): OURS -- one prefill chunk's hq-e8-2b attention at a long history, A1's
+# Prompt route against ignis's prompt attention without prompt planes, on one cache. A timing is a
+# finding, so this is a tool and NOT registered with CTest.
+add_executable(ignis_hq_prompt_bench bench_hq_prompt_attention.cu)
+target_link_libraries(ignis_hq_prompt_bench PRIVATE ignis_kernel ignis_vendor)
+
 # GitHub #268 (spec runtime/09): OURS -- the hq-e8-2b verify attention kernel
 # timed alone at the engine's real launch, over code planes encoded from the
 # same committed fixture rows, plus a hash of its partials so two builds can
@@ -480,11 +486,14 @@ target_include_directories(ignis_kernel_vision_workspace_test
 target_link_libraries(ignis_kernel_vision_workspace_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_vision_workspace_test COMMAND ignis_kernel_vision_workspace_test)
 
-# GitHub #296: OURS -- the vendored A1 capacity query against a layout-builder
-# replay of what the hq Prompt route bumps, at every serving prompt width, in
-# one scratch band and past it. Host-only layout arithmetic (the SM-count
-# query creates no context); it pins the recorded correctness patch on
-# kernel/vendor/src/ops/wrapper/gqa_attention.cpp (ADR 0037).
+# GitHub #296 / #335: OURS -- the GQA attention's arena: ignis's prompt
+# attention's, flat in the context past one band and at least 1.0e9 bytes
+# under A1's at 524,288 keys (spec 27b-16gb/03 acceptance 1), and the vendored
+# A1 capacity query against a layout-builder replay of what the hq Prompt
+# route bumps, at every serving prompt width, in one scratch band and past it.
+# Host-only layout arithmetic (the SM-count query creates no context); it pins
+# the recorded correctness patch on kernel/vendor/src/ops/wrapper/
+# gqa_attention.cpp (ADR 0037).
 add_executable(ignis_kernel_gqa_workspace_capacity_test test_gqa_workspace_capacity.cpp)
 target_link_libraries(ignis_kernel_gqa_workspace_capacity_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_gqa_workspace_capacity_test COMMAND ignis_kernel_gqa_workspace_capacity_test)
@@ -508,6 +517,18 @@ add_test(NAME ignis_kernel_gqa_workspace_capacity_test COMMAND ignis_kernel_gqa_
 add_executable(ignis_kernel_dflash2_topk_test test_dflash2_topk.cu)
 target_link_libraries(ignis_kernel_dflash2_topk_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_dflash2_topk_test COMMAND ignis_kernel_dflash2_topk_test)
+
+# ADR 0062: the token embedding in mapped pinned host memory (OURS: the
+# device surface's allocation), gathered by the vendored W8 op bit for bit as
+# from device memory, eager and graph-replayed. GPU; no SKIP_RETURN_CODE
+# (ADR 0006).
+add_executable(ignis_kernel_host_mapped_embedding_test test_host_mapped_embedding.cu)
+target_link_libraries(ignis_kernel_host_mapped_embedding_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_host_mapped_embedding_test COMMAND ignis_kernel_host_mapped_embedding_test)
+# The same gather timed from the mapped table against device memory: a tool,
+# NOT a CTest (the 2026-10-21 host-embedding finding).
+add_executable(ignis_kernel_host_mapped_embedding_bench bench_host_mapped_embedding.cu)
+target_link_libraries(ignis_kernel_host_mapped_embedding_bench PRIVATE ignis_kernel ignis_vendor)
 
 # OURS, not vendored: the A16 NVFP4 linear's tensor-core route
 # (kernel/include/ignis_nvfp4_a16_mma.h), which takes every A16 call of 64

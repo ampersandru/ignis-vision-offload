@@ -18,6 +18,8 @@ const FLASH_NEXT: TableFootprint = TableFootprint { table_rows: 320_001_536, row
 fn host(available: u64) -> HostPlanRequest {
     HostPlanRequest {
         available_physical_bytes: available,
+        scope: "qwen38flashnext",
+        token_embedding_bytes: 0,
         expert_pool_bytes: 37_795_446_784,
         load_staging_bytes: 0,
         ngram_hot_rows_bytes: 0,

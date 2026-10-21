@@ -319,6 +319,13 @@ int main() {
     const std::string refused = plan(&vision);
     check(refused.find("Qwen3.8-Flash-Next has no vision or attention readouts") != std::string::npos,
           "vision on a Flash-Next load is refused by name: got \"" + refused + "\"");
+    // GitHub #335: the prompt attention's precision is the 27B's; Flash-Next's QSA has no band.
+    ignis_model_load_options fp16{};
+    fp16.size = sizeof(fp16);
+    fp16.prefill_attention = IGNIS_PREFILL_ATTENTION_FP16;
+    const std::string qsa = plan(&fp16);
+    check(qsa.find("prefill_attention is the 27B's") != std::string::npos,
+          "an FP16 prefill attention on a Flash-Next load is refused by name: got \"" + qsa + "\"");
     // GitHub #307 (spec flash-next/07): Flash-Next drafts with its MTP head; the 27B's drafter is
     // refused by name, and so is a row budget no verify round fits.
     ignis_model_load_options dflash2{};

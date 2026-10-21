@@ -23,8 +23,8 @@
  * chunk (the recent ring) exact from the residual side planes, and everything
  * else decoded by the codec.
  * `ignis_attn_tap_arm_consumed` adds that: after the attention op of the
- * chunk holding the first query position, it copies the hq prompt route's
- * own scratch planes -- every key the op consumed, in the codec's rotated
+ * chunk holding the first query position, it fetches every key the op
+ * consumed again, row by row as the op fetched them, in the codec's rotated
  * frame -- so a host can score the head on the keys it really attended to.
  * The rotated frame is orthonormal (R = H * diag(signs) / 16), so a query
  * rotated the same way gives the same dot products.
@@ -93,18 +93,18 @@ int32_t ignis_attn_tap_arm(const int32_t *gqa_ordinals, int32_t n_layers,
  *
  * `kc_out`: caller-allocated, the same shape as `k_out`
  * (`n_layers * max_positions * 4 * 256` uint16_t, [layer][position][kv_head]
- * [dim]), receiving rows [0, visible) of the op's `scratch_k` plane in the
- * codec's **rotated** frame. Nothing is written for a layer whose query chunk
- * is not an hq prompt-route call (a BF16 or INT8 cache, a small-T width, or a
- * history wider than one scratch band); `consumed_rows` reports 0 for it.
+ * [dim]), receiving the keys [0, visible) ignis's prompt attention read
+ * (kernel/include/ignis_hq_prompt_attention.h, GitHub #335) in the codec's
+ * **rotated** frame, as BF16 rows -- before the attention's band rounds the
+ * codec's ones to 8 bits. Nothing is written for a layer whose query chunk did
+ * not take that attention (a BF16 or INT8 cache, a small-T width);
+ * `consumed_rows` reports 0 for it.
  *
- * The plane is found where the vendored op puts it: the first allocation of
- * the attention workspace `run_gqa_layer` hands it
- * (kernel/vendor/src/ops/wrapper/gqa_attention.cpp, the A1 prompt route),
- * laid out [kv_head][span][256] as `gqa_attention_prefill_hq_scratch_kernel`
- * writes it. A caller that relies on this should check it: rows of the
- * current chunk are exact by construction, so the codec's rotation of the
- * captured pre-cache keys must reproduce them. */
+ * The rows come from `ignis_hq_prompt_fetch_rows`, the fetch the attention's
+ * own passes run, called before the chunk's append. A caller that relies on
+ * this should check it: rows of the current chunk are exact by construction,
+ * so the codec's rotation of the captured pre-cache keys must reproduce them.
+ * A test-speed seam: it allocates and frees the rows' buffer per capture. */
 int32_t ignis_attn_tap_arm_consumed(uint16_t *kc_out);
 
 /* Disarm, and report what was captured: for each armed layer, how many key
@@ -133,13 +133,14 @@ int32_t ignis_attn_tap_record(uint32_t gqa_ordinal, int64_t start_position, int3
                               const void *rotated_query, const void *rotated_key,
                               cudaStream_t stream);
 
-/* The hook `run_gqa_layer` calls after the attention op. `hq_prompt` is
- * whether the op just ran the hq-e8-2b prompt route; `workspace` the base of
- * the attention workspace it was handed; `span` the scratch plane's row
- * count per KV head. Returns 0 when there is nothing to capture. */
+struct IgnisHqPromptKeys;
+
+/* The hook `run_gqa_layer` calls after ignis's prompt attention and before its
+ * attend-first append. `hq_keys` says where that attention read its keys; null
+ * when the call did not take it. Returns 0 when there is nothing to capture. */
 int32_t ignis_attn_tap_record_consumed(uint32_t gqa_ordinal, int64_t start_position,
-                                       int32_t tokens, bool hq_prompt, const void *workspace,
-                                       int64_t span, cudaStream_t stream);
+                                       int32_t tokens, const IgnisHqPromptKeys *hq_keys,
+                                       cudaStream_t stream);
 #endif
 
 #endif /* IGNIS_ATTN_TAP_H */

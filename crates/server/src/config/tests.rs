@@ -732,6 +732,36 @@ fn an_unknown_kv_format_is_a_usage_error() {
     assert!(err.contains("--model-kv-format") && err.contains("fp8") && err.contains("bf16"), "{err}");
 }
 
+// ── the prompt attention precision (GitHub #335) ─────────────────────────
+
+#[test]
+fn the_prefill_attention_is_fp8_unless_named_and_flag_beats_env() {
+    assert_eq!(config(&[]).prefill_attention, PrefillAttention::Fp8);
+    let env = env_map(&[("IGNIS_MODEL_PREFILL_ATTENTION", "fp16")]);
+    assert_eq!(expect_config(resolve(&[], env).expect("resolve")).prefill_attention, PrefillAttention::Fp16);
+    let env = env_map(&[("IGNIS_MODEL_PREFILL_ATTENTION", "fp16")]);
+    let flag = expect_config(resolve(&args(&["--model-prefill-attention", "FP8"]), env).expect("resolve"));
+    assert_eq!(flag.prefill_attention, PrefillAttention::Fp8);
+}
+
+/// The field is the 27B's alone (Flash-Next's QSA has no band pass): an
+/// explicit value reaches the 27B and refuses a Flash-Next start by name.
+#[test]
+fn the_prefill_attention_is_the_27bs_and_refuses_flash_next() {
+    let fp16 = config(&["--model-prefill-attention", "fp16"]);
+    assert_eq!(fp16.for_family(ModelFamily::Qwen38_27b).unwrap().prefill_attention, PrefillAttention::Fp16);
+    assert!(served_model_for(&fp16, ModelFamily::Qwen38_27b).is_ok());
+    let err = served_model_for(&fp16, ModelFamily::FlashNext).expect_err("the 27B's").0;
+    assert!(err.contains("--model-prefill-attention") && err.contains("Qwen3.8-Flash-Next"), "{err}");
+    assert!(served_model_for(&config(&[]), ModelFamily::FlashNext).is_ok(), "unnamed, it is no one's business");
+}
+
+#[test]
+fn an_unknown_prefill_attention_is_a_usage_error() {
+    let err = refused(&["--model-prefill-attention", "fp4"]);
+    assert!(err.contains("--model-prefill-attention") && err.contains("fp4") && err.contains("fp16"), "{err}");
+}
+
 #[test]
 fn the_same_named_budget_buys_more_tokens_under_hq() {
     // The format is a real option: one budget, two capacities. This is the
@@ -1735,20 +1765,20 @@ fn flash_next_runs_the_table_rope_scaling_resolves_to() {
 
 /// ADR 0057, ADR 0059: a switch resolves `auto` for the family it switches
 /// to, against that family's own context, and the shape it loads carries
-/// that table -- the 27B at 786,432 runs 3, Flash-Next at 589,824 runs
+/// that table -- the 27B at 917,504 runs 3.5, Flash-Next at 589,824 runs
 /// 2.25, and back again. The `rtx5090` profile's two contexts are this case.
 #[test]
 fn a_switch_resolves_each_familys_rope_table_against_its_own_context() {
     use crate::runtime::EngineShape;
-    let scoped = ["--profile", "none", "--qwen38-model-max-context", "786432", "--qwen38flashnext-model-max-context", "589824", "--model-kv-format", "hq-e8-2b"];
+    let scoped = ["--profile", "none", "--qwen38-model-max-context", "917504", "--qwen38flashnext-model-max-context", "589824", "--model-kv-format", "hq-e8-2b"];
     for started in [config(&scoped), config(&[])] {
         let qwen = started.for_family(ModelFamily::Qwen38_27b).unwrap();
-        assert_eq!((qwen.max_context, qwen.rope_scaling.factor()), (786_432, 3.0));
+        assert_eq!((qwen.max_context, qwen.rope_scaling.factor()), (917_504, 3.5));
         let (flash_next, _) = fit_to_family(&qwen, ModelFamily::FlashNext).unwrap();
         assert_eq!((flash_next.max_context, flash_next.rope_scaling.factor()), (589_824, 2.25));
         assert_eq!(EngineShape::from(&flash_next).rope_scaling, flash_next.rope_scaling);
         let (back, _) = fit_to_family(&flash_next, ModelFamily::Qwen38_27b).unwrap();
-        assert_eq!((back.max_context, back.rope_scaling.factor()), (786_432, 3.0));
+        assert_eq!((back.max_context, back.rope_scaling.factor()), (917_504, 3.5));
         assert_eq!(EngineShape::from(&back).rope_scaling, back.rope_scaling);
     }
 }

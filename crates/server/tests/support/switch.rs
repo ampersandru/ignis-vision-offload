@@ -246,6 +246,8 @@ impl MockLoader {
 pub fn starved_plan() -> ignis_core::residency::HostPlanError {
     ignis_core::residency::plan_host(&ignis_core::residency::HostPlanRequest {
         available_physical_bytes: 41_632_530_432,
+        scope: "qwen38flashnext",
+        token_embedding_bytes: 0,
         expert_pool_bytes: 37_795_446_784,
         load_staging_bytes: 0,
         ngram_hot_rows_bytes: 1 << 30,

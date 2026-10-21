@@ -2,11 +2,12 @@
 //! — and with the residual window wired (GitHub #257, spec runtime/06), which
 //! of them came back exact is exactly what the vendored route's rule says.
 //!
-//! `ignis_attn_tap_arm_consumed` copies the hq prompt route's own scratch
-//! plane after the attention op, found where the vendored op puts it — the
-//! first allocation of the workspace `run_gqa_layer` hands it — and in the
-//! codec's rotated frame. Both are facts about vendored code this repo does
-//! not own, so this test holds them to account on a real prefill.
+//! `ignis_attn_tap_arm_consumed` fetches the K rows the prompt attention
+//! reads, through the attention's own key fetch (`ignis_hq_prompt_fetch_rows`,
+//! GitHub #335: side plane, codec or the chunk's fresh rows), in the codec's
+//! rotated frame and before the chunk is appended. The rule they are held to
+//! is still the vendored route's, so this test holds ignis's fetch to it on a
+//! real prefill.
 //!
 //! **Before the window was wired**, every row — of 66,024 at 4096 px — sat at
 //! the codec's own error (0.333 to 0.784 relative, median 0.3696, the per-row
@@ -358,7 +359,7 @@ fn the_consumed_capture_reads_what_hq_attention_read() {
                 failures.push(format!(
                     "{label}: the codec rows sit a median {codec_median:.4} from their rotated keys, \
                      outside the codec's band {CODEC_MEDIAN_BAND:?}: the capture is not reading the \
-                     scratch plane the layout says, or the rotation is not the codec's"
+                     rows the attention reads, or the rotation is not the codec's"
                 ));
             }
 

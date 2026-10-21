@@ -11,11 +11,13 @@
 
 #include "ignis_attn_tap.h"
 #include "ignis_gqa_workspace.h"
+#include "ignis_hq_prompt_attention.h"
 #include "ignis_seq_internal.h"
 
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <exception>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -255,8 +257,8 @@ int32_t ignis_attn_tap_record(uint32_t gqa_ordinal, int64_t start_position, int3
 }
 
 int32_t ignis_attn_tap_record_consumed(uint32_t gqa_ordinal, int64_t start_position,
-                                       int32_t tokens, bool hq_prompt, const void *workspace,
-                                       int64_t span, cudaStream_t stream) {
+                                       int32_t tokens, const IgnisHqPromptKeys *hq_keys,
+                                       cudaStream_t stream) {
   if (!g_tap.armed.load(std::memory_order_acquire) || g_tap.kc_out == nullptr) {
     return 0;
   }
@@ -272,9 +274,8 @@ int32_t ignis_attn_tap_record_consumed(uint32_t gqa_ordinal, int64_t start_posit
   if (query < start_position || query >= end) {
     return 0;  // not the chunk whose attention the query row belongs to
   }
-  // Only the hq prompt route materializes a scratch plane, and only a single
-  // band of it holds the whole history after the call.
-  if (!hq_prompt || workspace == nullptr || span < end) {
+  // Only ignis's prompt attention says where the keys it read are.
+  if (hq_keys == nullptr) {
     return 0;
   }
   if (end > g_tap.max_positions) {
@@ -283,25 +284,45 @@ int32_t ignis_attn_tap_record_consumed(uint32_t gqa_ordinal, int64_t start_posit
               std::to_string(g_tap.max_positions));
     return -1;
   }
-  // scratch_k is [kv_head][span][256]; the capture is [position][kv_head][256].
-  const auto *base = static_cast<const std::uint16_t *>(workspace);
+  // GitHub #335: the attention keeps no plane of the keys it read, so they are fetched again,
+  // row by row as it fetched them, into a buffer of this capture's own -- a test-speed
+  // allocation, never made unless the tap is armed. [kv_head][end][256] there; the capture is
+  // [position][kv_head][256].
+  void *rows = nullptr;
+  const std::size_t bytes = static_cast<std::size_t>(end) * kKRow * sizeof(std::uint16_t);
+  cudaError_t err = cudaMalloc(&rows, bytes);
+  if (err != cudaSuccess) {
+    set_error(std::string("ignis_attn_tap_record_consumed: cudaMalloc failed: ") +
+              cudaGetErrorString(err));
+    return -1;
+  }
+  try {
+    ignis_hq_prompt_fetch_rows(*hq_keys, /*values=*/false, 0, static_cast<std::int32_t>(end), rows,
+                               stream);
+  } catch (const std::exception &e) {
+    cudaFree(rows);
+    set_error(std::string("ignis_attn_tap_record_consumed: ") + e.what());
+    return -1;
+  }
+  const auto *base = static_cast<const std::uint16_t *>(rows);
   for (std::int32_t head = 0; head < kKvHeads; ++head) {
     std::uint16_t *dst = g_tap.kc_out +
                          (static_cast<std::int64_t>(slot) * g_tap.max_positions * kKvHeads + head) *
                              kHeadDim;
-    const std::uint16_t *src = base + static_cast<std::int64_t>(head) * span * kHeadDim;
-    const cudaError_t err = cudaMemcpy2DAsync(
-        dst, static_cast<std::size_t>(kKRow) * sizeof(std::uint16_t), src,
-        static_cast<std::size_t>(kHeadDim) * sizeof(std::uint16_t),
-        static_cast<std::size_t>(kHeadDim) * sizeof(std::uint16_t),
-        static_cast<std::size_t>(end), cudaMemcpyDeviceToHost, stream);
+    const std::uint16_t *src = base + static_cast<std::int64_t>(head) * end * kHeadDim;
+    err = cudaMemcpy2DAsync(dst, static_cast<std::size_t>(kKRow) * sizeof(std::uint16_t), src,
+                            static_cast<std::size_t>(kHeadDim) * sizeof(std::uint16_t),
+                            static_cast<std::size_t>(kHeadDim) * sizeof(std::uint16_t),
+                            static_cast<std::size_t>(end), cudaMemcpyDeviceToHost, stream);
     if (err != cudaSuccess) {
+      cudaFree(rows);
       set_error(std::string("ignis_attn_tap_record_consumed: cudaMemcpy2DAsync failed: ") +
                 cudaGetErrorString(err));
       return -1;
     }
   }
-  const cudaError_t err = cudaStreamSynchronize(stream);
+  err = cudaStreamSynchronize(stream);
+  cudaFree(rows);
   if (err != cudaSuccess) {
     set_error(std::string("ignis_attn_tap_record_consumed: cudaStreamSynchronize failed: ") +
               cudaGetErrorString(err));

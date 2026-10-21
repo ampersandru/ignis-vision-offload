@@ -31,7 +31,7 @@ use std::path::PathBuf;
 
 use ignis_core::compute::ModelFamily;
 use ignis_core::ngram_cache::CacheLocation;
-use ignis_core::{KvFormat, RopeSetting};
+use ignis_core::{KvFormat, PrefillAttention, RopeSetting};
 use serde_json::{Map, Value};
 
 use super::field::{Applicability, Attr, FieldMeta, Validator};
@@ -326,6 +326,11 @@ config_group! {
         /// (the retained oracle format).
         kv_format: KvFormatKind = KvFormat::default(), Validator::OneOf(&["bf16", "hq-e8-2b", "hq_e8_2b", "hq"]), ALL,
             [Visible, Patchable, ReloadRequired, Scoped];
+        /// The 27B's prompt attention precision (GitHub #335): `fp8` (the
+        /// default, the band pass in 8 bits) or `fp16` (the FP16-accumulate
+        /// fallback). Flash-Next's attention is QSA and has no such pass.
+        prefill_attention: PrefillAttentionKind = PrefillAttention::default(), Validator::OneOf(&PrefillAttention::NAMES), QWEN38_ONLY,
+            [Visible, Patchable, ReloadRequired];
         /// The prefill chunk width, in tokens.
         prefill_chunk: Tokens = super::DEFAULT_PREFILL_CHUNK, Validator::MultipleOf(super::PREFILL_CHUNK_ALIGNMENT as u64), ALL,
             [Visible, Patchable, ReloadRequired, Scoped];
@@ -422,12 +427,13 @@ config_group! {
         /// unloads.
         idle_unload: Secs = super::DEFAULT_MODEL_IDLE_UNLOAD_SECS, between(0, super::MAX_MODEL_IDLE_UNLOAD_SECS as i64), ALL,
             [Visible, Patchable];
-        /// What Flash-Next's host plan must leave of the physical memory
+        /// What a text model's host plan must leave of the physical memory
         /// available at load (free plus standby): a load whose pinned lines
-        /// — experts, n-gram hot rows, staging, retained host slots, the
-        /// KV-RAM arena — leave less is refused, naming the line to shrink,
-        /// so the desktop is never paged out. The 27B and the image model make
-        /// no host plan: their starts carry it for a switch to Flash-Next.
+        /// — the 27B's token embedding, Flash-Next's experts and n-gram hot
+        /// rows, staging, retained host slots, the KV-RAM arena — leave less
+        /// is refused, naming the line to shrink, so the desktop is never
+        /// paged out. The image model makes no host plan: its start carries
+        /// it for a switch to a text model.
         host_margin_bytes: Bytes = super::DEFAULT_HOST_MARGIN_BYTES, NO_RULE, ALL, [Visible, Patchable, ReloadRequired, Scoped];
     }
 }
@@ -900,6 +906,7 @@ mod tests {
         for name in names("model", "kv_format") {
             assert!(KvFormat::parse(name).is_ok(), "{name}");
         }
+        assert_eq!(names("model", "prefill_attention"), PrefillAttention::NAMES.to_vec());
         for name in names("spec", "backend") {
             assert!(SpecBackend::parse(name).is_ok(), "{name}");
         }

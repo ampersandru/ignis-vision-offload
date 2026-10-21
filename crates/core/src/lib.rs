@@ -81,6 +81,7 @@ pub mod ngram;
 pub mod ngram_table;
 pub mod ngram_cache;
 pub mod pointing;
+pub mod prefill_attention;
 pub mod prefix;
 pub mod constrained;
 pub mod request;
@@ -124,6 +125,7 @@ pub use kv_format::{
     KvPlaneSpec, KvPoolPlan, auto_kv_pool_bytes, plan_kv_pool, plan_kv_pool_for_context,
 };
 pub use mock::{FakeDisk, MockCompute, MockSections};
+pub use prefill_attention::PrefillAttention;
 pub use prefix::{PrefixCache, PrefixClaim, PrefixEntry, PrefixId};
 pub use request::{Request, admit_candidates, basic_admission};
 pub use retained_slot::{

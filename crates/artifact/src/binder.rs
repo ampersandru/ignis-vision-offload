@@ -11,8 +11,19 @@
 
 use crate::{
     align_up, fail, checked_add, NumericFormat, Object, PayloadSpan, Reader, Result,
-    ResourceEncoding, StorageLayout,
+    ResourceEncoding, StorageLayout, DIRECT_IO_ALIGNMENT,
 };
+
+/// Where a tensor the kernels read lives while the model runs (ADR 0062).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Residence {
+    /// In the device arena, in VRAM.
+    #[default]
+    Device,
+    /// In mapped pinned host memory (`cudaHostAllocMapped`), read in place
+    /// over the bus through its mapped device pointer: no VRAM.
+    HostMapped,
+}
 
 /// A stable per-object handle (its directory index in `Reader::objects()`
 /// order).
@@ -56,6 +67,28 @@ pub struct ExpertPoolPlacement {
     pub alignment: u64,
 }
 
+/// One placement in **mapped pinned host memory** (ADR 0062): a tensor the
+/// kernels read in place through its mapped device pointer, so it takes no
+/// VRAM -- the 27B's token embedding. The materializer reads the payload's
+/// aligned file span straight into the allocation, once, at load: each span
+/// starts at a [`DIRECT_IO_ALIGNMENT`]-aligned offset, so the read needs no
+/// staging copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMappedPlacement {
+    pub handle: ObjectHandle,
+    /// Where the aligned span starts inside the allocation.
+    pub span_offset: u64,
+    /// The span's absolute file offset (the payload's, aligned down).
+    pub span_file_offset: u64,
+    /// The span's length (the payload's end aligned up, less its start).
+    pub span_bytes: u64,
+    /// Where the tensor starts inside the allocation: past `span_offset` by
+    /// as much as its payload is past `span_file_offset`.
+    pub offset: u64,
+    /// Exact stored payload length.
+    pub bytes: u64,
+}
+
 /// One host-streamed object: read from the file on demand by its owner
 /// (Flash-Next's n-gram table, spec flash-next/04). The binder hands over
 /// its file range and nothing reads it at load.
@@ -88,6 +121,11 @@ pub struct MaterializationPlan {
     pub expert_pool_objects: Vec<ExpertPoolPlacement>,
     /// Host-streamed objects in binding order.
     pub streamed_objects: Vec<StreamedPlacement>,
+    /// The mapped pinned host allocation's size: the end of its last span (0
+    /// without host-mapped objects).
+    pub host_mapped_capacity_bytes: u64,
+    /// Host-mapped placements in binding order (ADR 0062).
+    pub host_mapped_objects: Vec<HostMappedPlacement>,
 }
 
 /// The per-model binder: consumes every directory object and produces the
@@ -103,6 +141,8 @@ pub struct Binder<'a> {
     expert_pool_objects: Vec<ExpertPoolPlacement>,
     expert_pool_capacity: u64,
     streamed_objects: Vec<StreamedPlacement>,
+    host_mapped_objects: Vec<HostMappedPlacement>,
+    host_mapped_capacity: u64,
 }
 
 impl<'a> Binder<'a> {
@@ -121,6 +161,8 @@ impl<'a> Binder<'a> {
             expert_pool_objects: Vec::new(),
             expert_pool_capacity: 0,
             streamed_objects: Vec::new(),
+            host_mapped_objects: Vec::new(),
+            host_mapped_capacity: 0,
         }
     }
 
@@ -291,6 +333,34 @@ impl<'a> Binder<'a> {
         Ok(offset)
     }
 
+    /// Place a consumed tensor in mapped pinned host memory (ADR 0062): its
+    /// aligned file span goes at the next aligned offset of the allocation.
+    pub fn place_in_host_mapped(&mut self, handle: ObjectHandle) -> Result<()> {
+        self.claim_placement(handle)?;
+        if let Object::Resource(r) = &self.reader.objects()[handle.index] {
+            return Err(fail(format!("resource cannot be placed in mapped host memory: {}", r.name)));
+        }
+        let (payload_offset, bytes) = {
+            let span = self.payload(handle)?;
+            (span.absolute_offset, span.data.len() as u64)
+        };
+        let span_file_offset = payload_offset & !(DIRECT_IO_ALIGNMENT - 1);
+        let payload_end = checked_add(payload_offset, bytes, "host-mapped span end")?;
+        let span_bytes = align_up(payload_end, DIRECT_IO_ALIGNMENT, "host-mapped span end")? - span_file_offset;
+        let span_offset = align_up(self.host_mapped_capacity, DIRECT_IO_ALIGNMENT, "host-mapped span offset")?;
+        self.host_mapped_capacity = checked_add(span_offset, span_bytes, "host-mapped allocation size")?;
+        self.host_mapped_objects.push(HostMappedPlacement {
+            handle,
+            span_offset,
+            span_file_offset,
+            span_bytes,
+            offset: span_offset + (payload_offset - span_file_offset),
+            bytes,
+        });
+        self.planned[handle.index] = true;
+        Ok(())
+    }
+
     /// Hand a consumed object's file range to its owner instead of loading
     /// it (host-streamed: nothing reads its payload at load).
     pub fn stream_from_host(&mut self, handle: ObjectHandle) -> Result<()> {
@@ -341,6 +411,8 @@ impl<'a> Binder<'a> {
             expert_pool_capacity_bytes: self.expert_pool_capacity,
             expert_pool_objects: self.expert_pool_objects.clone(),
             streamed_objects: self.streamed_objects.clone(),
+            host_mapped_capacity_bytes: self.host_mapped_capacity,
+            host_mapped_objects: self.host_mapped_objects.clone(),
         }
     }
 
@@ -371,6 +443,8 @@ impl<'a> Binder<'a> {
             expert_pool_capacity_bytes: self.expert_pool_capacity,
             expert_pool_objects: self.expert_pool_objects.clone(),
             streamed_objects: self.streamed_objects.clone(),
+            host_mapped_capacity_bytes: self.host_mapped_capacity,
+            host_mapped_objects: self.host_mapped_objects.clone(),
         })
     }
 
@@ -560,6 +634,59 @@ mod tests {
         assert_eq!(streamed.file_offset, reader.payload_offset() + 17920);
     }
 
+    /// ADR 0062: a tensor in mapped pinned host memory takes no device arena
+    /// space. Its placement is the aligned file span the materializer reads
+    /// straight into the allocation, each span at a 4096-aligned offset, and
+    /// the tensor sits as far into its span as its payload is past the span's
+    /// start.
+    #[test]
+    fn a_host_mapped_placement_holds_the_aligned_file_span_and_no_device_space() {
+        let (_artifact, reader) = fixture_reader("host-mapped");
+        let mut binder = Binder::new(&reader);
+        let bf16 = binder
+            .require_tensor("w/bf16", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8])
+            .expect("bf16");
+        binder.materialize_on_device(bf16).expect("device");
+        let q4 = binder
+            .require_tensor("w/q4", NumericFormat::Q4G64F16S, StorageLayout::RowSplitK128V1, &[128, 128])
+            .expect("q4");
+        binder.place_in_host_mapped(q4).expect("host mapped");
+        let fp8 = binder
+            .require_tensor("w/fp8", NumericFormat::Fp8E4M3FnRowBf16S, StorageLayout::RowScaleV1, &[128, 64])
+            .expect("fp8");
+        binder.place_in_host_mapped(fp8).expect("host mapped");
+
+        let plan = binder.plan();
+        assert_eq!(plan.device_capacity_bytes, 64, "only the BF16 tensor is on the device");
+        assert_eq!(plan.device_objects.len(), 1);
+        let payload = reader.payload_offset();
+        // q4: payload bytes 9216..17920, read as the span 8192..20480.
+        // fp8: payload bytes 17920..26368, read as the span 16384..28672,
+        // placed after q4's span.
+        assert_eq!(
+            plan.host_mapped_objects,
+            [
+                HostMappedPlacement {
+                    handle: q4,
+                    span_offset: 0,
+                    span_file_offset: payload + 8192,
+                    span_bytes: 12288,
+                    offset: 1024,
+                    bytes: 8704,
+                },
+                HostMappedPlacement {
+                    handle: fp8,
+                    span_offset: 12288,
+                    span_file_offset: payload + 16384,
+                    span_bytes: 12288,
+                    offset: 12288 + 1536,
+                    bytes: 8448,
+                },
+            ]
+        );
+        assert_eq!(plan.host_mapped_capacity_bytes, 24576);
+    }
+
     /// A resource is not a host tensor or a pool tensor, nothing is placed
     /// twice, and a format outside the family is refused.
     #[test]
@@ -571,6 +698,7 @@ mod tests {
             .expect("resource");
         assert!(binder.retain_tensor_on_host(resource).is_err());
         assert!(binder.place_in_expert_pool(resource).is_err());
+        assert!(binder.place_in_host_mapped(resource).is_err());
         let bf16 = binder
             .require_tensor("w/bf16", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8])
             .expect("bf16");

@@ -229,6 +229,18 @@ enum ignis_speculative_backend {
 /* The widest DFlash2 draft window a load accepts. */
 #define IGNIS_DFLASH2_MAX_DRAFT_TOKENS 7
 
+/* GitHub #335 (spec 27b-16gb/03 solution 6): how the 27B's prompt attention
+ * multiplies its band pass over an hq-e8-2b prefill chunk
+ * (ignis_hq_prompt_attention.h). */
+enum ignis_prefill_attention {
+  /* 8 bits: Q K^T on the INT8 MMA, P V on the block-scaled E4M3 one. The
+   * default. */
+  IGNIS_PREFILL_ATTENTION_FP8 = 0,
+  /* FP16 operands with FP16 accumulate inside a 32-key tile, folded into
+   * FP32: the fallback. */
+  IGNIS_PREFILL_ATTENTION_FP16 = 1,
+};
+
 /* Load options (ADR 0016: `size` first, `sizeof` the struct the caller
  * compiled against; a NULL pointer means the production defaults -- no
  * speculation). */
@@ -322,6 +334,10 @@ struct ignis_model_load_options {
    * named `mtp.*` (the companion container's, docs/specs/flash-next/
    * layout.md section 13). NULL otherwise. */
   const struct ignis_moe_slot *mtp_expert_slots;
+  /* enum ignis_prefill_attention (GitHub #335); anything else is refused.
+   * Fixed for the life of the load. IGNIS_PREFILL_ATTENTION_FP8 on
+   * Flash-Next, whose attention is QSA. */
+  uint32_t prefill_attention;
 };
 
 /* The widest vision envelope a load accepts, in merged tokens: 4x that many
@@ -364,7 +380,8 @@ struct ignis_model_reservations {
 };
 
 struct ignis_model_stats {
-  uint64_t vram_bytes;        /* sum of every bound tensor's payload bytes */
+  /* Sum of the payload bytes of every bound tensor in device memory. */
+  uint64_t vram_bytes;
   uint64_t bound_tensor_count;
   /* What vision reserves beside the weights (GitHub #177, #212): the
    * per-item output transient, plus whatever the encoder workspace grows
@@ -374,6 +391,10 @@ struct ignis_model_stats {
   /* What this load holds beside the weights, read off its own buffers
    * (GitHub #210). */
   struct ignis_model_reservations reserved;
+  /* Sum of the payload bytes of every bound tensor in mapped host memory
+   * (ADR 0062: the 27B's token embedding), which `vram_bytes` leaves out:
+   * the load asks the runtime where each tensor's data lives. */
+  uint64_t host_mapped_bytes;
 };
 
 /* What `ignis_model_load` would reserve beside the weights for the same

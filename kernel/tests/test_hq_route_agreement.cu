@@ -32,6 +32,13 @@
 // That order is the reference's and ignis patches it (ADR 0037); these arms
 // are the test that tells the two apart.
 //
+// GitHub #335 (ADR 0061): the prefill arms run a second time through ignis's
+// prompt attention (`ignis_hq_prompt_attention`), the route every hq-e8-2b
+// prefill chunk takes now; A1's Prompt route stays here as its oracle. Its
+// distance from BF16 is held to A1's on the same keys (spec 27b-16gb/03
+// acceptance 2), and past the residual window the band's cuts (band size, key
+// splits) and its FP16 fallback are held to one another.
+//
 // Rows are the committed real-activation fixture from P4-03
 // (kernel/tests/fixtures/hq_kv_rows_27b.bin, captured from a real prefill of
 // the 27B artifact): the tolerance below is derived from the codec error
@@ -48,6 +55,7 @@
 // busy GPU, a kernel error, or a missing fixture fails this test.
 
 #include "ignis_gqa_workspace.h"
+#include "ignis_hq_prompt_attention.h"
 #include "ignis_seq.h"
 #include "ignis_seq_internal.h"
 
@@ -630,13 +638,26 @@ enum class WorkspaceFill { Zero, Hostile };
 // call reads goes through the codec, as it did before the window was wired.
 enum class Window { Production, CodecOnly };
 
+// Which prompt attention runs the call (GitHub #335, ADR 0061): A1's own route, or ignis's
+// prompt attention without prompt planes (kernel/include/ignis_hq_prompt_attention.h), which the
+// GQA layer runs for every hq-e8-2b prefill chunk. The second takes one dense sequence.
+enum class Route { Vendored, Ignis };
+
 // Runs `call` against a freshly built pool in `kv_format` and returns the
 // BF16 output rows, host-side. Everything device-side is torn down before
 // returning, so the two arms never hold two pools at once.
 std::vector<std::uint16_t> run_route(const Fixture &fx, int32_t kv_format, const Call &call,
                                      const Inputs &in, const char *label,
                                      WorkspaceFill fill = WorkspaceFill::Zero,
-                                     Window window = Window::Production) {
+                                     Window window = Window::Production,
+                                     Route route = Route::Vendored,
+                                     const IgnisHqPromptOptions &options = {}) {
+  if (route == Route::Ignis &&
+      (kv_format != IGNIS_KV_FORMAT_HQ_E8_2B || call.batch != 1 || !call.valid.empty() ||
+       call.envelope_keys != 0)) {
+    std::fprintf(stderr, "FATAL: %s: the ignis prompt route takes one dense hq sequence\n", label);
+    std::exit(EXIT_FAILURE);
+  }
   const ignis_seq_pool_spec spec =
       pool_spec(kv_format, call.max_context, static_cast<std::uint32_t>(call.batch));
   ignis_seq_pool *pool           = nullptr;
@@ -762,16 +783,21 @@ std::vector<std::uint16_t> run_route(const Fixture &fx, int32_t kv_format, const
 
   std::vector<std::uint16_t> host_out(out_elements, 0);
   try {
-    // Sized through the engine's own function (kernel/include/
-    // ignis_gqa_workspace.h), never a second copy of the arithmetic: the
-    // narrow-Prompt-width arm below exists precisely to catch an
-    // under-reservation there, and a test that computed its own answer could
-    // not. At B > 1 the resolver takes the small-T route, which that function
-    // documents as needing no correction, so the vendored query is asked
-    // directly for the batch axis.
+    // Sized through the shipped functions (kernel/include/
+    // ignis_gqa_workspace.h, ignis_hq_prompt_attention.h), never a second copy
+    // of the arithmetic: the narrow-Prompt-width arm below exists precisely to
+    // catch an under-reservation there, and a test that computed its own
+    // answer could not. A1 at B = 1 goes through `ignis_gqa_a1_workspace_bytes`,
+    // A1's own corrected query, since the engine sends the hq Prompt widths to
+    // ignis's prompt attention instead (GitHub #335). At B > 1 the resolver
+    // takes the small-T route, which needs no correction, so the vendored query
+    // is asked directly for the batch axis.
     const std::size_t workspace_bytes =
-        call.batch == 1
-            ? ignis_gqa_attention_workspace_bytes(cache.dtype, envelope, call.width)
+        route == Route::Ignis
+            ? ignis_hq_prompt_workspace_bytes(call.width, envelope.max_visible_keys,
+                                              options.band_keys)
+        : call.batch == 1
+            ? ignis_gqa_a1_workspace_bytes(cache.dtype, envelope, call.width)
             : ninfer::ops::gqa_attention_workspace_capacity_bytes(
                   kQHeads, cache.dtype, envelope, call.batch, call.width, call.width);
     ninfer::DeviceArena workspace(std::max<std::size_t>(workspace_bytes, 256));
@@ -795,8 +821,22 @@ std::vector<std::uint16_t> run_route(const Fixture &fx, int32_t kv_format, const
       check(probe[0] == 0x7F && probe[1] == 0x7F,
            std::string(label) + ": the hostile fill did not reach the workspace arena");
     }
-    ninfer::ops::gqa_attention(q, k, v, pos, valid_columns, rows, gate, kScale,
-                               cache, envelope, workspace, out, /*stream=*/nullptr);
+    if (route == Route::Ignis) {
+      // The layer's own view of the one sequence (`ignis_kv_layer_view`), as run_gqa_layer
+      // builds it.
+      ninfer::PagedKVLayerView layer = ignis_kv_layer_view(pool, lanes[0], kGqaOrdinal);
+      if (window == Window::CodecOnly) {
+        layer.residual_k = {};
+        layer.residual_v = {};
+        layer.ring_valid = {};
+      }
+      const ninfer::Tensor pos_column(pos_device.p, ninfer::DType::I32, {call.width, 1, 1, 1});
+      ignis_hq_prompt_attention(q, k, v, pos_column, call.first_position, gate, kScale, layer,
+                                workspace, out, /*stream=*/nullptr, options);
+    } else {
+      ninfer::ops::gqa_attention(q, k, v, pos, valid_columns, rows, gate, kScale,
+                                 cache, envelope, workspace, out, /*stream=*/nullptr);
+    }
     CUDA_FATAL(cudaStreamSynchronize(nullptr));
     CUDA_FATAL(cudaMemcpy(host_out.data(), out_device.p, out_elements * 2, cudaMemcpyDeviceToHost));
   } catch (const std::exception &e) {
@@ -982,6 +1022,44 @@ void check_causal(const std::string &arm, const std::vector<std::uint16_t> &same
                               "reached the op and the check above proves nothing");
 }
 
+// ---- ignis's prompt attention against A1's own route (GitHub #335) --------
+//
+// ADR 0061 / spec 27b-16gb/03 acceptance 2: the prompt attention without prompt planes is held
+// to the codec's bounds above like A1's route, and its median distance from BF16 to A1's on the
+// same keys, printed side by side. Acceptance 2 asks for "at least as close"; the bound leaves
+// 1% for the reduction order and the band's own rounding (measured x0.986-1.005 on every arm,
+// the FP16 band x0.998-1.001), and fails the E4M3 Q K^T this replaced (x1.062-1.066 at 32K). The window it reads exact goes
+// through the BF16 tensor cores as the prompt planes did; the keys only the codec holds go
+// through the 8-bit band (INT8 Q K^T, E4M3 P V), whose rounding (~1% of a row) sits under the
+// codec's own row error.
+constexpr double kPromptAttentionMedianRatio = 1.01;
+
+void report_routes(const std::string &arm, const Agreement &vendored, const Agreement &ignis) {
+  const double ratio = vendored.median() > 0.0 ? ignis.median() / vendored.median() : 0.0;
+  std::printf("[%s] against BF16: A1 median %.6f cosine %.6f | ignis median %.6f cosine %.6f "
+              "(median x%.4f)\n",
+              arm.c_str(), vendored.median(), vendored.cosine(), ignis.median(), ignis.cosine(),
+              ratio);
+  check(ratio <= kPromptAttentionMedianRatio,
+        arm + ": the prompt attention's median distance from BF16 is x" + std::to_string(ratio) +
+            " of A1's, past x" + std::to_string(kPromptAttentionMedianRatio));
+}
+
+// Two runs of ignis's prompt attention that differ only in how the keys are cut -- the band, the
+// key splits -- read the same keys with the same arithmetic per key; what moves is where the
+// partial states are rounded to FP16 between passes and the order they are summed in.
+constexpr double kCutMedianRelL2 = 0.01;
+constexpr double kCutRowRelL2    = 0.05;
+
+void check_cut(const std::string &arm, const Agreement &a) {
+  std::printf("[%s] rows %zu  median relL2 %.6f (bound %.3f)  max %.6f (bound %.3f)\n", arm.c_str(),
+              a.rel_l2.size(), a.median(), kCutMedianRelL2, a.worst(), kCutRowRelL2);
+  check(a.signal > 0.0, arm + ": the reference run wrote an all-zero output");
+  check(a.median() <= kCutMedianRelL2 && a.worst() <= kCutRowRelL2,
+        arm + ": cutting the same keys differently moved the answer more than the partial "
+              "states' BF16 rounding can");
+}
+
 } // namespace
 
 int main() {
@@ -1022,10 +1100,45 @@ int main() {
         "prefill W=200 B=1", hq,
         run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill hq hostile",
                   WorkspaceFill::Hostile));
-    check_agreement("prefill W=200 B=1 codec only",
-                    compare(bf16, run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in,
-                                            "prefill hq codec only", WorkspaceFill::Zero,
-                                            Window::CodecOnly)));
+    const std::vector<std::uint16_t> hq_codec =
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill hq codec only",
+                  WorkspaceFill::Zero, Window::CodecOnly);
+    check_agreement("prefill W=200 B=1 codec only", compare(bf16, hq_codec));
+
+    // GitHub #335: the same arms on ignis's prompt attention.
+    const std::vector<std::uint16_t> ignis =
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis", WorkspaceFill::Zero,
+                  Window::Production, Route::Ignis);
+    check_agreement("prefill W=200 B=1 ignis", compare(bf16, ignis));
+    check_exact_window("prefill W=200 B=1 ignis", compare(bf16, ignis));
+    report_routes("prefill W=200 B=1", compare(bf16, hq), compare(bf16, ignis));
+    check_workspace_independent(
+        "prefill W=200 B=1 ignis", ignis,
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis hostile",
+                  WorkspaceFill::Hostile, Window::Production, Route::Ignis));
+    const std::vector<std::uint16_t> ignis_codec =
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis codec only",
+                  WorkspaceFill::Zero, Window::CodecOnly, Route::Ignis);
+    check_agreement("prefill W=200 B=1 codec only ignis", compare(bf16, ignis_codec));
+    report_routes("prefill W=200 B=1 codec only", compare(bf16, hq_codec),
+                  compare(bf16, ignis_codec));
+    check_workspace_independent(
+        "prefill W=200 B=1 codec only ignis", ignis_codec,
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis codec only hostile",
+                  WorkspaceFill::Hostile, Window::CodecOnly, Route::Ignis));
+    // The FP16-accumulate fallback (spec 27b-16gb/03 Solution 6) on the same codec-only keys.
+    IgnisHqPromptOptions half;
+    half.precision = IgnisHqPromptPrecision::kFp16;
+    const std::vector<std::uint16_t> ignis_half =
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis fp16 codec only",
+                  WorkspaceFill::Zero, Window::CodecOnly, Route::Ignis, half);
+    check_agreement("prefill W=200 B=1 codec only ignis fp16", compare(bf16, ignis_half));
+    report_routes("prefill W=200 B=1 codec only (fp16 band)", compare(bf16, hq_codec),
+                  compare(bf16, ignis_half));
+    check_workspace_independent(
+        "prefill W=200 B=1 codec only ignis fp16", ignis_half,
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, "prefill ignis fp16 codec only hostile",
+                  WorkspaceFill::Hostile, Window::CodecOnly, Route::Ignis, half));
   }
 
   // ---- prefill at the narrow Prompt widths ---------------------------------
@@ -1060,6 +1173,14 @@ int main() {
         "prefill W=" + std::to_string(width) + " B=1", hq,
         run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (hq_label + " hostile").c_str(),
                   WorkspaceFill::Hostile));
+    const std::string ignis_label = "prefill ignis W=" + std::to_string(width);
+    const std::vector<std::uint16_t> ignis =
+        run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, ignis_label.c_str(), WorkspaceFill::Zero,
+                  Window::Production, Route::Ignis);
+    check_agreement(("prefill W=" + std::to_string(width) + " B=1 ignis").c_str(),
+                    compare(bf16, ignis));
+    report_routes("prefill W=" + std::to_string(width) + " B=1", compare(bf16, hq),
+                  compare(bf16, ignis));
   }
 
   // ---- prefill after a history: the chunk reads the ring before it writes it
@@ -1115,6 +1236,100 @@ int main() {
                              perturb_after(fx, in, arm.width, arm.first_position, arm.last_same),
                              (name + " hq later keys changed").c_str()),
                    arm.last_same, valid);
+      if (arm.valid > 0) { continue; }  // the ignis route serves the dense eager chunk only
+      const std::vector<std::uint16_t> ignis =
+          run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (name + " ignis").c_str(),
+                    WorkspaceFill::Zero, Window::Production, Route::Ignis);
+      if (arm.exact_window) {
+        const std::vector<std::uint16_t> bf16 =
+            run_route(fx, IGNIS_KV_FORMAT_BF16, call, in, (name + " bf16 (ignis)").c_str());
+        check_exact_window(name + " ignis", compare(bf16, ignis));
+      }
+      check_causal(name + " ignis", ignis,
+                   run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call,
+                             perturb_after(fx, in, arm.width, arm.first_position, arm.last_same),
+                             (name + " ignis later keys changed").c_str(), WorkspaceFill::Zero,
+                             Window::Production, Route::Ignis),
+                   arm.last_same, valid);
+    }
+  }
+
+  // ---- ignis's prompt attention past the window (GitHub #335) --------------
+  //
+  // A history longer than the residual window, so the keys between the sinks and the ring go
+  // through the 8-bit band: against BF16 next to A1's route, as the chunk cut into several bands
+  // (a 1,024-key band instead of 32,768) and into every split count, both of which must leave
+  // the answer where the partial states' rounding puts it. The second arm starts mid-block
+  // (3,000 = 46 x 64 + 56) and is a full serving-width chunk.
+  {
+    struct LongArm {
+      const char *name;
+      std::int32_t width;
+      std::int32_t first_position;
+    };
+    const LongArm arms[] = {
+        {"prefill W=200 at 4096", 200, 4096},
+        {"prefill W=1024 at 3000", 1024, 3000},
+        {"prefill W=1024 at 32000", 1024, 32000},
+    };
+    for (const LongArm &arm : arms) {
+      Inputs in;
+      fill_kv(fx, arm.width, arm.first_position, in.k, in.v);
+      fill_q(fx, arm.width, 1, in.q);
+      fill_gate(in.q.size(), in.gate);
+      Call call{arm.width, /*batch=*/1, arm.first_position, /*history=*/arm.first_position};
+      call.max_context = static_cast<std::uint32_t>(arm.first_position + arm.width);
+      const std::string name = arm.name;
+      for (const Window window : {Window::Production, Window::CodecOnly}) {
+        const std::string label = name + (window == Window::CodecOnly ? " codec only" : "");
+        const std::vector<std::uint16_t> bf16 =
+            run_route(fx, IGNIS_KV_FORMAT_BF16, call, in, (label + " bf16").c_str());
+        const std::vector<std::uint16_t> hq = run_route(
+            fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (label + " hq").c_str(), WorkspaceFill::Zero,
+            window);
+        const std::vector<std::uint16_t> ignis =
+            run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (label + " ignis").c_str(),
+                      WorkspaceFill::Zero, window, Route::Ignis);
+        check_agreement(label.c_str(), compare(bf16, hq));
+        check_agreement((label + " ignis").c_str(), compare(bf16, ignis));
+        report_routes(label, compare(bf16, hq), compare(bf16, ignis));
+        IgnisHqPromptOptions banded;
+        banded.band_keys = 1024;
+        check_cut(label + " ignis, 1,024-key bands",
+                  compare(ignis, run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in,
+                                           (label + " ignis banded").c_str(), WorkspaceFill::Zero,
+                                           window, Route::Ignis, banded)));
+        check_workspace_independent(
+            label + " ignis, 1,024-key bands",
+            run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (label + " ignis banded 2").c_str(),
+                      WorkspaceFill::Zero, window, Route::Ignis, banded),
+            run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in,
+                      (label + " ignis banded hostile").c_str(), WorkspaceFill::Hostile, window,
+                      Route::Ignis, banded));
+        for (std::int32_t splits = 1; splits <= kIgnisHqPromptMaxSplits; ++splits) {
+          IgnisHqPromptOptions split;
+          split.splits = splits;
+          check_cut(label + " ignis, " + std::to_string(splits) + " split(s)",
+                    compare(ignis, run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in,
+                                             (label + " ignis split").c_str(), WorkspaceFill::Zero,
+                                             window, Route::Ignis, split)));
+        }
+        // The FP16-accumulate fallback: against BF16 beside A1, and cut into 512-key bands.
+        IgnisHqPromptOptions half;
+        half.precision = IgnisHqPromptPrecision::kFp16;
+        const std::vector<std::uint16_t> ignis_half =
+            run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in, (label + " ignis fp16").c_str(),
+                      WorkspaceFill::Zero, window, Route::Ignis, half);
+        check_agreement((label + " ignis fp16").c_str(), compare(bf16, ignis_half));
+        report_routes(label + " (fp16 band)", compare(bf16, hq), compare(bf16, ignis_half));
+        IgnisHqPromptOptions half_banded = half;
+        half_banded.band_keys = 1024;
+        check_cut(label + " ignis fp16, 512-key bands",
+                  compare(ignis_half, run_route(fx, IGNIS_KV_FORMAT_HQ_E8_2B, call, in,
+                                                (label + " ignis fp16 banded").c_str(),
+                                                WorkspaceFill::Zero, window, Route::Ignis,
+                                                half_banded)));
+      }
     }
   }
 

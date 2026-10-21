@@ -9,6 +9,9 @@ anche per la 5090"):
 - with numerical, not bit-exact, equivalence;
 - the attention readout moves to the same path.
 
+Amended 2026-10-21 (owner, during #335's implementation): the history is decoded **once per chunk and
+layer into a fixed 8-bit band**, not per CTA tile (point 1 below and "As built").
+
 Related:
 - [ADR 0022](0022-two-kv-formats-bf16-as-oracle.md): BF16 KV is the oracle;
 - [ADR 0030](0030-device-memory-reserved-at-load.md): device memory is reserved at load;
@@ -92,3 +95,43 @@ The options costed:
   calls it. Its kernels are no longer the prefill bottleneck to optimize.
 - The VRAM plan's workspace line drops the 4,096 bytes per context token.
 - The 5090's profile is re-measured ("raise until refused", as on 2026-10-10) once this and ADR 0062 land.
+
+**As built** (2026-10-21, GitHub #335), where the decision left a choice:
+
+- **One decode per chunk and layer, not one per CTA tile** (owner, amending point 1). A CTA holds at most 128 query
+  rows, since its FP32 accumulators fill the registers. A decode per tile would then decode each K/V row ~48 times a
+  chunk: ~1.7 ns per key and token at the decode's 0.29 ns a row, more than the whole attention. The op
+  (`kernel/src/hq_prompt_attention.cu`, adapted from mkyt/qwen3-27b-5090's `attention_fa_kernel`, `kernel/NOTICE`)
+  runs two passes sharing one online softmax:
+  - the **residual window** (the 32 sinks, the ring before the chunk, the chunk itself) in BF16 on the BF16 MMAs, its
+    rows exact as before, ADR 0037's ring-before-append included;
+  - every other key decoded once into a fixed **band** of 32,768 keys (64 MiB), walked band after band.
+
+  A launch splits its keys up to 5 ways when the chunk's query tiles alone would leave SMs idle; a merge kernel
+  combines the splits and un-rotates.
+- **The band is 8-bit, not E4M3 throughout.** Q·Kᵀ runs on the INT8 MMA, exact in int32: Q with a scale per row, K
+  with one per 32-key tile, the scheme SageAttention uses and `kernel/src/image/attn8.cu` runs. P·V stays on the
+  block-scaled E4M3 MMA, V's power-of-two tile scale riding the MMA's block scale. Upstream's E4M3 Q rounds each query
+  by ~2.5%, the same for every key it scores: a bias, which the route agreement test measured at 32K keys as ×1.06 of
+  A1's median distance from BF16. INT8 Q brings that to ×1.005. Two probes that did not help are not kept: P encoded
+  against each tile's own max, and a two-term E4M3 Q (as close as INT8, at twice the time).
+- **The FP16-accumulate fallback ships behind `--model-prefill-attention fp16`** (config v2 `model.prefill_attention`,
+  the 27B's only, reload required; a Flash-Next start refuses an explicit value). Its band holds FP16 at half the
+  keys in the same bytes, on the FP16 MMAs with FP16 accumulate inside a tile, folded into FP32.
+- **One key fetch, three readers.** `kernel/src/hq_prompt_keys.cuh` reads a key wherever it lives (side plane, codec,
+  the chunk's fresh rows) for the attention, the attention readout and the tap. The readout reads spans past one band
+  (a test arm at 300,000 keys).
+- **Measured** ([finding](../findings/2026-10-21-prefill-attention-without-prompt-planes.md)):
+  - the attention, one 1,024-token chunk over 16 layers: 0.915 ns per key and token at 46K and 0.857 at 105K, against
+    A1's 2.147 and 2.098 (the FP16 fallback 1.464 and 1.496);
+  - route agreement: median ×0.986-1.005 of A1's distance from BF16 on every arm (FP16: ×0.998-1.001), which the test
+    now holds to ×1.01;
+  - KLD on the 2026-09-24 suite: 0.05221 against A1's 0.05134, within noise (the difference's CI [−0.00068,
+    +0.00301]); the E4M3-Q kernel read 0.05123, the gap between the two carried by one window's tail;
+  - cold prefill against main, one session: +7.2% at 8K, +9.4% at 14K, +29.7% at 46K, +53.1% at 105K (the host
+    embedding of ADR 0062 included); decode +0.1% at one lane and +1.5% at eight, the time per round 2-4% lower;
+  - VRAM at 524,288 keys: the attention's workspace −1,020,474,240 bytes (1,164,194,688 → 143,720,448), and a
+    text-only load's workspace line as much. With vision on, the line is now the item-bounded vision encoder's
+    (908,592,896 bytes), so it drops by 599,718,656.
+- **The 5090's profile spends it on context**: the 27B's `model.max_context` 786,432 → 917,504, raised until the plan
+  refused (950,272 is 59 MB short), which moves `auto` rope scaling from YaRN 3 to 3.5.

@@ -1837,8 +1837,9 @@ struct LastSwitchInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     /// The host plan that refused the target, in exact bytes, when that is
-    /// what failed it: a Qwen3.8-Flash-Next load short of RAM for its pinned
-    /// lines and the margin. `reason` says the same for a person.
+    /// what failed it: a text model's load (Qwen3.8-Flash-Next's, or the
+    /// 27B's, ADR 0062) short of RAM for its pinned lines and the margin.
+    /// `reason` says the same for a person.
     #[serde(skip_serializing_if = "Option::is_none")]
     host_plan: Option<HostPlanInfo>,
 }
@@ -1859,9 +1860,10 @@ struct HostPlanInfo {
     /// `needed_bytes` less `available_bytes`.
     short_bytes: u64,
     /// The first line, in plan order, the available memory could not hold:
-    /// `expert_pool`, `load_staging` (a device-only load's expert layer
-    /// buffers, freed once the experts are in VRAM), `ngram_hot_rows`,
-    /// `staging` (KV-disk's), `retained_host_slots` or `kv_ram_arena`.
+    /// `token_embedding` (the 27B's), `expert_pool`, `load_staging` (a
+    /// device-only load's expert layer buffers, freed once the experts are in
+    /// VRAM), `ngram_hot_rows`, `staging` (KV-disk's), `retained_host_slots`
+    /// or `kv_ram_arena`.
     crossing_line: &'static str,
     /// Every line, in plan order.
     lines: Vec<HostPlanLine>,
@@ -1882,6 +1884,7 @@ impl HostPlanInfo {
             margin_bytes,
             crossing_line,
             lines,
+            ..
         } = refusal;
         Self {
             available_bytes: *available_bytes,

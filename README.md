@@ -100,7 +100,7 @@ serves (YaRN x2, which the default `auto` rope scaling picks for it), DFlash2
 speculative decoding and image input; the Prometheus
 metrics the Playground's Monitor reads are on by default. A bare `ignis-server`
 already gets DFlash2 and image input from the built-in `rtx5090` profile, with
-a 768K context (YaRN x3). Flash-Next is `--model-id
+an 896K context (YaRN x3.5). Flash-Next is `--model-id
 qwen3.8-flash-next`; the flags `make` serves it with are on its
 [weights card](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis).
 The image model is `ignis-image-2.1-turbo`: once `ignis-server model download
@@ -359,7 +359,7 @@ Every number below is a measurement on a 5090.
 
 - **`auto` by default**: both models are trained to **262,144 positions**, and
   rope scaling follows each model's context — no scaling up to 262,144, then
-  YaRN at `max_context / 262,144` (3 for the 27B's 786,432 on the 5090, 4 at
+  YaRN at `max_context / 262,144` (3.5 for the 27B's 917,504 on the 5090, 4 at
   **1,048,576**; factor up to 64) ([ADR 0057](docs/adr/0057-rope-scaling-is-auto-by-default.md)).
   `--model-rope-scaling yarn:F` or `none` overrides it. What a long-context
   probe must ask is a question about *relative* position — a literal needle

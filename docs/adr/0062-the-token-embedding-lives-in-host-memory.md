@@ -53,3 +53,18 @@ What ignis already has:
   ~5.6 MB: under 1 ms even on the PCIe Gen 3 host.
 - How WDDM treats a 1.35 GB mapped pinned allocation is unverified. The A/B in point 3 includes a run with the desktop
   under load.
+
+**As built** (2026-10-21, GitHub #335), where the decision left a choice:
+
+- **A placement of its own.** The binder places the table in a host-mapped allocation (`cudaHostAllocMapped |
+  cudaHostAllocPortable`) and reads its aligned file span straight into it; the bound weight's pointers are the mapped
+  device pointer's. The leaf asks the runtime where each bound tensor lives, so `vram_bytes` leaves the table out and
+  `host_mapped_bytes` counts it.
+- **The 27B's host plan is a whole one.** Beside the table it charges what the 27B already pinned without a check: its
+  host retained slots, its KV-RAM arena and KV-disk's staging. A start that cannot hold them all beside
+  `model.host_margin_bytes` is now refused (~18 GB available under the make defaults); the refusal names the 27B's own
+  flags.
+- **Measured** ([finding](../findings/2026-10-21-token-embedding-in-host-memory.md)): the weights line −1,350,860,800
+  bytes, ~146K more KV tokens; decode −0.1% at one lane, ~−0.4% at eight; cold prefill −0.15% to −0.7% from 14K to
+  105K, −1.9% at 8K; the gather ~1 ms per 1,024-token chunk. WDDM counts the table as shared memory, and a loaded host
+  slows main and the branch alike.

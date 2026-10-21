@@ -40,6 +40,7 @@
 #include "ninfer/ops/gated_delta_net.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
+#include "ignis_gqa_workspace.h"
 #include "ninfer/ops/gqa_attention.h"
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/linear_add.h"
@@ -136,6 +137,21 @@ ninfer::Weight to_weight(const ignis_bound_tensor &t) {
     w.scale_dtype = ninfer::DType::FP8_E4M3FN;
   }
   return w;
+}
+
+// ADR 0062: whether `data` is page-locked host memory -- a mapped table the
+// kernels read in place over the bus -- rather than device memory. A pointer
+// the runtime does not know (none of the leaf's own) reads as not host.
+bool in_host_memory(const void *data) {
+  if (data == nullptr) {
+    return false;
+  }
+  cudaPointerAttributes attributes{};
+  if (cudaPointerGetAttributes(&attributes, data) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  return attributes.type == cudaMemoryTypeHost;
 }
 
 bool shape_matches(const ignis_bound_tensor &t, std::initializer_list<int64_t> want) {
@@ -424,11 +440,10 @@ std::size_t i32_bytes(int64_t elements) {
 //
 // `cache_dtype` is the KV format's own declared element type (P4-05, GitHub
 // #123): the layer asks the attention query under exactly this dtype, and
-// the hq (U8) prompt route's answer is far larger than BF16's -- it
-// materializes the envelope's visible history into two rotated-frame BF16
-// scratch planes before the shared FA2 kernel runs over it. Sizing the
-// arena as BF16 and then dispatching hq is the one way this reservation can
-// be wrong, so the format reaches here rather than being assumed.
+// the hq (U8) prompt widths take ignis's prompt attention (GitHub #335),
+// whose band and split states BF16 has no counterpart of. Sizing the arena
+// as BF16 and then dispatching hq is the one way this reservation can be
+// wrong, so the format reaches here rather than being assumed.
 std::size_t gqa_layer_scratch_bytes(const ignis_topology &topology, const GqaLayerWeights &w,
                                      std::int32_t T, uint32_t max_context_tokens,
                                      ninfer::DType cache_dtype, std::int32_t batch) {
@@ -436,7 +451,6 @@ std::size_t gqa_layer_scratch_bytes(const ignis_topology &topology, const GqaLay
   const auto q_width = static_cast<std::int32_t>(topology.num_q_heads * topology.head_dim);
   const auto kv_width = static_cast<std::int32_t>(topology.num_kv_heads * topology.head_dim);
   const auto ffn = static_cast<std::int32_t>(topology.ffn_intermediate);
-  const auto q_heads = static_cast<std::int32_t>(topology.num_q_heads);
   const std::int32_t columns = T * batch;
 
   std::size_t bytes = 0;
@@ -455,9 +469,8 @@ std::size_t gqa_layer_scratch_bytes(const ignis_topology &topology, const GqaLay
 
   const ninfer::ops::GqaExecutionEnvelope envelope{
       /*min_visible_keys=*/1, /*max_visible_keys=*/max_context_tokens};
-  bytes += round_up_arena_align(ninfer::ops::gqa_attention_workspace_capacity_bytes(
-      q_heads, cache_dtype, envelope, /*batch_size=*/batch, /*min_width=*/1,
-      /*max_width=*/T));
+  bytes += round_up_arena_align(ignis_gqa_attention_capacity_bytes(
+      cache_dtype, envelope, /*batch_size=*/batch, /*min_width=*/1, /*max_width=*/T));
   bytes += round_up_arena_align(ninfer::ops::attn_input_proj_workspace_capacity_bytes(
       w.query_key_gate_value.qtype, w.query_key_gate_value.n, w.query_key_gate_value.k,
       ignis_widest_linear_policy_for(w.query_key_gate_value.qtype), 1, columns));
@@ -867,6 +880,8 @@ struct LoadOptions {
   ignis::RopeScaling rope_scaling{};
   // GitHub #275: the most keys of a text span an attention readout reads.
   uint32_t attention_text_max_keys = 0;
+  // GitHub #335: the prompt attention's precision (enum ignis_prefill_attention).
+  uint32_t prefill_attention = IGNIS_PREFILL_ATTENTION_FP8;
 };
 
 // GitHub #243: one embedding pool page, in bytes -- the width every side of
@@ -1024,6 +1039,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   uint64_t vision_embedding_pool_request = 0;
   uint32_t attention_text_max_keys = 0;
   uint32_t draft_row_budget = 0;
+  uint32_t prefill_attention = 0;
   ignis::RopeScaling rope_scaling{};
   if (options != nullptr) {
     if (options->size != sizeof(struct ignis_model_load_options)) {
@@ -1042,6 +1058,14 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     rope_scaling.beta_slow = options->rope_scaling_beta_slow;
     attention_text_max_keys = options->attention_text_max_keys;
     draft_row_budget = options->draft_row_budget;
+    prefill_attention = options->prefill_attention;
+  }
+  // GitHub #335: a value the leaf does not know is refused rather than run as
+  // one of the two.
+  if (prefill_attention != IGNIS_PREFILL_ATTENTION_FP8 && prefill_attention != IGNIS_PREFILL_ATTENTION_FP16) {
+    set_error("ignis_model_load: prefill_attention " + std::to_string(prefill_attention) +
+              " is not 0 (8-bit) or 1 (FP16 accumulate)");
+    return nullptr;
   }
   // GitHub #227: a scaling that cannot build a table is refused by name --
   // the alternative is a load that silently rotates at a different one.
@@ -1107,12 +1131,17 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   out.vision_embedding_pool_bytes = vision_embedding_pool_request;
   out.rope_scaling = rope_scaling;
   out.attention_text_max_keys = std::min(attention_text_max_keys, max_context_tokens);
+  out.prefill_attention = prefill_attention;
 
   // GitHub #302: Flash-Next binds its own schema (kernel/src/flash_next/
   // bind.cu) into its own program (kernel/src/flash_next/program.h), and has
   // no drafter, vision tower or attention readouts. Its decode lanes and its
   // residency are its options alone.
   if (flash_next) {
+    if (prefill_attention != IGNIS_PREFILL_ATTENTION_FP8) {
+      set_error("ignis_model_load: prefill_attention is the 27B's; Qwen3.8-Flash-Next's attention is QSA");
+      return nullptr;
+    }
     if (vision_max_tokens != 0 || attention_text_max_keys != 0) {
       set_error("ignis_model_load: Qwen3.8-Flash-Next has no vision or attention readouts");
       return nullptr;
@@ -1482,12 +1511,16 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   model->speculative_backend = speculative_backend;
   model->draft_tokens = draft_tokens;
 
+  // ADR 0062: a tensor bound from mapped pinned host memory (the 27B's
+  // token embedding) takes no VRAM; the runtime says where each one lives.
   uint64_t vram_bytes = 0;
+  uint64_t host_mapped_bytes = 0;
   for (uint64_t i = 0; i < count; ++i) {
-    vram_bytes += tensors[i].bytes;
+    (in_host_memory(tensors[i].qdata) ? host_mapped_bytes : vram_bytes) += tensors[i].bytes;
   }
   model->bound_tensor_count = count;
   model->vram_bytes = vram_bytes;
+  model->host_mapped_bytes = host_mapped_bytes;
 
   // GitHub #302: a Flash-Next load reserves and prepares its own program.
   if (model->flash_next) {
@@ -1519,6 +1552,9 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // P4-05 (GitHub #123): what the two arenas below are reserved for, and
   // what `kernel/src/gqa_layer.cu` checks a sequence pool against.
   model->kv_format = kv_format;
+  // GitHub #335: the prompt attention's precision, read by every hq-e8-2b
+  // prefill chunk (`kernel/src/gqa_layer.cu`).
+  model->prefill_attention = load.prefill_attention;
 
   // GitHub #210: every reservation below is sized here, once, by the same
   // computation `ignis_model_plan_reservations` reports.
@@ -1718,6 +1754,7 @@ extern "C" int32_t ignis_model_stats(const struct ignis_model *model,
     return -1;
   }
   out_stats->vram_bytes = model->vram_bytes;
+  out_stats->host_mapped_bytes = model->host_mapped_bytes;
   out_stats->bound_tensor_count = model->bound_tensor_count;
   out_stats->vision_reserved_bytes = model->vision_reserved_bytes();
   out_stats->reserved = model->flash_next ? ignis::flash_next::reserved(*model) : reserved_of(*model);

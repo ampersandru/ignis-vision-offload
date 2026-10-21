@@ -322,6 +322,8 @@ struct ignis_model {
   ninfer::Weight output_head;
   std::vector<LayerWeights> layers;
   uint64_t vram_bytes = 0;
+  // ADR 0062: what of the bound tensors lives in mapped host memory.
+  uint64_t host_mapped_bytes = 0;
   uint64_t bound_tensor_count = 0;
 
   // Program-layer resources (ADR 0009, GitHub #54): the step ABI's stream
@@ -410,6 +412,9 @@ struct ignis_model {
   // is fixed for the life of a load (ADR 0022), and here that is not a
   // convention but an arena-sizing fact.
   int32_t kv_format = IGNIS_KV_FORMAT_BF16;
+  // GitHub #335: `ignis_model_load_options::prefill_attention` (enum
+  // ignis_prefill_attention), for the hq-e8-2b prompt attention's band pass.
+  uint32_t prefill_attention = IGNIS_PREFILL_ATTENTION_FP8;
   // Separate from `scratch` above: a graph replays fixed device addresses,
   // and a prefill chunk (which only ever uses `scratch`) landing between two
   // replays must never alias what a replay rereads. Sized once for one

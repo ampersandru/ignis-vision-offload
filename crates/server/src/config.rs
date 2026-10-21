@@ -193,7 +193,7 @@ pub const DEFAULT_IMAGE_SIZES: [ImageSize; 8] = [
 // to be kept in sync by hand across the crate boundary.
 pub use ignis_runtime::{DEFAULT_MAX_CONTEXT, DEFAULT_PREFILL_CHUNK, PREFILL_CHUNK_ALIGNMENT};
 
-pub use ignis_core::{KvFormat, KvPoolSize, VramMode};
+pub use ignis_core::{KvFormat, KvPoolSize, PrefillAttention, VramMode};
 use ignis_core::compute::ModelFamily;
 
 /// `--vram-headroom-bytes`' default: what a derived VRAM budget leaves to the
@@ -365,11 +365,12 @@ pub struct Config {
     /// snapshot's fixed GDN floor (~145 MiB) is paid regardless of prompt
     /// length.
     pub host_pool_bytes: u64,
-    /// What Flash-Next's host plan must leave of the physical memory
+    /// What a text model's host plan must leave of the physical memory
     /// available at load (`--model-host-margin-bytes`,
     /// [`DEFAULT_HOST_MARGIN_BYTES`]): a load whose pinned lines leave less
-    /// is refused, naming the line to shrink. The 27B and the image model
-    /// make no host plan: their starts carry it for a switch to Flash-Next.
+    /// is refused, naming the line to shrink -- Flash-Next's, and the 27B's
+    /// since its token embedding lives in pinned host memory (ADR 0062). The
+    /// image model makes no host plan: its start carries it for a switch.
     pub host_margin_bytes: u64,
     /// Cross-request state reuse (`--reuse-prompt`, GitHub #186, ADR 0029).
     /// On by default. Off means a request captures no prompt checkpoint and
@@ -426,6 +427,11 @@ pub struct Config {
     /// envelope, which is what a context past it needs. Both models run it
     /// (ADR 0059).
     pub rope_scaling: RopeScaling,
+    /// The 27B's prompt attention precision (`--model-prefill-attention`,
+    /// GitHub #335): the 8-bit band by default, or the FP16-accumulate fallback. Fixed
+    /// for the life of the load; the 27B's alone, so a Flash-Next start
+    /// refuses an explicit value.
+    pub prefill_attention: PrefillAttention,
     /// Media acquisition (`--media-allow-private-network`,
     /// `--media-cache-mib`, GitHub #179). Only nameable with vision on.
     pub media: MediaOptions,
@@ -1119,6 +1125,7 @@ fn derive(
         decode_lanes: s.spec.decode_lanes,
         vision,
         rope_scaling,
+        prefill_attention: s.model.prefill_attention,
         media,
         request_timeout_secs: s.server.request_timeout,
         stream_timeout_secs: s.server.stream_timeout,

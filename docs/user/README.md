@@ -448,7 +448,7 @@ change does not reach and a `null` removes.
 | `--switch-drain-timeout <secs>` | `IGNIS_SWITCH_DRAIN_TIMEOUT` | `30` (max `3600`) | How long a model switch lets the old model's running requests finish before it cancels them (`0` cancels at once). |
 | `--model-idle-unload <secs>` | `IGNIS_MODEL_IDLE_UNLOAD` | `300` (max `604800`) | Seconds with no request using the model before it is unloaded, the server staying up; the next request loads it again ([below](#idle-unload)). `0` never unloads. Patchable live. |
 | `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `300` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
-| `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What Flash-Next's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next)). Per family as `--qwen38flashnext-model-host-margin-bytes`, which a 27B or image-model start takes for a later switch; neither makes a host plan. (`make` knob `HOST_MARGIN_BYTES`.) |
+| `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What a text model's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next), [for the 27B](#host-ram-for-the-27b)). Per family as `--qwen38-model-host-margin-bytes` and `--qwen38flashnext-model-host-margin-bytes`; an image-model start, which makes no host plan, takes them for a later switch. (`make` knob `HOST_MARGIN_BYTES`.) |
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is. `POST /v1/models/switch` is not affected. |
 | `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
 | `--config <path>` | `IGNIS_CONFIG` | discovered | The config file ([above](#configuration)). |
@@ -482,6 +482,7 @@ change does not reach and a `null` removes.
 | `--spec-decode-lanes <n>` | `IGNIS_SPEC_DECODE_LANES` | `3` | Flash-Next only, `1..=8`: the sequences decoded at once. The lanes share the KV pool ([below](#the-kv-pool)): min(524,288 tokens, lanes × `--model-max-context`), never below one `--model-max-context` sequence and a page per retained slot. At `make`'s 262,144 tokens that is one context at one lane and 524,288 tokens from two lanes on, so one lane leaves the expert cache about 1 GiB more, and further lanes cost only their state; at 131,072 tokens three lanes get 393,216. The 27B serves a fixed 8 lanes and refuses the flag. `make MODEL=flash-next` runs 3 lanes at up to 262,144 tokens each (the checkpoint's trained positions); the `make` knob is `LANES`. |
 | `--model-decode-share <percent>` | `IGNIS_MODEL_DECODE_SHARE` | `25` on both models | The part of the time decoding lanes keep while a prompt prefills, 0-99: after a chunk that took `t`, the next chunk of the same prompt waits `t * s / (1 - s)` of wall time while they decode, and nothing waits when no lane decodes or after the prompt's last chunk. It trades the prefilling request's TTFT (about x1.33 at 25, x2 at 50, only while lanes decode) for the lanes' rate (15.6-18.3 tok/s on Flash-Next instead of ~1; why 25: [ADR 0018](../adr/0018-chunk-level-prefill-decode-interleaving.md)). `--model-decode-share 0` restores one decode round per chunk, the pacing before [#92](../findings/2026-10-07-27b-prefill-chunk-width.md); 50 splits time evenly. A prompt alone is unaffected. |
 | `--model-kv-format <fmt>` | `IGNIS_MODEL_KV_FORMAT` | `hq-e8-2b` | `hq-e8-2b` (serving) or `bf16` (retained; the format every correctness oracle runs against — [ADR 0022](../adr/0022-two-kv-formats-bf16-as-oracle.md)). Decides what a pool byte budget is worth in tokens. |
+| `--model-prefill-attention <precision>` | `IGNIS_MODEL_PREFILL_ATTENTION` | `fp8` | The 27B only: the precision of the prompt attention's band pass over an `hq-e8-2b` prefill chunk. `fp8` runs it in 8 bits (Q·Kᵀ in INT8, P·V in E4M3); `fp16` is the FP16-accumulate fallback. Fixed for the life of the load. Flash-Next's attention is QSA, with no such pass: a Flash-Next start refuses an explicit value. |
 | `--vram-kv-pool-bytes <bytes\|tokens>` | `IGNIS_VRAM_KV_POOL_BYTES` | the KV pool policy's | The KV pool, on both models: a byte count (`K`/`M`/`G` suffixes) or a token count, `<n>tok`, `<n>Ktok` or `<n>Mtok` with binary multipliers (`512Ktok` is 524,288 tokens: the same context on either model and either format, where a byte count is worth a different one on each). It replaces the policy's size ([below](#the-kv-pool)). Smaller than one `--model-max-context` sequence plus a page per retained slot, or past the VRAM budget, fails the load by name. (`make` knob `KV_POOL_BYTES`.) |
 | `--reuse-kv-host-pool-bytes <bytes>` | `IGNIS_REUSE_KV_HOST_POOL_BYTES` | `2G` | The KV-RAM host tier. Page-locked whole at start and held for the life of the load, so it is RAM the process holds even idle — and the figure Windows reports as shared GPU memory. `0` disables the host tier. (`make` sets `8G`, and Flash-Next's own `2G` as `--qwen38flashnext-reuse-kv-host-pool-bytes`: knob `FN_KV_HOST_POOL_BYTES`.) |
 | `--spec-backend <backend>` | `IGNIS_SPEC_BACKEND` | unset | Speculative decoding backend: `dflash2` (Qwen3.8-27B), `mtp` (Qwen3.8-Flash-Next, see [below](#flash-next-speculation-mtp)), `off`, or unset for none. |
@@ -817,6 +818,32 @@ eight lanes and 2.3x its prefill (a 32K-token TTFT of 7.4 s instead of 16.9 s,
 [finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). A local
 NVMe was not measured.
 
+### Host RAM for the 27B
+
+The 27B keeps its token embedding (1.35 GB, a 5,440-byte row per token) in
+pinned host memory rather than VRAM (ADR 0062): the card reads one row per
+token over PCIe and gives the 1.35 GB to the KV pool. So the 27B plans host
+memory too, the way Flash-Next does: the table, the host retained slots
+(232.5 MB each, 16 by default: 3.72 GB), the KV-RAM arena (2 GiB, 8 GiB under
+`make`) and KV-disk's staging when the tier is on must leave the 4 GiB margin
+of the available RAM. Under the `make` defaults that is about **18 GB
+available**. A load below it is refused before anything is pinned, naming
+the 27B's own flags:
+
+```
+not enough RAM: the load holds 12.7 GiB and keeps 4 GiB free for the system, so it needs 16.7 GiB
+available, but only 14 GiB is (2.7 GiB short). The model and its retained slots fit, the KV-RAM arena
+does not: a smaller one (--qwen38-reuse-kv-host-pool-bytes, 0 turns it off) or close other
+applications. Plan: token embedding 1.3 GiB, retained host slots 3.5 GiB, KV-RAM arena 8 GiB; margin
+4 GiB (--qwen38-model-host-margin-bytes).
+```
+
+The same refusal in exact bytes is the `ignis.runtime.qwen27b_host_plan_refused`
+event, and a load that fits logs `ignis.runtime.qwen27b_host_plan`. The knobs
+are Flash-Next's, under the `qwen38` scope: `--qwen38-reuse-retained-host`,
+`--qwen38-reuse-kv-host-pool-bytes`, `--qwen38-kv-disk-bytes` and
+`--qwen38-model-host-margin-bytes`.
+
 ### Vision
 
 | Flag | Env | Default | Meaning |
@@ -1013,8 +1040,9 @@ answers during a switch and while one has failed, and carries no path.
 `outcome` is `switched`, `refused` (nothing was torn down), `restored` (the
 old model was loaded again) or `failed` (nothing serves), with a `reason` for
 every outcome but the first. A reload from `PATCH /v1/config` is reported the
-same way, with `from` equal to `to`. When Flash-Next's
-[host plan](#host-ram-for-flash-next) refused the target, `host_plan` holds
+same way, with `from` equal to `to`. When a text model's host plan
+([Flash-Next's](#host-ram-for-flash-next), [the 27B's](#host-ram-for-the-27b))
+refused the target, `host_plan` holds
 it in exact bytes for an agent (`available_bytes`, `margin_bytes`,
 `planned_bytes`, `needed_bytes`, `short_bytes`, `crossing_line`, and every
 line as `{name, bytes}`), while `reason` says it for a person.
