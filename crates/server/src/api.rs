@@ -1754,35 +1754,62 @@ pub(crate) fn now() -> u64 {
 
 // ── GET /v1/models ────────────────────────────────────────────────────────
 
-/// `GET /v1/models` — the loaded model (one at a time), and whether it is
-/// serving or being switched (spec model-switch/01).
+/// `GET /v1/models` — the servable models (spec model-switch/03): the loaded
+/// one first (one at a time), and whether it is serving or being switched
+/// (spec model-switch/01); then every model a request may name and be
+/// served by now.
 #[utoipa::path(
     get,
     path = "/v1/models",
     tag = "models",
     operation_id = "list_models",
-    summary = "The loaded model",
-    description = "One entry: the model this server loaded, its `kind` (`text` or `image`: the routes it serves), and for a text model the context a single request may spend (`max_model_len`, prompt plus completion). A server serves one model at a time; `POST /v1/models/switch` replaces it.\n\n`status` beside the entry says what the API is doing: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and the entry is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503.\n\n`unloaded` when nobody used the model for `model.idle_unload` seconds and it was unloaded (the entry still names it, and the API stays up): the next request that needs it loads it again and is served once it is warm. `loading` while that load runs, `switching` naming what loads; requests arriving meanwhile wait for it. A load out of `unloaded` that fails is `failed`, and the next request tries again.",
+    summary = "The servable models, the loaded one first",
+    description = "The models a request may name and be served by now, without a download. `data[0]` is always the model this server loaded (`active: true`), with its `kind` (`text` or `image`: the routes it serves) and for a text model the context a single request may spend (`max_model_len`, prompt plus completion). The other entries (`active: false`) are the models a request naming them switches to: every catalog entry whose artifact is under `download.path` (catalog order), then every known model (`switch.known_models`, and the model the server started on) whose artifact is a file (id order) — read at each request, so a model downloaded into a running server is listed at once. Their `kind` is given only when the id is a model family's own, and `max_model_len` never: it is known once a model is loaded. No entry carries a path. With `switch.allow_implicit` false only `data[0]` is listed. A server serves one model at a time: a request naming another entry waits while it replaces the loaded one; a text request naming the image model is refused `409 model_kind_mismatch`.
+
+`status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503.
+
+`unloaded` when nobody used the model for `model.idle_unload` seconds and it was unloaded (`data[0]` still names it, and the API stays up): the next request that needs it loads it again and is served once it is warm. `loading` while that load runs, `switching` naming what loads; requests arriving meanwhile wait for it. A load out of `unloaded` that fails is `failed`, and the next request tries again.",
     responses(
-        (status = 200, description = "The loaded model.", body = ModelList),
+        (status = 200, description = "The servable models, the loaded one first.", body = ModelList),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`).", body = ApiError),
     ),
 )]
 async fn list_models(State(server): State<Arc<Server>>) -> Json<ModelList> {
+    // The rest of the list stats a file per candidate: off the runtime, as
+    // `GET /v1/models/catalog` lists.
+    let list = tokio::task::spawn_blocking(move || models_now(&server)).await.expect("listing the models does not panic");
+    Json(list)
+}
+
+/// What `GET /v1/models` answers now.
+fn models_now(server: &Server) -> ModelList {
     // The status first: a switch publishes the new model before it stores
     // `serving`, so a `serving` read here is never paired with the old id.
     let status = server.status();
     let loaded = server.active();
-    Json(ModelList {
+    let active = loaded.model_id();
+    let rest = server.switcher.as_ref().map(|switcher| switcher.servable_models(&active)).unwrap_or_default();
+    let mut data = vec![ModelInfo {
+        id: active,
+        object: "model",
+        owned_by: "ignis",
+        active: true,
+        kind: Some(loaded.kind().as_str()),
+        max_model_len: loaded.engine().map(Engine::max_model_len),
+    }];
+    // No header read here: a family's own id says its kind, any other none.
+    data.extend(rest.into_iter().map(|id| ModelInfo {
+        kind: ModelFamily::of_model_id(&id).map(|family| family.kind().as_str()),
+        id,
+        object: "model",
+        owned_by: "ignis",
+        active: false,
+        max_model_len: None,
+    }));
+    ModelList {
         object: "list",
-        data: vec![ModelInfo {
-            id: loaded.model_id(),
-            object: "model",
-            owned_by: "ignis",
-            kind: loaded.kind().as_str(),
-            max_model_len: loaded.engine().map(Engine::max_model_len),
-        }],
+        data,
         status: status.as_str(),
         switching: match &*status {
             ModelStatus::Switching { from, to } => Some(SwitchIds { from: from.clone(), to: to.clone() }),
@@ -1798,7 +1825,7 @@ async fn list_models(State(server): State<Arc<Server>>) -> Json<ModelList> {
             _ => None,
         },
         last_switch: server.switcher.as_ref().and_then(|switcher| switcher.last_switch()).map(LastSwitchInfo::of),
-    })
+    }
 }
 
 /// The models list envelope.
@@ -2086,9 +2113,15 @@ struct ModelInfo {
     id: String,
     object: &'static str,
     owned_by: &'static str,
+    /// Whether this is the model loaded now: `data[0]`, and no other entry
+    /// (spec model-switch/03).
+    active: bool,
     /// `text` or `image` (spec image-model/05): which routes the model
-    /// serves; the other kind's answer `409 model_kind_mismatch`.
-    kind: &'static str,
+    /// serves; the other kind's answer `409 model_kind_mismatch`. Always on
+    /// the active entry; on another only when its id is a model family's
+    /// own (no artifact is read to tell).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
     /// The context for one request, prompt plus `max_tokens`, in tokens
     /// (vLLM's name for it; the Playground's context bar reads it). A text
     /// model's only.

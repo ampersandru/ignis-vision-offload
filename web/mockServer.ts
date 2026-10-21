@@ -213,6 +213,17 @@ export function createServerSim() {
     return entries;
   }
 
+  // The servable rest of GET /v1/models (spec model-switch/03): every row on disk but the loaded one, in catalog
+  // order; `kind` only for a family's own id (the built-in ones here), as the server reads no header there.
+  const servable = () =>
+    CATALOG.filter((row) => row.on_disk === "complete" && row.id !== loaded).map((row) => ({
+      id: row.id,
+      object: "model",
+      owned_by: "ignis",
+      active: false,
+      ...(row.source === "built-in" ? { kind: "text" } : {}),
+    }));
+
   return {
     fields: () => ({ object: "list" as const, data: FIELDS }),
 
@@ -237,13 +248,14 @@ export function createServerSim() {
       return { object: "list", data: originRows(FIELDS, state.store, state.from) };
     },
 
+    /** GET /v1/models: the loaded model, then the servable rest (spec model-switch/03). */
     models(now: number): Record<string, unknown> {
       advance(now);
       const family = familyOf(loaded);
       const context = Number((state.store.model?.[family] as Record<string, unknown> | undefined)?.max_context ?? state.store.model?.max_context);
       return {
         object: "list",
-        data: dead ? [] : [{ id: loaded, object: "model", owned_by: "ignis", max_model_len: context }],
+        data: dead ? [] : [{ id: loaded, object: "model", owned_by: "ignis", active: true, kind: "text", max_model_len: context }, ...servable()],
         status: status(),
         ...(running ? { switching: { from: running.from, to: running.to } } : {}),
         ...(restoring || dead ? { reason: (restoring ?? dead)!.reason } : {}),

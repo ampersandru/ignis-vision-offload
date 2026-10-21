@@ -548,8 +548,8 @@ impl HttpEndpoint {
         self.request_timeout
     }
 
-    /// `GET /v1/models` — a readiness probe: the loaded model id(s)
-    /// (v1: a single model).
+    /// `GET /v1/models` — a readiness probe: the servable model ids in the
+    /// server's order, the loaded one first (spec model-switch/03).
     pub fn list_models(&self) -> Result<Vec<String>, String> {
         let url = format!("{}/v1/models", self.base_url);
         let value: serde_json::Value = self

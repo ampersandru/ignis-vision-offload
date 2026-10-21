@@ -446,6 +446,14 @@ When output names a domain concept, use the term as defined here.
   model), then a catalog entry on disk. `switch.allow_implicit` does not gate
   it; it gates only the **implicit switch** a request triggers by naming a
   model. Never starts a download.
+- **Servable model** — a model a request may name and be served by now,
+  with no download: the active model, plus every id the **implicit switch**
+  resolves to an artifact that is a file (a catalog entry on disk, a known
+  model whose artifact is there). What `GET /v1/models` lists, the active one
+  first (`active: true`), computed at each request; with
+  `switch.allow_implicit` off, the active model alone. An alias is not one
+  until the implicit switch resolves aliases.
+  _Avoid_: available model, installed model
 - **Last switch** — how the most recent switch or reload ended (`switched`,
   `refused`, `restored`, `failed`, with the reason), kept on `GET /v1/models`
   after the status itself has moved on. An **idle unload** and the load after

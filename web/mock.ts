@@ -41,8 +41,8 @@ import { createServerSim, type MockAnswer } from "./mockServer.ts";
 // Local: "/js", "/plan", "/file" and "/html" call run_js, update_plan and create_file.
 // "/math" answers with formulas; "/long" streams a long reply for scrolling.
 //
-// Server view (mockServer.ts, spec playground/05): /v1/models is the 27B,
-// and a switch or a reload reads `switching` for three seconds. A config
+// Server view (mockServer.ts, spec playground/05): /v1/models is the 27B
+// first, then every catalog row on disk (spec model-switch/03), and a switch or a reload reads `switching` for three seconds. A config
 // value "/error" is a 400 naming its key; a switch to an id containing
 // "fail", or a reload patch holding "/fail", ends `restored` with a reason.
 

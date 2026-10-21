@@ -620,9 +620,27 @@ impl Switcher {
         (self.loader.kind_of(&source) != Some(ModelKind::Image)).then_some(source)
     }
 
+    /// The servable models besides `active` (spec model-switch/03), what
+    /// `GET /v1/models` lists after it: the ids a request may name and be
+    /// served by now without a download — the catalog's entries in catalog
+    /// order, then the known models that are not one in id order, each once,
+    /// kept when [`Switcher::known`] resolves it to a file. Blocking (one
+    /// `stat` per candidate); no artifact is opened. `known` folds
+    /// `switch.allow_implicit` in: off, nothing is servable but `active`.
+    pub fn servable_models(&self, active: &str) -> Vec<String> {
+        let catalog = self.catalog.iter().flat_map(|catalog| catalog.catalog.entries().iter().map(|entry| entry.id.clone()));
+        let known = self.known_models().into_keys();
+        let mut seen = std::collections::HashSet::from([active.to_owned()]);
+        catalog
+            .chain(known)
+            .filter(|id| seen.insert(id.clone()))
+            .filter(|id| self.known(id).is_some_and(|artifact| artifact.is_file()))
+            .collect()
+    }
+
     /// The artifact a request naming `model` would switch to, if it is known:
     /// the known models' entry for it, else a catalog entry on disk.
-    pub(crate) fn known(&self, model: &str) -> Option<PathBuf> {
+    pub fn known(&self, model: &str) -> Option<PathBuf> {
         if let Some(listed) = self.known.lock().expect("known models lock").get(model) {
             return Some(listed.clone());
         }

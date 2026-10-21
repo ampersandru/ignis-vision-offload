@@ -88,6 +88,9 @@ struct State {
     /// What each id's load reports it reserved ([`MockLoader::reserve`]);
     /// an id not here reserved nothing, as on a build without `cuda`.
     reservations: Mutex<std::collections::HashMap<String, ignis_server::metrics::LoadReservations>>,
+    /// How many times [`ModelLoader::kind_of`] was asked: what a production
+    /// loader answers by opening the artifact.
+    kind_of_calls: AtomicUsize,
 }
 
 /// The mock loader. Clone the `Arc` into a `Switcher`, keep one to steer it.
@@ -212,6 +215,11 @@ impl MockLoader {
     /// How many built models were alive as each load began.
     pub fn resident_at_load(&self) -> Vec<usize> {
         self.state.resident_at_load.lock().unwrap().clone()
+    }
+
+    /// How many times the loader was asked a target's kind.
+    pub fn kind_of_calls(&self) -> usize {
+        self.state.kind_of_calls.load(Ordering::SeqCst)
     }
 
     /// The ids loaded, in order.
@@ -357,6 +365,13 @@ impl ModelLoader for MockLoader {
         };
         let options = fitted.or_else(|| self.state.serving.lock().unwrap().clone());
         Ok(Box::new(MockPrepared { state: Arc::clone(&self.state), id: target.model.clone(), options }))
+    }
+
+    /// The default's answer, counted: what a production loader reads off the
+    /// artifact's header.
+    fn kind_of(&self, target: &ModelSource) -> Option<ignis_core::compute::ModelKind> {
+        self.state.kind_of_calls.fetch_add(1, Ordering::SeqCst);
+        ModelFamily::of_model_id(&target.model).map(ModelFamily::kind)
     }
 }
 

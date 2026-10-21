@@ -21,6 +21,23 @@ describe("readModel", () => {
     expect(second).toEqual({ state: "ready", id: "flash-next", contextLimit: 589824 });
   });
 
+  it("reads the `active` entry among the servable models (spec model-switch/03), whatever its place", async () => {
+    saveKey("sk");
+    const three = {
+      data: [
+        { id: "qwen3.8-27b", active: true, kind: "text", max_model_len: 786432 },
+        { id: "qwen3.8-flash-next", active: false, kind: "text" },
+        { id: "ignis-image-2.1-turbo", active: false, kind: "image" },
+      ],
+      status: "serving",
+    };
+    expect(await readModel(answering(three))).toEqual({ state: "ready", id: "qwen3.8-27b", contextLimit: 786432, kind: "text" });
+    const unloaded = { ...three, status: "unloaded" };
+    expect(await readModel(answering(unloaded))).toEqual({ state: "unloaded", id: "qwen3.8-27b", contextLimit: 786432, kind: "text" });
+    const reordered = { data: [three.data[2], { ...three.data[0] }], status: "serving" };
+    expect(await readModel(answering(reordered))).toMatchObject({ state: "ready", id: "qwen3.8-27b", contextLimit: 786432 });
+  });
+
   it("is an error when nothing is listed or ignis refuses", async () => {
     saveKey("sk");
     const empty = (async () => new Response(JSON.stringify({ data: [] }))) as typeof fetch;

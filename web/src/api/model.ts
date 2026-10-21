@@ -65,7 +65,8 @@ export type ModelState =
   | { state: "error"; message: string; failed?: true; lastSwitch?: LastSwitch };
 
 type ModelList = {
-  data?: { id: string; max_model_len?: number; kind?: string }[];
+  /** The servable models (spec model-switch/03): the loaded one `active`, and first; an older server lists it alone, with no `active`. */
+  data?: { id: string; active?: boolean; max_model_len?: number; kind?: string }[];
   status?: string;
   switching?: { from: string; to: string };
   reason?: string;
@@ -90,11 +91,13 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     if (body.status === "failed") {
       return { state: "error", message: `Switch failed: ${body.reason ?? "no reason given"}`, failed: true, ...last };
     }
-    const id = body.data?.[0]?.id;
+    // The loaded model is the `active` entry; a server without the field lists it alone.
+    const entry = body.data?.find((listed) => listed.active === true) ?? body.data?.[0];
+    const id = entry?.id;
     if (!id) throw new Error("GET /v1/models: no model listed");
     // The image model reports no context at all; an older server no kind (a text model).
-    const contextLimit = body.data?.[0]?.max_model_len ?? null;
-    const reported = body.data?.[0]?.kind;
+    const contextLimit = entry?.max_model_len ?? null;
+    const reported = entry?.kind;
     const kind: { kind?: ModelKind } = reported === "image" || reported === "text" ? { kind: reported } : {};
     if (body.status === "unloaded") return { state: "unloaded", id, contextLimit, ...kind, ...last };
     if (body.status === "loading") return { state: "loading", to: body.switching?.to ?? id, since: now, ...last };

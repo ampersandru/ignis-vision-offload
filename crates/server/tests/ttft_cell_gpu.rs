@@ -60,7 +60,7 @@ fn a_ttft_cell_against_a_live_ignis_server_is_all_cold() {
     let Some(server) = live_server() else { return };
     let ep = HttpEndpoint::new(&server.url);
     let models = ep.list_models().unwrap_or_else(|e| panic!("GET /v1/models: {e}"));
-    assert_eq!(models, vec![MODEL.to_string()]);
+    assert_eq!(models.first().map(String::as_str), Some(MODEL), "the loaded model is listed first: {models:?}");
 
     // The acceptance criterion (GitHub #87) is a *record*, not a bare cell
     // measurement: `ttft::measure` is the same entry point a real gate run

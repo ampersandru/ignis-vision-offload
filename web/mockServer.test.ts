@@ -10,6 +10,9 @@ import type { CatalogRow, OriginRow, PatchApplied } from "./src/server/routes.ts
 
 const T = 1_000_000;
 
+/** GET /v1/models cut to `data[0]`, the loaded model: what most of these assertions are about (the rest is spec model-switch/03's). */
+const head = (list: Record<string, unknown>) => ({ ...list, data: (list.data as unknown[]).slice(0, 1) });
+
 describe("createServerSim", () => {
   it("serves the fields and the catalog in the list envelope, exactly one row loaded", () => {
     const sim = createServerSim();
@@ -19,8 +22,18 @@ describe("createServerSim", () => {
     expect(rows.find((row) => row.id === "qwen3.8-flash-next")).toMatchObject({ switchable: true, family: "qwen38flashnext" });
     expect(rows.find((row) => row.id === "qwen3.8-27b-abliterated")).toMatchObject({ on_disk: "partial", switchable: false });
     expect(rows.find((row) => row.id === "qwen3.8-27b-abliterated")).not.toHaveProperty("family");
-    expect(sim.models(T)).toMatchObject({ data: [{ id: "qwen3.8-27b", max_model_len: 786432 }], status: "serving" });
+    expect(head(sim.models(T))).toMatchObject({ data: [{ id: "qwen3.8-27b", max_model_len: 786432 }], status: "serving" });
     expect(sim.models(T)).not.toHaveProperty("last_switch");
+  });
+
+  it("lists the servable models as the server does: the loaded one first and active, then every row on disk (spec model-switch/03)", () => {
+    const sim = createServerSim();
+    const listed = sim.models(T).data as { id: string; active: boolean; kind?: string; max_model_len?: number }[];
+    expect(listed.map((entry) => entry.id)).toEqual(["qwen3.8-27b", "qwen3.8-flash-next", "qwen3.8-27b-dead", "qwen3.8-27b-fail"]);
+    expect(listed.map((entry) => entry.active)).toEqual([true, false, false, false]);
+    expect(listed[1]).toMatchObject({ kind: "text" });
+    expect(listed[2]).not.toHaveProperty("kind");
+    expect(listed.slice(1).some((entry) => "max_model_len" in entry)).toBe(false);
   });
 
   it("applies a live patch at once (200), the running configuration in the answer", () => {
@@ -61,7 +74,7 @@ describe("createServerSim", () => {
     // The gate holds every other route meanwhile.
     expect(sim.patch({ server: { request_timeout: "50" } }, T + 1_000)).toMatchObject({ status: 503, body: { error: { code: "model_switching" } } });
     const after = sim.models(T + 3_500);
-    expect(after).toMatchObject({ status: "serving", data: [{ max_model_len: 524288 }], last_switch: { from: "qwen3.8-27b", to: "qwen3.8-27b", outcome: "switched" } });
+    expect(head(after)).toMatchObject({ status: "serving", data: [{ max_model_len: 524288 }], last_switch: { from: "qwen3.8-27b", to: "qwen3.8-27b", outcome: "switched" } });
     expect(sim.config(T + 3_500).body.server.request_timeout).toBe(45);
   });
 
@@ -70,7 +83,7 @@ describe("createServerSim", () => {
     expect(sim.switchTo({ model: "qwen3.8-flash-next" }, T)).toEqual({ status: 202, body: { status: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next" } });
     expect((sim.catalog(T + 500).data as CatalogRow[]).every((row) => !row.switchable)).toBe(true);
     expect(sim.switchTo({ model: "qwen3.8-27b-fail" }, T + 500)).toMatchObject({ status: 409, body: { error: { code: "switch_in_progress" } } });
-    expect(sim.models(T + 3_500)).toMatchObject({ data: [{ id: "qwen3.8-flash-next", max_model_len: 589824 }], last_switch: { outcome: "switched" } });
+    expect(sim.models(T + 3_500)).toMatchObject({ data: [{ id: "qwen3.8-flash-next", active: true, max_model_len: 589824 }, { id: "qwen3.8-27b" }, {}, {}], last_switch: { outcome: "switched" } });
     const loaded = (sim.catalog(T + 3_500).data as CatalogRow[]).find((row) => row.loaded);
     expect(loaded).toMatchObject({ id: "qwen3.8-flash-next", family: "qwen38flashnext" });
   });
@@ -80,7 +93,7 @@ describe("createServerSim", () => {
     sim.switchTo({ model: "qwen3.8-27b-fail" }, T);
     expect(sim.models(T + 3_200)).toMatchObject({ status: "failed", reason: expect.stringContaining("qwen3.8-27b-fail") });
     const back = sim.models(T + 4_500);
-    expect(back).toMatchObject({ status: "serving", data: [{ id: "qwen3.8-27b" }], last_switch: { from: "qwen3.8-27b", to: "qwen3.8-27b-fail", outcome: "restored" } });
+    expect(head(back)).toMatchObject({ status: "serving", data: [{ id: "qwen3.8-27b" }], last_switch: { from: "qwen3.8-27b", to: "qwen3.8-27b-fail", outcome: "restored" } });
     expect((back as { last_switch: { reason: string } }).last_switch.reason).toContain("qwen3.8-27b-fail");
   });
 
@@ -95,7 +108,7 @@ describe("createServerSim", () => {
     expect(sim.patch({ server: { request_timeout: "60" } }, T + 5_000)).toMatchObject({ status: 503 });
     // A switch to a model that loads is the way out.
     sim.switchTo({ model: "qwen3.8-flash-next" }, T + 5_000);
-    expect(sim.models(T + 9_000)).toMatchObject({ status: "serving", data: [{ id: "qwen3.8-flash-next" }] });
+    expect(head(sim.models(T + 9_000))).toMatchObject({ status: "serving", data: [{ id: "qwen3.8-flash-next" }] });
   });
 
   it("answers 404 for an id it cannot switch to, naming the download command for an entry not on disk", () => {
@@ -118,10 +131,10 @@ describe("createServerSim: per-model values", () => {
     expect(answer.body).toMatchObject({ applied: "live", persisted: true });
     expect(model(sim).qwen38flashnext.max_context).toBe(524288);
     expect((sim.config(T).body.spec as Record<string, any>).qwen38flashnext.decode_lanes).toBe(4);
-    expect(sim.models(T)).toMatchObject({ status: "serving", data: [{ max_model_len: 786432 }] });
+    expect(head(sim.models(T))).toMatchObject({ status: "serving", data: [{ max_model_len: 786432 }] });
     // The load that follows runs with it.
     sim.switchTo({ model: "qwen3.8-flash-next" }, T);
-    expect(sim.models(T + 3_500)).toMatchObject({ data: [{ id: "qwen3.8-flash-next", max_model_len: 524288 }] });
+    expect(head(sim.models(T + 3_500))).toMatchObject({ data: [{ id: "qwen3.8-flash-next", max_model_len: 524288 }] });
   });
 
   it("refuses a group key for a field only the other family takes, as the server does, and homes its removal", () => {
@@ -159,7 +172,7 @@ describe("createServerSim: per-model values", () => {
     expect(sim.patch({ model: { qwen38: { max_context: null } } }, T).status).toBe(202);
     const after = model(sim, T + 3_500);
     expect(after).not.toHaveProperty("qwen38");
-    expect(sim.models(T + 3_500)).toMatchObject({ data: [{ max_model_len: 40960 }] });
+    expect(head(sim.models(T + 3_500))).toMatchObject({ data: [{ max_model_len: 40960 }] });
     // The other family's removal is live.
     expect(sim.patch({ model: { qwen38flashnext: { max_context: null } } }, T + 4_000).status).toBe(200);
     expect(model(sim, T + 4_000)).not.toHaveProperty("qwen38flashnext");

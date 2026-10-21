@@ -206,6 +206,24 @@ fn the_counting_routes_carry_their_schemas() {
 }
 
 #[test]
+fn the_models_list_documents_the_servable_models_and_the_active_entry() {
+    // Spec model-switch/03 AC 12: what is listed, and that `data[0]` is the
+    // active model.
+    let document = document();
+    let list = &document["paths"]["/v1/models"]["get"];
+    assert!(list["summary"].as_str().unwrap().contains("servable"), "{list}");
+    let description = list["description"].as_str().unwrap();
+    for says in ["`data[0]` is always the model this server loaded", "`download.path`", "`switch.known_models`", "`switch.allow_implicit` false"] {
+        assert!(description.contains(says), "{says}: {description}");
+    }
+    let entry = &document["components"]["schemas"]["ModelInfo"];
+    assert!(entry["properties"]["active"]["description"].as_str().unwrap().contains("data[0]"), "{entry}");
+    assert!(entry["properties"]["kind"]["description"].as_str().unwrap().contains("family's"), "{entry}");
+    let required: Vec<&str> = entry["required"].as_array().unwrap().iter().map(|key| key.as_str().unwrap()).collect();
+    assert!(required.contains(&"active") && !required.contains(&"kind"), "{entry}");
+}
+
+#[test]
 fn every_refused_field_is_named_in_its_operation_description() {
     // Spec server/09: driven off the table the validator reads, so a refusal
     // cannot be added without the document saying so.
