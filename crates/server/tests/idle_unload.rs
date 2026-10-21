@@ -511,7 +511,7 @@ async fn a_load_refused_at_prepare_answers_503_and_leaves_failed() {
     assert_eq!(models["status"], "failed", "{models}");
     assert!(models["reason"].as_str().unwrap().contains("refused at prepare"), "{models}");
     assert!(models["last_switch"].is_null(), "a request's load is not a switch: {models}");
-    assert_eq!(loader.prepared_artifacts(), [PathBuf::from("mock-a.ninfer")]);
+    assert_eq!(loader.prepared_artifacts(), [source("mock-a").artifact]);
     assert!(loader.loads().is_empty(), "{:?}", loader.loads());
 }
 

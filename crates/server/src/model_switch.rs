@@ -625,7 +625,7 @@ impl Switcher {
     /// served by now without a download — the catalog's entries in catalog
     /// order, then the known models that are not catalog entries, in id order
     /// ([`Switcher::known_models`] is a `BTreeMap`), each once,
-    /// kept when [`Switcher::known`] resolves it to a file. Blocking (one
+    /// kept when [`Switcher::known`] resolves it (to a file, always). Blocking (one
     /// `stat` per candidate); no artifact is opened. `known` folds
     /// `switch.allow_implicit` in: off, nothing is servable but `active`.
     pub fn servable_models(&self, active: &str) -> Vec<String> {
@@ -635,15 +635,21 @@ impl Switcher {
         catalog
             .chain(known)
             .filter(|id| seen.insert(id.clone()))
-            .filter(|id| self.known(id).is_some_and(|artifact| artifact.is_file()))
+            .filter(|id| self.known(id).is_some())
             .collect()
     }
 
-    /// The artifact a request naming `model` would switch to, if it is known:
-    /// the known models' entry for it, else a catalog entry on disk.
+    /// The artifact a request naming `model` would switch to, if it is known
+    /// and there: the known models' entry for it when its artifact is a file,
+    /// else a catalog entry on disk. A known model whose file is gone is not
+    /// one (spec model-switch/03 AC 3): a request naming it is refused by name,
+    /// as `GET /v1/models` does not list it, rather than tearing the loaded
+    /// model down for a load that cannot begin. Looked up at each call, so a
+    /// file put back is switchable at once. Its id still wins over a catalog
+    /// entry's.
     pub fn known(&self, model: &str) -> Option<PathBuf> {
         if let Some(listed) = self.known.lock().expect("known models lock").get(model) {
-            return Some(listed.clone());
+            return listed.is_file().then(|| listed.clone());
         }
         if !self.catalog_on.load(Ordering::SeqCst) {
             return None;

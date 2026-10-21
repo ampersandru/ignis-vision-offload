@@ -99,9 +99,18 @@ pub struct MockLoader {
     state: Arc<State>,
 }
 
-/// Where a mock model `id` "comes from": what a switch to it names.
+/// Where a mock model `id` "comes from": what a switch to it names — a
+/// file that is there (under this process's own temp directory), since a
+/// known model whose artifact is not a file is not switchable (spec
+/// model-switch/03).
 pub fn source(id: &str) -> ModelSource {
-    ModelSource { artifact: format!("{id}.ninfer").into(), model: id.to_owned() }
+    let dir = std::env::temp_dir().join(format!("ignis-mock-artifacts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the mock artifacts' directory");
+    let artifact = dir.join(format!("{id}.ninfer"));
+    if !artifact.is_file() {
+        std::fs::write(&artifact, b"mock").expect("a mock artifact");
+    }
+    ModelSource { artifact, model: id.to_owned() }
 }
 
 impl MockLoader {

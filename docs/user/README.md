@@ -452,7 +452,7 @@ change does not reach and a `null` removes.
 | `--server-socket-idle-close <secs>` | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` | `300` (max `604800`) | Seconds a Responses WebSocket may sit idle — nothing running or queued on it, no frame from its client — before the server closes it with a normal close frame saying why; the client's next request opens another ([WebSocket mode](#the-responses-api)). An open socket keeps a Knative pod from scaling down ([above](#behind-knative)). `0` never closes. Patchable live. |
 | `--model-host-margin-bytes <bytes>` | `IGNIS_MODEL_HOST_MARGIN_BYTES` | `4G` | What a text model's host plan must leave of the RAM available at load (free plus standby): a load whose pinned lines leave less is refused, naming the line to shrink ([Host RAM for Flash-Next](#host-ram-for-flash-next), [for the 27B](#host-ram-for-the-27b)). Per family as `--qwen38-model-host-margin-bytes` and `--qwen38flashnext-model-host-margin-bytes`; an image-model start, which makes no host plan, takes them for a later switch. (`make` knob `HOST_MARGIN_BYTES`.) |
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is, and `GET /v1/models` lists the loaded model alone. `POST /v1/models/switch` is not affected. |
-| `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
+| `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from — while that artifact is a file. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
 | `--config <path>` | `IGNIS_CONFIG` | discovered | The config file ([above](#configuration)). |
 | `--profile <name>` | `IGNIS_PROFILE` | `rtx5090` | The hardware profile ([above](#configuration)): `rtx5090`, `rtxpro6000`, one a config file defines, or `none`. |
 | `help` / `-h`, `--help` | — | — | Print the usage and the field list and exit; `help --fields` prints every field in full. |
@@ -1069,8 +1069,10 @@ included — switches are never queued. A switch that does not land refuses the
 request that began it with `503 model_switch_failed` and the reason (no
 `Retry-After`: each retry would unload and reload the serving model again),
 never an answer from another model; `/v1/decide` refuses it as its own `422`.
-A model nobody listed, or any other model under `--switch-allow-implicit false`,
-is a `404 model_not_found` as before. `/v1/tokenize` never switches: counting
+A model nobody listed, a listed one whose artifact is not a file (looked up at
+each request: put the file back and it switches), or any other model under
+`--switch-allow-implicit false`, is a `404 model_not_found`, and no switch
+begins — exactly the ids `GET /v1/models` does not list. `/v1/tokenize` never switches: counting
 tokens does not move the card.
 
 ### Idle unload

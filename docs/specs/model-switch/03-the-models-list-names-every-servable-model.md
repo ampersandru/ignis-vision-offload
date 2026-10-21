@@ -54,8 +54,11 @@ download — exactly the ids the implicit switch resolves
   `Switcher::known`: candidates are the catalog's entry ids in catalog
   order, then `Switcher::known_models()`' ids not in the catalog, in id
   order; drop the active id and duplicates; keep an id when
-  `Switcher::known(id)` returns a path that `is_file()` (`known` checks the
-  file for a catalog entry, not for a known model). `known` already folds
+  `Switcher::known(id)` returns a path that `is_file()`. As built (owner's
+  call at review): `known` itself checks the file for a known model too, so
+  a request naming one whose artifact is gone is `404 model_not_found` with
+  no switch begun — AC 3 as written — instead of tearing the loaded model
+  down for a load that fails at prepare. `known` already folds
   `switch.allow_implicit` (an empty known table, the catalog not consulted),
   so the flag needs no second check; a live `PATCH` of
   `switch.allow_implicit` or `switch.known_models` shows on the next `GET`.

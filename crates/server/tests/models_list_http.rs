@@ -237,12 +237,19 @@ async fn an_id_is_listed_if_and_only_if_a_request_naming_it_is_served() {
         assert_eq!(completion["model"], json!(id));
     }
     assert_eq!(loader.loads(), shown[1..], "each listed model was switched to");
-    // A known model whose file is gone resolves, so it is not refused by
-    // name: its load says the file is missing (the mock loads anything).
-    for id in ["acme-part", "acme-none", "mock-zz"] {
+    // A known model whose file is gone is refused by name too, before any
+    // switch: it is not servable, so naming it never tears the model down.
+    let loads = loader.loads();
+    for id in ["acme-part", "acme-none", "mock-gone", "mock-zz"] {
         let (status, refused) = send(&app, Method::POST, "/v1/chat/completions", Some(chat(id))).await;
         assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::NOT_FOUND, Some("model_not_found")), "{id}: {refused}");
     }
+    assert_eq!(loader.loads(), loads, "no switch began for an unlisted id");
+    // Put back, it is listed and served at the next request.
+    std::fs::write(&gone, b"back").unwrap();
+    assert!(listed(&app).await.contains(&"mock-gone".to_owned()));
+    let (status, completion) = send(&app, Method::POST, "/v1/chat/completions", Some(chat("mock-gone"))).await;
+    assert_eq!((status, completion["model"].as_str()), (StatusCode::OK, Some("mock-gone")), "{completion}");
     let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(elsewhere));
 }
 
