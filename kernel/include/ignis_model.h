@@ -322,6 +322,12 @@ struct ignis_model_load_options {
    * named `mtp.*` (the companion container's, docs/specs/flash-next/
    * layout.md section 13). NULL otherwise. */
   const struct ignis_moe_slot *mtp_expert_slots;
+  /* GitHub #335 (spec 27b-16gb/03 solution 6): the 27B's prompt attention
+   * band pass over an hq-e8-2b prefill chunk (ignis_hq_prompt_attention.h).
+   * 0 = E4M3 (the default), 1 = FP16 accumulate (the fallback); anything
+   * else is refused. Fixed for the life of the load. 0 on Flash-Next, whose
+   * attention is QSA. */
+  uint32_t prefill_attention;
 };
 
 /* The widest vision envelope a load accepts, in merged tokens: 4x that many

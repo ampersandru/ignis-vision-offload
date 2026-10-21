@@ -264,6 +264,24 @@ int main() {
     }
   }
 
+  // --- 6. GitHub #335: the prefill attention precision, same gate ---------------
+  {
+    for (const uint32_t precision : {2u, 7u}) {
+      ignis_model_load_options options = scaled(0.0F, 0.1F, 32.0F, 1.0F);
+      options.prefill_attention = precision;
+      const std::string m = load_error(options);
+      check(contains(m, "prefill_attention"),
+            "precision " + std::to_string(precision) + " is refused by name: " + m);
+    }
+    for (const uint32_t precision : {0u, 1u}) {
+      ignis_model_load_options options = scaled(0.0F, 0.1F, 32.0F, 1.0F);
+      options.prefill_attention = precision;
+      const std::string m = load_error(options);
+      check(contains(m, "text/token_embedding"),
+            "precision " + std::to_string(precision) + " reaches the binding: " + m);
+    }
+  }
+
   if (g_failed != 0) {
     std::fprintf(stderr, "rope scaling: %d check(s) failed\n", g_failed);
     return EXIT_FAILURE;

@@ -97,6 +97,9 @@ pub struct EngineShape {
     /// [`ignis_core::RopeScaling::NONE`] is the linear one, a YaRN factor
     /// rescales the checkpoint's trained position envelope.
     pub rope_scaling: ignis_core::RopeScaling,
+    /// The 27B's prompt attention precision (`--model-prefill-attention`,
+    /// GitHub #335); Flash-Next ignores it.
+    pub prefill_attention: ignis_core::PrefillAttention,
     /// Flash-Next's n-gram hot-row budget (`--ngram-hot-bytes`, GitHub
     /// #306): 1 GiB unless named; `auto` is resolved against the host plan
     /// at load.
@@ -143,6 +146,7 @@ impl Default for EngineShape {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
+            prefill_attention: ignis_core::PrefillAttention::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::default(),
             kv_disk_bytes: None,
             transfer_pace: None,
@@ -178,6 +182,7 @@ impl From<&crate::config::Config> for EngineShape {
             decode_lanes: config.decode_lanes.unwrap_or(0),
             vision: config.vision,
             rope_scaling: config.rope_scaling,
+            prefill_attention: config.prefill_attention,
             ngram_hot_bytes: config.ngram_hot_bytes.unwrap_or_default(),
             kv_disk_bytes: config.kv_disk_bytes,
             transfer_pace: None,
@@ -734,6 +739,7 @@ fn leaf_config_for_shape(shape: EngineShape, kv_pool_bytes: u64) -> ignis_runtim
         speculation: shape.speculation,
         vision: shape.vision,
         rope_scaling: shape.rope_scaling,
+        prefill_attention: shape.prefill_attention,
         retained_device_slots: shape.retained_device_slots,
         retained_host_slots: shape.retained_host_slots,
         ..ignis_runtime::CudaLeafConfig::default()
@@ -1405,6 +1411,24 @@ mod tests {
         assert_eq!(EngineShape::from(&config), EngineShape::default());
     }
 
+    /// GitHub #335: `--model-prefill-attention` reaches the shape, and from it
+    /// the 27B's leaf config the load crosses to the leaf.
+    #[test]
+    fn the_prefill_attention_flag_reaches_the_shape_and_the_leaf_config() {
+        let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(
+            &["--profile".to_owned(), "none".to_owned(), "--model-prefill-attention".to_owned(), "fp16".to_owned()],
+            |_| None,
+        )
+        .expect("resolve") else {
+            panic!("expected a runnable config");
+        };
+        let shape = EngineShape::from(&config);
+        assert_eq!(shape.prefill_attention, ignis_core::PrefillAttention::Fp16);
+        assert_eq!(EngineShape::default().prefill_attention, ignis_core::PrefillAttention::Fp8);
+        #[cfg(feature = "cuda")]
+        assert_eq!(leaf_config_for_shape(shape, 0).prefill_attention, ignis_core::PrefillAttention::Fp16);
+    }
+
     /// ADR 0059: a Flash-Next load's options carry its shape's rotary table,
     /// the one value its reservation plan is asked under, its leaf loads with
     /// and KV-disk's identity reads back off the leaf; the identity's rope
@@ -1714,6 +1738,7 @@ mod tests {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
+            prefill_attention: ignis_core::PrefillAttention::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::Auto,
             kv_disk_bytes: None,
             transfer_pace: None,

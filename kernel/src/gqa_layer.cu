@@ -264,6 +264,8 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
     };
     if (hq_prompt) {
       IgnisHqPromptOptions options;
+      options.precision = model->prefill_attention == 1 ? IgnisHqPromptPrecision::kFp16
+                                                        : IgnisHqPromptPrecision::kFp8;
       options.after_attention = [&](const IgnisHqPromptKeys &keys) { readout(&keys); };
       ignis_hq_prompt_attention(rotated_query_heads, rotated_key_heads, value_heads, positions,
                                 start_position, gate.view({kHeadDim, kQHeads, tokens, 1}),
