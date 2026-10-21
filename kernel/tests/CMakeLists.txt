@@ -373,6 +373,12 @@ add_test(NAME ignis_hq_codec_kv_rows_flash_next_test COMMAND ignis_hq_codec_kv_r
 # same committed fixture rows, plus a hash of its partials so two builds can
 # be compared bit for bit. A timing is a finding, not a pass/fail, so this is
 # a tool and deliberately NOT registered with CTest.
+# GitHub #335 (ADR 0061): OURS -- one prefill chunk's hq-e8-2b attention at a long history, A1's
+# Prompt route against ignis's prompt attention without prompt planes, on one cache. A timing is a
+# finding, so this is a tool and NOT registered with CTest.
+add_executable(ignis_hq_prompt_bench bench_hq_prompt_attention.cu)
+target_link_libraries(ignis_hq_prompt_bench PRIVATE ignis_kernel ignis_vendor)
+
 add_executable(ignis_hq_verify_bench bench_hq_verify_attention.cu)
 target_compile_definitions(ignis_hq_verify_bench PRIVATE
   IGNIS_HQ_KV_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hq_kv_rows_27b.bin")
