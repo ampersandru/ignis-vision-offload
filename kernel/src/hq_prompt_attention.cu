@@ -25,11 +25,15 @@
 //   - The keys are the hq-e8-2b codec's, read in two passes that share one online-softmax state:
 //       the residual window (sinks, the ring before the chunk, the chunk) on the BF16 path, its
 //       rows exact as the prompt planes held them;
-//       every other key on the FP8 path, decoded ONCE per chunk and layer into a fixed band of
-//       IgnisHqPromptOptions::band_keys keys -- K row-major, V already transposed into V^T's
-//       permuted order, both E4M3 with one power-of-two scale per 32-key tile and KV head -- and
-//       walked band after band. (Owner, 2026-10-21: a decode per CTA tile costs ~1.7 ns per key
-//       and token, more than the whole attention.)
+//       every other key on the 8-bit path, decoded ONCE per chunk and layer into a fixed band of
+//       IgnisHqPromptOptions::band_keys keys -- K row-major in INT8 with one scale per 32-key tile
+//       and KV head, V already transposed into V^T's permuted order in E4M3 with one power-of-two
+//       scale -- and walked band after band. (Owner, 2026-10-21: a decode per CTA tile costs
+//       ~1.7 ns per key and token, more than the whole attention.)
+//   - Q K^T on that path runs in INT8 (Q with a scale per row), exact in int32, as SageAttention
+//     does and kernel/src/image/attn8.cu after it; P V stays on the block-scaled E4M3 MMA.
+//     Upstream's E4M3 Q costs ~2.5% of each query's value, the same for every key it scores: a
+//     bias, not noise, measured at 32K keys as the median row x1.06 of A1's distance from BF16.
 //   - The attention runs in the codec's rotated frame: Q is rotated once per call (and rounded
 //     to BF16 for the window, quantized to E4M3 with a per-row scale for the band), the output
 //     is un-rotated once per row by the merge.
@@ -84,6 +88,7 @@ constexpr int kFaThreads = kHeadsPerCta * kQ / 16 * 32;  // 256
 constexpr int kVtTileBytes = kHeadDim * kTile;           // 8 KiB of E4M3 V^T
 constexpr float kLog2e = 1.4426950408889634f;
 constexpr float kE4m3Max = 448.0f;
+constexpr float kInt8Max = 127.0f;
 // The UE8M0 encoding of 2^0 in every byte: a unit block scale.
 constexpr std::uint32_t kUnitScale = 0x7F7F7F7Fu;
 constexpr int kRowThreads = 256;  // prep / merge: one warp per (token, head) row
@@ -142,6 +147,14 @@ __device__ __forceinline__ void mma_f16acc(std::uint32_t *d, const std::uint32_t
 __device__ __forceinline__ float2 half2_bits(std::uint32_t x) {
   return __half22float2(*reinterpret_cast<const __half2 *>(&x));
 }
+// D += A B over INT8, int32 accumulate (exact): the band's Q K^T.
+__device__ __forceinline__ void mma_s8(int *d, const std::uint32_t *a, const std::uint32_t *b) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+      : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
 // D += (A * 2^(sfa-127)) (B * 2^(sfb-127)): E4M3 m16n8k32 with fp32 accumulate on the
 // block-scaled form, which the 5090 runs at twice the plain form's rate. Every byte of a scale
 // register carries the same scale here, so which lane supplies it does not matter.
@@ -189,6 +202,10 @@ __device__ __forceinline__ std::uint32_t pack_half(float lo, float hi) {
   const __half2 h = __floats2half2_rn(lo, hi);
   return *reinterpret_cast<const std::uint32_t *>(&h);
 }
+// One INT8 code of x (|x| <= 127 by construction), as a byte.
+__device__ __forceinline__ std::uint8_t i8(float x) {
+  return static_cast<std::uint8_t>(static_cast<std::int8_t>(max(-127, min(127, __float2int_rn(x)))));
+}
 __device__ __forceinline__ std::uint8_t e4m3(float x) {
   return static_cast<std::uint8_t>(__nv_cvt_float_to_fp8(x, __NV_SATFINITE, __NV_E4M3));
 }
@@ -232,7 +249,7 @@ struct Columns {
 
 // ---- Q: rotate into the codec's frame, once per call ------------------------------------------
 
-// q8 / q_scale (or null): E4M3 with one scale per row, for the FP8 band; qh (or null): FP16 over
+// q8 / q_scale (or null): INT8 with one scale per row, for the 8-bit band; qh (or null): FP16 over
 // 16, for the fallback band; q16 (or null): BF16, for the window pass, with the single rounding
 // the prompt planes' consumer gave it.
 __global__ void __launch_bounds__(kRowThreads) prep_q_kernel(const __nv_bfloat16 *q, int rows,
@@ -264,11 +281,11 @@ __global__ void __launch_bounds__(kRowThreads) prep_q_kernel(const __nv_bfloat16
 #pragma unroll
   for (int s = 0; s < 8; ++s) mx = fmaxf(mx, fabsf(reg[s]));
   mx = warp_max(mx);
-  const float inv = mx > 0.0f ? kE4m3Max / mx : 0.0f;
+  const float inv = mx > 0.0f ? kInt8Max / mx : 0.0f;
   std::uint8_t *dst = q8 + static_cast<std::int64_t>(row) * kHeadDim;
 #pragma unroll
-  for (int s = 0; s < 8; ++s) dst[s * 32 + lane] = e4m3(reg[s] * inv);
-  if (lane == 0) q_scale[row] = mx * (1.0f / kE4m3Max);
+  for (int s = 0; s < 8; ++s) dst[s * 32 + lane] = i8(reg[s] * inv);
+  if (lane == 0) q_scale[row] = mx * (1.0f / kInt8Max);
 }
 
 // ---- a pass's keys: one 32-key tile of one KV head and role per CTA ---------------------------
@@ -346,8 +363,9 @@ __device__ __forceinline__ void store_fp8_tile(const __nv_bfloat16 *tile, bool r
   const int tid = static_cast<int>(threadIdx.x);
   const int warp = tid >> 5, lane = tid & 31;
   const int column0 = tile_index * kTile;
-  // One power-of-two scale for the tile: E4M3 keeps its relative precision over 15 binades
-  // below its largest value, so a scale per tile loses nothing a scale per row would keep.
+  // One scale for the tile. V: a power of two, E4M3 keeping its relative precision over 15
+  // binades below its largest value. K: amax / 127 for INT8 -- its rows share a norm (the
+  // checkpoint's per-head k norm), so a scale per tile costs no row its resolution.
   float mx = 0.0f;
   {
     const uint4 *p = reinterpret_cast<const uint4 *>(tile) + tid * 4;
@@ -369,20 +387,22 @@ __device__ __forceinline__ void store_fp8_tile(const __nv_bfloat16 *tile, bool r
     float amax = 0.0f;
     for (int w = 0; w < 8; ++w) amax = fmaxf(amax, warp_amax[w]);
     float scale = 1.0f;
-    if (amax > 0.0f) {
+    if (amax > 0.0f && role_v) {
       int e = 0;
       (void)frexpf(amax / kE4m3Max, &e);  // amax / 448 < 2^e
       scale = ldexpf(1.0f, e);
+    } else if (amax > 0.0f) {
+      scale = amax / kInt8Max;
     }
     tile_scale = scale;
     const int tiles = buf.capacity / kTile;
     buf.scale[((role_v ? kKvHeads : 0) + head) * tiles + tile_index] = scale;
   }
   __syncthreads();
-  const float inv = 1.0f / tile_scale;  // exact: a power of two
+  const float inv = 1.0f / tile_scale;  // V: exact, a power of two
 
   if (!role_v) {
-    // K rows as they are: two 16-byte units per thread.
+    // K rows in INT8: two 16-byte units per thread.
     std::uint8_t *dst =
         buf.k + (static_cast<std::int64_t>(head) * buf.capacity + column0) * kHeadDim;
 #pragma unroll
@@ -392,10 +412,10 @@ __device__ __forceinline__ void store_fp8_tile(const __nv_bfloat16 *tile, bool r
       std::uint32_t w[4];
 #pragma unroll
       for (int x = 0; x < 4; ++x) {
-        w[x] = static_cast<std::uint32_t>(e4m3(__bfloat162float(v[4 * x + 0]) * inv)) |
-               static_cast<std::uint32_t>(e4m3(__bfloat162float(v[4 * x + 1]) * inv)) << 8 |
-               static_cast<std::uint32_t>(e4m3(__bfloat162float(v[4 * x + 2]) * inv)) << 16 |
-               static_cast<std::uint32_t>(e4m3(__bfloat162float(v[4 * x + 3]) * inv)) << 24;
+        w[x] = static_cast<std::uint32_t>(i8(__bfloat162float(v[4 * x + 0]) * inv)) |
+               static_cast<std::uint32_t>(i8(__bfloat162float(v[4 * x + 1]) * inv)) << 8 |
+               static_cast<std::uint32_t>(i8(__bfloat162float(v[4 * x + 2]) * inv)) << 16 |
+               static_cast<std::uint32_t>(i8(__bfloat162float(v[4 * x + 3]) * inv)) << 24;
       }
       *reinterpret_cast<uint4 *>(dst + r * kHeadDim + col * 16) = make_uint4(w[0], w[1], w[2], w[3]);
     }
@@ -437,7 +457,7 @@ struct Carry {
 };
 
 struct Queries {
-  const std::uint8_t *q8;   // E4M3 [token][head][256]
+  const std::uint8_t *q8;   // INT8 [token][head][256]
   const float *q_scale;     // [token][head]
   const __half *qh;         // FP16 [token][head][256], over 16
   const __nv_bfloat16 *q16; // BF16 [token][head][256]
@@ -577,15 +597,23 @@ __global__ void __launch_bounds__(kFaThreads, 1)
         sk = buf.scale[g * tiles + c];
         // The V tile's power-of-two scale as a UE8M0 byte: its float exponent field.
         sfv = ((__float_as_uint(buf.scale[(kKvHeads + g) * tiles + c]) >> 23) & 0xFFu) * 0x01010101u;
+        // Q K^T in INT8, exact in int32: |S| <= 256 * 127^2 < 2^22, so 1.5 * 2^23 + S holds S
+        // in the float's mantissa and one subtraction lifts it exactly (kernel/src/image/attn8.cu).
+        int si[4][4] = {};
 #pragma unroll
         for (int kk = 0; kk < kKSteps; ++kk) {
 #pragma unroll
           for (int p = 0; p < 2; ++p) {
             std::uint32_t b[4];
             ldsm_x4(b, ks + row_swz<true>(16 * p + lr + 8 * (lm / 2), 2 * kk + lm % 2));
-            mma_e4m3(sc[2 * p], qa[kk], b, kUnitScale, kUnitScale);
-            mma_e4m3(sc[2 * p + 1], qa[kk], b + 2, kUnitScale, kUnitScale);
+            mma_s8(si[2 * p], qa[kk], b);
+            mma_s8(si[2 * p + 1], qa[kk], b + 2);
           }
+        }
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+#pragma unroll
+          for (int e = 0; e < 4; ++e) sc[nt][e] = __fsub_rn(__int_as_float(0x4B400000 + si[nt][e]), 12582912.0f);
         }
       } else if constexpr (kHalf) {
         // FP16 accumulate across the 256 dims, then into the fp32 softmax.

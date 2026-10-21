@@ -1254,6 +1254,7 @@ int main() {
     const LongArm arms[] = {
         {"prefill W=200 at 4096", 200, 4096},
         {"prefill W=1024 at 3000", 1024, 3000},
+        {"prefill W=1024 at 32000", 1024, 32000},
     };
     for (const LongArm &arm : arms) {
       Inputs in;
