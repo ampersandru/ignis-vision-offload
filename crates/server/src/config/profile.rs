@@ -33,13 +33,16 @@ pub const NONE_PROFILE: &str = "none";
 /// then trading `vram.headroom_bytes` down from the 1536 MiB hardcoded
 /// default against `spec.backend dflash2` staying on — the owner's own
 /// choice over a `vram.headroom_bytes` trade that would have reached ~864K
-/// tokens with speculation off instead. Flash-Next's leg holds its decode
+/// tokens with speculation off instead. Re-measured the same way on
+/// 2026-10-21 (GitHub #335), once the prompt planes were gone and the token
+/// embedding had moved to host memory: 917,504 holds, 950,272 is refused by
+/// 59 MB (finding 2026-10-21-prefill-attention-without-prompt-planes). Flash-Next's leg holds its decode
 /// lanes at their own default (3) and raises `model.max_context` to
 /// 512K + 32K + 32K tokens, the floor the owner asked for on both the expert
 /// cache (>= 15 GiB; it measured ~16.6 GiB) and the context. Past the
 /// checkpoint's trained 262,144 positions the 27B's text rotary table needs
 /// YaRN, which its leg does not spell out: `model.rope_scaling` defaults to
-/// `auto`, the factor `max_context / 262,144` (3 at 786,432). Flash-Next
+/// `auto`, the factor `max_context / 262,144` (3.5 at 917,504). Flash-Next
 /// resolves the same way over its 589,824: 2.25 (ADR 0057, ADR 0059).
 /// `vram.headroom_bytes`'s 1536 MiB hardcoded
 /// default (finding 2026-10-09-vram-headroom-wddm-paging) still holds for
@@ -86,7 +89,7 @@ const BUILT_IN: &str = r#"{
             "qwen38": { "headroom_bytes": "1200M" }
         },
         "model": {
-            "qwen38": { "max_context": 786432 },
+            "qwen38": { "max_context": 917504 },
             "qwen38flashnext": { "max_context": 589824 }
         },
         "vision": { "enabled": true },
@@ -153,7 +156,7 @@ mod tests {
         assert_eq!(rtx5090.get(headroom, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "1200M");
 
         let max_context = field("model", "max_context").unwrap();
-        assert_eq!(rtx5090.get(max_context, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "786432");
+        assert_eq!(rtx5090.get(max_context, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "917504");
         assert_eq!(rtx5090.get(max_context, Some(ModelFamily::FlashNext)).unwrap().raw, "589824");
 
         let rope = field("model", "rope_scaling").unwrap();
@@ -209,7 +212,7 @@ mod tests {
             assert!(fitted.settings().model.rope_scaling.is_auto());
             fitted.rope_scaling
         };
-        assert_eq!(table(DEFAULT_PROFILE, ModelFamily::Qwen38_27b).factor(), 3.0);
+        assert_eq!(table(DEFAULT_PROFILE, ModelFamily::Qwen38_27b).factor(), 3.5, "917,504 / 262,144");
         assert_eq!(table(DEFAULT_PROFILE, ModelFamily::FlashNext).factor(), 2.25, "589,824 / 262,144");
         assert_eq!(table("rtxpro6000", ModelFamily::Qwen38_27b).factor(), 4.0);
         assert_eq!(table("rtxpro6000", ModelFamily::FlashNext).factor(), 4.0);
