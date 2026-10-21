@@ -139,9 +139,18 @@ authors published it:
 
 Those rows are other people's runs: their prompts, their drafters, their
 context lengths. They are not a same-session benchmark, so read them as an order
-of magnitude, not a ratio. **Prefill is where ignis is not ahead:** vLLM's
-published ~12,500 tok/s at 60K is above ignis's measured 6,600 tok/s on a cold
-46K prompt and 4,600 tok/s on a cold 105K one.
+of magnitude, not a ratio. **Prefill is where ignis is not ahead.**
+- **ignis**, measured cold: 7,600 tok/s on a 46K prompt, 5,200 on a 105K one
+  ([cold prefill](docs/findings/2026-10-13-cold-prefill-27b-vs-flash-next.md)).
+- **One same-session bench, someone else's**
+  ([mkyt/qwen3-27b-5090](https://github.com/mkyt/qwen3-27b-5090), a 5090 at a
+  400 W limit, 2026-10-11), cold 73K prompt:
+  - vLLM 4,800 tok/s;
+  - NInfer 7,000;
+  - that engine 8,800 (its attention runs on FP4/FP8 tensor cores).
+- The ~12,500 tok/s at 60K once published for vLLM in
+  [HF discussion #132](https://huggingface.co/Qwen/Qwen3.8-27B/discussions/132)
+  is not reproduced there.
 
 **The one same-session comparison** is against
 [NInfer](#lineage), the engine whose kernels ignis started from: same artifact,

@@ -59,6 +59,18 @@ The token embedding, `text/token_embedding`, W8G32 `[248320, 5120]`:
      and a fold into FP32 per key block.
    - **An FP8 (E4M3) variant** of Q·K and P·V is built behind a load option and measured. It becomes the default
      only if it passes the same agreement and KLD criteria.
+   - **The precedent to read first** is `engine/src/attention.cu` of [mkyt/qwen3-27b-5090](https://github.com/mkyt/qwen3-27b-5090)
+     (MIT, so it can be the source of an adapted op, ADR 0051). Its prefill attention:
+     - runs Q·Kᵀ and P·V on FP8 MMAs (block-scaled `mxf8f6f4` at full rate on SM120): K and V as stored, Q with a
+       per-row scale, P scaled by 256 into E4M3;
+     - computes the exponentials in f16x2, base 2;
+     - masks only on the diagonal block;
+     - follows absolute positions with 64-token tiles.
+
+     It measured ~0.93 ns per key already seen per token at 400 W, against ignis's 1.84. Its KV is NVFP4 (Q·Kᵀ even
+     on the FP4 MMA). Ours stays **hq-e8-2b**: the tiles are decoded in shared memory first. One decoded KV-head tile
+     serves the 6 query heads that share it, so up to ~384 query rows per CTA. The decode's cost against that
+     amortization is the kernel's first measurement.
    - Estimate (no measurement), cold prefill on the 5090:
 
      | prompt | today | FP16 accumulate | FP8 |
