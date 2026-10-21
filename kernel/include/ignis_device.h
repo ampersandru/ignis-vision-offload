@@ -47,6 +47,13 @@ int32_t ignis_device_copy_d2h(struct ignis_device *d, void *dst, const void *src
  * of spinning the CPU. Returns 0 on success, -1 on a CUDA error. */
 int32_t ignis_device_sync(struct ignis_device *d);
 
+/* GitHub #341: enqueue ignis_fp8_quantize_rows (ignis_fp8_linear.h) on the load
+ * stream -- a BF16 weight `w` [rows][cols] already on the device to the FP8
+ * row-scale payload at `payload`, in stream order after the copies before it.
+ * Returns 0 on success, -1 on a bad argument or a CUDA error. */
+int32_t ignis_device_fp8_quantize_rows(struct ignis_device *d, const void *w, uint32_t rows,
+                                       uint32_t cols, void *payload);
+
 /* Free / total device memory in bytes (cudaMemGetInfo). Returns 0 on success,
  * -1 on a CUDA error or a bad argument. */
 int32_t ignis_device_mem_info(struct ignis_device *d, uint64_t *free_bytes,

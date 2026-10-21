@@ -223,7 +223,7 @@ fn load(prefill_chunk_tokens: u32) -> Option<Loaded> {
     let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
     let frontend = FrontendSet::from_reader(&reader).unwrap_or_else(|e| panic!("frontend: {e}"));
     let eos = frontend.eos_token_id().expect("eos");
-    let scope = ModelScope { draft: Some(DraftModule::Dflash2), vision: true };
+    let scope = ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: false };
     let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(device) => device,

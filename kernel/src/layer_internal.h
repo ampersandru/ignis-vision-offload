@@ -48,9 +48,17 @@ struct AttentionReadoutTarget;
 // T<=16 — is handled by `ignis_linear_swiglu_policy_for` below, never by
 // this helper); otherwise the reference's text-model policy — AllowA4 for
 // NVFP4, A16Only for the artifact's other qtypes (they admit nothing
-// else).
+// else) — and AllowA8 for the BF16 exception matrices converted to FP8 at
+// load (GitHub #341, kernel/src/fp8_exception.h), whose dispatch quantizes
+// its activations past the GEMV width.
 inline ninfer::ops::LinearPolicy ignis_policy_for(ninfer::QType qtype, LinearPolicyMode mode) {
-  if (mode == LinearPolicyMode::kA16Only || qtype != ninfer::QType::NVFP4) {
+  if (mode == LinearPolicyMode::kA16Only) {
+    return ninfer::ops::LinearPolicy::A16Only;
+  }
+  if (qtype == ninfer::QType::FP8_E4M3FN_ROW_BF16S) {
+    return ninfer::ops::LinearPolicy::AllowA8;
+  }
+  if (qtype != ninfer::QType::NVFP4) {
     return ninfer::ops::LinearPolicy::A16Only;
   }
   return ninfer::ops::LinearPolicy::AllowA4;
@@ -255,6 +263,9 @@ inline uint32_t ignis_gdn_relative_layer(uint32_t layer) {
 // `compute_program_scratch_bytes`) so the reservation is an upper bound
 // regardless of the token count a given call actually resolves to.
 inline ninfer::ops::LinearPolicy ignis_widest_linear_policy_for(ninfer::QType qtype) {
+  if (qtype == ninfer::QType::FP8_E4M3FN_ROW_BF16S) {
+    return ninfer::ops::LinearPolicy::AllowA8;  // GitHub #341: the converted exception matrices
+  }
   return qtype == ninfer::QType::NVFP4 ? ninfer::ops::LinearPolicy::AllowA4
                                        : ninfer::ops::LinearPolicy::A16Only;
 }

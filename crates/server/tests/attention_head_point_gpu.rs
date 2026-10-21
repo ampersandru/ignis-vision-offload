@@ -662,7 +662,7 @@ fn one_attention_head_points_in_the_engine() {
     let y_literal: Vec<i32> = encode(",\"y\":").into_iter().map(|t| t as i32).collect();
     let system = point_system(DIGITS as u32);
 
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true, fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind with vision: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,

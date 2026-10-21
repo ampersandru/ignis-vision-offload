@@ -836,6 +836,18 @@ target_compile_definitions(ignis_kernel_flash_next_sparse_attention_hq_test PRIV
 add_executable(ignis_mma_peak_bench bench_mma_peak.cu)
 target_include_directories(ignis_mma_peak_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(ignis_mma_peak_bench PRIVATE CUDA::cudart)
+
+# GitHub #341: OURS -- the FP8 arms of the 27B's BF16 exception matrices (kernel/src/fp8_exception.h,
+# a leaf-internal header) through the public attn_input_proj / linear_add dispatch. GPU (ADR 0006).
+add_executable(ignis_kernel_fp8_exception_arms_test test_fp8_exception_arms.cu)
+target_include_directories(ignis_kernel_fp8_exception_arms_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_fp8_exception_arms_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_fp8_exception_arms_test COMMAND ignis_kernel_fp8_exception_arms_test)
+
+# GitHub #341: OURS -- the 27B's nine BF16 exception matrices at prefill width on the vendored
+# BF16 routes against the FP8 W8A8 GEMM. A timing is a finding: a tool, NOT registered with CTest.
+add_executable(ignis_fp8_exception_bench bench_fp8_exception.cu)
+target_link_libraries(ignis_fp8_exception_bench PRIVATE ignis_kernel ignis_vendor)
 # The FP8 W8A8 GEMM and the per-token activation quantization (acceptance 2 and 3,
 # kernel/include/ignis_image_gemm.h) against our own fp64 references at the DiT's and the text
 # encoder's linear shapes. GPU (ADR 0006: no SKIP_RETURN_CODE).

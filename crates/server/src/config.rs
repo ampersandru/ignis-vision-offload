@@ -193,7 +193,7 @@ pub const DEFAULT_IMAGE_SIZES: [ImageSize; 8] = [
 // to be kept in sync by hand across the crate boundary.
 pub use ignis_runtime::{DEFAULT_MAX_CONTEXT, DEFAULT_PREFILL_CHUNK, PREFILL_CHUNK_ALIGNMENT};
 
-pub use ignis_core::{KvFormat, KvPoolSize, PrefillAttention, VramMode};
+pub use ignis_core::{ExceptionWeights, KvFormat, KvPoolSize, PrefillAttention, VramMode};
 use ignis_core::compute::ModelFamily;
 
 /// `--vram-headroom-bytes`' default: what a derived VRAM budget leaves to the
@@ -432,6 +432,10 @@ pub struct Config {
     /// for the life of the load; the 27B's alone, so a Flash-Next start
     /// refuses an explicit value.
     pub prefill_attention: PrefillAttention,
+    /// How the 27B holds its BF16 exception tensors (`--model-exception-weights`,
+    /// GitHub #341): as stored by default, or converted to FP8 at load. Fixed
+    /// for the life of the load; the 27B's alone.
+    pub exception_weights: ExceptionWeights,
     /// Media acquisition (`--media-allow-private-network`,
     /// `--media-cache-mib`, GitHub #179). Only nameable with vision on.
     pub media: MediaOptions,
@@ -1126,6 +1130,7 @@ fn derive(
         vision,
         rope_scaling,
         prefill_attention: s.model.prefill_attention,
+        exception_weights: s.model.exception_weights,
         media,
         request_timeout_secs: s.server.request_timeout,
         stream_timeout_secs: s.server.stream_timeout,

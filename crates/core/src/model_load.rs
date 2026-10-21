@@ -23,11 +23,12 @@ use std::os::raw::c_void;
 
 use ignis_artifact::flash_next::{self, FlashNextGeometry, FlashNextPlan};
 use ignis_artifact::{
-    model_scope_27b_with, DraftModule, InventoryEntry, MaterializationPlan, MaterializedArtifact,
+    model_scope_27b_with, DeviceEncoding, DraftModule, InventoryEntry, MaterializationPlan, MaterializedArtifact,
     ModelScope, NumericFormat, ObjectHandle, Reader, StorageLayout,
 };
 
 use crate::compute::ModelConfig;
+use crate::exception_weights::ExceptionWeights;
 use crate::kv_format::KvFormat;
 use crate::prefill_attention::PrefillAttention;
 use crate::rope_scaling::RopeScaling;
@@ -324,11 +325,14 @@ pub fn draft_module(speculation: Option<Speculation>) -> Option<DraftModule> {
 
 /// Every module a load with these options binds (GitHub #177): one mapping,
 /// shared by the server's binder call and this load, so the handles and the
-/// descriptors cannot name different scopes.
-pub fn model_scope(speculation: Option<Speculation>, vision: Option<Vision>) -> ModelScope {
+/// descriptors cannot name different scopes. `exceptions` (GitHub #341) is
+/// how the binder holds the BF16 exception tensors; the load reads that back
+/// from the placements, so it never has to be told.
+pub fn model_scope(speculation: Option<Speculation>, vision: Option<Vision>, exceptions: ExceptionWeights) -> ModelScope {
     ModelScope {
         draft: draft_module(speculation),
         vision: vision.is_some(),
+        fp8_exceptions: exceptions.is_fp8(),
     }
 }
 
@@ -422,6 +426,10 @@ fn read_input_scale_divisor(reader: &Reader, name: &str) -> Result<f32, String> 
 
 /// Where one bound tensor's bytes are, as a descriptor carries them.
 struct TensorPlacement {
+    /// How the tensor is held where it is placed: the stored format and
+    /// layout, or a conversion's (GitHub #341).
+    format: NumericFormat,
+    layout: StorageLayout,
     shape: Vec<u64>,
     bytes: u64,
     qdata: *const c_void,
@@ -436,6 +444,8 @@ fn device_placement(
     move |handle, _entry| {
         let view = artifact.device_view(handle).map_err(|e| e.to_string())?;
         Ok(TensorPlacement {
+            format: view.format,
+            layout: view.layout,
             shape: view.shape.clone(),
             bytes: view.bytes,
             qdata: view.base as *const c_void,
@@ -458,13 +468,24 @@ fn planned_placement(
     plan: &MaterializationPlan,
 ) -> impl Fn(ObjectHandle, &InventoryEntry) -> Result<TensorPlacement, String> + '_ {
     move |handle, entry| {
-        let device = plan.device_objects.iter().find(|placed| placed.handle == handle).map(|placed| placed.bytes);
-        let host_mapped =
-            || plan.host_mapped_objects.iter().find(|placed| placed.handle == handle).map(|placed| placed.bytes);
-        let bytes = device
+        let device = plan
+            .device_objects
+            .iter()
+            .find(|placed| placed.handle == handle)
+            .map(|placed| (placed.bytes, placed.encoding));
+        let host_mapped = || {
+            plan.host_mapped_objects
+                .iter()
+                .find(|placed| placed.handle == handle)
+                .map(|placed| (placed.bytes, DeviceEncoding::Stored))
+        };
+        let (bytes, encoding) = device
             .or_else(host_mapped)
             .ok_or_else(|| format!("{}: not a tensor the materialization plan places", entry.name))?;
+        let (format, layout) = encoding.held_as(entry.format, entry.layout);
         Ok(TensorPlacement {
+            format,
+            layout,
             shape: entry.shape.to_vec(),
             bytes,
             qdata: std::ptr::null(),
@@ -550,8 +571,8 @@ fn build_bound_tensors(
         let name = CString::new(entry.name).map_err(|e| e.to_string())?;
         tensors.push(ffi::IgnisBoundTensor {
             name: name.as_ptr(),
-            qtype: qtype_code(entry.format),
-            layout: layout_code(entry.layout),
+            qtype: qtype_code(view.format),
+            layout: layout_code(view.layout),
             qdata: view.qdata,
             qhigh: view.qhigh,
             scales: view.scales,
@@ -695,7 +716,8 @@ pub fn load_qwen38_27b_with_prefill_attention(
     let (_names, tensors) = build_bound_tensors(
         reader,
         handles,
-        model_scope(speculation, vision),
+        // The tensors' names; how each is held is its placement's.
+        model_scope(speculation, vision, ExceptionWeights::default()),
         device_placement(artifact),
     )?;
     let topology = ModelConfig::qwen38_27b().topology_abi();
@@ -746,7 +768,8 @@ pub fn plan_qwen38_27b_reservations(
     let (_names, tensors) = build_bound_tensors(
         reader,
         handles,
-        model_scope(speculation, vision),
+        // The tensors' names; how each is held is its placement's.
+        model_scope(speculation, vision, ExceptionWeights::default()),
         planned_placement(plan),
     )?;
     let topology = ModelConfig::qwen38_27b().topology_abi();
@@ -1075,6 +1098,7 @@ mod tests {
             layout,
             shape,
             residence: ignis_artifact::Residence::Device,
+            encoding: DeviceEncoding::Stored,
         };
         let bf16 = entry("w/bf16", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8]);
         let q4 = entry("w/q4", NumericFormat::Q4G64F16S, StorageLayout::RowSplitK128V1, &[128, 128]);
@@ -1190,13 +1214,16 @@ mod tests {
 
     #[test]
     fn the_model_scope_names_vision_only_when_the_load_asks_for_it() {
-        assert_eq!(model_scope(None, None), ModelScope::default());
+        assert_eq!(model_scope(None, None, ExceptionWeights::Bf16), ModelScope::default());
         let vision = Vision::default();
-        assert_eq!(model_scope(None, Some(vision)), ModelScope { draft: None, vision: true });
+        assert_eq!(
+            model_scope(None, Some(vision), ExceptionWeights::Bf16),
+            ModelScope { draft: None, vision: true, fp8_exceptions: false }
+        );
         let spec = Speculation::new(SpeculativeBackend::Dflash2, 3).unwrap();
         assert_eq!(
-            model_scope(Some(spec), Some(vision)),
-            ModelScope { draft: Some(DraftModule::Dflash2), vision: true }
+            model_scope(Some(spec), Some(vision), ExceptionWeights::Fp8),
+            ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: true }
         );
     }
 

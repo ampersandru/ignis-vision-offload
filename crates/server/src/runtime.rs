@@ -100,6 +100,9 @@ pub struct EngineShape {
     /// The 27B's prompt attention precision (`--model-prefill-attention`,
     /// GitHub #335); Flash-Next ignores it.
     pub prefill_attention: ignis_core::PrefillAttention,
+    /// How the 27B holds its BF16 exception tensors (`--model-exception-weights`,
+    /// GitHub #341): the binder places them converted to FP8 or as stored.
+    pub exception_weights: ignis_core::ExceptionWeights,
     /// Flash-Next's n-gram hot-row budget (`--ngram-hot-bytes`, GitHub
     /// #306): 1 GiB unless named; `auto` is resolved against the host plan
     /// at load.
@@ -147,6 +150,7 @@ impl Default for EngineShape {
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
             prefill_attention: ignis_core::PrefillAttention::default(),
+            exception_weights: ignis_core::ExceptionWeights::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::default(),
             kv_disk_bytes: None,
             transfer_pace: None,
@@ -183,6 +187,7 @@ impl From<&crate::config::Config> for EngineShape {
             vision: config.vision,
             rope_scaling: config.rope_scaling,
             prefill_attention: config.prefill_attention,
+            exception_weights: config.exception_weights,
             ngram_hot_bytes: config.ngram_hot_bytes.unwrap_or_default(),
             kv_disk_bytes: config.kv_disk_bytes,
             transfer_pace: None,
@@ -783,6 +788,13 @@ pub fn cuda_scheduler_with_thinking_close(
     qwen27b_load(artifact_path, model_id, eos, shape, thinking_close, kv_disk_location).map_err(|e| e.to_string())
 }
 
+/// The 27B's binder scope for `shape` (GitHub #177, #341): the drafter and
+/// the vision tower when asked for, and how the exception tensors are held.
+#[cfg(feature = "cuda")]
+pub(crate) fn model_scope_27b(shape: &EngineShape) -> ignis_artifact::ModelScope {
+    ignis_core::model_load::model_scope(shape.speculation, shape.vision, shape.exception_weights)
+}
+
 /// [`cuda_scheduler_with_thinking_close`], with a host plan's refusal kept
 /// whole ([`Qwen27bLoadError::HostPlan`], ADR 0062): the server's load reads
 /// it.
@@ -802,7 +814,7 @@ pub(crate) fn qwen27b_load(
     // P5-02 (GitHub #150) / GitHub #177: the drafter's and the vision tower's
     // objects are bound and uploaded only when the operator asked for them;
     // otherwise the plan is the text scope's alone, as before.
-    let scope = ignis_core::model_load::model_scope(shape.speculation, shape.vision);
+    let scope = model_scope_27b(&shape);
     let (plan, handles) =
         bind_model_scope_27b_with(&reader, scope).map_err(|e| format!("bind model scope: {e}"))?;
     // GitHub #210: what is free before this process holds anything, as NVML
@@ -1429,6 +1441,28 @@ mod tests {
         assert_eq!(leaf_config_for_shape(shape, 0).prefill_attention, ignis_core::PrefillAttention::Fp16);
     }
 
+    /// GitHub #341: `--model-exception-weights` reaches the shape, and from it
+    /// the binder's scope, which converts the exception tensors only under
+    /// `fp8` (the default is `bf16`).
+    #[test]
+    fn the_exception_weights_flag_reaches_the_shape_and_the_binder_scope() {
+        let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(
+            &["--profile".to_owned(), "none".to_owned(), "--model-exception-weights".to_owned(), "fp8".to_owned()],
+            |_| None,
+        )
+        .expect("resolve") else {
+            panic!("expected a runnable config");
+        };
+        let shape = EngineShape::from(&config);
+        assert_eq!(shape.exception_weights, ignis_core::ExceptionWeights::Fp8);
+        assert_eq!(EngineShape::default().exception_weights, ignis_core::ExceptionWeights::Bf16);
+        #[cfg(feature = "cuda")]
+        {
+            assert!(model_scope_27b(&shape).fp8_exceptions);
+            assert!(!model_scope_27b(&EngineShape::default()).fp8_exceptions);
+        }
+    }
+
     /// ADR 0059: a Flash-Next load's options carry its shape's rotary table,
     /// the one value its reservation plan is asked under, its leaf loads with
     /// and KV-disk's identity reads back off the leaf; the identity's rope
@@ -1739,6 +1773,7 @@ mod tests {
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
             prefill_attention: ignis_core::PrefillAttention::default(),
+            exception_weights: ignis_core::ExceptionWeights::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::Auto,
             kv_disk_bytes: None,
             transfer_pace: None,

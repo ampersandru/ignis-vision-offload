@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use ignis_artifact::{CudaDevice, Reader, bind_model_scope_27b_with, materialize};
 use ignis_core::gpu_profile;
-use ignis_core::{KvFormat, KvGeometry, N_DECODE_LANES, Speculation, SpeculativeBackend, Vision, model_load};
+use ignis_core::{ExceptionWeights, KvFormat, KvGeometry, N_DECODE_LANES, Speculation, SpeculativeBackend, Vision, model_load};
 use ignis_runtime::{CudaLeaf, CudaLeafConfig, Model, ReservedBytes};
 
 const ARTIFACT: &str = r"F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer";
@@ -31,6 +31,19 @@ const HQ_WINDOW_BYTES: u64 = 35_651_648;
 #[test]
 #[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
 fn the_planned_reservations_are_what_the_load_holds() {
+    planned_reservations_are_held(ExceptionWeights::Bf16);
+}
+
+/// GitHub #341: the same with the BF16 exception tensors held in FP8 -- the
+/// plan reads their conversions' format and bytes off the binder's plan, the
+/// load off the materialized views, and the two lay out the same arenas.
+#[test]
+#[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
+fn the_planned_reservations_are_what_an_fp8_exceptions_load_holds() {
+    planned_reservations_are_held(ExceptionWeights::Fp8);
+}
+
+fn planned_reservations_are_held(exceptions: ExceptionWeights) {
     let path = Path::new(ARTIFACT);
     if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
         return;
@@ -38,7 +51,7 @@ fn the_planned_reservations_are_what_the_load_holds() {
     let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
     let speculation = Speculation::new(SpeculativeBackend::Dflash2, 7).expect("dflash2-7");
     let vision = Vision::new(ignis_core::DEFAULT_VISION_MAX_TOKENS).expect("default envelope");
-    let scope = model_load::model_scope(Some(speculation), Some(vision));
+    let scope = model_load::model_scope(Some(speculation), Some(vision), exceptions);
     let (plan, handles) =
         bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
 
@@ -138,7 +151,7 @@ fn the_default_retained_slots_are_on_the_host() {
     }
     let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
     let speculation = Speculation::new(SpeculativeBackend::Dflash2, 7).expect("dflash2-7");
-    let scope = model_load::model_scope(Some(speculation), None);
+    let scope = model_load::model_scope(Some(speculation), None, ExceptionWeights::Bf16);
     let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
     let config = CudaLeafConfig {
         max_context_tokens: MAX_CONTEXT,
@@ -175,8 +188,8 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
     let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
     let speculation = Speculation::new(SpeculativeBackend::Dflash2, 7).expect("dflash2-7");
     let vision = Vision::new(ignis_core::DEFAULT_VISION_MAX_TOKENS).expect("default envelope");
-    let reserved = |prefill_chunk_tokens: u32, max_context_tokens: u32, vision: Option<Vision>| {
-        let scope = model_load::model_scope(Some(speculation), vision);
+    let reserved_as = |prefill_chunk_tokens: u32, max_context_tokens: u32, vision: Option<Vision>, exceptions| {
+        let scope = model_load::model_scope(Some(speculation), vision, exceptions);
         let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
         let config = CudaLeafConfig {
             max_context_tokens,
@@ -190,6 +203,9 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
             .plan_reservations(&reader, &plan, &handles)
             .unwrap_or_else(|e| panic!("plan the reservations: {e}"))
             .reserved
+    };
+    let reserved = |prefill_chunk_tokens: u32, max_context_tokens: u32, vision: Option<Vision>| {
+        reserved_as(prefill_chunk_tokens, max_context_tokens, vision, ExceptionWeights::Bf16)
     };
 
     // The serving context, where the encoder's 32,768-token workspace is the
@@ -266,6 +282,24 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
     assert!(wide_text.workspace < bounded.workspace, "at 2,048 the bounded encoder is still the larger");
     assert_eq!(wide_bounded.workspace, bounded.workspace, "with vision on, the 2,048 chunk is free");
     assert_eq!(widest_bounded.workspace, 1_578_309_632, "at 4,096 the text scratch is the larger");
+
+    // GitHub #341: held in FP8, the exception tensors' prefill quantizes its
+    // activations into the call's workspace (a code per input and a scale per
+    // token). Printed with the bounded encoder beside it: whether the 2,048
+    // chunk stays free with vision on.
+    let fp8_text = reserved_as(2048, MAX_CONTEXT, None, ExceptionWeights::Fp8);
+    let fp8_bounded =
+        reserved_as(2048, MAX_CONTEXT, Some(vision.with_item_max_tokens(ITEM_BOUND)), ExceptionWeights::Fp8);
+    eprintln!(
+        "workspace with FP8 exception tensors at 2,048: text {} ({:+} B), bounded vision {}",
+        fp8_text.workspace,
+        fp8_text.workspace as i64 - wide_text.workspace as i64,
+        fp8_bounded.workspace
+    );
+    // 5,513,216 B more: a 2,048-token exception call's E4M3 codes and scales (12,591,104 B at
+    // K = 6,144), less the room the layer's scratch already had at that step.
+    assert_eq!(fp8_text.workspace, 875_568_896 + text_room);
+    assert_eq!(fp8_bounded.workspace, bounded.workspace, "with vision on, still the encoder's arena");
 
     // A short context caps the envelope, and with it the item, below the
     // prefill scratch the same way -- and caps the text span too, to the

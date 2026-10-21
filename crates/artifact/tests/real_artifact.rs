@@ -297,7 +297,7 @@ fn real_nvfp4full_the_token_embedding_leaves_the_device_arena() {
         None => return,
     };
     const TABLE_BYTES: u64 = 248_320 * 5_440;
-    for scope in [ModelScope::default(), ModelScope { draft: Some(DraftModule::Dflash2), vision: true }] {
+    for scope in [ModelScope::default(), ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: false }] {
         let (mapped, handles) = bind_model_scope_27b_with(&reader, scope).expect("bind");
         let (on_device, device_handles) = bind_model_scope_27b_on_device(&reader, scope).expect("bind on device");
         assert_eq!(handles, device_handles, "the same objects, in the same order");
@@ -378,7 +378,7 @@ fn real_nvfp4full_vision_plan_extends_the_model_plan() {
             "no vision object without the option ({draft:?})"
         );
         let (plan, handles) =
-            bind_model_scope_27b_with(&reader, ModelScope { draft, vision: true }).expect("bind with vision");
+            bind_model_scope_27b_with(&reader, ModelScope { draft, vision: true, fp8_exceptions: false }).expect("bind with vision");
         assert_eq!(plan.object_count, base_plan.object_count + vision_scope_27b().len());
         assert_eq!(&handles[..base_handles.len()], base_handles.as_slice());
         assert_eq!(

@@ -13,6 +13,8 @@
 //
 // P1-11 (GitHub #47) vendors the NVFP4 and BF16 arms (the attention output
 // projection's residual add, [5120,6144] and [5120,17408]).
+// GitHub #341 adds an FP8 arm of ours, [5120,6144], the BF16 output projections
+// converted at load (kernel/src/fp8_exception.h).
 
 #include "ninfer/ops/linear_add.h"
 
@@ -20,6 +22,10 @@
 #include "ops/linear/nvfp4/nvfp4_format.h"
 #include "ops/linear_add/bf16/bf16_linear_add_plan.h"
 #include "ops/linear_add/nvfp4/nvfp4_linear_add_plan.h"
+
+#include "fp8_exception.h"
+#include "ignis_fp8_linear.h"
+#include "ignis_image_gemm.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -97,8 +103,15 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
         return detail::nvfp4_linear_add_workspace_capacity_bytes(output_rows, input_rows, policy,
                                                                  min_tokens, max_tokens);
     }
+    if (qtype == QType::FP8_E4M3FN_ROW_BF16S) {
+        if (output_rows != ignis::fp8_exception::kHidden || input_rows != ignis::fp8_exception::kOutputCols ||
+            policy == LinearPolicy::AllowA4) {
+            throw std::invalid_argument("linear_add workspace: unsupported FP8 profile");
+        }
+        return ignis::fp8_exception::workspace_capacity_bytes(policy, max_tokens, input_rows);
+    }
     throw std::invalid_argument(
-        "linear_add workspace: unsupported weight format (only NVFP4/BF16 are vendored here)");
+        "linear_add workspace: unsupported weight format (only NVFP4/BF16/FP8 are here)");
 }
 
 void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, WorkspaceArena& ws,
@@ -154,8 +167,38 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
         return;
     }
 
+    if (w.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
+        namespace fe = ignis::fp8_exception;
+        if (policy == LinearPolicy::AllowA4) {
+            throw std::invalid_argument("FP8 linear_add admits only A16 or A8");
+        }
+        if (w.n != fe::kHidden || w.k != fe::kOutputCols) {
+            throw std::invalid_argument("FP8 linear_add: unsupported weight shape");
+        }
+        fe::require_weight(w, w.n, w.k, ignis_fp8_payload_bytes(w.n, w.k), "linear_add");
+        if (!aligned_to(x.data, 16) || !aligned_to(residual_out.data, 16)) {
+            throw std::invalid_argument("linear_add: FP8 requires 16-byte x/residual alignment");
+        }
+        std::int32_t rc = 0;
+        const char* (*last_error)() = ignis_fp8_linear_last_error;
+        if (fe::quantizes(policy, t)) {
+            auto scope = ws.scope();
+            const fe::W8a8Workspace scratch = fe::allocate_w8a8_workspace(ws, t, w.k);
+            last_error = ignis_image_gemm_last_error;
+            rc = ignis_image_quantize_tokens(x.data, t, w.k, scratch.codes, scratch.scales, stream);
+            if (rc == 0) {
+                rc = ignis_image_gemm_w8a8_add(w.qdata, w.n, w.k, scratch.codes, scratch.scales, t,
+                                               residual_out.data, stream);
+            }
+        } else {
+            rc = ignis_fp8_linear_add(w.qdata, w.n, w.k, x.data, t, residual_out.data, stream);
+        }
+        if (rc != 0) { throw std::runtime_error(std::string("linear_add (FP8): ") + last_error()); }
+        return;
+    }
+
     throw std::invalid_argument(
-        "linear_add: unsupported weight format (only NVFP4/BF16 are vendored here)");
+        "linear_add: unsupported weight format (only NVFP4/BF16/FP8 are here)");
 }
 
 } // namespace ninfer::ops

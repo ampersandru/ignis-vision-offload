@@ -16,7 +16,7 @@
 //! mapped pinned host allocation the same way, read into from the file
 //! directly, with no staging copy and no upload.
 
-use crate::binder::{MaterializationPlan, Residence};
+use crate::binder::{DeviceEncoding, MaterializationPlan, Residence};
 use crate::device::{Device, DeviceBuffer, HostMappedBuffer};
 use crate::direct::AlignedBuffer;
 use crate::{
@@ -45,6 +45,10 @@ pub struct MaterializationStats {
     /// peak host-staging memory is at most [`STAGING_SLOTS`] × this value
     /// (fewer when the plan has fewer than [`STAGING_SLOTS`] device objects).
     pub peak_staging_bytes: u64,
+    /// Stored BF16 bytes converted to FP8 at load (GitHub #341), part of
+    /// `h2d_bytes`, and the bytes their conversions hold in the arena.
+    pub fp8_source_bytes: u64,
+    pub fp8_device_bytes: u64,
     /// Device tensors in the plan.
     pub tensor_count: usize,
     /// Host-retained resources in the plan.
@@ -340,10 +344,28 @@ pub fn materialize<D: Device>(
     // (`synchronize`) so every slot is free before reuse. The pool lives
     // until the final `synchronize`, so no in-flight copy ever reads freed
     // memory.
+    // A converted tensor (GitHub #341) uploads its stored bytes into a device
+    // staging buffer and is written into its slot from there.
+    let source_bytes = |dev: &crate::binder::DevicePlacement| -> Result<u64> {
+        match dev.encoding {
+            DeviceEncoding::Stored => Ok(dev.bytes),
+            DeviceEncoding::Fp8Rows(_) => Ok(reader
+                .objects()
+                .get(dev.handle.index)
+                .ok_or_else(|| fail("device placement handle is out of range"))?
+                .bytes()),
+        }
+    };
     let mut total_h2d = 0u64;
+    let mut max_converted = 0u64;
     for p in &plan.device_objects {
-        total_h2d = checked_add(total_h2d, p.bytes, "h2d total overflow u64")?;
+        let bytes = source_bytes(p)?;
+        total_h2d = checked_add(total_h2d, bytes, "h2d total overflow u64")?;
+        if p.encoding != DeviceEncoding::Stored {
+            max_converted = max_converted.max(bytes);
+        }
     }
+    let conversion_staging = if max_converted == 0 { None } else { Some(device.allocate(max_converted)?) };
     let mut h2d_done = 0u64;
 
     // Pre-size the bounded slot pool to the largest aligned direct-read span
@@ -356,7 +378,7 @@ pub fn materialize<D: Device>(
             .ok_or_else(|| fail("device placement handle is out of range"))?;
         let span = reader.payload_at(object)?;
         let source_end =
-            checked_add(span.absolute_offset, dev.bytes, "artifact tensor source range overflow u64")?;
+            checked_add(span.absolute_offset, source_bytes(dev)?, "artifact tensor source range overflow u64")?;
         let read_begin = span.absolute_offset & !(DIRECT_IO_ALIGNMENT - 1);
         let read_end = (source_end + (DIRECT_IO_ALIGNMENT - 1)) & !(DIRECT_IO_ALIGNMENT - 1);
         max_staging_len = max_staging_len.max((read_end - read_begin) as usize);
@@ -372,7 +394,17 @@ pub fn materialize<D: Device>(
             .objects()
             .get(dev.handle.index)
             .ok_or_else(|| fail("device placement handle is out of range"))?;
-        if object.bytes() != dev.bytes {
+        let source = source_bytes(dev)?;
+        let planned = match dev.encoding {
+            DeviceEncoding::Stored => source,
+            DeviceEncoding::Fp8Rows(blocks) => match object {
+                crate::Object::Tensor(t) if t.shape.len() == 2 => {
+                    crate::fp8::block_offsets(blocks, t.shape[1] as u32)[blocks.len()]
+                }
+                _ => return Err(fail(format!("an FP8 conversion's source is a matrix: {}", object.name()))),
+            },
+        };
+        if object.bytes() != source || planned != dev.bytes {
             return Err(fail(format!(
                 "materialization plan does not match artifact payload: {}",
                 object.name()
@@ -414,7 +446,7 @@ pub fn materialize<D: Device>(
         // span in one aligned read (bypasses the page cache).
         let span = reader.payload_at(object)?;
         let source_end =
-            checked_add(span.absolute_offset, dev.bytes, "artifact tensor source range overflow u64")?;
+            checked_add(span.absolute_offset, source, "artifact tensor source range overflow u64")?;
         let read_begin = span.absolute_offset & !(DIRECT_IO_ALIGNMENT - 1);
         let read_end = (source_end + DIRECT_IO_ALIGNMENT - 1) & !(DIRECT_IO_ALIGNMENT - 1);
         let staging_len = (read_end - read_begin) as usize;
@@ -429,7 +461,7 @@ pub fn materialize<D: Device>(
         let buf = slots[s].as_mut_slice();
         let read = reader.read_direct(read_begin, &mut buf[0..staging_len])?;
         let head = (span.absolute_offset - read_begin) as usize;
-        let needed = checked_add(head as u64, dev.bytes, "staging head overflow u64")? as usize;
+        let needed = checked_add(head as u64, source, "staging head overflow u64")? as usize;
         if read < needed {
             return Err(fail(format!(
                 "direct artifact read ended before the planned tensor range: {}",
@@ -438,17 +470,35 @@ pub fn materialize<D: Device>(
         }
         let payload = &buf[head..needed];
 
-        if let Some(a) = &arena {
-            device.copy_h2d(a, dev.offset, payload)?;
+        let mut view = tensor_view(tensor, dev.offset, view_base, dev.bytes)?;
+        match (dev.encoding, &arena, &conversion_staging) {
+            (DeviceEncoding::Stored, Some(a), _) => device.copy_h2d(a, dev.offset, payload)?,
+            (DeviceEncoding::Fp8Rows(blocks), Some(a), Some(staging)) => {
+                // Stream order: the upload, then each block's conversion out
+                // of it; the next converted tensor's upload follows them.
+                device.copy_h2d(staging, 0, payload)?;
+                let cols = tensor.shape[1] as u32;
+                let at = crate::fp8::block_offsets(blocks, cols);
+                let mut row0 = 0u64;
+                for (i, &rows) in blocks.iter().enumerate() {
+                    device.quantize_fp8_rows(staging, row0 * u64::from(cols) * 2, rows, cols, a, dev.offset + at[i])?;
+                    row0 += u64::from(rows);
+                }
+                (view.format, view.layout) = dev.encoding.held_as(view.format, view.layout);
+                // The first block's scales: each block's payload carries its own (`crate::fp8`).
+                view.scale_plane_offset = Some(crate::fp8::scale_offset(blocks[0], cols));
+                stats.fp8_source_bytes = checked_add(stats.fp8_source_bytes, source, "converted bytes overflow u64")?;
+                stats.fp8_device_bytes = checked_add(stats.fp8_device_bytes, dev.bytes, "converted bytes overflow u64")?;
+            }
+            _ => return Err(fail(format!("no arena or conversion staging for {}", object.name()))),
         }
         pending += 1;
-        h2d_done = checked_add(h2d_done, dev.bytes, "copied byte count overflows u64")?;
+        h2d_done = checked_add(h2d_done, source, "copied byte count overflows u64")?;
         stats.h2d_bytes = h2d_done;
         stats.file_bytes =
             checked_add(stats.file_bytes, read as u64, "artifact read bytes overflow u64")?;
         stats.peak_staging_bytes = stats.peak_staging_bytes.max(staging_len as u64);
 
-        let view = tensor_view(tensor, dev.offset, view_base, dev.bytes)?;
         objects[dev.handle.index] = MaterializedObject::Tensor(view);
 
         if let Some(callback) = &mut progress {
@@ -457,8 +507,12 @@ pub fn materialize<D: Device>(
     }
 
     // The pool lives until here: the final drain means no in-flight copy is
-    // still reading a slot when the buffers are dropped (at end of scope).
+    // still reading a slot when the buffers are dropped (at end of scope),
+    // and no conversion still reads the staging buffer when it is freed.
     device.synchronize()?;
+    if let Some(staging) = conversion_staging {
+        device.deallocate(staging)?;
+    }
     stats.upload_seconds = start.elapsed().as_secs_f64();
 
     Ok(MaterializedArtifact {
@@ -655,6 +709,69 @@ mod tests {
 
         // The fixture file is dropped (TempArtifact), then the reader.
         drop(reader);
+    }
+
+    /// GitHub #341: a BF16 matrix placed converted lands in its slot as
+    /// [`crate::fp8::quantize_blocks`] of its stored bytes, its view FP8
+    /// row-scale; a stored neighbour is untouched.
+    #[test]
+    fn cpu_materialize_converts_a_bf16_matrix_to_its_fp8_blocks() {
+        let words: Vec<u16> = (0..48 * 64u32)
+            .map(|i| {
+                let v = ((i * 7919 % 2003) as f32 - 1001.0) * 1e-4 * (1 + i / 512) as f32;
+                (v.to_bits() >> 16) as u16
+            })
+            .collect();
+        let bf16: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut payload = vec![0x5Au8; 256];
+        payload.extend_from_slice(&bf16);
+        let objects = vec![
+            fixture::FixtureObject::Tensor {
+                name: "w/kept",
+                shape: vec![4, 8],
+                format: "BF16",
+                layout: "contiguous-le-v1",
+                offset: 0,
+                bytes: 64,
+            },
+            fixture::FixtureObject::Tensor {
+                name: "w/converted",
+                shape: vec![48, 64],
+                format: "BF16",
+                layout: "contiguous-le-v1",
+                offset: 256,
+                bytes: bf16.len() as u64,
+            },
+        ];
+        let fixture = fixture::write_fixture(&objects, &payload, "fp8-convert").expect("fixture");
+        let reader = Reader::open(&fixture.path).expect("open fixture");
+        let mut binder = crate::binder::Binder::new(&reader);
+        let kept = binder.require_tensor("w/kept", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8]).unwrap();
+        binder.materialize_on_device(kept).unwrap();
+        let converted =
+            binder.require_tensor("w/converted", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[48, 64]).unwrap();
+        binder.materialize_on_device_as_fp8(converted, &[16, 32]).unwrap();
+        let plan = binder.finish().unwrap();
+        let mut device = CpuDevice::new();
+        let artifact = materialize(&reader, &plan, &mut device, None).expect("materialize");
+        let arena = artifact.arena().expect("arena");
+
+        let want = crate::fp8::quantize_blocks(&bf16, &[16, 32], 64);
+        let view = artifact.device_view(converted).expect("view");
+        assert_eq!(view.format, NumericFormat::Fp8E4M3FnRowBf16S);
+        assert_eq!(view.layout, StorageLayout::RowScaleV1);
+        assert_eq!(view.bytes, want.len() as u64);
+        assert_eq!(view.scale_plane_offset, Some(16 * 64));
+        let mut back = vec![0u8; want.len()];
+        device.copy_d2h(arena, view.offset_in_arena, &mut back).expect("d2h");
+        assert_eq!(back, want, "the slot holds the blocks' payloads");
+        let mut kept_back = vec![0u8; 64];
+        device.copy_d2h(arena, artifact.device_view(kept).unwrap().offset_in_arena, &mut kept_back).unwrap();
+        assert!(kept_back.iter().all(|&b| b == 0x5A), "the stored neighbour is as stored");
+
+        let stats = artifact.stats();
+        assert_eq!(stats.h2d_bytes, 64 + bf16.len() as u64, "the stored bytes are what crosses the bus");
+        assert_eq!((stats.fp8_source_bytes, stats.fp8_device_bytes), (bf16.len() as u64, want.len() as u64));
     }
 
     #[test]

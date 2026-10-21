@@ -346,7 +346,8 @@ When output names a domain concept, use the term as defined here.
   in the artifact's **body format**, its endpoints (token embedding, output
   head), an optional grafted DFlash2 module, and frontend objects (tokenizer /
   chat template). The 27B's 32 GB artifact carries NVFP4 tensors, BF16
-  exception tensors and W8G32 endpoints. Several artifacts share one **model
+  exception tensors (held as stored, or in FP8 converted at load under
+  `model.exception_weights: fp8`, ADR 0065) and W8G32 endpoints. Several artifacts share one **model
   family**.
 - **Body format** — the weight format of an artifact's transformer layers:
   **NVFP4**, or **trellis**. Read from the artifact, never configured.

@@ -21,6 +21,8 @@
 // int32 return codes (0 = ok, -1 = error), no C++ types across the boundary.
 
 #include "ignis_model.h"
+#include "ignis_fp8_linear.h"
+#include "ignis_image_gemm.h"
 #include "ignis_step.h"
 
 #include "attention_readout.h"
@@ -1555,6 +1557,16 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // GitHub #335: the prompt attention's precision, read by every hq-e8-2b
   // prefill chunk (`kernel/src/gqa_layer.cu`).
   model->prefill_attention = load.prefill_attention;
+
+  // GitHub #341: the BF16 exception tensors a load holds in FP8 run on the FP8
+  // linear and the W8A8 GEMM (kernel/src/fp8_exception.h), which refuse an
+  // unprepared device. Prepared here, outside any capture, whichever way the
+  // tensors are held: it only sets kernel attributes.
+  if (ignis_fp8_linear_prepare() != 0 || ignis_image_gemm_prepare() != 0) {
+    set_error(std::string("ignis_model_load: preparing the FP8 exception kernels: ") +
+              ignis_fp8_linear_last_error() + " / " + ignis_image_gemm_last_error());
+    return -1;
+  }
 
   // GitHub #210: every reservation below is sized here, once, by the same
   // computation `ignis_model_plan_reservations` reports.

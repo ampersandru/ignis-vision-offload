@@ -184,7 +184,7 @@ fn siblings_sending_same_size_images_share_only_what_their_images_agree_on() {
     let eos = frontend.eos_token_id().expect("eos");
     let tokenizer_frontend = FrontendSet::from_reader(&reader).expect("frontend");
     let provider = ArtifactTemplateProvider::new(frontend).with_vision(processor.clone());
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true, fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(device) => device,

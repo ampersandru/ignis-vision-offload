@@ -9,6 +9,8 @@
 
 #include <atomic>
 
+static_assert(IGNIS_FP8_MAX_SEGMENTS == ignis_image::kMaxSegments, "the grouped GEMM takes ignis_fp8_segment's count");
+
 namespace ignis_image {
 namespace {
 
@@ -47,4 +49,33 @@ extern "C" int32_t ignis_image_gemm_w8a8(const void *weight, uint32_t rows, uint
                                          const float *scales, uint32_t tokens, void *y, uint32_t y_f32, void *stream) {
   if (require_prepared("ignis_image_gemm_w8a8") != 0) return -1;
   return gemm_w8a8_launch<GemmDefaultConfig>(weight, rows, cols, codes, scales, tokens, y, y_f32, stream);
+}
+
+extern "C" int32_t ignis_image_gemm_w8a8_grouped(const ignis_fp8_segment *segments, uint32_t count, uint32_t cols,
+                                                 const void *codes, const float *scales, uint32_t tokens,
+                                                 uint32_t y_f32, void *stream) {
+  const char *op = "ignis_image_gemm_w8a8_grouped";
+  if (segments == nullptr) return fail(std::string(op) + ": NULL pointer");
+  if (count == 0 || count > static_cast<uint32_t>(kMaxSegments)) {
+    return fail(std::string(op) + ": 1.." + std::to_string(kMaxSegments) + " segments");
+  }
+  if (require_prepared(op) != 0) return -1;
+  const void *weights[kMaxSegments];
+  uint32_t rows[kMaxSegments];
+  void *ys[kMaxSegments];
+  for (uint32_t i = 0; i < count; ++i) {
+    weights[i] = segments[i].weight;
+    rows[i] = segments[i].rows;
+    ys[i] = segments[i].y;
+  }
+  return gemm_w8a8_launch_segments<GemmDefaultConfig>(op, weights, rows, ys, count, cols, codes, scales, tokens,
+                                                      y_f32 != 0 ? kYF32 : kYBf16, stream);
+}
+
+extern "C" int32_t ignis_image_gemm_w8a8_add(const void *weight, uint32_t rows, uint32_t cols, const void *codes,
+                                             const float *scales, uint32_t tokens, void *residual, void *stream) {
+  const char *op = "ignis_image_gemm_w8a8_add";
+  if (require_prepared(op) != 0) return -1;
+  return gemm_w8a8_launch_segments<GemmDefaultConfig>(op, &weight, &rows, &residual, 1, cols, codes, scales, tokens,
+                                                      kYBf16Add, stream);
 }

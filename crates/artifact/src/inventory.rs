@@ -19,7 +19,7 @@
 //! FP32, 247 NVFP4 (the 27B model's GEMM weights + the norms / GDN
 //! params / `*_input_scale_divisor` scalars).
 
-use crate::binder::{Binder, MaterializationPlan, ObjectHandle, Residence};
+use crate::binder::{Binder, DeviceEncoding, MaterializationPlan, ObjectHandle, Residence};
 use crate::{NumericFormat, Reader, Result, StorageLayout};
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,9 @@ pub struct InventoryEntry {
     /// Where the load places it: the device, but for the token embedding,
     /// which lives in mapped host memory (ADR 0062).
     pub residence: Residence,
+    /// How a device tensor is held: as stored, or (GitHub #341) a BF16
+    /// exception tensor converted to FP8 at load ([`ModelScope::fp8_exceptions`]).
+    pub encoding: DeviceEncoding,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +79,13 @@ const ATTENTION_OUT_BF16_LAYERS: &[usize] = &[3, 7];
 /// directory quirk: layer 4 — its `gdn/output` is BF16, so the
 /// `gdn/output_projection/input_scale_divisor` object is absent).
 const GDN_OUT_BF16_LAYERS: &[usize] = &[4];
+
+/// GitHub #341: the row blocks a BF16 exception tensor converts to FP8 in --
+/// the fused projection's q | k | gate | v (its stored row order), and an
+/// output projection whole. The leaf reads the same blocks back
+/// (`kQkgvSegmentRows`, kernel/src/fp8_exception.h).
+const QKGV_FP8_BLOCKS: &[u32] = &[6144, 1024, 6144, 1024];
+const OUTPUT_FP8_BLOCKS: &[u32] = &[5120];
 
 /// The out-of-scope text objects (spec 04 non-goals: the draft-head
 /// endpoints — noted, not normalized for v1 text).
@@ -320,7 +330,7 @@ pub fn bind_model_scope_27b(
     reader: &Reader,
     draft: Option<DraftModule>,
 ) -> Result<(MaterializationPlan, Vec<ObjectHandle>)> {
-    bind_model_scope_27b_with(reader, ModelScope { draft, vision: false })
+    bind_model_scope_27b_with(reader, ModelScope { draft, vision: false, fp8_exceptions: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +403,13 @@ pub fn vision_scope_27b() -> Vec<InventoryEntry> {
 pub struct ModelScope {
     pub draft: Option<DraftModule>,
     pub vision: bool,
+    /// GitHub #341: the nine BF16 exception tensors -- the fused attention
+    /// projection of GQA layers 3-23, the attention output of GQA layers 3
+    /// and 7, the GDN output of layer 4 -- held on the device in FP8,
+    /// converted at load. Unset, they are held as stored: this struct's
+    /// default is the artifact's bytes, for a caller binding the 27B
+    /// directly, and the server's default (`ignis_core::ExceptionWeights`).
+    pub fp8_exceptions: bool,
 }
 
 /// [`model_scope_27b`] for a full [`ModelScope`]: the text scope, then the
@@ -403,7 +420,27 @@ pub fn model_scope_27b_with(scope: ModelScope) -> Vec<InventoryEntry> {
     if scope.vision {
         entries.extend(vision_scope_27b());
     }
+    if scope.fp8_exceptions {
+        for entry in &mut entries {
+            if let Some(blocks) = fp8_blocks(entry.name) {
+                entry.encoding = DeviceEncoding::Fp8Rows(blocks);
+            }
+        }
+    }
     entries
+}
+
+/// The FP8 row blocks of a BF16 exception tensor's name, or None.
+fn fp8_blocks(name: &str) -> Option<&'static [u32]> {
+    let rest = name.strip_prefix("text/layers/")?;
+    let (layer, tail) = rest.split_once('/')?;
+    let layer: usize = layer.parse().ok()?;
+    match tail {
+        "attention/query_key_gate_value" if QKGV_BF16_LAYERS.contains(&layer) => Some(QKGV_FP8_BLOCKS),
+        "attention/output" if ATTENTION_OUT_BF16_LAYERS.contains(&layer) => Some(OUTPUT_FP8_BLOCKS),
+        "gdn/output" if GDN_OUT_BF16_LAYERS.contains(&layer) => Some(OUTPUT_FP8_BLOCKS),
+        _ => None,
+    }
 }
 
 /// [`bind_model_scope_27b`] for a full [`ModelScope`]. A missing or
@@ -448,9 +485,10 @@ fn bind_entries(
 ) -> Result<()> {
     for entry in entries {
         let handle = binder.require_tensor(entry.name, entry.format, entry.layout, entry.shape)?;
-        match entry.residence {
-            Residence::Device => binder.materialize_on_device(handle)?,
-            Residence::HostMapped => binder.place_in_host_mapped(handle)?,
+        match (entry.residence, entry.encoding) {
+            (Residence::Device, DeviceEncoding::Stored) => binder.materialize_on_device(handle)?,
+            (Residence::Device, DeviceEncoding::Fp8Rows(blocks)) => binder.materialize_on_device_as_fp8(handle, blocks)?,
+            (Residence::HostMapped, _) => binder.place_in_host_mapped(handle)?,
         }
         handles.push(handle);
     }
@@ -466,6 +504,7 @@ fn mk(name: &str, format: NumericFormat, layout: StorageLayout, shape: &'static 
         layout,
         shape,
         residence: Residence::Device,
+        encoding: DeviceEncoding::Stored,
     }
 }
 
@@ -547,7 +586,7 @@ mod tests {
     fn the_token_embedding_is_the_one_host_mapped_tensor_of_every_scope() {
         for scope in [
             ModelScope::default(),
-            ModelScope { draft: Some(DraftModule::Dflash2ShortlistHead), vision: true },
+            ModelScope { draft: Some(DraftModule::Dflash2ShortlistHead), vision: true, fp8_exceptions: false },
         ] {
             let host: Vec<&str> = model_scope_27b_with(scope)
                 .iter()
@@ -593,6 +632,32 @@ mod tests {
         assert_eq!(plan.device_objects.len(), 2);
         assert!(plan.host_mapped_objects.is_empty());
         assert_eq!(plan.host_mapped_capacity_bytes, 0);
+    }
+
+    /// GitHub #341: under `fp8_exceptions` exactly the nine BF16 exception
+    /// tensors convert, each in blocks that cover its rows; without it none.
+    #[test]
+    fn fp8_exceptions_convert_exactly_the_nine_bf16_exception_tensors() {
+        for draft in [None, Some(DraftModule::Dflash2)] {
+            let plain = model_scope_27b_with(ModelScope { draft, vision: true, fp8_exceptions: false });
+            assert!(plain.iter().all(|e| e.encoding == DeviceEncoding::Stored));
+            let fp8 = model_scope_27b_with(ModelScope { draft, vision: true, fp8_exceptions: true });
+            assert_eq!(fp8.len(), plain.len(), "the same tensors");
+            let converted: Vec<&InventoryEntry> = fp8.iter().filter(|e| e.encoding != DeviceEncoding::Stored).collect();
+            let names: Vec<&str> = converted.iter().map(|e| e.name).collect();
+            assert_eq!(names.len(), 9, "{names:?}");
+            for layer in [3, 7, 11, 15, 19, 23] {
+                assert!(names.contains(&format!("text/layers/{layer}/attention/query_key_gate_value").as_str()));
+            }
+            for name in ["text/layers/3/attention/output", "text/layers/7/attention/output", "text/layers/4/gdn/output"] {
+                assert!(names.contains(&name), "{name}");
+            }
+            for e in converted {
+                let DeviceEncoding::Fp8Rows(blocks) = e.encoding else { unreachable!() };
+                assert_eq!(e.format, NumericFormat::Bf16, "{}", e.name);
+                assert_eq!(blocks.iter().map(|&b| u64::from(b)).sum::<u64>(), e.shape[0], "{}", e.name);
+            }
+        }
     }
 
     /// The generated table has no duplicate names (the reader's
@@ -749,11 +814,11 @@ mod tests {
         let text = text_scope_27b();
         let vision = vision_scope_27b();
 
-        let only_vision = model_scope_27b_with(ModelScope { draft: None, vision: true });
+        let only_vision = model_scope_27b_with(ModelScope { draft: None, vision: true, fp8_exceptions: false });
         assert_eq!(&only_vision[..text.len()], text.as_slice());
         assert_eq!(&only_vision[text.len()..], vision.as_slice());
 
-        let both = model_scope_27b_with(ModelScope { draft: Some(DraftModule::Dflash2), vision: true });
+        let both = model_scope_27b_with(ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: false });
         let with_drafter = model_scope_27b(Some(DraftModule::Dflash2));
         assert_eq!(&both[..with_drafter.len()], with_drafter.as_slice());
         assert_eq!(&both[with_drafter.len()..], vision.as_slice());

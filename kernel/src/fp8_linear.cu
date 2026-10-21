@@ -13,6 +13,8 @@
 //            the codes widened to BF16 exactly in registers; a three-stage cp.async pipeline.
 //
 // The SwiGLU form runs the gate and up weights in the same CTA and writes silu(g) * u in BF16.
+// The row quantizer (GitHub #341) writes that payload from a BF16 weight on the device, for the 27B's
+// BF16 exception matrices converted at load.
 // Both routes are deterministic: no atomics, fixed summation order per output.
 
 #include "ignis_fp8_linear.h"
@@ -95,7 +97,11 @@ __device__ __forceinline__ void gemv_row(const uint8_t *row, const __nv_bfloat16
   for (int t = 0; t < kGemvMaxTokens; ++t) acc[t] = warp_sum(acc[t]);
 }
 
-// y[t][r] = scale * acc[t] (fp32 or BF16) of a `rows`-row output, lane t writing token t.
+// Both routes' output: y_f32 = 0 BF16, 1 fp32, kGemvAdd (GitHub #341) BF16 added to what y holds.
+constexpr int kGemvAdd = 2;
+
+// y[t][r] = scale * acc[t] (fp32 or BF16; or y[t][r] = BF16(y[t][r] + that)) of a `rows`-row
+// output, lane t writing token t.
 __device__ __forceinline__ void store_scaled(const float (&acc)[kGemvMaxTokens], float scale, void *y, int rows,
                                              int r, int tokens, int y_f32) {
   const int lane = threadIdx.x & 31;
@@ -104,7 +110,10 @@ __device__ __forceinline__ void store_scaled(const float (&acc)[kGemvMaxTokens],
 #pragma unroll
     for (int t = 0; t < kGemvMaxTokens; ++t) v = t == lane ? acc[t] * scale : v;
     const size_t at = static_cast<size_t>(lane) * rows + r;
-    if (y_f32) {
+    if (y_f32 == kGemvAdd) {
+      __nv_bfloat16 *yp = static_cast<__nv_bfloat16 *>(y) + at;
+      *yp = __float2bfloat16_rn(__fadd_rn(__bfloat162float(*yp), v));
+    } else if (y_f32) {
       static_cast<float *>(y)[at] = v;
     } else {
       static_cast<__nv_bfloat16 *>(y)[at] = __float2bfloat16_rn(v);
@@ -292,7 +301,11 @@ __global__ void __launch_bounds__(256) fp8_mma_kernel(const __nv_bfloat16 *__res
           const float v0 = acc[mi][ni][2 * hh] * s0;
           const float v1 = acc[mi][ni][2 * hh + 1] * s1;
           const size_t at = static_cast<size_t>(t) * rows + col;
-          if (y_f32) {
+          if (y_f32 == kGemvAdd) {
+            __nv_bfloat162 *yp = reinterpret_cast<__nv_bfloat162 *>(static_cast<__nv_bfloat16 *>(y) + at);
+            const float2 r = __bfloat1622float2(*yp);
+            *yp = __floats2bfloat162_rn(__fadd_rn(r.x, v0), __fadd_rn(r.y, v1));
+          } else if (y_f32) {
             *reinterpret_cast<float2 *>(static_cast<float *>(y) + at) = make_float2(v0, v1);
           } else {
             *reinterpret_cast<__nv_bfloat162 *>(static_cast<__nv_bfloat16 *>(y) + at) = __floats2bfloat162_rn(v0, v1);
@@ -332,6 +345,56 @@ __global__ void __launch_bounds__(256) fp8_mma_kernel(const __nv_bfloat16 *__res
 }
 
 constexpr size_t kMmaSmem = sizeof(MmaSmem) > sizeof(float) * kBM * 129 ? sizeof(MmaSmem) : sizeof(float) * kBM * 129;
+
+// ---- the row quantizer (GitHub #341) ---------------------------------------------------------
+
+// One CTA per row: the row's amax (fmaxf, exact in any order), then its BF16 scale rounded up from
+// amax / 448 so no code saturates, then the codes, eight at a time.
+__global__ void __launch_bounds__(256) fp8_quantize_rows_kernel(const __nv_bfloat16 *__restrict__ w, int cols,
+                                                                uint8_t *__restrict__ codes,
+                                                                __nv_bfloat16 *__restrict__ scales) {
+  __shared__ float warp_max[8];
+  __shared__ float row_scale;
+  const size_t r = blockIdx.x;
+  const uint4 *row = reinterpret_cast<const uint4 *>(w + r * cols);
+  const int chunks = cols / 8;
+  float m = 0.0f;
+  for (int c = threadIdx.x; c < chunks; c += blockDim.x) {
+    const uint4 v = __ldg(row + c);
+    const __nv_bfloat162 *b = reinterpret_cast<const __nv_bfloat162 *>(&v);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      const float2 f = __bfloat1622float2(b[i]);
+      m = fmaxf(m, fmaxf(fabsf(f.x), fabsf(f.y)));
+    }
+  }
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xFFFFFFFFu, m, o));
+  if ((threadIdx.x & 31) == 0) warp_max[threadIdx.x >> 5] = m;
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    float amax = 0.0f;
+    for (int i = 0; i < 8; ++i) amax = fmaxf(amax, warp_max[i]);
+    const __nv_bfloat16 s = amax == 0.0f ? __float2bfloat16(1.0f) : __float2bfloat16_ru(__fdiv_rn(amax, 448.0f));
+    scales[r] = s;
+    row_scale = __bfloat162float(s);
+  }
+  __syncthreads();
+  const float s = row_scale;
+  uint2 *out = reinterpret_cast<uint2 *>(codes + r * cols);
+  for (int c = threadIdx.x; c < chunks; c += blockDim.x) {
+    const uint4 v = __ldg(row + c);
+    const __nv_bfloat162 *b = reinterpret_cast<const __nv_bfloat162 *>(&v);
+    uint16_t q[4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      const float2 f = __bfloat1622float2(b[i]);
+      q[i] = __nv_cvt_float2_to_fp8x2(make_float2(__fdiv_rn(f.x, s), __fdiv_rn(f.y, s)), __NV_SATFINITE, __NV_E4M3);
+    }
+    out[c] = make_uint2(static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 16),
+                        static_cast<uint32_t>(q[2]) | (static_cast<uint32_t>(q[3]) << 16));
+  }
+}
 
 constexpr int kMaxDevices = 64;
 std::atomic<bool> g_prepared[kMaxDevices];
@@ -404,7 +467,9 @@ extern "C" int32_t ignis_fp8_linear(const void *weight, uint32_t rows, uint32_t 
     return fail("ignis_fp8_linear: weight and x must be 16-byte aligned");
   }
   const Fp8Weight w = fp8_weight(weight, rows, cols);
-  return launch<0>("ignis_fp8_linear", w, w, rows, cols, x, tokens, y, y_f32, static_cast<cudaStream_t>(stream));
+  // The public flag is fp32 or BF16; the routes' third output (kGemvAdd) is ignis_fp8_linear_add's.
+  return launch<0>("ignis_fp8_linear", w, w, rows, cols, x, tokens, y, y_f32 != 0 ? 1 : 0,
+                   static_cast<cudaStream_t>(stream));
 }
 
 extern "C" int32_t ignis_fp8_linear_grouped(const ignis_fp8_segment *segments, uint32_t count, uint32_t cols,
@@ -437,8 +502,45 @@ extern "C" int32_t ignis_fp8_linear_grouped(const ignis_fp8_segment *segments, u
   const int warps = 8;
   fp8_gemv_grouped_kernel<<<(total + warps - 1) / warps, warps * 32, 0, static_cast<cudaStream_t>(stream)>>>(
       static_cast<const __nv_bfloat16 *>(x), static_cast<int>(tokens), static_cast<int>(cols), s,
-      static_cast<int>(y_f32));
+      y_f32 != 0 ? 1 : 0);
   return check_launch("ignis_fp8_linear_grouped");
+}
+
+extern "C" int32_t ignis_fp8_linear_add(const void *weight, uint32_t rows, uint32_t cols, const void *x,
+                                        uint32_t tokens, void *residual, void *stream) {
+  const char *op = "ignis_fp8_linear_add";
+  if (weight == nullptr || x == nullptr || residual == nullptr) return fail(std::string(op) + ": NULL pointer");
+  if (validate(op, rows, cols, tokens, residual) != 0) return -1;
+  if ((reinterpret_cast<uintptr_t>(weight) | reinterpret_cast<uintptr_t>(x)) & 15) {
+    return fail(std::string(op) + ": weight and x must be 16-byte aligned");
+  }
+  const Fp8Weight w = fp8_weight(weight, rows, cols);
+  return launch<0>(op, w, w, rows, cols, x, tokens, residual, kGemvAdd, static_cast<cudaStream_t>(stream));
+}
+
+extern "C" uint64_t ignis_fp8_payload_bytes(uint32_t rows, uint32_t cols) {
+  return scale_offset(rows, cols) + static_cast<uint64_t>(rows) * 2;
+}
+
+extern "C" int32_t ignis_fp8_quantize_rows(const void *w, uint32_t rows, uint32_t cols, void *payload, void *stream) {
+  const char *op = "ignis_fp8_quantize_rows";
+  if (w == nullptr || payload == nullptr) return fail(std::string(op) + ": NULL pointer");
+  if (rows == 0 || rows > 0x7FFFFFFFu) return fail(std::string(op) + ": rows must be positive");
+  if (cols == 0 || cols % 16 != 0 || cols > 0x7FFFFFFFu) return fail(std::string(op) + ": cols must be a positive multiple of 16");
+  if ((reinterpret_cast<uintptr_t>(w) | reinterpret_cast<uintptr_t>(payload)) & 15) {
+    return fail(std::string(op) + ": w and payload must be 16-byte aligned");
+  }
+  const cudaStream_t s = static_cast<cudaStream_t>(stream);
+  uint8_t *p = static_cast<uint8_t *>(payload);
+  const size_t codes = static_cast<size_t>(rows) * cols;
+  const size_t scale_at = scale_offset(rows, cols);
+  if (scale_at > codes) {
+    const cudaError_t err = cudaMemsetAsync(p + codes, 0, scale_at - codes, s);
+    if (err != cudaSuccess) return fail(std::string(op) + ": " + cudaGetErrorString(err));
+  }
+  fp8_quantize_rows_kernel<<<rows, 256, 0, s>>>(static_cast<const __nv_bfloat16 *>(w), static_cast<int>(cols), p,
+                                                reinterpret_cast<__nv_bfloat16 *>(p + scale_at));
+  return check_launch(op);
 }
 
 extern "C" int32_t ignis_fp8_linear_swiglu(const void *gate, const void *up, uint32_t rows, uint32_t cols,

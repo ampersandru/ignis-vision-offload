@@ -31,7 +31,7 @@ use std::path::PathBuf;
 
 use ignis_core::compute::ModelFamily;
 use ignis_core::ngram_cache::CacheLocation;
-use ignis_core::{KvFormat, PrefillAttention, RopeSetting};
+use ignis_core::{ExceptionWeights, KvFormat, PrefillAttention, RopeSetting};
 use serde_json::{Map, Value};
 
 use super::field::{Applicability, Attr, FieldMeta, Validator};
@@ -330,6 +330,12 @@ config_group! {
         /// default, the band pass in 8 bits) or `fp16` (the FP16-accumulate
         /// fallback). Flash-Next's attention is QSA and has no such pass.
         prefill_attention: PrefillAttentionKind = PrefillAttention::default(), Validator::OneOf(&PrefillAttention::NAMES), QWEN38_ONLY,
+            [Visible, Patchable, ReloadRequired];
+        /// How the 27B holds its nine BF16 exception tensors on the device
+        /// (GitHub #341): `bf16` (the default, as the artifact stores them)
+        /// or `fp8`, converted at load to FP8 row-scale for the FP8 tensor
+        /// cores. Flash-Next has none.
+        exception_weights: ExceptionWeightsKind = ExceptionWeights::default(), Validator::OneOf(&ExceptionWeights::NAMES), QWEN38_ONLY,
             [Visible, Patchable, ReloadRequired];
         /// The prefill chunk width, in tokens.
         prefill_chunk: Tokens = super::DEFAULT_PREFILL_CHUNK, Validator::MultipleOf(super::PREFILL_CHUNK_ALIGNMENT as u64), ALL,
@@ -907,6 +913,7 @@ mod tests {
             assert!(KvFormat::parse(name).is_ok(), "{name}");
         }
         assert_eq!(names("model", "prefill_attention"), PrefillAttention::NAMES.to_vec());
+        assert_eq!(names("model", "exception_weights"), ExceptionWeights::NAMES.to_vec());
         for name in names("spec", "backend") {
             assert!(SpecBackend::parse(name).is_ok(), "{name}");
         }

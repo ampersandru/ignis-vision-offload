@@ -16,6 +16,9 @@
 //   quant      the W8A8 product's error against the unquantized one (fp64 of BF16 x and BF16 W,
 //              W quantized per row as the converter does), reported with the weight-only error
 //              beside it; gated only by a loose sanity flag.
+//   grouped    (GitHub #341) up to four weights of one input in one launch (the 27B's q | k | gate |
+//              v) against one launch per segment, and the residual-add form against BF16(residual
+//              + the fp32 GEMM), both bit for bit.
 //   refusals   what the GEMM does not take.
 //
 // The linear shapes (spec image-model/02 acceptance 2: K and N in {64, 4096, 6144, 12288,
@@ -54,6 +57,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -410,6 +414,79 @@ void mechanics_arm(const Options &o, int tokens, int rows, int cols, bool f32_ou
   check(same, what + ": a second run agrees bit for bit");
 }
 
+// GitHub #341: up to four row-scale weights of one quantized input in one launch -- the 27B's
+// q | k | gate | v -- against one ignis_image_gemm_w8a8 per segment, every output bit for bit.
+void grouped_arm(int tokens, const std::vector<int> &rows, int cols) {
+  const std::vector<uint16_t> x = make_activations(static_cast<uint32_t>(800 + cols), tokens, cols, {});
+  DeviceBytes dx(x.size() * 2), dc(x.size()), ds(static_cast<std::size_t>(tokens) * 4);
+  upload(dx, x);
+  IMG_RC(ignis_image_quantize_tokens(dx.p, tokens, cols, dc.p, ds.as<float>(), nullptr));
+  std::vector<std::unique_ptr<DeviceBytes>> dw, alone, grouped;
+  std::vector<ignis_fp8_segment> segments;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const std::vector<uint8_t> w = make_weight(static_cast<uint32_t>(9100 + 17 * i), rows[i], cols, 0.004f);
+    dw.push_back(std::make_unique<DeviceBytes>(w.size()));
+    upload(*dw.back(), w);
+    const std::size_t bytes = static_cast<std::size_t>(tokens) * rows[i] * 2;
+    alone.push_back(std::make_unique<DeviceBytes>(bytes));
+    grouped.push_back(std::make_unique<DeviceBytes>(bytes));
+    MOE_CUDA(cudaMemset(grouped.back()->p, 0xFF, bytes));
+    IMG_RC(ignis_image_gemm_w8a8(dw.back()->p, rows[i], cols, dc.p, ds.as<float>(), tokens, alone.back()->p, 0, nullptr));
+    segments.push_back(ignis_fp8_segment{dw.back()->p, static_cast<uint32_t>(rows[i]), grouped.back()->p});
+  }
+  IMG_RC(ignis_image_gemm_w8a8_grouped(segments.data(), static_cast<uint32_t>(segments.size()), cols, dc.p,
+                                       ds.as<float>(), tokens, 0, nullptr));
+  MOE_CUDA(cudaDeviceSynchronize());
+  bool same = true;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const std::size_t bytes = static_cast<std::size_t>(tokens) * rows[i] * 2;
+    same = same && download<uint8_t>(grouped[i]->p, bytes) == download<uint8_t>(alone[i]->p, bytes);
+  }
+  std::string shape;
+  for (int r : rows) shape += (shape.empty() ? "" : " | ") + std::to_string(r);
+  std::printf("  grouped gemm [%s] x %d x %d tokens: %s\n", shape.c_str(), cols, tokens,
+              same ? "bit-identical to one launch per segment" : "DIFFERS from one launch per segment");
+  check(same, "grouped gemm [" + shape + "] x " + std::to_string(tokens) + " equals one launch per segment bit for bit");
+}
+
+// GitHub #341: residual[t][r] = BF16(residual[t][r] + y[t][r]) in place, y the fp32 GEMM -- the
+// output projections' residual add -- against the fp32 GEMM plus the add on the host, bit for bit.
+void add_arm(int tokens, int rows, int cols) {
+  const std::vector<uint8_t> w = make_weight(static_cast<uint32_t>(9500 + rows), rows, cols, 0.004f);
+  const std::vector<uint16_t> x = make_activations(static_cast<uint32_t>(900 + cols), tokens, cols, {});
+  std::vector<uint16_t> res(static_cast<std::size_t>(tokens) * rows);
+  for (std::size_t i = 0; i < res.size(); ++i) res[i] = f32_to_bf16(hash_uniform(9600, i, 3.0f));
+  DeviceBytes dw(w.size()), dx(x.size() * 2), dc(x.size()), ds(static_cast<std::size_t>(tokens) * 4),
+      dyf(res.size() * 4), dr(res.size() * 2);
+  upload(dw, w);
+  upload(dx, x);
+  upload(dr, res);
+  IMG_RC(ignis_image_quantize_tokens(dx.p, tokens, cols, dc.p, ds.as<float>(), nullptr));
+  IMG_RC(ignis_image_gemm_w8a8(dw.p, rows, cols, dc.p, ds.as<float>(), tokens, dyf.p, 1, nullptr));
+  IMG_RC(ignis_image_gemm_w8a8_add(dw.p, rows, cols, dc.p, ds.as<float>(), tokens, dr.p, nullptr));
+  MOE_CUDA(cudaDeviceSynchronize());
+  const auto yf = download<float>(dyf.p, res.size());
+  const auto got = download<uint16_t>(dr.p, res.size());
+  std::size_t off = 0;
+  for (std::size_t i = 0; i < res.size(); ++i) off += got[i] != f32_to_bf16(bf16_to_f32(res[i]) + yf[i]);
+  std::printf("  gemm add [%5d][%5d] x %4d tokens: %zu of %zu outputs off BF16(residual + y)\n", rows, cols, tokens, off,
+              res.size());
+  check(off == 0, "gemm add [" + std::to_string(rows) + "][" + std::to_string(cols) + "] x " + std::to_string(tokens) +
+                      " is BF16(residual + y) bit for bit");
+}
+
+void grouped_refusals() {
+  DeviceBytes dw(64 * 64 + 256 + 128), dc(64), dy(64 * 4);
+  float *s = reinterpret_cast<float *>(dy.p);
+  const ignis_fp8_segment ok{dw.p, 64, dy.p}, odd{dw.p, 40, dy.p}, no_y{dw.p, 64, nullptr};
+  const ignis_fp8_segment five[5] = {ok, ok, ok, ok, ok};
+  check(ignis_image_gemm_w8a8_grouped(&ok, 0, 64, dc.p, s, 1, 0, nullptr) != 0, "grouped gemm: no segment refused");
+  check(ignis_image_gemm_w8a8_grouped(five, 5, 64, dc.p, s, 1, 0, nullptr) != 0, "grouped gemm: five segments refused");
+  check(ignis_image_gemm_w8a8_grouped(&odd, 1, 64, dc.p, s, 1, 0, nullptr) != 0, "grouped gemm: rows off 16 refused");
+  check(ignis_image_gemm_w8a8_grouped(&no_y, 1, 64, dc.p, s, 1, 0, nullptr) != 0, "grouped gemm: NULL y refused");
+  check(ignis_image_gemm_w8a8_add(dw.p, 64, 64, dc.p, s, 1, nullptr, nullptr) != 0, "gemm add: NULL residual refused");
+}
+
 // Approximately normal: the sum of three uniforms, unit variance.
 float gaussian(uint32_t stream, uint64_t i) {
   return (hash_uniform(stream, 3 * i, 1.0f) + hash_uniform(stream, 3 * i + 1, 1.0f) + hash_uniform(stream, 3 * i + 2, 1.0f));
@@ -540,6 +617,15 @@ int main(int argc, char **argv) {
     mechanics_arm(o, 4096, 4096, 12288, false, config);
   }
   gemm_refusals();
+
+  std::printf("grouped segments and the residual add (GitHub #341, the 27B's BF16 exception matrices)\n");
+  grouped_arm(1, {64, 16, 64, 16}, 4096);
+  grouped_arm(300, {512, 128, 512, 128}, 5120);
+  grouped_arm(2048, {6144, 1024, 6144, 1024}, 5120);
+  grouped_arm(129, {1040}, 4096);
+  for (int tokens : {9, 1000, 2048}) add_arm(tokens, 5120, 6144);
+  add_arm(1, 64, 4096);
+  grouped_refusals();
 
   std::printf("quantization error against the unquantized BF16 product (synthetic inputs)\n");
   for (bool outliers : {false, true}) {

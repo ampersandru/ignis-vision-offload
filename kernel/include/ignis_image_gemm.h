@@ -31,6 +31,8 @@
 
 #include <stdint.h>
 
+#include "ignis_fp8_linear.h" /* ignis_fp8_segment */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -50,6 +52,20 @@ int32_t ignis_image_quantize_tokens(const void *x, uint32_t tokens, uint32_t col
  * `y_f32` selects fp32 output (else BF16). */
 int32_t ignis_image_gemm_w8a8(const void *weight, uint32_t rows, uint32_t cols, const void *codes,
                               const float *scales, uint32_t tokens, void *y, uint32_t y_f32, void *stream);
+
+/* GitHub #341: several row-scale weights of one quantized input in one launch -- the 27B's q | k |
+ * gate | v. Segment i is `weight` [rows][cols] written to its `y` exactly as ignis_image_gemm_w8a8
+ * would write it (the same instructions per output, so the same bits). 1..IGNIS_FP8_MAX_SEGMENTS
+ * segments, each held to ignis_image_gemm_w8a8's shape and alignment rules. */
+int32_t ignis_image_gemm_w8a8_grouped(const ignis_fp8_segment *segments, uint32_t count, uint32_t cols,
+                                      const void *codes, const float *scales, uint32_t tokens, uint32_t y_f32,
+                                      void *stream);
+
+/* GitHub #341: the residual add, residual[t][r] = BF16(residual[t][r] + y[t][r]) in place, y the fp32
+ * value ignis_image_gemm_w8a8 computes (one fp32 add, one rounding); `residual` BF16 [tokens][rows],
+ * 8-byte aligned. The output projections' form. */
+int32_t ignis_image_gemm_w8a8_add(const void *weight, uint32_t rows, uint32_t cols, const void *codes,
+                                  const float *scales, uint32_t tokens, void *residual, void *stream);
 
 /* Thread-local message from the most recent failed call. Never NULL. */
 const char *ignis_image_gemm_last_error(void);

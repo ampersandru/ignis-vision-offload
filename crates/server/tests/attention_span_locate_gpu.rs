@@ -189,7 +189,7 @@ fn attention_over_a_span_set_is_dumped_with_its_full_row() {
     let tokenizer = tokenizer_set.tokenizer();
     let thinking = ThinkingOptions { enable_thinking: false, ..ThinkingOptions::default() };
 
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: false })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: false, fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,

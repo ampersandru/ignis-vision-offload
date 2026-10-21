@@ -15,12 +15,15 @@
 //! (a long window's head is prefilled first, without logits, so a 32K window
 //! costs 1 GB of host memory rather than 16); `TAIL` must be a multiple of
 //! the chunk so the chunks are the ones a whole-window prefill cuts.
+//! `IGNIS_MODEL_EXCEPTION_WEIGHTS=fp8`, the server's own variable for
+//! `--model-exception-weights`, holds the BF16 exception tensors in FP8
+//! (GitHub #341); unset, they are held as stored, as the server's default.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use ignis_artifact::{CudaDevice, Reader, bind_text_scope_27b, materialize};
-use ignis_core::KvFormat;
+use ignis_artifact::{CudaDevice, ModelScope, Reader, bind_model_scope_27b_with, materialize};
+use ignis_core::{ExceptionWeights, KvFormat};
 use ignis_core::compute::ModelConfig;
 use ignis_core::model_load::load_qwen38_27b;
 use ignis_core::seq::{SeqPool, SeqPoolBudget};
@@ -52,7 +55,12 @@ fn main() {
     let max_context = longest.div_ceil(64) * 64 + 64;
 
     let reader = Reader::open(Path::new(&args[1])).unwrap_or_else(|e| panic!("open artifact: {e}"));
-    let (plan, handles) = bind_text_scope_27b(&reader).unwrap_or_else(|e| panic!("bind: {e}"));
+    let exceptions = std::env::var("IGNIS_MODEL_EXCEPTION_WEIGHTS")
+        .map_or(Ok(ExceptionWeights::default()), |v| ExceptionWeights::parse(&v))
+        .unwrap_or_else(|e| panic!("IGNIS_MODEL_EXCEPTION_WEIGHTS: {e}"));
+    eprintln!("exception weights: {exceptions}");
+    let scope = ModelScope { draft: None, vision: false, fp8_exceptions: exceptions.is_fp8() };
+    let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
     let mut device = CudaDevice::create(0).unwrap_or_else(|e| panic!("CUDA: {e}"));
     let artifact = materialize(&reader, &plan, &mut device, None).unwrap_or_else(|e| panic!("materialize: {e}"));
     let model = load_qwen38_27b(&reader, &artifact, &handles, prefill_chunk, max_context, kv_format)

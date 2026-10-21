@@ -71,7 +71,8 @@ Each lever is an A/B on the 5090, kept only if it is faster and passes the quali
      assumed ~0.65 ns per key (60-70% of the FP8 peak; mkyt's 0.93 ns at 400 W scaled to default clocks).
    - Measured with the 2,048 chunk: the fixed part is already ~82-85 µs at 46K-105K and ~106 µs at the 8K cell,
      whose excess is per request (~80 ms) and whose request is the first after the load. The 8K criterion above
-     measures that, not the per-token term.
+     measures that, not the per-token term. With the exception tensors in FP8 too (lever 1, ADR 0065, opt-in): ~76-77
+     µs at 46K-105K, ~103 at 8K (finding 2026-10-21-the-bf16-exception-tensors-in-fp8).
    - 12,500 at 60K would need a fixed part of ~53 µs at the measured attention (~66 at 0.65 ns). That push past
      ≤ 85 µs is **phase 2** (owner, 2026-10-21; `docs/specs/27b-16gb/phase2-notes.md`). This ticket stops at AC 2's
      target.

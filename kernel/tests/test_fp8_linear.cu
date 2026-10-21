@@ -7,6 +7,10 @@
 //   swiglu   the shared expert's gate/up pair, silu(g) * u in BF16, against fp64.
 //   grouped  (GitHub #306) GDN's four projections in one grouped GEMV launch against one linear
 //            each, bit for bit, 1..8 tokens; and its refusals.
+//   add      (GitHub #341) the residual add on both routes against BF16(residual + the fp32
+//            linear), bit for bit.
+//   quantize (GitHub #341) a BF16 weight to the row-scale-v1 payload, every code and scale
+//            against the contract; and its refusals.
 //
 // Tolerance: E4M3 x BF16 products are exact in fp32, so the error is fp32 accumulation, bounded
 // by (cols / 8 + 64) u sum|terms| (fp8_test_common.h), plus the output's own rounding: one fp32
@@ -21,9 +25,11 @@
 #include "ignis_moe.h"
 #include "moe_fixture.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -171,6 +177,107 @@ void grouped_arm(int tokens, bool f32_out) {
   }
 }
 
+// GitHub #341: the residual add against the fp32 linear plus the add on the host, bit for bit, on
+// both routes.
+void linear_add_arm(int tokens) {
+  const int rows = 5120, cols = 6144;
+  const Fp8Matrix m = make_fp8(4100, rows, cols, 0.004f);
+  std::vector<uint16_t> x(static_cast<std::size_t>(tokens) * cols), res(static_cast<std::size_t>(tokens) * rows);
+  for (std::size_t i = 0; i < x.size(); ++i) x[i] = f32_to_bf16(hash_uniform(79, i, 2.0f));
+  for (std::size_t i = 0; i < res.size(); ++i) res[i] = f32_to_bf16(hash_uniform(80, i, 3.0f));
+  DeviceBytes dw(m.payload.size()), dx(x.size() * 2), dyf(res.size() * 4), dr(res.size() * 2);
+  upload(dw, m.payload);
+  upload(dx, x);
+  upload(dr, res);
+  MOE_RC(ignis_fp8_linear(dw.p, rows, cols, dx.p, tokens, dyf.p, 1, nullptr));
+  MOE_RC(ignis_fp8_linear_add(dw.p, rows, cols, dx.p, tokens, dr.p, nullptr));
+  MOE_CUDA(cudaDeviceSynchronize());
+  const auto yf = download<float>(dyf.p, res.size());
+  const auto got = download<uint16_t>(dr.p, res.size());
+  std::size_t off = 0;
+  for (std::size_t i = 0; i < res.size(); ++i) off += got[i] != f32_to_bf16(bf16_to_f32(res[i]) + yf[i]);
+  std::printf("  linear add [%d][%d] x %d tokens: %zu of %zu outputs off BF16(residual + y)\n", rows, cols, tokens, off,
+              res.size());
+  check(off == 0, "fp8 linear add x " + std::to_string(tokens) + " is BF16(residual + y) bit for bit");
+}
+
+// The E4M3FN code nearest to v (ties to the even code), saturated to +-448, the sign kept on a
+// zero: what cvt.rn.satfinite gives for a finite fp32. By search over the 127 magnitudes, so it shares no arithmetic with the
+// kernel.
+uint8_t e4m3_nearest(float v) {
+  const float a = std::fabs(v);
+  uint8_t best = 0;
+  float best_err = a;
+  for (uint8_t c = 1; c < 0x7F; ++c) {
+    const float err = std::fabs(e4m3_to_f32(c) - a);
+    if (err < best_err || (err == best_err && (c & 1) == 0)) {
+      best = c;
+      best_err = err;
+    }
+  }
+  return static_cast<uint8_t>(best | (std::signbit(v) ? 0x80 : 0));
+}
+
+// The least BF16 >= q (q finite and positive).
+uint16_t bf16_at_least(float q) {
+  uint16_t b = f32_to_bf16(q);
+  if (bf16_to_f32(b) < q) ++b;
+  return b;
+}
+
+// GitHub #341: a BF16 weight to the row-scale-v1 payload, every code and scale against the host's
+// own reading of the contract -- scale = the least BF16 >= fl32(amax / 448) (1 for an all-zero
+// row), code = E4M3(fl32(w / scale)), nearest even, saturated. Rows of very different magnitude, an
+// all-zero row and a row of one outlier; a second run agrees bit for bit; and its refusals.
+void quantize_arm(int rows, int cols) {
+  std::vector<uint16_t> w(static_cast<std::size_t>(rows) * cols);
+  for (int r = 0; r < rows; ++r) {
+    const float mag = std::ldexp(1.0f, (r % 13) - 9);
+    for (int c = 0; c < cols; ++c) {
+      const std::size_t i = static_cast<std::size_t>(r) * cols + c;
+      w[i] = f32_to_bf16(r == 1 ? 0.0f : r == 2 ? (c == 77 ? 3.5f : hash_uniform(91, i, 0.01f)) : hash_uniform(90, i, mag));
+    }
+  }
+  const uint64_t bytes = ignis_fp8_payload_bytes(rows, cols);
+  const std::size_t scale_at = (static_cast<std::size_t>(rows) * cols + 255) / 256 * 256;
+  check(bytes == scale_at + static_cast<uint64_t>(rows) * 2, "fp8 payload bytes: codes, padding to 256, BF16 scales");
+  DeviceBytes dw(w.size() * 2), dp(bytes);
+  upload(dw, w);
+  MOE_CUDA(cudaMemset(dp.p, 0xA5, bytes));
+  MOE_RC(ignis_fp8_quantize_rows(dw.p, rows, cols, dp.p, nullptr));
+  MOE_CUDA(cudaDeviceSynchronize());
+  const auto got = download<uint8_t>(dp.p, bytes);
+  MOE_CUDA(cudaMemset(dp.p, 0x5A, bytes));
+  MOE_RC(ignis_fp8_quantize_rows(dw.p, rows, cols, dp.p, nullptr));
+  MOE_CUDA(cudaDeviceSynchronize());
+  check(download<uint8_t>(dp.p, bytes) == got, "fp8 quantize: a second run agrees bit for bit");
+
+  int bad_codes = 0, bad_scales = 0;
+  for (int r = 0; r < rows; ++r) {
+    float amax = 0.0f;
+    for (int c = 0; c < cols; ++c) amax = std::max(amax, std::fabs(bf16_to_f32(w[static_cast<std::size_t>(r) * cols + c])));
+    const uint16_t scale = amax == 0.0f ? f32_to_bf16(1.0f) : bf16_at_least(amax / 448.0f);
+    uint16_t have;
+    std::memcpy(&have, &got[scale_at + 2 * static_cast<std::size_t>(r)], 2);
+    if (have != scale) ++bad_scales;
+    for (int c = 0; c < cols; ++c) {
+      const std::size_t i = static_cast<std::size_t>(r) * cols + c;
+      if (got[i] != e4m3_nearest(bf16_to_f32(w[i]) / bf16_to_f32(scale))) ++bad_codes;
+    }
+  }
+  std::printf("  quantize [%5d][%5d]: %d scale(s) and %d code(s) off the contract\n", rows, cols, bad_scales, bad_codes);
+  check(bad_scales == 0 && bad_codes == 0, "fp8 quantize [" + std::to_string(rows) + "][" + std::to_string(cols) + "] matches the contract");
+  check(std::all_of(got.begin() + static_cast<std::ptrdiff_t>(rows) * cols, got.begin() + static_cast<std::ptrdiff_t>(scale_at),
+                    [](uint8_t b) { return b == 0; }),
+        "fp8 quantize: the padding before the scales is zero");
+  if (rows == 64) {
+    check(ignis_fp8_quantize_rows(dw.p, rows, 100, dp.p, nullptr) != 0, "fp8 quantize: cols off 16 refused");
+    check(ignis_fp8_quantize_rows(dw.p, 0, cols, dp.p, nullptr) != 0, "fp8 quantize: zero rows refused");
+    check(ignis_fp8_quantize_rows(static_cast<const char *>(dw.p) + 2, rows, cols, dp.p, nullptr) != 0,
+          "fp8 quantize: a weight off 16 bytes refused");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -181,8 +288,15 @@ int main() {
   for (int tokens : {1, 3, 8, 9, 200, 2048}) linear_arm(640, 2560, tokens, tokens % 2 == 1);
   for (int tokens : {1, 8, 129, 1000}) linear_arm(2560, 640, tokens, true);
   for (int tokens : {2, 300}) linear_arm(48, 2560, tokens, false);
+  // GitHub #341: the 27B's exception shapes, on both routes.
+  for (int tokens : {8, 9, 128, 200}) linear_arm(5120, 6144, tokens, tokens % 2 == 0);
+  for (int tokens : {1, 9, 128}) linear_arm(6144, 5120, tokens, false);
   for (int tokens : {1, 3, 8, 64, 1024}) swiglu_arm(tokens);
   for (int tokens : {1, 2, 3, 5, 8}) grouped_arm(tokens, tokens == 3);
+  for (int tokens : {1, 3, 8, 9, 200}) linear_add_arm(tokens);
+  quantize_arm(64, 5120);
+  quantize_arm(16, 6144);
+  quantize_arm(3, 2560);
   if (g_failed != 0) {
     std::fprintf(stderr, "test_fp8_linear: %d failure(s)\n", g_failed);
     return 1;

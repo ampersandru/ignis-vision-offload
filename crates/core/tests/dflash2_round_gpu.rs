@@ -45,8 +45,8 @@ mod snapshot_blob;
 use std::path::Path;
 
 use ignis_artifact::{
-    bind_model_scope_27b, materialize, text_scope_27b, CudaDevice, DraftModule, FrontendSet, MaterializedArtifact,
-    ObjectHandle, Reader,
+    bind_model_scope_27b, bind_model_scope_27b_with, materialize, text_scope_27b, CudaDevice, DraftModule, FrontendSet,
+    MaterializedArtifact, ModelScope, ObjectHandle, Reader,
 };
 use ignis_core::compute::ModelConfig;
 use ignis_core::gpu_profile;
@@ -282,15 +282,10 @@ fn window_state(seq: &Seq<'_>) -> (Vec<u8>, u64, u64) {
     )
 }
 
-#[test]
-#[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
-fn the_drafter_proposes_from_its_window_and_the_text_stays_the_spec_off_text() {
-    let path = Path::new(ARTIFACT);
-    if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
-        return;
-    }
-    let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
-    let frontend = FrontendSet::from_reader(&reader).unwrap_or_else(|e| panic!("frontend: {e}"));
+/// The canary prompts in the model's chat format, and the two stop markers'
+/// ids (the turn ends at either; the server stops there).
+fn chat_canaries(reader: &Reader) -> (Vec<Vec<i32>>, Vec<i32>) {
+    let frontend = FrontendSet::from_reader(reader).unwrap_or_else(|e| panic!("frontend: {e}"));
     let encode = |text: &str| -> Vec<i32> {
         frontend
             .tokenizer()
@@ -301,13 +296,24 @@ fn the_drafter_proposes_from_its_window_and_the_text_stays_the_spec_off_text() {
             .collect()
     };
     assert_eq!(encode("<|im_start|>").len(), 1, "the chat markers must tokenize as special tokens");
-    // The turn ends at either marker; the server stops there.
     let stop_ids: Vec<i32> = ["<|im_end|>", "<|endoftext|>"].iter().flat_map(|marker| encode(marker)).collect();
     assert_eq!(stop_ids.len(), 2, "the stop markers must tokenize as special tokens");
-    let canaries: Vec<Vec<i32>> = CANARY_PROMPTS
+    let canaries = CANARY_PROMPTS
         .iter()
         .map(|prompt| encode(&format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")))
         .collect();
+    (canaries, stop_ids)
+}
+
+#[test]
+#[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
+fn the_drafter_proposes_from_its_window_and_the_text_stays_the_spec_off_text() {
+    let path = Path::new(ARTIFACT);
+    if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
+        return;
+    }
+    let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
+    let (canaries, stop_ids) = chat_canaries(&reader);
     // Width 8 carries the four canaries twice: the suite has four prompts.
     let prompts8: Vec<Vec<i32>> = canaries.iter().chain(&canaries).cloned().collect();
     assert!(prompts8.iter().all(|p| p.len() + TOTAL <= MAX_CONTEXT as usize), "a canary outgrows the context");
@@ -629,7 +635,7 @@ fn the_shortlist_head_drafts_and_the_text_stays_the_spec_off_text() {
             unreachable!("skip_or_fail panics under the profile");
         }
     };
-    let artifact = match materialize(&reader, &plan, &mut device, None) {
+    let mut artifact = match materialize(&reader, &plan, &mut device, None) {
         Ok(artifact) => artifact,
         Err(e) => {
             if gpu_profile::skip_or_fail(&format!("materialize text + dflash2 + shortlist head: {e}")) {
@@ -668,6 +674,10 @@ fn the_shortlist_head_drafts_and_the_text_stays_the_spec_off_text() {
     assert_equivalent(&model, &probe, MAX_CONTEXT, &canaries[..WIDTH], &off, &run.emitted, "shortlist head");
     let accepted = report_acceptance("shortlist head", &run);
     assert!(accepted > 0, "no draft from the shortlist head ever landed");
+    // The tests after this one in the binary materialize their own: free this one's arena.
+    drop(capture);
+    drop(model);
+    let _ = artifact.release_arena(&mut device);
 }
 
 #[test]
@@ -818,6 +828,59 @@ fn hq_verify_rounds_clear_the_ring_bits_of_every_rejected_draft() {
              {rejected_wrapped} of them on a wrapped ring"
         );
         assert!(rejected_wrapped > 0, "no round rejected a column on a wrapped ring: the clear this test exists for never ran");
+    }
+    let _ = artifact.release_arena(&mut device);
+}
+
+/// GitHub #341: with the BF16 exception tensors in FP8 (`--model-exception-weights
+/// fp8`, ADR 0065), a verify round of two lanes or more has more than 8 rows, so
+/// those projections quantize their activations inside the captured verify
+/// graph (the W8A8 route). At widths 1, 2 and 8 a load that captured nothing
+/// runs the same drafter rounds eagerly, bit for bit.
+#[test]
+#[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
+fn with_fp8_exception_tensors_the_verify_graphs_replay_the_eager_rounds() {
+    let path = Path::new(ARTIFACT);
+    if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
+        return;
+    }
+    let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
+    let (canaries, stop_ids) = chat_canaries(&reader);
+    let prompts8: Vec<Vec<i32>> = canaries.iter().chain(&canaries).cloned().collect();
+    let scope = ModelScope { draft: Some(DraftModule::Dflash2), vision: false, fp8_exceptions: true };
+    let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
+    let mut device = match CudaDevice::create(0) {
+        Ok(device) => device,
+        Err(e) => {
+            if gpu_profile::skip_or_fail(&format!("CUDA unavailable: {e}")) {
+                return;
+            }
+            unreachable!("skip_or_fail panics under the profile");
+        }
+    };
+    let mut artifact = match materialize(&reader, &plan, &mut device, None) {
+        Ok(artifact) => artifact,
+        Err(e) => {
+            if gpu_profile::skip_or_fail(&format!("materialize text + dflash2, fp8 exceptions: {e}")) {
+                return;
+            }
+            unreachable!("skip_or_fail panics under the profile");
+        }
+    };
+    const WIDTHS: [usize; 3] = [1, 2, 8];
+    let eager: Vec<SpecRun> = {
+        let model = load_drafter(&reader, &artifact, &handles);
+        WIDTHS.iter().map(|&width| spec_on(&model, &drafter_pool(width as u32), &prompts8[..width], &stop_ids, TOTAL, false)).collect()
+    };
+    {
+        let model = load_drafter(&reader, &artifact, &handles);
+        for (&width, eager) in WIDTHS.iter().zip(eager) {
+            let pool = drafter_pool(width as u32);
+            let _ = capture_decode_graphs(&model, &pool).unwrap_or_else(|e| panic!("capture: {e}"));
+            let graph = spec_on(&model, &pool, &prompts8[..width], &stop_ids, TOTAL, true);
+            report_acceptance(&format!("fp8 exceptions, width {width}"), &graph);
+            assert_eq!(eager, graph, "width {width}: the verify graph's replay diverged from eager");
+        }
     }
     let _ = artifact.release_arena(&mut device);
 }

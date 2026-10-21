@@ -28,6 +28,7 @@ pub mod device;
 pub mod direct;
 pub mod fixture;
 pub mod flash_next;
+pub mod fp8;
 pub mod frontend;
 pub mod inventory;
 pub mod materializer;
@@ -50,7 +51,7 @@ pub mod kv_budget;
 
 pub use binding::{Binding, Bf16View, Nvfp4View};
 pub use binder::{
-    Binder, DevicePlacement, ExpertPoolPlacement, HostMappedPlacement, HostPlacement, MaterializationPlan,
+    Binder, DeviceEncoding, DevicePlacement, ExpertPoolPlacement, HostMappedPlacement, HostPlacement, MaterializationPlan,
     ObjectHandle, Residence, StreamedPlacement,
 };
 pub use checksum::{

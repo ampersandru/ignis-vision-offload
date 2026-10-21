@@ -14,6 +14,7 @@
 // `CudaDevice` skips unless `IGNIS_TEST_CUDA=1` and the GPU is free).
 
 #include "ignis_device.h"
+#include "ignis_fp8_linear.h"
 #include "ignis_seq.h"
 #include "shared_library.h"
 
@@ -192,6 +193,18 @@ extern "C" int32_t ignis_device_copy_h2d(struct ignis_device *d, void *dst, cons
       cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, d->load_stream);
   if (err != cudaSuccess) {
     return log_cuda_error(-1, "cudaMemcpyAsync(H2D)", err);
+  }
+  return 0;
+}
+
+extern "C" int32_t ignis_device_fp8_quantize_rows(struct ignis_device *d, const void *w, uint32_t rows,
+                                                  uint32_t cols, void *payload) {
+  if (d == nullptr || !ensure_device(d)) {
+    return -1;
+  }
+  if (ignis_fp8_quantize_rows(w, rows, cols, payload, d->load_stream) != 0) {
+    std::fprintf(stderr, "ignis_device_fp8_quantize_rows: %s\n", ignis_fp8_linear_last_error());
+    return -1;
   }
   return 0;
 }

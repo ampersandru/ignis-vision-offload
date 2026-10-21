@@ -25,6 +25,29 @@ pub enum Residence {
     HostMapped,
 }
 
+/// How a device tensor is held in the arena (GitHub #341).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeviceEncoding {
+    /// The stored payload, byte for byte.
+    #[default]
+    Stored,
+    /// A BF16 matrix converted at load to the FP8 row-scale encoding
+    /// ([`crate::fp8`]) in these row blocks: one payload per block, each at a
+    /// multiple of 256 bytes (the 27B's BF16 exception tensors).
+    Fp8Rows(&'static [u32]),
+}
+
+impl DeviceEncoding {
+    /// The format and layout a tensor stored as `format` / `layout` is held
+    /// as on the device under this encoding.
+    pub fn held_as(self, format: NumericFormat, layout: StorageLayout) -> (NumericFormat, StorageLayout) {
+        match self {
+            Self::Stored => (format, layout),
+            Self::Fp8Rows(_) => (NumericFormat::Fp8E4M3FnRowBf16S, StorageLayout::RowScaleV1),
+        }
+    }
+}
+
 /// A stable per-object handle (its directory index in `Reader::objects()`
 /// order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,11 +63,14 @@ pub struct DevicePlacement {
     pub handle: ObjectHandle,
     /// Offset inside the device arena (alignment-aware, binder-computed).
     pub offset: u64,
-    /// Exact stored payload length.
+    /// The bytes it takes in the arena: the stored payload's, or its
+    /// conversion's ([`DevicePlacement::encoding`]).
     pub bytes: u64,
     /// File alignment applied to this object's offset (its layout's,
     /// [`crate::tensor_alignment`]).
     pub alignment: u64,
+    /// How it is held: as stored, or converted at load (GitHub #341).
+    pub encoding: DeviceEncoding,
 }
 
 /// One host-retained placement: its bytes stay in RAM.
@@ -271,6 +297,44 @@ impl<'a> Binder<'a> {
             offset,
             bytes: tensor.bytes,
             alignment,
+            encoding: DeviceEncoding::Stored,
+        });
+        self.capacity = capacity;
+        self.planned[handle.index] = true;
+        Ok(())
+    }
+
+    /// Place a consumed BF16 matrix into the device arena converted to the
+    /// FP8 row-scale encoding in row `blocks` (GitHub #341): its slot is the
+    /// conversion's bytes, 256-byte aligned. Refuses anything but a rank-2
+    /// contiguous BF16 tensor whose columns are a multiple of 16 and whose
+    /// rows the blocks cover exactly.
+    pub fn materialize_on_device_as_fp8(&mut self, handle: ObjectHandle, blocks: &'static [u32]) -> Result<()> {
+        self.claim_placement(handle)?;
+        let tensor = match &self.reader.objects()[handle.index] {
+            Object::Tensor(t) => t,
+            Object::Resource(r) => return Err(fail(format!("resource cannot be converted to FP8: {}", r.name))),
+        };
+        let name = &tensor.name;
+        if tensor.format != NumericFormat::Bf16 || tensor.layout != StorageLayout::ContiguousLeV1 || tensor.shape.len() != 2 {
+            return Err(fail(format!("only a rank-2 contiguous BF16 tensor converts to FP8: {name}")));
+        }
+        let (rows, cols) = (tensor.shape[0], tensor.shape[1]);
+        if cols == 0 || cols % 16 != 0 || cols > u64::from(u32::MAX) {
+            return Err(fail(format!("an FP8 conversion's columns are a positive multiple of 16: {name}")));
+        }
+        if blocks.iter().map(|&b| u64::from(b)).sum::<u64>() != rows || blocks.contains(&0) {
+            return Err(fail(format!("the FP8 row blocks {blocks:?} do not cover the {rows} rows of {name}")));
+        }
+        let bytes = crate::fp8::block_offsets(blocks, cols as u32)[blocks.len()];
+        let offset = align_up(self.capacity, 256, "materialization plan offset")?;
+        let capacity = checked_add(offset, bytes, "materialization plan size")?;
+        self.device_objects.push(DevicePlacement {
+            handle,
+            offset,
+            bytes,
+            alignment: 256,
+            encoding: DeviceEncoding::Fp8Rows(blocks),
         });
         self.capacity = capacity;
         self.planned[handle.index] = true;
@@ -512,6 +576,57 @@ mod tests {
             .expect("resource");
         binder.retain_on_host(resource).expect("retain resource");
         bind_devices(binder);
+    }
+
+    /// GitHub #341: a BF16 matrix placed converted to FP8 takes its
+    /// conversion's bytes at a 256-byte offset; anything else is refused.
+    #[test]
+    fn a_bf16_matrix_converts_to_fp8_row_blocks_and_nothing_else_does() {
+        let objects = vec![
+            fixture::FixtureObject::Tensor {
+                name: "w/a",
+                shape: vec![4, 8],
+                format: "BF16",
+                layout: "contiguous-le-v1",
+                offset: 0,
+                bytes: 64,
+            },
+            fixture::FixtureObject::Tensor {
+                name: "w/b",
+                shape: vec![48, 64],
+                format: "BF16",
+                layout: "contiguous-le-v1",
+                offset: 256,
+                bytes: 48 * 64 * 2,
+            },
+        ];
+        let artifact = fixture::write_fixture(&objects, &vec![0u8; 256 + 48 * 64 * 2], "fp8-rows").expect("write");
+        let reader = Reader::open(&artifact.path).expect("open");
+        let mut binder = Binder::new(&reader);
+        let a = binder.require_tensor("w/a", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8]).expect("a");
+        binder.materialize_on_device(a).expect("a stored");
+        let b = binder.require_tensor("w/b", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[48, 64]).expect("b");
+        assert!(binder.materialize_on_device_as_fp8(b, &[16, 16]).is_err(), "blocks short of the rows");
+        let plan_before = binder.plan();
+        assert_eq!(plan_before.device_objects.len(), 1, "a refused conversion places nothing");
+        binder.materialize_on_device_as_fp8(b, &[16, 32]).expect("b converted");
+        let plan = binder.finish().expect("all placed");
+        let placed = plan.device_objects[1];
+        assert_eq!(placed.encoding, DeviceEncoding::Fp8Rows(&[16, 32]));
+        assert_eq!(placed.offset, 256);
+        assert_eq!(placed.bytes, crate::fp8::block_offsets(&[16, 32], 64)[2]);
+        assert_eq!(plan.device_capacity_bytes, 256 + placed.bytes);
+        assert_eq!(plan.device_objects[0].encoding, DeviceEncoding::Stored);
+
+        let mut binder = Binder::new(&reader);
+        let a = binder.require_tensor("w/a", NumericFormat::Bf16, StorageLayout::ContiguousLeV1, &[4, 8]).expect("a");
+        assert!(binder.materialize_on_device_as_fp8(a, &[4]).is_err(), "columns off 16");
+        let (_fixture, reader) = fixture_reader("fp8-rows-nvfp4");
+        let mut binder = Binder::new(&reader);
+        let n = binder
+            .require_tensor("w/nvfp4", NumericFormat::Nvfp4, StorageLayout::BlockScaleK16M128x4V1, &[128, 64])
+            .expect("nvfp4");
+        assert!(binder.materialize_on_device_as_fp8(n, &[128]).is_err(), "not BF16");
     }
 
     /// ADR 0002 happy path: every object consumed and placed -> `finish`

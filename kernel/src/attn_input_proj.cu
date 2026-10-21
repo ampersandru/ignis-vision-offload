@@ -16,7 +16,8 @@
 // defined, matching that no vendored code here calls them.
 //
 // P1-11 (GitHub #47) vendors the NVFP4 and BF16 arms (their dispatch headers
-// need no workspace beyond NVFP4's private W4A4 route).
+// need no workspace beyond NVFP4's private W4A4 route). GitHub #341 adds an
+// FP8 arm of ours, the BF16 parent converted at load (kernel/src/fp8_exception.h).
 
 #include "ninfer/ops/attn_input_proj.h"
 
@@ -24,6 +25,10 @@
 #include "ops/attn_input_proj/nvfp4/nvfp4_attn_input_plan.h"
 #include "ops/linear/nvfp4/nvfp4_config.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
+
+#include "fp8_exception.h"
+#include "ignis_fp8_linear.h"
+#include "ignis_image_gemm.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -115,8 +120,55 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& q, Te
         return;
     }
 
+    if (weight.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
+        namespace fe = ignis::fp8_exception;
+        const std::int32_t cols = x.ne[1];
+        if (cols <= 0) { throw std::invalid_argument("attn_input_proj: T must be positive"); }
+        if (policy == LinearPolicy::AllowA4) {
+            throw std::invalid_argument("FP8 attn_input_proj admits only A16 or A8");
+        }
+        require_matrix(x, fe::kHidden, cols, "x");
+        require_matrix(q, 6144, cols, "q");
+        require_matrix(gate, 6144, cols, "gate");
+        require_matrix(k, 1024, cols, "k");
+        require_matrix(v, 1024, cols, "v");
+        const fe::QkgvLayout layout = fe::qkgv_layout();
+        fe::require_weight(weight, fe::kQkgvRows, fe::kHidden, layout.at[fe::kQkgvSegments],
+                           "attn_input_proj");
+        const auto* base = static_cast<const std::uint8_t*>(weight.qdata);
+        void* const ys[fe::kQkgvSegments] = {q.data, k.data, gate.data, v.data};
+        ignis_fp8_segment segments[fe::kQkgvSegments];
+        for (int i = 0; i < fe::kQkgvSegments; ++i) {
+            segments[i] = ignis_fp8_segment{base + layout.at[i], fe::kQkgvSegmentRows[i], ys[i]};
+        }
+        std::int32_t rc = 0;
+        const char* (*last_error)() = ignis_fp8_linear_last_error;
+        if (fe::quantizes(policy, cols)) {
+            if (workspace == nullptr) {
+                throw std::invalid_argument("FP8 W8A8 attn_input_proj requires caller workspace");
+            }
+            auto scope = workspace->scope();
+            const fe::W8a8Workspace scratch = fe::allocate_w8a8_workspace(*workspace, cols, fe::kHidden);
+            last_error = ignis_image_gemm_last_error;
+            rc = ignis_image_quantize_tokens(x.data, cols, fe::kHidden, scratch.codes, scratch.scales, stream);
+            if (rc == 0) {
+                rc = ignis_image_gemm_w8a8_grouped(segments, fe::kQkgvSegments, fe::kHidden, scratch.codes,
+                                                   scratch.scales, cols, 0, stream);
+            }
+        } else if (cols <= fe::kGemvTokens) {
+            rc = ignis_fp8_linear_grouped(segments, fe::kQkgvSegments, fe::kHidden, x.data, cols, 0, stream);
+        } else {
+            for (int i = 0; i < fe::kQkgvSegments && rc == 0; ++i) {
+                rc = ignis_fp8_linear(segments[i].weight, segments[i].rows, fe::kHidden, x.data, cols,
+                                      segments[i].y, 0, stream);
+            }
+        }
+        if (rc != 0) { throw std::runtime_error(std::string("attn_input_proj (FP8): ") + last_error()); }
+        return;
+    }
+
     throw std::invalid_argument(
-        "attn_input_proj: unsupported parent weight qtype (only NVFP4/BF16 are vendored here)");
+        "attn_input_proj: unsupported parent weight qtype (only NVFP4/BF16/FP8 are here)");
 }
 
 } // namespace
@@ -143,11 +195,17 @@ std::size_t attn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::in
             throw std::invalid_argument("attn_input_proj workspace: unsupported NVFP4 profile");
         }
         return detail::nvfp4_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
+    case QType::FP8_E4M3FN_ROW_BF16S:
+        if (parent_rows != ignis::fp8_exception::kQkgvRows || input_rows != ignis::fp8_exception::kHidden ||
+            policy == LinearPolicy::AllowA4) {
+            throw std::invalid_argument("attn_input_proj workspace: unsupported FP8 profile");
+        }
+        return ignis::fp8_exception::workspace_capacity_bytes(policy, max_tokens, input_rows);
     default:
         break;
     }
     throw std::invalid_argument(
-        "attn_input_proj workspace: unsupported parent qtype (only NVFP4/BF16 are vendored here)");
+        "attn_input_proj workspace: unsupported parent qtype (only NVFP4/BF16/FP8 are here)");
 }
 
 void attn_input_proj(const Tensor& x, const Weight& query_key_gate_value_weight, Tensor& q,

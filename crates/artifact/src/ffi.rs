@@ -51,6 +51,16 @@ unsafe extern "C" {
     /// instead of spinning).
     pub fn ignis_device_sync(d: *mut IgnisDevice) -> i32;
 
+    /// GitHub #341: enqueue the FP8 row quantizer on the load stream (a BF16
+    /// weight on the device to its row-scale payload).
+    pub fn ignis_device_fp8_quantize_rows(
+        d: *mut IgnisDevice,
+        w: *const c_void,
+        rows: u32,
+        cols: u32,
+        payload: *mut c_void,
+    ) -> i32;
+
     /// Free / total device memory in bytes (cudaMemGetInfo).
     pub fn ignis_device_mem_info(
         d: *mut IgnisDevice,

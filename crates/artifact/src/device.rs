@@ -131,6 +131,20 @@ pub trait Device {
     /// side [`crate::DIRECT_IO_ALIGNMENT`]-aligned.
     fn allocate_host_mapped(&mut self, bytes: u64) -> Result<HostMappedBuffer>;
 
+    /// GitHub #341: the BF16 weight `[rows][cols]` at `src` + `src_offset` to
+    /// its FP8 row-scale payload at `dst` + `dst_offset` ([`crate::fp8`]), in
+    /// order after the copies before it (call [`Device::synchronize`] before
+    /// reading it).
+    fn quantize_fp8_rows(
+        &mut self,
+        src: &DeviceBuffer,
+        src_offset: u64,
+        rows: u32,
+        cols: u32,
+        dst: &DeviceBuffer,
+        dst_offset: u64,
+    ) -> Result<()>;
+
     /// Release a mapped host buffer this device produced.
     fn free_host_mapped(&mut self, buffer: HostMappedBuffer) -> Result<()>;
 
@@ -247,6 +261,24 @@ impl Device for CpuDevice {
             .ok_or_else(|| fail("host-mapped buffer was not allocated by this device"))?;
         self.host_mapped.swap_remove(index);
         Ok(())
+    }
+
+    fn quantize_fp8_rows(
+        &mut self,
+        src: &DeviceBuffer,
+        src_offset: u64,
+        rows: u32,
+        cols: u32,
+        dst: &DeviceBuffer,
+        dst_offset: u64,
+    ) -> Result<()> {
+        let words = rows as usize * cols as usize;
+        let mut bf16 = vec![0u8; words * 2];
+        self.copy_d2h(src, src_offset, &mut bf16)?;
+        let w: Vec<u16> = bf16.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+        let mut payload = vec![0u8; crate::fp8::payload_bytes(rows, cols) as usize];
+        crate::fp8::quantize_rows(&w, rows, cols, &mut payload);
+        self.copy_h2d(dst, dst_offset, &payload)
     }
 }
 
@@ -369,6 +401,30 @@ impl CudaDevice {
 
 #[cfg(feature = "cuda")]
 impl Device for CudaDevice {
+    fn quantize_fp8_rows(
+        &mut self,
+        src: &DeviceBuffer,
+        src_offset: u64,
+        rows: u32,
+        cols: u32,
+        dst: &DeviceBuffer,
+        dst_offset: u64,
+    ) -> Result<()> {
+        let rc = unsafe {
+            crate::ffi::ignis_device_fp8_quantize_rows(
+                self.handle,
+                src.offset_ptr(src_offset) as *const c_void,
+                rows,
+                cols,
+                dst.offset_mut_ptr(dst_offset) as *mut c_void,
+            )
+        };
+        if rc != 0 {
+            return Err(fail(format!("ignis_device_fp8_quantize_rows([{rows}][{cols}]) failed")));
+        }
+        Ok(())
+    }
+
     fn allocate(&mut self, bytes: u64) -> Result<DeviceBuffer> {
         let mut ptr: *mut c_void = std::ptr::null_mut();
         let rc = unsafe { crate::ffi::ignis_device_alloc(self.handle, bytes, &mut ptr) };

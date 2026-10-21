@@ -190,6 +190,7 @@ async fn main() {
         // knobs.
         rope_scaling: _,
         prefill_attention: _,
+        exception_weights: _,
         media: _,
         request_timeout_secs,
         stream_timeout_secs,

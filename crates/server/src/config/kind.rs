@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use ignis_core::image::ImageSize;
 use ignis_core::ngram_cache::CacheLocation;
 use ignis_core::ngram_table::HotBudget;
-use ignis_core::{KvFormat, KvPoolSize, PrefillAttention, ProposalHead, RopeSetting, SpeculativeBackend};
+use ignis_core::{ExceptionWeights, KvFormat, KvPoolSize, PrefillAttention, ProposalHead, RopeSetting, SpeculativeBackend};
 use serde_json::Value;
 
 use super::{ApiKey, ApiKeySetting, Expose, SpecChoice};
@@ -391,6 +391,22 @@ impl FieldKind for PrefillAttentionKind {
     }
 
     fn render(value: &PrefillAttention) -> Value {
+        Value::String(value.as_str().to_owned())
+    }
+}
+
+/// How the 27B holds its BF16 exception tensors (GitHub #341): `bf16` or `fp8`.
+pub struct ExceptionWeightsKind;
+
+impl FieldKind for ExceptionWeightsKind {
+    type Value = ExceptionWeights;
+    const TAG: &'static str = "exception weights";
+
+    fn parse(raw: &str) -> Result<ExceptionWeights, String> {
+        ExceptionWeights::parse(raw)
+    }
+
+    fn render(value: &ExceptionWeights) -> Value {
         Value::String(value.as_str().to_owned())
     }
 }
@@ -907,6 +923,8 @@ mod tests {
         assert_eq!(KvFormatKind::parse("hq"), Ok(KvFormat::HqE8_2b));
         assert_eq!(PrefillAttentionKind::parse("FP16"), Ok(PrefillAttention::Fp16));
         assert!(PrefillAttentionKind::parse("fp4").unwrap_err().contains("fp8"));
+        assert_eq!(ExceptionWeightsKind::parse("FP8"), Ok(ExceptionWeights::Fp8));
+        assert!(ExceptionWeightsKind::parse("nvfp4").unwrap_err().contains("bf16"));
         assert_eq!(Effort::parse("LOW"), Ok(ReasoningEffort::Low));
         assert!(Effort::parse("nonsense").unwrap_err().contains("xhigh"));
         assert_eq!(SystemPolicy::parse("Strict"), Ok(SystemMessagePolicy::Strict));
@@ -919,6 +937,7 @@ mod tests {
         assert_eq!(TimeoutReplyKind::parse("Partial"), Ok(crate::deadline::TimeoutReply::Partial));
         round_trips::<KvFormatKind>(KvFormat::Bf16);
         round_trips::<PrefillAttentionKind>(PrefillAttention::Fp16);
+        round_trips::<ExceptionWeightsKind>(ExceptionWeights::Fp8);
         round_trips::<SpecBackend>(SpecChoice::Off);
         round_trips::<DeveloperPolicy>(DeveloperMessagePolicy::IntoSystem);
         round_trips::<TimeoutReplyKind>(crate::deadline::TimeoutReply::Error);

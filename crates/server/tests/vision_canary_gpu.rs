@@ -88,7 +88,7 @@ fn the_vision_canary_meets_the_teacher_forced_floor_whole_and_across_chunks() {
     let canaries = load_canaries(&frontend);
     assert!(!canaries.is_empty());
 
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true, fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind with vision: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,
