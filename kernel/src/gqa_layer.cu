@@ -9,6 +9,7 @@
 #include "ignis_gqa_layer.h"
 
 #include "ignis_gqa_workspace.h"
+#include "ignis_hq_prompt_attention.h"
 #include "ignis_seq_internal.h"
 #include "layer_internal.h"
 #include "model_internal.h"
@@ -202,16 +203,14 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
     // but neither `DeviceArena` constructor admits zero capacity, so at
     // least one byte is reserved regardless -- the op only ever touches
     // what its own query reported.
-    // Sized from the cache's *declared* dtype, never a constant: the hq
-    // prompt route additionally materializes the envelope's visible history
-    // into two rotated-frame BF16 scratch planes, so asking as BF16 here
-    // would under-reserve out of the arena `ignis_model_load` already sized
-    // for this format (P4-05, GitHub #123). It goes through
+    // Sized from the cache's *declared* dtype, never a constant: an hq
+    // prefill chunk takes ignis's prompt attention (below), whose band and
+    // split states BF16 has no counterpart of, so asking as BF16 here would
+    // under-reserve out of the arena `ignis_model_load` already sized for
+    // this format (P4-05, GitHub #123). It goes through
     // `ignis_gqa_attention_workspace_bytes` (kernel/include/
-    // ignis_gqa_workspace.h) rather than the vendored query directly, for the
-    // one correction that header documents -- a narrow hq prompt width is
-    // under-reported, and an under-reserved arena is an exception thrown
-    // mid-layer.
+    // ignis_gqa_workspace.h), which answers for whichever op the width
+    // takes.
     const std::size_t attention_workspace_bytes =
         ignis_gqa_attention_workspace_bytes(batch_cache.dtype, envelope, tokens);
     const ninfer::DeviceSpan attention_workspace_storage =
@@ -228,54 +227,60 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
     }
     ninfer::DeviceArena attention_workspace(attention_workspace_storage);
     ninfer::Tensor attention_heads = attention.view({kHeadDim, kQHeads, tokens, 1});
-    ninfer::ops::gqa_attention(
-        rotated_query_heads, rotated_key_heads, value_heads, positions,
-        /*valid_columns=*/ninfer::Tensor{}, kv_table_rows,
-        gate.view({kHeadDim, kQHeads, tokens, 1}), attention_scale, batch_cache, envelope,
-        attention_workspace, attention_heads, stream);
-
-    // Test-only: the keys the hq prompt route actually consumed
-    // (kernel/include/ignis_attn_tap.h). The route is asked of the same
-    // resolver the workspace was sized by, never inferred from a width.
-    if (ignis_attn_tap_record_consumed(
-            gqa_layer, start_position, tokens,
-            batch_cache.dtype == ninfer::DType::U8 &&
-                ninfer::ops::detail::gqa_attention_resolve_route(kQHeads, tokens, 1,
-                                                                 batch_cache.dtype, envelope) ==
-                    ninfer::ops::detail::GqaAttentionRoute::Prompt,
-            attention_workspace_storage.data,
-            static_cast<std::int64_t>(std::min<std::uint32_t>(
-                envelope.max_visible_keys, ninfer::ops::kGqaHqPromptScratchBandKeys)),
-            stream) != 0) {
-      set_error(std::string("ignis_gqa_layer: ") + ignis_attn_tap_last_error());
-      return -1;
-    }
-
+    // GitHub #335 (ADR 0061): every hq-e8-2b chunk the resolver sends to the
+    // Prompt route takes ignis's prompt attention, which reads the history
+    // without prompt planes (kernel/include/ignis_hq_prompt_attention.h). It
+    // takes the sequence's own layer view and keeps A1's order of append and
+    // attention. The vendored route keeps every other call: BF16 caches and
+    // the small-T widths.
+    const bool hq_prompt =
+        batch_cache.dtype == ninfer::DType::U8 &&
+        ninfer::ops::detail::gqa_attention_resolve_route(kQHeads, tokens, 1, batch_cache.dtype,
+                                                         envelope) ==
+            ninfer::ops::detail::GqaAttentionRoute::Prompt;
     // GitHub #260 (ADR 0038): the attention readout, scored here and nowhere
     // else -- after this layer's attention and inside its scope, while the
-    // keys that attention read are still where it read them (the hq prompt
-    // route's planes die with this scope; the BF16 pages were appended
-    // before the read). The route is asked of the same resolver the
-    // workspace was sized by, exactly as the test-only tap above asks it,
-    // and a single band is required: a banded prompt keeps only its last.
-    if (attention_readout != nullptr) {
-      const bool hq_prompt_scratch =
-          batch_cache.dtype == ninfer::DType::U8 &&
-          ninfer::ops::detail::gqa_attention_resolve_route(kQHeads, tokens, 1, batch_cache.dtype,
-                                                           envelope) ==
-              ninfer::ops::detail::GqaAttentionRoute::Prompt &&
-          envelope.max_visible_keys <= ninfer::ops::kGqaHqPromptScratchBandKeys;
-      const char *readout_error = nullptr;
-      if (ignis_attention_readout_run(
-              *attention_readout, rotated_query.data, kQHeads, kKvHeads, tokens,
-              static_cast<std::int64_t>(envelope.max_visible_keys), batch_cache,
-              hq_prompt_scratch, attention_workspace_storage.data,
-              static_cast<std::int64_t>(std::min<std::uint32_t>(
-                  envelope.max_visible_keys, ninfer::ops::kGqaHqPromptScratchBandKeys)),
-              attention_scale, stream, &readout_error) != 0) {
-        set_error(std::string("ignis_gqa_layer: ") + readout_error);
-        return -1;
+    // keys that attention read are still where it read them: under hq before
+    // the chunk's attend-first append (the ring still holds the keys before
+    // the chunk), which is why ignis's attention runs it; under BF16 after
+    // A1, which appended the pages before it read them. The test-only tap
+    // (kernel/include/ignis_attn_tap.h) captures the consumed keys at the
+    // same point.
+    const char *readout_error = nullptr;
+    bool readout_failed = false;
+    const auto readout = [&](const IgnisHqPromptKeys *hq_keys) {
+      if (ignis_attn_tap_record_consumed(gqa_layer, start_position, tokens, hq_keys, stream) != 0) {
+        readout_error = ignis_attn_tap_last_error();
+        readout_failed = true;
+        return;
       }
+      if (attention_readout != nullptr &&
+          ignis_attention_readout_run(
+              *attention_readout, rotated_query.data, kQHeads, kKvHeads, tokens,
+              static_cast<std::int64_t>(envelope.max_visible_keys), batch_cache, hq_keys,
+              attention_scale, stream, &readout_error) != 0) {
+        readout_failed = true;
+      }
+    };
+    if (hq_prompt) {
+      IgnisHqPromptOptions options;
+      options.after_attention = [&](const IgnisHqPromptKeys &keys) { readout(&keys); };
+      ignis_hq_prompt_attention(rotated_query_heads, rotated_key_heads, value_heads, positions,
+                                start_position, gate.view({kHeadDim, kQHeads, tokens, 1}),
+                                attention_scale,
+                                ignis_kv_layer_view(pool, seq, static_cast<std::int32_t>(gqa_layer)),
+                                attention_workspace, attention_heads, stream, options);
+    } else {
+      ninfer::ops::gqa_attention(
+          rotated_query_heads, rotated_key_heads, value_heads, positions,
+          /*valid_columns=*/ninfer::Tensor{}, kv_table_rows,
+          gate.view({kHeadDim, kQHeads, tokens, 1}), attention_scale, batch_cache, envelope,
+          attention_workspace, attention_heads, stream);
+      readout(nullptr);
+    }
+    if (readout_failed) {
+      set_error(std::string("ignis_gqa_layer: ") + readout_error);
+      return -1;
     }
 
     ninfer::Tensor residual(out_residual, ninfer::DType::BF16, {hidden, tokens, 1, 1});

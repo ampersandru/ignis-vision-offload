@@ -205,7 +205,7 @@ int main(int argc, char **argv) {
                 kGqaLayers * 1000.0 * t / pairs, workspace_bytes / 1048576.0);
   };
   if (!ignis_only) {
-    time("A1", ignis_gqa_attention_workspace_bytes(ninfer::DType::U8, envelope, width),
+    time("A1", ignis_gqa_a1_workspace_bytes(ninfer::DType::U8, envelope, width),
          [&](ninfer::DeviceArena &ws) {
            ninfer::ops::gqa_attention(q, k, v, pos, ninfer::Tensor{}, rows, gate, scale, batch, envelope, ws,
                                       out, nullptr);

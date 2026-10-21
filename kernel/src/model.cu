@@ -40,6 +40,7 @@
 #include "ninfer/ops/gated_delta_net.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
+#include "ignis_gqa_workspace.h"
 #include "ninfer/ops/gqa_attention.h"
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/linear_add.h"
@@ -424,11 +425,10 @@ std::size_t i32_bytes(int64_t elements) {
 //
 // `cache_dtype` is the KV format's own declared element type (P4-05, GitHub
 // #123): the layer asks the attention query under exactly this dtype, and
-// the hq (U8) prompt route's answer is far larger than BF16's -- it
-// materializes the envelope's visible history into two rotated-frame BF16
-// scratch planes before the shared FA2 kernel runs over it. Sizing the
-// arena as BF16 and then dispatching hq is the one way this reservation can
-// be wrong, so the format reaches here rather than being assumed.
+// the hq (U8) prompt widths take ignis's prompt attention (GitHub #335),
+// whose band and split states BF16 has no counterpart of. Sizing the arena
+// as BF16 and then dispatching hq is the one way this reservation can be
+// wrong, so the format reaches here rather than being assumed.
 std::size_t gqa_layer_scratch_bytes(const ignis_topology &topology, const GqaLayerWeights &w,
                                      std::int32_t T, uint32_t max_context_tokens,
                                      ninfer::DType cache_dtype, std::int32_t batch) {
@@ -436,7 +436,6 @@ std::size_t gqa_layer_scratch_bytes(const ignis_topology &topology, const GqaLay
   const auto q_width = static_cast<std::int32_t>(topology.num_q_heads * topology.head_dim);
   const auto kv_width = static_cast<std::int32_t>(topology.num_kv_heads * topology.head_dim);
   const auto ffn = static_cast<std::int32_t>(topology.ffn_intermediate);
-  const auto q_heads = static_cast<std::int32_t>(topology.num_q_heads);
   const std::int32_t columns = T * batch;
 
   std::size_t bytes = 0;
@@ -455,9 +454,8 @@ std::size_t gqa_layer_scratch_bytes(const ignis_topology &topology, const GqaLay
 
   const ninfer::ops::GqaExecutionEnvelope envelope{
       /*min_visible_keys=*/1, /*max_visible_keys=*/max_context_tokens};
-  bytes += round_up_arena_align(ninfer::ops::gqa_attention_workspace_capacity_bytes(
-      q_heads, cache_dtype, envelope, /*batch_size=*/batch, /*min_width=*/1,
-      /*max_width=*/T));
+  bytes += round_up_arena_align(ignis_gqa_attention_capacity_bytes(
+      cache_dtype, envelope, /*batch_size=*/batch, /*min_width=*/1, /*max_width=*/T));
   bytes += round_up_arena_align(ninfer::ops::attn_input_proj_workspace_capacity_bytes(
       w.query_key_gate_value.qtype, w.query_key_gate_value.n, w.query_key_gate_value.k,
       ignis_widest_linear_policy_for(w.query_key_gate_value.qtype), 1, columns));

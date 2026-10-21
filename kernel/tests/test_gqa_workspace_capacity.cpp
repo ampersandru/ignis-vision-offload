@@ -1,5 +1,20 @@
-// The vendored A1 capacity query against the bytes A1 actually bumps -- OURS,
-// not vendored (GitHub #296).
+// The GQA attention's transient arena -- OURS, not vendored: A1's capacity
+// query against the bytes A1 actually bumps (GitHub #296), and the arena of
+// ignis's prompt attention, which serves every hq-e8-2b prefill chunk since
+// GitHub #335 (ADR 0061, spec 27b-16gb/03 acceptance 1).
+//
+// #335 first. The prompt attention keeps no prompt planes, so what one call
+// bumps stops growing with the context at one band: the same bytes at 32,768
+// keys as at 1,048,576, for every prompt width. What a load reserves for the
+// layer (`ignis_gqa_attention_capacity_bytes`, kernel/src/model.cu) covers
+// every width's call. And against A1's own query -- what the load reserved
+// before -- the reservation at 524,288 keys drops by the prompt planes, less
+// the band: at least 1.0e9 bytes (the acceptance as amended with the band,
+// owner 2026-10-21). The numbers are printed.
+//
+// #296, below, still pins A1's query: A1's hq Prompt route is the oracle the
+// route agreement test holds the prompt attention against, and that test
+// sizes it through `ignis_gqa_a1_workspace_bytes`.
 //
 // `ninfer::ops::gqa_attention_workspace_capacity_bytes` is the only source the
 // GQA layer has for how much transient arena one prefill chunk's attention
@@ -11,7 +26,7 @@
 //
 // What is pinned: for every prompt width a serving chunk can have (17..1024 --
 // the 1..16 widths are #123's, covered by ignis_kernel_hq_route_agreement_test),
-// on an hq-e8-2b (U8) cache, the query at exactly that width covers a replay
+// on an hq-e8-2b (U8) cache, A1's query at exactly that width covers a replay
 // of the allocations `gqa_attention`'s Prompt route makes
 // (kernel/vendor/src/ops/wrapper/gqa_attention.cpp, `allocate_hq_prompt_scratch`
 // and the key-split partials), in its order and at its 256-byte alignment --
@@ -34,6 +49,7 @@
 // SKIP_RETURN_CODE.
 
 #include "ignis_gqa_workspace.h"
+#include "ignis_hq_prompt_attention.h"
 
 #include "core/layout.h"
 #include "ninfer/ops/gqa_attention.h"
@@ -100,7 +116,7 @@ void sweep(std::uint32_t visible_keys, const char *label) {
       continue;
     }
     const std::size_t reserved =
-        ignis_gqa_attention_workspace_bytes(ninfer::DType::U8, envelope, width);
+        ignis_gqa_a1_workspace_bytes(ninfer::DType::U8, envelope, width);
     const std::size_t bumped = prompt_call_bytes(width, envelope);
     if (reserved < bumped) {
       if (short_widths == 0) {
@@ -115,9 +131,86 @@ void sweep(std::uint32_t visible_keys, const char *label) {
                                first_short);
 }
 
+// ---- GitHub #335: the prompt attention's arena ------------------------------
+
+void no_prompt_planes() {
+  // Every width: one band's worth of context and the envelope's ceiling bump
+  // the same bytes, and so does everything between.
+  const std::uint32_t contexts[] = {kIgnisHqPromptBandKeys, 200'000, 262'144, 262'145,
+                                    344'064, 524'288, 1'048'576};
+  int moved = 0;
+  std::string first_moved;
+  for (std::int32_t width = 1; width <= kWidestChunk; ++width) {
+    const std::size_t at_band = ignis_hq_prompt_workspace_bytes(width, contexts[0]);
+    for (const std::uint32_t context : contexts) {
+      const std::size_t bytes = ignis_hq_prompt_workspace_bytes(width, context);
+      if (bytes != at_band && moved++ == 0) {
+        first_moved = "width " + std::to_string(width) + ": " + std::to_string(at_band) +
+                      " bytes at one band, " + std::to_string(bytes) + " at " +
+                      std::to_string(context) + " keys";
+      }
+    }
+  }
+  check(moved == 0, "the prompt attention's arena grows with the context past one band (" +
+                        std::to_string(moved) + " cases, first " + first_moved + ")");
+  std::printf("prompt attention, 1,024 tokens: %zu bytes at any context past one band\n",
+              ignis_hq_prompt_workspace_bytes(kWidestChunk, contexts[0]));
+}
+
+void the_load_covers_every_call() {
+  // A load reserves the layer's attention once, for widths 1..chunk at its
+  // context; every call at a narrower width and history must fit in it.
+  const std::uint32_t contexts[] = {4'096, 65'536, 524'288};
+  for (const std::uint32_t context : contexts) {
+    const ninfer::ops::GqaExecutionEnvelope load{.min_visible_keys = 1, .max_visible_keys = context};
+    const std::size_t reserved = ignis_gqa_attention_capacity_bytes(ninfer::DType::U8, load, 1, 1,
+                                                                    kWidestChunk);
+    int short_calls = 0;
+    std::string first;
+    for (std::int32_t width = 1; width <= kWidestChunk; ++width) {
+      for (const std::uint32_t visible : {static_cast<std::uint32_t>(width), context / 2, context}) {
+        if (visible < static_cast<std::uint32_t>(width)) continue;
+        const ninfer::ops::GqaExecutionEnvelope call{.min_visible_keys = 1, .max_visible_keys = visible};
+        const std::size_t needed = ignis_gqa_attention_workspace_bytes(ninfer::DType::U8, call, width);
+        if (needed > reserved && short_calls++ == 0) {
+          first = "width " + std::to_string(width) + " at " + std::to_string(visible) + " keys needs " +
+                  std::to_string(needed) + ", the load reserved " + std::to_string(reserved);
+        }
+      }
+    }
+    check(short_calls == 0, "a call needs more arena than the load at " + std::to_string(context) +
+                                " keys reserved (" + std::to_string(short_calls) + ", first " + first + ")");
+  }
+}
+
+void the_planes_are_gone_at_524288() {
+  // What the load reserved for one hq layer's attention before #335 -- A1's
+  // own query over the serving widths -- against what it reserves now.
+  const ninfer::ops::GqaExecutionEnvelope load{.min_visible_keys = 1, .max_visible_keys = 524'288};
+  const std::size_t before = ninfer::ops::gqa_attention_workspace_capacity_bytes(
+      kQHeads, ninfer::DType::U8, load, 1, 1, kWidestChunk);
+  const std::size_t now =
+      ignis_gqa_attention_capacity_bytes(ninfer::DType::U8, load, 1, 1, kWidestChunk);
+  std::printf("hq attention arena at 524,288 keys, 1,024-token chunks: %zu bytes with prompt planes, "
+              "%zu now, %zu fewer\n",
+              before, now, before - now);
+  check(now < before && before - now >= 1'000'000'000,
+        "the reservation at 524,288 keys dropped by less than 1.0e9 bytes");
+  // BF16 keeps A1, untouched.
+  check(ignis_gqa_attention_capacity_bytes(ninfer::DType::BF16, load, 1, 1, kWidestChunk) ==
+            ninfer::ops::gqa_attention_workspace_capacity_bytes(kQHeads, ninfer::DType::BF16, load, 1,
+                                                                1, kWidestChunk),
+        "a BF16 load's reservation moved");
+}
+
 } // namespace
 
 int main() {
+  // --- 0. GitHub #335: no prompt planes -----------------------------------
+  no_prompt_planes();
+  the_load_covers_every_call();
+  the_planes_are_gone_at_524288();
+
   // --- 1. one scratch band: the key-split partials ride beside the planes -----
   sweep(200'000, "single band (200,000 visible keys)");
   sweep(ninfer::ops::kGqaHqPromptScratchBandKeys, "single band (exactly one band)");

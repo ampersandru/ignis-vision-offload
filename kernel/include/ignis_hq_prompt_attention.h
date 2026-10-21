@@ -39,6 +39,8 @@ inline constexpr std::int32_t kIgnisHqPromptMaxSplits = 5;
 // The keys one tile holds: the band, the splits and the scales are cut at this grain.
 inline constexpr std::uint32_t kIgnisHqPromptTileKeys = 32;
 
+struct IgnisHqPromptKeys;
+
 struct IgnisHqPromptOptions {
   // Keys per band, a multiple of `kIgnisHqPromptTileKeys`. Tests narrow it to walk several
   // bands at a small context; the engine keeps the default.
@@ -46,9 +48,43 @@ struct IgnisHqPromptOptions {
   // Key splits, 1..kIgnisHqPromptMaxSplits; 0 lets the op pick them to fill the card.
   std::int32_t splits = 0;
   // Runs on the host after the attention is enqueued and before an attend-first append, while
-  // every key the attention read is still where it read it (the attention readout, GitHub #260).
-  std::function<void()> after_attention;
+  // every key the attention read is still where it read it, and is told where they are (the
+  // attention readout, GitHub #260, and the test-only tap).
+  std::function<void(const IgnisHqPromptKeys &)> after_attention;
 };
+
+// Where one chunk's keys are, as the attention reads them: the codec planes, the residual window
+// (null when it is off) and, when the chunk attends before its append, the chunk's own rows.
+// Plain pointers, passed by value into kernels; `ignis_hq_prompt_keys` fills it from the view.
+struct IgnisHqPromptKeys {
+  const void *codes_k = nullptr;
+  const void *codes_v = nullptr;
+  const void *meta_k = nullptr;
+  const void *meta_v = nullptr;
+  const std::int32_t *block_table = nullptr;
+  const void *residual_k = nullptr;
+  const void *residual_v = nullptr;
+  const std::uint32_t *ring_valid = nullptr;
+  const void *new_k = nullptr;  // BF16 [256, 4, width], or null
+  const void *new_v = nullptr;
+  std::int32_t start = 0;  // the chunk's first cache position
+  std::int32_t width = 0;
+};
+
+// The keys of the chunk `k`/`v` at `start_position` over `cache`. The chunk's own rows are read
+// from `k`/`v` exactly when the view carries the residual window, which is when the chunk
+// attends before its append.
+IgnisHqPromptKeys ignis_hq_prompt_keys(const ninfer::PagedKVLayerView &cache,
+                                       const ninfer::Tensor &k, const ninfer::Tensor &v,
+                                       std::int32_t start_position);
+
+// Writes the rows of keys [key_begin, key_begin + count) -- K, or V with `values` -- into `dst`,
+// BF16 [4 KV heads][count][256] in the codec's rotated frame: the values the attention reads
+// before its band rounds them to E4M3. Enqueued on `stream`; call it before an attend-first
+// append, while the ring still holds the keys before the chunk.
+void ignis_hq_prompt_fetch_rows(const IgnisHqPromptKeys &keys, bool values,
+                                std::int32_t key_begin, std::int32_t count, void *dst,
+                                cudaStream_t stream);
 
 // The transient arena one call of `width` tokens bumps when `visible_keys` keys (the chunk's
 // included) are visible, in bytes. It depends on the context only up to one band.

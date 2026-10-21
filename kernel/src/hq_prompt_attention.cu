@@ -43,6 +43,8 @@
 
 #include "ignis_hq_prompt_attention.h"
 
+#include "hq_prompt_keys.cuh"
+
 #include "ninfer/ops/gqa_attention.h"
 #include "ninfer/ops/sigmoid_mul.h"
 #include "ops/kernel/gqa_attention_geometry.cuh"
@@ -207,44 +209,6 @@ struct Columns {
   }
 };
 
-struct KeySources {
-  const std::uint8_t *codes_k;
-  const std::uint8_t *codes_v;
-  const std::uint8_t *meta_k;
-  const std::uint8_t *meta_v;
-  const std::int32_t *block_table;
-  // The residual window, pre-sliced to the sequence's slot; null when it is off.
-  const __nv_bfloat16 *residual_k;
-  const __nv_bfloat16 *residual_v;
-  const std::uint32_t *ring_valid;
-  // The chunk's own rows (BF16 [256, 4, width]); null unless the chunk attends before its
-  // append, which is the only case that reads them.
-  const __nv_bfloat16 *new_k;
-  const __nv_bfloat16 *new_v;
-  std::int32_t start;  // the chunk's first cache position
-  std::int32_t width;
-};
-
-enum class KeySource { Zero, Fresh, Side, Codec };
-
-// gqa_attention_prefill_hq_scratch_kernel's rule, key by key: the chunk's own rows when it
-// attends first, the sinks and the ring before it from the side planes, every other key the
-// codec. Keys past the history are zero (the causal mask drops them all).
-__device__ __forceinline__ KeySource key_source(const KeySources &s, int key) {
-  const int keys_total = s.start + s.width;
-  const int fresh_from = s.new_k != nullptr ? s.start : -1;
-  if (key >= keys_total) return KeySource::Zero;
-  if (fresh_from >= 0 && key >= fresh_from) return KeySource::Fresh;
-  if (s.residual_k != nullptr) {
-    const int ring_end = fresh_from >= 0 ? fresh_from : keys_total;
-    if (key < kSinks || (key >= ring_end - kRing && key < ring_end &&
-                         ninfer::ops::hq_ring_slot_valid(s.ring_valid, key))) {
-      return KeySource::Side;
-    }
-  }
-  return KeySource::Codec;
-}
-
 // ---- Q: rotate into the codec's frame, once per call ------------------------------------------
 
 // q8 / q_scale: E4M3 with one scale per row, for the band pass; q16 (or null): BF16, for the
@@ -295,79 +259,42 @@ __device__ __forceinline__ void store_fp8_tile(const __nv_bfloat16 *tile, bool r
                                                int tile_index, PassBuffers buf, float *warp_amax,
                                                float &tile_scale);
 
+// `role_first`: the role of blockIdx.z == 0 (K, or V when 1): a pass launches both roles, a
+// fetch one.
 template <bool kFp8>
-__global__ void __launch_bounds__(256) tile_kernel(KeySources src, Columns cols, PassBuffers buf) {
+__global__ void __launch_bounds__(256) tile_kernel(IgnisHqPromptKeys src, Columns cols,
+                                                   PassBuffers buf, int role_first) {
   __shared__ __align__(16) __nv_bfloat16 tile[kTile * kHeadDim];
   __shared__ std::int8_t signs[kHeadDim];
   __shared__ float warp_amax[8];
   __shared__ float tile_scale;
   const int tile_index = static_cast<int>(blockIdx.x);
   const int head = static_cast<int>(blockIdx.y);
-  const bool role_v = blockIdx.z != 0;
+  const bool role_v = role_first + static_cast<int>(blockIdx.z) != 0;
   const int tid = static_cast<int>(threadIdx.x);
   const int warp = tid >> 5, lane = tid & 31;
   const int column0 = tile_index * kTile;
   ninfer::ops::hq_engine_signs_fill(signs);
-
-  // Codec, side and empty rows: one 8-lane group per row, the whole warp converged on the
-  // decoder (an inactive group reads and writes nothing).
+  __syncthreads();
+  // Four rows a warp, one per 8-lane group; a column past the pass's keys is a zero row.
   {
     const int key_l = warp * 4 + (lane >> 3);
-    const int lane8 = lane & 7;
     const int column = column0 + key_l;
-    const int key = cols.key(column);
-    __nv_bfloat16 *row = tile + key_l * kHeadDim;
-    const KeySource source = column < cols.count ? key_source(src, key) : KeySource::Zero;
-    if (source == KeySource::Zero) {
-#pragma unroll
-      for (int j = 0; j < 4; ++j) {
-        *reinterpret_cast<uint4 *>(row + lane8 * 32 + j * 8) = make_uint4(0u, 0u, 0u, 0u);
-      }
-    } else if (source == KeySource::Side) {
-      const __nv_bfloat16 *side = ninfer::ops::hq_residual_row<Geometry>(
-          role_v ? src.residual_v : src.residual_k, 0, head, key);
-#pragma unroll
-      for (int j = 0; j < 4; ++j) {
-        *reinterpret_cast<uint4 *>(row + lane8 * 32 + j * 8) =
-            *reinterpret_cast<const uint4 *>(side + lane8 * 32 + j * 8);
-      }
-    }
-    const bool codec = source == KeySource::Codec;
-    const std::uint8_t *codes =
-        codec ? ninfer::ops::hq_row_codes<Geometry>(role_v ? src.codes_v : src.codes_k,
-                                                    src.block_table, head, key)
-              : nullptr;
-    const std::uint8_t *meta =
-        codec ? ninfer::ops::hq_row_meta<Geometry>(role_v ? src.meta_v : src.meta_k,
-                                                   src.block_table, head, key)
-              : nullptr;
-    ninfer::ops::hq_decode_row_group_fast(codes, meta, row, lane8, 0,
-                                          ninfer::ops::hq_dither_row_seed(head, key, role_v),
-                                          codec);
+    ignis_hq_prompt::fetch_rows_warp(src, head, role_v, column < cols.count ? cols.key(column) : -1,
+                                     tile + key_l * kHeadDim, signs);
   }
   __syncthreads();
-  // The chunk's own rows: one warp rotates one row, with the fill side's single rounding.
-  if (src.new_k != nullptr) {
-    for (int key_l = warp; key_l < kTile; key_l += 8) {
-      const int column = column0 + key_l;
-      if (column >= cols.count) continue;
-      const int key = cols.key(column);
-      if (key_source(src, key) != KeySource::Fresh) continue;
-      const __nv_bfloat16 *row =
-          (role_v ? src.new_v : src.new_k) +
-          ninfer::ops::gqa_kv_quant_src_index<Geometry>(head, 0, key - src.start);
-      ninfer::ops::hq_store_rotated_row_warp(row, signs, tile + key_l * kHeadDim);
-    }
-    __syncthreads();
-  }
 
   if constexpr (!kFp8) {
-    // BF16 rows as the prompt planes held them: four 16-byte units per thread.
+    // BF16 rows as the prompt planes held them, four 16-byte units per thread; rows past the
+    // buffer's capacity (a fetch of a count that is no multiple of 32) are not stored.
     std::uint8_t *base = role_v ? buf.v : buf.k;
     auto *dst = reinterpret_cast<uint4 *>(
         base + (static_cast<std::int64_t>(head) * buf.capacity + column0) * kHeadDim * 2);
     const auto *from = reinterpret_cast<const uint4 *>(tile);
-    for (int u = tid; u < kTile * kHeadDim / 8; u += 256) dst[u] = from[u];
+    for (int u = tid; u < kTile * kHeadDim / 8; u += 256) {
+      if (column0 + u / (kHeadDim / 8) < buf.capacity) dst[u] = from[u];
+    }
   } else {
     store_fp8_tile(tile, role_v, head, tile_index, buf, warp_amax, tile_scale);
   }
@@ -918,6 +845,39 @@ void launch_fa(dim3 grid, Queries qs, int start, int width, float scale, Columns
 
 } // namespace
 
+IgnisHqPromptKeys ignis_hq_prompt_keys(const ninfer::PagedKVLayerView &cache,
+                                       const ninfer::Tensor &k, const ninfer::Tensor &v,
+                                       std::int32_t start_position) {
+  IgnisHqPromptKeys keys;
+  keys.codes_k = cache.k_pages.data;
+  keys.codes_v = cache.v_pages.data;
+  keys.meta_k = cache.k_scale_pages.data;
+  keys.meta_v = cache.v_scale_pages.data;
+  keys.block_table = static_cast<const std::int32_t *>(cache.block_table.data);
+  keys.residual_k = cache.residual_k.data;
+  keys.residual_v = cache.residual_v.data;
+  keys.ring_valid = static_cast<const std::uint32_t *>(cache.ring_valid.data);
+  const bool attend_first = cache.residual_k.data != nullptr;
+  keys.new_k = attend_first ? k.data : nullptr;
+  keys.new_v = attend_first ? v.data : nullptr;
+  keys.start = start_position;
+  keys.width = k.ne[2];
+  return keys;
+}
+
+void ignis_hq_prompt_fetch_rows(const IgnisHqPromptKeys &keys, bool values,
+                                std::int32_t key_begin, std::int32_t count, void *dst,
+                                cudaStream_t stream) {
+  if (count <= 0) return;
+  require(key_begin >= 0 && dst != nullptr, "fetch: a negative key or no destination");
+  const Columns cols{key_begin, INT_MAX, 0, count};
+  const PassBuffers buf{values ? nullptr : static_cast<std::uint8_t *>(dst),
+                        values ? static_cast<std::uint8_t *>(dst) : nullptr, nullptr, count};
+  tile_kernel<false><<<dim3(static_cast<unsigned>((count + kTile - 1) / kTile), kKvHeads, 1), 256, 0,
+                       stream>>>(keys, cols, buf, values ? 1 : 0);
+  check_launch("fetch rows");
+}
+
 std::size_t ignis_hq_prompt_workspace_bytes(std::int32_t width, std::uint32_t visible_keys,
                                             std::uint32_t band_keys) {
   ninfer::WorkspaceLayoutBuilder layout;
@@ -973,19 +933,7 @@ void ignis_hq_prompt_attention(const ninfer::Tensor &q, const ninfer::Tensor &k,
   const bool window_pass = cache.residual_k.data != nullptr;
   if (!window_pass) ninfer::ops::gqa_kv_append(k, v, positions, cache, stream);
 
-  KeySources src{};
-  src.codes_k = static_cast<const std::uint8_t *>(cache.k_pages.data);
-  src.codes_v = static_cast<const std::uint8_t *>(cache.v_pages.data);
-  src.meta_k = static_cast<const std::uint8_t *>(cache.k_scale_pages.data);
-  src.meta_v = static_cast<const std::uint8_t *>(cache.v_scale_pages.data);
-  src.block_table = static_cast<const std::int32_t *>(cache.block_table.data);
-  src.residual_k = static_cast<const __nv_bfloat16 *>(cache.residual_k.data);
-  src.residual_v = static_cast<const __nv_bfloat16 *>(cache.residual_v.data);
-  src.ring_valid = static_cast<const std::uint32_t *>(cache.ring_valid.data);
-  src.new_k = window_pass ? static_cast<const __nv_bfloat16 *>(k.data) : nullptr;
-  src.new_v = window_pass ? static_cast<const __nv_bfloat16 *>(v.data) : nullptr;
-  src.start = start_position;
-  src.width = width;
+  const IgnisHqPromptKeys src = ignis_hq_prompt_keys(cache, k, v, start_position);
 
   Queries qs{};
   qs.q8 = static_cast<const std::uint8_t *>(ws.q8.data);
@@ -1015,7 +963,7 @@ void ignis_hq_prompt_attention(const ninfer::Tensor &q, const ninfer::Tensor &k,
     const PassBuffers buf{area_base + area.window_k, area_base + area.window_v, nullptr,
                           static_cast<std::int32_t>(window)};
     tile_kernel<false><<<dim3(static_cast<unsigned>((cols.count + kTile - 1) / kTile), kKvHeads, 2),
-                         256, 0, stream>>>(src, cols, buf);
+                         256, 0, stream>>>(src, cols, buf, 0);
     check_launch("window tiles");
     launch_fa<false>(fa_grid, qs, start_position, width, scale, cols, buf, splits, resume, carry,
                      stream);
@@ -1032,7 +980,7 @@ void ignis_hq_prompt_attention(const ninfer::Tensor &q, const ninfer::Tensor &k,
     const PassBuffers buf{area_base + area.band_k, area_base + area.band_v,
                           static_cast<float *>(ws.band_scale.data), static_cast<std::int32_t>(band)};
     tile_kernel<true><<<dim3(static_cast<unsigned>((cols.count + kTile - 1) / kTile), kKvHeads, 2),
-                        256, 0, stream>>>(src, cols, buf);
+                        256, 0, stream>>>(src, cols, buf, 0);
     check_launch("band tiles");
     launch_fa<true>(fa_grid, qs, start_position, width, scale, cols, buf, splits, resume, carry,
                     stream);
@@ -1043,7 +991,7 @@ void ignis_hq_prompt_attention(const ninfer::Tensor &q, const ninfer::Tensor &k,
                                                        static_cast<__nv_bfloat16 *>(out.data));
   check_launch("merge");
 
-  if (options.after_attention) options.after_attention();
+  if (options.after_attention) options.after_attention(src);
   if (window_pass) ninfer::ops::gqa_kv_append(k, v, positions, cache, stream);
   ninfer::ops::sigmoid_mul(gate, out, stream);
 }

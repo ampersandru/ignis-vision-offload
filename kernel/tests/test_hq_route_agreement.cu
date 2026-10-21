@@ -776,19 +776,21 @@ std::vector<std::uint16_t> run_route(const Fixture &fx, int32_t kv_format, const
 
   std::vector<std::uint16_t> host_out(out_elements, 0);
   try {
-    // Sized through the engine's own function (kernel/include/
-    // ignis_gqa_workspace.h), never a second copy of the arithmetic: the
-    // narrow-Prompt-width arm below exists precisely to catch an
-    // under-reservation there, and a test that computed its own answer could
-    // not. At B > 1 the resolver takes the small-T route, which that function
-    // documents as needing no correction, so the vendored query is asked
-    // directly for the batch axis.
+    // Sized through the shipped functions (kernel/include/
+    // ignis_gqa_workspace.h, ignis_hq_prompt_attention.h), never a second copy
+    // of the arithmetic: the narrow-Prompt-width arm below exists precisely to
+    // catch an under-reservation there, and a test that computed its own
+    // answer could not. A1 at B = 1 goes through `ignis_gqa_a1_workspace_bytes`,
+    // A1's own corrected query, since the engine sends the hq Prompt widths to
+    // ignis's prompt attention instead (GitHub #335). At B > 1 the resolver
+    // takes the small-T route, which needs no correction, so the vendored query
+    // is asked directly for the batch axis.
     const std::size_t workspace_bytes =
         route == Route::Ignis
             ? ignis_hq_prompt_workspace_bytes(call.width, envelope.max_visible_keys,
                                               options.band_keys)
         : call.batch == 1
-            ? ignis_gqa_attention_workspace_bytes(cache.dtype, envelope, call.width)
+            ? ignis_gqa_a1_workspace_bytes(cache.dtype, envelope, call.width)
             : ninfer::ops::gqa_attention_workspace_capacity_bytes(
                   kQHeads, cache.dtype, envelope, call.batch, call.width, call.width);
     ninfer::DeviceArena workspace(std::max<std::size_t>(workspace_bytes, 256));
