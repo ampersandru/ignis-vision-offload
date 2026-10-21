@@ -1459,6 +1459,9 @@ impl MockCompute {
 pub struct GatedCompute {
     inner: Arc<dyn Compute>,
     armed: AtomicBool,
+    /// [`GatedCompute::arm_at`]'s target: the request, and how many of its
+    /// decode steps still pass before the one held.
+    armed_at: Mutex<Option<(RequestId, u32)>>,
     entered_tx: SyncSender<()>,
     release_rx: Mutex<Receiver<()>>,
 }
@@ -1510,6 +1513,7 @@ impl GatedCompute {
             Arc::new(Self {
                 inner,
                 armed: AtomicBool::new(false),
+                armed_at: Mutex::new(None),
                 entered_tx,
                 release_rx: Mutex::new(release_rx),
             }),
@@ -1526,6 +1530,33 @@ impl GatedCompute {
     pub fn arm(&self) {
         self.armed.store(true, Ordering::SeqCst);
     }
+
+    /// Arms the gate on `request`'s decode step `step` (its first is step
+    /// 0): the steps before it pass, that one blocks until
+    /// [`GateController::release`] is called — a model thread held at a
+    /// known point of one request's stream, however fast its consumer
+    /// reads. Consumed on entry, like [`GatedCompute::arm`].
+    pub fn arm_at(&self, request: RequestId, step: u32) {
+        *self.armed_at.lock().unwrap() = Some((request, step));
+    }
+
+    /// Whether this call is the one [`GatedCompute::arm_at`] holds,
+    /// counting one of the armed request's steps when it is in `jobs`.
+    fn reaches_armed_step(&self, jobs: &[DecodeJob]) -> bool {
+        let mut armed_at = self.armed_at.lock().unwrap();
+        let Some((request, left)) = armed_at.as_mut() else {
+            return false;
+        };
+        if !jobs.iter().any(|job| job.request == *request) {
+            return false;
+        }
+        if *left > 0 {
+            *left -= 1;
+            return false;
+        }
+        *armed_at = None;
+        true
+    }
 }
 
 impl Compute for GatedCompute {
@@ -1538,7 +1569,7 @@ impl Compute for GatedCompute {
     }
 
     fn decode_step(&self, jobs: &[DecodeJob]) -> Result<Vec<DecodeOutcome>, ComputeError> {
-        if self.armed.swap(false, Ordering::SeqCst) {
+        if self.armed.swap(false, Ordering::SeqCst) || self.reaches_armed_step(jobs) {
             // A rendezvous pair: `send` blocks until `wait_entered`'s `recv`
             // is there to receive it, then this call blocks again until
             // `release` sends the go-ahead.
@@ -1609,5 +1640,35 @@ mod tests {
         let (gated, controller) = GatedCompute::new(Arc::new(MockCompute::new()));
         gated.arm();
         controller.wait_entered_within(Duration::from_millis(10));
+    }
+
+    /// `arm_at` holds the armed request's step, not before: the steps
+    /// before it, and another request's steps, pass untouched.
+    #[test]
+    fn a_gate_armed_at_a_step_holds_that_step_of_that_request() {
+        let mock = Arc::new(MockCompute::new());
+        let (gated, controller) = GatedCompute::new(mock.clone());
+        let job = |request: RequestId| DecodeJob {
+            request,
+            lane: 0,
+            params: crate::types::DecodeParams::default(),
+            remaining_tokens: 100,
+            permitted: None,
+            reasoning_close: None,
+        };
+        gated.arm_at(7, 2);
+        for _ in 0..2 {
+            gated.decode_step(&[job(7)]).expect("a step before the armed one passes");
+        }
+        gated.decode_step(&[job(3)]).expect("another request's step passes");
+        let held = std::thread::spawn({
+            let gated = gated.clone();
+            move || gated.decode_step(&[job(3), job(7)]).map(|outcomes| outcomes.len())
+        });
+        controller.wait_entered_within(Duration::from_secs(10));
+        assert!(!held.is_finished(), "the armed step waits for the release");
+        controller.release();
+        assert_eq!(held.join().unwrap().expect("the released step decodes"), 2);
+        gated.decode_step(&[job(7)]).expect("the gate is consumed on entry");
     }
 }

@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
-use ignis_core::{MockCompute, SchedulerConfig};
+use ignis_core::mock::GatedCompute;
+use ignis_core::{Compute, MockCompute, SchedulerConfig};
 use ignis_server::loop_guard::{LoopGuardMode, LoopGuardParams, TAG_PREFIX};
 use ignis_server::metrics::Metrics;
 use serde_json::{json, Value as JsonValue};
@@ -45,12 +46,49 @@ fn rewind() -> LoopGuardParams {
 /// reasons `reasoning` and whose continuation (request 1) reasons silently
 /// for 20 tokens and stops; and its metrics.
 fn guarded(reasoning: &str, guard: LoopGuardParams) -> (axum::Router, Arc<Metrics>) {
+    guarded_on(reasoning, guard, |mock| mock)
+}
+
+/// [`guarded`], its compute `wrap`ped around the mock.
+fn guarded_on(
+    reasoning: &str,
+    guard: LoopGuardParams,
+    wrap: impl FnOnce(Arc<MockCompute>) -> Arc<dyn Compute>,
+) -> (axum::Router, Arc<Metrics>) {
     let mock = Arc::new(MockCompute::new());
     mock.eos_after(1, 20);
     let script = Script::encoding(responses::scripted_text(&mock, 0, reasoning));
-    let server = server(&script, SchedulerConfig::default(), mock).with_loop_guard(guard).with_metrics();
+    let server = server(&script, SchedulerConfig::default(), wrap(mock)).with_loop_guard(guard).with_metrics();
     let metrics = Arc::clone(server.metrics.as_ref().unwrap());
     (server.app(), metrics)
+}
+
+/// [`respond`] on a [`guarded`] server whose model thread holds request 0
+/// at the end of its scripted reasoning until the guard's cancel has
+/// landed. The guard fires inside the loop, well before that step, so the
+/// cancel always finds request 0 running however slowly the guard reads;
+/// unheld, a slow runner let request 0 run to `max_output_tokens` first
+/// (`completed 2`, `cancelled 0`).
+async fn respond_held(reasoning: &str, guard: LoopGuardParams, stream: bool) -> (JsonValue, Arc<Metrics>) {
+    let mut gate = None;
+    let last_step = reasoning.chars().count().div_ceil(8) as u32;
+    let (app, metrics) = guarded_on(reasoning, guard, |mock| {
+        let (gated, controller) = GatedCompute::new(mock);
+        gated.arm_at(0, last_step);
+        gate = Some(controller);
+        gated
+    });
+    let gate = gate.unwrap();
+    let response = tokio::spawn(async move { respond(&app, 4000, stream).await });
+    let gate = tokio::task::spawn_blocking(move || {
+        gate.wait_entered();
+        gate
+    })
+    .await
+    .unwrap();
+    responses::metric_reaches(&metrics, "ignis_requests_cancelled_total 1").await;
+    gate.release();
+    (response.await.unwrap(), metrics)
 }
 
 /// The text of `series`' sample (its name and labels) in `metrics`'
@@ -148,8 +186,7 @@ async fn a_reasoning_that_never_loops_is_watched_and_scored_above_the_threshold(
 #[tokio::test]
 async fn a_rewind_on_responses_is_counted_with_the_tokens_its_usage_names() {
     for stream in [false, true] {
-        let (app, metrics) = guarded(&looping_reasoning(), rewind());
-        let response = respond(&app, 4000, stream).await;
+        let (response, metrics) = respond_held(&looping_reasoning(), rewind(), stream).await;
         let rewound = response["usage"]["output_tokens_details"]["rewound_tokens"].as_u64().expect("rewound");
         assert_eq!(count(&metrics, "ignis_loop_guard_watched_requests_total"), 1);
         assert_eq!(count(&metrics, "ignis_loop_guard_looped_requests_total"), 1);
@@ -183,8 +220,7 @@ async fn a_rewind_on_chat_completions_is_counted_the_same() {
 /// prefilled and no budget, never reaches.
 #[tokio::test]
 async fn a_guard_close_is_counted_as_closed_and_not_as_a_forced_close() {
-    let (app, metrics) = guarded(&looping_reasoning(), LoopGuardParams { retries: 0, ..rewind() });
-    let response = respond(&app, 4000, false).await;
+    let (response, metrics) = respond_held(&looping_reasoning(), LoopGuardParams { retries: 0, ..rewind() }, false).await;
     let rewound = response["usage"]["output_tokens_details"]["rewound_tokens"].as_u64().expect("rewound");
     assert_eq!((loops(&metrics, "rewound"), loops(&metrics, "closed")), (0, 1));
     assert_eq!(count(&metrics, "ignis_loop_guard_rewound_tokens_total"), rewound);
