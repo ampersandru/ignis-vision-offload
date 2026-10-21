@@ -28,3 +28,9 @@ shipped. After phase 2 comes the image model on 16 GB.
   - The MTP layer is already in the 16 GB artifact.
 - **A trellis drafter** (DFlash2 at ~4 bpw, −0.23 GB), if space is short.
 - **BF16 embedding on the host**, if the W8 table is ever shown to cost quality.
+- **Prefill to ~12,500 tok/s at 60K on the 5090** (owner, 2026-10-21). After #335 (FP8 attention) and #341 (fixed part
+  ≤ 85 µs/token), the fixed part must come down to ~66 µs/token. That means:
+  - GEMMs near 90% of the FP4 peak;
+  - GDN, norms and quantization fused and lean.
+
+  It is planned from #341's measurements, not before.

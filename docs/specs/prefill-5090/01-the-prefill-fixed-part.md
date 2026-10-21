@@ -70,7 +70,8 @@ Each lever is an A/B on the 5090, kept only if it is faster and passes the quali
      flash kernel reaches: mkyt's 0.93 ns at 400 W, scaled to default clocks.
    - **~8,500-9,000 with FP16 accumulate only.**
    - At 19K, ~11,000-12,000.
-   - 12,500 at 60K would need a fixed part of ~66 µs on top of FP8 attention.
+   - 12,500 at 60K would need a fixed part of ~66 µs on top of FP8 attention. That push past ≤ 85 µs is **phase 2**
+     (owner, 2026-10-21; `docs/specs/27b-16gb/phase2-notes.md`). This ticket stops at AC 2's target.
 3. Serving KLD within noise of today's for every kept speed lever. Decode unchanged.
 4. Lever 5: the KLD of the GPTQ-encoded weights against today's encoding, reported, with a recommendation for or
    against a new 32 GB artifact.

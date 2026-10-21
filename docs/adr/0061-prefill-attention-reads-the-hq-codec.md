@@ -69,13 +69,15 @@ The options costed:
 4. **The attention readout** (`/v1/decide`, `locate`, #260) reads from the same path. It loses its single-band
    restriction.
 
-5. **It computes in FP16 accumulate** (owner, 2026-10-21, amending this ADR the day it was accepted).
-   - QK and PV accumulate in FP16 on the tensor cores, with the softmax statistics in FP32 and a fold per key block.
-     GeForce halves HMMA throughput with FP32 accumulate, and the 27B's prefill attention runs at about that halved
-     peak today.
-   - An FP8 variant is measured behind a load option.
-   - Estimate: 60K cold prefill ~6.6K → ~8.0K tok/s (FP16 accumulate), ~9.0K (FP8). vLLM's published ~12.5K also
-     needs larger chunks and faster GEMMs and GDN; that is beyond this ADR.
+5. **It computes in FP8, with FP16 accumulate as the fallback** (owner, 2026-10-21, amending this ADR the day it was
+   accepted).
+   - Q·Kᵀ and P·V run on the block-scaled FP8 MMAs, which SM120 runs at full rate with FP32 accumulate. GeForce
+     halves BF16 HMMA with FP32 accumulate, and that halved peak is where the 27B's prefill attention runs today.
+   - FP16 accumulate (softmax statistics in FP32, a fold per key block) is the fallback if FP8 fails the agreement and
+     KLD criteria.
+   - Estimate: 60K cold prefill ~6.6K → ~9.6-10.1K tok/s (FP8 at ~0.65 ns per key), ~8.0K (FP16 accumulate).
+   - Reaching ~12.5K at 60K also needs the fixed part of the prefill down to ~66 µs per token: phase 2 (spec
+     27b-16gb/phase2-notes, spec prefill-5090/01).
 
 ## Considered options
 

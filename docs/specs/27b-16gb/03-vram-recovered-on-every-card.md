@@ -55,10 +55,12 @@ The token embedding, `text/token_embedding`, W8G32 `[248320, 5120]`:
    - The growing term of the 27B's prefill is its attention: ~1.84 ns per key already seen, per token, from the
      2026-10-13 cold-prefill measurements. That is BF16 MMA with FP32 accumulate at about the card's peak, which
      GeForce runs at half rate.
-   - The kernel accumulates **QK and PV in FP16 on the tensor cores**, with the softmax running max and sum in FP32
-     and a fold into FP32 per key block.
-   - **An FP8 (E4M3) variant** of Q·K and P·V is built behind a load option and measured. It becomes the default
-     only if it passes the same agreement and KLD criteria.
+   - **The target is FP8** (owner, 2026-10-21: "l'fp8 subito"). Q·Kᵀ and P·V run on the block-scaled FP8 MMAs
+     (E4M3, `mxf8f6f4` at full rate on SM120). It is the serving default once it passes the agreement and KLD
+     criteria (ACs 2-3).
+   - **The fallback is FP16 accumulate:** QK and PV in FP16 on the tensor cores, the softmax running max and sum in
+     FP32, a fold into FP32 per key block. It ships as the default instead only if FP8 fails those criteria, and it
+     stays available behind a load option either way.
    - **The precedent to read first** is `engine/src/attention.cu` of [mkyt/qwen3-27b-5090](https://github.com/mkyt/qwen3-27b-5090)
      (MIT, so it can be the source of an adapted op, ADR 0051). Its prefill attention:
      - runs Q·Kᵀ and P·V on FP8 MMAs (block-scaled `mxf8f6f4` at full rate on SM120): K and V as stored, Q with a
@@ -113,9 +115,10 @@ The token embedding, `text/token_embedding`, W8G32 `[248320, 5120]`:
    route's.
 3. Serving KLD on the 2026-09-24 suite within noise of today's (0.0513 ± the bootstrap interval of the finding).
 4. Decode tok/s at 1 and 8 lanes no slower than today's beyond the run's noise. Cold prefill at 46K and 105K faster
-   than today's by at least half the estimate of Solution 6: ≥ +10% at 46K and ≥ +15% at 105K with FP16 accumulate.
-   The FP8 variant's figures are reported. *(The owner set the equivalence and the FP16-accumulate design; the
-   thresholds are the agent's.)*
+   than today's by at least half the estimate of Solution 6:
+   - with FP8 (realistic ~0.65 ns per key): ≥ +13% at 46K and ≥ +24% at 105K;
+   - if the FP16-accumulate fallback ships instead: ≥ +10% and ≥ +15%.
+   *(The owner set the equivalence and FP8 as the target; the thresholds are the agent's.)*
 5. `/v1/decide` and `locate` answer as before on their test suites. A locate past 262,144 keys no longer needs a single
    band.
 6. The 27B's token embedding is in mapped pinned host memory. The VRAM plan's `weights_bytes` drops by its 1.35 GB;
