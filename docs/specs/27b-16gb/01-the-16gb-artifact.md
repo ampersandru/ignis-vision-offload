@@ -1,6 +1,6 @@
 # 01 - the 16 GB artifact: a trellis body, the DFlash2 graft, the catalog entry
 
-GitHub: to be opened (master to be opened).
+GitHub: #338 (master #334).
 
 Decided 2026-10-21: the owner approved this spec and vetoed none of the *(proposed)* items, so every one is decided.
 

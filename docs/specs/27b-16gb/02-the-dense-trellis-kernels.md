@@ -1,6 +1,6 @@
 # 02 - the dense trellis kernels: decode, verify, prefill and the head
 
-GitHub: to be opened (master to be opened).
+GitHub: #337 (master #334).
 
 Decided 2026-10-21: the owner approved this spec and vetoed none of the *(proposed)* items, so every one is decided.
 

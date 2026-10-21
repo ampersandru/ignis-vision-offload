@@ -1,6 +1,6 @@
-# 05 - gates and simulation: the artifact's quality in ignis, 16 GB capacity on the 5090, the speed estimate
+# 05 - first light, gates and simulation: the 16 GB artifact served in ignis, its quality, 16 GB capacity on the 5090, the speed estimate
 
-GitHub: to be opened (master to be opened).
+GitHub: #339 (Part A, 05a: first light) and #340 (Part B, 05b: gates and simulation), master #334.
 
 Decided 2026-10-21: the owner approved this spec and vetoed none of the *(proposed)* items, so every one is decided.
 
@@ -10,6 +10,32 @@ Phase 1 has no 16 GB card (the owner, 2026-10-21). This spec is what phase 1 mea
 - **speed**, as an estimate stated as one, with a bench users can run to report real numbers.
 
 ADRs: 0060 (the gates), 0063 (adaptation), 0003/0014 (gating practice), 0022 (BF16 as oracle).
+
+## Part A (ticket 05a) - first light
+
+The point where specs 01-04 meet: the 16 GB artifact served end to end by ignis on the 5090, under a 16 GiB budget.
+
+**What it wires:**
+- the 27B program binds a trellis body, fused planes or the split parts the repack carries (spec 01), by object
+  presence;
+- every layer's linears dispatch to spec 02's ops by tensor format;
+- the token embedding is read from host memory (spec 03);
+- the load runs the `rtx50-16gb` profile with its lanes and adaptation (spec 04).
+
+**Acceptance (A):**
+
+A1. The 16 GB artifact loads on the 5090 with `--vram-budget-bytes 17179869184` under the `rtx50-16gb` profile. The
+    VRAM plan and any adaptation are logged, and the plan's lines match spec 04's formulas.
+A2. It serves the coding canaries greedy, end to end: chunked prefill, then decode with DFlash2 at 2 lanes, the 128K
+    leg included. Outputs are coherent and there are no errors. Tokens per round and round time are reported.
+A3. A sanity KLD on two of the 2026-09-24 windows, engine path, reported beside M1's weights-only numbers for the same
+    windows. This is not the gate (Part B); it catches a wiring error early.
+A4. The 32 GB NVFP4 artifact still serves exactly as before: greedy outputs on the canaries are identical.
+A5. `cargo test` workspace-wide; GPU tests green on a free 5090.
+
+## Part B (ticket 05b) - gates and simulation
+
+Blocked by 05a. Everything below this line is Part B.
 
 ## Problem Statement
 

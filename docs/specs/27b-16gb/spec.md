@@ -1,6 +1,6 @@
 # The 27B on 16 GB cards — the feature, its tickets, and how to run them
 
-GitHub: master and specs 01-05 to be opened after the owner's seam review (one ticket per spec, numbered ACs).
+GitHub: master #334; 03 #335, 04 #336, 02 #337, 01 #338, 05a #339, 05b #340.
 
 The feature-level document the tickets decompose (`docs/agents/issue-tracker.md`). Read this first, then the ticket's
 spec.
@@ -75,9 +75,10 @@ The image model comes after phase 2.
 | [04](04-the-runtime-follows-the-card-class.md) | one `decode_lanes` field; profile `auto` by card class + adaptation; catalog card class, alias, refusal before teardown; drafter head `auto` | — (the 16 GB entry's file pins come from 01) | yes: lanes, profile, adaptation and catalog work on the 5090 with an explicit budget |
 | [02](02-the-dense-trellis-kernels.md) | dense trellis GEMV/GEMM for decode, verify and prefill, and the head | — for reduced shapes; 01 for full-shape checks | yes: reduced-shape fixtures straight from exllamav3 |
 | [01](01-the-16gb-artifact.md) | the 16 GB artifact: body source, converter, DFlash2 graft, sidecar, catalog entry, HF upload | — (the body source is decided: repack, ADR 0060 §4) | yes: the repack, the copies and the sidecar need no kernel |
-| [05](05-gates-and-simulation.md) | quality gates on the artifact in ignis; 16 GB capacity simulation on the 5090; speed estimate and a user bench | 01-04 for the final run | yes: the harnesses (M1's is reusable) |
+| [05a](05-gates-and-simulation.md) | first light: the 16 GB artifact served end to end in ignis on the 5090 under a 16 GiB budget | 01, 02, 03, 04 | — |
+| [05b](05-gates-and-simulation.md) | the four quality gates on the artifact in ignis; 16 GB capacity simulation on the 5090; speed estimate; user bench | 05a for the final run | yes: the harnesses (M1's is reusable) |
 
-The **order** is the owner's (Q20): 03, then 04, then 02 and 01, with 05 in parallel. 03 and 04 pay off on the 5090
+The **order** is the owner's (Q20): 03, then 04, then 02 and 01, then 05a; 05b's harnesses in parallel. 03 and 04 pay off on the 5090
 before any 16 GB artifact exists.
 
 ## Environment

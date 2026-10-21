@@ -1,6 +1,6 @@
 # 03 - VRAM recovered on every card: no prompt planes, the token embedding in host memory
 
-GitHub: to be opened (master to be opened).
+GitHub: #335 (master #334).
 
 Decided 2026-10-21: the owner approved this spec and vetoed none of the *(proposed)* items, so every one is decided.
 

@@ -1,6 +1,6 @@
 # 04 - the runtime follows the card class: decode lanes per load, profile `auto`, adaptation, catalog card class
 
-GitHub: to be opened (master to be opened).
+GitHub: #336 (master #334).
 
 Decided 2026-10-21: the owner approved this spec and vetoed none of the *(proposed)* items, so every one is decided.
 
