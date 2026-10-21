@@ -7,6 +7,7 @@
 mod responses;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
@@ -68,7 +69,9 @@ fn guarded_on(
 /// landed. The guard fires inside the loop, well before that step, so the
 /// cancel always finds request 0 running however slowly the guard reads;
 /// unheld, a slow runner let request 0 run to `max_output_tokens` first
-/// (`completed 2`, `cancelled 0`).
+/// (`completed 2`, `cancelled 0`). A model thread slower than the guard
+/// takes the cancel before it reaches the step: nothing is held, and the
+/// dropped gate lets the step pass should it come.
 async fn respond_held(reasoning: &str, guard: LoopGuardParams, stream: bool) -> (JsonValue, Arc<Metrics>) {
     let mut gate = None;
     let last_step = reasoning.chars().count().div_ceil(8) as u32;
@@ -80,14 +83,28 @@ async fn respond_held(reasoning: &str, guard: LoopGuardParams, stream: bool) -> 
     });
     let gate = gate.unwrap();
     let response = tokio::spawn(async move { respond(&app, 4000, stream).await });
-    let gate = tokio::task::spawn_blocking(move || {
-        gate.wait_entered();
-        gate
+    let cancelled = || metrics.render().contains("
+ignis_requests_cancelled_total 1
+");
+    let held = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if gate.entered() {
+                return true;
+            }
+            if cancelled() {
+                return false;
+            }
+            tokio::task::yield_now().await;
+        }
     })
     .await
-    .unwrap();
-    responses::metric_reaches(&metrics, "ignis_requests_cancelled_total 1").await;
-    gate.release();
+    .unwrap_or_else(|_| panic!("request 0 neither held nor cancelled:
+{}", metrics.render()));
+    if held {
+        responses::metric_reaches(&metrics, "ignis_requests_cancelled_total 1").await;
+        gate.release();
+    }
+    drop(gate);
     (response.await.unwrap(), metrics)
 }
 

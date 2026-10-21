@@ -1495,6 +1495,14 @@ impl GateController {
         });
     }
 
+    /// Whether the armed `decode_step` call has entered the gate, without
+    /// waiting for it: a test that cannot know which comes first, the
+    /// armed step or what it waits on, asks instead of blocking. A `true`
+    /// is that call held, owed a [`GateController::release`].
+    pub fn entered(&self) -> bool {
+        self.entered_rx.try_recv().is_ok()
+    }
+
     /// Releases the held `decode_step` call, letting it complete.
     pub fn release(&self) {
         self.release_tx
@@ -1535,7 +1543,8 @@ impl GatedCompute {
     /// 0): the steps before it pass, that one blocks until
     /// [`GateController::release`] is called — a model thread held at a
     /// known point of one request's stream, however fast its consumer
-    /// reads. Consumed on entry, like [`GatedCompute::arm`].
+    /// reads. Consumed on entry, like [`GatedCompute::arm`]. Once the
+    /// [`GateController`] is dropped an armed step passes untouched.
     pub fn arm_at(&self, request: RequestId, step: u32) {
         *self.armed_at.lock().unwrap() = Some((request, step));
     }
@@ -1670,5 +1679,24 @@ mod tests {
         controller.release();
         assert_eq!(held.join().unwrap().expect("the released step decodes"), 2);
         gated.decode_step(&[job(7)]).expect("the gate is consumed on entry");
+    }
+
+    /// A test that drops its controller unentered lets the armed step pass:
+    /// nobody is left to release it.
+    #[test]
+    fn an_armed_step_passes_once_its_controller_is_dropped() {
+        let (gated, controller) = GatedCompute::new(Arc::new(MockCompute::new()));
+        let job = DecodeJob {
+            request: 7,
+            lane: 0,
+            params: crate::types::DecodeParams::default(),
+            remaining_tokens: 100,
+            permitted: None,
+            reasoning_close: None,
+        };
+        gated.arm_at(7, 0);
+        assert!(!controller.entered(), "nothing has reached the armed step");
+        drop(controller);
+        gated.decode_step(&[job]).expect("the armed step passes, its controller gone");
     }
 }
