@@ -880,6 +880,8 @@ struct LoadOptions {
   ignis::RopeScaling rope_scaling{};
   // GitHub #275: the most keys of a text span an attention readout reads.
   uint32_t attention_text_max_keys = 0;
+  // GitHub #335: the prompt attention's precision, 0 = E4M3, 1 = FP16.
+  uint32_t prefill_attention = 0;
 };
 
 // GitHub #243: one embedding pool page, in bytes -- the width every side of
@@ -1129,6 +1131,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   out.vision_embedding_pool_bytes = vision_embedding_pool_request;
   out.rope_scaling = rope_scaling;
   out.attention_text_max_keys = std::min(attention_text_max_keys, max_context_tokens);
+  out.prefill_attention = prefill_attention;
 
   // GitHub #302: Flash-Next binds its own schema (kernel/src/flash_next/
   // bind.cu) into its own program (kernel/src/flash_next/program.h), and has
@@ -1551,7 +1554,7 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   model->kv_format = kv_format;
   // GitHub #335: the prompt attention's precision, read by every hq-e8-2b
   // prefill chunk (`kernel/src/gqa_layer.cu`).
-  model->prefill_attention = prefill_attention;
+  model->prefill_attention = load.prefill_attention;
 
   // GitHub #210: every reservation below is sized here, once, by the same
   // computation `ignis_model_plan_reservations` reports.
