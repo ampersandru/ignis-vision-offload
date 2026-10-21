@@ -817,6 +817,32 @@ eight lanes and 2.3x its prefill (a 32K-token TTFT of 7.4 s instead of 16.9 s,
 [finding](../findings/2026-10-18-rtxpro6000-profile-measured.md)). A local
 NVMe was not measured.
 
+### Host RAM for the 27B
+
+The 27B keeps its token embedding (1.35 GB, a 5,440-byte row per token) in
+pinned host memory rather than VRAM (ADR 0062): the card reads one row per
+token over PCIe and gives the 1.35 GB to the KV pool. So the 27B plans host
+memory too, the way Flash-Next does: the table, the host retained slots
+(232.5 MB each, 16 by default: 3.72 GB), the KV-RAM arena (2 GiB, 8 GiB under
+`make`) and KV-disk's staging when the tier is on must leave the 4 GiB margin
+of the available RAM. Under the `make` defaults that is about **18 GB
+available**. A load below it is refused before anything is pinned, naming
+the 27B's own flags:
+
+```
+not enough RAM: the load holds 12.7 GiB and keeps 4 GiB free for the system, so it needs 16.7 GiB
+available, but only 14 GiB is (2.7 GiB short). The model and its retained slots fit, the KV-RAM arena
+does not: a smaller one (--qwen38-reuse-kv-host-pool-bytes, 0 turns it off) or close other
+applications. Plan: token embedding 1.3 GiB, retained host slots 3.5 GiB, KV-RAM arena 8 GiB; margin
+4 GiB (--qwen38-model-host-margin-bytes).
+```
+
+The same refusal in exact bytes is the `ignis.runtime.qwen27b_host_plan_refused`
+event, and a load that fits logs `ignis.runtime.qwen27b_host_plan`. The knobs
+are Flash-Next's, under the `qwen38` scope: `--qwen38-reuse-retained-host`,
+`--qwen38-reuse-kv-host-pool-bytes`, `--qwen38-kv-disk-bytes` and
+`--qwen38-model-host-margin-bytes`.
+
 ### Vision
 
 | Flag | Env | Default | Meaning |

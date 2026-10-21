@@ -516,6 +516,10 @@ add_test(NAME ignis_kernel_dflash2_topk_test COMMAND ignis_kernel_dflash2_topk_t
 add_executable(ignis_kernel_host_mapped_embedding_test test_host_mapped_embedding.cu)
 target_link_libraries(ignis_kernel_host_mapped_embedding_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_host_mapped_embedding_test COMMAND ignis_kernel_host_mapped_embedding_test)
+# The same gather timed from the mapped table against device memory: a tool,
+# NOT a CTest (the 2026-10-21 host-embedding finding).
+add_executable(ignis_kernel_host_mapped_embedding_bench bench_host_mapped_embedding.cu)
+target_link_libraries(ignis_kernel_host_mapped_embedding_bench PRIVATE ignis_kernel ignis_vendor)
 
 # OURS, not vendored: the A16 NVFP4 linear's tensor-core route
 # (kernel/include/ignis_nvfp4_a16_mma.h), which takes every A16 call of 64
