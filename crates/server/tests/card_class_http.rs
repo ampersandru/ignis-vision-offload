@@ -439,3 +439,33 @@ async fn a_catalog_id_the_operator_listed_is_fitted_to_the_card_all_the_same() {
     let (status, completion) = send(&app, Method::POST, "/v1/chat/completions", Some(chat("acme-own"))).await;
     assert_eq!((status, completion["model"].as_str()), (StatusCode::OK, Some("acme-own")), "the operator's own model: {completion}");
 }
+
+/// ADR 0064 §2 for `image.prompt_enhancer`, `qwen3.8-27b` by default: it
+/// takes the step a request's `model` takes, so on a 16 GB card the rewrite
+/// runs on the entry that answers to the default id — the loaded one in
+/// place, never a visit to itself, or the one a visit loads. With no such
+/// entry it is an enhancer no visit reaches, which the start and a `PATCH`
+/// say; on a 32 GB card it is its own entry's.
+#[tokio::test]
+async fn the_prompt_enhancer_is_served_by_the_entry_that_answers_to_it() {
+    use ignis_server::images::enhance::{enhancer_on_this_card, unknown_enhancer};
+    let none = std::collections::BTreeMap::new();
+    let loaded = server_on(&MockLoader::new(), SIXTEEN, Some(CardClass::Gb16), "enhancer-loaded");
+    assert_eq!(enhancer_on_this_card(&loaded, DEFAULT_27B), SIXTEEN, "the loaded model rewrites in place");
+    assert_eq!(unknown_enhancer(&loaded, DEFAULT_27B, &none), None);
+
+    let visited = server_on(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb16), "enhancer-visit");
+    assert_eq!(enhancer_on_this_card(&visited, DEFAULT_27B), SIXTEEN);
+    let via = visited.switcher.as_ref().unwrap().text_model(SIXTEEN).expect("a visit loads the 16 GB 27B");
+    assert_eq!(via.artifact.file_name().and_then(|name| name.to_str()), Some("q16.ninfer"));
+    assert_eq!(unknown_enhancer(&visited, DEFAULT_27B, &none), None);
+
+    // The built-in catalog alone: no entry answers to the default id here.
+    let alone = server_over(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb16), catalog_on_disk("enhancer-alone", "models: []"));
+    assert_eq!(enhancer_on_this_card(&alone, DEFAULT_27B), DEFAULT_27B);
+    assert!(unknown_enhancer(&alone, DEFAULT_27B, &none).is_some_and(|reason| reason.contains(DEFAULT_27B)));
+
+    let thirty_two = server_on(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb32), "enhancer-32");
+    assert_eq!(enhancer_on_this_card(&thirty_two, DEFAULT_27B), DEFAULT_27B, "its own entry fits");
+    assert_eq!(unknown_enhancer(&thirty_two, DEFAULT_27B, &none), None);
+}

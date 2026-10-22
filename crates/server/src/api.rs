@@ -431,8 +431,16 @@ fn switching_message(from: &str, to: &str) -> String {
 /// [`unknown_model`]), spec image-model/05: a request never loads or switches
 /// to a model only to be refused by it. The route checks again once pinned
 /// ([`check_served_kind`]).
-pub(crate) async fn switch_to_named_model(server: &Server, route: ModelKind, model: Option<&str>) -> Result<(), Response> {
-    let (named, _) = split_model_lane(model.map(str::to_owned));
+///
+/// Before all of it, `model` becomes the id this card serves the request
+/// under ([`model_on_this_card`], ADR 0064), rewritten in place so that
+/// everything after reads it: an alias the entry that answers to it, an entry
+/// above the card's class refused [`above_card_class`]. A route that switches
+/// through here cannot skip that step; the image, decision and counting
+/// routes, which switch their own way or not at all, take it themselves.
+pub(crate) async fn switch_to_named_model(server: &Server, route: ModelKind, model: &mut Option<String>) -> Result<(), Response> {
+    *model = model_on_this_card(server, model.take()).map_err(|refusal| above_card_class(&refusal))?;
+    let (named, _) = split_model_lane(model.clone());
     check_kind(server, route, named.as_deref())?;
     if let Some(named) = unswitchable_named(server, route, named.as_deref()) {
         return Err(unknown_model(server, named));
@@ -532,8 +540,9 @@ pub(crate) fn check_served_kind(server: &Server, route: ModelKind, model: Option
 /// stands, whatever its class. Run first, before anything else reads the
 /// request's `model`: the kind check, the implicit switch and the engine's
 /// own model check all see the id the request is served under, and the
-/// answer names it.
-pub(crate) fn served_as(server: &Server, model: Option<String>) -> Result<Option<String>, crate::download::ClassRefusal> {
+/// answer names it. Each route words the refusal its own way:
+/// [`above_card_class`] on all but `/v1/decide`.
+pub(crate) fn model_on_this_card(server: &Server, model: Option<String>) -> Result<Option<String>, crate::download::ClassRefusal> {
     let Some(model) = model else {
         return Ok(None);
     };
@@ -547,11 +556,6 @@ pub(crate) fn served_as(server: &Server, model: Option<String>) -> Result<Option
         Some(served) => format!("{served}{tag}"),
         None => model,
     }))
-}
-
-/// [`served_as`], refused `409 model_above_card_class` ([`above_card_class`]).
-pub(crate) fn served_model(server: &Server, model: Option<String>) -> Result<Option<String>, Response> {
-    served_as(server, model).map_err(|refusal| above_card_class(&refusal))
 }
 
 /// `409 model_above_card_class` (ADR 0064 §3): the model a request or a
@@ -2047,7 +2051,7 @@ struct SwitchAccepted {
     tag = "models",
     operation_id = "switch_model",
     summary = "Replace the loaded model",
-    description = "Unloads the model being served and loads `artifact` in its place under the id `model` — or, with `model` alone, the artifact the server knows it by: the `switch.known_models` entry for the id (which wins), else a catalog entry whose artifact is under `download.path` (`GET /v1/models/catalog` lists them, with whether each is switchable). `switch.allow_implicit` does not apply to that: it gates the switch a request triggers by naming a model. An id that is neither, or whose artifact is not on disk, is `404 model_not_found`; a switch never starts a download. An id sent alone is fitted to the card's class first (ADR 0064): a catalog entry whose `card_class` is above the card's is refused `409 model_above_card_class` before anything is unloaded, unless another entry of its family answers to the id as an alias and fits — on a 16 GB card `qwen3.8-27b` switches to `qwen3.8-27b-16g`, and `to` names it. A switch naming its `artifact` is the operator's word and is not fitted: only the VRAM plan guards it. The switch is on the same process: a full reload, the two models never resident together, every flag the server started with applied to the new load except one the new model does not take (`--vision-enabled` on Qwen3.8-Flash-Next, the other model's `--spec-backend` backend, the Flash-Next-only knobs), which is left off for it.\n\nAnswers `202` at once; the switch runs behind it. Meanwhile every other `/v1` route answers `503 model_switching` with `Retry-After`, and `GET /v1/models` reports `status: switching`. Requests already running on the old model get `--switch-drain-timeout` (30 s by default) to finish; any still running then ends with an `engine_error`. A target that can be refused without unloading anything — a path with no file, a checksum that is not clean, a model id of the other model, a flag it cannot take — leaves the old model serving. A target that fails to load after the old model was unloaded has the old model reloaded from its artifact; `GET /v1/models` reports `status: failed` until one of them serves.",
+    description = "Unloads the model being served and loads `artifact` in its place under the id `model` — or, with `model` alone, the artifact the server knows it by: the `switch.known_models` entry for the id (which wins), else a catalog entry whose artifact is under `download.path` (`GET /v1/models/catalog` lists them, with whether each is switchable). `switch.allow_implicit` does not apply to that: it gates the switch a request triggers by naming a model. An id that is neither, or whose artifact is not on disk, is `404 model_not_found`; a switch never starts a download. An id sent alone is fitted to the card's class first (ADR 0064), whether or not `switch.known_models` lists it, since the class is its catalog entry's: a catalog entry whose `card_class` is above the card's is refused `409 model_above_card_class` before anything is unloaded, unless another entry of its family answers to the id as an alias, fits, and holds an artifact whose header names that family — on a 16 GB card `qwen3.8-27b` switches to `qwen3.8-27b-16g`, and `to` names it. A switch naming its `artifact` is the operator's word and is not fitted: only the VRAM plan guards it. The switch is on the same process: a full reload, the two models never resident together, every flag the server started with applied to the new load except one the new model does not take (`--vision-enabled` on Qwen3.8-Flash-Next, the other model's `--spec-backend` backend, the Flash-Next-only knobs), which is left off for it.\n\nAnswers `202` at once; the switch runs behind it. Meanwhile every other `/v1` route answers `503 model_switching` with `Retry-After`, and `GET /v1/models` reports `status: switching`. Requests already running on the old model get `--switch-drain-timeout` (30 s by default) to finish; any still running then ends with an `engine_error`. A target that can be refused without unloading anything — a path with no file, a checksum that is not clean, a model id of the other model, a flag it cannot take — leaves the old model serving. A target that fails to load after the old model was unloaded has the old model reloaded from its artifact; `GET /v1/models` reports `status: failed` until one of them serves.",
     request_body = SwitchRequest,
     responses(
         (status = 202, description = "The switch began.", body = SwitchAccepted),
@@ -2322,15 +2326,10 @@ async fn chat_completions(
     State(server): State<Arc<Server>>,
     Json(mut req): Json<ChatCompletionsRequest>,
 ) -> Response {
-    // The id this card serves the request under (ADR 0064): an alias
-    // rewritten, an entry above the card's class refused before anything.
-    req.model = match served_model(&server, req.model.take()) {
-        Ok(model) => model,
-        Err(refused) => return refused,
-    };
     // A `model` naming another known model switches to it first (spec
-    // model-switch/01 §Implicit switch), so the pin below takes that model.
-    if let Err(refused) = switch_to_named_model(&server, ModelKind::Text, req.model.as_deref()).await {
+    // model-switch/01 §Implicit switch), so the pin below takes that model —
+    // and is first the id this card serves it under (ADR 0064).
+    if let Err(refused) = switch_to_named_model(&server, ModelKind::Text, &mut req.model).await {
         return refused;
     }
     // One model for the whole request (spec model-switch/01), a text model

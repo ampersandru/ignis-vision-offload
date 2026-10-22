@@ -613,9 +613,9 @@ fn switch_steps(events: mpsc::UnboundedSender<Streamed>, legs: u32) -> Steps {
 async fn serve(server: Arc<Server>, mut request: ImageRequest, conditions: Conditions, route: Route) -> Response {
     // The id this card serves the request under (ADR 0064): an alias
     // rewritten, an entry above the card's class refused before anything.
-    request.model = match crate::api::served_model(&server, request.model.take()) {
+    request.model = match crate::api::model_on_this_card(&server, request.model.take()) {
         Ok(model) => model,
-        Err(refused) => return refused,
+        Err(refusal) => return crate::api::above_card_class(&refusal),
     };
     let named = split_model_lane(request.model.clone()).0;
     if let Err(refused) = check_kind(&server, ModelKind::Image, named.as_deref()) {
@@ -698,7 +698,7 @@ async fn admit(
     // the enhancer; else, naming an image model, the enhancer the server can
     // switch to.
     let unloaded = server.active();
-    let enhancer = server.live().image.prompt_enhancer.clone();
+    let enhancer = super::enhance::enhancer_on_this_card(&server, &server.live().image.prompt_enhancer);
     let rewrites_first = request.enhance && status.is_unloaded() && unloaded.kind() == ModelKind::Text;
     let load = match rewrites_first {
         true if unloaded.model_id() == enhancer => None,
@@ -884,7 +884,7 @@ async fn enhance(
     seed: u64,
     events: &mpsc::UnboundedSender<Streamed>,
 ) -> Result<Enhanced, Response> {
-    let enhancer = server.live().image.prompt_enhancer.clone();
+    let enhancer = super::enhance::enhancer_on_this_card(server, &server.live().image.prompt_enhancer);
     // The model the check reads is the one the rewrite runs on.
     let pinned = server.pinned();
     let loaded = pinned.active();

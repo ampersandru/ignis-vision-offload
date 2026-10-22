@@ -2460,7 +2460,7 @@ pub async fn decide(
     // rewritten, an entry above the card's class refused before anything
     // loads or switches — `422`, as every refusal of a decision's `model`.
     if let Ok(request) = &mut body {
-        match crate::api::served_as(&server, request.0.model.take()) {
+        match crate::api::model_on_this_card(&server, request.0.model.take()) {
             Ok(model) => request.0.model = model,
             Err(refusal) => {
                 return refused(&Refusal::new(

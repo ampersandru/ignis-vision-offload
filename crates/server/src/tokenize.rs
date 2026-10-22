@@ -130,9 +130,9 @@ pub(crate) async fn tokenize(State(server): State<Arc<Server>>, Json(mut req): J
     // (spec image-model/05): this route counts, it never switches. A `model`
     // another entry answers to on this card is that entry's (ADR 0064).
     let server = Arc::new(server.pinned());
-    req.model = match crate::api::served_model(&server, req.model.take()) {
+    req.model = match crate::api::model_on_this_card(&server, req.model.take()) {
         Ok(model) => model,
-        Err(refused) => return refused,
+        Err(refusal) => return crate::api::above_card_class(&refusal),
     };
     if let Some(metrics) = &server.metrics {
         metrics.record_tokenize(TokenizeRoute::Tokenize);
