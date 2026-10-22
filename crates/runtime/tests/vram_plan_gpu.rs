@@ -311,3 +311,139 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
         "the prefill scratch already fits the encoder, and the text room a head point's readout"
     );
 }
+
+
+/// GitHub #336 (spec 27b-16gb/04 acceptance 1): every line that scales with
+/// the round follows the load's decode lanes, and at eight lanes the plan is
+/// main 75210360's to the byte. Two shapes: the `rtx5090` profile's 27B
+/// (917,504 tokens of hq-e8-2b, DFlash2 at 7, vision with the processor's
+/// 16,384-token item bound, 2,048-token chunks) and a 262,144-token text
+/// load at 1,024; two device and sixteen host retained slots on both, so
+/// the lines the lanes do not move are there to stay put. Asked of the
+/// leaf's plan only, so nothing here touches the device.
+///
+/// A lane's state is its slot: the GDN recurrent state, the conv taps, the
+/// penalty counts and the drafter's window, 196,880,384 bytes; its residual
+/// window 35,651,648 more (PIANO-VRAM's 233 MB a lane); the drafter's round
+/// is `Speculation::round_scratch_bytes`, ~5.56 MB a lane. The sampling,
+/// decode and verify rounds take what the leaf's queries and its arena
+/// rounding say, pinned at 1, 2 and 8 lanes: at the `rtx5090` shape ~0.58,
+/// ~10.27 and ~19.02 MB a lane, so the four round lines are ~35.4 MB a lane
+/// beside ~33.6 MB that does not move (the drafter's 32 MiB allowance and
+/// its fixed buffers) -- PIANO-VRAM's "~35 MB a lane + 34 MB fixed" at
+/// DFlash2 7, fitted on 39 measured plans.
+#[test]
+#[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
+fn the_round_lines_follow_the_loads_lanes() {
+    let path = Path::new(ARTIFACT);
+    if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
+        return;
+    }
+    let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
+    let speculation = Speculation::new(SpeculativeBackend::Dflash2, 7).expect("dflash2-7");
+    let vision = Vision::new(ignis_core::DEFAULT_VISION_MAX_TOKENS).expect("default envelope").with_item_max_tokens(16_384);
+    let image = ignis_core::ModelConfig::qwen38_27b().state_image(KvFormat::HqE8_2b);
+    let slot = image.gdn_recurrent + image.gdn_conv_taps + image.penalty_counts + speculation.window_pool_bytes(1);
+    assert_eq!(slot, 196_880_384, "one lane's slot: 150,994,944 + 2,949,120 + 993,280 + 41,943,040");
+
+    // What main planned at eight lanes, and what each shape plans at one and
+    // two: (sampling, decode round, verify round).
+    struct Shape {
+        label: &'static str,
+        max_context_tokens: u32,
+        prefill_chunk_tokens: u32,
+        vision: Option<Vision>,
+        main: ReservedBytes,
+        rounds: [(u32, (u64, u64, u64)); 2],
+    }
+    let main = |workspace, media_embedding, decode_graph, verify_round| ReservedBytes {
+        workspace,
+        media_embedding,
+        sampling: 4_623_344,
+        decode_graph,
+        verify_round,
+        drafter_round: 78_027_552,
+        lane_state: 1_575_043_072,
+        retained_slots: 393_760_768,
+        hq_residual_window: 356_516_480,
+        kv_pool: 0,
+    };
+    let shapes = [
+        Shape {
+            label: "rtx5090",
+            max_context_tokens: 917_504,
+            prefill_chunk_tokens: 2048,
+            vision: Some(vision),
+            main: main(908_592_896, 335_544_320, 82_125_920, 152_139_488),
+            rounds: [(1, (ROUNDS_1.0, ROUNDS_1.1, ROUNDS_1.2)), (2, (ROUNDS_2.0, ROUNDS_2.1, ROUNDS_2.2))],
+        },
+        Shape {
+            label: "text262k",
+            max_context_tokens: 262_144,
+            prefill_chunk_tokens: 1024,
+            vision: None,
+            main: main(487_837_184, 0, 82_125_888, 152_139_232),
+            rounds: [(1, (TEXT_1.0, TEXT_1.1, TEXT_1.2)), (2, (TEXT_2.0, TEXT_2.1, TEXT_2.2))],
+        },
+    ];
+    for shape in &shapes {
+        let scope = model_load::model_scope(Some(speculation), shape.vision, ExceptionWeights::Bf16);
+        let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
+        let planned_at = |lanes: u32| {
+            let config = CudaLeafConfig {
+                max_context_tokens: shape.max_context_tokens,
+                kv_format: KvFormat::HqE8_2b,
+                slot_count: lanes,
+                prefill_chunk_tokens: shape.prefill_chunk_tokens,
+                speculation: Some(speculation),
+                vision: shape.vision,
+                retained_device_slots: 2,
+                retained_host_slots: 16,
+                ..CudaLeafConfig::default()
+            };
+            config.plan_reservations(&reader, &plan, &handles).unwrap_or_else(|e| panic!("plan at {lanes} lanes: {e}"))
+        };
+        let eight = planned_at(N_DECODE_LANES as u32);
+        assert_eq!(eight.reserved, shape.main, "{}: eight lanes are main's plan to the byte", shape.label);
+        assert_eq!(eight.retained_host_bytes, 16 * HOST_IMAGE_BYTES, "{}", shape.label);
+        for &(lanes, (sampling, decode_graph, verify_round)) in &shape.rounds {
+            let at = planned_at(lanes).reserved;
+            let label = format!("{} at {lanes} lanes", shape.label);
+            eprintln!("{label}: {at:?}");
+            assert_eq!(
+                at,
+                ReservedBytes {
+                    sampling,
+                    decode_graph,
+                    verify_round,
+                    drafter_round: speculation.round_scratch_bytes(lanes),
+                    lane_state: u64::from(lanes) * slot,
+                    hq_residual_window: u64::from(lanes + 2) * HQ_WINDOW_BYTES,
+                    ..shape.main
+                },
+                "{label}: the workspace, the media pool and the retained slots stay put"
+            );
+        }
+        // Each round line steps by about the same each lane: eight lanes are
+        // one lane and seven more of the step from one to two, within the
+        // arena's rounding of the buffers too small to fill a block.
+        let one = planned_at(1).reserved;
+        let two = planned_at(2).reserved;
+        for (line, at_one, at_two, at_eight) in [
+            ("sampling", one.sampling, two.sampling, eight.reserved.sampling),
+            ("decode_graph", one.decode_graph, two.decode_graph, eight.reserved.decode_graph),
+            ("verify_round", one.verify_round, two.verify_round, eight.reserved.verify_round),
+            ("drafter_round", one.drafter_round, two.drafter_round, eight.reserved.drafter_round),
+        ] {
+            let affine = at_one + 7 * (at_two - at_one);
+            assert!(at_eight.abs_diff(affine) <= 64 * 1024, "{}: {line} {at_eight} against {affine}", shape.label);
+        }
+    }
+}
+
+/// The sampling, decode round and verify round lines the `rtx5090` shape
+/// plans at one and two lanes, and the 262,144-token text shape's.
+const ROUNDS_1: (u64, u64, u64) = (579_048, 10_266_636, 19_017_436);
+const ROUNDS_2: (u64, u64, u64) = (1_156_768, 20_532_248, 38_034_872);
+const TEXT_1: (u64, u64, u64) = (579_048, 10_266_632, 19_017_404);
+const TEXT_2: (u64, u64, u64) = (1_156_768, 20_532_240, 38_034_808);

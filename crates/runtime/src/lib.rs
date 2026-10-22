@@ -63,8 +63,11 @@ pub const DEFAULT_RETAINED_DEVICE_SLOTS: u32 = 0;
 
 /// Retained slots in the pinned host block by default (`--reuse-retained-host`,
 /// GitHub #281): two per decode lane -- a chain link and a checkpoint for
-/// each conversation a lane serves.
-pub const DEFAULT_RETAINED_HOST_SLOTS: u32 = 2 * ignis_core::N_DECODE_LANES as u32;
+/// each conversation a lane serves -- here at the 27B's default eight lanes.
+/// A load of fewer lanes keeps two per lane of its own (GitHub #336,
+/// [`ignis_core::compute::ModelFamily::default_retained_host_slots`]).
+pub const DEFAULT_RETAINED_HOST_SLOTS: u32 = ignis_core::compute::ModelFamily::Qwen38_27b
+    .default_retained_host_slots(ignis_core::N_DECODE_LANES as u32);
 
 /// The paged-KV pool's auto byte budget for a configured `max_context`
 /// under `format` (P4-04, GitHub #122): [`ignis_core::DEFAULT_KV_POOL_BYTES`]
@@ -1789,6 +1792,8 @@ impl<L: StepLeaf> Compute for RuntimeCompute<L> {
     }
 
     fn decode_step(&self, jobs: &[DecodeJob]) -> Result<Vec<DecodeOutcome>, ComputeError> {
+        // The most any load's round serves; the leaf refuses past its own
+        // load's lanes (GitHub #336), which the scheduler never batches past.
         if jobs.len() > N_DECODE_LANES {
             return Err(ComputeError::Kernel(-1));
         }

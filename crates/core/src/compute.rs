@@ -798,15 +798,29 @@ impl ModelFamily {
             .find(|family| family.model_id() == model_id)
     }
 
+    /// The decode lanes a load of this family runs when none is named
+    /// (`--spec-decode-lanes`, GitHub #336): the 27B's 8, every lane the
+    /// leaf's round serves ([`crate::N_DECODE_LANES`]); Flash-Next's 3, where
+    /// its expert-streamed decode peaks on the 5090 (GitHub #306). None on
+    /// the image model, which decodes no tokens.
+    pub const fn default_decode_lanes(self) -> u32 {
+        match self {
+            ModelFamily::Qwen38_27b => crate::N_DECODE_LANES as u32,
+            ModelFamily::FlashNext => 3,
+            ModelFamily::QwenImage21 => 0,
+        }
+    }
+
     /// Host retained slots a load of this family keeps by default with
     /// prompt reuse on (`--reuse-retained-host`): two per decode lane on the 27B
-    /// (GitHub #281); 8 on Flash-Next, a chain link and a checkpoint for
-    /// three agents and a shared system block, ~1 GiB of pinned images
-    /// beside 37.7 GB of pinned experts (spec flash-next/05). None on the
-    /// image model, which keeps no sequences.
-    pub fn default_retained_host_slots(self) -> u32 {
+    /// (GitHub #281), of the load's `decode_lanes` (GitHub #336) -- 16 at its
+    /// default 8; 8 on Flash-Next whatever its lanes, a chain link and a
+    /// checkpoint for three agents and a shared system block, ~1 GiB of
+    /// pinned images beside 37.7 GB of pinned experts (spec flash-next/05).
+    /// None on the image model, which keeps no sequences.
+    pub const fn default_retained_host_slots(self, decode_lanes: u32) -> u32 {
         match self {
-            ModelFamily::Qwen38_27b => 2 * crate::N_DECODE_LANES as u32,
+            ModelFamily::Qwen38_27b => 2 * decode_lanes,
             ModelFamily::FlashNext => 8,
             ModelFamily::QwenImage21 => 0,
         }
@@ -1411,8 +1425,20 @@ mod tests {
         assert_eq!(image.name(), "Qwen-Image-2.1");
         assert!(!image.takes_images() && !image.serves_readouts() && !image.opener_page_rides_capture());
         assert_eq!(image.drafter(), None);
-        assert_eq!(image.default_retained_host_slots(), 0);
+        assert_eq!(image.default_retained_host_slots(image.default_decode_lanes()), 0);
+        assert_eq!(image.default_decode_lanes(), 0);
         assert_eq!(ModelFamily::FlashNext.drafter(), Some(crate::SpeculativeBackend::Mtp));
+    }
+
+    /// GitHub #336: each family's lanes when none is named -- the 27B every
+    /// lane its round serves, Flash-Next its three agents -- and the 27B's
+    /// host retained slots, two per lane of the load.
+    #[test]
+    fn each_family_names_its_own_default_decode_lanes() {
+        assert_eq!(ModelFamily::Qwen38_27b.default_decode_lanes(), crate::N_DECODE_LANES as u32);
+        assert_eq!(ModelFamily::FlashNext.default_decode_lanes(), 3);
+        assert_eq!(ModelFamily::Qwen38_27b.default_retained_host_slots(2), 4);
+        assert_eq!(ModelFamily::Qwen38_27b.default_retained_host_slots(8), 16);
     }
 
     /// What each model can serve beyond text: Flash-Next has no vision

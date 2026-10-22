@@ -528,7 +528,7 @@ config_group! {
 }
 
 config_group! {
-    /// Speculative decoding, and Flash-Next's decode lanes.
+    /// Speculative decoding, and the decode lanes.
     SpecGroup = "spec" {
         /// The speculative backend: `dflash2` (the 27B's drafter), `mtp`
         /// (Flash-Next's head, with its companion container beside the
@@ -541,11 +541,14 @@ config_group! {
         /// lanes, 0 (= 8) or 2..=32; past 8, five to eight lanes draft too.
         draft_rows: Opt<DraftRows> = None, between(0, ignis_core::speculation::FLASH_NEXT_MAX_VERIFY_ROWS as i64), FLASH_NEXT_ONLY,
             [Visible, Patchable, ReloadRequired];
-        /// Flash-Next's decode lanes: the sequences it decodes at once,
-        /// sharing the KV pool — min(524,288 tokens, lanes x `max_context`),
-        /// never below one `max_context` and a page per retained slot. Unset,
-        /// 3. The 27B serves a fixed 8.
-        decode_lanes: Opt<Lanes> = None, between(1, ignis_core::N_DECODE_LANES as i64), FLASH_NEXT_ONLY, [Visible, Patchable, ReloadRequired];
+        /// The decode lanes: the sequences a model decodes at once. On the
+        /// 27B each lane reserves its state (~233 MB with `dflash2` under
+        /// hq-e8-2b) and its share of the round buffers, and takes two of the
+        /// default host retained slots. On Flash-Next they decode sharing the
+        /// KV pool — min(524,288 tokens, lanes x `max_context`), never below
+        /// one `max_context` and a page per retained slot. Unset, the model's
+        /// own: 8 on the 27B, 3 on Flash-Next.
+        decode_lanes: Opt<Lanes> = None, between(1, ignis_core::N_DECODE_LANES as i64), ALL, [Visible, Patchable, ReloadRequired, Scoped];
         /// The drafter's proposal head: `full` (the target's output head) or
         /// `shortlist` (the artifact's Q4 head over the 131,072 most frequent
         /// tokens, +356 MB of VRAM). Needs a backend; `mtp` has only `full`.

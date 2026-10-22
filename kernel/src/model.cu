@@ -591,8 +591,10 @@ std::size_t compute_program_scratch_bytes(const ignis_model &model, const ignis_
 }
 
 // ---------------------------------------------------------------------------
-// The ReplaySSM record geometry of the verify round at window `k`.
-ninfer::GdnReplayRecordSpec verify_record_spec(const ignis_topology &topology, uint32_t window) {
+// The ReplaySSM record geometry of the verify round at window `k`, one
+// record row per lane of the load's `lanes` (GitHub #336).
+ninfer::GdnReplayRecordSpec verify_record_spec(const ignis_topology &topology, uint32_t window,
+                                               uint32_t lanes) {
   std::int32_t gdn_layers = 0;
   for (uint32_t i = 0; i < topology.num_layers; ++i) {
     if (static_cast<ignis_layer_kind>(topology.layer_kinds[i]) == IGNIS_LAYER_GDN) {
@@ -601,7 +603,7 @@ ninfer::GdnReplayRecordSpec verify_record_spec(const ignis_topology &topology, u
   }
   ninfer::GdnReplayRecordSpec spec{};
   spec.layers = gdn_layers;
-  spec.record_capacity = IGNIS_DECODE_MAX_BATCH;
+  spec.record_capacity = static_cast<std::int32_t>(lanes);
   spec.width = static_cast<std::int32_t>(window) + 1;
   spec.conv_channels =
       static_cast<std::int32_t>(topology.gdn_q_width + topology.gdn_state_cols + topology.gdn_state_rows);
@@ -618,11 +620,12 @@ ninfer::GdnReplayRecordSpec verify_record_spec(const ignis_topology &topology, u
 // GitHub #210: every byte `build_verify_round` below allocates, without
 // allocating -- the VRAM plan's verify line. `IgnisVerifyRound::device_bytes`
 // reads the same total back off a built round, and the load checks the two
-// agree.
-std::size_t verify_round_bytes(const ignis_topology &topology, uint32_t window, bool vision) {
+// agree. GitHub #336: for the load's `decode_lanes`, IGNIS_DECODE_MAX_BATCH before.
+std::size_t verify_round_bytes(const ignis_topology &topology, uint32_t window, bool vision,
+                               uint32_t decode_lanes) {
   const auto k = static_cast<std::size_t>(window);
   const std::size_t columns = k + 1;
-  const std::size_t lanes = IGNIS_DECODE_MAX_BATCH;
+  const std::size_t lanes = decode_lanes;
   const auto hidden = static_cast<std::size_t>(topology.hidden);
   const auto vocab = static_cast<std::size_t>(topology.vocab);
   const std::size_t i32 = sizeof(int32_t);
@@ -639,7 +642,7 @@ std::size_t verify_round_bytes(const ignis_topology &topology, uint32_t window, 
   bytes += hidden * columns * lanes * bf16;          // hidden
   bytes += hidden * lanes * bf16;                    // selected_hidden
   ninfer::LayoutBuilder builder;
-  (void)ninfer::plan_gdn_replay_records(builder, verify_record_spec(topology, window));
+  (void)ninfer::plan_gdn_replay_records(builder, verify_record_spec(topology, window, decode_lanes));
   bytes += builder.finish(kArenaAlign, "GDN replay records");
   bytes += std::max<std::size_t>(ninfer::ops::speculative_accept_greedy_drafts_workspace_capacity_bytes(
                                      static_cast<std::int32_t>(vocab), static_cast<std::int32_t>(k),
@@ -649,7 +652,8 @@ std::size_t verify_round_bytes(const ignis_topology &topology, uint32_t window, 
 }
 
 // P5-04 (GitHub #153): the verify round's substrate (model_internal.h's
-// `IgnisVerifyRound`) at window `k`, for `IGNIS_DECODE_MAX_BATCH` lanes. The
+// `IgnisVerifyRound`) at window `k`, for the load's `decode_lanes` lanes
+// (GitHub #336; IGNIS_DECODE_MAX_BATCH before). The
 // ReplaySSM record geometry is the model's GDN geometry -- the layer count
 // from the topology's kinds, the head counts from the state widths -- and
 // the vendored planner (`plan_gdn_replay_records`) lays the four planes out;
@@ -661,12 +665,13 @@ std::size_t verify_round_bytes(const ignis_topology &topology, uint32_t window, 
 // way its decode rounds do. A load without vision allocates nothing for it
 // and every round rotates at `positions` itself, exactly as before.
 std::unique_ptr<IgnisVerifyRound> build_verify_round(const ignis_topology &topology,
-                                                     uint32_t window, bool vision) {
+                                                     uint32_t window, bool vision,
+                                                     uint32_t decode_lanes) {
   auto verify = std::make_unique<IgnisVerifyRound>();
   verify->window = window;
   const auto k = static_cast<std::int32_t>(window);
   const std::int32_t columns = k + 1;
-  const std::int32_t lanes = IGNIS_DECODE_MAX_BATCH;
+  const auto lanes = static_cast<std::int32_t>(decode_lanes);
   const auto hidden = static_cast<std::size_t>(topology.hidden);
   const auto vocab = static_cast<std::int32_t>(topology.vocab);
 
@@ -711,7 +716,7 @@ std::unique_ptr<IgnisVerifyRound> build_verify_round(const ignis_topology &topol
 
   ninfer::LayoutBuilder builder;
   verify->records_layout =
-      ninfer::plan_gdn_replay_records(builder, verify_record_spec(topology, window));
+      ninfer::plan_gdn_replay_records(builder, verify_record_spec(topology, window, decode_lanes));
   const std::size_t record_bytes = builder.finish(kArenaAlign, "GDN replay records");
   verify->records_backing = std::make_unique<ninfer::DeviceBuffer>(record_bytes);
   verify->records = ninfer::GdnReplayRecords(
@@ -763,16 +768,18 @@ std::size_t dflash2_prefill_scratch_bytes(const ignis_topology &topology, std::i
 constexpr std::size_t kDflash2RoundWorkspaceBytes = 32 * 1024 * 1024;
 
 // P5-05 (GitHub #155): the activations the drafter's round allocates from
-// `drafter_scratch` (kernel/src/dflash2_drafter.cu) at window `k` across
-// IGNIS_DECODE_MAX_BATCH lanes, in the order it allocates them: its forward
-// -- both blocks of a layer counted together, so the sum is conservative --
-// or the round's context append, whichever is larger.
-std::size_t dflash2_round_activation_bytes(const ignis_topology &topology, std::int32_t window) {
+// `drafter_scratch` (kernel/src/dflash2_drafter.cu) at window `k` across the
+// load's `lanes` (GitHub #336; IGNIS_DECODE_MAX_BATCH before), in the order
+// it allocates them: its forward -- both blocks of a layer counted together,
+// so the sum is conservative -- or the round's context append, whichever is
+// larger.
+std::size_t dflash2_round_activation_bytes(const ignis_topology &topology, std::int32_t window,
+                                           uint32_t lanes) {
   const auto hidden = static_cast<int64_t>(topology.hidden);
   const auto vocab = static_cast<int64_t>(topology.vocab);
   const auto intermediate = static_cast<int64_t>(topology.ffn_intermediate);
-  const int64_t columns = static_cast<int64_t>(window + 1) * IGNIS_DECODE_MAX_BATCH;
-  const int64_t drafts = static_cast<int64_t>(window) * IGNIS_DECODE_MAX_BATCH;
+  const int64_t columns = static_cast<int64_t>(window + 1) * lanes;
+  const int64_t drafts = static_cast<int64_t>(window) * lanes;
   const int64_t kv_width = kDflash2KvHeads * kDflash2HeadDim;
   const int64_t top_k = kDflash2SelectorTopK;
 
@@ -884,6 +891,9 @@ struct LoadOptions {
   uint32_t attention_text_max_keys = 0;
   // GitHub #335: the prompt attention's precision (enum ignis_prefill_attention).
   uint32_t prefill_attention = IGNIS_PREFILL_ATTENTION_FP8;
+  // GitHub #336: the 27B's decode lanes, resolved (0 is IGNIS_DECODE_MAX_BATCH):
+  // the widest round, and every round reservation's width.
+  uint32_t decode_lanes = IGNIS_DECODE_MAX_BATCH;
 };
 
 // GitHub #243: one embedding pool page, in bytes -- the width every side of
@@ -1166,12 +1176,23 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     model->flash_next.reset(program.release());
     return model;
   }
-  if (options != nullptr && (options->decode_lanes != 0 || options->residency != nullptr ||
-                             options->draft_row_budget != 0 || options->mtp_expert_slots != nullptr)) {
-    set_error("ignis_model_load: decode_lanes, residency, draft_row_budget and mtp_expert_slots are "
+  if (options != nullptr && (options->residency != nullptr || options->draft_row_budget != 0 ||
+                             options->mtp_expert_slots != nullptr)) {
+    set_error("ignis_model_load: residency, draft_row_budget and mtp_expert_slots are "
               "Qwen3.8-Flash-Next's options");
     return nullptr;
   }
+  // GitHub #336: the 27B's decode lanes are a load option too -- the widest
+  // round, which every round reservation below is sized for and every round
+  // graph is captured up to. 0 is the most a round serves.
+  const uint32_t decode_lanes =
+      options != nullptr && options->decode_lanes != 0 ? options->decode_lanes : IGNIS_DECODE_MAX_BATCH;
+  if (decode_lanes > IGNIS_DECODE_MAX_BATCH) {
+    set_error("ignis_model_load: decode_lanes " + std::to_string(decode_lanes) + " is more than the " +
+              std::to_string(IGNIS_DECODE_MAX_BATCH) + " a Qwen 3.8-27B round serves");
+    return nullptr;
+  }
+  out.decode_lanes = decode_lanes;
   if (speculative_backend == IGNIS_SPECULATIVE_MTP) {
     set_error("ignis_model_load: MTP is Qwen3.8-Flash-Next's draft head; the 27B drafts with DFlash2");
     return nullptr;
@@ -1236,14 +1257,16 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   return model;
 }
 
-// The drafter round's vendored workspaces (`swa`, `linear_swiglu`), checked
-// against their fixed allowance; see kDflash2RoundWorkspaceBytes.
+// The drafter round's vendored workspaces (`swa`, `linear_swiglu`) at the
+// load's `lanes`, checked against their fixed allowance; see
+// kDflash2RoundWorkspaceBytes.
 void check_dflash2_round_workspace(const ignis_model &model, const Geometry &g,
-                                   uint32_t max_context_tokens, uint32_t draft_tokens) {
+                                   uint32_t max_context_tokens, uint32_t draft_tokens,
+                                   uint32_t lanes) {
   const auto block = static_cast<std::int32_t>(draft_tokens + 1);
   const std::size_t workspace_bytes =
       ninfer::ops::swa_workspace_capacity_bytes({0, max_context_tokens}, 1, block,
-                                                IGNIS_DECODE_MAX_BATCH) +
+                                                static_cast<std::int32_t>(lanes)) +
       ninfer::ops::linear_swiglu_workspace_capacity_bytes(
           model.dflash2.layers[0].mlp_gate_up.qtype, static_cast<std::int32_t>(2 * g.ffn_intermediate),
           static_cast<std::int32_t>(g.hidden), ninfer::ops::LinearPolicy::A16Only, 1, 16);
@@ -1281,6 +1304,9 @@ struct LoadSizes {
   std::size_t drafter_features = 0;
   std::size_t drafter_scratch = 0;
   std::size_t sampling_logits = 0;
+  // GitHub #336: the load's decode lanes, which every round line is sized
+  // for.
+  std::size_t lanes = IGNIS_DECODE_MAX_BATCH;
 
   // GitHub #212: the one arena prefill chunks and media encode share. A
   // media encode runs between prefill steps, never inside one, so the two
@@ -1291,7 +1317,6 @@ struct LoadSizes {
   }
 
   ignis_model_reservations reservations() const {
-    const std::size_t lanes = IGNIS_DECODE_MAX_BATCH;
     const bool vision = media_embedding > 0;
     ignis_model_reservations out{};
     out.workspace_bytes = workspace();
@@ -1337,6 +1362,9 @@ LoadSizes plan_load_sizes(const ignis_model &model, const ignis_topology &topolo
                           const LoadOptions &options) {
   const Geometry g = Geometry::from(topology);
   LoadSizes sizes;
+  // GitHub #336: every round line below is the load's lanes wide.
+  const uint32_t lanes = options.decode_lanes;
+  sizes.lanes = lanes;
 
   // P2-01 (GitHub #83): the scratch, sized for a `prefill_chunk_tokens`-wide
   // chunk (see compute_program_scratch_bytes above).
@@ -1390,10 +1418,9 @@ LoadSizes plan_load_sizes(const ignis_model &model, const ignis_topology &topolo
 
   // P3-03 (GitHub #99): device sampling's workspace and its decode logits.
   const auto vocab = static_cast<std::int32_t>(g.vocab);
-  sizes.sampling_logits =
-      static_cast<std::size_t>(vocab) * IGNIS_DECODE_MAX_BATCH * sizeof(std::uint16_t);
+  sizes.sampling_logits = static_cast<std::size_t>(vocab) * lanes * sizeof(std::uint16_t);
   sizes.sampling_workspace = std::max<std::size_t>(
-      ninfer::ops::sampling_workspace_capacity_bytes(vocab, 1, IGNIS_DECODE_MAX_BATCH), kArenaAlign);
+      ninfer::ops::sampling_workspace_capacity_bytes(vocab, 1, static_cast<std::int32_t>(lanes)), kArenaAlign);
 
   // P3-05 (GitHub #102) / P5-04 (GitHub #153): the round scratch, one column
   // per lane, or `k+1` with a draft window.
@@ -1401,20 +1428,21 @@ LoadSizes plan_load_sizes(const ignis_model &model, const ignis_topology &topolo
   const auto round_columns = static_cast<std::int32_t>(windowed ? options.draft_tokens + 1 : 1);
   sizes.decode_graph_scratch = compute_program_scratch_bytes(
       model, topology, /*chunk=*/round_columns, max_context_tokens, options.cache_dtype,
-      /*batch=*/IGNIS_DECODE_MAX_BATCH, /*head_every_column=*/windowed);
+      /*batch=*/static_cast<std::int32_t>(lanes), /*head_every_column=*/windowed);
 
   if (windowed) {
-    sizes.verify_round = verify_round_bytes(topology, options.draft_tokens, options.vision_max_tokens > 0);
+    sizes.verify_round =
+        verify_round_bytes(topology, options.draft_tokens, options.vision_max_tokens > 0, lanes);
   }
 
   // P5-05 (GitHub #155): the drafter's round buffers.
   if (options.speculative_backend == IGNIS_SPECULATIVE_DFLASH2) {
-    check_dflash2_round_workspace(model, g, max_context_tokens, options.draft_tokens);
+    check_dflash2_round_workspace(model, g, max_context_tokens, options.draft_tokens, lanes);
     const auto block = static_cast<std::size_t>(options.draft_tokens + 1);
     sizes.drafter_features = kDflash2TapLayers.size() * static_cast<std::size_t>(g.hidden) * block *
-                             IGNIS_DECODE_MAX_BATCH * sizeof(std::uint16_t);
+                             lanes * sizeof(std::uint16_t);
     sizes.drafter_scratch =
-        dflash2_round_activation_bytes(topology, static_cast<std::int32_t>(options.draft_tokens)) +
+        dflash2_round_activation_bytes(topology, static_cast<std::int32_t>(options.draft_tokens), lanes) +
         kDflash2RoundWorkspaceBytes;
   }
   return sizes;
@@ -1512,6 +1540,9 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   const uint32_t vision_max_tokens = load.vision_max_tokens;
   model->speculative_backend = speculative_backend;
   model->draft_tokens = draft_tokens;
+  // GitHub #336: the widest round this load serves.
+  model->decode_lanes = load.decode_lanes;
+  const std::size_t lanes = load.decode_lanes;
 
   // ADR 0062: a tensor bound from mapped pinned host memory (the 27B's
   // token embedding) takes no VRAM; the runtime says where each one lives.
@@ -1668,29 +1699,24 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
         std::make_unique<ninfer::DeviceBuffer>(sizeof(ninfer::ops::SamplingConfig));
     model->sampling_single_positions = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t));
     model->sampling_single_out = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t));
-    model->sampling_decode_configs = std::make_unique<ninfer::DeviceBuffer>(
-        sizeof(ninfer::ops::SamplingConfig) * IGNIS_DECODE_MAX_BATCH);
-    model->sampling_decode_positions =
-        std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH);
+    model->sampling_decode_configs =
+        std::make_unique<ninfer::DeviceBuffer>(sizeof(ninfer::ops::SamplingConfig) * lanes);
+    model->sampling_decode_positions = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes);
     // GitHub #178: allocated before the decode graphs are captured, which
     // bake its address into every GQA layer's rotation.
     if (vision_max_tokens > 0) {
-      model->decode_rope_positions =
-          std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH);
+      model->decode_rope_positions = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes);
     }
-    model->sampling_decode_out =
-        std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH);
+    model->sampling_decode_out = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes);
     model->sampling_decode_logits = std::make_unique<ninfer::DeviceBuffer>(sizes.sampling_logits);
     // GitHub #242: three small per-lane rows, allocated whether or not any
     // request ever constrains a draw -- 4 KB against a plan in gigabytes,
     // and an allocation that depends on traffic is one the VRAM plan cannot
     // state at load (ADR 0030).
-    model->sampling_decode_permitted = std::make_unique<ninfer::DeviceBuffer>(
-        sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH * IGNIS_MAX_PERMITTED_TOKENS);
-    model->sampling_decode_permitted_counts =
-        std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH);
-    model->sampling_decode_permitted_probs =
-        std::make_unique<ninfer::DeviceBuffer>(sizeof(float) * IGNIS_DECODE_MAX_BATCH);
+    model->sampling_decode_permitted =
+        std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes * IGNIS_MAX_PERMITTED_TOKENS);
+    model->sampling_decode_permitted_counts = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes);
+    model->sampling_decode_permitted_probs = std::make_unique<ninfer::DeviceBuffer>(sizeof(float) * lanes);
     model->sampling_workspace = std::make_unique<ninfer::DeviceArena>(sizes.sampling_workspace);
   } catch (const std::exception &e) {
     set_error(std::string("ignis_model_load: sampling buffer allocation failed: ") + e.what());
@@ -1702,10 +1728,11 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // P3-05 (GitHub #102, ADR 0019) / GitHub #111: the decode rounds'
   // own scratch and staging buffers, reserved once here and never touched by
   // prefill -- so a chunk running between two replays can never alias what a
-  // replay rereads. Sized for the widest round the leaf admits: one token
-  // per lane (`chunk=1`) across `IGNIS_DECODE_MAX_BATCH` lanes, since #111
-  // made a round one batch-wide traversal instead of a per-lane loop, and
-  // every width 1..IGNIS_DECODE_MAX_BATCH shares this one reservation.
+  // replay rereads. Sized for the widest round the load admits: one token
+  // per lane (`chunk=1`) across its `decode_lanes` lanes (GitHub #336;
+  // IGNIS_DECODE_MAX_BATCH before), since #111 made a round one batch-wide
+  // traversal instead of a per-lane loop, and every width 1..decode_lanes
+  // shares this one reservation.
   // Capture itself (`ignis_decode_graph_capture`) happens later, once the
   // sequence pool exists.
   //
@@ -1715,10 +1742,8 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // share it.
   try {
     model->decode_graph_scratch = std::make_unique<ninfer::DeviceArena>(sizes.decode_graph_scratch);
-    model->decode_graph_token_ids =
-        std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH);
-    model->decode_graph_slots =
-        std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * IGNIS_DECODE_MAX_BATCH);
+    model->decode_graph_token_ids = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes);
+    model->decode_graph_slots = std::make_unique<ninfer::DeviceBuffer>(sizeof(int32_t) * lanes);
   } catch (const std::exception &e) {
     set_error(std::string("ignis_model_load: decode graph buffer allocation failed: ") + e.what());
     cudaStreamDestroy(model->stream);
@@ -1730,7 +1755,7 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // backend.
   if (draft_tokens > 0) {
     try {
-      model->verify = build_verify_round(*topology, draft_tokens, vision_max_tokens > 0);
+      model->verify = build_verify_round(*topology, draft_tokens, vision_max_tokens > 0, load.decode_lanes);
     } catch (const std::exception &e) {
       set_error(std::string("ignis_model_load: verify round allocation failed: ") + e.what());
       cudaStreamDestroy(model->stream);
@@ -1744,7 +1769,6 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // vendored workspaces against their allowance.
   if (speculative_backend == IGNIS_SPECULATIVE_DFLASH2) {
     try {
-      const auto lanes = static_cast<std::size_t>(IGNIS_DECODE_MAX_BATCH);
       model->verify->features = std::make_unique<ninfer::DeviceBuffer>(sizes.drafter_features);
       model->verify->append_counts = std::make_unique<ninfer::DeviceBuffer>(lanes * sizeof(std::int32_t));
       model->verify->drafter_scratch = std::make_unique<ninfer::DeviceArena>(sizes.drafter_scratch);

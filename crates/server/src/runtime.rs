@@ -87,8 +87,9 @@ pub struct EngineShape {
     /// Flash-Next's draft row budget (`--spec-draft-rows`, GitHub #307); 0 = the
     /// default's 8 rows.
     pub draft_rows: u32,
-    /// Flash-Next's decode lanes (`--spec-decode-lanes`, GitHub #306); 0 = the
-    /// engine's default.
+    /// The decode lanes (`--spec-decode-lanes`, GitHub #306; the 27B's too
+    /// since GitHub #336); 0 = the family's default
+    /// ([`EngineShape::decode_lanes_for`]).
     pub decode_lanes: u32,
     /// Vision (`--vision-enabled`/`--vision-max-tokens`, GitHub #177): `None` binds
     /// and reserves nothing of the vision tower.
@@ -224,6 +225,16 @@ impl EngineShape {
         self.retained_device_slots + self.retained_host_slots
     }
 
+    /// The decode lanes a load of `family` runs (GitHub #336): the operator's
+    /// or the profile's, else the family's own -- 8 on the 27B, 3 on
+    /// Flash-Next.
+    pub fn decode_lanes_for(&self, family: ignis_core::compute::ModelFamily) -> u32 {
+        match self.decode_lanes {
+            0 => family.default_decode_lanes(),
+            lanes => lanes,
+        }
+    }
+
     /// This shape for an artifact of `family`: the host retained slots the
     /// operator did not name are the family's default when prompt reuse is
     /// on (Flash-Next's 8, spec flash-next/05) -- the config resolved the
@@ -239,7 +250,7 @@ impl EngineShape {
         if this.retained_host_named || !this.prompt_reuse {
             return this;
         }
-        Self { retained_host_slots: family.default_retained_host_slots(), ..this }
+        Self { retained_host_slots: family.default_retained_host_slots(this.decode_lanes_for(family)), ..this }
     }
 
     /// KV-disk's budget on a load of `family` (spec vram-budget/03): the
@@ -740,6 +751,8 @@ fn leaf_config_for_shape(shape: EngineShape, kv_pool_bytes: u64) -> ignis_runtim
         max_context_tokens: shape.max_context,
         kv_format: shape.kv_format,
         kv_pool_bytes,
+        // GitHub #336: the pool's slots and the model's widest round.
+        slot_count: shape.decode_lanes_for(ignis_core::compute::ModelFamily::Qwen38_27b),
         prefill_chunk_tokens: shape.prefill_chunk,
         speculation: shape.speculation,
         vision: shape.vision,
@@ -928,9 +941,8 @@ pub(crate) fn qwen27b_load(
     // `kv_pool_plan` call — one byte budget, one format, one derived page
     // count — so growing the configured context (or the pool, or changing
     // the format) can never let admission promise capacity the GPU does not
-    // have. The slot count is `CudaLeafConfig::default()`'s
-    // `N_DECODE_LANES` (8), so the scheduler's own lane count
-    // (`SchedulerConfig::default()`'s `max_in_flight`) still matches it.
+    // have. The slot count is the load's decode lanes (GitHub #336), and the
+    // scheduler below is handed the same number.
     let expected_pages = leaf_config
         .kv_pool_plan()
         .map_err(|e| e.to_string())?
@@ -1002,8 +1014,15 @@ pub(crate) fn qwen27b_load(
         restore_floor_tokens: ignis_runtime::kv_disk::restore_floor_tokens(family),
         pace: shape.transfer_pace.unwrap_or_else(|| ignis_runtime::TransferPace::for_family(family)),
     };
+    // GitHub #336: the scheduler's lanes are the load's, as Flash-Next's are:
+    // no more requests in flight, in one prefill batch or holding a pool
+    // slot than the pool has slots and the model's round has lanes.
+    let lanes = leaf_config.slot_count;
     let (sched, kv_disk_bytes) = scheduler_with_kv_disk(
         SchedulerConfig {
+            max_in_flight: lanes as usize,
+            max_prefill_batch: lanes as usize,
+            resident_slot_capacity: lanes,
             thinking_close,
             ..scheduler_config_for_shape(model_id.clone(), shape, KV_PAGE_TOKENS, capacity_pages)
         },
@@ -1134,10 +1153,7 @@ pub(crate) fn flash_next_load(
     use ignis_runtime::{FlashNextLeaf, KV_PAGE_TOKENS};
 
     let shape = shape.for_family(ignis_core::compute::ModelFamily::FlashNext);
-    let lanes = match shape.decode_lanes {
-        0 => ignis_core::flash_next::DEFAULT_DECODE_LANES,
-        lanes => lanes,
-    };
+    let lanes = shape.decode_lanes_for(ignis_core::compute::ModelFamily::FlashNext);
     // As the 27B's load reads it (GitHub #210, #324), but for the 27B's
     // per-process state: no line here charges it, so a 27B's, if one ran,
     // stays outside this budget.
@@ -1702,6 +1718,10 @@ mod tests {
         assert_eq!((flash.retained_device_slots, flash.retained_host_slots), (0, 8));
         assert_eq!(flash.host_pool_bytes, 2 << 30);
         assert_eq!(unnamed.for_family(ModelFamily::Qwen38_27b).retained_host_slots, 16, "the 27B's own");
+        // GitHub #336: two per lane on the 27B, Flash-Next's 8 whatever its lanes.
+        let two = EngineShape { decode_lanes: 2, ..EngineShape::default() };
+        assert_eq!(two.for_family(ModelFamily::Qwen38_27b).retained_host_slots, 4);
+        assert_eq!(two.for_family(ModelFamily::FlashNext).retained_host_slots, 8);
 
         let named = EngineShape { retained_host_slots: 16, retained_host_named: true, ..EngineShape::default() };
         assert_eq!(named.for_family(ModelFamily::FlashNext).retained_host_slots, 16, "a named count stands");
@@ -1874,6 +1894,19 @@ mod tests {
         let leaf = leaf_config_for_shape(shape, 1 << 30);
         assert_eq!((leaf.retained_device_slots, leaf.retained_host_slots), (2, 3));
         assert_eq!(scheduler_config_for_shape("m".into(), shape, 64, 1024).retained_slots, 5);
+    }
+
+    /// GitHub #336: the 27B's leaf -- its pool's slots and its model's widest
+    /// round -- takes the shape's lanes, and the 27B's own 8 when none is
+    /// named; Flash-Next's 3 is never the 27B's.
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn the_27bs_leaf_takes_the_shapes_decode_lanes() {
+        let lanes = |decode_lanes| leaf_config_for_shape(EngineShape { decode_lanes, ..EngineShape::default() }, 1 << 30).slot_count;
+        assert_eq!(lanes(0), ignis_core::N_DECODE_LANES as u32);
+        assert_eq!(lanes(2), 2);
+        assert_eq!(lanes(1), 1);
+        assert_eq!(EngineShape::default().decode_lanes_for(ignis_core::compute::ModelFamily::FlashNext), 3);
     }
 
     #[test]

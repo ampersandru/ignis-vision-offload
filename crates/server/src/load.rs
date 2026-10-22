@@ -554,6 +554,8 @@ fn cuda_scheduler_for(
         eos,
         prefill_chunk = shape.prefill_chunk,
         max_context = shape.max_context,
+        // GitHub #336: the 27B's are a load setting too.
+        decode_lanes = shape.decode_lanes_for(family),
         kv_format = shape.kv_format.as_str(),
         speculation = %shape.speculation.map_or_else(
             || "off".to_owned(),

@@ -1,6 +1,6 @@
 // ignis kernel leaf - P3-05 (GitHub #102, ADR 0019) and GitHub #111 (ADR
 // 0020): the decode round's forward pass, and one CUDA graph capturing
-// it per exact batch width 1..IGNIS_DECODE_MAX_BATCH. The program layer is
+// it per exact batch width 1..decode_lanes, the load's (GitHub #336). The program layer is
 // ours; every dispatched op is the ADR 0010 vendored reference
 // implementation, called through the graph-safe layer bodies
 // (kernel/src/gqa_layer.cu / gdn_layer.cu's `*_run_body_graph`).
@@ -75,9 +75,10 @@ int32_t ignis_decode_graph_run_batch(ignis_model *model, ignis_seq_pool *pool, u
     set_error("ignis_decode_graph: null argument");
     return -1;
   }
-  if (width == 0 || width > IGNIS_DECODE_MAX_BATCH) {
-    set_error("ignis_decode_graph: width " + std::to_string(width) +
-              " is not in 1..IGNIS_DECODE_MAX_BATCH");
+  // GitHub #336: the load's lanes, which every round buffer is sized for.
+  if (width == 0 || width > model->decode_lanes) {
+    set_error("ignis_decode_graph: width " + std::to_string(width) + " is not in 1.." +
+              std::to_string(model->decode_lanes) + ", the load's decode lanes");
     return -1;
   }
   const auto hidden = static_cast<std::int32_t>(model->hidden);
@@ -148,9 +149,9 @@ int32_t ignis_verify_graph_run_batch(ignis_model *model, ignis_seq_pool *pool, u
     set_error("ignis_verify_graph: the model was loaded without a draft window");
     return -1;
   }
-  if (width == 0 || width > IGNIS_DECODE_MAX_BATCH) {
-    set_error("ignis_verify_graph: width " + std::to_string(width) +
-              " is not in 1..IGNIS_DECODE_MAX_BATCH");
+  if (width == 0 || width > model->decode_lanes) {
+    set_error("ignis_verify_graph: width " + std::to_string(width) + " is not in 1.." +
+              std::to_string(model->decode_lanes) + ", the load's decode lanes");
     return -1;
   }
   IgnisVerifyRound &verify = *model->verify;
@@ -408,7 +409,9 @@ extern "C" int32_t ignis_decode_graph_capture(struct ignis_model *model, struct 
   }
   const auto began = std::chrono::steady_clock::now();
   uint32_t ready_mask = 0;
-  for (uint32_t width = 1; width <= IGNIS_DECODE_MAX_BATCH; ++width) {
+  // GitHub #336: the widths the load's lanes serve, and no wider: a round
+  // past them is refused, so a graph for it would only hold memory.
+  for (uint32_t width = 1; width <= model->decode_lanes; ++width) {
     cudaGraphExec_t exec = nullptr;
     if (capture_decode_graph_width(model, pool, width, &exec) == 0) {
       model->decode_graph_exec[width - 1] = exec;
@@ -428,7 +431,7 @@ extern "C" int32_t ignis_decode_graph_capture(struct ignis_model *model, struct 
   // load's window, under the same never-refuse-service rule -- a width whose
   // verify capture failed runs the verify traversal eagerly.
   if (model->verify != nullptr) {
-    for (uint32_t width = 1; width <= IGNIS_DECODE_MAX_BATCH; ++width) {
+    for (uint32_t width = 1; width <= model->decode_lanes; ++width) {
       cudaGraphExec_t exec = nullptr;
       if (capture_verify_graph_width(model, pool, width, &exec) == 0) {
         model->verify->graph_exec[width - 1] = exec;

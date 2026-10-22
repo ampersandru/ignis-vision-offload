@@ -63,7 +63,13 @@ pub struct CudaLeafConfig {
     /// independently of `slot_count * max_context_tokens` — see
     /// [`CudaLeafConfig::default`].
     pub kv_pool_bytes: u64,
-    /// Max concurrent sequences (mirrors [`N_DECODE_LANES`]).
+    /// The load's decode lanes (GitHub #336): the sequence pool's slots and
+    /// the widest round the model serves, `1..=`[`N_DECODE_LANES`] -- the
+    /// one number the pool and `ignis_model_load` are both sized by, so
+    /// neither can promise a lane the other does not hold. Every round
+    /// reservation the plan lays out follows it (sampling, the decode and
+    /// verify rounds' buffers, the drafter's), as the lanes' state and the
+    /// hq residual window always have.
     pub slot_count: u32,
     /// Retained slots the sequence pool holds past the lanes (GitHub #211,
     /// #215): a lane's mutable state each, reserved at load, where every
@@ -267,6 +273,10 @@ impl CudaLeafConfig {
     /// and the KV pool, asked of the leaf before anything is on the device
     /// (GitHub #210). `plan` and
     /// `handles` are the binder's, not yet materialized.
+    ///
+    /// Pure in its options: asked again with another `slot_count` it gives
+    /// that many lanes' lines, so a load can re-plan at fewer lanes before it
+    /// allocates anything (GitHub #336).
     pub fn plan_reservations(
         &self,
         reader: &Reader,
@@ -284,6 +294,7 @@ impl CudaLeafConfig {
             self.vision,
             self.rope_scaling,
             self.prefill_attention,
+            self.slot_count,
         )?;
         let pool = self.pool_plan(1)?;
         Ok(PlannedReservations {
@@ -513,7 +524,8 @@ impl StepLeaf for CudaLeaf {
         // GQA layers refuse a pool built in the other one.
         // GitHub #177: the vision reservation is taken inside this load, so it
         // is on the device before the pool below is built.
-        let model = model_load::load_qwen38_27b_with_prefill_attention(
+        // GitHub #336: the model's rounds as wide as the pool's slots.
+        let model = model_load::load_qwen38_27b_with_decode_lanes(
             &self.reader,
             &self.artifact,
             &self.handles,
@@ -524,6 +536,7 @@ impl StepLeaf for CudaLeaf {
             self.config.vision,
             self.config.rope_scaling,
             self.config.prefill_attention,
+            self.config.slot_count,
         )
         .map_err(|e| leaf_error("model load", e))?;
         let cfg = ModelConfig::qwen38_27b();
@@ -875,12 +888,14 @@ impl StepLeaf for CudaLeaf {
         sequences: &mut [&mut Self::Sequence],
         lanes: &[DecodeLane<'_>],
     ) -> Result<Vec<LaneRun>, i32> {
-        if lanes.len() > N_DECODE_LANES {
+        // GitHub #336: the load's lanes, which the leaf refuses past too.
+        if lanes.len() > self.config.slot_count as usize {
             return Err(leaf_error(
                 "decode",
                 format!(
-                    "batch has {} sampling parameter sets; maximum is {N_DECODE_LANES}",
-                    lanes.len()
+                    "batch has {} sampling parameter sets; the load's decode lanes are {}",
+                    lanes.len(),
+                    self.config.slot_count
                 ),
             ));
         }
@@ -1123,7 +1138,8 @@ mod tests {
         let generous = CudaLeafConfig {
             max_context_tokens: lean.max_context_tokens / 2,
             kv_pool_bytes: lean.kv_pool_bytes * 2,
-            slot_count: lean.slot_count * 2,
+            // GitHub #336: the load's lanes, as a 16 GB card's two.
+            slot_count: lean.slot_count / 4,
             prefill_chunk_tokens: 512,
             vision: Some(ignis_core::Vision::default()),
             ..lean

@@ -667,9 +667,10 @@ int32_t ignis_gdn_layer_run_body_graph(ignis_model *model, ignis_seq_pool *pool,
     set_error("ignis_gdn_layer_graph: layer " + std::to_string(layer) + " is not a GDN layer");
     return -1;
   }
-  if (width == 0 || width > IGNIS_DECODE_MAX_BATCH) {
-    set_error("ignis_gdn_layer_graph: width " + std::to_string(width) +
-              " is not in 1..IGNIS_DECODE_MAX_BATCH");
+  // GitHub #336: the load's lanes, which every round buffer is sized for.
+  if (width == 0 || width > model->decode_lanes) {
+    set_error("ignis_gdn_layer_graph: width " + std::to_string(width) + " is not in 1.." +
+              std::to_string(model->decode_lanes) + ", the load's decode lanes");
     return -1;
   }
   const uint32_t gdn_layer = ignis_gdn_relative_layer(layer);
@@ -695,9 +696,9 @@ int32_t ignis_gdn_layer_run_body_verify(ignis_model *model, ignis_seq_pool *pool
     set_error("ignis_gdn_layer_verify: layer " + std::to_string(layer) + " is not a GDN layer");
     return -1;
   }
-  if (width == 0 || width > IGNIS_DECODE_MAX_BATCH) {
-    set_error("ignis_gdn_layer_verify: width " + std::to_string(width) +
-              " is not in 1..IGNIS_DECODE_MAX_BATCH");
+  if (width == 0 || width > model->decode_lanes) {
+    set_error("ignis_gdn_layer_verify: width " + std::to_string(width) + " is not in 1.." +
+              std::to_string(model->decode_lanes) + ", the load's decode lanes");
     return -1;
   }
   const uint32_t gdn_layer = ignis_gdn_relative_layer(layer);
