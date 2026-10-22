@@ -725,7 +725,7 @@ impl Switcher {
         let catalog = self.catalog.iter().flat_map(|catalog| catalog.catalog.entries().iter().map(|entry| entry.id.clone()));
         let known = self.known_models().into_keys();
         let mut seen = std::collections::HashSet::from([active.to_owned()]);
-        let above_class = |id: &str| {
+        let unavailable_on_disk = |id: &str| {
             let on_disk = self.catalog_on.load(Ordering::SeqCst) && self.catalog.as_ref().is_some_and(|catalog| catalog.artifact(id).is_some());
             on_disk.then(|| self.unavailable(id)).flatten()
         };
@@ -734,7 +734,7 @@ impl Switcher {
             .filter(|id| seen.insert(id.clone()))
             .filter_map(|id| match self.known(&id) {
                 Some(_) => Some((id, None)),
-                None => above_class(&id).map(|reason| (id, Some(reason))),
+                None => unavailable_on_disk(&id).map(|reason| (id, Some(reason))),
             })
             .collect()
     }
