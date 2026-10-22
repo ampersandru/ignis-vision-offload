@@ -387,8 +387,8 @@ Every number below is a measurement on a 5090.
   into the server, not a separate service.
 - **One declaration per setting**: every option is a flag, an `IGNIS_*`
   variable and a key in a YAML or JSON config file, with per-model values and
-  a measured `rtx5090` profile applied by default (and `rtxpro6000` for the
-  96 GB card); `GET`/`PATCH /v1/config`
+  a built-in profile chosen by the card's memory by default (`--profile auto`:
+  the measured `rtx5090`, `rtxpro6000` for the 96 GB card and the derived `rtx50-16gb`, which has no model until the 16 GB artifact); `GET`/`PATCH /v1/config`
   reads and changes the running server, reloading the model only for a field
   that needs it.
 - **`POST /v1/tokenize`** counts a chat body's prompt exactly as it would be

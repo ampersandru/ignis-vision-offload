@@ -49,6 +49,24 @@ fn exit_after_flush(logging_handle: &ignis_logging::LoggingHandle, code: i32) ->
     std::process::exit(code);
 }
 
+/// The card `--profile auto` chooses by (ADR 0063): NVML's total memory of
+/// device 0 on a CUDA build — a total it cannot read refuses the start — and
+/// no card on a build without CUDA, where `auto` resolves as `none`. Read
+/// here, never in the config module, which runs on machines with no NVML.
+#[cfg(feature = "cuda")]
+fn card_probe() -> config::profile::Card {
+    match ignis_artifact::CudaDevice::nvml_memory(0) {
+        Ok((_, total)) => config::profile::Card::Total(total),
+        Err(error) => config::profile::Card::Unreadable(error.to_string()),
+    }
+}
+
+/// A build without CUDA has no card: `auto` resolves as `none`.
+#[cfg(not(feature = "cuda"))]
+fn card_probe() -> config::profile::Card {
+    config::profile::Card::Absent
+}
+
 #[tokio::main]
 async fn main() {
     // The canonical structured-logging system (GitHub #78, ADR 0011) — first
@@ -71,7 +89,7 @@ async fn main() {
     };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let config = match config::resolve_with(&args, |name| std::env::var(name).ok(), &config::file::RealFiles) {
+    let config = match config::resolve_on(&args, |name| std::env::var(name).ok(), &config::file::RealFiles, &card_probe) {
         Ok(ConfigOutcome::Config(config)) => config,
         Ok(ConfigOutcome::Help(text)) => {
             println!("{text}");

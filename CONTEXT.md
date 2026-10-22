@@ -1236,9 +1236,11 @@ When output names a domain concept, use the term as defined here.
   which artifact, how many lanes and what context the profile defaults to.
   _Avoid_: GPU tier.
 - **Profile** — a named bundle of hardware-shaped field defaults (`--profile`,
-  built-in `rtx5090`, or a config file's `profiles:`): below the config file,
-  above the hardcoded defaults — a default, never an override. `auto` picks
-  the built-in profile of the card's **card class** (ADR 0063).
+  built-in `rtx50-16gb`, `rtx5090` or `rtxpro6000`, or a config file's
+  `profiles:`): below the config file, above the hardcoded defaults — a
+  default, never an override. `auto`, the default, picks the built-in profile
+  of the card's **card class** from NVML's total memory (ADR 0063); a named
+  profile always wins.
 - **Adaptation** — a load lowering its profile's defaults, in a fixed order,
   until its VRAM plan fits (ADR 0063). An explicit value never adapts.
 - **Live change** / **reload** — the two ways `PATCH /v1/config` applies a

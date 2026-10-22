@@ -158,9 +158,10 @@ LOOP_GUARD ?=
 # hq-e8-2b KV, DFlash2 speculation with a 7-token draft window. The G5 gate
 # legs (docs/specs/runtime/05) ran at MAX_CONTEXT=262144 ROPE_SCALING=none.
 # Empty = leave the flag off (the server's default); SPEC=off turns speculation
-# off (SPEC= leaves it to the server, and the rtx5090 profile speculates).
-# PREFILL_CHUNK is left to the server too: the rtx5090 profile's 2048 (GitHub
-# #341; free there, vision's encoder sizes the arena), 1024 without it.
+# off (SPEC= leaves it to the server, and the card class's profile speculates).
+# PREFILL_CHUNK is left to the server too: the card class's profile (`auto`):
+# 2048 on the 5090 (GitHub #341; free there, vision's encoder sizes the
+# arena), 1024 without it.
 MAX_CONTEXT ?= 524288
 KV_FORMAT ?= hq-e8-2b
 PREFILL_CHUNK ?=
@@ -185,7 +186,7 @@ ALLOW_EXPERT_CACHE_BELOW_FLOOR ?=
 # the calibration-hottest experts held in the expert cache outside its LRU, with
 # no copy in the pinned host pool, which takes that much less RAM (on the 5090:
 # nothing measurable at 1G, ~1% of three-lane decode at 2G). Empty = the
-# server's: 2G under the rtx5090 profile, else 0 (none). The 27B refuses it.
+# server's: 2G under the rtx5090 profile (`auto` on a 5090), else 0 (none). The 27B refuses it.
 PINNED_EXPERT_BYTES ?=
 # The VRAM budget (GitHub #210, ADR 0030). Empty = the server's default: the
 # memory free at start minus a 1536M headroom. VRAM_HEADROOM derives it with
