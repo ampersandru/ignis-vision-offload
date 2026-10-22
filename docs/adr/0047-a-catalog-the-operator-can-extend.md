@@ -8,6 +8,13 @@ Accepted (2026-10-10, owner decision in conversation — GitHub #313). Spec:
 behaviour stand; what changes is the one option it rejected, "a `models.json`
 next to the binary", which comes back in a narrower form.
 
+**Amended by ADR 0064** (2026-10-21, GitHub #336): every entry states the
+smallest card class it loads on (`card_class`: 16, 32 or 96, required in both
+layers) and may list `aliases`, its family's default id it answers to on a
+smaller card. Still no family is declared: an alias is a family's own id, so
+the entry's aliases say its family, and the catalog refuses one that
+contradicts the entry's own id.
+
 ## Context
 
 ADR 0033 made `ignis-server` fetch its own model from a registry pinned in
