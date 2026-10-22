@@ -18,6 +18,7 @@ use super::field::{FieldMeta, FAMILIES};
 use super::file::{self, Files, Format};
 use super::schema::{all_fields, GROUPS};
 use super::source;
+use super::profile::Card;
 use super::{gather, Config, ConfigError, ConfigOutcome, FileChoice};
 use crate::download::{self, ListFormat, ModelCommand};
 
@@ -115,15 +116,15 @@ pub fn fields_json() -> String {
 }
 
 /// `config generate|print|patch …`.
-pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(ConfigError("`config` takes a verb: generate, print or patch".to_owned()));
     };
     let mut rest = rest.to_vec();
     match verb.as_str() {
-        "generate" => generate(&mut rest, env, files),
-        "print" => print(&mut rest, env, files),
-        "patch" => patch(&mut rest, env, files),
+        "generate" => generate(&mut rest, env, files, card),
+        "print" => print(&mut rest, env, files, card),
+        "patch" => patch(&mut rest, env, files, card),
         other => Err(ConfigError(format!("`config {other}`: the verbs are generate, print and patch"))),
     }
 }
@@ -133,7 +134,7 @@ pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, file
 /// the profile and the defaults — no existing file is read, ever, since this
 /// is what makes one. Refuses to overwrite a file without `--force`;
 /// `--dry-run` checks and prints, and writes nothing.
-fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let format = take_value(args, "--format")?;
     let out = take_value(args, "--out")?.map(PathBuf::from);
     let force = take_switch(args, "--force");
@@ -143,7 +144,7 @@ fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files:
         return Err(ConfigError("`config generate` reads no config file: it writes one (`--out`)".to_owned()));
     }
     let profile = parsed.profile.clone();
-    let (sources, _) = gather(parsed, env, files, FileChoice::None)?;
+    let (sources, _) = gather(parsed, env, files, FileChoice::None, card)?;
     let config = Config::from_sources(sources)?;
     let format = match (format, &out) {
         (Some(name), _) => Format::parse(&name).ok_or_else(|| ConfigError(format!("`--format {name}`: the formats are json and yaml")))?,
@@ -173,7 +174,7 @@ fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files:
 /// place a start looks), the environment, and the flags given here. Never
 /// writes. A field `GET /v1/config` hides is shown as set or not, never its
 /// value: a terminal's scrollback is no place for a key.
-fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let path = take_value(args, "--file")?.map(PathBuf::from).unwrap_or_else(default_path);
     let format = match take_value(args, "--format")? {
         Some(name) => Format::parse(&name).ok_or_else(|| ConfigError(format!("`--format {name}`: the formats are json and yaml")))?,
@@ -183,7 +184,7 @@ fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
     if parsed.config.is_some() {
         return Err(ConfigError("`config print` names its file with `--file`".to_owned()));
     }
-    let (sources, _) = gather(parsed, env, files, FileChoice::IfPresent(path))?;
+    let (sources, _) = gather(parsed, env, files, FileChoice::IfPresent(path), card)?;
     let config = Config::from_sources(sources)?;
     let mut document = file::effective_document(&config);
     hide_invisible(&mut document);
@@ -197,7 +198,7 @@ fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
 /// and writes: the environment's values land in the file, and a stale
 /// spelling in it is rewritten in canonical form. Every key it does not
 /// change — other fields, family sections, `profiles:` — is kept.
-fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let path = take_value(args, "--file")?.map(PathBuf::from).unwrap_or_else(default_path);
     let out = take_value(args, "--out")?.map(PathBuf::from);
     let parsed = source::parse_args(args)?;
@@ -205,7 +206,7 @@ fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
         return Err(ConfigError("`config patch` names its file with `--file`".to_owned()));
     }
     let profile = parsed.profile.clone();
-    let (sources, _) = gather(parsed, env, files, FileChoice::Required(path.clone()))?;
+    let (sources, _) = gather(parsed, env, files, FileChoice::Required(path.clone()), card)?;
     Config::from_sources(sources.clone())?;
     let mut changes = file::changes_of(&sources.file)?;
     changes.extend(file::changes_of(&sources.env)?);
@@ -224,14 +225,14 @@ fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
 /// configuration a start would read and the catalog it would load, turned
 /// into what to do, for `main` to run. `model verify` and `model convert`
 /// are reserved, so any other word is an unknown command.
-pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(ConfigError("`model` takes a command: download or list".to_owned()));
     };
     let mut rest = rest.to_vec();
     match verb.as_str() {
-        "download" => model_download(&mut rest, env, files),
-        "list" => model_list(&mut rest, env, files),
+        "download" => model_download(&mut rest, env, files, card),
+        "list" => model_list(&mut rest, env, files, card),
         other => Err(ConfigError(format!("unknown command `model {other}` (the model commands are download and list)"))),
     }
 }
@@ -242,7 +243,7 @@ pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files
 /// the token [`download::bearer_token`] picks. The ids may stand anywhere
 /// among the flags. `download.enabled` is not read: it gates only the start's own
 /// fetch, and this command is the operator's explicit yes.
-fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let all = take_switch(args, "--all");
     let out = take_value(args, "--out")?.map(PathBuf::from);
     let (named, flags) = super::source::split_positionals(args);
@@ -253,7 +254,7 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
             ids.push(id);
         }
     }
-    let config = super::start_config(args, env, files)?;
+    let config = super::start_config(args, env, files, card)?;
     let catalog = download::catalog::load(files, config.download_catalog.as_deref()).map_err(|err| ConfigError(err.0))?;
     let lookup = |id: &str| {
         catalog.entry(id).cloned().ok_or_else(|| {
@@ -277,13 +278,13 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
 
 /// `model list [--format text|json] [field flags]`: every entry of the
 /// catalog a start would load, with its state under `download.path`.
-fn model_list(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn model_list(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let format = match take_value(args, "--format")?.as_deref() {
         None | Some("text") => ListFormat::Text,
         Some("json") => ListFormat::Json,
         Some(other) => return Err(ConfigError(format!("`model list --format {other}`: the formats are text and json"))),
     };
-    let config = super::start_config(args, env, files)?;
+    let config = super::start_config(args, env, files, card)?;
     let catalog = download::catalog::load(files, config.download_catalog.as_deref()).map_err(|err| ConfigError(err.0))?;
     Ok(ConfigOutcome::Model(ModelCommand::List { catalog, dir: config.model_download_path.clone(), format }))
 }

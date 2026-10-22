@@ -44,6 +44,23 @@ use ignis_server::{
 /// (`ignis_logging::init`'s queued writer thread) — without this, the very
 /// diagnostic that explains *why* the process is exiting could still be
 /// sitting in the queue when the process terminates, and be lost.
+/// The card `--profile auto` chooses by (ADR 0063): NVML's total memory of
+/// device 0 on a CUDA build — a total it cannot read refuses the start — and
+/// no card on a build without CUDA, where `auto` resolves as `none`. Read
+/// here, never in the config module, which runs on machines with no NVML.
+#[cfg(feature = "cuda")]
+fn card_probe() -> config::profile::Card {
+    match ignis_artifact::CudaDevice::nvml_memory(0) {
+        Ok((_, total)) => config::profile::Card::Total(total),
+        Err(_) => config::profile::Card::Unreadable,
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn card_probe() -> config::profile::Card {
+    config::profile::Card::Absent
+}
+
 fn exit_after_flush(logging_handle: &ignis_logging::LoggingHandle, code: i32) -> ! {
     logging_handle.flush(ignis_logging::SHUTDOWN_FLUSH_TIMEOUT);
     std::process::exit(code);
@@ -71,7 +88,7 @@ async fn main() {
     };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let config = match config::resolve_with(&args, |name| std::env::var(name).ok(), &config::file::RealFiles) {
+    let config = match config::resolve_on(&args, |name| std::env::var(name).ok(), &config::file::RealFiles, &card_probe) {
         Ok(ConfigOutcome::Config(config)) => config,
         Ok(ConfigOutcome::Help(text)) => {
             println!("{text}");

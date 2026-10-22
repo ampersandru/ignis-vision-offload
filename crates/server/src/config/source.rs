@@ -338,8 +338,16 @@ pub struct Sources {
     /// The profile's values (spec config-v2/02 §`--profile`): defaults, not
     /// overrides — below the file, above the hardcoded default.
     pub profile: Layer,
-    /// The profile's name.
+    /// The profile's name — the one `auto` chose, never `auto` itself (spec
+    /// 27b-16gb/04): what `GET /v1/config` and the Playground show.
     pub profile_name: String,
+    /// The profile was chosen by `--profile auto` (the default) from the
+    /// card's total, not named.
+    pub profile_auto: bool,
+    /// The card's total memory in bytes, when the start read it (`auto`
+    /// reads it to choose; a named profile reads it only at a start); `None`
+    /// when it was not read.
+    pub card_total: Option<u64>,
 }
 
 /// What to do with an explicit value for a field the family being

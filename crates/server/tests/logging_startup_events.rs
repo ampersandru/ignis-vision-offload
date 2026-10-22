@@ -425,7 +425,10 @@ fn the_config_source_is_logged_before_anything_is_loaded() {
     }
     let record = &records[source];
     assert_eq!(record["attributes"]["source"], "none", "{record}");
-    assert_eq!(record["attributes"]["profile"], "rtx5090", "{record}");
+    // The default is `--profile auto` (ADR 0063): the binary built without
+    // CUDA has no card to read, so it resolves as `none` and says so.
+    assert_eq!(record["attributes"]["profile"], "none", "{record}");
+    assert_eq!(record["attributes"]["profile_by"], "auto", "{record}");
 }
 
 #[test]

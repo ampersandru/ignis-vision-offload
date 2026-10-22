@@ -687,11 +687,25 @@ pub fn resolve_with(
     env: impl Fn(&str) -> Option<String>,
     files: &dyn file::Files,
 ) -> Result<ConfigOutcome, ConfigError> {
+    resolve_on(args, env, files, &|| profile::Card::Total(profile::RTX_5090_TOTAL_BYTES))
+}
+
+/// [`resolve_with`] on the card `card` reads (ADR 0063): what `--profile
+/// auto` chooses by, and what the start's catalog checks fit entries to. The
+/// binary's probe reads NVML's total on a CUDA build; [`resolve`] and
+/// [`resolve_with`], which every CPU test goes through, inject a 5090's, so
+/// they resolve `rtx5090` as they always have.
+pub fn resolve_on(
+    args: &[String],
+    env: impl Fn(&str) -> Option<String>,
+    files: &dyn file::Files,
+    card: &dyn Fn() -> profile::Card,
+) -> Result<ConfigOutcome, ConfigError> {
     match args.first().map(String::as_str) {
         Some("help") => return cli::help(&args[1..]),
         Some("version") => return Ok(ConfigOutcome::Version(version_text())),
-        Some("config") => return cli::config(&args[1..], &env, files),
-        Some("model") => return cli::model(&args[1..], &env, files),
+        Some("config") => return cli::config(&args[1..], &env, files, card),
+        Some("model") => return cli::model(&args[1..], &env, files, card),
         Some(word) if !word.starts_with('-') => {
             return Err(ConfigError(format!(
                 "unknown command `{word}` (the commands are help, version, config and model; with none, the server starts)"
@@ -706,21 +720,33 @@ pub fn resolve_with(
             _ => {}
         }
     }
-    start_config(args, &env, files).map(ConfigOutcome::Config)
+    start_config(args, &env, files, card).map(ConfigOutcome::Config)
 }
 
 /// The configuration a start reads from `args` (field flags, `--config`,
 /// `--profile`): the config file `--config` / `IGNIS_CONFIG` names or
 /// discovery finds, the environment, the profile — shared with the `model`
 /// subcommands, which act on exactly what a start would.
-pub(crate) fn start_config(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn file::Files) -> Result<Config, ConfigError> {
+pub(crate) fn start_config(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    files: &dyn file::Files,
+    card: &dyn Fn() -> profile::Card,
+) -> Result<Config, ConfigError> {
     let parsed = source::parse_args(args)?;
     let named = parsed.config.clone().or_else(|| env(CONFIG_ENV).filter(|path| !path.is_empty()));
     let choice = match named {
         Some(path) => FileChoice::Explicit(PathBuf::from(path)),
         None => FileChoice::Discover,
     };
-    let (sources, _) = gather(parsed, env, files, choice)?;
+    let (mut sources, _) = gather(parsed, env, files, choice, card)?;
+    // A start reads the card's total whichever way its profile was chosen,
+    // so the catalog can check what fits it (ADR 0064).
+    if sources.card_total.is_none() {
+        if let profile::Card::Total(total) = card() {
+            sources.card_total = Some(total);
+        }
+    }
     Config::from_sources(sources)
 }
 
@@ -751,11 +777,15 @@ pub(crate) enum FileChoice {
 /// looked up among the file's `profiles:` first and the built-in ones after,
 /// by one function. Returns the file's document as written too, for a
 /// caller that merges a change into it.
+///
+/// With no profile named, `auto` (ADR 0063) chooses by the total `card`
+/// reads ([`profile::auto`]); a named profile, `none` included, reads none.
 pub(crate) fn gather(
     parsed: source::ParsedArgs,
     env: &dyn Fn(&str) -> Option<String>,
     files: &dyn file::Files,
     choice: FileChoice,
+    card: &dyn Fn() -> profile::Card,
 ) -> Result<(Sources, Option<serde_json::Value>), ConfigError> {
     let (file_source, loaded) = match choice {
         FileChoice::None => (FileSource::None, None),
@@ -791,11 +821,23 @@ pub(crate) fn gather(
         Some((value, document)) => (Some(value), document),
         None => (None, file::Document::default()),
     };
-    let profile_name = parsed
+    let named = parsed
         .profile
         .or_else(|| env(PROFILE_ENV).filter(|name| !name.is_empty()))
         .or(document.profile)
         .unwrap_or_else(|| profile::DEFAULT_PROFILE.to_owned());
+    let profile_auto = named == profile::AUTO_PROFILE;
+    let mut card_total = None;
+    let profile_name = if profile_auto {
+        let card = card();
+        if let profile::Card::Total(total) = card {
+            card_total = Some(total);
+        }
+        // No card (a build without CUDA) resolves as `none` would.
+        profile::auto(card)?.unwrap_or(profile::NONE_PROFILE).to_owned()
+    } else {
+        named
+    };
     let profile = if profile_name == profile::NONE_PROFILE {
         source::Layer::default()
     } else {
@@ -809,6 +851,8 @@ pub(crate) fn gather(
         file_source,
         profile,
         profile_name,
+        profile_auto,
+        card_total,
     };
     Ok((sources, value))
 }
@@ -826,6 +870,21 @@ impl Config {
     /// The settings every field resolved to (`GET /v1/config`'s source).
     pub fn settings(&self) -> &schema::Settings {
         self.basis.settings()
+    }
+
+    /// The card's total memory in bytes, as NVML reports it, when the start
+    /// read it: always for `--profile auto` on a CUDA build, and for a start
+    /// whichever way its profile was named; `None` without a card (a build
+    /// without CUDA) or for a resolution that read none (`config` verbs).
+    pub fn card_total_bytes(&self) -> Option<u64> {
+        self.basis.sources().card_total
+    }
+
+    /// The [`profile::CardClass`] of [`Config::card_total_bytes`]: what the
+    /// catalog fits an entry to (ADR 0064). `None` when no total was read or
+    /// the total is no class (a named profile may run on any card).
+    pub fn card_class(&self) -> Option<profile::CardClass> {
+        self.card_total_bytes().and_then(profile::CardClass::of_total)
     }
 
     /// The config file this configuration was read from — where a change to
@@ -1164,6 +1223,8 @@ pub fn log_source(config: &Config) {
         source = sources.file_source.kind(),
         path = path.as_deref().unwrap_or("none"),
         profile = %sources.profile_name,
+        profile_by = if sources.profile_auto { "auto" } else { "named" },
+        card_total_bytes = sources.card_total,
         "configuration source"
     );
 }
@@ -1461,7 +1522,11 @@ pub fn help_text() -> String {
          Every field has a flag (--<group>-<field>), an env var (IGNIS_<GROUP>_<FIELD>)\n\
          and a config-file key (<group>.<field>). Precedence, highest first: flag, env\n\
          var, config file, profile, built-in default; a field's qwen38 / qwen38flashnext\n\
-         value wins within each. `help --fields` prints every field in full.\n",
+         value wins within each. `help --fields` prints every field in full.\n\
+         \n\
+         --profile defaults to `auto`: the built-in profile of the card's total memory\n\
+         (about 16 GB: rtx50-16gb, 32 GB: rtx5090, 96 GB: rtxpro6000); a card of no class\n\
+         is refused, naming --profile. A named profile (or `none`) always wins.\n",
     );
     for (group, fields) in schema::GROUPS {
         text.push_str(&format!("\n{}:\n", group.to_ascii_uppercase()));
