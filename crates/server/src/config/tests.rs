@@ -234,7 +234,7 @@ fn the_startup_log_names_the_config_source_in_all_three_states() {
         assert_eq!(field("path"), Some(path.into()), "{event}");
         assert_eq!(field("profile"), Some("rtx5090".into()), "{event}");
         assert_eq!(field("profile_by"), Some("auto".into()), "{event}");
-        assert_eq!(field("card_total_bytes"), Some((32_607u64 << 20).into()), "{event}");
+        assert_eq!(field("card_total_bytes"), Some(profile::RTX_5090_TOTAL_BYTES.into()), "{event}");
     }
 }
 
@@ -2653,7 +2653,7 @@ fn an_image_field_past_its_bounds_is_refused_naming_it() {
 const GIB_F: f64 = (1u64 << 30) as f64;
 
 fn on_card(flags: &[&str], card: profile::Card) -> Result<Config, ConfigError> {
-    resolve_on(&args(flags), no_env, &file::NoFiles, &|| card).map(expect_config)
+    resolve_on(&args(flags), no_env, &file::NoFiles, &|| card.clone()).map(expect_config)
 }
 
 fn on_total(flags: &[&str], gib: f64) -> Result<Config, ConfigError> {
@@ -2688,8 +2688,9 @@ fn auto_refuses_a_card_of_no_class_naming_profile() {
         assert!(err.contains(&format!("{gib:.1} GiB")), "{err}");
         assert!(err.contains("--profile") && err.contains("rtx5090") && err.contains("rtx50-16gb"), "{err}");
     }
-    let unreadable = on_card(&[], profile::Card::Unreadable).unwrap_err().0;
+    let unreadable = on_card(&[], profile::Card::Unreadable("NVML is not installed".to_owned())).unwrap_err().0;
     assert!(unreadable.contains("--profile") && unreadable.contains("total"), "{unreadable}");
+    assert!(unreadable.contains("NVML is not installed"), "the reason NVML failed is in the refusal: {unreadable}");
 }
 
 /// A build with no card (the mock engine, CI on Linux) resolves as `none`
@@ -2713,11 +2714,10 @@ fn a_named_profile_beats_auto_whatever_the_card() {
     assert_eq!(flag.card_class(), None, "24 GiB is no class; the named profile still starts");
     assert_eq!(on_total(&["--profile", "none"], 31.8).unwrap().basis.sources().profile_name, "none");
     let env = |key: &str| (key == "IGNIS_PROFILE").then(|| "rtx50-16gb".to_owned());
-    let from_env = resolve_on(&[], env, &file::NoFiles, &|| profile::Card::Total(32_607 << 20)).map(expect_config).unwrap();
+    let from_env = resolve_on(&[], env, &file::NoFiles, &|| profile::Card::Total(profile::RTX_5090_TOTAL_BYTES)).map(expect_config).unwrap();
     assert_eq!(from_env.basis.sources().profile_name, "rtx50-16gb");
     assert_eq!(from_env.card_class(), Some(profile::CardClass::Gb32), "the total read is the card's, not the profile's");
-    let files = MemFiles::with(&[("c.yaml", "profile: none
-")]);
+    let files = MemFiles::with(&[("c.yaml", "profile: none\n")]);
     let from_file = resolve_on(&args(&["--config", "c.yaml"]), no_env, &files, &|| profile::Card::Total(24 << 30)).map(expect_config).unwrap();
     assert_eq!(from_file.basis.sources().profile_name, "none");
     // A named profile reads no total for the choice: a probe that panics
@@ -2754,4 +2754,69 @@ fn the_rtx50_16gb_profile_serves_the_27b_text_only_and_flash_next_starts_under_i
     assert!(s27.speculation.is_some(), "DFlash2 is on");
     assert_eq!(s27.settings().spec.draft_tokens, Some(7));
     config.for_family(ModelFamily::FlashNext).expect("Flash-Next starts under the 27B's profile");
+}
+
+/// The startup line says whether the profile was chosen by `auto` or named.
+#[test]
+fn the_startup_log_says_a_named_profile_is_named() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let config = config(&["--profile", "rtxpro6000"]);
+    let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
+    let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
+    tracing::subscriber::with_default(subscriber, || log_source(&config));
+    let event: serde_json::Value = serde_json::from_str(&sink.lines()[0]).unwrap();
+    let field = |name: &str| event.get(name).or_else(|| event["attributes"].get(name)).cloned();
+    assert_eq!(field("profile"), Some("rtxpro6000".into()), "{event}");
+    assert_eq!(field("profile_by"), Some("named".into()), "{event}");
+}
+
+/// `--help` says which profile each class gets, from the classes themselves.
+#[test]
+fn help_names_the_profile_of_every_card_class() {
+    let help = help_text();
+    for class in profile::CardClass::ALL {
+        assert!(help.contains(&format!("{class}: {}", class.profile())), "{class}: {help}");
+    }
+}
+
+/// The refusal of a card of no class spells the boundaries the constants hold.
+#[test]
+fn the_refusal_of_a_card_of_no_class_spells_every_boundary() {
+    let err = on_total(&[], 24.0).unwrap_err().0;
+    for bounds in ["16 GB below 20 GiB", "32 GB from 28 to 40 GiB", "96 GB from 88 to 104 GiB"] {
+        assert!(err.contains(bounds), "{bounds}: {err}");
+    }
+}
+
+/// A `profiles:` entry called `none` or `auto` could never be reached
+/// (`gather` resolves both words first): the file is refused when read.
+#[test]
+fn a_file_cannot_define_a_profile_called_none_or_auto() {
+    for name in ["none", "auto"] {
+        let contents = format!("profiles:\n  {name}:\n    vram:\n      headroom_bytes: 2G\n");
+        let files = MemFiles::with(&[("c.yaml", contents.as_str())]);
+        let err = resolve_with(&args(&["--config", "c.yaml"]), no_env, &files).map(expect_config).unwrap_err().0;
+        assert!(err.contains(&format!("`{name}`")) && err.contains("c.yaml"), "{name}: {err}");
+    }
+}
+
+/// `auto` picks by NAME through the lookup a named profile uses, so a file's
+/// `profiles:` redefining `rtx5090` replaces what `auto` picks for a 5090.
+#[test]
+fn a_file_redefining_a_built_in_profile_replaces_what_auto_picks() {
+    let files = MemFiles::with(&[("c.yaml", "profiles:\n  rtx5090:\n    model:\n      qwen38:\n        max_context: 131072\n")]);
+    let config = resolve_on(&args(&["--config", "c.yaml"]), no_env, &files, &|| profile::Card::Total(profile::RTX_5090_TOTAL_BYTES))
+        .map(expect_config)
+        .unwrap();
+    assert_eq!(config.basis.sources().profile_name, "rtx5090");
+    assert_eq!(config.for_family(ModelFamily::Qwen38_27b).unwrap().max_context, 131_072);
+}
+
+/// The `config` verbs resolve as a start would: on a card of no class,
+/// `config print` under `auto` refuses naming `--profile`.
+#[test]
+fn the_config_verbs_refuse_a_card_of_no_class_under_auto() {
+    let refused = resolve_on(&args(&["config", "print"]), no_env, &file::NoFiles, &|| profile::Card::Total(24 << 30)).unwrap_err().0;
+    assert!(refused.contains("--profile"), "{refused}");
+    resolve_on(&args(&["config", "print", "--profile", "none"]), no_env, &file::NoFiles, &|| profile::Card::Total(24 << 30)).unwrap();
 }

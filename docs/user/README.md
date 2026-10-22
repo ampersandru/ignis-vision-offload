@@ -377,8 +377,10 @@ names a bundle of hardware-shaped defaults, below the file and above the
 built-in defaults. Three are built in, and the default, `--profile auto`,
 picks one by the card's total memory as NVML reports it: under 20 GiB
 (a 16 GB card) `rtx50-16gb`, 28 to 40 GiB (a 5090) `rtx5090`, 88 to 104 GiB
-(an RTX PRO 6000) `rtxpro6000`. A card of any other size is refused at the
-start, naming `--profile`; a profile you name (`--profile`, `IGNIS_PROFILE`, the
+(an RTX PRO 6000) `rtxpro6000`. A card of any other size, or a total NVML
+cannot read, is refused, naming `--profile` — at a start, and at `config
+generate|print|patch` and `model list|download` too, which resolve exactly as a
+start would; a profile you name (`--profile`, `IGNIS_PROFILE`, the
 file's `profile:`, `none` included) always wins and the card is not consulted
 for the choice. The start's log line `ignis.config.source` names the profile
 chosen and the total it was chosen by; `GET /v1/config` and the Playground show
@@ -399,8 +401,8 @@ the profile it resolved to. A build without CUDA has no card, so `auto` there is
   ([below](#flash-next-speculation-mtp)) and `--ngram-hot-bytes auto`: the
   whole n-gram table in RAM when the host plan leaves room for it
   ([below](#flash-next-n-gram-startup-cache)). Everything else is as on the
-  5090, except that the 27B's VRAM headroom stays at its default. Start it
-  with `--profile rtxpro6000`.
+  5090, except that the 27B's VRAM headroom stays at its default. `--profile
+  auto` picks it on this card; `--profile rtxpro6000` names it.
 - `rtx50-16gb` is the 16 GB class (RTX 5060 Ti 16 GB, 5070 Ti, 5080): derived,
   not measured, since no 16 GB card exists in the project. The 27B at
   262,144 tokens of context with DFlash2 at 7 draft tokens and vision off, the
@@ -409,7 +411,17 @@ the profile it resolved to. A build without CUDA has no card, so `auto` there is
   of the default id.
 
 A file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
-card.
+card. `auto` picks the class's profile by name, the lookup a named profile
+goes through, so a file whose `profiles:` redefines `rtx50-16gb`, `rtx5090` or
+`rtxpro6000` replaces what `auto` picks for that class. A profile called `none`
+or `auto` is refused when the file is read: both words mean something to
+`--profile`, so such a profile could never be reached.
+
+`config generate` writes every resolved value as a value of the FILE, the
+profile's among them: a file generated under `auto` carries the numbers of the
+card class it was generated on, and a value in a file never adapts to the card
+that reads it. Generate with `--profile none` for a file that does not depend on
+the card.
 
 **At runtime.** `GET /v1/config` shows the running configuration (fields
 declared visible only: never the API key); `GET /v1/config?format=yaml` shows

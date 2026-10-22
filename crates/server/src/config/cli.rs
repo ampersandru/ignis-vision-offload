@@ -17,8 +17,8 @@ use serde_json::Value;
 use super::field::{FieldMeta, FAMILIES};
 use super::file::{self, Files, Format};
 use super::schema::{all_fields, GROUPS};
-use super::source;
 use super::profile::Card;
+use super::source;
 use super::{gather, Config, ConfigError, ConfigOutcome, FileChoice};
 use crate::download::{self, ListFormat, ModelCommand};
 
@@ -133,7 +133,12 @@ pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, file
 /// [--dry-run] [field flags]`: a fresh file from the flags, the environment,
 /// the profile and the defaults — no existing file is read, ever, since this
 /// is what makes one. Refuses to overwrite a file without `--force`;
-/// `--dry-run` checks and prints, and writes nothing.
+/// `--dry-run` checks and prints, and writes nothing. Every resolved value is
+/// written as a FILE value, the profile's among them: under `--profile auto`
+/// the file names the numbers of the card class it was generated on, and since
+/// file values are explicit, nothing in them adapts at load (spec
+/// 27b-16gb/04). `--profile none` generates a card-independent file. It reads
+/// the card as a start does, so on a card of no class `auto` refuses here too.
 fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let format = take_value(args, "--format")?;
     let out = take_value(args, "--out")?.map(PathBuf::from);

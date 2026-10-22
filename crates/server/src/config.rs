@@ -682,6 +682,11 @@ pub const PROFILE_ENV: &str = "IGNIS_PROFILE";
 /// start rather than at the first load of that family. The family checks
 /// that depend on which artifact loads (the 27B's attention envelope) wait
 /// for [`Config::for_family`].
+///
+/// Not for a caller that has a card: it injects a fixed RTX 5090 total
+/// ([`profile::RTX_5090_TOTAL_BYTES`]) in place of reading one, so `auto`
+/// resolves `rtx5090` whatever the machine. Test helpers and callers with no
+/// card go through it; the binary goes through [`resolve_on`].
 pub fn resolve_with(
     args: &[String],
     env: impl Fn(&str) -> Option<String>,
@@ -743,9 +748,7 @@ pub(crate) fn start_config(
     // A start reads the card's total whichever way its profile was chosen,
     // so the catalog can check what fits it (ADR 0064).
     if sources.card_total.is_none() {
-        if let profile::Card::Total(total) = card() {
-            sources.card_total = Some(total);
-        }
+        sources.card_total = card().total();
     }
     Config::from_sources(sources)
 }
@@ -830,9 +833,7 @@ pub(crate) fn gather(
     let mut card_total = None;
     let profile_name = if profile_auto {
         let card = card();
-        if let profile::Card::Total(total) = card {
-            card_total = Some(total);
-        }
+        card_total = card.total();
         // No card (a build without CUDA) resolves as `none` would.
         profile::auto(card)?.unwrap_or(profile::NONE_PROFILE).to_owned()
     } else {
@@ -873,9 +874,12 @@ impl Config {
     }
 
     /// The card's total memory in bytes, as NVML reports it, when the start
-    /// read it: always for `--profile auto` on a CUDA build, and for a start
-    /// whichever way its profile was named; `None` without a card (a build
-    /// without CUDA) or for a resolution that read none (`config` verbs).
+    /// read it: always for `--profile auto` on a CUDA build (the `config` and
+    /// `model` verbs included, which resolve as a start would: on a card of
+    /// no class, or a total NVML cannot read, they refuse the same way,
+    /// naming `--profile`), and for a start whichever way its profile was
+    /// named; `None` without a card (a build without CUDA), or when a verb
+    /// resolved under a named profile, which reads none.
     pub fn card_total_bytes(&self) -> Option<u64> {
         self.basis.sources().card_total
     }
@@ -1507,7 +1511,7 @@ fn version_text() -> String {
 /// `--help`: how to run the server, and every field's flag, env var and
 /// default, one line each, from the field table itself.
 pub fn help_text() -> String {
-    let mut text = String::from(
+    let mut text = format!(
         "ignis-server: the OpenAI-compatible HTTP entrypoint\n\
          \n\
          USAGE:\n    ignis-server [--config <path>] [--profile <name>] [FIELD FLAGS]\n\
@@ -1525,8 +1529,9 @@ pub fn help_text() -> String {
          value wins within each. `help --fields` prints every field in full.\n\
          \n\
          --profile defaults to `auto`: the built-in profile of the card's total memory\n\
-         (about 16 GB: rtx50-16gb, 32 GB: rtx5090, 96 GB: rtxpro6000); a card of no class\n\
-         is refused, naming --profile. A named profile (or `none`) always wins.\n",
+         ({}); a card of no class is refused, naming --profile. A named profile\n\
+         (or `none`) always wins.\n",
+        profile::classes_text(),
     );
     for (group, fields) in schema::GROUPS {
         text.push_str(&format!("\n{}:\n", group.to_ascii_uppercase()));

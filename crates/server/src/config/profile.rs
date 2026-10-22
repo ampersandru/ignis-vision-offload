@@ -24,23 +24,37 @@ pub const DEFAULT_PROFILE: &str = AUTO_PROFILE;
 /// the built-in profile of the card's [`CardClass`], read from NVML's total
 /// memory at the start. Not a name [`lookup`] resolves: `gather` chooses
 /// the real profile first and names that one, so `GET /v1/config`, `make
-/// config` and the Playground show `rtx5090`, never `auto`.
+/// config` and the Playground show `rtx5090`, never `auto`. It picks the
+/// class's profile by NAME, through the same [`lookup`] a named profile goes
+/// through: a config file's `profiles:` that redefines `rtx50-16gb`,
+/// `rtx5090` or `rtxpro6000` replaces what `auto` picks for that class.
 pub const AUTO_PROFILE: &str = "auto";
 
 /// What the start could read of the card `--profile auto` chooses by. Injected
 /// into config resolution, like the environment: resolution runs in contexts
-/// with no card (`config show`, `make config`, CI on Linux without NVML), so
-/// the module never reads one itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// with no card (CI on Linux without NVML, the CPU tests), so the module never
+/// reads one itself. The `config` and `model` verbs read it exactly as a
+/// start does (`config generate|print|patch`, `model list|download`).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Card {
     /// The card's total memory in bytes, as NVML reports it.
     Total(u64),
     /// A build with no CUDA (the mock engine, CI): there is no card to read,
     /// and `auto` resolves as `none` would — the hardcoded defaults.
     Absent,
-    /// A CUDA build that could not read the total: `auto` refuses the start,
-    /// naming `--profile`.
-    Unreadable,
+    /// A CUDA build that could not read the total, and why (NVML's error):
+    /// `auto` refuses, naming the reason and `--profile`.
+    Unreadable(String),
+}
+
+impl Card {
+    /// The card's total memory when it was read.
+    pub fn total(&self) -> Option<u64> {
+        match self {
+            Self::Total(total) => Some(*total),
+            Self::Absent | Self::Unreadable(_) => None,
+        }
+    }
 }
 
 /// The total memory of an RTX 5090 as NVML reports it (32,607 MiB): what the
@@ -53,18 +67,40 @@ pub const RTX_5090_TOTAL_BYTES: u64 = 32_607 << 20;
 pub fn auto(card: Card) -> Result<Option<&'static str>, ConfigError> {
     match card {
         Card::Absent => Ok(None),
-        Card::Unreadable => Err(ConfigError(format!(
-            "`--profile auto` could not read the card's total memory: name a profile with `--profile` or IGNIS_PROFILE ({}, or `none`)",
+        Card::Unreadable(why) => Err(ConfigError(format!(
+            "`--profile auto` could not read the card's total memory ({why}): name a profile with `--profile` or IGNIS_PROFILE ({}, or `none`)",
             built_in_names()
         ))),
         Card::Total(total) => CardClass::of_total(total).map(|class| Some(class.profile())).ok_or_else(|| {
             ConfigError(format!(
-                "`--profile auto`: a card of {:.1} GiB is no card class (16 GB below 20 GiB, 32 GB from 28 to 40 GiB, 96 GB from 88 to 104 GiB): name a profile with `--profile` or IGNIS_PROFILE ({}, or `none`)",
+                "`--profile auto`: a card of {:.1} GiB is no card class ({}): name a profile with `--profile` or IGNIS_PROFILE ({}, or `none`)",
                 total as f64 / (1u64 << 30) as f64,
+                class_bounds(),
                 built_in_names()
             ))
         }),
     }
+}
+
+/// The boundaries of every class, spelled from the `CARD_CLASS_*` constants:
+/// "16 GB below 20 GiB, 32 GB from 28 to 40 GiB, 96 GB from 88 to 104 GiB".
+fn class_bounds() -> String {
+    let gib = |bytes: u64| bytes >> 30;
+    CardClass::ALL
+        .into_iter()
+        .map(|class| match class {
+            CardClass::Gb16 => format!("{class} below {} GiB", gib(CARD_CLASS_16GB_BELOW_BYTES)),
+            CardClass::Gb32 => format!("{class} from {} to {} GiB", gib(*CARD_CLASS_32GB_BYTES.start()), gib(*CARD_CLASS_32GB_BYTES.end())),
+            CardClass::Gb96 => format!("{class} from {} to {} GiB", gib(*CARD_CLASS_96GB_BYTES.start()), gib(*CARD_CLASS_96GB_BYTES.end())),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The sentence `--help` gives `--profile auto`: each class's profile by its
+/// own name, built from [`CardClass::ALL`] and [`CardClass::profile`].
+pub fn classes_text() -> String {
+    CardClass::ALL.into_iter().map(|class| format!("{class}: {}", class.profile())).collect::<Vec<_>>().join(", ")
 }
 
 fn built_in_names() -> String {
@@ -73,8 +109,9 @@ fn built_in_names() -> String {
 
 /// `--profile none` / `IGNIS_PROFILE=none`: skip the profile layer
 /// entirely, hardcoded defaults only. Not a name [`lookup`] resolves — a
-/// config file's `profiles:` may not define one by this name either, since
-/// it would never be reachable (`gather` checks for it first).
+/// config file's `profiles:` may not define one by this name either (nor one
+/// called [`AUTO_PROFILE`]), since it would never be reachable (`gather`
+/// checks for both first): `read_document` refuses it.
 pub const NONE_PROFILE: &str = "none";
 
 /// The built-in profiles, as a config file's `profiles:` section.
@@ -139,8 +176,8 @@ pub const NONE_PROFILE: &str = "none";
 /// the host plan leaves room, never refusing a start the 1 GiB default would
 /// make. The VRAM plan sizes the rest, the KV pool among it.
 ///
-/// `rtx50-16gb` is the 16 GB class (ADR 0063, ADR 0064): the RTX 5060 Ti 16 GB
-/// and 5070 Ti, 5080 and 4080-class cards `--profile auto` finds below 20 GiB.
+/// `rtx50-16gb` is the 16 GB class (ADR 0063, ADR 0064): the RTX 5060 Ti 16 GB,
+/// 5070 Ti and 5080, the RTX 50 cards `--profile auto` finds below 20 GiB.
 /// Derived, not measured: no 16 GB card exists in the project. It serves the 27B
 /// (the 16 GB catalog entry) at the 262,144 positions it was trained on, with
 /// DFlash2 at 7 tokens, as the other profiles, and vision off, explicit: the

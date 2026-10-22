@@ -320,7 +320,8 @@ impl FileSource {
 }
 
 /// Every source a start gathered, kept so the same options can be resolved
-/// again for a family, or with a patch on top.
+/// again for a family, or with a patch on top: the layers, and the one
+/// hardware reading the profile was chosen by (`card_total`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sources {
     /// Live changes made after start (`PATCH /v1/config`, a switch target's

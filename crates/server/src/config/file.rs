@@ -280,6 +280,11 @@ pub fn read_document(value: &Value, origin: &str) -> Result<Document, ConfigErro
                     return Err(ConfigError(format!("`profiles` in {origin} must map names to groups")));
                 };
                 for (name, body) in profiles {
+                    if name == super::profile::NONE_PROFILE || name == super::profile::AUTO_PROFILE {
+                        return Err(ConfigError(format!(
+                            "profile `{name}` in {origin}: `{name}` is a word `--profile` gives meaning to, so a profile cannot be called that"
+                        )));
+                    }
                     let Value::Object(body) = body else {
                         return Err(ConfigError(format!("profile `{name}` in {origin} must be a map of groups")));
                     };

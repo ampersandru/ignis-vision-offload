@@ -425,9 +425,16 @@ fn the_config_source_is_logged_before_anything_is_loaded() {
     }
     let record = &records[source];
     assert_eq!(record["attributes"]["source"], "none", "{record}");
-    // The default is `--profile auto` (ADR 0063): the binary built without
-    // CUDA has no card to read, so it resolves as `none` and says so.
-    assert_eq!(record["attributes"]["profile"], "none", "{record}");
+    // The default is `--profile auto` (ADR 0063). The binary built without
+    // CUDA has no card to read, so it resolves as `none` and says so; one
+    // built with it reads the machine's card, whose class names the profile.
+    let profile = record["attributes"]["profile"].as_str().expect("the profile is named");
+    if cfg!(feature = "cuda") {
+        let classes = ignis_server::config::profile::CardClass::ALL.map(|class| class.profile());
+        assert!(classes.contains(&profile), "the profile of the card's class: {record}");
+    } else {
+        assert_eq!(profile, "none", "{record}");
+    }
     assert_eq!(record["attributes"]["profile_by"], "auto", "{record}");
 }
 
