@@ -139,15 +139,15 @@ describe("createServerSim: per-model values", () => {
 
   it("refuses a group key for a field only the other family takes, as the server does, and homes its removal", () => {
     const sim = createServerSim();
-    const refused = sim.patch({ spec: { decode_lanes: "5" } }, T);
+    const refused = sim.patch({ spec: { draft_rows: "5" } }, T);
     expect(refused.status).toBe(400);
-    expect(JSON.stringify(refused.body)).toContain("`spec.decode_lanes 5`: Qwen3.8-27B does not take it (a Qwen3.8-Flash-Next option)");
+    expect(JSON.stringify(refused.body)).toContain("`spec.draft_rows 5`: Qwen3.8-27B does not take it (a Qwen3.8-Flash-Next option)");
     // The family's section is the way, and a removal at the group key is homed there.
-    expect(sim.patch({ spec: { qwen38flashnext: { decode_lanes: "5" } } }, T).status).toBe(200);
-    expect(sim.patch({ spec: { decode_lanes: null } }, T).status).toBe(200);
-    expect((sim.config(T).body.spec as Record<string, any>).qwen38flashnext).not.toHaveProperty("decode_lanes");
+    expect(sim.patch({ spec: { qwen38flashnext: { draft_rows: "5" } } }, T).status).toBe(200);
+    expect(sim.patch({ spec: { draft_rows: null } }, T).status).toBe(200);
+    expect((sim.config(T).body.spec as Record<string, any>).qwen38flashnext).not.toHaveProperty("draft_rows");
     // A value it already has is no value to refuse.
-    expect(sim.patch({ spec: { decode_lanes: null } }, T).status).toBe(200);
+    expect(sim.patch({ spec: { draft_rows: null } }, T).status).toBe(200);
   });
 
   it("answers a group key the loaded family overrides 200 live, and reloads when it does not", () => {
@@ -237,7 +237,9 @@ describe("createServerSim: where each value comes from", () => {
     const rows = origins(sim);
     expect(rows.filter((r) => r.key === "model.max_context").map((r) => r.scope)).toEqual([null, "qwen38", "qwen38flashnext"]);
     // A field one family takes has the shared row too, then its family's alone.
-    expect(rows.filter((r) => r.key === "spec.decode_lanes").map((r) => r.scope)).toEqual([null, "qwen38flashnext"]);
+    expect(rows.filter((r) => r.key === "spec.draft_rows").map((r) => r.scope)).toEqual([null, "qwen38flashnext"]);
+    // GitHub #336: the decode lanes are both models', so each has its row.
+    expect(rows.filter((r) => r.key === "spec.decode_lanes").map((r) => r.scope)).toEqual([null, "qwen38", "qwen38flashnext"]);
     expect(new Set(rows.map((r) => r.key))).toEqual(new Set(FIELDS.map((f) => f.file_key)));
   });
 

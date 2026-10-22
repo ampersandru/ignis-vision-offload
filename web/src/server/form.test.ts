@@ -86,8 +86,8 @@ describe("rowMode", () => {
 
   it("reads a field the running family does not take as not used by it", () => {
     expect(rowMode(field("vision.enabled"), "qwen38flashnext")).toEqual({ kind: "unused", family: "qwen38flashnext" });
-    expect(rowMode(field("spec.decode_lanes"), "qwen38")).toEqual({ kind: "unused", family: "qwen38" });
-    expect(rowMode(field("spec.decode_lanes"), "qwen38flashnext")).toEqual({ kind: "edit" });
+    expect(rowMode(field("spec.draft_rows"), "qwen38")).toEqual({ kind: "unused", family: "qwen38" });
+    expect(rowMode(field("spec.draft_rows"), "qwen38flashnext")).toEqual({ kind: "edit" });
     // With no family known, the server judges: the control stays.
     expect(rowMode(field("vision.enabled"), null)).toEqual({ kind: "edit" });
   });
@@ -176,8 +176,8 @@ describe("rowView", () => {
     expect(noteLines(view("vision.enabled", "qwen38"), undefined)).toEqual([]);
     expect(view("vision.enabled", "qwen38flashnext").mode).toEqual({ kind: "unused", family: "qwen38flashnext" });
     // It is editable while the other family runs: the section is its family's.
-    expect(view("spec.decode_lanes", null)).toMatchObject({ mode: { kind: "edit" }, inForce: { value: null, scope: "qwen38flashnext" } });
-    expect(noteLines(view("spec.decode_lanes", null), undefined)).toEqual(["Qwen3.8-Flash-Next only"]);
+    expect(view("spec.draft_rows", null)).toMatchObject({ mode: { kind: "edit" }, inForce: { value: null, scope: "qwen38flashnext" } });
+    expect(noteLines(view("spec.draft_rows", null), undefined)).toEqual(["Qwen3.8-Flash-Next only"]);
   });
 
   it("has no value without a configuration", () => {
@@ -239,12 +239,12 @@ describe("patchBody", () => {
     draft = edit(draft, "model.max_context", "50000", null);
     draft = edit(draft, "model.kv_format", "bf16", "qwen38");
     draft = removeDraft(draft, field("model.max_context"), "qwen38flashnext");
-    draft = edit(draft, "spec.decode_lanes", "4", null);
-    expect(Object.keys(draft)).toEqual(["model.max_context", "model.qwen38.kv_format", "model.qwen38flashnext.max_context", "spec.qwen38flashnext.decode_lanes"]);
+    draft = edit(draft, "spec.draft_rows", "4", null);
+    expect(Object.keys(draft)).toEqual(["model.max_context", "model.qwen38.kv_format", "model.qwen38flashnext.max_context", "spec.qwen38flashnext.draft_rows"]);
     expect(Object.keys(changes(draft))).toHaveLength(4);
     expect(patchBody(draft)).toEqual({
       model: { max_context: "50000", qwen38: { kv_format: "bf16" }, qwen38flashnext: { max_context: null } },
-      spec: { qwen38flashnext: { decode_lanes: "4" } },
+      spec: { qwen38flashnext: { draft_rows: "4" } },
     });
     expect(Object.keys(dropDraft(draft, field("model.max_context"), "qwen38flashnext"))).not.toContain("model.qwen38flashnext.max_context");
   });
@@ -279,9 +279,9 @@ describe("the reload a draft causes", () => {
     expect(waits(draft)).toEqual([{ family: "qwen38flashnext", keys: ["model.qwen38flashnext.max_context"] }]);
     expect(waitingLine(waits(draft)[0])).toBe("Takes effect when Qwen3.8-Flash-Next loads: model.qwen38flashnext.max_context");
     // A field only that family takes is the same.
-    const lanes = edit({}, "spec.decode_lanes", "4", null);
+    const lanes = edit({}, "spec.draft_rows", "4", null);
     expect(reload(lanes)).toBe(false);
-    expect(waits(lanes)).toEqual([{ family: "qwen38flashnext", keys: ["spec.qwen38flashnext.decode_lanes"] }]);
+    expect(waits(lanes)).toEqual([{ family: "qwen38flashnext", keys: ["spec.qwen38flashnext.draft_rows"] }]);
     // And from the other side.
     expect(reload(edit({}, "model.max_context", "524288", "qwen38"), "qwen38flashnext")).toBe(false);
     expect(waits(edit({}, "model.max_context", "524288", "qwen38"), "qwen38flashnext")).toEqual([{ family: "qwen38", keys: ["model.qwen38.max_context"] }]);
