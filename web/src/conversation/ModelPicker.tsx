@@ -3,7 +3,7 @@ import { loadUnderWay, type ModelState } from "../api/model.ts";
 import type { CatalogRow } from "../server/routes.ts";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconChevron } from "../ui/icons.tsx";
-import { type NextModel, nextLine, rowLine, sizeOf, usable } from "./nextModel.ts";
+import { type NextModel, nextLine, rowLine, sizeOf, unavailableReason, usable } from "./nextModel.ts";
 
 // Under the prompt box: the model the next message goes to, and what sending
 // does first — nothing, a load, or a switch. Pressing it lists the text
@@ -81,6 +81,7 @@ export function ModelPicker({
                   role="menuitemradio"
                   aria-checked={on}
                   disabled={!usable(row)}
+                  title={unavailableReason(row) ?? undefined}
                   className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-line disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                   onClick={() => onChoose(row.id)}
                 >

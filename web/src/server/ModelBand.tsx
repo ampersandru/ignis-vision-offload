@@ -182,6 +182,12 @@ function RowActionView({ row, model, loadingId, onLoad }: { row: CatalogRow; mod
       return <CopyCommand id={row.id} />;
     case "missing":
       return null;
+    case "unavailable":
+      return (
+        <span title={action.reason} className="font-display text-[13px] font-semibold text-[#939ba4]">
+          Not for this card
+        </span>
+      );
   }
 }
 

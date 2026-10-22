@@ -15,8 +15,11 @@ export function textModels(catalog: CatalogRow[] | null): CatalogRow[] {
   return (catalog ?? []).filter((row) => row.family !== "qwenimage21" && !/^ignis-image/.test(row.id));
 }
 
-/** A row the server can switch to: all its files on disk, and switchable. */
-export const usable = (row: CatalogRow) => row.switchable && row.on_disk === "complete";
+/** A row the server can switch to: all its files on disk, switchable, and of a card class this card loads (ADR 0064). */
+export const usable = (row: CatalogRow) => row.switchable && row.on_disk === "complete" && row.available !== false;
+
+/** Why the card cannot load a row (ADR 0064), as the server words it; null when it can. */
+export const unavailableReason = (row: CatalogRow): string | null => (row.available === false ? (row.reason ?? "Too large for this card") : null);
 
 export type NextModel = {
   /** The model the next message goes to; null while none can be named (a switch under way, nothing read yet). */
@@ -61,6 +64,8 @@ export function nextLine(next: NextModel): string {
 export function rowLine(row: CatalogRow, model: ModelState): string {
   const loaded = model.state === "ready" || model.state === "unloaded" ? model.id : null;
   if (row.id === loaded) return model.state === "unloaded" ? "Unloaded while idle: the message loads it" : "Loaded";
+  const unavailable = unavailableReason(row);
+  if (unavailable) return `Not for this card: ${unavailable}`;
   if (row.on_disk !== "complete") return row.on_disk === "partial" ? "Partly on disk: download it from the Server view" : "Not on disk: download it from the Server view";
   if (!row.switchable) return "Not one the server can switch to";
   return loaded ? `The message switches from ${loaded} first` : "The message loads it first";

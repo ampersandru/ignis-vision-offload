@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelState } from "../api/model.ts";
 import type { CatalogRow } from "../server/routes.ts";
-import { nextLine, nextModel, rowLine, sizeOf, textModels } from "./nextModel.ts";
+import { nextLine, nextModel, rowLine, sizeOf, textModels, unavailableReason, usable } from "./nextModel.ts";
 
 // The model the chat's next message goes to (conversation/nextModel.ts): the
 // one loaded unless the owner chose another, the way back to a text model when
@@ -74,5 +74,22 @@ describe("the next message's model", () => {
     expect(rowLine(row("x", { on_disk: "absent" }), text)).toContain("Not on disk");
     expect(rowLine(row("x", { switchable: false }), text)).toContain("Not one the server can switch to");
     expect(sizeOf(19406942468)).toBe("19.4 GB");
+  });
+
+  // ADR 0064: a model this card's class cannot load is listed, disabled, with
+  // the server's reason as its line and its tooltip — whatever is on disk.
+  it("offers no model above the card's class, and says why in the server's words", () => {
+    const reason = "qwen3.8-flash-next needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
+    const above = row("qwen3.8-flash-next", { family: "qwen38flashnext", switchable: false, available: false, reason });
+    expect(usable(above)).toBe(false);
+    expect(usable({ ...above, switchable: true })).toBe(false);
+    expect(unavailableReason(above)).toBe(reason);
+    expect(unavailableReason(row("qwen3.8-27b"))).toBeNull();
+    expect(unavailableReason(row("qwen3.8-27b", { available: true }))).toBeNull();
+    expect(rowLine(above, text)).toBe(`Not for this card: ${reason}`);
+    expect(rowLine({ ...above, on_disk: "absent" }, text)).toBe(`Not for this card: ${reason}`);
+    // Never the way back from the image model either.
+    const sixteen = [above, row("qwen3.8-27b-16g")];
+    expect(nextModel(image, null, "qwen3.8-flash-next", sixteen).id).toBe("qwen3.8-27b-16g");
   });
 });

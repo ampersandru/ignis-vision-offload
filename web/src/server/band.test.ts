@@ -19,6 +19,17 @@ describe("rowAction", () => {
     expect(rowAction(row("qwen3.8-27b-custom"), ready)).toEqual({ kind: "download" });
   });
 
+  // ADR 0064: an entry above this card's class offers neither Load nor the
+  // download command, whatever is on disk; the server's reason is its tooltip.
+  it("offers nothing for an entry above the card's class, and gives the server's reason", () => {
+    const reason = "qwen3.8-flash-next needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
+    const above = { ...row("qwen3.8-flash-next"), switchable: false, available: false, reason };
+    expect(rowAction(above, ready)).toEqual({ kind: "unavailable", reason });
+    expect(rowAction({ ...above, on_disk: "absent" }, ready)).toEqual({ kind: "unavailable", reason });
+    expect(rowAction({ ...above, loaded: true }, ready)).toEqual({ kind: "loaded" });
+    expect(rowAction({ ...row("qwen3.8-flash-next"), available: true }, ready)).toEqual({ kind: "load", enabled: true });
+  });
+
   it("offers no download for a known model, which is no catalog entry: its artifact is just missing", () => {
     expect(rowAction({ ...row("qwen3.8-27b-fail"), on_disk: "absent", switchable: false }, ready)).toEqual({ kind: "missing" });
   });

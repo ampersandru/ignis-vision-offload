@@ -65,6 +65,10 @@ export type CatalogRow = {
   family?: string;
   loaded: boolean;
   switchable: boolean;
+  /** `false` when this card's class is below the entry's `card_class` (ADR 0064): no switch to it, no download of it. An older server sends neither field. */
+  available?: boolean;
+  /** Why it is not available, naming both classes; only with `available: false`. */
+  reason?: string;
 };
 
 /** A `PATCH /v1/config` that was applied (`200`) or began a reload (`202`). */
