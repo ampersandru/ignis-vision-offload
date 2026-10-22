@@ -54,6 +54,8 @@ async fn a_fetch_with_a_token_logs_its_urls_and_never_the_token() {
         repo: "acme/m".to_owned(),
         revision: "v1".to_owned(),
         artifact: "m.ninfer".to_owned(),
+        card_class: ignis_server::config::profile::CardClass::Gb32,
+        aliases: Vec::new(),
         files: vec![pinned("m.ninfer.graft.json", SIDECAR_BODY), pinned("m.ninfer", ARTIFACT_BODY)],
         layer: CatalogLayer::Operator,
     };

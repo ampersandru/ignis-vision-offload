@@ -326,7 +326,7 @@ async fn a_known_models_patch_never_writes_a_catalog_model_to_the_config_file() 
     std::fs::write(dir.join("mock-cat.ninfer"), b"on disk").unwrap();
     let zeros = "0".repeat(64);
     let catalog = ignis_server::download::catalog::parse_operator(
-        &format!("models:\n  - id: mock-cat\n    repo: acme/cat\n    revision: v1\n    artifact: mock-cat.ninfer\n    files:\n      - {{ name: mock-cat.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: mock-cat.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"),
+        &format!("models:\n  - id: mock-cat\n    repo: acme/cat\n    revision: v1\n    artifact: mock-cat.ninfer\n    card_class: 32\n    files:\n      - {{ name: mock-cat.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: mock-cat.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"),
         Format::Yaml,
         "test",
     )

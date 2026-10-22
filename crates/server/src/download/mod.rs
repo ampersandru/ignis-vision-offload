@@ -31,7 +31,7 @@ pub mod catalog;
 pub mod command;
 mod transfer;
 
-pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, BUILT_IN_CATALOG};
+pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, Resolved, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
 pub use transfer::{DownloadError, Downloader, Report};
 
@@ -400,6 +400,7 @@ mod tests {
     repo: acme/ft
     revision: v1
     artifact: acme_ft.ninfer
+    card_class: 32
     files:
       - { name: acme_ft.ninfer.conversion.json, bytes: 10, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }
       - { name: acme_ft.ninfer, bytes: 20, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }

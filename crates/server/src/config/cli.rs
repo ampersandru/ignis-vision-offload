@@ -630,7 +630,7 @@ mod tests {
     /// refuses the command.
     #[test]
     fn model_list_reads_the_catalog_the_config_file_names_beside_it() {
-        let catalog = "models:\n  - id: acme-ft\n    repo: acme/ft\n    revision: v1\n    artifact: a.ninfer\n    files:\n      - { name: a.ninfer.graft.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }\n      - { name: a.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }\n";
+        let catalog = "models:\n  - id: acme-ft\n    repo: acme/ft\n    revision: v1\n    artifact: a.ninfer\n    card_class: 32\n    files:\n      - { name: a.ninfer.graft.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }\n      - { name: a.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }\n";
         let files = MemFiles::with(&[("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n  path: /srv/models\n"), ("conf/acme.yaml", catalog)]);
         match run(&["model", "list", "--config", "conf/ignis.config.yaml", "--format", "json"], &[], &files).unwrap() {
             ConfigOutcome::Model(ModelCommand::List { catalog, dir, format }) => {
