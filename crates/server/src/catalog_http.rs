@@ -118,7 +118,7 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
     let family_of = |path: &Path| crate::loader::artifact_family(path).ok().flatten();
     let row = |id: &str, source, on_disk: OnDisk, bytes, family| {
         let loaded = serving && id == loaded_id;
-        let reason = switcher.filter(|_| !loaded).and_then(|switcher| switcher.unavailable(id));
+        let reason = switcher.filter(|_| !loaded).and_then(|switcher| switcher.unavailable_reason(id));
         CatalogRow {
             id: id.to_owned(),
             source,

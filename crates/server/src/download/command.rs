@@ -17,7 +17,7 @@ use std::sync::Arc;
 use ignis_core::compute::ModelFamily;
 use serde_json::{json, Value};
 
-use super::catalog::{Catalog, CatalogEntry, Resolved};
+use super::catalog::{Catalog, CatalogEntry};
 use super::transfer::{part_path, Downloader, Report};
 use crate::config::profile::CardClass;
 use crate::config::ApiKey;
@@ -119,7 +119,7 @@ pub fn list_rows(
 /// §3): each of `ids`, matched case-insensitively as a command line's ids
 /// are; every entry with `all`; the configured model, `configured`, with
 /// neither. Each is fitted to the card's class `card` first
-/// ([`Catalog::resolve`]): an id another entry answers to on this card
+/// ([`Catalog::answering`]): an id another entry answers to on this card
 /// fetches that one (`qwen3.8-27b` on a 16 GB card, the 16 GB 27B), and one
 /// this card cannot load refuses the whole command — every such entry named,
 /// with its class and the card's — before anything is fetched. So `--all` on
@@ -136,10 +136,14 @@ pub fn entries_to_fetch(catalog: &Catalog, ids: &[String], all: bool, configured
     let mut entries: Vec<CatalogEntry> = Vec::new();
     let mut refused: Vec<String> = Vec::new();
     for entry in named {
-        match catalog.resolve(&entry.id, card) {
-            Resolved::Entry(fetched) if !entries.iter().any(|earlier| earlier.id == fetched.id) => entries.push(fetched.clone()),
-            Resolved::Entry(_) | Resolved::Unknown => {}
-            Resolved::AboveClass(refusal) => refused.push(refusal.to_string()),
+        match catalog.answering(&entry.id, card) {
+            Ok(fetched) => {
+                let fetched = fetched.unwrap_or(entry);
+                if !entries.iter().any(|earlier| earlier.id == fetched.id) {
+                    entries.push(fetched.clone());
+                }
+            }
+            Err(refusal) => refused.push(refusal.to_string()),
         }
     }
     if !refused.is_empty() {

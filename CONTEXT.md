@@ -428,9 +428,10 @@ When output names a domain concept, use the term as defined here.
   _Avoid_: model name
 - **Alias** — a served id one catalog entry also answers to: its family's
   default id, on a **card class** below the default entry's (ADR 0064). It
-  resolves only within one model family, and only to an entry the card can
-  load. Listed in the entry's `aliases`; the catalog refuses an alias that is
-  no family's default id, the entry's own id, of another family than the
+  resolves only within one model family — the entry that answers to it holds
+  an artifact whose header names that family — and only to an entry the card
+  can load. Listed in the entry's `aliases`; the catalog refuses an alias that
+  is no family's default id, the entry's own id, of another family than the
   entry's own id, or claimed by two entries.
 - **Catalog** — the models the server knows how to fetch: the **built-in
   catalog**, shipped inside the binary, plus the **operator catalog**, a
@@ -439,8 +440,9 @@ When output names a domain concept, use the term as defined here.
   registry"), model list
 - **Catalog entry** — one published model: its served id, repo, revision, the
   artifact to load, every file it needs with its byte count and SHA-256
-  pinned, the smallest **card class** it loads on (`card_class`, required in
-  both catalogs), and the **aliases** it may answer to (ADR 0064). An operator
+  pinned, the smallest **card class** it loads on (`card_class`, optional: an
+  entry stating none is never refused by class; every built-in one states
+  it), and the **aliases** it may answer to (ADR 0064). An operator
   entry never reuses a built-in id. A switch, a request, a start or a download
   naming an entry above the card's class is refused before anything is torn
   down or fetched, and the model lists show it as unavailable.

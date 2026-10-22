@@ -67,6 +67,21 @@ fn card_probe() -> config::profile::Card {
     config::profile::Card::Absent
 }
 
+/// Refuse the start (ADR 0064): the model it would load with no artifact
+/// named is a catalog entry this card's class cannot load, and no entry of
+/// its family that answers to it can.
+fn refuse_above_card_class(logging_handle: &ignis_logging::LoggingHandle, refusal: &download::ClassRefusal) -> ! {
+    tracing::error!(
+        name: "ignis.model.above_card_class",
+        model = %refusal.model,
+        card_class = refusal.needs.gb(),
+        card = refusal.card.gb(),
+        error = %refusal,
+        "refusing to start: name a model this card loads (`--model-id`), or its artifact (`--model-artifact`)"
+    );
+    exit_after_flush(logging_handle, 1);
+}
+
 #[tokio::main]
 async fn main() {
     // The canonical structured-logging system (GitHub #78, ADR 0011) — first
@@ -290,17 +305,7 @@ async fn main() {
         Some(_) => model.clone(),
         None => match download::start_model(&catalog, &model, card_class) {
             Ok(served) => served,
-            Err(refusal) => {
-                tracing::error!(
-                    name: "ignis.model.above_card_class",
-                    model = %refusal.model,
-                    card_class = refusal.needs.gb(),
-                    card = refusal.card.gb(),
-                    error = %refusal,
-                    "refusing to start: name a model this card loads (`--model-id`), or its artifact (`--model-artifact`)"
-                );
-                exit_after_flush(&logging_handle, 1);
-            }
+            Err(refusal) => refuse_above_card_class(&logging_handle, &refusal),
         },
     };
 
@@ -367,10 +372,13 @@ async fn main() {
     };
 
     // The entry the card's class chose in `model`'s place is served under its
-    // own id (ADR 0064 §2), as a switch to it would serve it.
-    let start_options = match download::served_start_options(start_options, &served, artifact.as_deref()) {
+    // own id (ADR 0064 §2), as a switch to it would serve it — once its
+    // artifact's header says it is of the configured id's family.
+    let artifact_family = |path: &std::path::Path| ignis_server::loader::artifact_family(path).ok().flatten();
+    let start_options = match download::served_start_options(start_options, &served, artifact.as_deref(), &catalog, card_class, &artifact_family) {
         Ok(options) => options,
-        Err(err) => {
+        Err(download::StartRefusal::AboveClass(refusal)) => refuse_above_card_class(&logging_handle, &refusal),
+        Err(download::StartRefusal::Config(err)) => {
             tracing::error!(name: "ignis.config.invalid", error = %err, "refusing to start");
             exit_after_flush(&logging_handle, 1);
         }

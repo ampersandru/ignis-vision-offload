@@ -54,7 +54,7 @@ models:
     repo: acme/qwen-ft-ninfer          # <owner>/<name>
     revision: v1                       # commit, tag or branch; required
     artifact: acme_ft.ninfer           # the file the server loads
-    card_class: 32                     # smallest card class it loads on, in GB: 16, 32 or 96 (ADR 0064)
+    card_class: 32                     # optional: smallest card class it loads on, in GB: 16, 32 or 96 (ADR 0064)
     # aliases: [qwen3.8-27b]           # optional: the family's default id it answers to on a smaller card
     files:                             # every file, all pinned
       - { name: acme_ft.ninfer.graft.json, bytes: 48211,       sha256: 9c1e… }
@@ -69,8 +69,9 @@ the form `<owner>/<name>`; an empty `revision`; an `artifact` not among
 `loader::SIDECAR_SUFFIXES`; a `sha256` that is not 64 lowercase hex digits; a
 `bytes` of 0; **a file name that is not a plain name** (a path separator,
 `..`, or an absolute path — a catalog must never write outside the
-destination directory); a missing `card_class`, or one that is not 16, 32
-or 96; an alias that is not a model family's default id, is the entry's own
+destination directory); a `card_class` that is not 16, 32 or 96 (one
+left out states no class: the entry is never refused by class, and every
+built-in entry states one); an alias that is not a model family's default id, is the entry's own
 id, names another family than the entry's own id or than its other aliases,
 or that two entries claim — within the file or across the two catalogs (ADR
 0064, spec 27b-16gb/04 §6). A `download.catalog` that names a missing or

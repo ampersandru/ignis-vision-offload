@@ -790,12 +790,14 @@ impl LayerKind {
 }
 
 impl ModelFamily {
+    /// Every family, in declaration order: the one list a caller walks, so
+    /// a family added here reaches every one of them.
+    pub const ALL: [ModelFamily; 3] = [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21];
+
     /// The family an artifact's identity `model_id` names, or `None` for an
     /// artifact of no family (a test fixture).
     pub fn of_model_id(model_id: &str) -> Option<Self> {
-        [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21]
-            .into_iter()
-            .find(|family| family.model_id() == model_id)
+        Self::ALL.into_iter().find(|family| family.model_id() == model_id)
     }
 
     /// Host retained slots a load of this family keeps by default with
@@ -1397,7 +1399,7 @@ mod tests {
         assert_eq!(ModelFamily::of_model_id("ignis-image-2.1-turbo"), Some(ModelFamily::QwenImage21));
         assert_eq!(ModelFamily::QwenImage21.model_id(), ignis_artifact::qwen_image::MODEL_ID);
         assert_eq!(ModelFamily::of_model_id("fixture-model"), None);
-        for family in [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21] {
+        for family in ModelFamily::ALL {
             assert_eq!(ModelFamily::of_model_id(family.model_id()), Some(family));
         }
     }

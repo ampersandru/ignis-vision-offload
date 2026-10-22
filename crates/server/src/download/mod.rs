@@ -31,7 +31,7 @@ pub mod catalog;
 pub mod command;
 mod transfer;
 
-pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, Resolved, BUILT_IN_CATALOG};
+pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
 pub use transfer::{DownloadError, Downloader, Report};
 
@@ -147,7 +147,7 @@ pub fn artifact_source(
 }
 
 /// The served id a start with no artifact named loads (ADR 0064, spec
-/// 27b-16gb/04 §6): the catalog's class-aware step ([`Catalog::resolve`])
+/// 27b-16gb/04 §6): the catalog's class-aware step ([`Catalog::answering`])
 /// on `model` and the card's class `card`, before [`artifact_source`] looks
 /// it up. `model` itself when its own entry fits the card, no class is known,
 /// or the catalog does not hold it (for [`artifact_source`] to answer as
@@ -163,11 +163,7 @@ pub fn start_model(catalog: &Catalog, model: &str, card: Option<crate::config::p
     let Some(own) = catalog.entry(model) else {
         return Ok(model.to_owned());
     };
-    match catalog.resolve(&own.id, card) {
-        Resolved::Entry(serving) if serving.id != own.id => Ok(serving.id.clone()),
-        Resolved::Entry(_) | Resolved::Unknown => Ok(model.to_owned()),
-        Resolved::AboveClass(refusal) => Err(refusal),
-    }
+    Ok(catalog.answering(&own.id, card)?.map_or_else(|| model.to_owned(), |serving| serving.id.clone()))
 }
 
 /// The start options a start runs with once [`start_model`] has said which
@@ -179,11 +175,39 @@ pub fn start_model(catalog: &Catalog, model: &str, card: Option<crate::config::p
 /// the options, as a switch to it would serve it
 /// ([`crate::config::target_patch`]), so `GET /v1/config`, the switcher and
 /// the load all name the model that runs.
-pub fn served_start_options(options: crate::config::Config, served: &str, artifact: Option<&Path>) -> Result<crate::config::Config, crate::config::ConfigError> {
-    match artifact {
-        Some(path) if served != options.model => crate::config::target_patch(path, served).and_then(|patch| options.general_with(&patch)),
-        _ => Ok(options),
+///
+/// An alias resolves only within one model family (ADR 0064 §2), and the
+/// family is the artifact's header's (ADR 0047), which is known only once the
+/// artifact is on disk — after the fetch when the start fetched it: `header`
+/// reads it (`loader::artifact_family`), and an artifact of another family
+/// than the configured id's refuses the start before it loads, naming both
+/// ([`Catalog::alias_holds`]).
+pub fn served_start_options(
+    options: crate::config::Config,
+    served: &str,
+    artifact: Option<&Path>,
+    catalog: &Catalog,
+    card: Option<crate::config::profile::CardClass>,
+    header: &dyn Fn(&Path) -> Option<ignis_core::compute::ModelFamily>,
+) -> Result<crate::config::Config, StartRefusal> {
+    let Some(path) = artifact.filter(|_| served != options.model) else {
+        return Ok(options);
+    };
+    if let (Some(own), Some(entry)) = (catalog.entry(&options.model), catalog.entry(served)) {
+        catalog.alias_holds(&own.id, entry, header(path), card).map_err(StartRefusal::AboveClass)?;
     }
+    crate::config::target_patch(path, served).and_then(|patch| options.general_with(&patch)).map_err(StartRefusal::Config)
+}
+
+/// Why a start the card's class fitted is refused once its artifact is on
+/// disk ([`served_start_options`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartRefusal {
+    /// The entry that answers to the configured id holds an artifact of
+    /// another family (ADR 0064 §2): the alias does not resolve.
+    AboveClass(ClassRefusal),
+    /// Its artifact and id over the start options do not resolve.
+    Config(crate::config::ConfigError),
 }
 
 /// Which token a request to `endpoint` carries (spec model-download/02
@@ -271,6 +295,7 @@ pub fn ask(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ignis_core::compute::ModelFamily;
 
     const DIR: &str = "models";
 
@@ -367,14 +392,41 @@ mod tests {
         let mut settings = settings(&served, &dir);
         settings.catalog = &catalog;
         let ArtifactSource::Use(path) = artifact_source(&settings, |_| true, never_asked) else { panic!("on disk") };
-        let serving = served_start_options(options.clone(), &served, Some(&path)).unwrap();
+        let card = options.card_class();
+        let serving = served_start_options(options.clone(), &served, Some(&path), &catalog, card, &|_| Some(ModelFamily::Qwen38_27b)).unwrap();
         assert_eq!((serving.model.as_str(), serving.artifact.as_deref()), ("qwen3.8-27b-16g", Some(dir.join("q16.ninfer").as_path())));
-        assert_eq!(served_start_options(options.clone(), &served, None).unwrap(), options, "a placeholder start loads nothing");
+        let placeholder = served_start_options(options.clone(), &served, None, &catalog, card, &|_| panic!("no artifact, no header"));
+        assert_eq!(placeholder.unwrap(), options, "a placeholder start loads nothing");
 
         let options = start_config_on(crate::config::profile::RTX_5090_TOTAL_BYTES);
         let served = start_model(&catalog, &options.model, options.card_class()).unwrap();
         assert_eq!(served, crate::config::DEFAULT_MODEL);
-        assert_eq!(served_start_options(options.clone(), &served, Some(&dir.join("qwen3_8_27b_nvfp4full-v2.ninfer"))).unwrap(), options);
+        let own = dir.join("qwen3_8_27b_nvfp4full-v2.ninfer");
+        assert_eq!(served_start_options(options.clone(), &served, Some(&own), &catalog, options.card_class(), &|_| panic!("its own entry")).unwrap(), options);
+    }
+
+    /// ADR 0064 §2: an alias resolves only within one model family, by the
+    /// artifact's header (ADR 0047). A start that has to fetch the entry
+    /// answering to the default id knows the header only once the fetch has
+    /// landed: an artifact of another family — or of none — then refuses the
+    /// start before it loads, naming both families.
+    #[test]
+    fn a_start_whose_answering_entry_holds_another_family_is_refused_once_fetched() {
+        let catalog = catalog::testing::with_sixteen();
+        let dir = PathBuf::from(DIR);
+        let options = start_config_on(16 << 30);
+        let served = start_model(&catalog, &options.model, options.card_class()).unwrap();
+        let mut settings = settings(&served, &dir);
+        settings.catalog = &catalog;
+        let ArtifactSource::Download { entry, dir } = artifact_source(&settings, nothing_exists, |_, _| None) else { panic!("fetched") };
+        let fetched = entry.artifact_path(&dir);
+        for header in [Some(ModelFamily::FlashNext), None] {
+            let Err(StartRefusal::AboveClass(refusal)) = served_start_options(options.clone(), &served, Some(&fetched), &catalog, options.card_class(), &|_| header) else {
+                panic!("{header:?}: refused")
+            };
+            let said = refusal.to_string();
+            assert!(said.contains("qwen3.8-27b-16g lists it as an alias") && said.contains("one model family"), "{said}");
+        }
     }
 
     /// ADR 0064 §3: a start whose model no entry loads on this card is

@@ -1848,15 +1848,15 @@ fn models_now(server: &Server) -> ModelList {
         reason: None,
     }];
     // No header read here: a family's own id says its kind, any other none.
-    data.extend(rest.into_iter().map(|(id, unavailable)| ModelInfo {
-        kind: ModelFamily::of_model_id(&id).map(|family| family.kind().as_str()),
-        id,
+    data.extend(rest.into_iter().map(|servable| ModelInfo {
+        kind: ModelFamily::of_model_id(&servable.id).map(|family| family.kind().as_str()),
+        id: servable.id,
         object: "model",
         owned_by: "ignis",
         active: false,
         max_model_len: None,
-        available: unavailable.is_none(),
-        reason: unavailable,
+        available: servable.unavailable.is_none(),
+        reason: servable.unavailable,
     }));
     ModelList {
         object: "list",

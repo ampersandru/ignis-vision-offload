@@ -50,25 +50,37 @@ Related:
 
 **As built** (2026-10-23, GitHub #336), where the decision left a choice:
 
-- **`card_class` is required in both catalogs**, as `revision` is: a missing class would leave the VRAM plan, after
-  the teardown, as the only guard. `CardClass::from_gb` reads it; any number but 16, 32 or 96 refuses the catalog.
+- **`card_class` is optional in both catalogs, by one rule**: an entry that states none is never refused by class,
+  and the VRAM plan's refusal still guards it — so an operator catalog written before card classes still starts.
+  Every built-in entry states one (a test pins it). `CardClass::from_gb` reads a stated class; any number but 16, 32
+  or 96 refuses the catalog.
 - **No family is declared** (ADR 0047 stands). An alias is a family's default id, so an entry's aliases say its
   family. The catalog refuses an alias that is no family's default id, the entry's own id, of another family than
   the entry's own id when that id is a family's own, of another family than the entry's other aliases, or claimed
   by two entries — within one file, and across the built-in and operator catalogs.
-- **One resolve step**, `Catalog::resolve(id, card)`: the id's own entry when it fits, else the entry of its family
-  that lists it as an alias and fits, else refused naming both classes. Ids match exactly, as a request's `model`
-  does. A card of no known class refuses nothing.
-- **Where the catalog chooses the artifact, the class applies**: a start with no artifact named, a switch by id, a
-  request's implicit switch, `model download`. **Where the operator named the path, it does not**: `--model-artifact`,
-  `switch.known_models` and the start model, a `POST /v1/models/switch` naming its `artifact`. Only the VRAM plan
-  guards those, as before.
+- **The family is the artifact's header's** (ADR 0047), so §2's "only within one model family" is checked on the
+  artifact too: the entry that answers to an alias must hold an artifact whose header names the alias's family. A
+  switch or a request checks it before anything stops, when that artifact is on disk; a start checks it once the
+  artifact is there, after the fetch when it fetched it, before the load. An artifact of another family, or of
+  none, does not answer to the alias: refused `model_above_card_class`, naming both families.
+- **One class rule**, `Catalog::above_class(id, card)`, and **one resolve step**, `Catalog::answering(id, card)`:
+  the id stands when its own entry fits (or states no class), else the entry of its family that lists it as an
+  alias and fits answers to it, else refused naming both classes. Ids match exactly, as a request's `model` does. A
+  card of no known class refuses nothing.
+- **The class is the catalog entry's, whoever names its id** (§3): a start with no artifact named, a switch by id, a
+  request's implicit switch, `model download` — and a catalog id the operator also listed in `switch.known_models`
+  or started on by path, which is fitted all the same: off the card's class it is unavailable, never switched to,
+  and the way back to it after a switch is refused. **Only a path named for the load itself is
+  the operator's word**: `--model-artifact` at start (the loaded model's own id is then served whatever its class)
+  and a `POST /v1/models/switch` naming its `artifact`. Only the VRAM plan guards those, as before. An id that is no
+  catalog entry, the operator's own model, has no class and is never refused by one.
 - **The refusal is `409 model_above_card_class`** on every route that names a model, as `model_kind_mismatch` is,
   and `422` on `/v1/decide`, as its other model refusals are. It comes before anything is prepared: the status never
   leaves `serving`, and no `last_switch` is written.
 - **An alias rewrites the request's `model`** to the serving entry's id before anything else reads it, the lane tag
   kept. The answer names the entry that served it. The loaded model's own id is served as it is, whatever its class.
-- **A start that an alias resolves** loads the entry's artifact under that entry's own id.
+- **A start that an alias resolves** loads the entry's artifact under that entry's own id: its artifact and id over
+  the start options, as a switch to it would load it.
 - **`model download --all`** on a card below one of the entries is refused whole, naming each such entry.
 - **The model lists** keep the entries they listed. One above the card's class is `available: false` with a
   `reason`; when another entry answers to its id here, the reason names it.

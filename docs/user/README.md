@@ -174,10 +174,14 @@ serves on; a start with no artifact that would load it, and its
 the Playground list it as unavailable, with the reason. An entry may answer to
 its family's default id as an **alias**: the 16 GB 27B, once published,
 answers to `qwen3.8-27b` on a 16 GB card, so a client configured with
-`qwen3.8-27b` is served by it, and the answer names it. A model named by its
-path — `--model-artifact`, `--switch-known-models`, a switch naming its
-`artifact` — is your word and is not fitted to the card: only the VRAM plan
-refuses it. A card whose class is not known refuses nothing.
+`qwen3.8-27b` is served by it, and the answer names it — only an entry whose
+artifact is of the 27B's family, by the artifact's header, answers to it; one
+of another family is refused, naming both. A model loaded from a path named
+for the load itself — `--model-artifact`, a switch naming its `artifact` — is
+your word and is not fitted to the card: only the VRAM plan refuses it. A
+catalog id you also list in `--switch-known-models` is fitted all the same:
+the class is its catalog entry's. A model id no entry holds has no class, and
+a card whose class is not known refuses nothing.
 
 `ignis-server model list` shows every entry and how much of it is on disk:
 
@@ -277,7 +281,7 @@ models:
     repo: acme/qwen-ft-ninfer          # <owner>/<name>
     revision: v1                       # commit, tag or branch; required
     artifact: acme_ft.ninfer           # the file the server loads
-    card_class: 32                     # the smallest card class it loads on, in GB: 16, 32 or 96
+    card_class: 32                     # optional: the smallest card class it loads on, in GB: 16, 32 or 96
     # aliases: [qwen3.8-27b]           # optional: the family's default id it answers to on a smaller card
     files:                             # every file, all pinned
       - { name: acme_ft.ninfer.graft.json, bytes: 48211,       sha256: 9c1e… }
@@ -291,13 +295,15 @@ the form `<owner>/<name>`, an empty `revision`, an `artifact` not among its
 `files`, no sidecar (the artifact's name plus `.graft.json` or
 `.conversion.json`), a `sha256` that is not 64 lowercase hex digits, a `bytes`
 of 0, a file name that is not a plain name (a path separator, `..`, an
-absolute path), a missing `card_class` or one that is not 16, 32 or 96, or an
+absolute path), a `card_class` that is not 16, 32 or 96, or an
 alias that is not a model family's default id (`qwen3.8-27b`,
 `qwen3.8-flash-next`, `ignis-image-2.1-turbo`), is the entry's own id, names
 another family than the entry's own id or its other aliases, or is already
 another entry's — a built-in one's included. A relative `--download-catalog` set in a config file is read
 from that file's directory; from a flag or an env var, from the working
-directory.
+directory. An entry with no `card_class` states no class: it is never refused
+by class, so a catalog written before card classes still starts, and only the
+VRAM plan says it does not fit.
 
 A built-in id cannot be re-pinned by a file: a mirror of the owner's models is
 an endpoint, a variant of them a new id. Your entry may answer to a built-in
