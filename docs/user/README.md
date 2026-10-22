@@ -404,8 +404,19 @@ ignis-server config patch --model-max-context 131072   # change the file in plac
 
 **Profiles.** `--profile <name>` / `IGNIS_PROFILE` / the file's `profile:`
 names a bundle of hardware-shaped defaults, below the file and above the
-built-in defaults. Two are built in:
-- `rtx5090` (the default) holds numbers measured on that card. Under it
+built-in defaults. Three are built in, and the default, `--profile auto`,
+picks one by the card's total memory as NVML reports it: under 20 GiB
+(a 16 GB card) `rtx50-16gb`, 28 to 40 GiB (a 5090) `rtx5090`, 88 to 104 GiB
+(an RTX PRO 6000) `rtxpro6000`. A card of any other size, or a total NVML
+cannot read, is refused, naming `--profile` — at a start, and at `config
+generate|print|patch` and `model list|download` too, which resolve exactly as a
+start would; a profile you name (`--profile`, `IGNIS_PROFILE`, the
+file's `profile:`, `none` included) always wins and the card is not consulted
+for the choice. The start's log line `ignis.config.source` names the profile
+chosen and the total it was chosen by; `GET /v1/config` and the Playground show
+the profile it resolved to. A build without CUDA has no card, so `auto` there is
+`none`.
+- `rtx5090` holds numbers measured on that card. Under it
   Flash-Next pins its calibration-hottest 2 GiB of experts in VRAM
   (`--vram-pinned-expert-bytes 2G`, [the pinned hot set](#host-ram-for-flash-next)):
   2.1 GB less RAM for at most ~1% of three-lane decode. `--vram-pinned-expert-bytes 0`
@@ -420,11 +431,27 @@ built-in defaults. Two are built in:
   ([below](#flash-next-speculation-mtp)) and `--ngram-hot-bytes auto`: the
   whole n-gram table in RAM when the host plan leaves room for it
   ([below](#flash-next-n-gram-startup-cache)). Everything else is as on the
-  5090, except that the 27B's VRAM headroom stays at its default. Start it
-  with `--profile rtxpro6000`.
+  5090, except that the 27B's VRAM headroom stays at its default. `--profile
+  auto` picks it on this card; `--profile rtxpro6000` names it.
+- `rtx50-16gb` is the 16 GB class (RTX 5060 Ti 16 GB, 5070 Ti, 5080): derived,
+  not measured, since no 16 GB card exists in the project. The 27B at
+  262,144 tokens of context with DFlash2 at 7 draft tokens and vision off, the
+  VRAM headroom of the 5090's 27B (1200M) and a 1,024-token prefill chunk.
+  It names no model: a start with no artifact takes the catalog's 16 GB entry
+  of the default id.
 
 A file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
-card.
+card. `auto` picks the class's profile by name, the lookup a named profile
+goes through, so a file whose `profiles:` redefines `rtx50-16gb`, `rtx5090` or
+`rtxpro6000` replaces what `auto` picks for that class. A profile called `none`
+or `auto` is refused when the file is read: both words mean something to
+`--profile`, so such a profile could never be reached.
+
+`config generate` writes every resolved value as a value of the FILE, the
+profile's among them: a file generated under `auto` carries the numbers of the
+card class it was generated on, and a value in a file never adapts to the card
+that reads it. Generate with `--profile none` for a file that does not depend on
+the card.
 
 **At runtime.** `GET /v1/config` shows the running configuration (fields
 declared visible only: never the API key); `GET /v1/config?format=yaml` shows
@@ -484,7 +511,7 @@ change does not reach and a `null` removes.
 | `--switch-allow-implicit <true\|false>` | `IGNIS_SWITCH_ALLOW_IMPLICIT` | `true` | A request whose `model` names another model `--switch-known-models` lists switches the server to it, then is served on it. `false`: such a request is a `404 model_not_found`, as an unknown model is, and `GET /v1/models` lists the loaded model alone. `POST /v1/models/switch` is not affected. |
 | `--switch-known-models <id>=<path>` (repeatable) | `IGNIS_SWITCH_KNOWN_MODELS` (`;`-separated pairs) | the start model only | A model a request may switch to by naming it, and the artifact it loads from — while that artifact is a file. The model the server starts on is always listed. Any flag replaces the env var whole; an id named twice is refused. |
 | `--config <path>` | `IGNIS_CONFIG` | discovered | The config file ([above](#configuration)). |
-| `--profile <name>` | `IGNIS_PROFILE` | `rtx5090` | The hardware profile ([above](#configuration)): `rtx5090`, `rtxpro6000`, one a config file defines, or `none`. |
+| `--profile <name>` | `IGNIS_PROFILE` | `auto` | The hardware profile ([above](#configuration)): `auto` (the profile of the card's memory), `rtx50-16gb`, `rtx5090`, `rtxpro6000`, one a config file defines, or `none`. |
 | `help` / `-h`, `--help` | — | — | Print the usage and the field list and exit; `help --fields` prints every field in full. |
 | `version` / `-V`, `--version` | — | — | Print the version and exit. |
 
