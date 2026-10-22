@@ -28,10 +28,11 @@
   <tr>
     <td align="center"><b>~170 tok/s</b><br><sub>one lane, average; peaks ~370</sub></td>
     <td align="center"><b>1,065 tok/s</b><br><sub>eight lanes, aggregate</sub></td>
+    <td align="center"><b>~9,700 tok/s</b><br><sub>cold prefill, 46K prompt</sub></td>
     <td align="center"><b>~100 tok/s</b><br><sub>Flash-Next 125B MoE, one lane</sub></td>
     <td align="center"><b>7.11x</b><br><sub>KV capacity of BF16</sub></td>
     <td align="center"><b>~36 ms</b><br><sub>a decision, zero tokens decoded</sub></td>
-    <td align="center"><b>512K</b><br><sub>context, YaRN x2</sub></td>
+    <td align="center"><b>896K</b><br><sub>context, with vision and DFlash2</sub></td>
     <td align="center"><b>~7.9 s</b><br><sub>a 2048² image, end to end</sub></td>
   </tr>
 </table>
@@ -139,9 +140,16 @@ authors published it:
 
 Those rows are other people's runs: their prompts, their drafters, their
 context lengths. They are not a same-session benchmark, so read them as an order
-of magnitude, not a ratio. **Prefill is where ignis is not ahead.**
-- **ignis**, measured cold: 7,600 tok/s on a 46K prompt, 5,200 on a 105K one
-  ([cold prefill](docs/findings/2026-10-13-cold-prefill-27b-vs-flash-next.md)).
+of magnitude, not a ratio. **Prefill was where ignis trailed; 0.7.3 made it
+30-53% faster on long prompts.**
+- **ignis**, measured cold: **9,717 tok/s on a 46K prompt, 7,865 on a 105K one**.
+  The prefill attention now reads the compressed KV directly, instead of
+  expanding it into BF16 planes first: +30% at 46K and +53% at 105K against
+  0.7.2's kernels in one A/B session
+  ([no prompt planes](docs/findings/2026-10-21-prefill-attention-without-prompt-planes.md)).
+  A 2,048-token prefill chunk adds 2% more
+  ([the 2,048 chunk](docs/findings/2026-10-21-the-27b-prefill-chunk-at-2048.md)).
+  Decode is unchanged, and the KL divergence from BF16 is lower.
 - **One same-session bench, someone else's**
   ([mkyt/qwen3-27b-5090](https://github.com/mkyt/qwen3-27b-5090), a 5090 at a
   400 W limit, 2026-10-11), cold 73K prompt:
@@ -227,6 +235,12 @@ Every number below is a measurement on a 5090.
 - The load that used to grow the process **2,734 MiB in 14 minutes now grows it
   6 MiB in 24.5**, and the printed plan matches what the OS reports to within
   16 MiB. No paging, no surprise at minute forty.
+- In 0.7.3 the 27B handed **up to 2.4 GB of VRAM back to the KV pool**. The
+  prefill attention no longer holds prompt planes (up to 1.02 GB, ~0.6 GB with
+  image input on), and the 1.35 GB token embedding lives in pinned host
+  memory, at ~1 µs per prompt token. On the 5090 the built-in profile's context went from 786,432 to
+  **917,504 tokens, with image input and DFlash2 still on**
+  ([embedding in host memory](docs/findings/2026-10-21-token-embedding-in-host-memory.md)).
 
 ### Lanes that know who is asking
 
@@ -346,6 +360,10 @@ Every number below is a measurement on a 5090.
   — VRAM, pinned host memory and KV-RAM all freed for other programs — and the
   server stays up; the next request loads it again and is answered.
   Polling `/v1/models` or `/metrics` neither keeps it loaded nor loads it.
+- **`GET /v1/models` lists what a request can be served by.** The loaded
+  model comes first, then every model whose weights are on disk, so a client's
+  model picker shows them all. A model whose weights are gone is a 404 and
+  never tears the loaded one down.
 - **A catalog it fetches from**: `ignis-server model download <id>`, every
   file pinned at a revision and its size and SHA-256 checked before use; an
   operator catalog file and a mirror endpoint for private or air-gapped
