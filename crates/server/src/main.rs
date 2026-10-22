@@ -138,6 +138,11 @@ async fn main() {
     // from the fitted config. A model switch loads every later model from
     // the same options, fitted to its own family.
     let start_options = config.clone();
+    // The card's class (ADR 0063, ADR 0064): what the catalog's entries are
+    // fitted to at start, for a switch, a request and a listing. #336
+    // integration wires part B's `config.card_class()` (NVML's total, read
+    // at resolution) here; `None` refuses nothing.
+    let card_class: Option<ignis_server::config::profile::CardClass> = None;
     let Config {
         model,
         model_named: _,
@@ -257,6 +262,30 @@ async fn main() {
         }
     };
 
+    // ADR 0064 (spec 27b-16gb/04 §6): with no artifact named, the model is
+    // the catalog's, fitted to the card's class before it is looked for or
+    // fetched — on a card below its own entry's class the entry that answers
+    // to it there, served under that entry's own id; one this card cannot
+    // load refuses the start before anything is fetched. A named artifact is
+    // the operator's word, which only the VRAM plan guards.
+    let served = match artifact {
+        Some(_) => model.clone(),
+        None => match download::start_model(&catalog, &model, card_class) {
+            Ok(served) => served,
+            Err(refusal) => {
+                tracing::error!(
+                    name: "ignis.model.above_card_class",
+                    model = %refusal.model,
+                    card_class = refusal.needs.gb(),
+                    card = refusal.card.gb(),
+                    error = %refusal,
+                    "refusing to start: name a model this card loads (`--model-id`), or its artifact (`--model-artifact`)"
+                );
+                exit_after_flush(&logging_handle, 1);
+            }
+        },
+    };
+
     // Where the artifact comes from (GitHub #234, ADR 0033): the path the
     // operator named, one already under `--download-path`, one fetched
     // now, or none at all — which is the placeholder start this server has
@@ -264,7 +293,7 @@ async fn main() {
     let source = download::artifact_source(
         &download::DownloadSettings {
             artifact: artifact.as_deref(),
-            model: &model,
+            model: &served,
             enabled: model_download,
             dir: &model_download_path,
             // A binary built without `cuda` could not run the weights it
@@ -317,6 +346,22 @@ async fn main() {
                 }
             }
         }
+    };
+
+    // The entry the card's class chose in `model`'s place is served under its
+    // own id (ADR 0064 §2), as a switch to it would serve it: its artifact and
+    // id over the start options.
+    let start_options = match &artifact {
+        Some(path) if served != model => {
+            match ignis_server::config::target_patch(path, &served).and_then(|patch| start_options.general_with(&patch)) {
+                Ok(options) => options,
+                Err(err) => {
+                    tracing::error!(name: "ignis.config.invalid", error = %err, "refusing to start");
+                    exit_after_flush(&logging_handle, 1);
+                }
+            }
+        }
+        _ => start_options,
     };
 
     // GitHub #216 (ADR 0030 §Observability): what the load's VRAM plan
@@ -410,7 +455,8 @@ async fn main() {
             switcher
                 .with_known_models(tables.known)
                 .with_listed_models(tables.listed)
-                .with_catalog(catalog_models, allow_model_switch),
+                .with_catalog(catalog_models, allow_model_switch)
+                .with_card_class(card_class),
         )
         .with_config(config_state);
 

@@ -255,17 +255,11 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
     }
     let config = super::start_config(args, env, files)?;
     let catalog = download::catalog::load(files, config.download_catalog.as_deref()).map_err(|err| ConfigError(err.0))?;
-    let lookup = |id: &str| {
-        catalog.entry(id).cloned().ok_or_else(|| {
-            ConfigError(format!("`{id}` is not in the catalog (the ids are {})", catalog.ids().join(", ")))
-        })
-    };
-    let entries = match (all, ids.as_slice()) {
-        (true, []) => catalog.entries().to_vec(),
-        (true, _) => return Err(ConfigError("`model download --all` fetches every entry: name ids or `--all`, not both".to_owned())),
-        (false, []) => vec![lookup(&config.model)?],
-        (false, ids) => ids.iter().map(|id| lookup(id)).collect::<Result<_, _>>()?,
-    };
+    // Fitted to the card's class (ADR 0064): the class the start reads from
+    // NVML's total. #336 integration wires part B's `config.card_class()`
+    // here; `None` refuses nothing.
+    let card = None;
+    let entries = download::command::entries_to_fetch(&catalog, &ids, all, &config.model, card).map_err(ConfigError)?;
     let token = download::bearer_token(&config.download_endpoint, config.download_token.as_ref(), env("HF_TOKEN").as_deref());
     Ok(ConfigOutcome::Model(ModelCommand::Download {
         entries,

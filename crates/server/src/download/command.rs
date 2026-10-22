@@ -17,8 +17,9 @@ use std::sync::Arc;
 use ignis_core::compute::ModelFamily;
 use serde_json::{json, Value};
 
-use super::catalog::{Catalog, CatalogEntry};
+use super::catalog::{Catalog, CatalogEntry, Resolved};
 use super::transfer::{part_path, Downloader, Report};
+use crate::config::profile::CardClass;
 use crate::config::ApiKey;
 
 /// What a `model` command line asked for, resolved.
@@ -112,6 +113,44 @@ pub fn list_rows(
             }
         })
         .collect()
+}
+
+/// The entries `model download` fetches (spec model-download/02, ADR 0064
+/// §3): each of `ids`, matched case-insensitively as a command line's ids
+/// are; every entry with `all`; the configured model, `configured`, with
+/// neither. Each is fitted to the card's class `card` first
+/// ([`Catalog::resolve`]): an id another entry answers to on this card
+/// fetches that one (`qwen3.8-27b` on a 16 GB card, the 16 GB 27B), and one
+/// this card cannot load refuses the whole command — every such entry named,
+/// with its class and the card's — before anything is fetched. So `--all` on
+/// a card below one of the entries is refused too: name the ids it loads. A
+/// card of no known class refuses nothing. Each entry once, in the order
+/// named.
+pub fn entries_to_fetch(catalog: &Catalog, ids: &[String], all: bool, configured: &str, card: Option<CardClass>) -> Result<Vec<CatalogEntry>, String> {
+    let named: Vec<&CatalogEntry> = match (all, ids) {
+        (true, []) => catalog.entries().iter().collect(),
+        (true, _) => return Err("`model download --all` fetches every entry: name ids or `--all`, not both".to_owned()),
+        (false, []) => vec![catalog_entry(catalog, configured)?],
+        (false, ids) => ids.iter().map(|id| catalog_entry(catalog, id)).collect::<Result<_, _>>()?,
+    };
+    let mut entries: Vec<CatalogEntry> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
+    for entry in named {
+        match catalog.resolve(&entry.id, card) {
+            Resolved::Entry(fetched) if !entries.iter().any(|earlier| earlier.id == fetched.id) => entries.push(fetched.clone()),
+            Resolved::Entry(_) | Resolved::Unknown => {}
+            Resolved::AboveClass(refusal) => refused.push(refusal.to_string()),
+        }
+    }
+    if !refused.is_empty() {
+        return Err(format!("nothing fetched: {}; `model download` fetches only what this card can load", refused.join("; ")));
+    }
+    Ok(entries)
+}
+
+/// The entry `id` names, or why it names none.
+fn catalog_entry<'a>(catalog: &'a Catalog, id: &str) -> Result<&'a CatalogEntry, String> {
+    catalog.entry(id).ok_or_else(|| format!("`{id}` is not in the catalog (the ids are {})", catalog.ids().join(", ")))
 }
 
 /// The rows as `model list` prints them.
@@ -300,5 +339,45 @@ mod tests {
         assert_eq!(json[0]["family"], "Qwen3.8-27B");
         assert_eq!(json[4]["layer"], "operator");
         assert_eq!(json[4]["family"], Value::Null);
+    }
+
+    fn fetched(catalog: &Catalog, ids: &[&str], all: bool, card: Option<CardClass>) -> Result<Vec<String>, String> {
+        let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        entries_to_fetch(catalog, &ids, all, crate::config::DEFAULT_MODEL, card).map(|entries| entries.into_iter().map(|entry| entry.id).collect())
+    }
+
+    /// ADR 0064 §2-3: on a 16 GB card the default id — named, or the
+    /// configured model with none — fetches the entry that answers to it,
+    /// each entry once.
+    #[test]
+    fn a_download_fetches_the_entry_that_serves_an_id_on_the_card() {
+        let catalog = super::super::catalog::testing::with_sixteen();
+        let sixteen = Some(CardClass::Gb16);
+        assert_eq!(fetched(&catalog, &[], false, sixteen), Ok(vec!["qwen3.8-27b-16g".to_owned()]), "the configured model");
+        assert_eq!(fetched(&catalog, &["QWEN3.8-27B", "qwen3.8-27b-16g"], false, sixteen), Ok(vec!["qwen3.8-27b-16g".to_owned()]));
+        for card in [Some(CardClass::Gb32), None] {
+            assert_eq!(fetched(&catalog, &["qwen3.8-27b"], false, card), Ok(vec!["qwen3.8-27b".to_owned()]), "{card:?}: nothing changes");
+            assert_eq!(fetched(&catalog, &[], true, card).unwrap().len(), 5, "{card:?}");
+        }
+    }
+
+    /// ADR 0064 §3: a download of an entry above the card's class is
+    /// refused whole, before anything is fetched — each such entry named
+    /// with both classes, `--all` too — and the built-in catalog's default
+    /// model on a 16 GB card is, until GitHub #338 adds the 16 GB 27B.
+    #[test]
+    fn a_download_of_an_entry_above_the_card_class_is_refused_before_any_fetch() {
+        let catalog = super::super::catalog::testing::with_sixteen();
+        let sixteen = Some(CardClass::Gb16);
+        let err = fetched(&catalog, &["qwen3.8-27b-16g", "qwen3.8-flash-next", "ignis-image-2.1-turbo"], false, sixteen).unwrap_err();
+        assert!(err.starts_with("nothing fetched"), "{err}");
+        for said in ["qwen3.8-flash-next needs a 32 GB card", "ignis-image-2.1-turbo needs a 32 GB card", "16 GB class"] {
+            assert!(err.contains(said), "{said}: {err}");
+        }
+        let err = fetched(&catalog, &[], true, sixteen).unwrap_err();
+        assert!(err.contains("qwen3.8-27b-abliterated") && err.contains("qwen3.8-flash-next") && !err.contains("qwen3.8-27b needs"), "{err}");
+        let err = fetched(Catalog::built_in(), &[], false, sixteen).unwrap_err();
+        assert!(err.contains("qwen3.8-27b needs a 32 GB card"), "{err}");
+        assert!(fetched(&catalog, &["acme-nothing"], false, sixteen).unwrap_err().contains("not in the catalog"));
     }
 }

@@ -521,8 +521,34 @@ fn plain_name(name: &str) -> bool {
         && !DEVICES.iter().any(|device| stem.eq_ignore_ascii_case(device))
 }
 
+/// Test fixtures other modules' tests share.
+#[cfg(test)]
+pub(crate) mod testing {
+    /// The 16 GB 27B's entry as spec 27b-16gb/01 describes it, an operator
+    /// catalog standing in for the built-in entry GitHub #338 adds with its
+    /// pins: its own served id, the 16 GB class, and the 27B's default id as
+    /// its alias.
+    pub(crate) const SIXTEEN: &str = "models:
+  - id: qwen3.8-27b-16g
+    repo: acme/qwen3.8-27b-16g
+    revision: v1
+    artifact: q16.ninfer
+    card_class: 16
+    aliases: [qwen3.8-27b]
+    files:
+      - { name: q16.ninfer.conversion.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }
+      - { name: q16.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }
+";
+
+    /// [`SIXTEEN`] after the built-in entries.
+    pub(crate) fn with_sixteen() -> super::Catalog {
+        super::parse_operator(SIXTEEN, crate::config::file::Format::Yaml, "acme.catalog.yaml").expect("valid")
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::SIXTEEN;
     use super::*;
 
     /// The spec's table, written out again: what the built-in catalog must
@@ -737,21 +763,6 @@ mod tests {
         let err = operator(&twice).unwrap_err().0;
         assert!(err.contains("entry 2 (`ACME-Qwen3.8-27B-FT`)") && err.contains("`acme-qwen3.8-27b-ft`"), "{err}");
     }
-
-    /// The 16 GB 27B's entry as spec 27b-16gb/01 describes it, standing in
-    /// for the built-in one GitHub #338 adds with its pins: its own served
-    /// id, the 16 GB class, and the 27B's default id as its alias.
-    const SIXTEEN: &str = "models:
-  - id: qwen3.8-27b-16g
-    repo: acme/qwen3.8-27b-16g
-    revision: v1
-    artifact: q16.ninfer
-    card_class: 16
-    aliases: [qwen3.8-27b]
-    files:
-      - { name: q16.ninfer.conversion.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }
-      - { name: q16.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }
-";
 
     /// ADR 0064 §1-2: an entry states the smallest card class it loads on
     /// and may list the ids it also answers to; the family the catalog can

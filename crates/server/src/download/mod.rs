@@ -146,6 +146,30 @@ pub fn artifact_source(
     }
 }
 
+/// The served id a start with no artifact named loads (ADR 0064, spec
+/// 27b-16gb/04 §6): the catalog's class-aware step ([`Catalog::resolve`])
+/// on `model` and the card's class `card`, before [`artifact_source`] looks
+/// it up. `model` itself when its own entry fits the card, no class is known,
+/// or the catalog does not hold it (for [`artifact_source`] to answer as
+/// before); on a card below its entry's class, the entry of its family that
+/// answers to it there — the default id `qwen3.8-27b` on a 16 GB card is the
+/// 16 GB 27B's, which is how the `rtx50-16gb` profile's default model is
+/// realized, served under that entry's own id; refused, naming both classes,
+/// when no entry that answers to it fits: the start is refused before
+/// anything is fetched. Matched as [`artifact_source`] matches `model`,
+/// case-insensitively. A start naming its artifact never comes here: that
+/// path is the operator's word.
+pub fn start_model(catalog: &Catalog, model: &str, card: Option<crate::config::profile::CardClass>) -> Result<String, ClassRefusal> {
+    let Some(own) = catalog.entry(model) else {
+        return Ok(model.to_owned());
+    };
+    match catalog.resolve(&own.id, card) {
+        Resolved::Entry(serving) if serving.id != own.id => Ok(serving.id.clone()),
+        Resolved::Entry(_) | Resolved::Unknown => Ok(model.to_owned()),
+        Resolved::AboveClass(refusal) => Err(refusal),
+    }
+}
+
 /// Which token a request to `endpoint` carries (spec model-download/02
 /// §Endpoint and token): `download.token` when it is set; else `HF_TOKEN`,
 /// but **only** when the endpoint's host is `huggingface.co` itself — a
@@ -275,6 +299,39 @@ mod tests {
             artifact_source(&settings, |_| true, never_asked),
             ArtifactSource::Use(named)
         );
+    }
+
+    /// ADR 0064, spec 27b-16gb/04 §6: with no artifact named, the configured
+    /// id is fitted to the card's class before the catalog is searched for
+    /// its file — on a 16 GB card the 27B's default id starts the 16 GB
+    /// entry; on a 32 GB card, or one of no known class, it is its own.
+    #[test]
+    fn a_start_with_no_artifact_loads_the_entry_that_serves_its_id_on_the_card() {
+        use crate::config::profile::CardClass;
+        let catalog = catalog::testing::with_sixteen();
+        assert_eq!(start_model(&catalog, crate::config::DEFAULT_MODEL, Some(CardClass::Gb16)), Ok("qwen3.8-27b-16g".to_owned()));
+        for card in [Some(CardClass::Gb32), Some(CardClass::Gb96), None] {
+            assert_eq!(start_model(&catalog, crate::config::DEFAULT_MODEL, card), Ok(crate::config::DEFAULT_MODEL.to_owned()), "{card:?}");
+        }
+        assert_eq!(start_model(&catalog, "qwen3.8-27b-16g", Some(CardClass::Gb32)), Ok("qwen3.8-27b-16g".to_owned()), "a 16 GB entry fits a larger card");
+        assert_eq!(start_model(&catalog, "some-other-model", Some(CardClass::Gb16)), Ok("some-other-model".to_owned()), "artifact_source's to answer");
+        // The decision then finds the entry the start serves.
+        let dir = PathBuf::from(DIR);
+        let mut settings = settings("qwen3.8-27b-16g", &dir);
+        settings.catalog = &catalog;
+        assert_eq!(artifact_source(&settings, |_| true, never_asked), ArtifactSource::Use(dir.join("q16.ninfer")));
+    }
+
+    /// ADR 0064 §3: a start whose model no entry loads on this card is
+    /// refused naming both classes — the built-in catalog's default model on
+    /// a 16 GB card, until GitHub #338 adds the 16 GB 27B.
+    #[test]
+    fn a_start_with_no_artifact_the_card_cannot_load_is_refused_naming_both_classes() {
+        use crate::config::profile::CardClass;
+        let refusal = start_model(Catalog::built_in(), crate::config::DEFAULT_MODEL, Some(CardClass::Gb16)).unwrap_err();
+        assert_eq!((refusal.model.as_str(), refusal.needs, refusal.card), ("qwen3.8-27b", CardClass::Gb32, CardClass::Gb16));
+        let refusal = start_model(&catalog::testing::with_sixteen(), "Qwen3.8-Flash-Next", Some(CardClass::Gb16)).unwrap_err();
+        assert!(refusal.to_string().contains("qwen3.8-flash-next needs a 32 GB card"), "{refusal}");
     }
 
     #[test]
