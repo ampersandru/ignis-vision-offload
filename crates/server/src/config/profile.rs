@@ -120,6 +120,75 @@ const BUILT_IN: &str = r#"{
     }
 }"#;
 
+/// A **card class** (ADR 0063, ADR 0064, `CONTEXT.md`): the cards one
+/// built-in profile serves, named by their memory, and the smallest a
+/// catalog entry loads on. Ordered by size, so `entry > card` reads "the
+/// entry needs a larger card than this one".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CardClass {
+    Gb16,
+    Gb32,
+    Gb96,
+}
+
+/// The total memories each [`CardClass`] covers (spec 27b-16gb/04), as NVML
+/// reports a card's total: below 20 GiB is the 16 GB class (a 16 GB card
+/// reports ~15.9 GiB), 28-40 GiB the 32 GB one (the 5090 ~31.8 GiB), 88-104
+/// GiB the 96 GB one (the RTX PRO 6000 ~95.6 GiB). Any other total is no
+/// class: `--profile auto` refuses it, naming `--profile`.
+pub const CARD_CLASS_16GB_BELOW_BYTES: u64 = 20 << 30;
+pub const CARD_CLASS_32GB_BYTES: std::ops::RangeInclusive<u64> = (28 << 30)..=(40 << 30);
+pub const CARD_CLASS_96GB_BYTES: std::ops::RangeInclusive<u64> = (88 << 30)..=(104 << 30);
+
+impl CardClass {
+    /// Every class, smallest first.
+    pub const ALL: [CardClass; 3] = [Self::Gb16, Self::Gb32, Self::Gb96];
+
+    /// The class a card whose total memory is `total_bytes` belongs to, by
+    /// the boundaries above; `None` for a total between or past them.
+    pub fn of_total(total_bytes: u64) -> Option<Self> {
+        if total_bytes < CARD_CLASS_16GB_BELOW_BYTES {
+            Some(Self::Gb16)
+        } else if CARD_CLASS_32GB_BYTES.contains(&total_bytes) {
+            Some(Self::Gb32)
+        } else if CARD_CLASS_96GB_BYTES.contains(&total_bytes) {
+            Some(Self::Gb96)
+        } else {
+            None
+        }
+    }
+
+    /// The class's size in GB, as a catalog entry spells it (`card_class: 16`).
+    pub fn gb(self) -> u32 {
+        match self {
+            Self::Gb16 => 16,
+            Self::Gb32 => 32,
+            Self::Gb96 => 96,
+        }
+    }
+
+    /// The class a catalog entry's `card_class` names; `None` for any other
+    /// number.
+    pub fn from_gb(gb: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|class| class.gb() == gb)
+    }
+
+    /// The built-in profile `--profile auto` picks for a card of this class.
+    pub fn profile(self) -> &'static str {
+        match self {
+            Self::Gb16 => "rtx50-16gb",
+            Self::Gb32 => "rtx5090",
+            Self::Gb96 => "rtxpro6000",
+        }
+    }
+}
+
+impl std::fmt::Display for CardClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} GB", self.gb())
+    }
+}
+
 /// Every built-in profile, by name.
 pub fn built_in() -> BTreeMap<String, Layer> {
     let value = serde_json::from_str(&format!(r#"{{"profiles": {BUILT_IN}}}"#)).expect("the built-in profiles are JSON");
@@ -305,6 +374,41 @@ mod tests {
         assert_eq!(qwen.settings.ngram.hot_bytes, None);
         let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
         assert_eq!(flash.settings.ngram.hot_bytes.map(|b| b.to_string()).as_deref(), Some("auto"));
+    }
+
+    /// Spec 27b-16gb/04: the class boundaries by NVML's total, at the totals
+    /// the cards report and either side of every boundary.
+    #[test]
+    fn a_cards_total_memory_names_its_class() {
+        const GIB: f64 = (1u64 << 30) as f64;
+        let class = |gib: f64| CardClass::of_total((gib * GIB) as u64);
+        assert_eq!(class(15.9), Some(CardClass::Gb16), "a 16 GB card");
+        assert_eq!(class(11.9), Some(CardClass::Gb16), "a 12 GB card is the 16 GB class's");
+        assert_eq!(class(31.8), Some(CardClass::Gb32), "the 5090");
+        assert_eq!(class(95.5), Some(CardClass::Gb96), "the RTX PRO 6000");
+        assert_eq!(CardClass::of_total(CARD_CLASS_16GB_BELOW_BYTES - 1), Some(CardClass::Gb16));
+        assert_eq!(CardClass::of_total(CARD_CLASS_16GB_BELOW_BYTES), None, "20 GiB: no class");
+        assert_eq!(class(24.0), None, "a 24 GB card");
+        assert_eq!(CardClass::of_total(*CARD_CLASS_32GB_BYTES.start() - 1), None);
+        assert_eq!(CardClass::of_total(*CARD_CLASS_32GB_BYTES.start()), Some(CardClass::Gb32));
+        assert_eq!(CardClass::of_total(*CARD_CLASS_32GB_BYTES.end()), Some(CardClass::Gb32));
+        assert_eq!(CardClass::of_total(*CARD_CLASS_32GB_BYTES.end() + 1), None);
+        assert_eq!(class(48.0), None, "a 48 GB card");
+        assert_eq!(CardClass::of_total(*CARD_CLASS_96GB_BYTES.start()), Some(CardClass::Gb96));
+        assert_eq!(CardClass::of_total(*CARD_CLASS_96GB_BYTES.end() + 1), None, "past 104 GiB");
+        assert_eq!(class(141.0), None, "an H200");
+    }
+
+    #[test]
+    fn a_card_class_is_named_by_its_gb_and_orders_by_size() {
+        for class in CardClass::ALL {
+            assert_eq!(CardClass::from_gb(class.gb()), Some(class));
+        }
+        assert_eq!(CardClass::from_gb(24), None);
+        assert!(CardClass::Gb16 < CardClass::Gb32 && CardClass::Gb32 < CardClass::Gb96);
+        assert_eq!(CardClass::Gb32.to_string(), "32 GB");
+        assert_eq!(CardClass::Gb32.profile(), "rtx5090", "the 5090's class keeps its profile");
+        assert_eq!(CardClass::Gb96.profile(), "rtxpro6000");
     }
 
     #[test]
