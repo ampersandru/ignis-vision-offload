@@ -610,7 +610,13 @@ fn switch_steps(events: mpsc::UnboundedSender<Streamed>, legs: u32) -> Steps {
 /// prompt is rewritten first. One the loaded image model takes as it is
 /// starts streaming once admitted, so every refusal before its job is still
 /// a status.
-async fn serve(server: Arc<Server>, request: ImageRequest, conditions: Conditions, route: Route) -> Response {
+async fn serve(server: Arc<Server>, mut request: ImageRequest, conditions: Conditions, route: Route) -> Response {
+    // The id this card serves the request under (ADR 0064): an alias
+    // rewritten, an entry above the card's class refused before anything.
+    request.model = match crate::api::served_model(&server, request.model.take()) {
+        Ok(model) => model,
+        Err(refused) => return refused,
+    };
     let named = split_model_lane(request.model.clone()).0;
     if let Err(refused) = check_kind(&server, ModelKind::Image, named.as_deref()) {
         return refused;

@@ -125,10 +125,15 @@ A body carrying an `image_url` part is refused with `media_not_countable`: an im
         (status = 501, description = "The raw form on a load whose tokenizer cannot be asked for ids (`tokenizer_unavailable`).", body = ApiError),
     ),
 )]
-pub(crate) async fn tokenize(State(server): State<Arc<Server>>, Json(req): Json<TokenizeRequest>) -> Response {
+pub(crate) async fn tokenize(State(server): State<Arc<Server>>, Json(mut req): Json<TokenizeRequest>) -> Response {
     // One model for the whole request (spec model-switch/01), a text model
-    // (spec image-model/05): this route counts, it never switches.
+    // (spec image-model/05): this route counts, it never switches. A `model`
+    // another entry answers to on this card is that entry's (ADR 0064).
     let server = Arc::new(server.pinned());
+    req.model = match crate::api::served_model(&server, req.model.take()) {
+        Ok(model) => model,
+        Err(refused) => return refused,
+    };
     if let Some(metrics) = &server.metrics {
         metrics.record_tokenize(TokenizeRoute::Tokenize);
     }

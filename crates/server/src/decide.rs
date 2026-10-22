@@ -2454,8 +2454,22 @@ Thinking is refused rather than ignored: a decision's prompt ends exactly where 
 )]
 pub async fn decide(
     axum::extract::State(server): axum::extract::State<std::sync::Arc<crate::Server>>,
-    body: Result<axum::Json<DecideRequest>, axum::extract::rejection::JsonRejection>,
+    mut body: Result<axum::Json<DecideRequest>, axum::extract::rejection::JsonRejection>,
 ) -> axum::response::Response {
+    // The id this card serves the decision under (ADR 0064): an alias
+    // rewritten, an entry above the card's class refused before anything
+    // loads or switches — `422`, as every refusal of a decision's `model`.
+    if let Ok(request) = &mut body {
+        match crate::api::served_as(&server, request.0.model.take()) {
+            Ok(model) => request.0.model = model,
+            Err(refusal) => {
+                return refused(&Refusal::new(
+                    "model_above_card_class",
+                    format!("`model` names {:?}: {refusal}, so it is not loaded on this card", refusal.model),
+                ))
+            }
+        }
+    }
     // A `model` naming another known model switches to it first (spec
     // model-switch/01 §Implicit switch) — ahead of the Flash-Next refusal
     // below, so a decision naming the 27B on a Flash-Next load moves the

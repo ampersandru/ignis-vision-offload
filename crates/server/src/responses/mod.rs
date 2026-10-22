@@ -158,11 +158,11 @@ The reasoning-loop guard (`--model-loop-guard`, ADR 0052) watches a request that
 )]
 pub(crate) async fn create_response(
     State(server): State<Arc<Server>>,
-    Json(req): Json<CreateResponse>,
+    Json(mut req): Json<CreateResponse>,
 ) -> Response {
     // A `model` naming another known model switches to it first (spec
     // model-switch/01 §Implicit switch), so the pin below takes that model.
-    if let Err(refused) = input::switch_to_named_model(&server, &req).await {
+    if let Err(refused) = input::switch_to_named_model(&server, &mut req).await {
         return refused;
     }
     // One model for the whole request (spec model-switch/01).

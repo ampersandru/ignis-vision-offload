@@ -239,11 +239,7 @@ pub struct ClassRefusal {
 
 impl std::fmt::Display for ClassRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} needs a {} card or larger (its catalog entry's card_class), and this card is of the {} class; no entry that answers to it loads on this card",
-            self.model, self.needs, self.card
-        )
+        write!(f, "{} needs a {} card or larger (its catalog entry's card_class), and this card is of the {} class", self.model, self.needs, self.card)
     }
 }
 

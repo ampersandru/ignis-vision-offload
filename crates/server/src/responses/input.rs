@@ -180,8 +180,11 @@ pub(crate) fn previous_response_not_found(id: &JsonValue) -> Response {
 /// knows, and wait until it serves ([`api::switch_to_named_model`]), before
 /// anything else of `req` is read — the over-HTTP and the WebSocket path
 /// alike. On the server every handler shares, ahead of the pin [`prepare`]'s
-/// callers take.
-pub(crate) async fn switch_to_named_model(server: &Server, req: &CreateResponse) -> Result<(), Response> {
+/// callers take. Its `model` is first the id this card serves it under
+/// ([`api::served_model`], ADR 0064): an alias rewritten, an entry above the
+/// card's class refused.
+pub(crate) async fn switch_to_named_model(server: &Server, req: &mut CreateResponse) -> Result<(), Response> {
+    req.model = api::served_model(server, req.model.take())?;
     api::switch_to_named_model(server, ModelKind::Text, req.model.as_deref()).await
 }
 

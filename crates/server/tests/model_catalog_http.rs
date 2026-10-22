@@ -150,7 +150,7 @@ async fn the_catalog_lists_every_entry_then_every_known_model_with_its_state_on_
     assert!(built_in.get("family").is_none(), "no artifact, no header to name a family");
 
     let full = row(&rows, "acme-full");
-    assert_eq!(full, &json!({ "id": "acme-full", "source": "operator", "on_disk": "complete", "bytes": 8, "loaded": false, "switchable": true }));
+    assert_eq!(full, &json!({ "id": "acme-full", "source": "operator", "on_disk": "complete", "bytes": 8, "loaded": false, "switchable": true, "available": true }));
     assert_eq!(row(&rows, "acme-part")["on_disk"], "partial");
     assert_eq!(row(&rows, "acme-part")["switchable"], false, "its artifact is not there");
     assert_eq!((row(&rows, "acme-none")["on_disk"].clone(), row(&rows, "acme-none")["bytes"].clone()), (json!("absent"), json!(8)));
