@@ -175,7 +175,8 @@ async fn on_a_16gb_card_the_default_id_is_served_by_the_entry_that_answers_to_it
     let loader = MockLoader::new();
     let server = server_on(&loader, SIXTEEN, Some(CardClass::Gb16), "alias");
     let app = server.app();
-    for model in [DEFAULT_27B, &format!("{DEFAULT_27B}@agent")] {
+    // The lane tag is kept, an empty one included.
+    for model in [DEFAULT_27B, &format!("{DEFAULT_27B}@agent"), &format!("{DEFAULT_27B}@")] {
         let (status, completion) = send(&app, Method::POST, "/v1/chat/completions", Some(chat(model))).await;
         assert_eq!(status, StatusCode::OK, "{model}: {completion}");
         assert_eq!(completion["model"], SIXTEEN);
@@ -284,6 +285,22 @@ async fn the_model_lists_mark_entries_above_the_card_class_unavailable_with_the_
             assert_eq!(row["switchable"], false, "{row}");
         }
     }
+
+    // A model the operator listed by its path is their word (ADR 0047): not
+    // fitted to the card, available and switchable on either list.
+    let loader = MockLoader::new();
+    let flash = switch_support::source(FLASH_NEXT).artifact;
+    let listed = server_on(&loader, SIXTEEN, Some(CardClass::Gb16), "lists-listed");
+    listed.switcher.as_ref().unwrap().set_listed_models([(FLASH_NEXT.to_owned(), flash)].into());
+    let app = listed.app();
+    let (_, models) = send(&app, Method::GET, "/v1/models", None).await;
+    let entry = models["data"].as_array().unwrap().iter().find(|entry| entry["id"] == FLASH_NEXT).cloned().unwrap();
+    assert_eq!((entry["available"].as_bool(), entry.get("reason")), (Some(true), None), "{models}");
+    let (_, catalog) = send(&app, Method::GET, "/v1/models/catalog", None).await;
+    let row = catalog["data"].as_array().unwrap().iter().find(|row| row["id"] == FLASH_NEXT).cloned().unwrap();
+    assert_eq!((row["available"].as_bool(), row["switchable"].as_bool(), row.get("reason")), (Some(true), Some(true), None), "{row}");
+    let default_row = catalog["data"].as_array().unwrap().iter().find(|row| row["id"] == DEFAULT_27B).cloned().unwrap();
+    assert_eq!(default_row["available"], false, "the entries not listed are still fitted: {default_row}");
 
     let thirty_two = server_on(&MockLoader::new(), SIXTEEN, Some(CardClass::Gb32), "lists-32").app();
     let (_, catalog) = send(&thirty_two, Method::GET, "/v1/models/catalog", None).await;

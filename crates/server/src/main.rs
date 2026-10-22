@@ -311,7 +311,7 @@ async fn main() {
             tracing::warn!(
                 name: "ignis.model.placeholder_template",
                 reason = reason.as_str(),
-                model = %model,
+                model = %served,
                 download_path = %model_download_path.display(),
                 "no artifact — placeholder template (content is not natural text) and MockCompute"
             );
@@ -410,7 +410,9 @@ async fn main() {
     } else {
         // Why there is no artifact was said once, with its reason, where the
         // decision was made (`ignis.model.placeholder_template` above).
-        (Server::from_active(placeholder_model(&model, default_max_tokens)), start_options.clone())
+        // Under the id the start resolved (ADR 0064 §2), the one the catalog
+        // and the switcher know it by.
+        (Server::from_active(placeholder_model(&served, default_max_tokens)), start_options.clone())
     };
     let server = server
         .with_request_timeout(std::time::Duration::from_secs(request_timeout_secs as u64))

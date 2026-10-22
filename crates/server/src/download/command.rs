@@ -374,6 +374,8 @@ mod tests {
         for said in ["qwen3.8-flash-next needs a 32 GB card", "ignis-image-2.1-turbo needs a 32 GB card", "16 GB class"] {
             assert!(err.contains(said), "{said}: {err}");
         }
+        // `--all` names every entry, each through the same resolve step: the
+        // 27B's own resolves to the 16 GB entry, the others are refused.
         let err = fetched(&catalog, &[], true, sixteen).unwrap_err();
         assert!(err.contains("qwen3.8-27b-abliterated") && err.contains("qwen3.8-flash-next") && !err.contains("qwen3.8-27b needs"), "{err}");
         let err = fetched(Catalog::built_in(), &[], false, sixteen).unwrap_err();
