@@ -410,7 +410,9 @@ picks one by the card's total memory as NVML reports it: under 20 GiB
 (an RTX PRO 6000) `rtxpro6000`. A card of any other size, or a total NVML
 cannot read, is refused, naming `--profile` — at a start, and at `config
 generate|print|patch` and `model list|download` too, which resolve exactly as a
-start would; a profile you name (`--profile`, `IGNIS_PROFILE`, the
+start would, except that the `model` commands need no card: to them a total
+NVML cannot read (no NVIDIA driver) is no card, as on a build without CUDA; a
+profile you name (`--profile`, `IGNIS_PROFILE`, the
 file's `profile:`, `none` included) always wins and the card is not consulted
 for the choice. The start's log line `ignis.config.source` names the profile
 chosen and the total it was chosen by; `GET /v1/config` and the Playground show

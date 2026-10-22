@@ -170,6 +170,22 @@ pub fn start_model(catalog: &Catalog, model: &str, card: Option<crate::config::p
     }
 }
 
+/// The start options a start runs with once [`start_model`] has said which
+/// id it serves and [`artifact_source`] where its artifact is (ADR 0064 §2):
+/// `options` as they are when it serves the id they were resolved with — a
+/// named artifact, or an id whose own entry fits the card — or loads no
+/// artifact (the placeholder); else `served`, the entry that answers to
+/// `options.model` on this card, under its own id: its artifact and id over
+/// the options, as a switch to it would serve it
+/// ([`crate::config::target_patch`]), so `GET /v1/config`, the switcher and
+/// the load all name the model that runs.
+pub fn served_start_options(options: crate::config::Config, served: &str, artifact: Option<&Path>) -> Result<crate::config::Config, crate::config::ConfigError> {
+    match artifact {
+        Some(path) if served != options.model => crate::config::target_patch(path, served).and_then(|patch| options.general_with(&patch)),
+        _ => Ok(options),
+    }
+}
+
 /// Which token a request to `endpoint` carries (spec model-download/02
 /// §Endpoint and token): `download.token` when it is set; else `HF_TOKEN`,
 /// but **only** when the endpoint's host is `huggingface.co` itself — a
@@ -320,6 +336,45 @@ mod tests {
         let mut settings = settings("qwen3.8-27b-16g", &dir);
         settings.catalog = &catalog;
         assert_eq!(artifact_source(&settings, |_| true, never_asked), ArtifactSource::Use(dir.join("q16.ninfer")));
+    }
+
+    /// The start options a configuration resolves to on a card of `total`
+    /// bytes, as `main` reads them (`config::resolve_on`, the probe injected).
+    fn start_config_on(total: u64) -> crate::config::Config {
+        let card = move || crate::config::profile::Card::Total(total);
+        match crate::config::resolve_on(&[], |_: &str| None, &crate::config::file::NoFiles, &card).expect("resolves") {
+            crate::config::ConfigOutcome::Config(config) => config,
+            other => panic!("expected a start, got {other:?}"),
+        }
+    }
+
+    /// ADR 0064 §2, `main`'s start path end to end: a start with no artifact
+    /// named on a 16 GB card — the class `Config::card_class` reads from the
+    /// probe's total — finds the entry that answers to the default id on
+    /// disk and serves it under that entry's own id, its artifact and id over
+    /// the start options, as a switch to it would serve it. On a 32 GB card
+    /// the options are the start's own; so are they on the placeholder path,
+    /// which loads no artifact.
+    #[test]
+    fn a_start_the_card_class_fitted_serves_the_answering_entry_under_its_own_id() {
+        use crate::config::profile::CardClass;
+        let catalog = catalog::testing::with_sixteen();
+        let dir = PathBuf::from(DIR);
+        let options = start_config_on(16 << 30);
+        assert_eq!(options.card_class(), Some(CardClass::Gb16));
+        let served = start_model(&catalog, &options.model, options.card_class()).unwrap();
+        assert_eq!(served, "qwen3.8-27b-16g");
+        let mut settings = settings(&served, &dir);
+        settings.catalog = &catalog;
+        let ArtifactSource::Use(path) = artifact_source(&settings, |_| true, never_asked) else { panic!("on disk") };
+        let serving = served_start_options(options.clone(), &served, Some(&path)).unwrap();
+        assert_eq!((serving.model.as_str(), serving.artifact.as_deref()), ("qwen3.8-27b-16g", Some(dir.join("q16.ninfer").as_path())));
+        assert_eq!(served_start_options(options.clone(), &served, None).unwrap(), options, "a placeholder start loads nothing");
+
+        let options = start_config_on(crate::config::profile::RTX_5090_TOTAL_BYTES);
+        let served = start_model(&catalog, &options.model, options.card_class()).unwrap();
+        assert_eq!(served, crate::config::DEFAULT_MODEL);
+        assert_eq!(served_start_options(options.clone(), &served, Some(&dir.join("qwen3_8_27b_nvfp4full-v2.ninfer"))).unwrap(), options);
     }
 
     /// ADR 0064 §3: a start whose model no entry loads on this card is

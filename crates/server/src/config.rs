@@ -876,10 +876,12 @@ impl Config {
     /// The card's total memory in bytes, as NVML reports it, when the start
     /// read it: always for `--profile auto` on a CUDA build (the `config` and
     /// `model` verbs included, which resolve as a start would: on a card of
-    /// no class, or a total NVML cannot read, they refuse the same way,
-    /// naming `--profile`), and for a start whichever way its profile was
-    /// named; `None` without a card (a build without CUDA), or when a verb
-    /// resolved under a named profile, which reads none.
+    /// no class they refuse the same way, naming `--profile`, and so do the
+    /// `config` verbs on a total NVML cannot read, which the `model` verbs
+    /// take for no card), and for a start whichever way its profile was
+    /// named; `None` without a card (a build without CUDA, or NVML unread by
+    /// a `model` verb), or when a verb resolved under a named profile, which
+    /// reads none.
     pub fn card_total_bytes(&self) -> Option<u64> {
         self.basis.sources().card_total
     }

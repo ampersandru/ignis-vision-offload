@@ -157,10 +157,10 @@ async fn main() {
     // the same options, fitted to its own family.
     let start_options = config.clone();
     // The card's class (ADR 0063, ADR 0064): what the catalog's entries are
-    // fitted to at start, for a switch, a request and a listing. #336
-    // integration wires part B's `config.card_class()` (NVML's total, read
-    // at resolution) here; `None` refuses nothing.
-    let card_class: Option<ignis_server::config::profile::CardClass> = None;
+    // fitted to at start, for a switch, a request and a listing — of the
+    // total NVML reported at resolution (`card_probe`). `None` without a
+    // card, or for a total of no class, which refuses nothing.
+    let card_class = config.card_class();
     let Config {
         model,
         model_named: _,
@@ -367,19 +367,13 @@ async fn main() {
     };
 
     // The entry the card's class chose in `model`'s place is served under its
-    // own id (ADR 0064 §2), as a switch to it would serve it: its artifact and
-    // id over the start options.
-    let start_options = match &artifact {
-        Some(path) if served != model => {
-            match ignis_server::config::target_patch(path, &served).and_then(|patch| start_options.general_with(&patch)) {
-                Ok(options) => options,
-                Err(err) => {
-                    tracing::error!(name: "ignis.config.invalid", error = %err, "refusing to start");
-                    exit_after_flush(&logging_handle, 1);
-                }
-            }
+    // own id (ADR 0064 §2), as a switch to it would serve it.
+    let start_options = match download::served_start_options(start_options, &served, artifact.as_deref()) {
+        Ok(options) => options,
+        Err(err) => {
+            tracing::error!(name: "ignis.config.invalid", error = %err, "refusing to start");
+            exit_after_flush(&logging_handle, 1);
         }
-        _ => start_options,
     };
 
     // GitHub #216 (ADR 0030 §Observability): what the load's VRAM plan
