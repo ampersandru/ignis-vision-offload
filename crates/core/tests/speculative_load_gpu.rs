@@ -39,7 +39,14 @@ fn a_dflash2_load_reports_the_drafters_vram_and_a_plain_load_reports_todays() {
         .unwrap_or_else(|e| panic!("bind with dflash2: {e}"));
     let text_len = text_scope_27b().len();
     assert_eq!(handles.len(), text_len + 66);
-    let drafter_weight_bytes: u64 = plan.device_objects[text_len..].iter().map(|p| p.bytes).sum();
+    // ADR 0062: the token embedding is the text scope's one host-mapped
+    // object, so the text scope holds one device object fewer than handles
+    // and the drafter's 66 are the rest. Slicing at `text_len`, as this did
+    // before the embedding moved, dropped the drafter's first object (its
+    // 73,728,004-byte feature projection) from the figure.
+    let text_device_objects = text_len - plan.host_mapped_objects.len();
+    assert_eq!(plan.device_objects.len(), text_device_objects + 66);
+    let drafter_weight_bytes: u64 = plan.device_objects[text_device_objects..].iter().map(|p| p.bytes).sum();
 
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,
@@ -115,7 +122,7 @@ fn a_dflash2_load_reports_the_drafters_vram_and_a_plain_load_reports_todays() {
         drafter_weight_bytes
             + spec.window_pool_bytes(1)
             + spec.prefill_scratch_bytes(128)
-            + spec.round_scratch_bytes(),
+            + spec.round_scratch_bytes(ignis_core::N_DECODE_LANES as u32),
         "the drafter adds its weights, one slot's 40 MiB window, its prefill scratch at a \
          128-token chunk and its verify round's taps and scratch, nothing else"
     );
