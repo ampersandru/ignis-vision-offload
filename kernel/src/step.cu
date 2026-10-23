@@ -2246,9 +2246,11 @@ extern "C" int32_t ignis_program_decode(struct ignis_model *model,
     set_error("ignis_program_decode: null argument or empty batch");
     return -1;
   }
-  if (batch_size > IGNIS_DECODE_MAX_BATCH) {
+  // GitHub #336: a round as wide as the load's lanes at most -- every
+  // round buffer, the verify round's included, is sized for them.
+  if (batch_size > model->decode_lanes) {
     set_error("ignis_program_decode: batch_size " + std::to_string(batch_size) +
-              " exceeds IGNIS_DECODE_MAX_BATCH (" + std::to_string(IGNIS_DECODE_MAX_BATCH) + ")");
+              " exceeds the load's decode lanes (" + std::to_string(model->decode_lanes) + ")");
     return -1;
   }
   if (!dflash2_matches_load(model, pool, "ignis_program_decode")) {

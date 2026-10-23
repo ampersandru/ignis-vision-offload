@@ -114,6 +114,12 @@ else
   ARTIFACT ?= ./models/qwen3_8_27b_nvfp4full-v2.ninfer
 endif
 
+# The decode lanes (--spec-decode-lanes, 1..8) of whichever model starts, in its
+# own section. Empty = the model's own: Flash-Next's 3 (set above), the 27B's 8.
+# On the 27B each lane holds ~233 MB of state and its share of the round
+# buffers, so LANES=2 frees ~1.6 GB for the KV pool (GitHub #336).
+LANES ?=
+
 # Server settings. Empty = the server's own default.
 BIND ?= 127.0.0.1:8000
 LOG_LEVEL ?=

@@ -30,8 +30,8 @@
  * (`greedy` nonzero, or `temperature <= 0`) is bit-identical to argmax by
  * that op's own contract, so this is not a behavior change for any existing
  * caller. `ignis_program_decode` takes one `ignis_sampling_params` per
- * sequence (an array parallel to `sequences`, capped at
- * `IGNIS_DECODE_MAX_BATCH`) because lanes sharing a decode round carry
+ * sequence (an array parallel to `sequences`, capped at the load's decode
+ * lanes, GitHub #336) because lanes sharing a decode round carry
  * independent temperatures, seeds and penalty histories; the other three
  * entry points keep a single sampling pointer (one sequence, or -- for
  * `ignis_prefill`/`ignis_decode` -- one degenerate step at a time). RNG is
@@ -144,12 +144,14 @@ struct ignis_sampling_params {
   int32_t reasoning_close_id;  /* GitHub #315: `</think>` while the block is open; -1: none */
 };
 
-/* The largest `batch_size` `ignis_program_decode` accepts: the decode
- * round's sampling parameters and logical positions are staged in
- * model-owned device buffers at stable addresses (so a future decode CUDA
- * graph, P3-05/#102, can replay reading them), sized once at model load for
- * this many lanes -- matching the engine's own N=8 resident decode-lane
- * concurrency and the decode graphs' exact widths 1..8. */
+/* The most decode lanes a load may ask for, and so the largest `batch_size`
+ * `ignis_program_decode` can ever accept: the decode round's sampling
+ * parameters and logical positions are staged in model-owned device buffers
+ * at stable addresses (so a decode CUDA graph, P3-05/#102, can replay
+ * reading them), sized once at model load. GitHub #336: a 27B load sizes
+ * them, and every other round buffer, for its own
+ * `ignis_model_load_options::decode_lanes` (0 = this many), captures the
+ * decode graphs' exact widths 1..decode_lanes, and refuses a wider round. */
 #define IGNIS_DECODE_MAX_BATCH 8
 
 /* Which internal path ignis_program_prefill takes over a span's chunks
@@ -403,9 +405,9 @@ const char *ignis_step_last_error(void);
  * replayed a captured decode graph, 0 when it enqueued the same traversal
  * directly (including every `ignis_program_prefill` call, which never
  * replays a graph). `decode_graph_ready_mask` has bit (w-1) set when a
- * decode graph for exact width w (1..IGNIS_DECODE_MAX_BATCH) is captured
- * and replayable; a clear bit means that width always falls back to
- * eager. */
+ * decode graph for exact width w (1..the load's decode lanes, GitHub #336)
+ * is captured and replayable; a clear bit means that width always falls
+ * back to eager, and every bit past the lanes is clear. */
 struct ignis_program_stats {
   uint64_t vram_bytes;
   uint64_t last_step_micros;
@@ -418,8 +420,9 @@ struct ignis_program_stats {
   uint32_t verify_graph_ready_mask;
 };
 
-/* Captures one CUDA graph per exact decode batch width 1..IGNIS_DECODE_MAX_BATCH
- * (P3-05, GitHub #102, ADR 0019). Must be called once, after `pool` is
+/* Captures one CUDA graph per exact decode batch width 1..the load's decode
+ * lanes (P3-05, GitHub #102, ADR 0019; GitHub #336: IGNIS_DECODE_MAX_BATCH
+ * unless the load asked for fewer). Must be called once, after `pool` is
  * created and before any concurrent `ignis_program_decode` call -- capture
  * is not thread-safe with replay. Every width is attempted independently: a
  * capture failure for one width is logged (see ignis_step_last_error for the
@@ -581,7 +584,8 @@ struct ignis_decode_options {
  * `sampling` is an array of `batch_size` entries parallel to `sequences`
  * (P3-03, GitHub #99): sequence `i` is sampled with `sampling[i]`, so lanes
  * sharing this round may carry independent temperatures, seeds and penalty
- * histories. `batch_size` must not exceed `IGNIS_DECODE_MAX_BATCH`. Returns
+ * histories. `batch_size` must not exceed the load's decode lanes
+ * (`ignis_model_load_options::decode_lanes`, GitHub #336). Returns
  * -1 (see ignis_step_last_error) on a null argument, an oversized batch, or
  * an unrecognized `sampling[i].size`.
  *

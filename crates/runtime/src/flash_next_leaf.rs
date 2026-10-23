@@ -434,6 +434,10 @@ impl StepLeaf for FlashNextLeaf {
 
     fn release_model(&self, _model: Self::Model) {}
 
+    fn decode_lanes(&self) -> u32 {
+        self.options.decode_lanes
+    }
+
     fn stats(&self, model: &Self::Model) -> Result<RuntimeStats, i32> {
         let program =
             step::program_stats(&model.model, &model.pool).map_err(|e| leaf_error("program stats", e))?;

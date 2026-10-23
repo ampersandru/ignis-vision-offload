@@ -927,9 +927,9 @@ mod tests {
         let (code, message) = read_patch(&json!({ "server": { "request_timeout": null, "api_key": null } })).unwrap_err();
         assert_eq!(code, "config_field_not_patchable");
         assert!(message.contains("`server.api_key`") && !message.contains("request_timeout"), "{message}");
-        let (code, message) = read_patch(&json!({ "spec": { "qwen38": { "decode_lanes": null } } })).unwrap_err();
+        let (code, message) = read_patch(&json!({ "spec": { "qwen38": { "draft_rows": null } } })).unwrap_err();
         assert_eq!(code, "config_invalid");
-        assert!(message.contains("spec.qwen38.decode_lanes") && message.contains("does not take"), "{message}");
+        assert!(message.contains("spec.qwen38.draft_rows") && message.contains("does not take"), "{message}");
         let removals = read_patch(&json!({ "reuse": { "prompt": null } })).unwrap();
         assert_eq!(removals.removals().count(), 1);
     }

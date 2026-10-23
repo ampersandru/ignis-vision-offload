@@ -11,7 +11,7 @@ use ignis_core::types::{
     DecodeParams, EngineMode, LaneId, N_DECODE_LANES, RequestClass, RequestInput, SchedEvent,
     SubmitError,
 };
-use ignis_core::{ConcreteScheduler, MockCompute, Scheduler};
+use ignis_core::{ConcreteScheduler, MockCompute, Scheduler, SchedulerConfig};
 
 fn input(model: &str, tokens: &[u32], max_tokens: Option<u32>) -> RequestInput {
     RequestInput {
@@ -81,6 +81,42 @@ fn holds_eight_resident_lanes_and_rejects_the_ninth() {
             .count(),
         N_DECODE_LANES
     );
+    assert!(sched.is_idle());
+}
+
+/// GitHub #336: the lanes are the load's. A scheduler configured for two,
+/// as the server configures it for a two-lane load of the 27B (its pool's
+/// slots and its round's widest width), deals the first two requests onto
+/// two lanes and turns a third away.
+#[test]
+fn a_two_lane_load_holds_two_lanes_and_rejects_the_third() {
+    let compute = Arc::new(MockCompute::new());
+    let config = SchedulerConfig {
+        model: "qwen3.8-27b".into(),
+        max_in_flight: 2,
+        max_prefill_batch: 2,
+        resident_slot_capacity: 2,
+        ..SchedulerConfig::default()
+    };
+    let mut sched = ConcreteScheduler::with_config(config, compute);
+    for _ in 0..2 {
+        assert!(sched.submit(input("qwen3.8-27b", &[1, 2, 3], Some(2)), RequestClass::Agent).is_ok());
+    }
+    assert!(matches!(
+        sched.submit(input("qwen3.8-27b", &[9], Some(1)), RequestClass::Agent),
+        Err(SubmitError::Full)
+    ));
+    let lanes: BTreeSet<LaneId> = sched
+        .advance()
+        .iter()
+        .filter_map(|e| match e {
+            SchedEvent::Admitted { lane, .. } => Some(*lane),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lanes.len(), 2, "two distinct lanes: {lanes:?}");
+    let done = sched.advance().iter().filter(|e| matches!(e, SchedEvent::Done { .. })).count();
+    assert_eq!(done, 2);
     assert!(sched.is_idle());
 }
 

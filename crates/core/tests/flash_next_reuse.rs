@@ -162,13 +162,16 @@ fn a_flash_next_blob_is_refused_under_the_27b_by_its_artifact() {
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Retained host slots by default: 8 on Flash-Next (three agents' chain link
-/// and checkpoint each, and a shared system block), against the 27B's two
-/// per decode lane.
+/// and checkpoint each, and a shared system block) whatever its lanes,
+/// against the 27B's two per decode lane of its load (GitHub #336).
 #[test]
 fn flash_next_defaults_to_eight_host_retained_slots() {
-    assert_eq!(ModelFamily::FlashNext.default_retained_host_slots(), 8);
+    for lanes in [1, 3, 8] {
+        assert_eq!(ModelFamily::FlashNext.default_retained_host_slots(lanes), 8);
+        assert_eq!(ModelFamily::Qwen38_27b.default_retained_host_slots(lanes), 2 * lanes);
+    }
     assert_eq!(
-        ModelFamily::Qwen38_27b.default_retained_host_slots(),
+        ModelFamily::Qwen38_27b.default_retained_host_slots(ModelFamily::Qwen38_27b.default_decode_lanes()),
         2 * ignis_core::N_DECODE_LANES as u32
     );
 }
@@ -186,7 +189,7 @@ fn spec_host_plan(available: u64) -> HostPlanRequest {
         load_staging_bytes: 0,
         ngram_hot_rows_bytes: GIB,
         staging_bytes: GIB / 2,
-        retained_host_slots_bytes: u64::from(ModelFamily::FlashNext.default_retained_host_slots()) * image,
+        retained_host_slots_bytes: u64::from(ModelFamily::FlashNext.default_retained_host_slots(3)) * image,
         kv_ram_arena_bytes: 2 * GIB,
         margin_bytes: DEFAULT_HOST_MARGIN_BYTES,
     }

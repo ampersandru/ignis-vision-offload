@@ -365,15 +365,16 @@ impl Speculation {
             + 3 * bf16(kv_width * columns)
     }
 
-    /// What the drafter's verify round adds to the load under this backend
-    /// (P5-05, GitHub #155; `kernel/src/model.cu`): the feature taps of every
-    /// verify column of the widest round, one append count per lane, and the
-    /// round scratch -- the larger of the drafter's forward activations and
-    /// the round's context append, each rounded to the arena's alignment
-    /// (the top-k's row-split partials excepted, added as the leaf adds
-    /// them), plus the fixed allowance for the vendored workspaces the
-    /// forward calls into.
-    pub fn round_scratch_bytes(&self) -> u64 {
+    /// What the drafter's verify round adds to a load of `decode_lanes`
+    /// lanes under this backend (P5-05, GitHub #155; `kernel/src/model.cu`):
+    /// the feature taps of every verify column of the widest round -- one of
+    /// `decode_lanes` lanes since GitHub #336, where it was always 8 -- one
+    /// append count per lane, and the round scratch -- the larger of the
+    /// drafter's forward activations and the round's context append, each
+    /// rounded to the arena's alignment (the top-k's row-split partials
+    /// excepted, added as the leaf adds them), plus the fixed allowance for
+    /// the vendored workspaces the forward calls into.
+    pub fn round_scratch_bytes(&self, decode_lanes: u32) -> u64 {
         match self.backend {
             // The fake drafter proposes from the host: nothing to reserve
             // (Flash-Next's MTP sizes its own, spec flash-next/07).
@@ -381,7 +382,7 @@ impl Speculation {
             SpeculativeBackend::Dflash2 => {
                 let bf16 = |elements: u64| (elements * 2).div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
                 let wide = |elements: u64| (elements * 4).div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
-                let lanes = crate::N_DECODE_LANES as u64;
+                let lanes = u64::from(decode_lanes);
                 let columns = u64::from(self.draft_tokens + 1) * lanes;
                 let drafts = u64::from(self.draft_tokens) * lanes;
                 let kv_width = DFLASH2_KV_HEADS * DFLASH2_HEAD_DIM;
@@ -451,11 +452,11 @@ mod tests {
         for backend in [SpeculativeBackend::VerifyOnly, SpeculativeBackend::Mtp] {
             assert!(!backend.binds_dflash2());
             let spec = Speculation::new(backend, 3).expect("in range");
-            assert_eq!((spec.window_pool_bytes(4), spec.prefill_scratch_bytes(1024), spec.round_scratch_bytes()), (0, 0, 0));
+            assert_eq!((spec.window_pool_bytes(4), spec.prefill_scratch_bytes(1024), spec.round_scratch_bytes(4)), (0, 0, 0));
         }
         let spec = Speculation::new(SpeculativeBackend::Dflash2, 3).expect("in range");
         assert!(SpeculativeBackend::Dflash2.binds_dflash2());
-        assert!(spec.window_pool_bytes(4) > 0 && spec.prefill_scratch_bytes(1024) > 0 && spec.round_scratch_bytes() > 0);
+        assert!(spec.window_pool_bytes(4) > 0 && spec.prefill_scratch_bytes(1024) > 0 && spec.round_scratch_bytes(4) > 0);
     }
 
     #[test]
@@ -595,7 +596,7 @@ mod tests {
         assert_eq!(spec.backend().abi_code(), 2);
         assert_eq!(spec.window_pool_bytes(8), 0, "no drafter, no window pool");
         assert_eq!(spec.prefill_scratch_bytes(128), 0, "no drafter, no prefill taps");
-        assert_eq!(spec.round_scratch_bytes(), 0, "no drafter, no round scratch");
+        assert_eq!(spec.round_scratch_bytes(8), 0, "no drafter, no round scratch");
         let err = Speculation::new(SpeculativeBackend::VerifyOnly, 8).expect_err("out of range");
         assert!(err.contains("1..7"), "{err}");
     }
@@ -640,9 +641,29 @@ mod tests {
         // unary 3,584 + predecessors 3,584; hidden_proj 28,672 + its FP32
         // 57,344; scores 57,344). The append (2,490,368) is smaller. Taps
         // 3,276,800, counts 32, allowance 33,554,432.
-        assert_eq!(spec.round_scratch_bytes(), 78_027_552);
+        assert_eq!(spec.round_scratch_bytes(8), 78_027_552);
         // A narrower window reserves less; the window pool does not change.
         let narrow = Speculation::new(SpeculativeBackend::Dflash2, 3).unwrap();
-        assert!(narrow.round_scratch_bytes() < spec.round_scratch_bytes());
+        assert!(narrow.round_scratch_bytes(8) < spec.round_scratch_bytes(8));
+    }
+
+    /// GitHub #336: the round is as wide as the load's decode lanes, so its
+    /// scratch is too -- eight lanes is the figure above to the byte.
+    #[test]
+    fn the_dflash2_round_scratch_follows_the_loads_lanes() {
+        let spec = Speculation::new(SpeculativeBackend::Dflash2, 7).unwrap();
+        // One lane, worked as above: 8 columns and 7 draft columns, forward
+        // 5,150,208 (the append 311,296 is smaller), taps 409,600, one count
+        // of 4 bytes and the allowance 33,554,432.
+        assert_eq!(spec.round_scratch_bytes(1), 5_150_208 + 409_600 + 4 + 33_554_432);
+        assert_eq!(spec.round_scratch_bytes(2), 44_673_544);
+        // Each lane adds 5,559,300 bytes, less what the arena's 256-byte
+        // rounding of its smallest buffers (the ids, the top-k candidates)
+        // had already reserved.
+        for lanes in 2..=8 {
+            let step = spec.round_scratch_bytes(lanes) - spec.round_scratch_bytes(lanes - 1);
+            assert!((5_559_300 - 1024..=5_559_300).contains(&step), "lane {lanes} adds {step}");
+        }
+        assert_eq!(spec.round_scratch_bytes(crate::N_DECODE_LANES as u32), 78_027_552);
     }
 }

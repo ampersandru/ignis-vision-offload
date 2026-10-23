@@ -223,7 +223,8 @@ pub(crate) mod ffi {
         /// graph, 0 if it ran the eager per-lane loop.
         pub graph_launches: u64,
         /// P3-05 (GitHub #102): bit (w-1) set when a decode graph for exact
-        /// width w (1..IGNIS_DECODE_MAX_BATCH) is captured and replayable.
+        /// width w (1..the load's decode lanes, GitHub #336) is captured and
+        /// replayable.
         pub decode_graph_ready_mask: u32,
         /// P5-04 (GitHub #153): the same for the verify graphs at the load's
         /// draft window; 0 on a load without one.
@@ -1232,7 +1233,8 @@ pub fn decode_program_batch(
 /// (P3-03, GitHub #99): `sampling[i]` draws sequence `i`'s successor, so
 /// lanes sharing this round may carry independent temperatures, seeds and
 /// penalty histories. `sampling.len()` must equal `sequences.len()` and must
-/// not exceed the leaf's `IGNIS_DECODE_MAX_BATCH` (8, `ignis_step.h`).
+/// not exceed the load's decode lanes (GitHub #336; at most the leaf's
+/// `IGNIS_DECODE_MAX_BATCH`, 8, `ignis_step.h`).
 pub fn decode_program_batch_sampled(
     model: &Model,
     pool: &SeqPool,

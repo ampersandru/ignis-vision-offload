@@ -384,7 +384,8 @@ pub struct Config {
     /// the device state arenas and are handed out first; host slots
     /// (`--reuse-retained-host`, [`DEFAULT_RETAINED_HOST_SLOTS`]) sit in one
     /// pinned host block and cost a PCIe copy per capture and per claim. Both
-    /// 0 with prompt reuse off unless named.
+    /// 0 with prompt reuse off unless named. Unnamed, the host slots are two
+    /// per decode lane of the 27B (GitHub #336): 16 at its default 8.
     pub retained_device_slots: u32,
     pub retained_host_slots: u32,
     /// Whether [`Config::retained_host_slots`] was given at all — by the
@@ -412,9 +413,11 @@ pub struct Config {
     /// round of w lanes verifies min(draft tokens, rows / w - 1) drafts per
     /// lane. `None`: the default's 8 rows; up to 32 (GitHub #329).
     pub draft_rows: Option<u32>,
-    /// Flash-Next's decode lanes (`--spec-decode-lanes`, GitHub #306),
-    /// 1..=[`ignis_core::N_DECODE_LANES`]. `None`: the engine's default of 3.
-    /// The 27B has a fixed lane count and refuses the flag.
+    /// The decode lanes (`--spec-decode-lanes`, GitHub #306; the 27B's too
+    /// since GitHub #336), 1..=[`ignis_core::N_DECODE_LANES`], family-scoped.
+    /// `None`: the model's own default
+    /// ([`ignis_core::compute::ModelFamily::default_decode_lanes`]), 8 on the
+    /// 27B and 3 on Flash-Next.
     pub decode_lanes: Option<u32>,
     /// Vision, chosen at load (`--vision-enabled` / `--vision-max-tokens`,
     /// GitHub #177). `None` binds and reserves nothing of the vision tower.
@@ -1178,10 +1181,14 @@ fn derive(
             .reuse
             .retained_device
             .unwrap_or(if prompt_reuse { DEFAULT_RETAINED_DEVICE_SLOTS } else { 0 }),
-        retained_host_slots: s
-            .reuse
-            .retained_host
-            .unwrap_or(if prompt_reuse { DEFAULT_RETAINED_HOST_SLOTS } else { 0 }),
+        // The 27B's default, two per decode lane, from the lanes as named;
+        // Flash-Next's own replaces it at load (`EngineShape::for_family`,
+        // which asks the same function).
+        retained_host_slots: s.reuse.retained_host.unwrap_or(if prompt_reuse {
+            ModelFamily::Qwen38_27b.default_retained_host_slots(s.spec.decode_lanes.unwrap_or(0))
+        } else {
+            0
+        }),
         retained_host_named: s.reuse.retained_host.is_some(),
         retained_interactive_ttl_secs: s.reuse.retained_interactive_ttl,
         instruction_policy: InstructionPolicy {

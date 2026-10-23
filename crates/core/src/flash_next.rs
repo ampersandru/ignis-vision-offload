@@ -49,8 +49,9 @@ pub const LOOKAHEAD_WIDTH: u32 = 16;
 pub const PREFILL_LOOKAHEAD_WIDTH: u32 = crate::moe::TOP_K;
 
 /// The decode lanes a Flash-Next load serves by default (spec flash-next/04:
-/// three agents); the leaf's own default for a load option of 0.
-pub const DEFAULT_DECODE_LANES: u32 = 3;
+/// three agents); the leaf's own default for a load option of 0. The
+/// family's own figure (GitHub #336), where the 27B's 8 sits beside it.
+pub const DEFAULT_DECODE_LANES: u32 = crate::compute::ModelFamily::FlashNext.default_decode_lanes();
 
 /// What a Flash-Next engine is loaded with.
 #[derive(Debug, Clone)]

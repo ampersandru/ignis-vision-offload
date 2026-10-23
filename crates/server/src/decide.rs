@@ -2734,7 +2734,8 @@ async fn serve(
     // it and prefill only their own tail.
     //
     // After that there is nothing left to serialize, so the followers run
-    // together, [`FAN_OUT_WIDTH`] of them at a time. A `locate`'s baseline
+    // together, as many at a time as the engine admits ([`fan_out_width`]).
+    // A `locate`'s baseline
     // (GitHub #275) is one more follower: it claims the state like any
     // sibling, and is answered with the questions that read it.
     //
@@ -3831,11 +3832,11 @@ async fn ask(
     ))
 }
 
-/// Put `items` to the engine together, [`FAN_OUT_WIDTH`] at a time, with
+/// Put `items` to the engine together, [`fan_out_width`] at a time, with
 /// whatever the engine turned away put back for the next wave.
 ///
-/// A wave is `FAN_OUT_WIDTH` wide *because* the engine admits about that
-/// many, but it is not the only client: two of its lanes may already be
+/// A wave is as wide as the engine admits, but the fan-out is not its only
+/// client: two of its lanes may already be
 /// somebody else's, and then two of this wave's questions come back
 /// `Full`. Answering those with an error would be a failure the
 /// one-at-a-time loop before #240 never produced, so they are re-queued
@@ -3850,7 +3851,7 @@ async fn in_waves<'a>(
     let mut out = Vec::with_capacity(items.len());
     let mut pending: std::collections::VecDeque<_> = items.into();
     while !pending.is_empty() {
-        let wave: Vec<_> = (0..FAN_OUT_WIDTH.min(pending.len()))
+        let wave: Vec<_> = (0..fan_out_width(server).min(pending.len()))
             .filter_map(|_| pending.pop_front())
             .collect();
         let asked: Vec<(usize, Collect<'a>)> = wave.iter().map(|(slot, _, collect)| (*slot, *collect)).collect();
@@ -3941,15 +3942,15 @@ fn engine_full() -> Answer {
 /// idle engine never refuses one.
 ///
 /// **What it is tied to, and what it is not.** The number that matters is
-/// `max_in_flight`, which no server flag sets: `runtime.rs` builds its
-/// `SchedulerConfig` without it, so it is the default, and the default is
-/// `N_DECODE_LANES`. That is the whole justification for reading it from
-/// there — *not* that a decision occupies a decode lane, which it never does
-/// (`CONTEXT.md`: a decision takes only the single global prefill lane). The
-/// two numbers are equal today and mean different things; if `max_in_flight`
-/// ever becomes configurable from the server, or core-06 raises it as its
-/// doc promises, this has to be read from the engine instead of assumed.
-/// Being too small is a slower fan-out, being too large is a failed one.
+/// `max_in_flight`, the engine's admission cap, and since GitHub #336 it is
+/// a load's decode lanes: `runtime.rs` hands each load's scheduler its own
+/// — eight on the 27B unless named, two on a 16 GB card's, three on
+/// Flash-Next. So it is read from the engine the wave is put to
+/// ([`crate::engine::Engine::max_in_flight`]), never assumed — and *not*
+/// because a decision occupies a decode lane, which it never does
+/// (`CONTEXT.md`: a decision takes only the single global prefill lane).
+/// Being too small is a slower fan-out, being too large a wave of refusals
+/// the retry in [`in_waves`] pays for.
 ///
 /// A fan-out sharing the engine with other clients can still meet a full
 /// engine, exactly as any single request can. That is the pre-existing
@@ -3957,8 +3958,9 @@ fn engine_full() -> Answer {
 /// fan-out competing with *itself*.
 ///
 /// The cost is one `--server-request-timeout` per wave rather than per question:
-/// twenty questions bound at four timeouts — the sequenced first, then
-/// `ceil(19 / 8)` waves — instead of twenty. A wave also ends no sooner
+/// twenty questions at eight lanes bound at four timeouts — the sequenced
+/// first, then `ceil(19 / 8)` waves — instead of twenty; at two lanes,
+/// eleven. A wave also ends no sooner
 /// than its slowest question, so one question that times out holds the next
 /// wave for that long; a sliding window would not, and is not worth the
 /// machinery until a fan-out is wider than two waves.
@@ -3969,7 +3971,9 @@ fn engine_full() -> Answer {
 /// one-at-a-time took one. Spec 04's "leaves the others' paid-for answers
 /// alone" holds for a fault in one question's own readout, which is the
 /// per-question failure it describes; a fault in the batch is not one.
-const FAN_OUT_WIDTH: usize = ignis_core::N_DECODE_LANES;
+fn fan_out_width(server: &crate::Server) -> usize {
+    server.active().text_engine().max_in_flight()
+}
 
 /// Run every future to completion **at the same time**, in place, and
 /// collect their outputs in order.

@@ -79,8 +79,10 @@
 //!    and moved sequences come back in rank order, ahead of any newcomer
 //!    they outrank; a restore never moves anything.
 //!
-//! Lane capacity: the scheduler holds [`N_DECODE_LANES`] (8) resident
-//! lanes and a KV page capacity (`kv_capacity_pages`, auto-sized from
+//! Lane capacity: the scheduler holds the load's decode lanes resident --
+//! at most [`N_DECODE_LANES`] (8); the 27B's 8 unless named and Flash-Next's
+//! 3, as its `resident_slot_capacity` and `max_in_flight` (GitHub #336) --
+//! and a KV page capacity (`kv_capacity_pages`, auto-sized from
 //! the pool in production; the machine's resource dimension). In-flight
 //! admission is capped at `max_in_flight`; beyond N=8 the KV-RAM host
 //! tier (core-06) provides overflow — a blocked head is admitted by
@@ -5481,6 +5483,11 @@ impl Scheduler for ConcreteScheduler {
 
     fn max_sequence_tokens(&self) -> u32 {
         self.config.max_sequence_tokens
+    }
+
+    /// The cap admission holds (GitHub #336): the load's lanes.
+    fn max_in_flight(&self) -> usize {
+        self.config.max_in_flight
     }
 
     fn mode(&self) -> EngineMode {

@@ -897,6 +897,9 @@ fn the_help_says_lanes_share_the_pool_and_names_the_new_spellings() {
     assert!(!lanes.contains("whole context"), "{lanes}");
     assert!(lanes.contains("sharing the KV pool"), "{lanes}");
     assert!(lanes.contains("min(524,288 tokens, lanes x `max_context`)") && lanes.contains("retained slot"), "{lanes}");
+    // GitHub #336: the 27B's lanes are a setting too, and say what they cost.
+    assert!(lanes.contains("8 on the 27B, 3 on Flash-Next") && lanes.contains("~233 MB"), "{lanes}");
+    assert!(!lanes.contains("fixed 8"), "{lanes}");
     let pool = help_block("--vram-kv-pool-bytes");
     assert!(pool.contains("Ktok") && pool.contains("524,288"), "{pool}");
     let floor = help_block("--vram-allow-expert-cache-below-floor");
@@ -1828,9 +1831,11 @@ fn max_context_past_the_gqa_envelope_is_refused_for_the_27b_only() {
     assert!(served_model_for(&cfg("1048577", "hq-e8-2b"), ModelFamily::FlashNext).is_ok());
 }
 
-/// GitHub #306: `--spec-decode-lanes` is Flash-Next's, 1 to the engine's 8.
+/// GitHub #306, #336: `--spec-decode-lanes` is both models', 1 to the
+/// engine's 8, and scoped: each model reads its own section's value over the
+/// general one, and with neither its own default -- the 27B 8, Flash-Next 3.
 #[test]
-fn decode_lanes_parse_bound_and_refuse_the_27b() {
+fn decode_lanes_parse_bound_and_apply_to_both_models() {
     assert_eq!(config(&["--profile", "none"]).decode_lanes, None);
     let flag = config(&["--spec-decode-lanes", "1"]);
     assert_eq!(flag.decode_lanes, Some(1));
@@ -1840,9 +1845,42 @@ fn decode_lanes_parse_bound_and_refuse_the_27b() {
         let err = refused(&["--spec-decode-lanes", raw]);
         assert!(err.contains("--spec-decode-lanes") && err.contains(raw), "{err}");
     }
-    assert!(served_model_for(&flag, ModelFamily::FlashNext).is_ok());
-    let err = served_model_for(&flag, ModelFamily::Qwen38_27b).expect_err("a fixed lane count").0;
-    assert!(err.contains("--spec-decode-lanes 1") && err.contains("Qwen3.8-27B does not take it"), "{err}");
+    for family in [ModelFamily::FlashNext, ModelFamily::Qwen38_27b] {
+        assert_eq!(flag.for_family(family).unwrap().decode_lanes, Some(1), "{family:?} takes the general value");
+    }
+    let scoped = config(&["--qwen38-spec-decode-lanes", "2", "--qwen38flashnext-spec-decode-lanes", "4"]);
+    assert_eq!(scoped.for_family(ModelFamily::Qwen38_27b).unwrap().decode_lanes, Some(2));
+    assert_eq!(scoped.for_family(ModelFamily::FlashNext).unwrap().decode_lanes, Some(4));
+    let bare = config(&["--profile", "none"]);
+    let shape = |family| crate::runtime::EngineShape::from(&bare.for_family(family).unwrap()).decode_lanes_for(family);
+    assert_eq!(shape(ModelFamily::Qwen38_27b), 8, "the 27B's own default");
+    assert_eq!(shape(ModelFamily::FlashNext), 3, "Flash-Next's own default");
+}
+
+/// GitHub #336: the 27B's default host retained slots are two per decode
+/// lane of its load -- 16 at its default 8 -- and Flash-Next keeps its own
+/// 8 whatever its lanes; a named count is the operator's.
+#[test]
+fn the_27bs_default_host_retained_slots_follow_its_lanes() {
+    let host = |args: &[&str], family| config(args).for_family(family).unwrap().retained_host_slots;
+    assert_eq!(host(&["--profile", "none"], ModelFamily::Qwen38_27b), DEFAULT_RETAINED_HOST_SLOTS);
+    assert_eq!(host(&["--profile", "none", "--spec-decode-lanes", "2"], ModelFamily::Qwen38_27b), 4);
+    assert_eq!(host(&["--qwen38-spec-decode-lanes", "1"], ModelFamily::Qwen38_27b), 2);
+    assert_eq!(host(&["--spec-decode-lanes", "2", "--reuse-retained-host", "7"], ModelFamily::Qwen38_27b), 7);
+    assert_eq!(host(&["--spec-decode-lanes", "2", "--reuse-prompt", "off"], ModelFamily::Qwen38_27b), 0);
+    let flash = config(&["--spec-decode-lanes", "2"]).for_family(ModelFamily::FlashNext).unwrap();
+    let shape = crate::runtime::EngineShape::from(&flash).for_family(ModelFamily::FlashNext);
+    assert_eq!((shape.decode_lanes, shape.retained_host_slots), (2, 8));
+    // ADR 0046: the config's 27B default and a load's own re-resolution are
+    // one function's, at any lanes.
+    for lanes in [None, Some("1"), Some("2"), Some("8")] {
+        let mut args = vec!["--profile", "none"];
+        args.extend(lanes.map(|lanes| ["--spec-decode-lanes", lanes]).into_iter().flatten());
+        let fitted = config(&args).for_family(ModelFamily::Qwen38_27b).unwrap();
+        let shape = crate::runtime::EngineShape::from(&fitted);
+        let reloaded = crate::runtime::EngineShape { retained_host_slots: 0, ..shape }.for_family(ModelFamily::Qwen38_27b);
+        assert_eq!(reloaded.retained_host_slots, fitted.retained_host_slots, "{lanes:?} lanes");
+    }
 }
 
 /// `--ngram-hot-bytes` (GitHub #306): unnamed is `None`, the 1 GiB default
@@ -1969,8 +2007,10 @@ fn a_switch_drops_the_values_only_the_other_model_takes_and_names_them() {
 
     let flash = config(&["--spec-decode-lanes", "1", "--ngram-hot-bytes", "4G", "--vram-allow-expert-cache-below-floor", "--spec-draft-rows", "6"]);
     let (fitted, dropped) = fit_to_family(&flash, ModelFamily::Qwen38_27b).unwrap();
-    assert_eq!(dropped, ["--vram-allow-expert-cache-below-floor", "--spec-draft-rows", "--spec-decode-lanes", "--ngram-hot-bytes"]);
-    assert!(fitted.decode_lanes.is_none() && fitted.ngram_hot_bytes.is_none() && !fitted.allow_expert_cache_below_floor);
+    assert_eq!(dropped, ["--vram-allow-expert-cache-below-floor", "--spec-draft-rows", "--ngram-hot-bytes"]);
+    assert!(fitted.ngram_hot_bytes.is_none() && !fitted.allow_expert_cache_below_floor);
+    // GitHub #336: the lanes are both models'; a general value is the 27B's too.
+    assert_eq!(fitted.decode_lanes, Some(1));
 
     let (kept, dropped) = fit_to_family(&config(&["--vision-enabled"]), ModelFamily::Qwen38_27b).unwrap();
     assert!(kept.vision.is_some() && dropped.is_empty(), "nothing dropped for the model it was named for");
@@ -1994,10 +2034,10 @@ fn a_patch_wins_over_the_command_line_and_is_validated_whole() {
     assert_eq!(patched.basis.family(), Some(ModelFamily::FlashNext));
     assert_eq!(patched.model, "qwen3.8-flash-next");
 
-    let lanes = schema::field("spec", "decode_lanes").unwrap();
-    patch.set(lanes, None, source::Candidate { raw: "99".into(), spelling: "spec.decode_lanes".into() }).unwrap();
+    let rows = schema::field("spec", "draft_rows").unwrap();
+    patch.set(rows, None, source::Candidate { raw: "99".into(), spelling: "spec.draft_rows".into() }).unwrap();
     let err = started.with_patch(&patch).unwrap_err().0;
-    assert!(err.contains("spec.decode_lanes") && err.contains("99"), "{err}");
+    assert!(err.contains("spec.draft_rows") && err.contains("99"), "{err}");
 }
 
 /// One patch entry, as `PATCH /v1/config` would give it.
@@ -2048,14 +2088,33 @@ fn a_patch_on_a_switched_config_keeps_its_drops_and_judges_only_its_own_entries(
 #[test]
 fn a_patch_from_before_a_switch_never_refuses_a_later_one() {
     let flash = config(&[]).for_family(ModelFamily::FlashNext).unwrap();
-    let patched = flash.with_patch(&patch_of(&[("spec", "decode_lanes", "1"), ("spec", "backend", "mtp")])).unwrap();
+    let patched = flash.with_patch(&patch_of(&[("spec", "draft_rows", "6"), ("spec", "backend", "mtp")])).unwrap();
     let (on_27b, dropped) = fit_to_family(&patched, ModelFamily::Qwen38_27b).unwrap();
     assert_eq!(dropped, ["--spec-backend"], "a value both families read is dropped; the family-only one waits in its section");
-    assert_eq!(on_27b.decode_lanes, None);
+    assert_eq!(on_27b.draft_rows, None);
     let later = on_27b.with_patch(&patch_of(&[("server", "request_timeout", "60")])).unwrap();
     assert_eq!(later.request_timeout_secs, 60);
     let (back, _) = fit_to_family(&later, ModelFamily::FlashNext).unwrap();
-    assert_eq!((back.decode_lanes, back.request_timeout_secs), (Some(1), 60), "the earlier patch is the Flash-Next load's again");
+    assert_eq!((back.draft_rows, back.request_timeout_secs), (Some(6), 60), "the earlier patch is the Flash-Next load's again");
+}
+
+/// GitHub #336: the decode lanes are both models', so a patch at the group
+/// key is both models' value, and a patch in one model's section is that
+/// model's alone -- a switch takes the other model's own lanes.
+#[test]
+fn a_decode_lanes_patch_is_scoped_as_it_is_written() {
+    let flash = config(&["--profile", "none"]).for_family(ModelFamily::FlashNext).unwrap();
+    let mut own = source::Layer::default();
+    let lanes = schema::field("spec", "decode_lanes").unwrap();
+    own.set(lanes, Some(ModelFamily::FlashNext), source::Candidate { raw: "1".into(), spelling: "spec.qwen38flashnext.decode_lanes".into() })
+        .unwrap();
+    let patched = flash.with_patch(&own).unwrap();
+    assert_eq!(patched.decode_lanes, Some(1));
+    let (on_27b, dropped) = fit_to_family(&patched, ModelFamily::Qwen38_27b).unwrap();
+    assert!(dropped.is_empty() && on_27b.decode_lanes.is_none(), "the 27B keeps its own: {dropped:?}");
+    let general = flash.with_patch(&patch_of(&[("spec", "decode_lanes", "2")])).unwrap();
+    let (on_27b, _) = fit_to_family(&general, ModelFamily::Qwen38_27b).unwrap();
+    assert_eq!(on_27b.decode_lanes, Some(2), "a general value is both models'");
 }
 
 // ── vision as a load option (GitHub #177) ────────────────────────────────

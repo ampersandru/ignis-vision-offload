@@ -63,8 +63,11 @@ pub const DEFAULT_RETAINED_DEVICE_SLOTS: u32 = 0;
 
 /// Retained slots in the pinned host block by default (`--reuse-retained-host`,
 /// GitHub #281): two per decode lane -- a chain link and a checkpoint for
-/// each conversation a lane serves.
-pub const DEFAULT_RETAINED_HOST_SLOTS: u32 = 2 * ignis_core::N_DECODE_LANES as u32;
+/// each conversation a lane serves -- here at the 27B's default eight lanes,
+/// none named. A load of fewer lanes keeps two per lane of its own (GitHub
+/// #336, [`ignis_core::compute::ModelFamily::default_retained_host_slots`]).
+pub const DEFAULT_RETAINED_HOST_SLOTS: u32 =
+    ignis_core::compute::ModelFamily::Qwen38_27b.default_retained_host_slots(0);
 
 /// The paged-KV pool's auto byte budget for a configured `max_context`
 /// under `format` (P4-04, GitHub #122): [`ignis_core::DEFAULT_KV_POOL_BYTES`]
@@ -166,6 +169,12 @@ pub fn held_before_load(context_created: bool, qwen27b_state_charged: bool) -> u
 /// free-memory delta does not measure it: it moves with every process on the
 /// card (14 MB over the plan on 2026-10-14, 86 MB on this run). It was
 /// 88,028,656 B on 2026-09-17, at 262K with `--vision-enabled`.
+///
+/// Measured at eight decode lanes, whose decode and verify graphs are
+/// captured at every width up to eight, sixteen captures in all. A load of
+/// fewer lanes (GitHub #336) captures fewer and charges the same figure: the
+/// line over-reserves there -- conservative, never short -- until a load at
+/// its own lanes is measured.
 pub const LOAD_RESIDUAL_BYTES: u64 = 124_474_800;
 
 /// Device bytes a load holds beside its weights, line by line as the VRAM
@@ -551,6 +560,13 @@ pub trait StepLeaf: Send + Sync + 'static {
     fn load_model(&self) -> Result<Self::Model, i32>;
     /// Release a model handle.
     fn release_model(&self, model: Self::Model);
+    /// The widest decode round this load serves: its decode lanes (GitHub
+    /// #336), fixed for the load's life. The default is the most any load
+    /// serves ([`N_DECODE_LANES`]); a leaf loaded at fewer says so, and the
+    /// adapter refuses a wider round before the leaf is asked.
+    fn decode_lanes(&self) -> u32 {
+        N_DECODE_LANES as u32
+    }
     /// Read the leaf's current geometry and step counters.
     fn stats(&self, model: &Self::Model) -> Result<RuntimeStats, i32>;
     /// Columns the loaded model's output head writes — the length a
@@ -1789,7 +1805,9 @@ impl<L: StepLeaf> Compute for RuntimeCompute<L> {
     }
 
     fn decode_step(&self, jobs: &[DecodeJob]) -> Result<Vec<DecodeOutcome>, ComputeError> {
-        if jobs.len() > N_DECODE_LANES {
+        // The load's own lanes (GitHub #336), which the scheduler never
+        // batches past and the leaf refuses past too.
+        if jobs.len() > self.model.leaf.decode_lanes() as usize {
             return Err(ComputeError::Kernel(-1));
         }
         let mut sequences = self.sequences.lock().unwrap();

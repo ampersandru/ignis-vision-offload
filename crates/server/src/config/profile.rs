@@ -134,7 +134,8 @@ pub const NONE_PROFILE: &str = "none";
 /// 46K / 105K, the same at 8K / 14K, a lower 4K KLD and decode unchanged; a
 /// decoding lane's longest pause while a prompt prefills grows ~65% (finding
 /// 2026-10-21-the-27b-prefill-chunk-at-2048). Flash-Next's leg holds its decode
-/// lanes at their own default (3) and raises `model.max_context` to
+/// lanes at their own default (3), in its own section since the 27B takes the
+/// field too and keeps its 8 (GitHub #336), and raises `model.max_context` to
 /// 512K + 32K + 32K tokens, the floor the owner asked for on both the expert
 /// cache (>= 15 GiB; it measured ~16.6 GiB) and the context. Past the
 /// checkpoint's trained 262,144 positions the 27B's text rotary table needs
@@ -207,7 +208,7 @@ const BUILT_IN: &str = r#"{
         "vision": { "enabled": true },
         "spec": {
             "qwen38": { "backend": "dflash2", "draft_tokens": 7 },
-            "decode_lanes": 3
+            "qwen38flashnext": { "decode_lanes": 3 }
         }
     },
     "rtxpro6000": {
@@ -218,8 +219,7 @@ const BUILT_IN: &str = r#"{
         "vision": { "enabled": true },
         "spec": {
             "qwen38": { "backend": "dflash2", "draft_tokens": 7 },
-            "qwen38flashnext": { "backend": "mtp", "draft_tokens": 3 },
-            "decode_lanes": 8
+            "qwen38flashnext": { "backend": "mtp", "draft_tokens": 3, "decode_lanes": 8 }
         },
         "ngram": { "hot_bytes": "auto" }
     },
@@ -362,8 +362,11 @@ mod tests {
         assert_eq!(rtx5090.get(backend, Some(ModelFamily::Qwen38_27b)).unwrap().raw, "dflash2");
         assert!(rtx5090.get(backend, Some(ModelFamily::FlashNext)).is_none(), "Flash-Next keeps speculation off here");
 
+        // GitHub #336: both models take the lanes, so the profile scopes
+        // Flash-Next's 3 to its own section; the 27B keeps its own 8.
         let lanes = field("spec", "decode_lanes").unwrap();
-        assert_eq!(rtx5090.get(lanes, None).unwrap().raw, "3", "Flash-Next-only; the 27B passes it over");
+        assert_eq!(rtx5090.get(lanes, Some(ModelFamily::FlashNext)).unwrap().raw, "3");
+        assert!(rtx5090.get(lanes, None).is_none() && rtx5090.get(lanes, Some(ModelFamily::Qwen38_27b)).is_none());
 
         // Flash-Next pins its calibration-hottest 2 GiB of experts (the
         // owner's call, ADR 0055): the field's own default stays 0, and the
@@ -387,6 +390,25 @@ mod tests {
         assert!(qwen.dropped.is_empty(), "passed over, not dropped: {:?}", qwen.dropped);
         let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
         assert_eq!(flash.settings.vram.pinned_expert_bytes, 2 << 30);
+    }
+
+    /// GitHub #336: the decode lanes are both models' field, so a profile
+    /// value written for one model is scoped to it -- the 27B started under
+    /// either built-in profile keeps its own 8, not Flash-Next's 3.
+    #[test]
+    fn under_the_built_in_profiles_each_model_keeps_its_own_decode_lanes() {
+        use super::super::source::{resolve_settings, Fit, Sources};
+        use ignis_core::compute::ModelFamily;
+
+        for (profile, flash_next_lanes) in [(DEFAULT_PROFILE, 3), ("rtxpro6000", 8)] {
+            let sources = Sources { profile: built_in()[profile].clone(), ..Sources::default() };
+            let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
+            assert_eq!(qwen.settings.spec.decode_lanes, None, "{profile}: the 27B's default");
+            let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
+            assert_eq!(flash.settings.spec.decode_lanes, Some(flash_next_lanes), "{profile}");
+            let general = resolve_settings(&sources, None, Fit::Start).unwrap();
+            assert_eq!(general.settings.spec.decode_lanes, None, "{profile}: nothing general");
+        }
     }
 
     /// GitHub #341: the 27B prefills 2,048 tokens a chunk under both built-in
@@ -448,7 +470,8 @@ mod tests {
         assert!(pro.get(rope, None).is_none(), "unset: `auto` makes the 27B's 1,048,576 tokens YaRN at 4");
 
         let lanes = field("spec", "decode_lanes").unwrap();
-        assert_eq!(pro.get(lanes, None).unwrap().raw, "8", "every lane: on 96 GB a lane costs its state");
+        assert_eq!(pro.get(lanes, Some(ModelFamily::FlashNext)).unwrap().raw, "8", "every lane: on 96 GB a lane costs its state");
+        assert!(pro.get(lanes, None).is_none(), "Flash-Next's own: the 27B's are its default");
 
         // The 5090's choices the card's memory does not change.
         let vision = field("vision", "enabled").unwrap();

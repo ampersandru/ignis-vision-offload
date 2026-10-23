@@ -71,6 +71,7 @@ pub mod image_vision;
 pub mod identity;
 pub mod kv;
 pub mod kv_format;
+pub mod lane_lines;
 pub mod locate;
 pub mod mock;
 #[cfg(feature = "cuda")]
