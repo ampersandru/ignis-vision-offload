@@ -170,10 +170,25 @@ pub fn load_processor(
     vision: ignis_core::Vision,
     max_context: u32,
 ) -> Result<VisionProcessor, ProcessorError> {
-    let mut options = frontend.vision_processor()?.options().clone();
+    let options = bounded_options(frontend.vision_processor()?.options().clone(), vision, max_context);
+    VisionProcessor::new(frontend.tokenizer(), options)
+}
+
+/// `processor` at a load's context `max_context` rather than the one it was
+/// built at: the context a 27B load runs, which its adaptation may have
+/// lowered (ADR 0063 §3). Its request budget, and so its item bound, follow
+/// the envelope the leaf planned.
+pub fn processor_at(processor: VisionProcessor, vision: ignis_core::Vision, max_context: u32) -> VisionProcessor {
+    let options = bounded_options(processor.options().clone(), vision, max_context);
+    processor.with_options(options)
+}
+
+/// `options` with the vision-token budget of a load of `max_context` tokens
+/// and the raw patches it implies; the pixel bounds stay.
+fn bounded_options(mut options: ProcessorOptions, vision: ignis_core::Vision, max_context: u32) -> ProcessorOptions {
     options.max_vision_tokens = u64::from(vision.envelope_tokens(max_context));
     options.max_raw_patches = options.max_vision_tokens * 4;
-    VisionProcessor::new(frontend.tokenizer(), options)
+    options
 }
 
 /// Whether any message carries an `image_url` part.
@@ -962,6 +977,49 @@ fn lanczos_weights(input: usize, out: usize) -> Vec<(usize, Vec<i64>)> {
 mod tests {
     use super::*;
     use crate::template::ContentPart;
+
+    /// A processor over a tokenizer that knows the model contract's two
+    /// placeholders, under `options`.
+    fn processor(options: ProcessorOptions) -> VisionProcessor {
+        use ignis_artifact::vision::{IMAGE_PAD, IMAGE_PAD_ID, VIDEO_PAD, VIDEO_PAD_ID};
+        let added = |id: u32, content: &str| {
+            serde_json::json!({"id": id, "content": content, "single_word": false, "lstrip": false,
+                               "rstrip": false, "normalized": false, "special": true})
+        };
+        let json = serde_json::json!({
+            "version": "1.0",
+            "added_tokens": [added(IMAGE_PAD_ID, IMAGE_PAD), added(VIDEO_PAD_ID, VIDEO_PAD)],
+            "pre_tokenizer": {"type": "Whitespace"},
+            "model": {"type": "WordLevel", "vocab": {"x": 0, IMAGE_PAD: IMAGE_PAD_ID, VIDEO_PAD: VIDEO_PAD_ID}, "unk_token": "x"},
+        });
+        let tokenizer = ignis_artifact::Tokenizer::from_bytes(json.to_string().as_bytes()).expect("tokenizer");
+        VisionProcessor::new(&tokenizer, options).expect("the contract's placeholders")
+    }
+
+    /// ADR 0063 §3 (review of #336 part D): a processor built at the
+    /// configured context and served at the one a 27B load adapted to takes
+    /// that context's envelope -- its request budget, its item bound, the
+    /// raw patches they imply -- and keeps the artifact's pixel bounds.
+    #[test]
+    fn a_processor_at_an_adapted_context_takes_its_envelope() {
+        let artifact = ProcessorOptions {
+            min_pixels: 32 * 32,
+            max_pixels: 1 << 28,
+            max_encoded_media_bytes: 1 << 20,
+            max_decoded_pixels: 1 << 28,
+            max_raw_patches: 1 << 16,
+            max_vision_tokens: 1 << 14,
+        };
+        let vision = ignis_core::Vision::new(131_072).unwrap();
+        let configured = processor_at(processor(artifact.clone()), vision, 131_072);
+        assert_eq!((configured.options().max_vision_tokens, configured.options().max_item_tokens()), (131_072, 131_072));
+        let adapted = processor_at(configured, vision, 65_536);
+        let options = adapted.options();
+        assert_eq!((options.max_vision_tokens, options.max_item_tokens(), options.max_raw_patches), (65_536, 65_536, 262_144));
+        assert_eq!((options.min_pixels, options.max_pixels), (artifact.min_pixels, artifact.max_pixels));
+        let wider = processor_at(adapted, vision, 196_608);
+        assert_eq!(wider.options().max_vision_tokens, 131_072, "the vision envelope below the context");
+    }
 
     fn b64(bytes: &[u8]) -> String {
         const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

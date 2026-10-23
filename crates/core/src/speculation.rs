@@ -239,7 +239,7 @@ impl FlashNextSpeculation {
 ///
 /// The artifact carries two: the target's own output head (W8, all 248,320
 /// rows, 1.27 GB streamed per round) and a shortlist proposal head
-/// (`text/draft_head`, Q4 over the 131,072 most frequent tokens, 356 MB, with
+/// (`text/draft_head`, Q4 over the 131,072 most frequent tokens, ~357 MB, with
 /// `text/draft_head_token_ids` mapping its rows back to token ids). The verify
 /// round always scores with the full head, so what a round accepts is still
 /// the target's choice: a token outside the shortlist is still produced, it
@@ -252,7 +252,7 @@ pub enum ProposalHead {
     #[default]
     Full,
     /// The artifact's Q4 shortlist head: bound beside the full head, so it
-    /// costs its 356 MB of device memory.
+    /// costs its ~357 MB of device memory (+357,040,380 bytes in the plan).
     Shortlist,
 }
 
@@ -280,7 +280,7 @@ impl ProposalHead {
 /// as `auto` rope scaling is (ADR 0057) -- rather than a third head.
 ///
 /// `auto` is [`ProposalHead::Full`] on every card class. The shortlist is
-/// bound beside the full head, so it frees no bytes: it costs its 356 MB.
+/// bound beside the full head, so it frees no bytes: it costs its ~357 MB.
 /// And the one card that measured it found it slower (-7.4% tokens/round,
 /// -5.5% tok/s on the 5090, finding 2026-09-24-upstream-quick-wins-ab). The
 /// rule is revisited when a real 16 GB card measures the trade (spec

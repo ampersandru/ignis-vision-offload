@@ -231,6 +231,18 @@ pub const DEFAULT_HOST_POOL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// 2026-10-12, the owner's call; spec flash-next/03 set 6).
 pub const DEFAULT_HOST_MARGIN_BYTES: u64 = ignis_core::residency::DEFAULT_HOST_MARGIN_BYTES;
 
+/// `--model-adapt-context-step`'s default (ADR 0063 §3): a 27B context the
+/// load adapts goes down 65,536 tokens at a time, and never below 65,536 --
+/// spec 27b-16gb/04's 262,144 -> 196,608 -> 131,072 -> 65,536 on the 16 GB
+/// card, generalized to any profile's value.
+pub const DEFAULT_ADAPT_CONTEXT_STEP: u32 = 65_536;
+
+/// `--vram-adapt-spare-tokens`' default (ADR 0063 §3): at more than one
+/// decode lane, a context the 27B's load adapts is kept when its KV pool
+/// holds it and one more 65,536-token reservation, room for a second
+/// request beside a full one.
+pub const DEFAULT_ADAPT_SPARE_TOKENS: u32 = 65_536;
+
 /// `--reuse-prompt`'s default (GitHub #186, ADR 0029): on. Cross-request
 /// reuse is the owner's workload — an agent's tool loop re-sends its whole
 /// history every iteration — so it is what the engine does unless asked not
@@ -894,6 +906,18 @@ impl Config {
     /// the total is no class (a named profile may run on any card).
     pub fn card_class(&self) -> Option<profile::CardClass> {
         self.card_total_bytes().and_then(profile::CardClass::of_total)
+    }
+
+    /// The 27B's adaptation ladder (ADR 0063 §3): its context step
+    /// (`--model-adapt-context-step`) and its spare reservation
+    /// (`--vram-adapt-spare-tokens`). The load's shape carries it
+    /// ([`crate::runtime::EngineShape::adapt_ladder`]).
+    pub fn adapt_ladder(&self) -> crate::adaptation::Ladder {
+        let settings = self.settings();
+        crate::adaptation::Ladder {
+            context_step: settings.model.adapt_context_step,
+            spare_tokens: settings.vram.adapt_spare_tokens,
+        }
     }
 
     /// Which of the 27B's load values its **adaptation** may lower (ADR 0063

@@ -108,7 +108,7 @@ pub(crate) struct TokenizeResponse {
     tag = "tokenize",
     operation_id = "tokenize",
     summary = "A prompt's token count, without serving it",
-    description = "Renders a chat body exactly as `/v1/chat/completions` would -- the chat template, the tool block, the thinking controls, the system block -- and answers how many tokens it prefills, without submitting it: no lane, no GPU, no KV page, and the count is the `usage.prompt_tokens` the same body reports when served. `max_model_len` is the server's `--model-max-context`, so one call decides whether a body fits.
+    description = "Renders a chat body exactly as `/v1/chat/completions` would -- the chat template, the tool block, the thinking controls, the system block -- and answers how many tokens it prefills, without submitting it: no lane, no GPU, no KV page, and the count is the `usage.prompt_tokens` the same body reports when served. `max_model_len` is the context the load runs -- `--model-max-context`, or the context the 27B's load adapted it to when the VRAM plan could not hold it -- so one call decides whether a body fits.
 
 Send **either** `messages` (with `model`, `tools`, `tool_choice` and the thinking controls, which are validated as chat validates them) **or** a raw `prompt`, which is tokenized with no template applied. Sampling fields are ignored: they do not change a render. `stream` is refused.
 

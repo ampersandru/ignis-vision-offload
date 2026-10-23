@@ -441,6 +441,13 @@ config_group! {
         /// paged out. The image model makes no host plan: its start carries
         /// it for a switch to a text model.
         host_margin_bytes: Bytes = super::DEFAULT_HOST_MARGIN_BYTES, NO_RULE, ALL, [Visible, Patchable, ReloadRequired, Scoped];
+        /// The 27B's adaptation (ADR 0063): when its VRAM plan refuses a
+        /// `max_context` the profile or the default gave, the load lowers it
+        /// this many tokens at a time, never below this many -- a start whose
+        /// plan does not hold one step is refused. A whole number of KV pages
+        /// (64 tokens).
+        adapt_context_step: Tokens = super::DEFAULT_ADAPT_CONTEXT_STEP, Validator::MultipleOf(ignis_core::KV_PAGE_TOKENS as u64),
+            QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
     }
 }
 
@@ -475,6 +482,11 @@ config_group! {
         /// decode at 2 GiB). 0 pins none; the `rtx5090` profile pins 2 GiB. A
         /// card that holds every expert keeps none in RAM anyway and ignores it.
         pinned_expert_bytes: Bytes = 0, NO_RULE, FLASH_NEXT_ONLY, [Visible, Patchable, ReloadRequired];
+        /// The 27B's adaptation (ADR 0063): at more than one decode lane, a
+        /// context the load lowers is kept only when the KV pool holds it and
+        /// a spare reservation of this many tokens, room for a second request;
+        /// 0, one sequence is enough. At one lane the plan's own floor decides.
+        adapt_spare_tokens: Tokens = super::DEFAULT_ADAPT_SPARE_TOKENS, NO_RULE, QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
     }
 }
 
@@ -551,7 +563,7 @@ config_group! {
         decode_lanes: Opt<Lanes> = None, between(1, ignis_core::N_DECODE_LANES as i64), ALL, [Visible, Patchable, ReloadRequired, Scoped];
         /// The drafter's proposal head: `full` (the target's output head),
         /// `shortlist` (the artifact's Q4 head over the 131,072 most frequent
-        /// tokens, +356 MB of VRAM) or `auto` (`full` on every card class: the
+        /// tokens, ~357 MB more VRAM) or `auto` (`full` on every card class: the
         /// shortlist frees no VRAM and measured slower). Needs a backend; `mtp`
         /// has only `full`. Unset, `full`.
         draft_head: Opt<DraftHead> = None, Validator::OneOf(&["full", "shortlist", "auto"]), ALL, [Visible, Patchable, ReloadRequired, Scoped];

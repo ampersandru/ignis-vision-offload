@@ -98,16 +98,20 @@ pub struct EngineShape {
     /// [`ignis_core::RopeScaling::NONE`] is the linear one, a YaRN factor
     /// rescales the checkpoint's trained position envelope.
     pub rope_scaling: ignis_core::RopeScaling,
-    /// Whether [`Self::rope_scaling`] is `auto`'s table for
-    /// [`Self::max_context`] (ADR 0057): a context the load adapts
-    /// re-resolves it ([`Self::at`]); a spelled-out table stays.
-    pub rope_scaling_auto: bool,
+    /// The setting [`Self::rope_scaling`] was resolved from (ADR 0057): an
+    /// `auto` table is resolved again for a context the load adapts
+    /// ([`Self::at`]); a spelled-out one stays.
+    pub rope_setting: ignis_core::RopeSetting,
     /// Which of the 27B's context, decode lanes and drafter head its load
     /// may lower when the VRAM plan refuses them (ADR 0063 §3): those the
-    /// profile or the hardcoded default gave
-    /// ([`crate::config::Config::adaptable`]). The default shape names
-    /// nothing, so all three adapt; Flash-Next's load adapts nothing.
+    /// profile or the hardcoded default gave, as the resolution says
+    /// ([`crate::config::Config::adaptable`]). The default shape, which no
+    /// resolution made, adapts nothing; Flash-Next's load adapts nothing.
     pub adaptable: crate::adaptation::Adaptable,
+    /// The 27B's adaptation ladder: its context step and its spare
+    /// reservation (`--model-adapt-context-step`, `--vram-adapt-spare-tokens`,
+    /// ADR 0063 §3).
+    pub adapt_ladder: crate::adaptation::Ladder,
     /// The 27B's prompt attention precision (`--model-prefill-attention`,
     /// GitHub #335); Flash-Next ignores it.
     pub prefill_attention: ignis_core::PrefillAttention,
@@ -160,9 +164,11 @@ impl Default for EngineShape {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
-            // `auto`, the default, is the linear table at the default context.
-            rope_scaling_auto: true,
-            adaptable: crate::adaptation::Adaptable::ALL,
+            // A shape built by hand names its table and adapts nothing: a
+            // GPU test's shape is refused as it was, never served smaller.
+            rope_setting: ignis_core::RopeSetting::Fixed(ignis_core::RopeScaling::NONE),
+            adaptable: crate::adaptation::Adaptable::NONE,
+            adapt_ladder: crate::adaptation::Ladder::default(),
             prefill_attention: ignis_core::PrefillAttention::default(),
             exception_weights: ignis_core::ExceptionWeights::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::default(),
@@ -200,8 +206,9 @@ impl From<&crate::config::Config> for EngineShape {
             decode_lanes: config.decode_lanes.unwrap_or(0),
             vision: config.vision,
             rope_scaling: config.rope_scaling,
-            rope_scaling_auto: config.settings().model.rope_scaling.is_auto(),
+            rope_setting: config.settings().model.rope_scaling,
             adaptable: config.adaptable(),
+            adapt_ladder: config.adapt_ladder(),
             prefill_attention: config.prefill_attention,
             exception_weights: config.exception_weights,
             ngram_hot_bytes: config.ngram_hot_bytes.unwrap_or_default(),
@@ -277,21 +284,27 @@ impl EngineShape {
     }
 
     /// This 27B shape at `attempt`'s values (ADR 0063 §3), each changed only
-    /// where it differs, with what follows it: the context, and an `auto`
-    /// rope table re-resolved for it (ADR 0057); the lanes, and the host
-    /// retained slots nobody named -- two a lane (GitHub #336), and with them
-    /// the plan's per-slot pages; the drafter's head. At its own values, the
+    /// where it differs, with what follows it: the context, an `auto` rope
+    /// table re-resolved for it (ADR 0057), and the vision encoder's item
+    /// bound kept within the envelope at it; the lanes, and the host retained
+    /// slots nobody named -- two a lane (GitHub #336), and with them the
+    /// plan's per-slot pages; the drafter's head. At its own values, the
     /// shape itself.
     pub fn at(self, attempt: crate::adaptation::Attempt) -> Self {
         let family = ignis_core::compute::ModelFamily::Qwen38_27b;
         let mut shape = self;
         if attempt.max_context != self.max_context {
             shape.max_context = attempt.max_context;
-            if self.rope_scaling_auto {
-                shape.rope_scaling = ignis_core::RopeSetting::Auto
-                    .resolve(attempt.max_context)
-                    .expect("adaptation only lowers a context `auto` resolved");
+            if self.rope_setting.is_auto() {
+                shape.rope_scaling =
+                    self.rope_setting.resolve(attempt.max_context).expect("adaptation only lowers a context `auto` resolved");
             }
+            // The processor the load serves bounds an item at the envelope
+            // of the context it runs (`load::serve_vision`).
+            shape.vision = self.vision.map(|vision| {
+                let envelope = vision.envelope_tokens(attempt.max_context);
+                if vision.item_max_tokens() > envelope { vision.with_item_max_tokens(envelope) } else { vision }
+            });
         }
         if attempt.decode_lanes != self.decode_lanes_for(family) {
             shape.decode_lanes = attempt.decode_lanes;
@@ -484,7 +497,7 @@ pub struct RetainedSlotsPlan {
 /// §3), in order: the event's `adapted`, empty when it took none.
 pub fn log_vram_plan(
     plan: &ignis_core::VramPlan, retained: RetainedSlotsPlan, process_held_bytes: u64,
-    adapted: &[crate::adaptation::Step],
+    adapted: &[crate::adaptation::AdaptStep],
 ) {
     let lines = plan.lines;
     let adapted = crate::adaptation::steps_text(adapted);
@@ -662,11 +675,14 @@ pub fn qwen27b_pin_refused(error: &str, request: &ignis_core::residency::HostPla
 }
 
 /// Why a 27B load failed: its host plan's refusal (ADR 0062), kept whole so
-/// a switch can report it in bytes as Flash-Next's is, or anything else, as
-/// the text it always was.
+/// a switch can report it in bytes as Flash-Next's is; its VRAM plan's
+/// refusal after every adaptation it could take (ADR 0063 §3), kept whole so
+/// a caller reads the deficit from its fields; or anything else, as the text
+/// it always was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Qwen27bLoadError {
     HostPlan(ignis_core::residency::HostPlanError),
+    VramPlan(crate::adaptation::StartRefusal),
     Other(String),
 }
 
@@ -680,6 +696,7 @@ impl std::fmt::Display for Qwen27bLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::HostPlan(refusal) => refusal.fmt(f),
+            Self::VramPlan(refusal) => refusal.fmt(f),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -900,7 +917,17 @@ pub(crate) fn model_scope_27b(shape: &EngineShape) -> ignis_artifact::ModelScope
 
 /// A scope the binder bound, with its plan and handles.
 #[cfg(feature = "cuda")]
-type BoundScope = (ignis_artifact::ModelScope, ignis_artifact::MaterializationPlan, Vec<ignis_artifact::ObjectHandle>);
+struct BoundScope {
+    scope: ignis_artifact::ModelScope,
+    plan: ignis_artifact::MaterializationPlan,
+    handles: Vec<ignis_artifact::ObjectHandle>,
+}
+
+/// Where `bound` holds `scope`, if it does.
+#[cfg(feature = "cuda")]
+fn bound_index(bound: &[BoundScope], scope: ignis_artifact::ModelScope) -> Option<usize> {
+    bound.iter().position(|bound| bound.scope == scope)
+}
 
 /// The binder's plan and handles for `scope`, bound the first time a load
 /// asks for it: adaptation plans at a second scope only when it drops the
@@ -911,25 +938,27 @@ fn bound_scope<'a>(
     bound: &'a mut Vec<BoundScope>,
     scope: ignis_artifact::ModelScope,
 ) -> Result<&'a BoundScope, String> {
-    let at = match bound.iter().position(|(bound_scope, ..)| *bound_scope == scope) {
-        Some(at) => at,
+    let index = match bound_index(bound, scope) {
+        Some(index) => index,
         None => {
             let (plan, handles) =
                 ignis_artifact::bind_model_scope_27b_with(reader, scope).map_err(|e| format!("bind model scope: {e}"))?;
-            bound.push((scope, plan, handles));
+            bound.push(BoundScope { scope, plan, handles });
             bound.len() - 1
         }
     };
-    Ok(&bound[at])
+    Ok(&bound[index])
 }
 
 /// [`cuda_scheduler_with_thinking_close`], with a host plan's refusal kept
-/// whole ([`Qwen27bLoadError::HostPlan`], ADR 0062): the server's load reads
-/// it. Beside the scheduler and its reservations, the shape the load runs:
-/// `shape` at the values its adaptation kept (ADR 0063 §3) -- `shape`
-/// itself when the plan fit as configured.
+/// whole ([`Qwen27bLoadError::HostPlan`], ADR 0062), and the VRAM plan's
+/// ([`Qwen27bLoadError::VramPlan`]): the server's load reads them, and a GPU
+/// test reads a plan's deficit from the second. Beside the scheduler and its
+/// reservations, the shape the load runs: `shape` at the values its
+/// adaptation kept (ADR 0063 §3) -- `shape` itself when the plan fit as
+/// configured.
 #[cfg(feature = "cuda")]
-pub(crate) fn qwen27b_load(
+pub fn qwen27b_load(
     artifact_path: &std::path::Path,
     model_id: String,
     eos: TokenId,
@@ -962,9 +991,9 @@ pub(crate) fn qwen27b_load(
     // objects are bound and uploaded only when the operator asked for them;
     // otherwise the plan is the text scope's alone, as before.
     let mut bound = Vec::new();
-    let adapted = crate::adaptation::adapt(shape.adaptation_start(), shape.adaptable, |attempt| {
+    let adapted = crate::adaptation::adapt(shape.adaptation_start(), shape.adaptable, shape.adapt_ladder, |attempt| {
         let shape = shape.at(attempt);
-        let (_, plan, handles) = bound_scope(&reader, &mut bound, model_scope_27b(&shape))?;
+        let BoundScope { plan, handles, .. } = bound_scope(&reader, &mut bound, model_scope_27b(&shape))?;
         let planning = leaf_config_for_shape(shape, 0);
         let reservations = planning.plan_reservations(&reader, plan, handles)?;
         // Asked once where its error can surface: the plan below reads a
@@ -993,18 +1022,17 @@ pub(crate) fn qwen27b_load(
         });
         Ok::<_, String>(match planned {
             Ok(vram) => Planned::Fits { kv_tokens: vram.kv_token_capacity(), plan: (vram, reservations) },
-            Err(refusal) => Planned::Refused(refusal),
+            Err(refusal) => Planned::Unfit(refusal),
         })
     })
     .map_err(|error| match error {
-        AdaptError::Refused(refused) => refused.to_string(),
-        AdaptError::Failed(error) => error,
+        AdaptError::Refused(refused) => Qwen27bLoadError::VramPlan(refused),
+        AdaptError::Failed(error) => Qwen27bLoadError::Other(error),
     })?;
     let shape = shape.at(adapted.attempt);
     let (vram, reservations) = adapted.plan;
-    let scope = model_scope_27b(&shape);
-    let at = bound.iter().position(|(bound_scope, ..)| *bound_scope == scope).expect("the kept plan's scope is bound");
-    let (_, plan, handles) = bound.swap_remove(at);
+    let index = bound_index(&bound, model_scope_27b(&shape)).expect("the kept plan's scope is bound");
+    let BoundScope { plan, handles, .. } = bound.swap_remove(index);
     if shape.prefill_chunk > ignis_runtime::DEFAULT_PREFILL_CHUNK {
         let narrow = EngineShape { prefill_chunk: ignis_runtime::DEFAULT_PREFILL_CHUNK, ..shape };
         let narrow = leaf_config_for_shape(narrow, 0).plan_reservations(&reader, &plan, &handles)?;
@@ -1579,7 +1607,26 @@ mod tests {
         else {
             panic!("expected a runnable config");
         };
-        assert_eq!(EngineShape::from(&config), EngineShape::default());
+        // A resolution says what may adapt and that the rope table is
+        // `auto`'s; a shape built by hand adapts nothing (ADR 0063 §3).
+        let resolved = EngineShape {
+            adaptable: crate::adaptation::Adaptable::ALL,
+            rope_setting: ignis_core::RopeSetting::Auto,
+            ..EngineShape::default()
+        };
+        assert_eq!(EngineShape::from(&config), resolved);
+    }
+
+    /// Review of #336 part D: the default shape -- every GPU gate's hand-built
+    /// one -- adapts nothing, so a gate the card cannot hold is refused as it
+    /// was, never served at a context it did not ask for; its rope table is
+    /// the one it names.
+    #[test]
+    fn the_default_shape_adapts_nothing() {
+        let shape = EngineShape::default();
+        assert_eq!(shape.adaptable, crate::adaptation::Adaptable::NONE);
+        assert_eq!(shape.rope_setting, ignis_core::RopeSetting::Fixed(shape.rope_scaling));
+        assert_eq!(shape.adapt_ladder, crate::adaptation::Ladder { context_step: 65_536, spare_tokens: 65_536 });
     }
 
     /// GitHub #335: `--model-prefill-attention` reaches the shape, and from it
@@ -1941,8 +1988,9 @@ mod tests {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
-            rope_scaling_auto: false,
-            adaptable: crate::adaptation::Adaptable::default(),
+            rope_setting: ignis_core::RopeSetting::Fixed(ignis_core::RopeScaling::NONE),
+            adaptable: crate::adaptation::Adaptable::NONE,
+            adapt_ladder: crate::adaptation::Ladder::default(),
             prefill_attention: ignis_core::PrefillAttention::default(),
             exception_weights: ignis_core::ExceptionWeights::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::Auto,
@@ -2009,7 +2057,10 @@ mod tests {
         let shape = rtx5090_27b(&[]);
         assert_eq!(shape.adaptable, Adaptable::ALL);
         assert_eq!(rtx5090_27b(&["--model-max-context", "131072"]).adaptable, Adaptable { max_context: false, ..Adaptable::ALL });
-        assert!(shape.rope_scaling_auto);
+        assert_eq!(shape.rope_setting, ignis_core::RopeSetting::Auto);
+        assert_eq!(shape.adapt_ladder, crate::adaptation::Ladder { context_step: 65_536, spare_tokens: 65_536 });
+        let ladder = rtx5090_27b(&["--model-adapt-context-step", "131072", "--vram-adapt-spare-tokens", "0"]).adapt_ladder;
+        assert_eq!(ladder, crate::adaptation::Ladder { context_step: 131_072, spare_tokens: 0 }, "the fields reach the shape");
         assert_eq!((shape.max_context, shape.rope_scaling.factor()), (917_504, 3.5));
         let start = shape.adaptation_start();
         assert_eq!(start, Attempt { max_context: 917_504, decode_lanes: 8, draft_head: Some(ProposalHead::Full) });
@@ -2019,8 +2070,18 @@ mod tests {
         assert_eq!((narrower.max_context, narrower.rope_scaling.factor()), (786_432, 3.0), "auto re-resolved");
         assert_eq!(shape.at(Attempt { max_context: 196_608, ..start }).rope_scaling, RopeScaling::NONE, "within the trained positions");
         let fixed = rtx5090_27b(&["--model-rope-scaling", "yarn:4"]);
-        assert!(!fixed.rope_scaling_auto);
+        assert!(!fixed.rope_setting.is_auto());
         assert_eq!(fixed.at(Attempt { max_context: 786_432, ..start }).rope_scaling, fixed.rope_scaling, "a spelled-out table stays");
+
+        // The encoder's item bound stays within the envelope at the context
+        // the load runs, as the processor it serves does (`load::serve_vision`).
+        let wide = ignis_core::Vision::new(131_072).unwrap().with_item_max_tokens(131_072);
+        let seen = EngineShape { vision: Some(wide), ..shape };
+        let item = |context| seen.at(Attempt { max_context: context, ..start }).vision.map(|v| v.item_max_tokens());
+        assert_eq!(item(65_536), Some(65_536), "the adapted envelope");
+        assert_eq!(item(196_608), Some(131_072), "the vision envelope, below the context");
+        let unbounded = EngineShape { vision: Some(ignis_core::Vision::default()), ..shape };
+        assert_eq!(unbounded.at(Attempt { max_context: 65_536, ..start }).vision, Some(ignis_core::Vision::default()), "none named: the leaf reads the envelope");
 
         let one = shape.at(Attempt { decode_lanes: 1, ..start });
         assert_eq!((one.decode_lanes_for(ignis_core::compute::ModelFamily::Qwen38_27b), one.retained_host_slots), (1, 2));
@@ -2159,7 +2220,7 @@ mod tests {
         captured_adapted_vram_plan(plan, &[])
     }
 
-    fn captured_adapted_vram_plan(plan: &ignis_core::VramPlan, adapted: &[crate::adaptation::Step]) -> Vec<serde_json::Value> {
+    fn captured_adapted_vram_plan(plan: &ignis_core::VramPlan, adapted: &[crate::adaptation::AdaptStep]) -> Vec<serde_json::Value> {
         use tracing_subscriber::layer::SubscriberExt;
         let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
         let subscriber =
@@ -2416,37 +2477,21 @@ mod tests {
     /// took, in the order taken, as one list.
     #[test]
     fn the_vram_plan_event_names_the_adaptations_the_load_took() {
-        use crate::adaptation::Step;
+        use crate::adaptation::{AdaptStep, Room};
         let plan = plan_for(ignis_core::VramMode::Derived { headroom_bytes: 1 << 30 }, 30 << 30);
         let steps = [
-            Step::DraftHead { from: ignis_core::ProposalHead::Shortlist, to: ignis_core::ProposalHead::Full },
-            Step::DecodeLanes { from: 2, to: 1 },
-            Step::MaxContext { from: 262_144, to: 196_608, second_reservation: true },
+            AdaptStep::DraftHead { from: ignis_core::ProposalHead::Shortlist, to: ignis_core::ProposalHead::Full },
+            AdaptStep::DecodeLanes { from: 2, to: 1 },
+            AdaptStep::MaxContext { from: 262_144, to: 196_608, context_step: 65_536, room: Room::OneLane },
         ];
         let records = captured_adapted_vram_plan(&plan, &steps);
         assert_eq!(records.len(), 1, "{records:?}");
         assert_eq!(
             records[0]["attributes"]["adapted"],
-            "draft_head shortlist -> full, decode_lanes 2 -> 1, max_context 262144 -> 196608",
+            "draft_head shortlist -> full, decode_lanes 2 -> 1, max_context 262144 -> 196608 (adapt_context_step 65536, one lane)",
             "{}",
             records[0]
         );
-    }
-
-    /// ADR 0063 (AC 5): a drafter whose head is left to `auto` says what
-    /// `auto` chose.
-    #[test]
-    fn a_draft_head_left_to_auto_logs_what_it_resolved_to() {
-        use tracing_subscriber::layer::SubscriberExt;
-        let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
-        let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
-        tracing::subscriber::with_default(subscriber, || log_draft_head_auto(ignis_core::ProposalHead::Full));
-        let events: Vec<serde_json::Value> = sink.lines().iter().map(|line| serde_json::from_str(line).expect("json")).collect();
-        assert_eq!(events.len(), 1, "{events:?}");
-        let event = &events[0];
-        assert_eq!(event["event_name"], "ignis.runtime.draft_head", "{event}");
-        assert_eq!(event["body"], "draft_head auto -> full");
-        assert_eq!((&event["attributes"]["setting"], &event["attributes"]["draft_head"]), (&"auto".into(), &"full".into()));
     }
 
     #[test]

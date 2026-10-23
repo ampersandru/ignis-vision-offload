@@ -2850,14 +2850,8 @@ fn only_the_profiles_and_the_defaults_values_adapt() {
     let env = env_map(&[("IGNIS_QWEN38_SPEC_DECODE_LANES", "2")]);
     assert_eq!(qwen(expect_config(resolve(&[], env).unwrap())), Adaptable { decode_lanes: false, ..Adaptable::ALL });
     let files = MemFiles::with(&[
-        ("head.yaml", "spec:
-  backend: dflash2
-  draft_tokens: 7
-  draft_head: auto
-"),
-        ("default.yaml", "model:
-  max_context: 40960
-"),
+        ("head.yaml", "spec:\n  backend: dflash2\n  draft_tokens: 7\n  draft_head: auto\n"),
+        ("default.yaml", "model:\n  max_context: 40960\n"),
     ]);
     let head = with_files(&["--config", "head.yaml"], no_env, &files).unwrap();
     assert_eq!(qwen(head), Adaptable { draft_head: false, ..Adaptable::ALL }, "an explicit `auto` too");
@@ -2866,6 +2860,51 @@ fn only_the_profiles_and_the_defaults_values_adapt() {
     assert!(!qwen(default).max_context, "a file's value is explicit, at the default or not");
     // `--profile none`: the hardcoded defaults adapt as a profile's would.
     assert_eq!(qwen(config(&["--profile", "none"])), Adaptable::ALL);
+}
+
+/// ADR 0063 §3, review of #336 part D: the adaptation ladder's step and
+/// spare reservation are fields, 65,536 tokens each unless named, by flag,
+/// env or file; they reach the 27B's ladder.
+#[test]
+fn the_adaptation_ladder_is_two_fields_at_65536_tokens() {
+    use crate::adaptation::Ladder;
+    let defaults = config(&[]);
+    assert_eq!((defaults.settings().model.adapt_context_step, defaults.settings().vram.adapt_spare_tokens), (65_536, 65_536));
+    assert_eq!((DEFAULT_ADAPT_CONTEXT_STEP, DEFAULT_ADAPT_SPARE_TOKENS), (65_536, 65_536));
+    assert_eq!(defaults.adapt_ladder(), Ladder::default());
+    let named = config(&["--model-adapt-context-step", "131072", "--vram-adapt-spare-tokens", "0"]);
+    assert_eq!(named.adapt_ladder(), Ladder { context_step: 131_072, spare_tokens: 0 }, "0: one sequence is enough");
+    let env = env_map(&[("IGNIS_MODEL_ADAPT_CONTEXT_STEP", "4096"), ("IGNIS_VRAM_ADAPT_SPARE_TOKENS", "32768")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve"));
+    assert_eq!(from_env.adapt_ladder(), Ladder { context_step: 4_096, spare_tokens: 32_768 });
+    let files = MemFiles::with(&[("c.yaml", "model:\n  adapt_context_step: 64\nvram:\n  adapt_spare_tokens: 1000\n")]);
+    let from_file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap();
+    assert_eq!(from_file.adapt_ladder(), Ladder { context_step: 64, spare_tokens: 1_000 }, "one KV page is the smallest step");
+}
+
+/// The context step is a whole number of KV pages, at least one: anything
+/// else is refused by name.
+#[test]
+fn an_adaptation_step_that_is_not_whole_kv_pages_is_refused() {
+    for raw in ["0", "100", "65537", "-64", "wide"] {
+        let err = refused(&["--model-adapt-context-step", raw]);
+        assert!(err.contains("--model-adapt-context-step"), "{raw}: {err}");
+    }
+    assert!(refused(&["--model-adapt-context-step", "100"]).contains("nonzero multiple of 64"));
+    assert!(refused(&["--vram-adapt-spare-tokens", "-1"]).contains("--vram-adapt-spare-tokens"));
+}
+
+/// Both fields are the 27B's alone (Flash-Next does not adapt, ADR 0063 §3):
+/// a Flash-Next start refuses an explicit value by name, and the defaults are
+/// no one's business.
+#[test]
+fn the_adaptation_fields_are_the_27bs_and_refuse_flash_next() {
+    for flags in [["--model-adapt-context-step", "131072"], ["--vram-adapt-spare-tokens", "0"]] {
+        let named = config(&flags);
+        assert!(served_model_for(&named, ModelFamily::Qwen38_27b).is_ok(), "{flags:?}");
+        let err = served_model_for(&named, ModelFamily::FlashNext).expect_err("the 27B's").0;
+        assert!(err.contains(flags[0]) && err.contains("Qwen3.8-Flash-Next"), "{err}");
+    }
 }
 
 /// The startup line says whether the profile was chosen by `auto` or named.
