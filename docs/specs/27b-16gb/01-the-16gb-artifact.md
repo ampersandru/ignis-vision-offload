@@ -109,9 +109,9 @@ as oracles), 0002 (the artifact format).
   the container, as for Flash-Next and the image model. The step that needs the GPU is the reconstruction errors only.
 - **The artifact.** `qwen3_8_27b_trellis_sc30-v2.ninfer`, identity `qwen3.8-27b` / `trellis-sc30`, 13,379,877,124
   bytes, sha256 `2c4c9ee4d6b25c08da6c2d85840126e73d120564e230f926b6230b5b95ee8b3c`; sidecar
-  `<artifact>.conversion.json`. 1,222 objects: 6 resources and 1,216 tensors, of which 401 trellis (the body's 400
-  matrices and the head) and 821 copied. The 247 `*_input_scale_divisor` scalars of the NVFP4 planes are dropped with
-  them; the quant's MTP layer (8 matrices) is not taken: the MTP layer is the served W8 one.
+  `<artifact>.conversion.json`. 1,222 objects: 401 trellis tensors (the body's 400 matrices and the head) and 821
+  copied objects (815 tensors and the 6 resources). The 247 `*_input_scale_divisor` scalars of the NVFP4 planes are
+  dropped with them; the quant's MTP layer (8 matrices) is not taken: the MTP layer is the served W8 one.
 - **The object names** (`plan.py`; `ignis_artifact::text_scope_27b_trellis` on the Rust side). Under
   `text/layers/{i}/`:
 
@@ -141,19 +141,30 @@ as oracles), 0002 (the artifact format).
 - **Acceptance:**
   1. Met: the sidecar pins `turboderp/Qwen3.8-27B-exl3`, branch `SC_3.00bpw_H4`, revision
      `86b95530f9d365d90dd24d01a997a8de0cdf6c55` (from the download's Hugging Face records), the two shards (each
-     checked against its LFS oid) and the index, quantization config and config by sha256.
-  2. Met: two packs of the same work tree are byte-identical (the sha256 above); the converter writes no timestamp or
-     local path, so the same inputs give the same work tree (`test_the_same_inputs_give_the_same_work_tree`,
-     `the_same_tree_packs_to_the_same_bytes`). The sidecar carries the provenance of the solution's point 3, the
-     commit the converter ran from, and the served graft sidecar's NVFP4 records of the copied drafter, which
-     `checksum::verify` reads clean (34 of 34).
+     checked against its LFS oid) and the index, quantization config and config by sha256. The BF16 checkpoint the
+     reconstruction errors are measured against is pinned the same way (`reference`: `Qwen/Qwen3.8-27B`, its
+     revision, index and 18 shards).
+  2. Met: two conversions from the committed converter, each packed, give the same container (the sha256 above), and
+     two packs of one work tree are byte-identical; the converter writes no timestamp or local path
+     (`test_the_same_inputs_give_the_same_work_tree`, `the_same_tree_packs_to_the_same_bytes`). The sidecar carries
+     the provenance of the solution's point 3, the commit the converter ran from (and whether its files differed from
+     it), and the served graft sidecar's NVFP4 records of the copied drafter, which `checksum::verify` reads clean
+     (34 of 34).
   3. Met: `convert.py verify` reads every trellis object back equal to its source tensors and every copied object's
-     sha256 equal to the served one's (VERIFY PASS, 401 + 821); the Rust test cross-checks copies of every kind through
-     the crate's reader, and binds every object of the directory to `finish` (`tests/trellis_27b.rs`).
-  4. Met: the text scope, the embedding in mapped host memory, is 9,825,087,488 bytes of device arena; with the DFlash2
-     module and the draft head 11,264,998,400; with the vision tower too 11,560,717,824. The trellis op's workspace
-     (`trellis::plan_bytes`, 72.4 MB at 16 decode and 2,048 prefill tokens: spec 02) comes on top in spec 05's plan.
+     sha256 equal to the served one's (VERIFY PASS, 401 + 821), and the Rust test cross-checks copies of every kind
+     through the crate's own reader (`tests/trellis_27b.rs`). Every object binds against its descriptor to `finish`
+     (ADR 0002's contract, as for the served artifact); against the model's own tables, the trellis text scope, the
+     DFlash2 module, the draft head and the vision tower bind, and the rest is the MTP layer and the frontend, which
+     no 27B scope binds on the served artifact either. Binding it in the program is 05a's (below).
+  4. Met: the binder's materialization plan for the text scope, the embedding in mapped host memory, is 9,825,087,488
+     bytes of device arena; with the DFlash2 module and the draft head 11,264,998,400; with the vision tower too
+     11,560,717,824. The trellis op's workspace (`trellis::plan_bytes`, 72.4 MB at 16 decode and 2,048 prefill
+     tokens: spec 02) and the VRAM plan's other lines come with the load, in spec 05a.
   5. See the Hugging Face paragraph below.
   6. Met: `cargo test` workspace-wide.
-- **Moved to spec 05a.** The testing decision "the artifact loads in ignis on the 5090 under a 16 GiB budget" is 05a's
-  Acceptance A1: the 27B program binds the NVFP4 text scope only until 05a wires the trellis one.
+- **Moved to spec 05a** (a coordinator call, listed on #338 for the owner). The testing decision "the artifact loads in
+  ignis on the 5090 under a 16 GiB budget" is 05a's Acceptance A1 word for word: the 27B program binds the NVFP4 text
+  scope only until 05a wires the trellis one.
+- **Beyond the spec, for the tool's own runs:** `--error-bound` (default 0.6, recorded in the sidecar; a threshold is a
+  setting with a default, the owner's rule) and `--skip-errors` (a `dry-run` tree, which the packer refuses unless
+  asked).

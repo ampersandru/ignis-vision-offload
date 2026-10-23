@@ -10,9 +10,9 @@ from conftest import write_safetensors
 def _quant(tmp_path, tensors):
     write_safetensors(os.path.join(tmp_path, "model-00001-of-00001.safetensors"), tensors)
     import json
-    with open(os.path.join(tmp_path, "model.safetensors.index.json"), "w") as f:
+    with open(os.path.join(tmp_path, "model.safetensors.index.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump({"weight_map": {n: "model-00001-of-00001.safetensors" for n in tensors}}, f)
-    with open(os.path.join(tmp_path, "quantization_config.json"), "w") as f:
+    with open(os.path.join(tmp_path, "quantization_config.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump({"codebook": "mul1"}, f)
     return exl3.Quant(tmp_path)
 

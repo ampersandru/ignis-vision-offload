@@ -12,7 +12,9 @@ writes the container.
   download metadata), every file the converter reads by sha256, each shard's checked against its
   LFS oid; the served artifact and its graft sidecar by sha256.
 - Every trellis matrix's reconstruction error against the BF16 checkpoint is recorded, and one
-  above `--error-bound` fails the conversion (`errors.py`, the GPU step). `--skip-errors` writes a
+  above `--error-bound` fails the conversion (`reconstruction.py`, the GPU step). The BF16 checkpoint
+  it is measured against is pinned like the quant: its revision, every file the step reads by
+  sha256, each shard against its LFS oid. `--skip-errors` writes a
   `dry-run` tree instead (the packer packs it only when asked).
 
 `verify` reads a packed artifact back: its identity, its object table against the plan, every
@@ -34,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 import container
 import exl3
 import plan
+import reconstruction
 import work
 
 SCHEMA = "qwen3.8-27b-trellis-converter-v1"
@@ -45,24 +48,54 @@ BRANCH = "SC_3.00bpw_H4"
 QUANT_CONFIG = {"quant_method": "exl3", "codebook": "mul1", "out_scales": "always", "bits": 3.0, "head_bits": 4}
 # The quant's files the converter reads, beside its shards.
 QUANT_META = ("model.safetensors.index.json", "quantization_config.json", "config.json")
+BF16_REPO = "Qwen/Qwen3.8-27B"
+INDEX = "model.safetensors.index.json"
+EXIT_REFUSED = 2
+EXIT_VERIFY_FAILED = 3
 
 
 class Refused(Exception):
     """A conversion that must not produce a work tree."""
 
 
-def sha256_file(path, block=64 << 20):
-    return work.file_digest(path, block)
-
-
-def hf_metadata(root, name):
-    """(revision, etag) of a file in a Hugging Face download (`.cache/huggingface/download`)."""
+def download_record(root, name):
+    """(revision, etag) of a file in a Hugging Face download (`.cache/huggingface/download`): an LFS
+    file's etag is its sha256."""
     path = os.path.join(root, ".cache", "huggingface", "download", name + ".metadata")
     if not os.path.isfile(path):
         raise Refused(f"{root} has no Hugging Face download record for {name}: the revision cannot be pinned")
     with open(path, encoding="utf-8") as f:
-        lines = f.read().split("\n")
-    return lines[0].strip(), lines[1].strip()
+        lines = [line.strip() for line in f.read().split("\n")]
+    if len(lines) < 2 or not lines[0] or not lines[1]:
+        raise Refused(f"{path} is not a Hugging Face download record")
+    return lines[0], lines[1]
+
+
+def revision_of(root, names, what):
+    """The one revision the files `names` of `root` were downloaded at."""
+    revisions = {download_record(root, name)[0] for name in names}
+    if len(revisions) != 1:
+        raise Refused(f"{what}'s files come from different revisions: {sorted(revisions)}")
+    return revisions.pop()
+
+
+def pin_files(root, digests, lfs):
+    """{name: {bytes, sha256}} from `digests` (name -> future sha256), each file of `lfs` checked
+    against its LFS oid."""
+    out = {}
+    for name, future in digests.items():
+        digest = future.result()
+        oid = download_record(root, name)[1]
+        if name in lfs and digest != oid:
+            raise Refused(f"{name} hashes to {digest}, its LFS oid is {oid}")
+        out[name] = {"bytes": os.path.getsize(os.path.join(root, name)), "sha256": digest}
+    return out
+
+
+def bf16_shards(bf16_root):
+    """The BF16 checkpoint's shards (the reconstruction step reads its linears from them)."""
+    with open(os.path.join(bf16_root, INDEX), encoding="utf-8") as f:
+        return sorted(set(json.load(f)["weight_map"].values()))
 
 
 def check_quant_config(config):
@@ -113,11 +146,9 @@ def versions():
     return out
 
 
-def convert(served_path, quant_root, bf16_root, out_work, skip_errors=False, error_bound=None,
+def convert(served_path, quant_root, bf16_root, out_work, skip_errors=False, error_bound=reconstruction.ERROR_BOUND,
             errors_fn=None, log=print):
     """Writes the work tree `out_work`; returns the converter.json record. Raises Refused."""
-    import errors as errors_mod
-    error_bound = errors_mod.ERROR_BOUND if error_bound is None else error_bound
     t0 = time.time()
     if os.path.isdir(out_work) and os.listdir(out_work):
         raise Refused(f"{out_work} is not empty: remove it to convert again")
@@ -137,27 +168,26 @@ def convert(served_path, quant_root, bf16_root, out_work, skip_errors=False, err
     log(f"plan: {len(objects)} objects ({sum(p.key is not None for p in objects)} trellis), "
         f"{len(dropped)} served objects dropped, {len(unused)} quant matrices unused")
 
-    # The pins hash ~33 GB; they run beside the GPU step.
-    revisions = {}
-    pinned = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {name: pool.submit(sha256_file, os.path.join(quant_root, name))
-                   for name in list(quant.shards) + list(QUANT_META)}
-        served_digest = pool.submit(sha256_file, served_path)
+    # The revisions are read before the GPU step; the hashes (~33 GB, ~88 GB with the BF16
+    # reference) run beside it.
+    quant_files = list(quant.shards) + list(QUANT_META)
+    quant_revision = revision_of(quant_root, quant_files, "the quant")
+    bf16_files = [] if skip_errors else bf16_shards(bf16_root) + [INDEX]
+    bf16_revision = revision_of(bf16_root, bf16_files, "the BF16 checkpoint") if bf16_files else None
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        def digests(root, names):
+            return {name: pool.submit(work.file_digest, os.path.join(root, name)) for name in names}
+
+        quant_digests = digests(quant_root, quant_files)
+        bf16_digests = digests(bf16_root, bf16_files)
+        served_digest = pool.submit(work.file_digest, served_path)
         if skip_errors:
             rel = None
         else:
-            rel = (errors_fn or errors_mod.rel_errors)(quant, bf16_root, objects, log=log)
-        for name, fut in futures.items():
-            revision, etag = hf_metadata(quant_root, name)
-            revisions[name] = revision
-            digest = fut.result()
-            if name in quant.shards and digest != etag:
-                raise Refused(f"{name} hashes to {digest}, its LFS oid is {etag}")
-            pinned[name] = {"bytes": os.path.getsize(os.path.join(quant_root, name)), "sha256": digest}
+            rel = (errors_fn or reconstruction.rel_errors)(quant, bf16_root, objects, log=log)
+        pinned = pin_files(quant_root, quant_digests, set(quant.shards))
+        bf16_pinned = pin_files(bf16_root, bf16_digests, set(bf16_files) - {INDEX})
         served_sha256 = served_digest.result()
-    if len(set(revisions.values())) != 1:
-        raise Refused(f"the quant's files come from different revisions: {sorted(set(revisions.values()))}")
     if rel is not None:
         over = {n: e for n, e in rel.items() if not e <= error_bound}
         if over:
@@ -212,7 +242,7 @@ def convert(served_path, quant_root, bf16_root, out_work, skip_errors=False, err
         "source": {
             "repo": REPO,
             "branch": BRANCH,
-            "revision": next(iter(revisions.values())),
+            "revision": quant_revision,
             "license": "apache-2.0",
             "quantization_config": {k: quant.config.get(k) for k in QUANT_CONFIG},
             "files": pinned,
@@ -222,10 +252,13 @@ def convert(served_path, quant_root, bf16_root, out_work, skip_errors=False, err
             "bytes": os.path.getsize(served_path),
             "sha256": served_sha256,
             "identity": served.identity,
-            "graft_sidecar": {"file": os.path.basename(graft_path), "sha256": sha256_file(graft_path)},
+            "graft_sidecar": {"file": os.path.basename(graft_path), "sha256": work.file_digest(graft_path)},
         },
+        # The checkpoint the reconstruction errors are measured against (none in a dry run).
+        "reference": None if skip_errors else {"repo": BF16_REPO, "revision": bf16_revision, "files": bf16_pinned},
         "graft": {
-            "how": "the 66 dflash2/* objects copied byte for byte from the served artifact, which grafted them",
+            "how": f"the {sum(n.startswith('dflash2/') for n in copied)} dflash2/* objects copied byte for byte "
+                   f"from the served artifact, which grafted them",
             "recipe_id": graft.get("recipe_id"),
             "grafted_from": graft.get("grafted_from"),
             "source": graft.get("source"),
@@ -282,7 +315,7 @@ def verify(artifact_path, served_path, quant_root, log=print):
         if p.kind == "resource":
             if o["kind"] != "resource" or o["encoding"] != p.encoding:
                 problems.append(f"{name}: {o['kind']} {o.get('encoding')}, not a {p.encoding} resource")
-        elif (o["kind"], o["format"], o["layout"], o["shape"]) != ("tensor", p.format, p.layout, p.shape):
+        elif (o["kind"], o.get("format"), o.get("layout"), o.get("shape")) != ("tensor", p.format, p.layout, p.shape):
             problems.append(f"{name}: {o.get('format')} {o.get('layout')} {o.get('shape')}, "
                             f"not {p.format} {p.layout} {p.shape}")
         data = art.read(name)
@@ -303,18 +336,19 @@ def verify(artifact_path, served_path, quant_root, log=print):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="command", required=True)
-    r = sub.add_parser("run")
-    r.add_argument("--served", required=True)
-    r.add_argument("--quant", required=True)
-    r.add_argument("--bf16", required=True)
-    r.add_argument("--work", required=True)
-    r.add_argument("--skip-errors", action="store_true")
-    r.add_argument("--error-bound", type=float, default=None)
-    v = sub.add_parser("verify")
-    v.add_argument("--artifact", required=True)
-    v.add_argument("--served", required=True)
-    v.add_argument("--quant", required=True)
-    v.add_argument("--report")
+    r = sub.add_parser("run", help="write the packer's work tree and converter.json")
+    r.add_argument("--served", required=True, help="the served qwen3_8_27b_nvfp4full-v2.ninfer (its .graft.json beside)")
+    r.add_argument("--quant", required=True, help="the SC_3.00bpw_H4 download, with .cache/huggingface/download")
+    r.add_argument("--bf16", required=True, help="the BF16 checkpoint the reconstruction errors are measured against")
+    r.add_argument("--work", required=True, help="the work tree to write (absent or empty)")
+    r.add_argument("--skip-errors", action="store_true", help="skip the GPU step: a dry-run tree")
+    r.add_argument("--error-bound", type=float, default=reconstruction.ERROR_BOUND,
+                   help="the largest relative reconstruction error (default %(default)s; above it is a layout error)")
+    v = sub.add_parser("verify", help="check a packed artifact against the plan and its sources")
+    v.add_argument("--artifact", required=True, help="the packed .ninfer")
+    v.add_argument("--served", required=True, help="the served artifact it copies from")
+    v.add_argument("--quant", required=True, help="the quant it repacks")
+    v.add_argument("--report", help="write the report as JSON here")
     a = ap.parse_args(argv)
     log = lambda line: print(line, flush=True)
     if a.command == "run":
@@ -322,7 +356,7 @@ def main(argv=None):
             convert(a.served, a.quant, a.bf16, a.work, skip_errors=a.skip_errors, error_bound=a.error_bound, log=log)
         except Refused as e:
             print(f"REFUSED: {e}", flush=True)
-            return 2
+            return EXIT_REFUSED
         return 0
     ok, report = verify(a.artifact, a.served, a.quant, log=log)
     if a.report:
@@ -330,7 +364,7 @@ def main(argv=None):
     for p in report["problems"]:
         print(f"  {p}", flush=True)
     print("VERIFY PASS" if ok else "VERIFY FAILED", flush=True)
-    return 0 if ok else 3
+    return 0 if ok else EXIT_VERIFY_FAILED
 
 
 if __name__ == "__main__":

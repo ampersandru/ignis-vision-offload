@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import exl3  # noqa: E402
 
 REVISION = "86b95530f9d365d90dd24d01a997a8de0cdf6c55"
+BF16_REVISION = "0123456789abcdef0123456789abcdef01234567"
 H = 128
 LAYERS = 4
 VOCAB = 256
@@ -174,12 +175,26 @@ def make_sources(root, seed=338):
     for name, value in files.items():
         with open(os.path.join(quant, name), "w", encoding="utf-8", newline="\n") as f:
             json.dump(value, f)
-    for name in list(shards) + list(files):
-        with open(os.path.join(quant, name), "rb") as f:
-            digest = hashlib.sha256(f.read()).hexdigest()
-        etag = digest if name in shards else "0" * 40
-        with open(os.path.join(meta, name + ".metadata"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(f"{REVISION}\n{etag}\n1792534371.28\n")
+    download_records(quant, list(shards) + list(files), set(shards), REVISION)
+
+    # The BF16 checkpoint: one shard and its index (the reconstruction step is a test double).
     bf16 = os.path.join(root, "bf16")
-    os.makedirs(bf16)
+    os.makedirs(os.path.join(bf16, ".cache", "huggingface", "download"))
+    write_safetensors(os.path.join(bf16, "model-00001-of-00001.safetensors"),
+                      {"lm_head.weight": ("BF16", [VOCAB, H], _bytes(rng, 2 * VOCAB * H))})
+    with open(os.path.join(bf16, "model.safetensors.index.json"), "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"weight_map": {"lm_head.weight": "model-00001-of-00001.safetensors"}}, f)
+    download_records(bf16, ["model-00001-of-00001.safetensors", "model.safetensors.index.json"],
+                     {"model-00001-of-00001.safetensors"}, BF16_REVISION)
     return {"served": served, "quant": quant, "bf16": bf16}
+
+
+def download_records(root, names, lfs, revision):
+    """The Hugging Face download records of `names` under `root`: an LFS file's etag is its sha256."""
+    meta = os.path.join(root, ".cache", "huggingface", "download")
+    for name in names:
+        with open(os.path.join(root, name), "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        etag = digest if name in lfs else "0" * 40
+        with open(os.path.join(meta, name + ".metadata"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"{revision}\n{etag}\n1792534371.28\n")

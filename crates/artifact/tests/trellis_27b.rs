@@ -100,7 +100,7 @@ fn work_tree(root: &Path, units: &[(&'static str, Vec<Tensor>)]) -> PathBuf {
         for (name, format, layout, shape) in tensors {
             let bytes = tensor_encoded_size(*layout, *format, shape).unwrap();
             let file = format!("{}.bin", name[unit.len() + 1..].replace('/', "."));
-            listed.push(json!({"name": name, "file": file, "format": format.name(), "layout": layout_name(*layout),
+            listed.push(json!({"name": name, "file": file, "format": format.name(), "layout": layout.name(),
                                "shape": shape, "bytes": bytes}));
             files.push((file, payload(name, bytes)));
         }
@@ -113,15 +113,6 @@ fn work_tree(root: &Path, units: &[(&'static str, Vec<Tensor>)]) -> PathBuf {
     )
     .unwrap();
     work
-}
-
-fn layout_name(layout: StorageLayout) -> &'static str {
-    match layout {
-        StorageLayout::ContiguousLeV1 => "contiguous-le-v1",
-        StorageLayout::RowSplitK128V1 => "row-split-k128-v1",
-        StorageLayout::TrellisTile16V1 => "trellis-tile16-v1",
-        other => panic!("no fixture layout {other:?}"),
-    }
 }
 
 /// Pack `work` into `artifact` without consuming the work files.

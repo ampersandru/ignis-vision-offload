@@ -27,7 +27,7 @@ it. Python never writes the container.
 | `plan.py` | The object table: the served directory, in its order, with the body's planes and the head replaced. |
 | `exl3.py` | The quant's matrices from its safetensors headers (no torch): K, shapes, the `mul1` flag, the record bytes. |
 | `container.py` | Read-only access to a `.ninfer` v2 container (the served artifact; the packed one for `verify`). |
-| `errors.py` | The GPU step and the only exllamav3 user: each trellis matrix's relative error against the BF16 checkpoint. |
+| `reconstruction.py` | The GPU step and the only exllamav3 user: each trellis matrix's relative reconstruction error against the BF16 checkpoint. |
 | `work.py` | The DONE protocol the packer checks (copied from `tools/image-converter/work.py`). |
 | `test_*.py`, `conftest.py` | Unit tests (CPU only) on a reduced synthetic served artifact and quant. |
 
@@ -62,7 +62,8 @@ F:/ai/ngram-venv/Scripts/python.exe tools/27b-16gb-converter/convert.py verify \
 
 - **`run`** refuses (exit 2, nothing written) a non-empty `--work`, another quant recipe (its
   `quantization_config.json` must say exl3, mul1, out scales always, 3.0 bits, head 4), a shard whose
-  sha256 is not its LFS oid, files from two revisions, a quant matrix with no served plane or a plane
+  sha256 is not its LFS oid (the BF16 checkpoint's too), files from two revisions or with no download
+  record, a quant matrix with no served plane or a plane
   with no quant matrix, split parts that do not tile their plane, and any matrix whose reconstruction
   error is above `--error-bound` (0.6: a layout error, never a quantization one). `--skip-errors` skips
   the GPU step and writes a `dry-run` tree, which the packer takes only with `--accept-status dry-run`.
@@ -77,6 +78,8 @@ F:/ai/ngram-venv/Scripts/python.exe tools/27b-16gb-converter/convert.py verify \
 - `source`: the quant's repository, branch, revision and every file the converter reads, by bytes and
   sha256; its `quantization_config`.
 - `served`: the served artifact's file name, bytes, sha256 and identity; its graft sidecar's sha256.
+- `reference`: the BF16 checkpoint the errors are measured against: repository, revision, its index
+  and shards by bytes and sha256 (none in a dry run).
 - `graft`: the served graft sidecar's provenance of the DFlash2 module (`grafted_from`, the drafter's
   config); `local_nvfp4`: its per-object NVFP4 records of the copied objects, which
   `ignis_artifact::checksum::verify` reads.

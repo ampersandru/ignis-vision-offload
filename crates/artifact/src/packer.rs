@@ -225,10 +225,15 @@ impl PackOptions {
     /// The defaults for the 27B's 16 GB artifact: `work_dir` → `artifact`.
     pub fn trellis_27b(work_dir: PathBuf, artifact: PathBuf) -> Self {
         Self {
+            work_dir,
+            artifact,
+            geometry: None,
             identity: trellis_27b_identity(),
             header_bytes: TRELLIS_27B_HEADER_BYTES,
+            keep_work: false,
+            delete_batch_bytes: DEFAULT_DELETE_BATCH_BYTES,
+            accept_status: vec!["complete".into()],
             family: Family::Qwen27bTrellis,
-            ..Self::qwen_image(work_dir, artifact)
         }
     }
 
@@ -699,9 +704,10 @@ fn plan_unit(
                 });
             }
         }
-        // the 16 GB 27B's units: tensors.json only, every name under the
-        // unit's own prefix (`text/...`, `mtp/...`: not Flash-Next's `mtp`)
-        _ if *family == Family::Qwen27bTrellis => {
+        // the image model's and the 16 GB 27B's units: tensors.json only,
+        // every name under the unit's own prefix (`vision/...`, `vae/...`,
+        // `text/...`; the 27B's `mtp/...` is not Flash-Next's `mtp` unit)
+        _ if *family == Family::Qwen27bTrellis || crate::qwen_image::WORK_UNITS.contains(&unit) => {
             plan_tensors_json(&mut plan, &done, Some(&format!("{unit}/")))?;
         }
         "global" => plan_tensors_json(&mut plan, &done, None)?,
@@ -713,11 +719,6 @@ fn plan_unit(
             if !plan_ngram(&mut plan, &done, flash_next()?)? {
                 return Ok(None);
             }
-        }
-        // the image model's units: tensors.json only, every name under the
-        // unit's own prefix (`vision/...`, `vae/...`)
-        _ if crate::qwen_image::WORK_UNITS.contains(&unit) => {
-            plan_tensors_json(&mut plan, &done, Some(&format!("{unit}/")))?;
         }
         _ => {
             let layer: usize = unit

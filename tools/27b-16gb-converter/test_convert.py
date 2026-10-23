@@ -7,7 +7,7 @@ import pytest
 import container
 import convert
 import exl3
-from conftest import REVISION, make_sources, write_container
+from conftest import BF16_REVISION, REVISION, make_sources, write_container
 
 
 def _errors(value=0.25):
@@ -31,9 +31,14 @@ def _sha(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def pack(work, artifact):
+def _never(*args, **kw):
+    raise AssertionError("the GPU step ran before a refusal that needs none")
+
+
+def pack(work, artifact, as_resource=()):
     """What the packer does with a work tree, for `verify`'s tests: the units in order, frontend
-    files by DONE's (sorted) names, tensors in tensors.json order."""
+    files by DONE's (sorted) names, tensors in tensors.json order; the tensors named in
+    `as_resource` written as resources instead (a broken artifact)."""
     objects = []
     for unit in ("frontend", "text", "mtp", "vision", "dflash2"):
         d = os.path.join(work, unit)
@@ -44,9 +49,12 @@ def pack(work, artifact):
                                     f.read()))
             continue
         for t in _json(os.path.join(d, "tensors.json"))["tensors"]:
+            if t["name"] in as_resource:
+                desc = {"name": t["name"], "kind": "resource", "encoding": "raw-bytes-v1"}
+            else:
+                desc = {k: t[k] for k in ("name", "format", "layout", "shape")} | {"kind": "tensor"}
             with open(os.path.join(d, t["file"]), "rb") as f:
-                objects.append(({k: t[k] for k in ("name", "format", "layout", "shape")} | {"kind": "tensor"},
-                                f.read()))
+                objects.append((desc, f.read()))
     write_container(artifact, convert.IDENTITY, objects)
 
 
@@ -92,6 +100,13 @@ def test_converter_json_carries_the_provenance(tmp_path):
                                   "model-00002-of-00002.safetensors", "model.safetensors.index.json",
                                   "quantization_config.json"]
     assert record["served"]["sha256"] == _sha(src["served"])
+    ref = record["reference"]
+    assert (ref["repo"], ref["revision"]) == ("Qwen/Qwen3.8-27B", BF16_REVISION)
+    for name, pin in ref["files"].items():
+        assert pin == {"bytes": os.path.getsize(os.path.join(src["bf16"], name)),
+                       "sha256": _sha(os.path.join(src["bf16"], name))}
+    assert sorted(ref["files"]) == ["model-00001-of-00001.safetensors", "model.safetensors.index.json"]
+    assert record["graft"]["how"].startswith("the 2 dflash2/* objects")
     assert record["served"]["graft_sidecar"]["sha256"] == _sha(src["served"] + ".graft.json")
     assert record["graft"]["grafted_from"]["repository"] == "someone/base"
     # only the copied drafter's NVFP4 record survives: the body plane it named is gone
@@ -132,11 +147,14 @@ def test_skip_errors_writes_a_dry_run(tmp_path):
     record = _run(src, str(tmp_path / "work"), skip_errors=True, errors_fn=None)
     assert record["status"] == "dry-run"
     assert all(t["rel_error"] is None for t in record["trellis"]["matrices"].values())
+    assert record["reference"] is None, "a dry run reads no BF16 checkpoint"
 
 
-def test_a_shard_that_is_not_its_lfs_oid_is_refused(tmp_path):
+@pytest.mark.parametrize("root,shard", [("quant", "model-00002-of-00002.safetensors"),
+                                        ("bf16", "model-00001-of-00001.safetensors")])
+def test_a_shard_that_is_not_its_lfs_oid_is_refused(tmp_path, root, shard):
     src = make_sources(str(tmp_path))
-    path = os.path.join(src["quant"], "model-00002-of-00002.safetensors")
+    path = os.path.join(src[root], shard)
     with open(path, "r+b") as f:
         f.seek(-1, 2)
         last = f.read(1)
@@ -144,6 +162,23 @@ def test_a_shard_that_is_not_its_lfs_oid_is_refused(tmp_path):
         f.write(bytes([last[0] ^ 1]))
     with pytest.raises(convert.Refused, match="LFS oid"):
         _run(src, str(tmp_path / "work"))
+
+
+@pytest.mark.parametrize("root,name,content,message", [
+    ("quant", "config.json", None, "no Hugging Face download record"),
+    ("quant", "model-00001-of-00002.safetensors", "86b95530f9d365d90dd24d01a997a8de0cdf6c55", "not a Hugging Face"),
+    ("bf16", "model.safetensors.index.json", "f" * 40 + "\n" + "0" * 40, "different revisions"),
+])
+def test_a_source_that_cannot_be_pinned_is_refused_before_the_gpu_step(tmp_path, root, name, content, message):
+    src = make_sources(str(tmp_path))
+    record = os.path.join(src[root], ".cache", "huggingface", "download", name + ".metadata")
+    if content is None:
+        os.remove(record)
+    else:
+        with open(record, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+    with pytest.raises(convert.Refused, match=message):
+        _run(src, str(tmp_path / "work"), errors_fn=_never)
 
 
 def test_a_nonempty_work_dir_is_refused(tmp_path):
@@ -158,7 +193,7 @@ def test_another_quant_recipe_is_refused(tmp_path):
     src = make_sources(str(tmp_path))
     path = os.path.join(src["quant"], "quantization_config.json")
     config = _json(path) | {"codebook": "mcg"}
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(config, f)
     with pytest.raises(convert.Refused, match="codebook"):
         _run(src, str(tmp_path / "work"))
@@ -186,3 +221,14 @@ def test_verify_passes_the_packed_artifact_and_names_a_changed_byte(tmp_path):
     assert not ok
     assert any(p.startswith("text/layers/2/mlp/gate_proj: not") for p in report["problems"])
     assert any(p.startswith("vision/patch_embedding: sha256") for p in report["problems"])
+
+
+def test_verify_names_an_object_of_the_wrong_kind(tmp_path):
+    src = make_sources(str(tmp_path))
+    work = str(tmp_path / "work")
+    _run(src, work)
+    artifact = str(tmp_path / "a.ninfer")
+    pack(work, artifact, as_resource={"text/layers/0/mlp/down"})
+    ok, report = convert.verify(artifact, src["served"], src["quant"], log=lambda _: None)
+    assert not ok
+    assert any(p.startswith("text/layers/0/mlp/down: None None None, not TRELLIS_MUL1_K3") for p in report["problems"])
