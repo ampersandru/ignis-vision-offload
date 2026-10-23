@@ -20,6 +20,9 @@ kernel/tests/fixtures/residency/*.txt text eol=lf
 # The same for Flash-Next's logits capture (flash_next_rope_logits_gpu.rs),
 # whose SHA-256 its provenance records (hq_kv_fixture_integrity.rs).
 crates/core/tests/fixtures/flash_next/*.txt text eol=lf
+# The code span the trellis program is compared on (trellis_logits_gpu.rs): its
+# tokens are the measured top-1 agreement's positions.
+crates/core/tests/fixtures/trellis_logits/*.txt text eol=lf
 
 # The image converter's committed work tree (crates/artifact/tests/qwen_image.rs): each
 # unit's DONE pins the sha256 of its JSON files, so a CRLF checkout would break the pack.

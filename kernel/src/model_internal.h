@@ -8,6 +8,7 @@
 
 #include "ignis_model.h"
 #include "ignis_step.h"
+#include "ignis_trellis_linear.h"
 
 #include "rope_scaling.h"
 
@@ -23,6 +24,32 @@
 #include <memory>
 #include <vector>
 
+// GitHub #339 (spec 27b-16gb/05a): a trellis body's linears, the 16 GB
+// artifact's split parts (spec 27b-16gb/01's As built) -- bound instead of a
+// layer's NVFP4 planes below, never beside them (kernel/src/trellis_body.h).
+//
+// Both kinds of layer end the same way after their token mixer: the output
+// projection's residual add and the MLP (`ignis::trellis_body::output_and_mlp`).
+struct TrellisTail {
+  ignis_trellis_weight output;
+  ignis_trellis_weight gate_proj;
+  ignis_trellis_weight up_proj;
+  ignis_trellis_weight down;
+};
+
+struct GqaTrellisWeights {
+  ignis_trellis_weight q_proj;  // [24 heads x (q 256 | gate 256)] x hidden
+  ignis_trellis_weight k_proj;
+  ignis_trellis_weight v_proj;
+  TrellisTail tail;
+};
+
+struct GdnTrellisWeights {
+  ignis_trellis_weight in_proj_qkv;  // [q 2048 | k 2048 | v 6144] x hidden: the conv input's channels
+  ignis_trellis_weight in_proj_z;
+  TrellisTail tail;
+};
+
 // One decoder layer's leaf-crossing weights (the reference's per-layer
 // weight struct shape, e.g. targets/qwen3_6 FullLayerW / GdnLayerW --
 // written by us: ADR 0009, the program layer is ours, not vendored).
@@ -35,6 +62,9 @@ struct GqaLayerWeights {
   ninfer::Weight post_attention_norm;
   ninfer::Weight mlp_gate_up;
   ninfer::Weight mlp_down;
+  // GitHub #339: the trellis body's linears; empty on the NVFP4 body, where
+  // the planes above are bound.
+  GqaTrellisWeights trellis{};
 };
 
 struct GdnLayerWeights {
@@ -49,6 +79,8 @@ struct GdnLayerWeights {
   ninfer::Weight post_attention_norm;
   ninfer::Weight mlp_gate_up;
   ninfer::Weight mlp_down;
+  // GitHub #339: as GqaLayerWeights::trellis.
+  GdnTrellisWeights trellis{};
 };
 
 // P5-02 (GitHub #150): the DFlash2 drafter's weights, bound only under
@@ -141,6 +173,11 @@ struct VisionWeights {
 };
 
 struct ignis_media_embedding;
+
+// The columns `ignis_program_prefill`'s span-logits readout scores at a time
+// (kernel/src/step.cu): the widest call it makes of the output head, which
+// the trellis body's workspace is sized for (GitHub #339, kernel/src/model.cu).
+inline constexpr std::int32_t kSpanLogitsBlockColumns = 32;
 
 // GitHub #302: a Flash-Next load's program (kernel/src/flash_next/
 // program.h), complete only there; its deleter is defined beside it so this
@@ -322,6 +359,19 @@ struct ignis_model {
   ninfer::Weight final_norm;
   ninfer::Weight output_head;
   std::vector<LayerWeights> layers;
+  // GitHub #339 (spec 27b-16gb/05a): the body the load bound, by its head's
+  // format (kernel/src/model.cu): the NVFP4 planes and `output_head` above,
+  // or the 16 GB artifact's trellis matrices -- each layer's `trellis`
+  // weights and `trellis_head` -- which every linear and head site then
+  // dispatches to (kernel/src/trellis_body.h). Never both.
+  bool is_trellis_body = false;
+  ignis_trellis_weight trellis_head{};
+  // The trellis op's one workspace, reserved at load at a stable address the
+  // round graphs bake (its plan line, `trellis_workspace_bytes`) and zeroed
+  // once: every trellis call runs on `stream` below, one at a time, and
+  // leaves its counters zero. Null on the NVFP4 body.
+  std::unique_ptr<ninfer::DeviceBuffer> trellis_workspace_buffer;
+  ignis_trellis_workspace trellis_workspace{};
   uint64_t vram_bytes = 0;
   // ADR 0062: what of the bound tensors lives in mapped host memory.
   uint64_t host_mapped_bytes = 0;

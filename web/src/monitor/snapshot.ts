@@ -16,7 +16,9 @@ export const REJECT_REASONS = ["full", "unknown_model", "oversized"] as const;
 export type RejectReason = (typeof REJECT_REASONS)[number];
 
 /**
- * The plan's twelve lines, then Flash-Next's two (GitHub #306: `residency`,
+ * The plan's thirteen lines (GitHub #339: `trellis_workspace`, the 27B
+ * trellis body's, 0 on the served artifact and absent from a server that
+ * predates it), then Flash-Next's two (GitHub #306: `residency`,
  * the expert residency's fixed bytes, and `expert_cache`, the VRAM cache of
  * experts; 0 on the 27B, absent from a server that predates them), in the order `VramLines::entries()` lays them out
  * — which is the order the load itself reserves them in, so the panel reads
@@ -29,6 +31,7 @@ export const VRAM_LINES = [
   "weights",
   "cuda_context",
   "workspace",
+  "trellis_workspace",
   "media_embedding",
   "sampling",
   "decode_graph",

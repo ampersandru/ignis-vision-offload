@@ -28,7 +28,14 @@
 extern "C" {
 #endif
 
-/* Mirrors ninfer::QType (kernel/vendor/src/core/tensor.h) numeric values. */
+/* Mirrors ninfer::QType (kernel/vendor/src/core/tensor.h) numeric values.
+ *
+ * GitHub #339 (spec 27b-16gb/05a): the trellis codes, one per K of the 27B's
+ * 16 GB artifact (`TRELLIS_MUL1_K*`, ignis_trellis_linear.h), extend past the
+ * vendored enum and are the leaf's own: a trellis tensor binds into an
+ * `ignis_trellis_weight`, never into a `ninfer::Weight`, so no code here ever
+ * casts one to ninfer::QType. Its `qhigh` and `scales` are the record's `suh`
+ * and `svh`. */
 enum ignis_qtype {
   IGNIS_QTYPE_Q4G64_F16S = 0,
   IGNIS_QTYPE_Q5G64_F16S = 1,
@@ -39,14 +46,22 @@ enum ignis_qtype {
   IGNIS_QTYPE_I32_CTRL = 6,
   IGNIS_QTYPE_NVFP4 = 7,
   IGNIS_QTYPE_FP8_E4M3FN_ROW_BF16S = 8,
+  IGNIS_QTYPE_TRELLIS_MUL1_K2 = 64,
+  IGNIS_QTYPE_TRELLIS_MUL1_K2P5 = 65,
+  IGNIS_QTYPE_TRELLIS_MUL1_K3 = 66,
+  IGNIS_QTYPE_TRELLIS_MUL1_K4 = 67,
+  IGNIS_QTYPE_TRELLIS_MUL1_K5 = 68,
+  IGNIS_QTYPE_TRELLIS_MUL1_K6 = 69,
 };
 
-/* Mirrors ninfer::QuantLayout (kernel/vendor/src/core/tensor.h). */
+/* Mirrors ninfer::QuantLayout (kernel/vendor/src/core/tensor.h), and (GitHub
+ * #339) the leaf's own `trellis-tile16-v1` past it. */
 enum ignis_quant_layout {
   IGNIS_LAYOUT_ROW_SPLIT = 0,
   IGNIS_LAYOUT_CONTIGUOUS = 1,
   IGNIS_LAYOUT_BLOCKSCALE_K16_M128X4 = 2,
   IGNIS_LAYOUT_ROW_SCALE = 3,
+  IGNIS_LAYOUT_TRELLIS_TILE16 = 64,
 };
 
 /* The kind of attention a decoder layer uses (mirrors
@@ -381,6 +396,12 @@ struct ignis_model_reservations {
    * block's workspace, accumulator, router and shared-expert buffers. 0 on
    * the 27B, whose activations live in its workspace. */
   uint64_t activation_bytes;
+  /* GitHub #339 (spec 27b-16gb/05a): the 27B trellis body's
+   * `ignis_trellis_workspace`, one buffer at a stable address for every
+   * trellis call on the model's stream -- the widest of its body's and its
+   * head's calls at 1..IGNIS_TRELLIS_DECODE_MAX_TOKENS tokens and at the
+   * prefill chunk, on this device. 0 on the NVFP4 body and on Flash-Next. */
+  uint64_t trellis_workspace_bytes;
 };
 
 struct ignis_model_stats {
@@ -400,6 +421,17 @@ struct ignis_model_stats {
    * the load asks the runtime where each tensor's data lives. */
   uint64_t host_mapped_bytes;
 };
+
+#ifdef __cplusplus
+/* Neither struct has a `size` field, so both sides pin their layouts (here,
+ * and crates/core/src/model_load.rs's mirror test). */
+static_assert(sizeof(struct ignis_model_reservations) == 64 &&
+                  offsetof(struct ignis_model_reservations, trellis_workspace_bytes) == 56,
+              "ignis_model_reservations drifted from crates/core/src/model_load.rs IgnisModelReservations");
+static_assert(sizeof(struct ignis_model_stats) == 96 && offsetof(struct ignis_model_stats, reserved) == 24 &&
+                  offsetof(struct ignis_model_stats, host_mapped_bytes) == 88,
+              "ignis_model_stats drifted from crates/core/src/model_load.rs IgnisModelStats");
+#endif
 
 /* What `ignis_model_load` would reserve beside the weights for the same
  * arguments, without allocating anything (GitHub #210): the argument checks

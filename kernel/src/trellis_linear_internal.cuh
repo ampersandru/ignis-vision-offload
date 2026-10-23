@@ -70,6 +70,13 @@ struct Layout {
 
 __host__ __device__ inline uint64_t align256(uint64_t v) { return (v + 255) / 256 * 256; }
 
+// The arrival counts' room, in output blocks: one size for every call, so that every call's
+// counts sit where every other call's do. The rotated activations follow the room; sized by the
+// call's own blocks, it put a narrow call's activations over a wider call's counts, which that
+// call then found nonzero and reduced its splits early -- a load's calls of several shapes share
+// one workspace (GitHub #339). Bounds a call's out at IGNIS_TRELLIS_MAX_OUT.
+constexpr uint32_t kArrivalBlocks = IGNIS_TRELLIS_MAX_OUT / 128;
+
 // The decode route's split of the inputs: as many work units (output blocks x splits) as the
 // kernel has resident CTAs on the card (or on the SMs the debug cap admits), so each CTA runs one
 // unit and streams its blocks pipelined instead of paying a unit's latency several times; never
@@ -97,7 +104,7 @@ inline Layout layout(uint32_t in, uint32_t out, uint32_t weights, uint32_t token
   const bool decode = tokens <= static_cast<uint32_t>(kDecodeMaxTokens);
   const uint64_t xr_weights = decode ? weights : 1;
   l.arrivals = 256;
-  l.xr = align256(l.arrivals + 4ull * weights * (out / 128));
+  l.xr = align256(l.arrivals + 4ull * kArrivalBlocks);
   l.inv = align256(l.xr + 2ull * xr_weights * tokens * in);
   l.partials = align256(l.inv + 4ull * xr_weights * nb * tokens);
   l.bytes = l.partials;

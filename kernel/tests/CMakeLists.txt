@@ -997,3 +997,17 @@ add_executable(ignis_kernel_image_transformer_test test_image_transformer.cu)
 target_include_directories(ignis_kernel_image_transformer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(ignis_kernel_image_transformer_test PRIVATE ignis_kernel ignis_vendor)
 add_test(NAME ignis_kernel_image_transformer_test COMMAND ignis_kernel_image_transformer_test)
+
+# GitHub #339 (spec 27b-16gb/05a): OURS -- the 27B program binds the 16 GB artifact's trellis body.
+# The binder through `ignis_model_plan_reservations` on a four-layer topology of the 27B's widths
+# (the body by its head, one body never a mix, each code its K, strict shapes, suh/svh where the
+# record puts them, the trellis workspace plan line); then the layer bodies' own plumbing
+# (kernel/src/trellis_body.h, leaf-internal): the q_proj's per-head [q | gate] split, query_gate,
+# the head and the two epilogues. GPU: the op's workspace query needs a prepared device (ADR 0006).
+add_executable(ignis_kernel_model_load_trellis_test test_model_load_trellis.cpp)
+target_link_libraries(ignis_kernel_model_load_trellis_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_model_load_trellis_test COMMAND ignis_kernel_model_load_trellis_test)
+add_executable(ignis_kernel_trellis_body_test test_trellis_body.cu)
+target_include_directories(ignis_kernel_trellis_body_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(ignis_kernel_trellis_body_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_trellis_body_test COMMAND ignis_kernel_trellis_body_test)

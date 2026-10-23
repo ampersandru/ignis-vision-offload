@@ -75,8 +75,9 @@ pub use inventory::{
     bind_model_scope_27b, bind_model_scope_27b_on_device, bind_model_scope_27b_with, bind_text_scope_27b,
     dflash2_scope_27b,
     draft_head_scope_27b,
-    model_scope_27b, model_scope_27b_with, vision_scope_27b, DraftModule, InventoryEntry,
-    ModelScope, DFLASH2_LAYERS, OUT_OF_SCOPE_TEXT_NAMES, VISION_LAYERS, text_scope_27b, text_scope_27b_trellis,
+    body_27b, model_scope_27b, model_scope_27b_of, model_scope_27b_with, vision_scope_27b, Body27b, DraftModule,
+    InventoryEntry, ModelScope, DFLASH2_LAYERS, OUT_OF_SCOPE_TEXT_NAMES, VISION_LAYERS, text_scope_27b,
+    text_scope_27b_trellis,
 };
 
 // ---------------------------------------------------------------------------

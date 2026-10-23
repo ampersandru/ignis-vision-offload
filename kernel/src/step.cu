@@ -22,6 +22,7 @@
 #include "model_internal.h"
 #include "permitted_tokens.h"
 #include "step_internal.h"
+#include "trellis_body.h"
 #include "flash_next/program.h"
 
 #include "ninfer/ops/argmax.h"
@@ -353,7 +354,7 @@ int32_t run_degenerate_step(ignis_model *model, int32_t token_id, int32_t *out_t
                          norm_out, model->stream);
 
     ninfer::Tensor logits = model->scratch->alloc(ninfer::DType::BF16, {vocab, 1, 1, 1});
-    ninfer::ops::linear(norm_out, model->output_head, logits, model->stream);
+    ignis::trellis_body::output_head(*model, norm_out, logits, model->stream);
 
     ninfer::Tensor argmax_out = model->scratch->alloc(ninfer::DType::I32, {1, 1, 1, 1});
     ninfer::ops::argmax(logits, argmax_out, vocab, model->stream);
@@ -487,7 +488,7 @@ int32_t run_program_token(ignis_model *model, ignis_seq_pool *pool, ignis_seq *s
     ninfer::ops::rmsnorm(left, norm_weight, model->rms_norm_eps, /*unit_offset=*/true,
                          normalized, model->stream);
     ninfer::Tensor logits = model->scratch->alloc(ninfer::DType::BF16, {vocab, 1, 1, 1});
-    ninfer::ops::linear(normalized, model->output_head, logits, model->stream);
+    ignis::trellis_body::output_head(*model, normalized, logits, model->stream);
     if (sample_single(model, pool, seq, logits, sampling, ninfer::ops::kSamplePurposePrefill,
                       static_cast<std::int32_t>(seq->position), out_token_id,
                       permitted_prob_out) != 0) {
@@ -1215,7 +1216,7 @@ int32_t run_program_chunk(ignis_model *model, ignis_seq_pool *pool, ignis_seq *s
     // the head over every column of the chunk, 32 columns at a time, each
     // block copied out before the next reuses its buffers (stream order).
     if (span_logits_out != nullptr) {
-      constexpr std::int32_t kSpanBlock = 32;
+      constexpr std::int32_t kSpanBlock = kSpanLogitsBlockColumns;
       ninfer::DeviceArena::Scope span_scope = model->scratch->scope();
       const ninfer::Tensor norm_weight(const_cast<void *>(model->final_norm.qdata),
                                        ninfer::DType::BF16, {hidden, 1, 1, 1});
@@ -1232,7 +1233,7 @@ int32_t run_program_chunk(ignis_model *model, ignis_seq_pool *pool, ignis_seq *s
         ninfer::Tensor logits(block_logits.data, ninfer::DType::BF16, {vocab, cols, 1, 1});
         ninfer::ops::rmsnorm(columns, norm_weight, model->rms_norm_eps, /*unit_offset=*/true,
                              normalized, model->stream);
-        ninfer::ops::linear(normalized, model->output_head, logits, model->stream);
+        ignis::trellis_body::output_head(*model, normalized, logits, model->stream);
         err = cudaMemcpyAsync(span_logits_out + static_cast<std::size_t>(c0) * static_cast<std::size_t>(vocab),
                               logits.data,
                               static_cast<std::size_t>(cols) * static_cast<std::size_t>(vocab) * sizeof(uint16_t),
@@ -1257,7 +1258,7 @@ int32_t run_program_chunk(ignis_model *model, ignis_seq_pool *pool, ignis_seq *s
       ninfer::ops::rmsnorm(last_token, norm_weight, model->rms_norm_eps, /*unit_offset=*/true,
                            normalized, model->stream);
       ninfer::Tensor logits = model->scratch->alloc(ninfer::DType::BF16, {vocab, 1, 1, 1});
-      ninfer::ops::linear(normalized, model->output_head, logits, model->stream);
+      ignis::trellis_body::output_head(*model, normalized, logits, model->stream);
       // The absolute logical position of the span's last token in this
       // chunk: `seq->position` is still the chunk's pre-advance frontier
       // here (the caller advances it only after this function returns 0).

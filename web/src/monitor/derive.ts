@@ -33,10 +33,11 @@ import {
 } from "./snapshot.ts";
 
 /**
- * The plan lines a server may predate, counted as 0 when absent: Flash-Next's
- * two (GitHub #306) and the image model's condition budget (GitHub #324).
+ * The plan lines a server may predate, counted as 0 when absent: the 27B
+ * trellis body's workspace (GitHub #339), Flash-Next's two (GitHub #306) and
+ * the image model's condition budget (GitHub #324).
  */
-const LATER_LINES: readonly VramLine[] = ["residency", "expert_cache", "condition_budget"];
+const LATER_LINES: readonly VramLine[] = ["trellis_workspace", "residency", "expert_cache", "condition_budget"];
 
 // Everything the Monitor shows, derived from the scrape history for one
 // window: counter gains and rates, scheduler load, latency quantiles and
@@ -666,7 +667,7 @@ export function deriveMemory(points: Point[], since: number): Memory {
 
   const lines = VRAM_LINES.map((line) => ({ line, bytes: mem.reserved[line] }));
   // The twelve plan lines come together or not at all; the later ones (GitHub
-  // #306, #324) are absent from a server that predates them, and count as 0 then.
+  // #306, #324, #339) are absent from a server that predates them, and count as 0 then.
   const linesBytes = lines.filter((l) => !LATER_LINES.includes(l.line)).every((l) => l.bytes !== null) ? sumKnown(lines.map((l) => l.bytes)) : null;
   const conditionBudgetBytes = mem.reserved.condition_budget ?? 0;
   const kvPoolBytes = mem.kvPoolPages !== null && mem.kvPageBytes !== null ? mem.kvPoolPages * mem.kvPageBytes : null;

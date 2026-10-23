@@ -162,3 +162,9 @@ short:
      [06](06-the-dense-trellis-prefill-at-the-tensor-peak.md), #345.
   6. Met: no exllamav3 or QTIP kernel source read or copied; every file is labelled ours.
   7. Met: `cargo test` workspace-wide; the leaf's 136 CTests green on the 5090.
+- **Amended 2026-10-23 by spec 05a** (GitHub #339, commit 584e1a6e): "every call leaves the counters zero" held for
+  one shape per workspace only. The arrival counters' room followed the call's output blocks and the rotated
+  activations came right after it, so a narrow call's activations left a wider call's counters nonzero on a shared
+  workspace. The room is now one size, `kArrivalBlocks` = 4096 output blocks (`out` at most `IGNIS_TRELLIS_MAX_OUT`,
+  524,288, in the op's header: workspace geometry, not a serving threshold; the workspace 16 KB larger), held by
+  `test_trellis_linear`'s `shared_workspace_arm`; spec 05's As built has how it showed.

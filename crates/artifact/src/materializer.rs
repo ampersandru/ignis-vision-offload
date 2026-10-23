@@ -20,8 +20,8 @@ use crate::binder::{DeviceEncoding, MaterializationPlan, Residence};
 use crate::device::{Device, DeviceBuffer, HostMappedBuffer};
 use crate::direct::AlignedBuffer;
 use crate::{
-    block_scale_geometry, checked_add, fail, row_scale_geometry, row_split_geometry, Reader,
-    Result, StorageLayout, TensorDescriptor, DIRECT_IO_ALIGNMENT,
+    block_scale_geometry, checked_add, fail, row_scale_geometry, row_split_geometry, trellis_geometry,
+    Reader, Result, StorageLayout, TensorDescriptor, DIRECT_IO_ALIGNMENT,
 };
 
 /// Materialization statistics (mirrors the reference `MaterializationStats`).
@@ -81,10 +81,11 @@ pub struct TensorView {
     /// Offset of this tensor inside the device arena (for d2h
     /// verification), or inside the mapped host allocation.
     pub offset_in_arena: u64,
-    /// Row-split high-plane offset relative to `base` (row-split layouts).
+    /// Row-split high-plane offset relative to `base` (row-split layouts),
+    /// or a trellis record's `suh` (GitHub #339).
     pub high_plane_offset: Option<u64>,
     /// Scale-plane offset relative to `base` (row-split / blockscale /
-    /// row-scale layouts).
+    /// row-scale layouts), or a trellis record's `svh` (GitHub #339).
     pub scale_plane_offset: Option<u64>,
     /// Trailing FP32 weight-divisor offset relative to `base` (blockscale
     /// layouts only).
@@ -563,11 +564,18 @@ fn tensor_view(
             let g = row_scale_geometry(tensor.format, &tensor.shape)?;
             (None, Some(g.scale_plane_offset), None)
         }
-        // Flash-Next's expert projections and n-gram table: the Flash-Next
-        // plan puts them in the host pool or streams them, never in the
-        // device arena, and their planes are each record's own (the
-        // geometry functions name them). A device view carries the base.
-        StorageLayout::TrellisTile16V1 | StorageLayout::RowInterleavedV1 => (None, None, None),
+        // The 27B's trellis body (spec 27b-16gb/05a, GitHub #339): one record
+        // `[tiles | suh | svh]`, whose two scale vectors the view names as
+        // its high and scale planes -- the leaf's `ignis_trellis_weight`
+        // takes them from there. Flash-Next's expert projections never reach
+        // the device arena.
+        StorageLayout::TrellisTile16V1 => {
+            let g = trellis_geometry(tensor.format, &tensor.shape)?;
+            (Some(g.suh_offset), Some(g.svh_offset), None)
+        }
+        // Flash-Next's n-gram table: the host pool's, never the device
+        // arena's. A device view carries the base.
+        StorageLayout::RowInterleavedV1 => (None, None, None),
     };
     Ok(TensorView {
         name: tensor.name.clone(),
@@ -909,6 +917,29 @@ mod tests {
             "{err}"
         );
         drop(reader);
+    }
+
+    /// GitHub #339: a trellis record's view names its two scale vectors, at
+    /// the geometry's offsets, so the 27B's loader hands the leaf all three
+    /// parts of the weight without restating the record's layout.
+    #[test]
+    fn a_trellis_view_names_its_suh_and_svh() {
+        let tensor = TensorDescriptor {
+            name: "text/layers/0/mlp/down".into(),
+            format: crate::NumericFormat::TrellisMul1K3,
+            layout: StorageLayout::TrellisTile16V1,
+            shape: vec![256, 128],
+            offset: 0,
+            bytes: 0,
+        };
+        let base = 0x1000 as *const u8;
+        let view = tensor_view(&tensor, 0, base, 0).expect("view");
+        // 256 x 128 weights at 2K = 6: 256 * 128 / 16 * 6 bytes of tiles,
+        // then 128 fp16 suh, then 256 fp16 svh.
+        assert_eq!(view.high_plane_offset, Some(12_288));
+        assert_eq!(view.scale_plane_offset, Some(12_288 + 256));
+        assert_eq!(view.high_plane(), Some(base.wrapping_add(12_288)));
+        assert_eq!(view.weight_divisor_offset, None);
     }
 
     #[test]

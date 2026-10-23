@@ -2,9 +2,10 @@
 //! ABI of `kernel/include/ignis_trellis_linear.h`, 1:1, thin wrappers that turn its return codes
 //! into `Result`s carrying the leaf's own message, and the workspace's plan line (ADR 0030).
 //!
-//! The ops are program-side ops (ADR 0009): the 27B's layer programs call them inside the leaf
-//! once spec 05 binds the 16 GB artifact, and these bindings exist for the load's plan and for
-//! Rust-side tests and tools. Every pointer argument is a device pointer the caller vouches for,
+//! The ops are program-side ops (ADR 0009): the 27B's trellis body calls them inside the leaf
+//! (spec 27b-16gb/05a, `kernel/src/trellis_body.h`), whose load sizes and reserves their workspace
+//! itself (the `trellis_workspace` plan line); these bindings exist for Rust-side tests and tools.
+//! Every pointer argument is a device pointer the caller vouches for,
 //! so the wrappers are `unsafe`; the shapes and counts they take are checked by the leaf.
 //!
 //! All of it is our own implementation, built on our own Flash-Next trellis decode (ADR 0051).

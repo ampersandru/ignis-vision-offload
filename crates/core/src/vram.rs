@@ -149,6 +149,10 @@ pub struct VramLines {
     /// encoder's workspace when that is larger. The two are never live at
     /// once.
     pub workspace: u64,
+    /// The trellis body's workspace (GitHub #339, spec 27b-16gb/05a): the
+    /// widest of the dense trellis linears' calls, decode and prefill, on
+    /// the load's one stream. 0 on the NVFP4 body and on Flash-Next.
+    pub trellis_workspace: u64,
     /// One media item's encoder output (0 without `--vision-enabled`).
     pub media_embedding: u64,
     /// Device sampling's staging buffers and workspace.
@@ -182,7 +186,7 @@ pub struct VramLines {
 impl VramLines {
     /// How many lines a plan has. The arity of [`VramLines::entries`], named
     /// so a reader of the plan does not have to write the number out again.
-    pub const LINES: usize = 12;
+    pub const LINES: usize = 13;
 
     /// `(name, bytes)` in plan order; the names are the `*_bytes` fields of
     /// `ignis.runtime.vram_plan` without the suffix.
@@ -191,6 +195,7 @@ impl VramLines {
             ("weights", self.weights),
             ("cuda_context", self.cuda_context),
             ("workspace", self.workspace),
+            ("trellis_workspace", self.trellis_workspace),
             ("media_embedding", self.media_embedding),
             ("sampling", self.sampling),
             ("decode_graph", self.decode_graph),
@@ -619,6 +624,7 @@ mod tests {
             cuda_context: 300 * MIB,
             // max(1300 MiB of prefill scratch, 2 GiB of vision encoder).
             workspace: 2 * GIB,
+            trellis_workspace: 0,
             media_embedding: 320 * MIB,
             sampling: 10 * MIB,
             decode_graph: 200 * MIB,
@@ -1184,6 +1190,7 @@ mod tests {
                 "weights",
                 "cuda_context",
                 "workspace",
+                "trellis_workspace",
                 "media_embedding",
                 "sampling",
                 "decode_graph",

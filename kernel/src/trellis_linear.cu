@@ -199,6 +199,9 @@ int32_t check_weight(const char *op, const char *name, const ignis_trellis_weigh
   if (w->in == 0 || w->out == 0 || w->in % 128 != 0 || w->out % 128 != 0) {
     return fail(who + ": in and out must be positive multiples of 128");
   }
+  if (w->out / 128 > kArrivalBlocks) {
+    return fail(who + ": out must be at most " + std::to_string(kArrivalBlocks * 128));
+  }
   const uint32_t stride = w->tile_stride == 0 ? w->out / 16 : w->tile_stride;
   if (stride < w->out / 16) return fail(who + ": tile_stride is narrower than out / 16");
   if (!aligned(w->trellis, 16) || !aligned(w->suh, 8) || !aligned(w->svh, 8)) {
@@ -360,7 +363,10 @@ extern "C" uint32_t ignis_trellis_sm_cap(void) {
 }
 
 extern "C" uint64_t ignis_trellis_workspace_bytes(uint32_t in, uint32_t out, uint32_t weights, uint32_t tokens) {
-  if (in == 0 || out == 0 || in % 128 != 0 || out % 128 != 0 || tokens == 0 || weights < 1 || weights > 2) return 0;
+  if (in == 0 || out == 0 || in % 128 != 0 || out % 128 != 0 || out / 128 > kArrivalBlocks || tokens == 0 ||
+      weights < 1 || weights > 2) {
+    return 0;
+  }
   DeviceState st;
   if (require_prepared("ignis_trellis_workspace_bytes", &st) != 0) return 0;
   // The K <= 4 kernel has the most resident CTAs, so the most splits: an upper bound for any K.

@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use ignis_artifact::binder::{Binder, Residence};
 use ignis_artifact::packer::{pack, sidecar_path, PackOptions, PackOutcome, TRELLIS_27B_ARTIFACT_FILE_NAME};
 use ignis_artifact::{
-    dflash2_scope_27b, draft_head_scope_27b, tensor_encoded_size, text_scope_27b_trellis, vision_scope_27b,
-    InventoryEntry, NumericFormat, Object, Reader, Sidecar, StorageLayout,
+    bind_model_scope_27b_with, body_27b, dflash2_scope_27b, draft_head_scope_27b, model_scope_27b_of,
+    tensor_encoded_size, text_scope_27b_trellis, vision_scope_27b, Body27b, DraftModule, InventoryEntry, ModelScope,
+    NumericFormat, Object, Reader, Sidecar, StorageLayout,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -223,6 +224,37 @@ fn bind_entries(binder: &mut Binder, entries: &[InventoryEntry]) {
             Residence::Device => binder.materialize_on_device(handle).unwrap(),
             Residence::HostMapped => binder.place_in_host_mapped(handle).unwrap(),
         }
+    }
+}
+
+/// Spec 27b-16gb/05a (GitHub #339): the 27B's own scope binds the real
+/// artifact by its body, read off the directory, with no caller naming it --
+/// the scope a load asks for, over whichever body the artifact carries -- at
+/// the device bytes spec 01's As built states.
+#[test]
+fn real_trellis_artifact_binds_through_the_27bs_model_scope() {
+    let path = Path::new(REAL_ARTIFACT);
+    if !path.exists() {
+        eprintln!("skip: {REAL_ARTIFACT} does not exist");
+        return;
+    }
+    let reader = Reader::open(path).unwrap();
+    assert_eq!(body_27b(&reader), Body27b::Trellis);
+    let text = ModelScope::default();
+    let drafted = ModelScope { draft: Some(DraftModule::Dflash2ShortlistHead), ..text };
+    let with_vision = ModelScope { vision: true, ..drafted };
+    for (scope, entries, device_bytes) in
+        [(text, 803, 9_825_087_488u64), (drafted, 803 + 66 + 2, 11_264_998_400), (with_vision, 803 + 68 + 333, 11_560_717_824)]
+    {
+        assert_eq!(model_scope_27b_of(&reader, scope).unwrap().len(), entries, "{scope:?}");
+        let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap();
+        assert_eq!(handles.len(), entries, "{scope:?}");
+        assert_eq!(plan.device_capacity_bytes, device_bytes, "{scope:?}");
+    }
+    // The served artifact's head is W8: its body is the NVFP4 one.
+    let served_path = Path::new(SERVED_ARTIFACT);
+    if served_path.exists() {
+        assert_eq!(body_27b(&Reader::open(served_path).unwrap()), Body27b::Nvfp4);
     }
 }
 

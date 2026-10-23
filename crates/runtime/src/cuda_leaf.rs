@@ -346,6 +346,7 @@ fn reserved_bytes(
 ) -> ReservedBytes {
     ReservedBytes {
         workspace: model.workspace_bytes,
+        trellis_workspace: model.trellis_workspace_bytes,
         media_embedding: model.media_embedding_bytes,
         sampling: model.sampling_bytes,
         decode_graph: model.decode_graph_bytes,

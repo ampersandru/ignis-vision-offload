@@ -23,7 +23,7 @@ use std::os::raw::c_void;
 
 use ignis_artifact::flash_next::{self, FlashNextGeometry, FlashNextPlan};
 use ignis_artifact::{
-    model_scope_27b_with, DeviceEncoding, DraftModule, InventoryEntry, MaterializationPlan, MaterializedArtifact,
+    model_scope_27b_of, DeviceEncoding, DraftModule, InventoryEntry, MaterializationPlan, MaterializedArtifact,
     ModelScope, NumericFormat, ObjectHandle, Reader, StorageLayout,
 };
 
@@ -137,6 +137,12 @@ pub(crate) mod ffi {
         /// GitHub #302: Flash-Next's activations and MoE buffers outside the
         /// workspace; 0 on the 27B.
         pub activation_bytes: u64,
+        /// GitHub #339: the 27B trellis body's workspace (`ignis_trellis_workspace`),
+        /// sized by the leaf's plan (`trellis_workspace_bytes` in
+        /// `kernel/src/model.cu`, behind `ignis_model_plan_reservations`) as the
+        /// op's answer for the load's widest call; 0 on the NVFP4 body and on
+        /// Flash-Next.
+        pub trellis_workspace_bytes: u64,
     }
 
     /// 1:1 with `struct ignis_model_stats`.
@@ -220,7 +226,9 @@ impl Drop for Model {
 }
 
 /// Mirrors `ninfer::QType` (`kernel/vendor/src/core/tensor.h`) numeric
-/// values -- 1:1 with `enum ignis_qtype`.
+/// values -- 1:1 with `enum ignis_qtype`, whose trellis codes (GitHub #339)
+/// extend past the vendored enum: the leaf binds them into its own trellis
+/// weights, never into a `ninfer::Weight`.
 fn qtype_code(format: NumericFormat) -> i32 {
     match format {
         NumericFormat::Q4G64F16S => 0,
@@ -232,28 +240,29 @@ fn qtype_code(format: NumericFormat) -> i32 {
         NumericFormat::I32 => 6,
         NumericFormat::Nvfp4 => 7,
         NumericFormat::Fp8E4M3FnRowBf16S => 8,
-        // Flash-Next formats are not bound by the 27B loader, nor (until
-        // spec 27b-16gb/05 binds them) the 27B's own trellis body.
-        NumericFormat::I64
-        | NumericFormat::Q4G32F16S
-        | NumericFormat::TrellisMul1K2
-        | NumericFormat::TrellisMul1K2p5
-        | NumericFormat::TrellisMul1K3
-        | NumericFormat::TrellisMul1K4
-        | NumericFormat::TrellisMul1K5
-        | NumericFormat::TrellisMul1K6 => -1,
+        // The 27B's trellis body (spec 27b-16gb/05a), one code per K.
+        NumericFormat::TrellisMul1K2 => 64,
+        NumericFormat::TrellisMul1K2p5 => 65,
+        NumericFormat::TrellisMul1K3 => 66,
+        NumericFormat::TrellisMul1K4 => 67,
+        NumericFormat::TrellisMul1K5 => 68,
+        NumericFormat::TrellisMul1K6 => 69,
+        // Flash-Next formats are not bound by the 27B loader.
+        NumericFormat::I64 | NumericFormat::Q4G32F16S => -1,
     }
 }
 
-/// Mirrors `ninfer::QuantLayout` -- 1:1 with `enum ignis_quant_layout`.
+/// Mirrors `ninfer::QuantLayout` -- 1:1 with `enum ignis_quant_layout`, and
+/// its trellis code (GitHub #339) past the vendored enum.
 fn layout_code(layout: StorageLayout) -> i32 {
     match layout {
         StorageLayout::RowSplitK128V1 => 0,
         StorageLayout::ContiguousLeV1 => 1,
         StorageLayout::BlockScaleK16M128x4V1 => 2,
         StorageLayout::RowScaleV1 => 3,
-        // Flash-Next layouts are not bound by the 27B loader.
-        StorageLayout::TrellisTile16V1 | StorageLayout::RowInterleavedV1 => -1,
+        StorageLayout::TrellisTile16V1 => 64,
+        // Flash-Next's n-gram table is not bound by the 27B loader.
+        StorageLayout::RowInterleavedV1 => -1,
     }
 }
 
@@ -504,8 +513,10 @@ fn planned_placement(
 
 /// Build the bound-tensor descriptors for every tensor
 /// [`ignis_artifact::bind_model_scope_27b_with`] placed on the device for
-/// `scope`, in [`model_scope_27b_with`] order, at the addresses `placement`
-/// gives.
+/// `scope`, in [`model_scope_27b_of`] order -- over `reader`'s own body, the
+/// served NVFP4 one or the trellis one (GitHub #339) -- at the addresses
+/// `placement` gives. A trellis record's `suh` and `svh` cross as its
+/// `qhigh` and `scales`, which its view names.
 ///
 /// Returns the descriptors alongside the [`CString`] names they point
 /// into: the caller must keep both alive across the `ignis_model_load`
@@ -516,7 +527,7 @@ fn build_bound_tensors(
     scope: ModelScope,
     placement: impl Fn(ObjectHandle, &InventoryEntry) -> Result<TensorPlacement, String>,
 ) -> Result<(Vec<CString>, Vec<ffi::IgnisBoundTensor>), String> {
-    let entries = model_scope_27b_with(scope);
+    let entries = model_scope_27b_of(reader, scope).map_err(|e| e.to_string())?;
     if entries.len() != handles.len() {
         return Err(format!(
             "model-scope handle count ({}) does not match the inventory ({}, scope: {scope:?})",
@@ -1208,7 +1219,15 @@ mod tests {
         assert_eq!(qtype_code(NumericFormat::I32), 6);
         assert_eq!(qtype_code(NumericFormat::Nvfp4), 7);
         assert_eq!(qtype_code(NumericFormat::Fp8E4M3FnRowBf16S), 8);
-        assert_eq!(qtype_code(NumericFormat::TrellisMul1K2p5), -1, "no 27B QType");
+        // GitHub #339: the leaf's trellis codes, one per K, past the vendored
+        // enum (`IGNIS_QTYPE_TRELLIS_MUL1_K2` .. `_K6`).
+        assert_eq!(qtype_code(NumericFormat::TrellisMul1K2), 64);
+        assert_eq!(qtype_code(NumericFormat::TrellisMul1K2p5), 65);
+        assert_eq!(qtype_code(NumericFormat::TrellisMul1K3), 66);
+        assert_eq!(qtype_code(NumericFormat::TrellisMul1K4), 67);
+        assert_eq!(qtype_code(NumericFormat::TrellisMul1K5), 68);
+        assert_eq!(qtype_code(NumericFormat::TrellisMul1K6), 69);
+        assert_eq!(qtype_code(NumericFormat::Q4G32F16S), -1, "Flash-Next's, no 27B code");
     }
 
     #[test]
@@ -1218,7 +1237,8 @@ mod tests {
         assert_eq!(layout_code(StorageLayout::ContiguousLeV1), 1);
         assert_eq!(layout_code(StorageLayout::BlockScaleK16M128x4V1), 2);
         assert_eq!(layout_code(StorageLayout::RowScaleV1), 3);
-        assert_eq!(layout_code(StorageLayout::TrellisTile16V1), -1, "no 27B QuantLayout");
+        assert_eq!(layout_code(StorageLayout::TrellisTile16V1), 64, "IGNIS_LAYOUT_TRELLIS_TILE16");
+        assert_eq!(layout_code(StorageLayout::RowInterleavedV1), -1, "Flash-Next's, no 27B code");
     }
 
     #[test]
@@ -1417,10 +1437,15 @@ mod tests {
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, draft_row_budget), 64);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, mtp_expert_slots), 72);
         // uint64 x 3, then (GitHub #210) the six uint64 reservation lines,
-        // (GitHub #302) the seventh, Flash-Next's activations, and (ADR 0062)
-        // the uint64 host-mapped bytes.
-        assert_eq!(std::mem::size_of::<IgnisModelStats>(), 88);
-        assert_eq!(std::mem::offset_of!(IgnisModelStats, host_mapped_bytes), 80);
+        // (GitHub #302) the seventh, Flash-Next's activations, (GitHub #339)
+        // the eighth, the trellis workspace, and (ADR 0062) the uint64
+        // host-mapped bytes. The leaf pins the same sizes
+        // (kernel/include/ignis_model.h).
+        assert_eq!(std::mem::size_of::<IgnisModelReservations>(), 64);
+        assert_eq!(std::mem::offset_of!(IgnisModelReservations, trellis_workspace_bytes), 56);
+        assert_eq!(std::mem::size_of::<IgnisModelStats>(), 96);
+        assert_eq!(std::mem::offset_of!(IgnisModelStats, reserved), 24);
+        assert_eq!(std::mem::offset_of!(IgnisModelStats, host_mapped_bytes), 88);
     }
 
     #[test]

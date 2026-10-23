@@ -184,6 +184,8 @@ pub const LOAD_RESIDUAL_BYTES: u64 = 124_474_800;
 pub struct ReservedBytes {
     /// The scratch arena prefill chunks and media encode share (GitHub #212).
     pub workspace: u64,
+    /// The 27B trellis body's workspace (GitHub #339); 0 on the NVFP4 body.
+    pub trellis_workspace: u64,
     pub media_embedding: u64,
     pub sampling: u64,
     pub decode_graph: u64,

@@ -20,7 +20,7 @@
 //! params / `*_input_scale_divisor` scalars).
 
 use crate::binder::{Binder, DeviceEncoding, MaterializationPlan, ObjectHandle, Residence};
-use crate::{NumericFormat, Reader, Result, StorageLayout};
+use crate::{NumericFormat, Object, Reader, Result, StorageLayout};
 
 // ---------------------------------------------------------------------------
 // The entry
@@ -310,16 +310,7 @@ pub fn draft_head_scope_27b() -> Vec<InventoryEntry> {
 /// first, so a drafter-bearing plan places every text tensor at the offset a
 /// text-only plan does.
 pub fn model_scope_27b(draft: Option<DraftModule>) -> Vec<InventoryEntry> {
-    let mut entries = text_scope_27b();
-    match draft {
-        None => {}
-        Some(DraftModule::Dflash2) => entries.extend(dflash2_scope_27b()),
-        Some(DraftModule::Dflash2ShortlistHead) => {
-            entries.extend(dflash2_scope_27b());
-            entries.extend(draft_head_scope_27b());
-        }
-    }
-    entries
+    with_modules(text_scope_27b(), ModelScope { draft, ..ModelScope::default() })
 }
 
 /// [`bind_text_scope_27b`], plus the drafter module's objects when `draft`
@@ -416,18 +407,75 @@ pub struct ModelScope {
 /// drafter's objects, then the vision tower's — so neither module moves a
 /// text placement, and the vision tower does not move the drafter's.
 pub fn model_scope_27b_with(scope: ModelScope) -> Vec<InventoryEntry> {
-    let mut entries = model_scope_27b(scope.draft);
+    with_modules(text_scope_27b(), scope)
+}
+
+/// `text`, then the drafter's objects, then the vision tower's, with the
+/// exception tensors held as `scope` says.
+fn with_modules(text: Vec<InventoryEntry>, scope: ModelScope) -> Vec<InventoryEntry> {
+    let mut entries = text;
+    match scope.draft {
+        None => {}
+        Some(DraftModule::Dflash2) => entries.extend(dflash2_scope_27b()),
+        Some(DraftModule::Dflash2ShortlistHead) => {
+            entries.extend(dflash2_scope_27b());
+            entries.extend(draft_head_scope_27b());
+        }
+    }
     if scope.vision {
         entries.extend(vision_scope_27b());
     }
     if scope.fp8_exceptions {
         for entry in &mut entries {
+            // Only a BF16 tensor converts (GitHub #339): the trellis body's
+            // `attention/output` of layers 3 and 7 and `gdn/output` of layer 4
+            // share the exception tensors' names, and are already 3 bits.
+            if entry.format != NumericFormat::Bf16 {
+                continue;
+            }
             if let Some(blocks) = fp8_blocks(entry.name) {
                 entry.encoding = DeviceEncoding::Fp8Rows(blocks);
             }
         }
     }
     entries
+}
+
+/// The body a 27B artifact carries (spec 27b-16gb/05a, GitHub #339): the
+/// served NVFP4 planes, or the 16 GB card class's trellis matrices (spec
+/// 27b-16gb/01). A [`ModelScope`] is the modules a load binds; the body is
+/// the artifact's, read off its directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Body27b {
+    Nvfp4,
+    Trellis,
+}
+
+/// `reader`'s body, by its output head's format: the trellis artifact's head
+/// is trellis like its body, the served one's W8. The leaf decides by the
+/// same tensor (`kernel/src/model.cu`), and a body that mixes the two fails
+/// there naming the tensor.
+pub fn body_27b(reader: &Reader) -> Body27b {
+    match reader.find("text/output_head") {
+        Some(Object::Tensor(head)) if head.format.trellis_k2().is_some() => Body27b::Trellis,
+        _ => Body27b::Nvfp4,
+    }
+}
+
+/// [`model_scope_27b_with`] over `reader`'s body ([`body_27b`]): the served
+/// text scope, or the trellis one with each matrix's K from the directory
+/// ([`text_scope_27b_trellis`]), then the modules `scope` names, which both
+/// artifacts carry as the served bytes. The binder and the load's
+/// descriptors both read it, so the two cannot name different entries.
+pub fn model_scope_27b_of(reader: &Reader, scope: ModelScope) -> Result<Vec<InventoryEntry>> {
+    let text = match body_27b(reader) {
+        Body27b::Nvfp4 => text_scope_27b(),
+        Body27b::Trellis => text_scope_27b_trellis(|name| match reader.find(name) {
+            Some(Object::Tensor(t)) => Some(t.format),
+            _ => None,
+        })?,
+    };
+    Ok(with_modules(text, scope))
 }
 
 /// The FP8 row blocks of a BF16 exception tensor's name, or None.
@@ -445,12 +493,13 @@ fn fp8_blocks(name: &str) -> Option<&'static [u32]> {
 
 /// [`bind_model_scope_27b`] for a full [`ModelScope`]. A missing or
 /// mis-shaped vision object is a load failure naming it. Returns the handles
-/// in [`model_scope_27b_with`] order.
+/// in [`model_scope_27b_of`] order: the scope over `reader`'s own body
+/// (GitHub #339), the served one's [`model_scope_27b_with`].
 pub fn bind_model_scope_27b_with(
     reader: &Reader,
     scope: ModelScope,
 ) -> Result<(MaterializationPlan, Vec<ObjectHandle>)> {
-    let entries = model_scope_27b_with(scope);
+    let entries = model_scope_27b_of(reader, scope)?;
     let mut binder = Binder::new(reader);
     let mut handles = Vec::with_capacity(entries.len());
     bind_entries(&mut binder, &entries, &mut handles)?;
@@ -465,7 +514,7 @@ pub fn bind_model_scope_27b_on_device(
     reader: &Reader,
     scope: ModelScope,
 ) -> Result<(MaterializationPlan, Vec<ObjectHandle>)> {
-    let entries = all_on_device(&model_scope_27b_with(scope));
+    let entries = all_on_device(&model_scope_27b_of(reader, scope)?);
     let mut binder = Binder::new(reader);
     let mut handles = Vec::with_capacity(entries.len());
     bind_entries(&mut binder, &entries, &mut handles)?;
@@ -1034,5 +1083,60 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("text/output_head is W8G32_F16S, not a trellis format"), "{err}");
+    }
+
+    /// GitHub #339: `fp8_exceptions` names the exception tensors by name, and
+    /// on the trellis body three of those names are trellis matrices
+    /// (`attention/output` of layers 3 and 7, `gdn/output` of layer 4). Only
+    /// a BF16 tensor converts, so the option is a no-op there -- the body has
+    /// no BF16 exception tensor -- and the served body's nine still convert.
+    #[test]
+    fn fp8_exceptions_never_reencode_a_trellis_matrix() {
+        let k3 = |_: &str| Some(NumericFormat::TrellisMul1K3);
+        for draft in [None, Some(DraftModule::Dflash2ShortlistHead)] {
+            let scope = ModelScope { draft, vision: true, fp8_exceptions: true };
+            let trellis = with_modules(text_scope_27b_trellis(k3).unwrap(), scope);
+            assert!(trellis.iter().all(|e| e.encoding == DeviceEncoding::Stored), "{draft:?}");
+            assert_eq!(trellis.len(), with_modules(text_scope_27b_trellis(k3).unwrap(), ModelScope { fp8_exceptions: false, ..scope }).len());
+            for name in ["text/layers/3/attention/output", "text/layers/7/attention/output", "text/layers/4/gdn/output"] {
+                let entry = trellis.iter().find(|e| e.name == name).unwrap();
+                assert_eq!((entry.layout, entry.encoding), (StorageLayout::TrellisTile16V1, DeviceEncoding::Stored), "{name}");
+            }
+            let served = model_scope_27b_with(scope);
+            assert_eq!(served.iter().filter(|e| e.encoding != DeviceEncoding::Stored).count(), 9, "{draft:?}");
+        }
+    }
+
+    /// A directory of one tensor, `text/output_head` in `format`.
+    fn head_only_reader(format: NumericFormat, layout: StorageLayout, tag: &str) -> (crate::fixture::TempArtifact, Reader) {
+        let shape = vec![256u64, 128];
+        let bytes = crate::tensor_encoded_size(layout, format, &shape).unwrap();
+        let objects = vec![crate::fixture::FixtureObject::Tensor {
+            name: "text/output_head",
+            shape,
+            format: format.name(),
+            layout: layout.name(),
+            offset: 0,
+            bytes,
+        }];
+        let artifact = crate::fixture::write_fixture(&objects, &vec![0u8; bytes as usize], tag).unwrap();
+        let reader = Reader::open(&artifact.path).unwrap();
+        (artifact, reader)
+    }
+
+    /// GitHub #339: the body is the artifact's, read off its head's format;
+    /// a trellis head makes the scope the trellis one, whose first missing
+    /// matrix is then named.
+    #[test]
+    fn the_body_is_read_off_the_output_heads_format() {
+        let (_served, served) = head_only_reader(NumericFormat::W8G32F16S, StorageLayout::RowSplitK128V1, "body-served");
+        assert_eq!(body_27b(&served), Body27b::Nvfp4);
+        assert_eq!(model_scope_27b_of(&served, ModelScope::default()).unwrap(), model_scope_27b_with(ModelScope::default()));
+        let (_trellis, trellis) = head_only_reader(NumericFormat::TrellisMul1K4, StorageLayout::TrellisTile16V1, "body-trellis");
+        assert_eq!(body_27b(&trellis), Body27b::Trellis);
+        let err = model_scope_27b_of(&trellis, ModelScope::default()).unwrap_err().to_string();
+        assert!(err.contains("the trellis artifact has no text/layers/0/gdn/in_proj_qkv"), "{err}");
+        let err = bind_model_scope_27b_with(&trellis, ModelScope::default()).unwrap_err().to_string();
+        assert!(err.contains("text/layers/0/gdn/in_proj_qkv"), "{err}");
     }
 }
