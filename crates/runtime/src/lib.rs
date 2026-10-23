@@ -63,11 +63,11 @@ pub const DEFAULT_RETAINED_DEVICE_SLOTS: u32 = 0;
 
 /// Retained slots in the pinned host block by default (`--reuse-retained-host`,
 /// GitHub #281): two per decode lane -- a chain link and a checkpoint for
-/// each conversation a lane serves -- here at the 27B's default eight lanes.
-/// A load of fewer lanes keeps two per lane of its own (GitHub #336,
-/// [`ignis_core::compute::ModelFamily::default_retained_host_slots`]).
-pub const DEFAULT_RETAINED_HOST_SLOTS: u32 = ignis_core::compute::ModelFamily::Qwen38_27b
-    .default_retained_host_slots(ignis_core::N_DECODE_LANES as u32);
+/// each conversation a lane serves -- here at the 27B's default eight lanes,
+/// none named. A load of fewer lanes keeps two per lane of its own (GitHub
+/// #336, [`ignis_core::compute::ModelFamily::default_retained_host_slots`]).
+pub const DEFAULT_RETAINED_HOST_SLOTS: u32 =
+    ignis_core::compute::ModelFamily::Qwen38_27b.default_retained_host_slots(0);
 
 /// The paged-KV pool's auto byte budget for a configured `max_context`
 /// under `format` (P4-04, GitHub #122): [`ignis_core::DEFAULT_KV_POOL_BYTES`]

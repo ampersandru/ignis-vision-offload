@@ -229,10 +229,7 @@ impl EngineShape {
     /// or the profile's, else the family's own -- 8 on the 27B, 3 on
     /// Flash-Next.
     pub fn decode_lanes_for(&self, family: ignis_core::compute::ModelFamily) -> u32 {
-        match self.decode_lanes {
-            0 => family.default_decode_lanes(),
-            lanes => lanes,
-        }
+        family.decode_lanes(self.decode_lanes)
     }
 
     /// This shape for an artifact of `family`: the host retained slots the
@@ -250,7 +247,8 @@ impl EngineShape {
         if this.retained_host_named || !this.prompt_reuse {
             return this;
         }
-        Self { retained_host_slots: family.default_retained_host_slots(this.decode_lanes_for(family)), ..this }
+        // The config's own function (ADR 0046), from the lanes as named.
+        Self { retained_host_slots: family.default_retained_host_slots(this.decode_lanes), ..this }
     }
 
     /// KV-disk's budget on a load of `family` (spec vram-budget/03): the

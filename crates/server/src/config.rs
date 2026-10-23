@@ -1116,12 +1116,11 @@ fn derive(
             .reuse
             .retained_device
             .unwrap_or(if prompt_reuse { DEFAULT_RETAINED_DEVICE_SLOTS } else { 0 }),
-        // The 27B's default, two per decode lane; Flash-Next's own replaces it
-        // at load (`EngineShape::for_family`).
+        // The 27B's default, two per decode lane, from the lanes as named;
+        // Flash-Next's own replaces it at load (`EngineShape::for_family`,
+        // which asks the same function).
         retained_host_slots: s.reuse.retained_host.unwrap_or(if prompt_reuse {
-            ModelFamily::Qwen38_27b.default_retained_host_slots(
-                s.spec.decode_lanes.unwrap_or(ModelFamily::Qwen38_27b.default_decode_lanes()),
-            )
+            ModelFamily::Qwen38_27b.default_retained_host_slots(s.spec.decode_lanes.unwrap_or(0))
         } else {
             0
         }),

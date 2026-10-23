@@ -811,16 +811,31 @@ impl ModelFamily {
         }
     }
 
+    /// The decode lanes a load of this family runs (GitHub #336): `named`,
+    /// the operator's or the profile's, else -- 0 names none -- the family's
+    /// own ([`ModelFamily::default_decode_lanes`]).
+    pub const fn decode_lanes(self, named: u32) -> u32 {
+        match named {
+            0 => self.default_decode_lanes(),
+            lanes => lanes,
+        }
+    }
+
     /// Host retained slots a load of this family keeps by default with
     /// prompt reuse on (`--reuse-retained-host`): two per decode lane on the 27B
-    /// (GitHub #281), of the load's `decode_lanes` (GitHub #336) -- 16 at its
+    /// (GitHub #281), of the load's lanes as named (GitHub #336; 0, none
+    /// named, is the family's own, [`ModelFamily::decode_lanes`]) -- 16 at its
     /// default 8; 8 on Flash-Next whatever its lanes, a chain link and a
     /// checkpoint for three agents and a shared system block, ~1 GiB of
     /// pinned images beside 37.7 GB of pinned experts (spec flash-next/05).
     /// None on the image model, which keeps no sequences.
-    pub const fn default_retained_host_slots(self, decode_lanes: u32) -> u32 {
+    ///
+    /// The one declaration of the default (ADR 0046): the server's config
+    /// resolves the 27B's with it and `EngineShape::for_family` a load's
+    /// family's, both from the lanes as named, so the two cannot drift.
+    pub const fn default_retained_host_slots(self, named_lanes: u32) -> u32 {
         match self {
-            ModelFamily::Qwen38_27b => 2 * decode_lanes,
+            ModelFamily::Qwen38_27b => 2 * self.decode_lanes(named_lanes),
             ModelFamily::FlashNext => 8,
             ModelFamily::QwenImage21 => 0,
         }
@@ -1439,6 +1454,11 @@ mod tests {
         assert_eq!(ModelFamily::FlashNext.default_decode_lanes(), 3);
         assert_eq!(ModelFamily::Qwen38_27b.default_retained_host_slots(2), 4);
         assert_eq!(ModelFamily::Qwen38_27b.default_retained_host_slots(8), 16);
+        // No lanes named is the family's own, for the lanes and the slots alike.
+        assert_eq!((ModelFamily::Qwen38_27b.decode_lanes(0), ModelFamily::Qwen38_27b.decode_lanes(2)), (8, 2));
+        assert_eq!((ModelFamily::FlashNext.decode_lanes(0), ModelFamily::FlashNext.decode_lanes(5)), (3, 5));
+        assert_eq!(ModelFamily::Qwen38_27b.default_retained_host_slots(0), 16);
+        assert_eq!(ModelFamily::FlashNext.default_retained_host_slots(0), 8);
     }
 
     /// What each model can serve beyond text: Flash-Next has no vision

@@ -1869,6 +1869,16 @@ fn the_27bs_default_host_retained_slots_follow_its_lanes() {
     let flash = config(&["--spec-decode-lanes", "2"]).for_family(ModelFamily::FlashNext).unwrap();
     let shape = crate::runtime::EngineShape::from(&flash).for_family(ModelFamily::FlashNext);
     assert_eq!((shape.decode_lanes, shape.retained_host_slots), (2, 8));
+    // ADR 0046: the config's 27B default and a load's own re-resolution are
+    // one function's, at any lanes.
+    for lanes in [None, Some("1"), Some("2"), Some("8")] {
+        let mut args = vec!["--profile", "none"];
+        args.extend(lanes.map(|lanes| ["--spec-decode-lanes", lanes]).into_iter().flatten());
+        let fitted = config(&args).for_family(ModelFamily::Qwen38_27b).unwrap();
+        let shape = crate::runtime::EngineShape::from(&fitted);
+        let reloaded = crate::runtime::EngineShape { retained_host_slots: 0, ..shape }.for_family(ModelFamily::Qwen38_27b);
+        assert_eq!(reloaded.retained_host_slots, fitted.retained_host_slots, "{lanes:?} lanes");
+    }
 }
 
 /// `--ngram-hot-bytes` (GitHub #306): unnamed is `None`, the 1 GiB default
