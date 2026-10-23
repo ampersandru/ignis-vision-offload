@@ -76,7 +76,7 @@ pub use inventory::{
     dflash2_scope_27b,
     draft_head_scope_27b,
     model_scope_27b, model_scope_27b_with, vision_scope_27b, DraftModule, InventoryEntry,
-    ModelScope, DFLASH2_LAYERS, OUT_OF_SCOPE_TEXT_NAMES, VISION_LAYERS, text_scope_27b,
+    ModelScope, DFLASH2_LAYERS, OUT_OF_SCOPE_TEXT_NAMES, VISION_LAYERS, text_scope_27b, text_scope_27b_trellis,
 };
 
 // ---------------------------------------------------------------------------

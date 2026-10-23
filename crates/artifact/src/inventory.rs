@@ -495,6 +495,84 @@ fn bind_entries(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// The trellis body (spec 27b-16gb/01, GitHub #338)
+// ---------------------------------------------------------------------------
+
+const SH_GDN_QKV: [u64; 2] = [10240, 5120]; // the GDN q + k + v (exllamav3's `in_proj_qkv`)
+const SH_GDN_Z: [u64; 2] = [6144, 5120]; // the GDN output gate (`in_proj_z`)
+const SH_Q_GATE: [u64; 2] = [12288, 5120]; // q and its gate, interleaved per head (`q_proj`)
+const SH_KV: [u64; 2] = [1024, 5120]; // `k_proj`, `v_proj`
+const SH_MLP_HALF: [u64; 2] = [17408, 5120]; // `gate_proj`, `up_proj`
+
+/// The trellis objects standing for an NVFP4 text-scope plane (its suffix
+/// under `text/layers/{i}/`): a fused plane's split parts under their
+/// exllamav3 names (exllamav3 quantized them separately, each with its own
+/// scales: ADR 0060 §4), a whole one under its own name.
+fn trellis_parts(suffix: &str) -> Option<&'static [(&'static str, &'static [u64])]> {
+    Some(match suffix {
+        "gdn/query_key_value_z" => &[("gdn/in_proj_qkv", &SH_GDN_QKV), ("gdn/in_proj_z", &SH_GDN_Z)],
+        "gdn/output" => &[("gdn/output", &SH_GDN_OUT)],
+        "attention/query_key_gate_value" => {
+            &[("attention/q_proj", &SH_Q_GATE), ("attention/k_proj", &SH_KV), ("attention/v_proj", &SH_KV)]
+        }
+        "attention/output" => &[("attention/output", &SH_ATTN_OUT)],
+        "mlp/gate_up" => &[("mlp/gate_proj", &SH_MLP_HALF), ("mlp/up_proj", &SH_MLP_HALF)],
+        "mlp/down" => &[("mlp/down", &SH_MLP_DOWN)],
+        _ => return None,
+    })
+}
+
+/// The text scope of the 27B's trellis artifact (the 16 GB card class, spec
+/// 27b-16gb/01): [`text_scope_27b`] with every body linear and the output
+/// head in trellis (layout `trellis-tile16-v1`), the NVFP4 planes'
+/// `*_input_scale_divisor` scalars gone with their W4A4 activations, and
+/// every other entry unchanged -- the token embedding in mapped host memory
+/// included. 803 entries, 401 of them trellis.
+///
+/// K is per matrix (the public quant's), so a trellis entry's format is
+/// `format_of(name)`'s: the artifact's directory, which is the authority
+/// for the format (ADR 0002). A name it does not know, or a format that is
+/// not a trellis one, is an error naming the object.
+pub fn text_scope_27b_trellis(format_of: impl Fn(&str) -> Option<NumericFormat>) -> Result<Vec<InventoryEntry>> {
+    let trellis = |name: String, shape: &'static [u64]| -> Result<InventoryEntry> {
+        let format = format_of(&name)
+            .ok_or_else(|| crate::fail(format!("the trellis artifact has no {name}")))?;
+        if format.trellis_k2().is_none() {
+            return Err(crate::fail(format!("{name} is {}, not a trellis format", format.name())));
+        }
+        Ok(mk(&name, format, StorageLayout::TrellisTile16V1, shape))
+    };
+    let mut entries = Vec::with_capacity(803);
+    for entry in text_scope_27b() {
+        if entry.name == "text/output_head" {
+            entries.push(trellis(entry.name.to_string(), &SH_EMBED)?);
+            continue;
+        }
+        let Some((prefix, suffix)) = entry
+            .name
+            .strip_prefix("text/layers/")
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(layer, suffix)| (format!("text/layers/{layer}/"), suffix))
+        else {
+            entries.push(entry);
+            continue;
+        };
+        if suffix.ends_with("input_scale_divisor") {
+            continue;
+        }
+        match trellis_parts(suffix) {
+            Some(parts) => {
+                for (part, shape) in parts {
+                    entries.push(trellis(format!("{prefix}{part}"), shape)?);
+                }
+            }
+            None => entries.push(entry),
+        }
+    }
+    Ok(entries)
+}
+
 /// Build a device entry, leaking the (templated) name into a `'static`
 /// string (the generator runs once; the leak is bounded by the table size).
 fn mk(name: &str, format: NumericFormat, layout: StorageLayout, shape: &'static [u64]) -> InventoryEntry {
@@ -865,5 +943,96 @@ mod tests {
         let err = bind_dflash2_error(objects, &[0u8; 64], "dflash2-mis-shaped");
         assert!(err.contains("does not match target contract"), "{err}");
         assert!(err.contains("dflash2/feature_projection"), "{err}");
+    }
+
+    /// Spec 27b-16gb/01: the trellis artifact's text scope is the NVFP4
+    /// one with the body linears and the head in trellis (fused planes
+    /// split, divisors gone) and everything else unchanged.
+    #[test]
+    fn the_trellis_text_scope_replaces_the_body_and_the_head_and_keeps_the_rest() {
+        let k3 = |_: &str| Some(NumericFormat::TrellisMul1K3);
+        let entries = text_scope_27b_trellis(k3).unwrap();
+        assert_eq!(entries.len(), 803);
+        let trellis: Vec<&InventoryEntry> =
+            entries.iter().filter(|e| e.layout == StorageLayout::TrellisTile16V1).collect();
+        assert_eq!(trellis.len(), 48 * 6 + 16 * 7 + 1, "the public quant's 400 body matrices and its head");
+        for e in &trellis {
+            tensor_encoded_size(e.layout, e.format, e.shape).unwrap_or_else(|err| panic!("{}: {err}", e.name));
+            assert_eq!(e.residence, Residence::Device, "{}", e.name);
+        }
+        assert!(entries.iter().all(|e| !e.name.ends_with("input_scale_divisor")));
+
+        let nvfp4: BTreeMap<&str, InventoryEntry> = text_scope_27b().into_iter().map(|e| (e.name, e)).collect();
+        let kept: Vec<&InventoryEntry> =
+            entries.iter().filter(|e| e.layout != StorageLayout::TrellisTile16V1).collect();
+        assert_eq!(kept.len(), 402);
+        for e in kept {
+            assert_eq!(nvfp4.get(e.name), Some(e), "{} is the NVFP4 scope's entry", e.name);
+        }
+        let names: std::collections::BTreeSet<&str> = entries.iter().map(|e| e.name).collect();
+        assert_eq!(names.len(), entries.len(), "unique names");
+
+        let layer = |i: usize| -> Vec<(&str, &[u64])> {
+            let prefix = format!("text/layers/{i}/");
+            trellis
+                .iter()
+                .filter_map(|e| e.name.strip_prefix(prefix.as_str()).map(|s| (s, e.shape)))
+                .collect()
+        };
+        assert_eq!(
+            layer(0),
+            vec![
+                ("gdn/in_proj_qkv", &[10240u64, 5120][..]),
+                ("gdn/in_proj_z", &[6144, 5120][..]),
+                ("gdn/output", &[5120, 6144][..]),
+                ("mlp/gate_proj", &[17408, 5120][..]),
+                ("mlp/up_proj", &[17408, 5120][..]),
+                ("mlp/down", &[5120, 17408][..]),
+            ]
+        );
+        assert_eq!(
+            layer(3),
+            vec![
+                ("attention/q_proj", &[12288u64, 5120][..]),
+                ("attention/k_proj", &[1024, 5120][..]),
+                ("attention/v_proj", &[1024, 5120][..]),
+                ("attention/output", &[5120, 6144][..]),
+                ("mlp/gate_proj", &[17408, 5120][..]),
+                ("mlp/up_proj", &[17408, 5120][..]),
+                ("mlp/down", &[5120, 17408][..]),
+            ]
+        );
+        let head = entries.iter().find(|e| e.name == "text/output_head").unwrap();
+        assert_eq!((head.layout, head.shape), (StorageLayout::TrellisTile16V1, &SH_EMBED[..]));
+        let embedding = entries.iter().find(|e| e.name == "text/token_embedding").unwrap();
+        assert_eq!(embedding.residence, Residence::HostMapped);
+    }
+
+    #[test]
+    fn a_trellis_entry_takes_its_k_from_the_directory() {
+        let entries = text_scope_27b_trellis(|name: &str| {
+            Some(if name.ends_with("mlp/down") { NumericFormat::TrellisMul1K5 } else { NumericFormat::TrellisMul1K2 })
+        })
+        .unwrap();
+        let format = |name: &str| entries.iter().find(|e| e.name == name).unwrap().format;
+        assert_eq!(format("text/layers/7/mlp/down"), NumericFormat::TrellisMul1K5);
+        assert_eq!(format("text/layers/7/mlp/up_proj"), NumericFormat::TrellisMul1K2);
+        assert_eq!(format("text/layers/7/input_norm"), NumericFormat::Bf16);
+    }
+
+    #[test]
+    fn a_missing_or_non_trellis_body_object_is_an_error_naming_it() {
+        let err = text_scope_27b_trellis(|name: &str| {
+            (name != "text/layers/5/gdn/in_proj_z").then_some(NumericFormat::TrellisMul1K4)
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("text/layers/5/gdn/in_proj_z"), "{err}");
+        let err = text_scope_27b_trellis(|name: &str| {
+            Some(if name == "text/output_head" { NumericFormat::W8G32F16S } else { NumericFormat::TrellisMul1K4 })
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("text/output_head is W8G32_F16S, not a trellis format"), "{err}");
     }
 }
