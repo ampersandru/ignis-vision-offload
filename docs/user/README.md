@@ -161,8 +161,29 @@ revision of its Hugging Face repository:
 | `ignis-image-2.1-turbo` | [`gpillon/ignis-image-2.1-turbo`](https://huggingface.co/gpillon/ignis-image-2.1-turbo) | 15.6 GiB (the [image model](#image-generation); non-commercial licence) |
 
 The id is the **served id**: what `--model-id` names, what `/v1/models`
-reports and what a request puts in `model`. `ignis-server model list` shows
-every entry and how much of it is on disk:
+reports and what a request puts in `model`.
+
+Each entry states the smallest **card class** it loads on
+([ADR 0064](../adr/0064-a-catalog-entry-states-its-card-class.md)): every
+built-in one is 32 GB, the RTX 5090's class. On a card of a smaller class (16
+GB), the server refuses an entry above it before unloading or fetching
+anything: a switch to it and a request naming it are answered
+`409 model_above_card_class`, naming both classes, while the loaded model
+serves on; a start with no artifact that would load it, and its
+`model download`, are refused; `GET /v1/models`, `GET /v1/models/catalog` and
+the Playground list it as unavailable, with the reason. An entry may answer to
+its family's default id as an **alias**: the 16 GB 27B, once published,
+answers to `qwen3.8-27b` on a 16 GB card, so a client configured with
+`qwen3.8-27b` is served by it, and the answer names it — only an entry whose
+artifact is of the 27B's family, by the artifact's header, answers to it; one
+of another family is refused, naming both. A model loaded from a path named
+for the load itself — `--model-artifact`, a switch naming its `artifact` — is
+your word and is not fitted to the card: only the VRAM plan refuses it. A
+catalog id you also list in `--switch-known-models` is fitted all the same:
+the class is its catalog entry's. A model id no entry holds has no class, and
+a card whose class is not known refuses nothing.
+
+`ignis-server model list` shows every entry and how much of it is on disk:
 
 ```
 ignis-server model list                 # id, built-in or operator, repo@revision, size, complete/partial/absent, family
@@ -174,7 +195,7 @@ ignis-server model list --format json
 ```
 ignis-server model download                          # the configured --model-id (qwen3.8-27b by default)
 ignis-server model download qwen3.8-flash-next       # one or more ids
-ignis-server model download --all                    # every entry
+ignis-server model download --all                    # every entry (refused when the card cannot load one)
 ignis-server model download qwen3.8-27b --out /mnt/usb   # somewhere other than --download-path
 ```
 
@@ -195,7 +216,10 @@ the runtime's; a lower minor is fine) is refused naming both versions and asking
 to update the NVIDIA driver.
 Progress goes to stderr, the artifact paths to stdout, and the exit code is 0
 only when every entry verified. It reads the same configuration a start does
-(config file, environment, flags).
+(config file, environment, flags). It is fitted to the card of the machine it
+runs on: an id an entry answers to there fetches that entry, and an entry
+above the card's class refuses the whole command before anything is fetched —
+fetch it on the machine that will run it, or on one without a GPU.
 
 A model fetched into a running server's `--download-path` is switchable at
 once: a request naming its id switches the server to it, as a
@@ -257,6 +281,8 @@ models:
     repo: acme/qwen-ft-ninfer          # <owner>/<name>
     revision: v1                       # commit, tag or branch; required
     artifact: acme_ft.ninfer           # the file the server loads
+    card_class: 32                     # optional: the smallest card class it loads on, in GB: 16, 32 or 96
+    # aliases: [qwen3.8-27b]           # optional: the family's default id it answers to on a smaller card
     files:                             # every file, all pinned
       - { name: acme_ft.ninfer.graft.json, bytes: 48211,       sha256: 9c1e… }
       - { name: acme_ft.ninfer,            bytes: 19406942468, sha256: abb1… }
@@ -268,13 +294,23 @@ cannot be read, or when an entry has an unknown key, an empty or duplicate id
 the form `<owner>/<name>`, an empty `revision`, an `artifact` not among its
 `files`, no sidecar (the artifact's name plus `.graft.json` or
 `.conversion.json`), a `sha256` that is not 64 lowercase hex digits, a `bytes`
-of 0, or a file name that is not a plain name (a path separator, `..`, an
-absolute path). A relative `--download-catalog` set in a config file is read
+of 0, a file name that is not a plain name (a path separator, `..`, an
+absolute path), a `card_class` that is not 16, 32 or 96, or an
+alias that is not a model family's default id (`qwen3.8-27b`,
+`qwen3.8-flash-next`, `ignis-image-2.1-turbo`), is the entry's own id, names
+another family than the entry's own id or its other aliases, or is already
+another entry's — a built-in one's included. A relative `--download-catalog` set in a config file is read
 from that file's directory; from a flag or an env var, from the working
-directory.
+directory. An entry with no `card_class` states no class: it is never refused
+by class, so a catalog written before card classes still starts, and only the
+VRAM plan says it does not fit.
 
 A built-in id cannot be re-pinned by a file: a mirror of the owner's models is
-an endpoint, a variant of them a new id.
+an endpoint, a variant of them a new id. Your entry may answer to a built-in
+default id as an alias — your own 16 GB build answering to `qwen3.8-27b` —
+since the built-in entry keeps its id and pins and still serves it wherever it
+fits: the alias is consulted only on a card below its class, and the answer
+names your entry.
 
 ### Air-gapped machines
 
@@ -380,7 +416,9 @@ picks one by the card's total memory as NVML reports it: under 20 GiB
 (an RTX PRO 6000) `rtxpro6000`. A card of any other size, or a total NVML
 cannot read, is refused, naming `--profile` — at a start, and at `config
 generate|print|patch` and `model list|download` too, which resolve exactly as a
-start would; a profile you name (`--profile`, `IGNIS_PROFILE`, the
+start would, except that the `model` commands need no card: to them a total
+NVML cannot read (no NVIDIA driver) is no card, as on a build without CUDA; a
+profile you name (`--profile`, `IGNIS_PROFILE`, the
 file's `profile:`, `none` included) always wins and the card is not consulted
 for the choice. The start's log line `ignis.config.source` names the profile
 chosen and the total it was chosen by; `GET /v1/config` and the Playground show
@@ -904,7 +942,7 @@ not.
 
 | Endpoint | Method | Notes |
 |---|---|---|
-| `/v1/models` | GET | The servable models: `data[0]` the loaded one (`active: true`), then every model a request naming it would switch to and be served by now — each catalog entry on disk, each known model whose artifact is a file; the loaded one alone with `--switch-allow-implicit false`. And `status`, about `data[0]`: `serving`, `switching`, `failed` ([below](#switching-models)), `unloaded` or `loading` ([idle unload](#idle-unload)). |
+| `/v1/models` | GET | The servable models: `data[0]` the loaded one (`active: true`), then every model a request naming it would switch to and be served by now — each catalog entry on disk, each known model whose artifact is a file; the loaded one alone with `--switch-allow-implicit false`. A catalog entry on disk above the card's class is listed `available: false`, with the `reason` ([the catalog](#the-catalog)). And `status`, about `data[0]`: `serving`, `switching`, `failed` ([below](#switching-models)), `unloaded` or `loading` ([idle unload](#idle-unload)). |
 | `/v1/models/switch` | POST | Replace the loaded model on the running process ([below](#switching-models)). |
 | `/v1/models/catalog` | GET | Every model the server can switch to or fetch, with its state on disk ([below](#switching-models)). |
 | `/v1/images/generations` | POST | Generate images with the image model ([below](#image-generation)). |

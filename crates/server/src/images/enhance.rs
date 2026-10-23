@@ -116,18 +116,32 @@ impl Task {
 /// ([`crate::model_switch::Switcher::text_model`]), `listing` (the known
 /// models a config change is about to set) listed too. `None` when it names
 /// one, or when the server cannot switch: a request then falls back, with a
-/// warning, as it does for any enhancer it cannot reach.
+/// warning, as it does for any enhancer it cannot reach. The enhancer is the
+/// one this card serves ([`enhancer_on_this_card`]).
 pub fn unknown_enhancer(server: &Server, enhancer: &str, listing: &BTreeMap<String, PathBuf>) -> Option<String> {
     let switcher = server.switcher.as_ref()?;
     let loaded = server.active();
-    if loaded.kind() == ModelKind::Text && loaded.model_id() == enhancer {
+    let served = enhancer_on_this_card(server, enhancer);
+    if loaded.kind() == ModelKind::Text && loaded.model_id() == served {
         return None;
     }
-    switcher.text_model_among(enhancer, listing).is_none().then(|| {
+    switcher.text_model_among(&served, listing).is_none().then(|| {
         format!(
             "image.prompt_enhancer `{enhancer}` names no text model this server can switch to: list it in switch.known_models, start on it, or download it from the catalog"
         )
     })
+}
+
+/// The text model `enhancer` (`image.prompt_enhancer`) names, as this card
+/// serves it — through the same step a request's `model` takes
+/// ([`crate::api::model_on_this_card`], ADR 0064 §2): on a card below the
+/// 27B's default entry, the default enhancer `qwen3.8-27b` is the entry that
+/// answers to it, so the rewrite runs on that one, loaded or visited, and is
+/// never a visit to the model already loaded. As configured when no entry
+/// answers in its place — then an enhancer above the card's class is one no
+/// visit reaches ([`crate::model_switch::Switcher::text_model`]).
+pub fn enhancer_on_this_card(server: &Server, enhancer: &str) -> String {
+    crate::api::model_on_this_card(server, Some(enhancer.to_owned())).ok().flatten().unwrap_or_else(|| enhancer.to_owned())
 }
 
 /// A prompt the enhancer rewrote, and what the response says beside it.

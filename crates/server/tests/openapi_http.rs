@@ -223,6 +223,36 @@ fn the_models_list_documents_the_servable_models_and_the_active_entry() {
     assert!(required.contains(&"active") && !required.contains(&"kind"), "{entry}");
 }
 
+/// ADR 0064 (GitHub #336): every route that names a model documents the
+/// card-class refusal — `409`, or `422` on the decision endpoint as its other
+/// model refusals — and both model lists say what `available` and `reason`
+/// are.
+#[test]
+fn the_card_class_refusal_and_availability_are_documented() {
+    let document = document();
+    for (path, status) in [
+        ("/v1/chat/completions", "409"),
+        ("/v1/responses", "409"),
+        ("/v1/images/generations", "409"),
+        ("/v1/images/edits", "409"),
+        ("/v1/tokenize", "409"),
+        ("/v1/models/switch", "409"),
+        ("/v1/decide", "422"),
+    ] {
+        let said = document["paths"][path]["post"]["responses"][status]["description"].as_str().unwrap_or_default();
+        assert!(said.contains("model_above_card_class"), "{path} {status}: {said}");
+    }
+    for (schema, path) in [("ModelInfo", "/v1/models"), ("CatalogRow", "/v1/models/catalog")] {
+        let entry = &document["components"]["schemas"][schema];
+        let required: Vec<&str> = entry["required"].as_array().unwrap().iter().map(|key| key.as_str().unwrap()).collect();
+        assert!(required.contains(&"available") && !required.contains(&"reason"), "{schema}: {entry}");
+        assert!(entry["properties"]["available"]["description"].as_str().unwrap().contains("card_class"), "{schema}: {entry}");
+        assert!(entry["properties"]["reason"]["description"].as_str().unwrap().contains("available: false"), "{schema}: {entry}");
+        let description = document["paths"][path]["get"]["description"].as_str().unwrap();
+        assert!(description.contains("`available: false`") && description.contains("ADR 0064"), "{path}: {description}");
+    }
+}
+
 #[test]
 fn every_refused_field_is_named_in_its_operation_description() {
     // Spec server/09: driven off the table the validator reads, so a refusal

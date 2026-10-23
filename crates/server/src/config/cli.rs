@@ -230,14 +230,25 @@ fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
 /// configuration a start would read and the catalog it would load, turned
 /// into what to do, for `main` to run. `model verify` and `model convert`
 /// are reserved, so any other word is an unknown command.
+///
+/// Neither needs a card: the CUDA build fetches and lists on a machine with
+/// no NVIDIA driver too, a Kubernetes CPU node or the machine that carries
+/// the files to an air-gapped one (`docs/user/README.md`). So a total NVML
+/// cannot read is no card here, as on a build without CUDA — `auto`
+/// resolves as `none` and no entry is fitted to a class — where a start, and
+/// the `config` verbs, whose values are the card's, refuse it.
 pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(ConfigError("`model` takes a command: download or list".to_owned()));
     };
+    let card = || match card() {
+        Card::Unreadable(_) => Card::Absent,
+        read => read,
+    };
     let mut rest = rest.to_vec();
     match verb.as_str() {
-        "download" => model_download(&mut rest, env, files, card),
-        "list" => model_list(&mut rest, env, files, card),
+        "download" => model_download(&mut rest, env, files, &card),
+        "list" => model_list(&mut rest, env, files, &card),
         other => Err(ConfigError(format!("unknown command `model {other}` (the model commands are download and list)"))),
     }
 }
@@ -261,17 +272,9 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
     }
     let config = super::start_config(args, env, files, card)?;
     let catalog = download::catalog::load(files, config.download_catalog.as_deref()).map_err(|err| ConfigError(err.0))?;
-    let lookup = |id: &str| {
-        catalog.entry(id).cloned().ok_or_else(|| {
-            ConfigError(format!("`{id}` is not in the catalog (the ids are {})", catalog.ids().join(", ")))
-        })
-    };
-    let entries = match (all, ids.as_slice()) {
-        (true, []) => catalog.entries().to_vec(),
-        (true, _) => return Err(ConfigError("`model download --all` fetches every entry: name ids or `--all`, not both".to_owned())),
-        (false, []) => vec![lookup(&config.model)?],
-        (false, ids) => ids.iter().map(|id| lookup(id)).collect::<Result<_, _>>()?,
-    };
+    // Fitted to the card's class (ADR 0064), as a start reads it from NVML's
+    // total; none without a card, which refuses nothing.
+    let entries = download::command::entries_to_fetch(&catalog, &ids, all, &config.model, config.card_class()).map_err(ConfigError)?;
     let token = download::bearer_token(&config.download_endpoint, config.download_token.as_ref(), env("HF_TOKEN").as_deref());
     Ok(ConfigOutcome::Model(ModelCommand::Download {
         entries,
@@ -631,12 +634,61 @@ mod tests {
         assert_eq!((endpoint.as_str(), token.as_deref()), ("https://mirror.example.com", Some("tok")));
     }
 
+    /// [`run`] on a machine whose card the probe reads as `card`.
+    fn run_on(argv: &[&str], files: &MemFiles, card: Card) -> Result<ConfigOutcome, ConfigError> {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        crate::config::resolve_on(&argv, |_: &str| None, files, &move || card.clone())
+    }
+
+    /// ADR 0064 §3, through the command line: `model download` is fitted to
+    /// the class of the card the start reads — on a 16 GB card the default
+    /// id fetches the entry that answers to it, and an entry no 16 GB card
+    /// loads is refused before anything is fetched; on a 5090 nothing
+    /// changes.
+    #[test]
+    fn model_download_is_fitted_to_the_card_the_start_reads() {
+        let files = MemFiles::with(&[
+            ("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n"),
+            ("conf/acme.yaml", crate::download::catalog::testing::SIXTEEN),
+        ]);
+        let sixteen = Card::Total(16 << 30);
+        let config = ["--config", "conf/ignis.config.yaml"];
+        let (ids, ..) = download_of(run_on(&[&["model", "download"][..], &config].concat(), &files, sixteen.clone()).unwrap());
+        assert_eq!(ids, ["qwen3.8-27b-16g"]);
+        let err = run_on(&[&["model", "download", "qwen3.8-flash-next"][..], &config].concat(), &files, sixteen.clone()).unwrap_err().0;
+        assert!(err.contains("nothing fetched") && err.contains("32 GB") && err.contains("16 GB"), "{err}");
+        let err = run_on(&["model", "download"], &MemFiles::default(), sixteen).unwrap_err().0;
+        assert!(err.contains("qwen3.8-27b needs a 32 GB card"), "the built-in catalog alone: {err}");
+        let five_090 = Card::Total(super::super::profile::RTX_5090_TOTAL_BYTES);
+        let (ids, ..) = download_of(run_on(&[&["model", "download"][..], &config].concat(), &files, five_090).unwrap());
+        assert_eq!(ids, ["qwen3.8-27b"]);
+    }
+
+    /// `docs/user/README.md`: the CUDA build fetches and lists on a machine
+    /// with no NVIDIA driver. NVML that cannot be read is no card to the
+    /// `model` verbs — nothing is fitted to a class, nothing refused — while
+    /// a start and the `config` verbs still refuse it under `auto`.
+    #[test]
+    fn the_model_verbs_need_no_card() {
+        let files = MemFiles::default();
+        for card in [Card::Unreadable("NVML Shared Library Not Found".to_owned()), Card::Absent] {
+            let (ids, ..) = download_of(run_on(&["model", "download", "--all"], &files, card.clone()).unwrap());
+            assert_eq!(ids, ALL_IDS, "{card:?}");
+            assert!(matches!(run_on(&["model", "list"], &files, card.clone()).unwrap(), ConfigOutcome::Model(ModelCommand::List { .. })), "{card:?}");
+        }
+        let unreadable = || Card::Unreadable("NVML Shared Library Not Found".to_owned());
+        for argv in [&["config", "print"][..], &[]] {
+            let err = run_on(argv, &files, unreadable()).unwrap_err().0;
+            assert!(err.contains("NVML Shared Library Not Found") && err.contains("--profile"), "{argv:?}: {err}");
+        }
+    }
+
     /// AC 2, 3 and 13 through the command line: an operator catalog a config
     /// file names, beside it, joins the listing; one that cannot be read
     /// refuses the command.
     #[test]
     fn model_list_reads_the_catalog_the_config_file_names_beside_it() {
-        let catalog = "models:\n  - id: acme-ft\n    repo: acme/ft\n    revision: v1\n    artifact: a.ninfer\n    files:\n      - { name: a.ninfer.graft.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }\n      - { name: a.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }\n";
+        let catalog = "models:\n  - id: acme-ft\n    repo: acme/ft\n    revision: v1\n    artifact: a.ninfer\n    card_class: 32\n    files:\n      - { name: a.ninfer.graft.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }\n      - { name: a.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }\n";
         let files = MemFiles::with(&[("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n  path: /srv/models\n"), ("conf/acme.yaml", catalog)]);
         match run(&["model", "list", "--config", "conf/ignis.config.yaml", "--format", "json"], &[], &files).unwrap() {
             ConfigOutcome::Model(ModelCommand::List { catalog, dir, format }) => {

@@ -150,7 +150,7 @@ The reasoning-loop guard (`--model-loop-guard`, ADR 0052) watches a request that
         (status = 400, description = "The request is malformed, or asks for what this server does not serve: a hosted tool, structured output, a background response, a `previous_response_id`.", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
-        (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
+        (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id). Or `model` names a catalog entry this card's class cannot load, and no entry that answers to it can (`model_above_card_class`, naming the entry's class and the card's, ADR 0064): refused before anything loads or switches, the loaded model serving on.", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
         (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
         (status = 504, description = "A non-streaming request the engine did not finish within `--server-request-timeout`, under `--server-timeout-reply error` (`request_timeout`). Under `partial`, the default, such a request is answered `200` with what it generated: `status: \"incomplete\"`, `incomplete_details.reason: \"max_output_tokens\"`, and the header `ignis-stopped-by: request_timeout`.", body = ApiError),
@@ -158,11 +158,11 @@ The reasoning-loop guard (`--model-loop-guard`, ADR 0052) watches a request that
 )]
 pub(crate) async fn create_response(
     State(server): State<Arc<Server>>,
-    Json(req): Json<CreateResponse>,
+    Json(mut req): Json<CreateResponse>,
 ) -> Response {
     // A `model` naming another known model switches to it first (spec
     // model-switch/01 §Implicit switch), so the pin below takes that model.
-    if let Err(refused) = input::switch_to_named_model(&server, &req).await {
+    if let Err(refused) = input::switch_to_named_model(&server, &mut req).await {
         return refused;
     }
     // One model for the whole request (spec model-switch/01).

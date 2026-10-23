@@ -1,0 +1,15 @@
+# The 16 GB 27B's catalog entry as spec 27b-16gb/01 describes it (ADR 0064):
+# an operator catalog in place of the built-in entry GitHub #338 adds with
+# its pins — its own served id, the 16 GB class, and the 27B's default id as its
+# alias. Shared by the catalog's unit tests (`download::catalog::testing`) and
+# the integration tests (`tests/card_class_http.rs`).
+models:
+  - id: qwen3.8-27b-16g
+    repo: acme/qwen3.8-27b-16g
+    revision: v1
+    artifact: q16.ninfer
+    card_class: 16
+    aliases: [qwen3.8-27b]
+    files:
+      - { name: q16.ninfer.conversion.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }
+      - { name: q16.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }

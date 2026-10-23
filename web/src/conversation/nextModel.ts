@@ -1,5 +1,5 @@
 import type { ModelState } from "../api/model.ts";
-import type { CatalogRow } from "../server/routes.ts";
+import { type CatalogRow, unavailableReason } from "../server/routes.ts";
 
 // Which model the chat's next message goes to (the composer's model picker).
 // By default the one loaded: the chat follows the server, whoever switched
@@ -15,8 +15,8 @@ export function textModels(catalog: CatalogRow[] | null): CatalogRow[] {
   return (catalog ?? []).filter((row) => row.family !== "qwenimage21" && !/^ignis-image/.test(row.id));
 }
 
-/** A row the server can switch to: all its files on disk, and switchable. */
-export const usable = (row: CatalogRow) => row.switchable && row.on_disk === "complete";
+/** A row the server can switch to: all its files on disk, switchable, and of a card class this card loads (ADR 0064). */
+export const usable = (row: CatalogRow) => row.switchable && row.on_disk === "complete" && row.available !== false;
 
 export type NextModel = {
   /** The model the next message goes to; null while none can be named (a switch under way, nothing read yet). */
@@ -61,6 +61,8 @@ export function nextLine(next: NextModel): string {
 export function rowLine(row: CatalogRow, model: ModelState): string {
   const loaded = model.state === "ready" || model.state === "unloaded" ? model.id : null;
   if (row.id === loaded) return model.state === "unloaded" ? "Unloaded while idle: the message loads it" : "Loaded";
+  const unavailable = unavailableReason(row);
+  if (unavailable) return `Not for this card: ${unavailable}`;
   if (row.on_disk !== "complete") return row.on_disk === "partial" ? "Partly on disk: download it from the Server view" : "Not on disk: download it from the Server view";
   if (!row.switchable) return "Not one the server can switch to";
   return loaded ? `The message switches from ${loaded} first` : "The message loads it first";

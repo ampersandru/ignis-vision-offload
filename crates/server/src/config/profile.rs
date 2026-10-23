@@ -34,7 +34,9 @@ pub const AUTO_PROFILE: &str = "auto";
 /// into config resolution, like the environment: resolution runs in contexts
 /// with no card (CI on Linux without NVML, the CPU tests), so the module never
 /// reads one itself. The `config` and `model` verbs read it exactly as a
-/// start does (`config generate|print|patch`, `model list|download`).
+/// start does (`config generate|print|patch`, `model list|download`), except
+/// that the `model` verbs, which need no card, take [`Card::Unreadable`] for
+/// [`Card::Absent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Card {
     /// The card's total memory in bytes, as NVML reports it.
