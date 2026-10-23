@@ -350,15 +350,23 @@ fn scheduler_with_kv_disk<L: StepLeaf>(
     Ok((ConcreteScheduler::with_config(config, Arc::new(compute)), Some(budget_bytes)))
 }
 
+/// A load's scheduler over `shape`, its pool's pages and its `lanes`
+/// (GitHub #336): the decode lanes the leaf's pool has slots for and its
+/// model's widest round serves, on both families -- no more requests in
+/// flight, in one prefill batch or holding a pool slot than that.
 #[cfg(any(feature = "cuda", test))]
 fn scheduler_config_for_shape(
     model: String,
     shape: EngineShape,
     kv_page_tokens: u32,
     capacity_pages: u32,
+    lanes: u32,
 ) -> SchedulerConfig {
     SchedulerConfig {
         model,
+        max_in_flight: lanes as usize,
+        max_prefill_batch: lanes as usize,
+        resident_slot_capacity: lanes,
         kv_page_tokens,
         max_sequence_tokens: shape.max_context,
         // ADR 0045: one home for the default cap, on both models' loads.
@@ -1013,16 +1021,11 @@ pub(crate) fn qwen27b_load(
         pace: shape.transfer_pace.unwrap_or_else(|| ignis_runtime::TransferPace::for_family(family)),
     };
     // GitHub #336: the scheduler's lanes are the load's, as Flash-Next's are:
-    // no more requests in flight, in one prefill batch or holding a pool
-    // slot than the pool has slots and the model's round has lanes.
-    let lanes = leaf_config.slot_count;
+    // the pool's slots and the model's widest round.
     let (sched, kv_disk_bytes) = scheduler_with_kv_disk(
         SchedulerConfig {
-            max_in_flight: lanes as usize,
-            max_prefill_batch: lanes as usize,
-            resident_slot_capacity: lanes,
             thinking_close,
-            ..scheduler_config_for_shape(model_id.clone(), shape, KV_PAGE_TOKENS, capacity_pages)
+            ..scheduler_config_for_shape(model_id.clone(), shape, KV_PAGE_TOKENS, capacity_pages, leaf_config.slot_count)
         },
         model,
         eos,
@@ -1408,11 +1411,8 @@ pub(crate) fn flash_next_load(
     };
     let (sched, kv_disk_bytes) = scheduler_with_kv_disk(
         SchedulerConfig {
-            max_in_flight: lanes as usize,
-            max_prefill_batch: lanes as usize,
-            resident_slot_capacity: lanes,
             thinking_close,
-            ..scheduler_config_for_shape(model_id.clone(), shape, KV_PAGE_TOKENS, capacity_pages)
+            ..scheduler_config_for_shape(model_id.clone(), shape, KV_PAGE_TOKENS, capacity_pages, lanes)
         },
         model,
         eos,
@@ -1680,7 +1680,7 @@ mod tests {
         assert_eq!(off.for_family(ModelFamily::FlashNext).decode_share_percent, flash.decode_share_percent);
         let named = EngineShape { decode_share_percent: Some(0), ..unnamed };
         assert_eq!(named.for_family(ModelFamily::FlashNext).decode_share_percent, Some(0), "a named share stands");
-        let config = scheduler_config_for_shape("m".into(), unnamed, 16, 64);
+        let config = scheduler_config_for_shape("m".into(), unnamed, 16, 64, 8);
         assert_eq!(config.decode_share, 0.0, "unresolved, one round per chunk");
     }
 
@@ -1691,19 +1691,19 @@ mod tests {
         // imaged prefix at a cut of its own.
         use ignis_core::compute::ModelFamily;
         let unnamed = EngineShape::default();
-        let flash = scheduler_config_for_shape("m".into(), unnamed.for_family(ModelFamily::FlashNext), 64, 1024);
+        let flash = scheduler_config_for_shape("m".into(), unnamed.for_family(ModelFamily::FlashNext), 64, 1024, 8);
         assert!(flash.opener_page_rides_capture);
         let off = EngineShape { prompt_reuse: false, ..unnamed };
         assert!(
-            scheduler_config_for_shape("m".into(), off.for_family(ModelFamily::FlashNext), 64, 1024)
+            scheduler_config_for_shape("m".into(), off.for_family(ModelFamily::FlashNext), 64, 1024, 8)
                 .opener_page_rides_capture,
             "a property of the family, inert while reuse is off"
         );
         // The 27B's load takes only the decode-share step (`main.rs`), and
         // nothing on that path may switch it on.
         let on_27b = unnamed.with_family_decode_share(ModelFamily::Qwen38_27b);
-        assert!(!scheduler_config_for_shape("m".into(), on_27b, 64, 1024).opener_page_rides_capture);
-        assert!(!scheduler_config_for_shape("m".into(), unnamed.for_family(ModelFamily::Qwen38_27b), 64, 1024)
+        assert!(!scheduler_config_for_shape("m".into(), on_27b, 64, 1024, 8).opener_page_rides_capture);
+        assert!(!scheduler_config_for_shape("m".into(), unnamed.for_family(ModelFamily::Qwen38_27b), 64, 1024, 8)
             .opener_page_rides_capture);
     }
 
@@ -1786,7 +1786,7 @@ mod tests {
         assert_eq!(named.kv_disk_bytes_for(ModelFamily::Qwen38_27b), 4 << 30);
         let off = shape_of(&["--kv-disk-bytes", "0"]);
         assert_eq!(off.kv_disk_bytes_for(ModelFamily::FlashNext), 0);
-        let config = scheduler_config_for_shape("m".into(), unnamed.for_family(ModelFamily::FlashNext), 64, 1024);
+        let config = scheduler_config_for_shape("m".into(), unnamed.for_family(ModelFamily::FlashNext), 64, 1024, 8);
         assert_eq!(config.kv_disk_capacity_bytes, 0);
     }
 
@@ -1823,7 +1823,7 @@ mod tests {
             transfer_pace: None,
         };
 
-        let config = scheduler_config_for_shape("test-model".into(), shape, 64, 32_768);
+        let config = scheduler_config_for_shape("test-model".into(), shape, 64, 32_768, 8);
 
         assert_eq!(config.serving_chunk_tokens, 512);
         // ADR 0045: and the default cap.
@@ -1857,9 +1857,37 @@ mod tests {
             let flash = shape.for_family(ModelFamily::FlashNext);
             let qwen = shape.with_family_decode_share(ModelFamily::Qwen38_27b);
             for (family, shape) in [("Flash-Next", flash), ("27B", qwen)] {
-                assert_eq!(scheduler_config_for_shape("m".into(), shape, 64, 1024).default_max_tokens, cap, "{family} {flags:?}");
+                assert_eq!(scheduler_config_for_shape("m".into(), shape, 64, 1024, 8).default_max_tokens, cap, "{family} {flags:?}");
             }
         }
+    }
+
+    /// GitHub #336: a load's scheduler holds no more requests in flight, in
+    /// one prefill batch or on a pool slot than the load has lanes -- the
+    /// 27B's as its shape names them, 8 when none is, as Flash-Next's.
+    #[test]
+    fn the_scheduler_takes_the_loads_decode_lanes() {
+        use ignis_core::compute::ModelFamily;
+        for (named, lanes) in [(1, 1), (2, 2), (8, 8), (0, 8)] {
+            let shape = EngineShape { decode_lanes: named, ..EngineShape::default() };
+            let config = scheduler_config_for_shape("m".into(), shape, 64, 1024, shape.decode_lanes_for(ModelFamily::Qwen38_27b));
+            assert_eq!(
+                (config.max_in_flight, config.max_prefill_batch, config.resident_slot_capacity),
+                (lanes, lanes, lanes as u32),
+                "the 27B at {named} lanes named"
+            );
+        }
+        let flash = EngineShape::default().for_family(ModelFamily::FlashNext);
+        let config = scheduler_config_for_shape("m".into(), flash, 64, 1024, flash.decode_lanes_for(ModelFamily::FlashNext));
+        assert_eq!((config.max_in_flight, config.resident_slot_capacity), (3, 3), "Flash-Next's own 3");
+        // Eight lanes are the scheduler's own defaults: the 27B's default load
+        // admits as it did before its lanes were a setting.
+        let eight = scheduler_config_for_shape("m".into(), EngineShape::default(), 64, 1024, 8);
+        let default = SchedulerConfig::default();
+        assert_eq!(
+            (eight.max_in_flight, eight.max_prefill_batch, eight.resident_slot_capacity),
+            (default.max_in_flight, default.max_prefill_batch, default.resident_slot_capacity)
+        );
     }
 
     #[test]
@@ -1871,7 +1899,7 @@ mod tests {
             panic!("expected a runnable config");
         };
         let shape = EngineShape::from(&off);
-        let config = scheduler_config_for_shape("test-model".into(), shape, 64, 32_768);
+        let config = scheduler_config_for_shape("test-model".into(), shape, 64, 32_768, 8);
         assert!(!config.prompt_reuse);
         assert_eq!(config.retained_slots, 0, "reuse off reserves no retained slot");
     }
@@ -1891,7 +1919,7 @@ mod tests {
         };
         let leaf = leaf_config_for_shape(shape, 1 << 30);
         assert_eq!((leaf.retained_device_slots, leaf.retained_host_slots), (2, 3));
-        assert_eq!(scheduler_config_for_shape("m".into(), shape, 64, 1024).retained_slots, 5);
+        assert_eq!(scheduler_config_for_shape("m".into(), shape, 64, 1024, 8).retained_slots, 5);
     }
 
     /// GitHub #336: the 27B's leaf -- its pool's slots and its model's widest

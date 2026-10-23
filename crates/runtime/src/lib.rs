@@ -554,6 +554,13 @@ pub trait StepLeaf: Send + Sync + 'static {
     fn load_model(&self) -> Result<Self::Model, i32>;
     /// Release a model handle.
     fn release_model(&self, model: Self::Model);
+    /// The widest decode round this load serves: its decode lanes (GitHub
+    /// #336), fixed for the load's life. The default is the most any load
+    /// serves ([`N_DECODE_LANES`]); a leaf loaded at fewer says so, and the
+    /// adapter refuses a wider round before the leaf is asked.
+    fn decode_lanes(&self) -> u32 {
+        N_DECODE_LANES as u32
+    }
     /// Read the leaf's current geometry and step counters.
     fn stats(&self, model: &Self::Model) -> Result<RuntimeStats, i32>;
     /// Columns the loaded model's output head writes — the length a
@@ -1792,9 +1799,9 @@ impl<L: StepLeaf> Compute for RuntimeCompute<L> {
     }
 
     fn decode_step(&self, jobs: &[DecodeJob]) -> Result<Vec<DecodeOutcome>, ComputeError> {
-        // The most any load's round serves; the leaf refuses past its own
-        // load's lanes (GitHub #336), which the scheduler never batches past.
-        if jobs.len() > N_DECODE_LANES {
+        // The load's own lanes (GitHub #336), which the scheduler never
+        // batches past and the leaf refuses past too.
+        if jobs.len() > self.model.leaf.decode_lanes() as usize {
             return Err(ComputeError::Kernel(-1));
         }
         let mut sequences = self.sequences.lock().unwrap();

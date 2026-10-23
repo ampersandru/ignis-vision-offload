@@ -123,6 +123,8 @@ struct StubLeaf {
     /// eviction loop, since the real refusal comes from the leaf's bytes and
     /// this side owns only the policy.
     media_pool_columns: Option<u64>,
+    /// GitHub #336: the load's decode lanes, as the 27B's leaf reports them.
+    decode_lanes: u32,
 }
 
 impl StubLeaf {
@@ -130,6 +132,12 @@ impl StubLeaf {
     /// (GitHub #243).
     fn with_media_pool(mut self, columns: u64) -> Self {
         self.media_pool_columns = Some(columns);
+        self
+    }
+
+    /// The same stub loaded at `lanes` decode lanes (GitHub #336).
+    fn with_decode_lanes(mut self, lanes: u32) -> Self {
+        self.decode_lanes = lanes;
         self
     }
 
@@ -148,6 +156,7 @@ impl StubLeaf {
             capture_error: None,
             capture_lent_pages: 0,
             media_pool_columns: None,
+            decode_lanes: N_DECODE_LANES as u32,
         }
     }
 
@@ -169,6 +178,7 @@ impl StubLeaf {
             capture_error: None,
             capture_lent_pages: 0,
             media_pool_columns: None,
+            decode_lanes: N_DECODE_LANES as u32,
         }
     }
 
@@ -184,6 +194,7 @@ impl StubLeaf {
             capture_error: None,
             capture_lent_pages: 0,
             media_pool_columns: None,
+            decode_lanes: N_DECODE_LANES as u32,
         }
     }
 
@@ -199,6 +210,7 @@ impl StubLeaf {
             capture_error: None,
             capture_lent_pages: 0,
             media_pool_columns: None,
+            decode_lanes: N_DECODE_LANES as u32,
         }
     }
 
@@ -214,6 +226,7 @@ impl StubLeaf {
             capture_error: None,
             capture_lent_pages: 0,
             media_pool_columns: None,
+            decode_lanes: N_DECODE_LANES as u32,
         }
     }
 }
@@ -285,6 +298,10 @@ impl StepLeaf for StubLeaf {
 
     fn release_model(&self, _model: Self::Model) {
         self.calls.lock().unwrap().models_released += 1;
+    }
+
+    fn decode_lanes(&self) -> u32 {
+        self.decode_lanes
     }
 
     fn stats(&self, _model: &Self::Model) -> Result<RuntimeStats, i32> {
@@ -892,6 +909,25 @@ fn adapter_rejects_decode_batches_larger_than_the_resident_lane_bound() {
 
     assert_eq!(compute.decode_step(&jobs), Err(ComputeError::Kernel(-1)));
     assert_eq!(compute.live_sequences(), 0);
+}
+
+/// GitHub #336: the bound is the load's own lanes, not the most any load
+/// serves -- a 2-lane load's adapter refuses a round of three before the leaf
+/// is asked, and runs one of two.
+#[test]
+fn adapter_rejects_decode_batches_wider_than_the_loads_decode_lanes() {
+    let leaf = Arc::new(StubLeaf::with_tokens([5, 6]).with_decode_lanes(2));
+    let model = Arc::new(Model::load(leaf.clone()).unwrap());
+    let compute = RuntimeCompute::new(model, 99);
+    for request in 1..=3 {
+        compute.prefill_step(&[prefill(request, None)]).unwrap();
+    }
+    let jobs: Vec<_> = (1..=3).map(|request| job(request, DecodeParams::default(), 8)).collect();
+
+    assert_eq!(compute.decode_step(&jobs), Err(ComputeError::Kernel(-1)));
+    assert!(leaf.calls.lock().unwrap().decode_params.is_empty(), "the leaf is never asked");
+    assert_eq!(compute.live_sequences(), 3, "the refused round keeps every sequence");
+    assert_eq!(compute.decode_step(&jobs[..2]).map(|outcomes| outcomes.len()), Ok(2));
 }
 
 fn prefill(request: u64, max_tokens: Option<u32>) -> PrefillJob {

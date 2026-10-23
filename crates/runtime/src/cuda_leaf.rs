@@ -624,6 +624,11 @@ impl StepLeaf for CudaLeaf {
         // `ignis_seq_pool_free`).
     }
 
+    /// GitHub #336: the pool's slots, the widest round the model serves.
+    fn decode_lanes(&self) -> u32 {
+        self.config.slot_count
+    }
+
     fn stats(&self, model: &Self::Model) -> Result<RuntimeStats, i32> {
         let program = step::program_stats(&model.model, &model.pool)
             .map_err(|e| leaf_error("program stats", e))?;
