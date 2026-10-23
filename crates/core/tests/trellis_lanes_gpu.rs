@@ -62,9 +62,9 @@ const LANES: u32 = 2;
 const TOTAL: usize = 64;
 
 /// Two of the canary suite's prompts (`crates/bench/src/canary.rs::CANARIES`)
-/// in a user turn of the model's chat format with thinking closed: the two
-/// whose answers run past `TOTAL`, so every verify round of the pair is two
-/// lanes wide.
+/// in a user turn of the model's chat format with thinking closed: two whose
+/// answers run past `TOTAL`, so the pair shares its verify rounds until the
+/// lane that accepts more reaches its budget.
 const PROMPTS: [&str; 2] = [
     "Compute, step by step, 2 * 3 + 4 and give the final number on the last line.",
     "What does `let v = vec![3,1,2]; v.sort();` set `v` to, after the call?",

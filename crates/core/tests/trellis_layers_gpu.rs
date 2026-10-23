@@ -30,6 +30,9 @@
 
 #![cfg(feature = "cuda")]
 
+#[path = "support/bf16.rs"]
+mod bf16;
+
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +48,8 @@ use ignis_core::model_load::{load_qwen38_27b, Model};
 use ignis_core::seq::{SeqPool, SeqPoolBudget};
 use ignis_core::trellis::{self, TrellisWeight};
 
+use bf16::{bf16_to_f64, f32_to_bf16};
+
 const TRELLIS: &str = "F:/ai/models/Qwen3.8-27B-trellis-3bpw-ignis/qwen3_8_27b_trellis_sc30-v2.ninfer";
 const HIDDEN: usize = 5120;
 const MAX_CONTEXT_TOKENS: u32 = 128;
@@ -56,15 +61,6 @@ const MAX_CONTEXT_TOKENS: u32 = 128;
 /// 1.0; the trellis op's workspace left dirty by a narrower call (fixed in
 /// kernel/src/trellis_linear_internal.cuh) moved every layer to 0.17 to 0.86.
 const LAYER_TOLERANCE: f64 = 0.01;
-
-fn bf16_to_f64(bits: u16) -> f64 {
-    f32::from_bits(u32::from(bits) << 16) as f64
-}
-
-fn f32_to_bf16(x: f32) -> u16 {
-    let bits = x.to_bits();
-    ((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16) as u16
-}
 
 fn f16_to_f32(bits: u16) -> f32 {
     let sign = if bits & 0x8000 != 0 { -1.0f32 } else { 1.0 };

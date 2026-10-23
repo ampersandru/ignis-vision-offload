@@ -21,6 +21,9 @@
 
 #![cfg(feature = "cuda")]
 
+#[path = "support/logit_drift.rs"]
+mod logit_drift;
+
 use std::path::Path;
 
 use ignis_artifact::{CudaDevice, FrontendSet, Reader, bind_text_scope_27b, materialize};
@@ -30,36 +33,24 @@ use ignis_core::model_load::load_qwen38_27b;
 use ignis_core::seq::{SeqPool, SeqPoolBudget};
 use ignis_core::step::prefill_program_span_logits;
 
+use logit_drift::{argmax, bf16};
+
 const TRELLIS: &str = "F:/ai/models/Qwen3.8-27B-trellis-3bpw-ignis/qwen3_8_27b_trellis_sc30-v2.ninfer";
 const SERVED: &str = r"F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer";
 const SPAN_TOKENS: usize = 768;
 const PREFILL_CHUNK: u32 = 1024;
 const MAX_CONTEXT: u32 = 1024;
 /// The share of positions whose argmax the trellis program must share with
-/// the served one. Measured 2026-10-23 on the 5090: 684 of 768 (0.891), mean
-/// KL(served || trellis) 0.072 nats (printed below); a body wired wrong agrees
-/// on almost none.
+/// the served one. Measured 2026-10-23 on the 5090 over the frozen span: 683
+/// of 768 (0.889), mean KL(served || trellis) 0.071 nats (printed below, and
+/// again on a rerun); a body wired wrong agrees on almost none.
 const TOP1_FLOOR: f64 = 0.7;
 
-fn bf16_to_f32(bits: u16) -> f32 {
-    f32::from_bits(u32::from(bits) << 16)
-}
-
-fn argmax(row: &[u16]) -> usize {
-    let mut best = 0usize;
-    for (i, &x) in row.iter().enumerate() {
-        if bf16_to_f32(x) > bf16_to_f32(row[best]) {
-            best = i;
-        }
-    }
-    best
-}
-
 fn log_softmax(row: &[u16]) -> Vec<f64> {
-    let max = row.iter().map(|&b| bf16_to_f32(b)).fold(f32::NEG_INFINITY, f32::max) as f64;
-    let sum: f64 = row.iter().map(|&b| (bf16_to_f32(b) as f64 - max).exp()).sum();
+    let max = row.iter().map(|&b| bf16(b)).fold(f32::NEG_INFINITY, f32::max) as f64;
+    let sum: f64 = row.iter().map(|&b| (bf16(b) as f64 - max).exp()).sum();
     let lse = max + sum.ln();
-    row.iter().map(|&b| bf16_to_f32(b) as f64 - lse).collect()
+    row.iter().map(|&b| bf16(b) as f64 - lse).collect()
 }
 
 /// The span's `[SPAN_TOKENS][vocab]` logits on `path`'s program, or `None`
@@ -116,10 +107,12 @@ fn the_trellis_program_agrees_with_the_served_one_on_code() {
     }
     let served = Reader::open(Path::new(SERVED)).unwrap_or_else(|e| panic!("open: {e}"));
     let frontend = FrontendSet::from_reader(&served).unwrap_or_else(|e| panic!("frontend: {e}"));
-    // Real code, this crate's own: the trellis op's Rust binding.
+    // Real code, frozen: the trellis op's Rust binding as of f3985f17
+    // (`crates/core/src/trellis.rs`), so an edit of the live file moves no
+    // position.
     let span: Vec<i32> = frontend
         .tokenizer()
-        .encode(include_str!("../src/trellis.rs"))
+        .encode(include_str!("fixtures/trellis_logits/code_span.txt"))
         .unwrap_or_else(|e| panic!("tokenize: {e}"))
         .into_iter()
         .take(SPAN_TOKENS)
@@ -134,7 +127,7 @@ fn the_trellis_program_agrees_with_the_served_one_on_code() {
     let (mut agree, mut kl) = (0usize, 0f64);
     for position in 0..SPAN_TOKENS {
         let row = position * vocab..(position + 1) * vocab;
-        agree += usize::from(argmax(&ours[row.clone()]) == argmax(&theirs[row.clone()]));
+        agree += usize::from(argmax(&ours[row.clone()]).0 == argmax(&theirs[row.clone()]).0);
         let (p, q) = (log_softmax(&theirs[row.clone()]), log_softmax(&ours[row]));
         kl += p.iter().zip(&q).map(|(&lp, &lq)| lp.exp() * (lp - lq)).sum::<f64>();
     }

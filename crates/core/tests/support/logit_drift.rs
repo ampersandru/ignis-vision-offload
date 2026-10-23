@@ -12,6 +12,9 @@
 //! exact at any budget is the commit: a round commits its own argmax
 //! ([`commit_follows_argmax`]).
 
+// Each including test reads the rules it needs.
+#![allow(dead_code)]
+
 use ignis_core::speculation::FLASH_NEXT_DEFAULT_VERIFY_ROWS;
 
 /// The teacher-forced tolerance, in BF16 ulps at the reference row's largest

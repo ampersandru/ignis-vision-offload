@@ -31,12 +31,17 @@
 
 #![cfg(feature = "cuda")]
 
+#[path = "support/bf16.rs"]
+mod bf16;
+
 use std::os::raw::c_void;
 use std::path::Path;
 
 use ignis_artifact::{f64_reference, trellis_geometry, CudaDevice, Device, DeviceBuffer, Object, Reader};
 use ignis_core::gpu_profile;
 use ignis_core::trellis::{self, Call, TrellisWeight, TrellisWorkspace};
+
+use bf16::{bf16_to_f64, f32_to_bf16};
 
 const TRELLIS: &str = "F:/ai/models/Qwen3.8-27B-trellis-3bpw-ignis/qwen3_8_27b_trellis_sc30-v2.ninfer";
 const SERVED: &str = r"F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer";
@@ -50,15 +55,6 @@ const TOKENS: usize = 2;
 const COSINE_FLOOR: f64 = 0.9;
 /// The control: a block against rows it does not stand for stays below this.
 const UNRELATED_CEILING: f64 = 0.3;
-
-fn f32_to_bf16(x: f32) -> u16 {
-    let bits = x.to_bits();
-    ((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16) as u16
-}
-
-fn bf16_to_f64(bits: u16) -> f64 {
-    f32::from_bits(u32::from(bits) << 16) as f64
-}
 
 /// `tokens` deterministic activations of `width`, as BF16 bits, token-major,
 /// of the size a normalized residual has.
