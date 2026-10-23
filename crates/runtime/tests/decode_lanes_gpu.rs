@@ -12,10 +12,12 @@
 //! The 8-lane load's greedy token ids, at every width, must equal main's
 //! (the spec's "at 8 lanes, greedy outputs identical to today's"), on every
 //! run: `fixtures/decode_lanes_greedy_8lanes.json`, recorded by this test
-//! on 2026-10-23 on main 75210360's engine (the tree then differed from it
-//! only by `config/profile.rs`'s card class and this file, at 8 lanes).
-//! `IGNIS_RECORD_DECODE_LANES_TOKENS=1` writes it again, and is only ever
-//! run on a build of main's engine.
+//! at 8 lanes on 2026-10-23 by a binary built at 00:28, before the kernel
+//! rebuild (00:51) and the first commit that changed the engine (01:10) on
+//! a branch off main 75210360. At 8 lanes this branch's plan is main's to the
+//! byte on both shapes `vram_plan_gpu` asks, and its load options cross
+//! nothing main's did not. `IGNIS_RECORD_DECODE_LANES_TOKENS=1` writes it
+//! again, and is only ever run on a build of main's engine.
 //!
 //! Its own test binary: it materializes the artifact, and the card fits one
 //! at a time.
