@@ -92,11 +92,15 @@ KV_DISK_BUDGET = $(or $(KV_DISK_BYTES),$(if $(filter flash-next,$(MODEL_FAMILY))
 KV_DISK_LOCATION = $(strip $(if $(filter auto,$(KV_DISK_PATH)),$(if $(filter windows,$(HOST_OS)),$(subst \,/,$(LOCALAPPDATA))/ignis/cache/kv-disk,$(or $(XDG_CACHE_HOME),$(HOME)/.cache)/ignis/kv-disk),$(if $(filter-out model,$(KV_DISK_PATH)),$(KV_DISK_PATH),$(patsubst %/,%,$(dir $(ARTIFACT))))))
 SERVER_PID := $(RUNTIME_DIR)/ignis-server.pid
 SERVER_LOG := $(RUNTIME_DIR)/ignis-server.log
+# LANES goes to the started model's own section (GitHub #336): both models take
+# the decode lanes, so a general value would follow a switch to the other one
+# -- Flash-Next's 3 becoming the 27B's.
+LANES_SCOPE = $(if $(filter flash-next,$(MODEL_FAMILY)),qwen38flashnext,qwen38)
 
 GPU_ENGINE_FLAGS = $(if $(ARTIFACT),--model-artifact $(ARTIFACT)) \
   $(if $(KV_FORMAT),--model-kv-format $(KV_FORMAT)) \
   $(if $(MAX_CONTEXT),--model-max-context $(MAX_CONTEXT)) \
-  $(if $(PREFILL_CHUNK),--model-prefill-chunk $(PREFILL_CHUNK))   $(if $(DECODE_SHARE),--model-decode-share $(DECODE_SHARE))   $(if $(LANES),--spec-decode-lanes $(LANES)) \
+  $(if $(PREFILL_CHUNK),--model-prefill-chunk $(PREFILL_CHUNK))   $(if $(DECODE_SHARE),--model-decode-share $(DECODE_SHARE))   $(if $(LANES),--$(LANES_SCOPE)-spec-decode-lanes $(LANES)) \
   $(if $(KV_POOL_BYTES),--vram-kv-pool-bytes $(KV_POOL_BYTES))   $(if $(VRAM_HEADROOM),--vram-headroom-bytes $(VRAM_HEADROOM))   $(if $(VRAM_BUDGET),--vram-budget-bytes $(VRAM_BUDGET))   $(if $(filter 1,$(ALLOW_VRAM_OVERSUBSCRIPTION)),--vram-allow-oversubscription) \
   $(if $(filter 1,$(ALLOW_EXPERT_CACHE_BELOW_FLOOR)),--vram-allow-expert-cache-below-floor) \
   $(if $(PINNED_EXPERT_BYTES),--vram-pinned-expert-bytes $(PINNED_EXPERT_BYTES)) \
@@ -193,7 +197,7 @@ help: ## Show this list
 	  /^[a-zA-Z0-9_.%-]+:.*## / { printf "  %-16s %s\n", $$1, $$2 }' Makefile
 	@echo ""
 	@echo "Knobs (make config for all):  CUDA=$(CUDA)  PROFILE=$(PROFILE)  UI=$(UI)  METRICS=$(METRICS)  BIND=$(BIND)  host=$(HOST_OS)"
-	@echo "GPU engine: MAX_CONTEXT=$(MAX_CONTEXT)  SPEC=$(or $(SPEC),server default)  DRAFT_TOKENS=$(DRAFT_TOKENS)  KV_FORMAT=$(KV_FORMAT)"
+	@echo "GPU engine: MAX_CONTEXT=$(or $(MAX_CONTEXT),the profile's)  SPEC=$(or $(SPEC),server default)  DRAFT_TOKENS=$(DRAFT_TOKENS)  KV_FORMAT=$(KV_FORMAT)"
 	@echo "  e.g.  make dev CUDA=0 PROFILE=dev      make dev-ui SPEC=off MAX_CONTEXT=40960"
 
 .PHONY: config
@@ -206,12 +210,12 @@ config: ## Print the resolved knobs and paths
 	@echo "METRICS         $(METRICS)  $(if $(filter 0,$(METRICS)),(off),(Prometheus: $(METRICS_URL)/metrics; Playground: /ui/metrics$(if $(or $(API_KEY),$(EXPOSE)), behind the API key)))"
 	@echo "ARTIFACT        $(ARTIFACT)"
 	@echo "UNCENSORED      $(if $(filter 1,$(UNCENSORED)),1  (default ARTIFACT is the huihui-abliterated image, served as qwen3.8-27b-abliterated),off)"
-	@echo "engine (CUDA=1) context=$(or $(MAX_CONTEXT),default) kv=$(or $(KV_FORMAT),default) chunk=$(or $(PREFILL_CHUNK),$(if $(filter image,$(MODEL_FAMILY)),default,server default (the rtx5090 profile: 2048 on the 27B))) pool=$(KV_POOL_PLAN) host_pool=$(or $(KV_HOST_POOL_BYTES),default) (flash-next $(or $(FN_KV_HOST_POOL_BYTES),default)) timeout=$(or $(REQUEST_TIMEOUT),default) stream_timeout=$(or $(STREAM_TIMEOUT),default) spec=$(or $(SPEC),$(if $(filter flash-next,$(MODEL_FAMILY)),off (SPEC=mtp turns the MTP head on),server default (the rtx5090 profile: dflash2)))$(if $(filter-out off,$(SPEC)),/$(DRAFT_TOKENS)$(if $(DRAFT_HEAD),/$(DRAFT_HEAD)))$(if $(DRAFT_ROWS), rows=$(DRAFT_ROWS)) rope=$(or $(ROPE_SCALING),auto)"
+	@echo "engine (CUDA=1) context=$(or $(MAX_CONTEXT),default) kv=$(or $(KV_FORMAT),default) chunk=$(or $(PREFILL_CHUNK),$(if $(filter image,$(MODEL_FAMILY)),default,server default (auto, the card class's profile: 2048 on the 5090 and the 96 GB card))) pool=$(KV_POOL_PLAN) host_pool=$(or $(KV_HOST_POOL_BYTES),default) (flash-next $(or $(FN_KV_HOST_POOL_BYTES),default)) timeout=$(or $(REQUEST_TIMEOUT),default) stream_timeout=$(or $(STREAM_TIMEOUT),default) spec=$(or $(SPEC),$(if $(filter flash-next,$(MODEL_FAMILY)),off (SPEC=mtp turns the MTP head on),server default (auto, the card class's profile: dflash2)))$(if $(filter-out off,$(SPEC)),/$(DRAFT_TOKENS)$(if $(DRAFT_HEAD),/$(DRAFT_HEAD)))$(if $(DRAFT_ROWS), rows=$(DRAFT_ROWS)) rope=$(or $(ROPE_SCALING),auto)"
 	@echo "PLAN            $(if $(filter image,$(MODEL_FAMILY)),(image model: no context, lanes, prefill chunk, speculation, KV pool or vision; the server plans its own VRAM),$(if $(filter flash-next,$(MODEL_FAMILY)),lanes=$(LANES) context/lane=$(or $(MAX_CONTEXT),default) kv=$(or $(KV_FORMAT),default) prefill_chunk=$(or $(PREFILL_CHUNK),default) decode_share=$(if $(DECODE_SHARE),$(DECODE_SHARE)%,25% (default)) retained_host=$(or $(RETAINED_HOST),8 (Flash-Next default)) kv_ram_arena=$(or $(FN_KV_HOST_POOL_BYTES),default) host_margin=$(or $(HOST_MARGIN_BYTES),4G (default)) kv_pool=$(KV_POOL_PLAN) expert_cache_floor=$(if $(filter 1,$(ALLOW_EXPERT_CACHE_BELOW_FLOOR)),12G (below it allowed with a warning),12G (refused below)) ngram_hot=$(or $(NGRAM_HOT_BYTES),1G (default; auto = what the host plan leaves)),(Flash-Next only: the plan is the server's for the 27B)))"
 	@echo "KV-DISK (CUDA=1) $(if $(filter 0,$(KV_DISK_BUDGET)),off$(if $(KV_DISK_BYTES),, (the 27B's default; KV_DISK_BYTES=4G turns it on)),budget=$(KV_DISK_BUDGET) (cut at start to the volume's free space less 10 GiB) dir=$(KV_DISK_LOCATION)/ignis-kv-disk/<pid>-<nonce>)"
 	@echo "VISION (CUDA=1) $(if $(filter 1,$(VISION)),on  max_tokens=$(or $(VISION_MAX_TOKENS),(server default)),off  (image parts are refused with vision_disabled))"
 	@echo "VRAM (CUDA=1)   $(if $(VRAM_BUDGET),budget=$(VRAM_BUDGET)$(if $(filter 1,$(ALLOW_VRAM_OVERSUBSCRIPTION)), (oversubscription allowed)),headroom=$(or $(VRAM_HEADROOM),(server default: 1536M))) retained_device=$(or $(RETAINED_DEVICE),(server default: 0)) retained_host=$(or $(RETAINED_HOST),(server default: two per lane))"
-	@echo "MODEL           $(MODEL_FAMILY)  $(if $(filter image,$(MODEL_FAMILY)),(the image model served as $(SERVED_MODEL); generation and edit routes, no text engine knobs),$(if $(filter flash-next,$(MODEL_FAMILY)),(Qwen3.8-Flash-Next as $(SERVED_MODEL); lanes=$(LANES); its prefetch width 16, 10 in prefill is not a server flag yet),$(if $(SERVED_MODEL),(Qwen3.8-27B served as $(SERVED_MODEL)),(Qwen3.8-27B under the server's default id))))"
+	@echo "MODEL           $(MODEL_FAMILY)  $(if $(filter image,$(MODEL_FAMILY)),(the image model served as $(SERVED_MODEL); generation and edit routes, no text engine knobs),$(if $(filter flash-next,$(MODEL_FAMILY)),(Qwen3.8-Flash-Next as $(SERVED_MODEL); lanes=$(LANES); its prefetch width 16, 10 in prefill is not a server flag yet),$(if $(SERVED_MODEL),(Qwen3.8-27B served as $(SERVED_MODEL)),(Qwen3.8-27B under the server's default id))$(if $(LANES), lanes=$(LANES))))"
 	@echo "BIND            $(BIND)"
 	@echo "LOG_LEVEL       $(or $(LOG_LEVEL),(server default))"
 	@echo "LOG_FORMAT      $(or $(LOG_FORMAT),(server default))"

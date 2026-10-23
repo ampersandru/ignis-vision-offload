@@ -326,7 +326,7 @@ async fn a_known_models_patch_never_writes_a_catalog_model_to_the_config_file() 
     std::fs::write(dir.join("mock-cat.ninfer"), b"on disk").unwrap();
     let zeros = "0".repeat(64);
     let catalog = ignis_server::download::catalog::parse_operator(
-        &format!("models:\n  - id: mock-cat\n    repo: acme/cat\n    revision: v1\n    artifact: mock-cat.ninfer\n    files:\n      - {{ name: mock-cat.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: mock-cat.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"),
+        &format!("models:\n  - id: mock-cat\n    repo: acme/cat\n    revision: v1\n    artifact: mock-cat.ninfer\n    card_class: 32\n    files:\n      - {{ name: mock-cat.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: mock-cat.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"),
         Format::Yaml,
         "test",
     )
@@ -443,17 +443,17 @@ async fn a_family_only_field_is_written_under_its_familys_section() {
     let server = server_on(&loader, flash);
     server.update_active(|model| model.family = ModelFamily::FlashNext);
     let app = server.app();
-    let (status, applied) = send(&app, Method::PATCH, "/v1/config", Some(json!({ "spec": { "decode_lanes": 1 } }))).await;
+    let (status, applied) = send(&app, Method::PATCH, "/v1/config", Some(json!({ "spec": { "draft_rows": 6 } }))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "a reload field: {applied}");
     until_serving(&app).await;
 
     let written = read_yaml(&path);
-    assert_eq!(written["spec"]["qwen38flashnext"]["decode_lanes"], 1, "{written:?}");
-    assert!(written["spec"].get("decode_lanes").is_none(), "never the general section: {written:?}");
+    assert_eq!(written["spec"]["qwen38flashnext"]["draft_rows"], 6, "{written:?}");
+    assert!(written["spec"].get("draft_rows").is_none(), "never the general section: {written:?}");
     let restarted = started(&["--config", path.to_str().unwrap()]);
     let qwen = restarted.for_family(ModelFamily::Qwen38_27b).expect("a 27B start from the same file is unaffected");
-    assert_eq!(qwen.decode_lanes, None);
-    assert_eq!(restarted.for_family(ModelFamily::FlashNext).unwrap().decode_lanes, Some(1), "Flash-Next still gets it");
+    assert_eq!(qwen.draft_rows, None);
+    assert_eq!(restarted.for_family(ModelFamily::FlashNext).unwrap().draft_rows, Some(6), "Flash-Next still gets it");
 }
 
 /// A request pins the live knobs with the model: a live change landing
@@ -1045,9 +1045,15 @@ async fn the_origins_say_where_each_value_comes_from() {
     );
     assert_eq!(origins_of(&origins, "switch.drain_timeout")[0], row(&shared, "env", false, some("IGNIS_SWITCH_DRAIN_TIMEOUT")));
     assert_eq!(
-        origins_of(&origins, "spec.decode_lanes"),
-        [row(&shared, "profile", false, some("rtx5090")), row(&flash, "profile", false, some("rtx5090"))],
+        origins_of(&origins, "spec.draft_rows"),
+        [row(&shared, "default", false, None), row(&flash, "default", false, None)],
         "a field only Flash-Next takes has no 27B row"
+    );
+    // GitHub #336: the decode lanes are both models', and the profile's 3 is
+    // Flash-Next's own; the 27B's is its default.
+    assert_eq!(
+        origins_of(&origins, "spec.decode_lanes"),
+        [row(&shared, "default", false, None), row(&qwen, "default", false, None), row(&flash, "profile", true, some("rtx5090"))]
     );
 
     // Every visible field, once per scope, and nothing hidden.
@@ -1101,14 +1107,14 @@ async fn a_family_only_value_set_then_removed_leaves_what_a_start_from_the_file_
     let app = server.app();
     let running = || server.config.as_ref().unwrap().current();
     let restarted = || started(&argv).for_family(ModelFamily::FlashNext).unwrap();
-    for removal in [json!({ "spec": { "qwen38flashnext": { "decode_lanes": null } } }), json!({ "spec": { "decode_lanes": null } })] {
-        patched(&app, json!({ "spec": { "decode_lanes": 2 } })).await;
-        assert_eq!(running().decode_lanes, Some(2));
-        assert_eq!(read_yaml(&path)["spec"]["qwen38flashnext"]["decode_lanes"], 2);
+    for removal in [json!({ "spec": { "qwen38flashnext": { "draft_rows": null } } }), json!({ "spec": { "draft_rows": null } })] {
+        patched(&app, json!({ "spec": { "draft_rows": 4 } })).await;
+        assert_eq!(running().draft_rows, Some(4));
+        assert_eq!(read_yaml(&path)["spec"]["qwen38flashnext"]["draft_rows"], 4);
         assert_eq!(running().settings(), restarted().settings(), "set: what the file starts");
         patched(&app, removal.clone()).await;
         assert!(read_yaml(&path).get("spec").is_none(), "{removal}: the file loses the key and the section");
-        assert_eq!(running().decode_lanes, None, "{removal}: nothing sets it any more");
+        assert_eq!(running().draft_rows, None, "{removal}: nothing sets it any more");
         assert_eq!(running().settings(), restarted().settings(), "{removal}: what the rewritten file starts");
     }
 }
@@ -1120,36 +1126,36 @@ async fn a_family_only_value_set_then_removed_leaves_what_a_start_from_the_file_
 /// key removes that section's value.
 #[tokio::test]
 async fn a_family_only_value_in_the_file_is_replaced_and_removed_at_its_group_key() {
-    let path = config_file("family-only-file-remove", "spec:\n  qwen38flashnext:\n    decode_lanes: 2\n");
+    let path = config_file("family-only-file-remove", "spec:\n  qwen38flashnext:\n    draft_rows: 4\n");
     let argv = ["--config", path.to_str().unwrap(), "--profile", "none"];
     let loader = MockLoader::new();
     let server = family_server(&loader, ModelFamily::FlashNext, started(&argv));
     let app = server.app();
     let running = || server.config.as_ref().unwrap().current();
     let restarted = || started(&argv).for_family(ModelFamily::FlashNext).unwrap();
-    assert_eq!(running().decode_lanes, Some(2));
+    assert_eq!(running().draft_rows, Some(4));
 
-    let applied = patched(&app, json!({ "spec": { "decode_lanes": 1 } })).await;
+    let applied = patched(&app, json!({ "spec": { "draft_rows": 6 } })).await;
     assert_eq!(applied["applied"], "reload", "the running family's own value changes: {applied}");
-    assert_eq!(read_yaml(&path)["spec"]["qwen38flashnext"]["decode_lanes"], 1);
-    assert_eq!(running().decode_lanes, Some(1), "the change runs, as the file now says");
+    assert_eq!(read_yaml(&path)["spec"]["qwen38flashnext"]["draft_rows"], 6);
+    assert_eq!(running().draft_rows, Some(6), "the change runs, as the file now says");
     assert_eq!(running().settings(), restarted().settings());
 
-    patched(&app, json!({ "spec": { "decode_lanes": null } })).await;
+    patched(&app, json!({ "spec": { "draft_rows": null } })).await;
     assert!(read_yaml(&path).get("spec").is_none(), "the file loses the section's key");
-    assert_eq!(running().decode_lanes, None);
+    assert_eq!(running().draft_rows, None);
     assert_eq!(running().settings(), restarted().settings(), "what the rewritten file starts");
 
     // The file's own value, removed at the group key with no change before.
-    let path = config_file("family-only-file-null", "spec:\n  qwen38flashnext:\n    decode_lanes: 2\n");
+    let path = config_file("family-only-file-null", "spec:\n  qwen38flashnext:\n    draft_rows: 4\n");
     let argv = ["--config", path.to_str().unwrap(), "--profile", "none"];
     let loader = MockLoader::new();
     let server = family_server(&loader, ModelFamily::FlashNext, started(&argv));
     let app = server.app();
-    patched(&app, json!({ "spec": { "decode_lanes": null } })).await;
+    patched(&app, json!({ "spec": { "draft_rows": null } })).await;
     assert!(read_yaml(&path).get("spec").is_none(), "the file loses the section's key");
     let running = server.config.as_ref().unwrap().current();
-    assert_eq!(running.decode_lanes, None);
+    assert_eq!(running.draft_rows, None);
     assert_eq!(running.settings(), started(&argv).for_family(ModelFamily::FlashNext).unwrap().settings());
 }
 

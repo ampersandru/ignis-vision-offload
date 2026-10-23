@@ -1404,6 +1404,10 @@ impl ignis_core::Scheduler for RecordingScheduler {
         ignis_core::Scheduler::max_sequence_tokens(&self.inner)
     }
 
+    fn max_in_flight(&self) -> usize {
+        ignis_core::Scheduler::max_in_flight(&self.inner)
+    }
+
     fn mode(&self) -> ignis_core::types::EngineMode {
         ignis_core::Scheduler::mode(&self.inner)
     }
@@ -1503,12 +1507,17 @@ async fn a_wave_wider_than_the_engine_is_retried_rather_than_failed() {
     // into an error in a question's slot would be a failure the one question
     // at a time loop before GitHub #240 never produced.
     //
-    // An engine that admits two at a time stands in for a busy one: the
-    // wave of seven followers cannot fit, and every question must still be
-    // answered.
+    // An engine that admits two at a time while it says eight stands in for
+    // a busy one: the wave of seven followers cannot fit, and every question
+    // must still be answered.
     const QUESTIONS: usize = 8;
     let compute = Arc::new(MockCompute::new());
-    let scheduler = scheduler_admitting(compute.clone() as Arc<dyn ignis_core::Compute>, 2);
+    let full = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let scheduler = CountingFull {
+        inner: scheduler_admitting(compute.clone() as Arc<dyn ignis_core::Compute>, 2),
+        full: full.clone(),
+        claims_in_flight: Some(8),
+    };
     let app = Server::new(Engine::new(Box::new(scheduler)), Box::new(DecidingTemplate)).app();
 
     let (status, response) = decide(&app, &fan_out(300, QUESTIONS)).await;
@@ -1531,6 +1540,108 @@ async fn a_wave_wider_than_the_engine_is_retried_rather_than_failed() {
             "question {request} still claims the state: {tokens} tokens"
         );
     }
+    assert!(
+        full.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "the engine did turn questions away: the retry is what answered them"
+    );
+}
+
+/// The real scheduler, counting the submissions it turned away `Full`: what a
+/// wave wider than the engine costs, which no response shows once the retry
+/// has answered them.
+struct CountingFull {
+    inner: ConcreteScheduler,
+    full: Arc<std::sync::atomic::AtomicUsize>,
+    /// What the engine says it admits: `None`, the scheduler's own cap; a
+    /// wider one stands in for an engine somebody else already uses.
+    claims_in_flight: Option<usize>,
+}
+
+impl ignis_core::Scheduler for CountingFull {
+    fn share_request_ids(&mut self, ids: ignis_core::RequestIds) {
+        self.inner.share_request_ids(ids)
+    }
+
+    fn submit(
+        &mut self,
+        input: ignis_core::types::RequestInput,
+        class: ignis_core::types::RequestClass,
+    ) -> Result<ignis_core::RequestId, ignis_core::SubmitError> {
+        let submitted = self.inner.submit(input, class);
+        if matches!(submitted, Err(ignis_core::SubmitError::Full)) {
+            self.full.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        submitted
+    }
+
+    fn refusal(&self, input: &ignis_core::types::RequestInput) -> Option<ignis_core::SubmitError> {
+        ignis_core::Scheduler::refusal(&self.inner, input)
+    }
+
+    fn cancel(&mut self, request: ignis_core::RequestId) -> bool {
+        self.inner.cancel(request)
+    }
+
+    fn end_fan_out(&mut self, owner: ignis_core::types::FanOutId) -> Vec<ignis_core::SchedEvent> {
+        ignis_core::Scheduler::end_fan_out(&mut self.inner, owner)
+    }
+
+    fn advance(&mut self) -> Vec<ignis_core::SchedEvent> {
+        self.inner.advance()
+    }
+
+    fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+
+    fn model_id(&self) -> &str {
+        ignis_core::Scheduler::model_id(&self.inner)
+    }
+
+    fn max_sequence_tokens(&self) -> u32 {
+        ignis_core::Scheduler::max_sequence_tokens(&self.inner)
+    }
+
+    fn max_in_flight(&self) -> usize {
+        self.claims_in_flight.unwrap_or_else(|| ignis_core::Scheduler::max_in_flight(&self.inner))
+    }
+
+    fn mode(&self) -> ignis_core::types::EngineMode {
+        ignis_core::Scheduler::mode(&self.inner)
+    }
+
+    fn occupancy(&self) -> ignis_core::scheduler::Occupancy {
+        ignis_core::Scheduler::occupancy(&self.inner)
+    }
+}
+
+#[tokio::test]
+async fn a_wave_is_no_wider_than_the_engine_admits() {
+    // GitHub #336: the 27B's decode lanes are a load setting, and its
+    // scheduler admits no more requests than the load has lanes. A wave is
+    // the engine's own width, read off the engine: at two lanes a fan-out of
+    // eight goes two at a time, and an engine nobody else is using turns
+    // none of them away. Eight a wave would answer them all too -- the
+    // retry above -- at six refusals a wave.
+    const QUESTIONS: usize = 8;
+    let compute = Arc::new(MockCompute::new());
+    let full = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let scheduler = CountingFull {
+        inner: scheduler_admitting(compute.clone() as Arc<dyn ignis_core::Compute>, 2),
+        full: full.clone(),
+        claims_in_flight: None,
+    };
+    let app = Server::new(Engine::new(Box::new(scheduler)), Box::new(DecidingTemplate)).app();
+
+    let (status, response) = decide(&app, &fan_out(300, QUESTIONS)).await;
+    assert_eq!(status, 200, "{response}");
+    assert_eq!(response["answers"].as_object().expect("a map").len(), QUESTIONS);
+    assert_eq!(prefilled(&compute).len(), QUESTIONS, "one request per question");
+    assert_eq!(
+        full.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "no wave asked the two-lane engine for more than two"
+    );
 }
 
 // ── decisions on the metrics listener (GitHub #241, spec 05) ────────────

@@ -41,7 +41,8 @@ has "SPEC=mtp" "$out" "--spec-draft-tokens 3"
 has "SPEC=mtp" "$out" "--spec-draft-rows 6"
 
 out="$(flags MODEL=flash-next)"
-has "default" "$out" "--spec-decode-lanes 3"
+# GitHub #336: in Flash-Next's own section, so a switch leaves the 27B its 8.
+has "default" "$out" "--qwen38flashnext-spec-decode-lanes 3"
 has "default" "$out" "--model-max-context 262144"
 lacks "default" "$out" "--spec-backend"
 lacks "default" "$out" "--spec-draft-rows"
@@ -68,7 +69,9 @@ plan="$(make config CUDA=1 MODEL=flash-next DECODE_SHARE=25 LANES=2 2>/dev/null 
 case "$plan" in *"decode_share=25%"*"lanes=2"*|*"lanes=2"*"decode_share=25%"*) ;; *) fail "PLAN does not follow the knobs: $plan" ;; esac
 
 out="$(flags MODEL=flash-next LANES=1)"
-has "LANES=1" "$out" "--spec-decode-lanes 1"
+has "LANES=1" "$out" "--qwen38flashnext-spec-decode-lanes 1"
+# GitHub #336: the 27B takes the lanes too, in its own section.
+has "27B LANES=2" "$(flags LANES=2)" "--qwen38-spec-decode-lanes 2"
 
 # ADR 0045: the default max_tokens, a non-default value on both models, and
 # nothing passed when the knob is empty (the server's own 38912).
@@ -119,6 +122,12 @@ done
 
 out="$(flags)"
 lacks "27B" "$out" "--spec-decode-lanes"
+# GitHub #336 (ADR 0063 §3): the 27B's context is the profile's, which the
+# load adapts to the free memory; a named one is explicit and never adapts.
+lacks "27B context" "$out" "--model-max-context"
+has "27B MAX_CONTEXT=524288" "$(flags MAX_CONTEXT=524288)" "--model-max-context 524288"
+engine="$(make config CUDA=1 2>/dev/null | sed -n 's/^engine (CUDA=1) //p')"
+case "$engine" in *"context=default"*) ;; *) fail "27B engine line: 'context=default' missing from: $engine" ;; esac
 
 out="$(flags MODEL=flash-next SPEC=off)"
 has "SPEC=off" "$out" "--spec-backend off"

@@ -65,6 +65,8 @@ fn entry() -> CatalogEntry {
         repo: REPO.to_owned(),
         revision: REVISION.to_owned(),
         artifact: ARTIFACT.to_owned(),
+        card_class: Some(ignis_server::config::profile::CardClass::Gb32),
+        aliases: Vec::new(),
         // Listed large first: the fetch order is the transfer's, not the list's.
         files: vec![pinned(ARTIFACT, &artifact_bytes()), pinned(SIDECAR, SIDECAR_BODY)],
         layer: CatalogLayer::Operator,
@@ -579,7 +581,7 @@ fn operator_catalog() -> OneFile {
     let file = |f: &CatalogFile| format!("      - {{ name: {}, bytes: {}, sha256: \"{}\" }}\n", f.name, f.bytes, f.sha256);
     let entry = entry();
     let text = format!(
-        "models:\n  - id: test-model\n    repo: {REPO}\n    revision: \"{REVISION}\"\n    artifact: {ARTIFACT}\n    files:\n{}{}",
+        "models:\n  - id: test-model\n    repo: {REPO}\n    revision: \"{REVISION}\"\n    artifact: {ARTIFACT}\n    card_class: 32\n    files:\n{}{}",
         file(&entry.files[0]),
         file(&entry.files[1])
     );

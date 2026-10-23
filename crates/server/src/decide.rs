@@ -2446,7 +2446,7 @@ Thinking is refused rather than ignored: a decision's prompt ends exactly where 
         (status = 200, description = "One answer per question, under the ids the caller chose.", body = DecideResponse),
         (status = 400, description = "The loaded model serves no `/v1/decide` (`model_unsupported`): Qwen3.8-Flash-Next has no readouts.", body = crate::api::ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = crate::api::ApiError),
-        (status = 422, description = "The body does not parse, or a question is malformed, or the request asked for something this endpoint cannot honour (thinking, an unnameable option, an image on a text-only load, a `method` on anything but a `point` or a `box`, `head` on a load with no calibrated pointing head, or a head `box` on a load with no head set), or a `state` part's reuse marker is not exactly `{\"type\": \"ephemeral\"}` (`malformed_reuse_marker`: retention is by eviction, never by time, so a `ttl` is refused) or there are more than four of them (`too_many_reuse_markers`), or a `locate` cannot be served: the load has no calibrated heads for it (`locate_uncalibrated`), the `state` is content parts (`locate_needs_json_state`), `within` is not a pointer, names nothing, or names a key written twice (`locate_within_malformed`, `locate_within_not_found`, `locate_within_ambiguous`), the target is not a string or a non-empty array (`locate_target_unsegmentable`), fewer than two of its segments own a token (`locate_too_few_segments`), a vote's target is longer than the vote was measured on (`locate_too_long`), a single segment is longer than a window (`locate_segment_too_long`), or the loaded template cannot say where its tokens sit (`locate_unsupported`); a `kind`, `method` or `compression` a locate does not know (`kind_unknown`, `method_unknown`, `compression_unknown`), a fold under `vote` or of prose (`compression_unsupported`), `kind: records` on a state that is not an array of JSON objects or `log`/`prose` on one (`kind_mismatch`); `criteria` and `digits` on a `locate`, and `within`, `kind` and `compression` on anything else (`kind_unsupported`, `compression_unsupported`), are refused too, as is a fold's level-1 text past the context (`context_exceeded`). Nothing reached the engine. (A shortlist step rendered from an earlier step's answer -- a fold's level 2, every `choice` -- can only fault after a prefill, and then answers its own question with an `error`.) A `model` the server neither loads nor may switch to is refused `model_not_found`; one it began switching to that did not load, `model_switch_failed`.",
+        (status = 422, description = "The body does not parse, or a question is malformed, or the request asked for something this endpoint cannot honour (thinking, an unnameable option, an image on a text-only load, a `method` on anything but a `point` or a `box`, `head` on a load with no calibrated pointing head, or a head `box` on a load with no head set), or a `state` part's reuse marker is not exactly `{\"type\": \"ephemeral\"}` (`malformed_reuse_marker`: retention is by eviction, never by time, so a `ttl` is refused) or there are more than four of them (`too_many_reuse_markers`), or a `locate` cannot be served: the load has no calibrated heads for it (`locate_uncalibrated`), the `state` is content parts (`locate_needs_json_state`), `within` is not a pointer, names nothing, or names a key written twice (`locate_within_malformed`, `locate_within_not_found`, `locate_within_ambiguous`), the target is not a string or a non-empty array (`locate_target_unsegmentable`), fewer than two of its segments own a token (`locate_too_few_segments`), a vote's target is longer than the vote was measured on (`locate_too_long`), a single segment is longer than a window (`locate_segment_too_long`), or the loaded template cannot say where its tokens sit (`locate_unsupported`); a `kind`, `method` or `compression` a locate does not know (`kind_unknown`, `method_unknown`, `compression_unknown`), a fold under `vote` or of prose (`compression_unsupported`), `kind: records` on a state that is not an array of JSON objects or `log`/`prose` on one (`kind_mismatch`); `criteria` and `digits` on a `locate`, and `within`, `kind` and `compression` on anything else (`kind_unsupported`, `compression_unsupported`), are refused too, as is a fold's level-1 text past the context (`context_exceeded`). Nothing reached the engine. (A shortlist step rendered from an earlier step's answer -- a fold's level 2, every `choice` -- can only fault after a prefill, and then answers its own question with an `error`.) A `model` the server neither loads nor may switch to is refused `model_not_found`; one it began switching to that did not load, `model_switch_failed`; a catalog entry this card's class cannot load, with no entry that answers to it that can, `model_above_card_class` (ADR 0064), before anything loads or switches.",
             body = crate::api::ApiError),
         (status = 409, description = "The model that would serve the decision is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`).", body = crate::api::ApiError),
         (status = 503, description = "The engine is at capacity and the request was not admitted; or a model switch is under way (`model_switching`, with `Retry-After`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = crate::api::ApiError),
@@ -2454,8 +2454,22 @@ Thinking is refused rather than ignored: a decision's prompt ends exactly where 
 )]
 pub async fn decide(
     axum::extract::State(server): axum::extract::State<std::sync::Arc<crate::Server>>,
-    body: Result<axum::Json<DecideRequest>, axum::extract::rejection::JsonRejection>,
+    mut body: Result<axum::Json<DecideRequest>, axum::extract::rejection::JsonRejection>,
 ) -> axum::response::Response {
+    // The id this card serves the decision under (ADR 0064): an alias
+    // rewritten, an entry above the card's class refused before anything
+    // loads or switches — `422`, as every refusal of a decision's `model`.
+    if let Ok(request) = &mut body {
+        match crate::api::model_on_this_card(&server, request.0.model.take()) {
+            Ok(model) => request.0.model = model,
+            Err(refusal) => {
+                return refused(&Refusal::new(
+                    "model_above_card_class",
+                    format!("`model` names {:?}: {refusal}, so it is not loaded on this card", refusal.model),
+                ))
+            }
+        }
+    }
     // A `model` naming another known model switches to it first (spec
     // model-switch/01 §Implicit switch) — ahead of the Flash-Next refusal
     // below, so a decision naming the 27B on a Flash-Next load moves the
@@ -2720,7 +2734,8 @@ async fn serve(
     // it and prefill only their own tail.
     //
     // After that there is nothing left to serialize, so the followers run
-    // together, [`FAN_OUT_WIDTH`] of them at a time. A `locate`'s baseline
+    // together, as many at a time as the engine admits ([`fan_out_width`]).
+    // A `locate`'s baseline
     // (GitHub #275) is one more follower: it claims the state like any
     // sibling, and is answered with the questions that read it.
     //
@@ -3817,11 +3832,11 @@ async fn ask(
     ))
 }
 
-/// Put `items` to the engine together, [`FAN_OUT_WIDTH`] at a time, with
+/// Put `items` to the engine together, [`fan_out_width`] at a time, with
 /// whatever the engine turned away put back for the next wave.
 ///
-/// A wave is `FAN_OUT_WIDTH` wide *because* the engine admits about that
-/// many, but it is not the only client: two of its lanes may already be
+/// A wave is as wide as the engine admits, but the fan-out is not its only
+/// client: two of its lanes may already be
 /// somebody else's, and then two of this wave's questions come back
 /// `Full`. Answering those with an error would be a failure the
 /// one-at-a-time loop before #240 never produced, so they are re-queued
@@ -3836,7 +3851,7 @@ async fn in_waves<'a>(
     let mut out = Vec::with_capacity(items.len());
     let mut pending: std::collections::VecDeque<_> = items.into();
     while !pending.is_empty() {
-        let wave: Vec<_> = (0..FAN_OUT_WIDTH.min(pending.len()))
+        let wave: Vec<_> = (0..fan_out_width(server).min(pending.len()))
             .filter_map(|_| pending.pop_front())
             .collect();
         let asked: Vec<(usize, Collect<'a>)> = wave.iter().map(|(slot, _, collect)| (*slot, *collect)).collect();
@@ -3927,15 +3942,15 @@ fn engine_full() -> Answer {
 /// idle engine never refuses one.
 ///
 /// **What it is tied to, and what it is not.** The number that matters is
-/// `max_in_flight`, which no server flag sets: `runtime.rs` builds its
-/// `SchedulerConfig` without it, so it is the default, and the default is
-/// `N_DECODE_LANES`. That is the whole justification for reading it from
-/// there — *not* that a decision occupies a decode lane, which it never does
-/// (`CONTEXT.md`: a decision takes only the single global prefill lane). The
-/// two numbers are equal today and mean different things; if `max_in_flight`
-/// ever becomes configurable from the server, or core-06 raises it as its
-/// doc promises, this has to be read from the engine instead of assumed.
-/// Being too small is a slower fan-out, being too large is a failed one.
+/// `max_in_flight`, the engine's admission cap, and since GitHub #336 it is
+/// a load's decode lanes: `runtime.rs` hands each load's scheduler its own
+/// — eight on the 27B unless named, two on a 16 GB card's, three on
+/// Flash-Next. So it is read from the engine the wave is put to
+/// ([`crate::engine::Engine::max_in_flight`]), never assumed — and *not*
+/// because a decision occupies a decode lane, which it never does
+/// (`CONTEXT.md`: a decision takes only the single global prefill lane).
+/// Being too small is a slower fan-out, being too large a wave of refusals
+/// the retry in [`in_waves`] pays for.
 ///
 /// A fan-out sharing the engine with other clients can still meet a full
 /// engine, exactly as any single request can. That is the pre-existing
@@ -3943,8 +3958,9 @@ fn engine_full() -> Answer {
 /// fan-out competing with *itself*.
 ///
 /// The cost is one `--server-request-timeout` per wave rather than per question:
-/// twenty questions bound at four timeouts — the sequenced first, then
-/// `ceil(19 / 8)` waves — instead of twenty. A wave also ends no sooner
+/// twenty questions at eight lanes bound at four timeouts — the sequenced
+/// first, then `ceil(19 / 8)` waves — instead of twenty; at two lanes,
+/// eleven. A wave also ends no sooner
 /// than its slowest question, so one question that times out holds the next
 /// wave for that long; a sliding window would not, and is not worth the
 /// machinery until a fan-out is wider than two waves.
@@ -3955,7 +3971,9 @@ fn engine_full() -> Answer {
 /// one-at-a-time took one. Spec 04's "leaves the others' paid-for answers
 /// alone" holds for a fault in one question's own readout, which is the
 /// per-question failure it describes; a fault in the batch is not one.
-const FAN_OUT_WIDTH: usize = ignis_core::N_DECODE_LANES;
+fn fan_out_width(server: &crate::Server) -> usize {
+    server.active().text_engine().max_in_flight()
+}
 
 /// Run every future to completion **at the same time**, in place, and
 /// collect their outputs in order.

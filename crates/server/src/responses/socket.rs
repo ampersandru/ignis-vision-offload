@@ -631,7 +631,7 @@ async fn respond(
 
 async fn serve(
     server: &Server,
-    job: Job,
+    mut job: Job,
     key: u64,
     outbox: &UnboundedSender<Outgoing>,
     emit: &impl Fn(JsonValue),
@@ -645,7 +645,7 @@ async fn serve(
     // A `model` naming another known model switches to it first, as over
     // HTTP (spec model-switch/01 §Implicit switch) — and a model the idle
     // clock unloaded is loaded first (spec model-switch/02).
-    if let Err(refusal) = input::switch_to_named_model(server, &job.body).await {
+    if let Err(refusal) = input::switch_to_named_model(server, &mut job.body).await {
         emit(refusal_event(refusal).await);
         return Outcome::Failed;
     }

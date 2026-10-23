@@ -320,7 +320,8 @@ impl FileSource {
 }
 
 /// Every source a start gathered, kept so the same options can be resolved
-/// again for a family, or with a patch on top.
+/// again for a family, or with a patch on top: the layers, and the one
+/// hardware reading the profile was chosen by (`card_total`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sources {
     /// Live changes made after start (`PATCH /v1/config`, a switch target's
@@ -338,8 +339,16 @@ pub struct Sources {
     /// The profile's values (spec config-v2/02 §`--profile`): defaults, not
     /// overrides — below the file, above the hardcoded default.
     pub profile: Layer,
-    /// The profile's name.
+    /// The profile's name — the one `auto` chose, never `auto` itself (spec
+    /// 27b-16gb/04): what `GET /v1/config` and the Playground show.
     pub profile_name: String,
+    /// The profile was chosen by `--profile auto` (the default) from the
+    /// card's total, not named.
+    pub profile_auto: bool,
+    /// The card's total memory in bytes, when the start read it (`auto`
+    /// reads it to choose; a named profile reads it only at a start); `None`
+    /// when it was not read.
+    pub card_total: Option<u64>,
 }
 
 /// What to do with an explicit value for a field the family being
@@ -384,6 +393,15 @@ impl Resolution {
     /// ([`Origin::at_default`]).
     pub fn explicit(&self, group: &str, name: &str) -> bool {
         self.origin(group, name).is_some_and(|origin| origin.source.explicit() && !origin.at_default)
+    }
+
+    /// Whether `<group>.<name>`'s value is the profile's or the hardcoded
+    /// default's: what a load's **adaptation** may lower (ADR 0063 §3). By
+    /// source alone -- a value the operator wrote never adapts, not even one
+    /// equal to the default, since a file `config generate` wrote names the
+    /// numbers of the card it was generated on.
+    pub fn adapts(&self, group: &str, name: &str) -> bool {
+        !self.origin(group, name).is_some_and(|origin| origin.source.explicit())
     }
 }
 
@@ -794,25 +812,25 @@ mod tests {
     /// was named, and lets a key named in the section win over the group's.
     #[test]
     fn homing_moves_a_family_only_fields_value_and_removal_to_its_section() {
-        let lanes = field("spec", "decode_lanes").unwrap();
+        let rows = field("spec", "draft_rows").unwrap();
         let pool = field("reuse", "kv_host_pool_bytes").unwrap();
         let flash = Some(ModelFamily::FlashNext);
         let mut patch = Layer::default();
-        patch.set(lanes, None, Candidate { raw: "2".into(), spelling: "spec.decode_lanes".into() }).unwrap();
+        patch.set(rows, None, Candidate { raw: "2".into(), spelling: "spec.draft_rows".into() }).unwrap();
         patch.set(pool, None, Candidate { raw: "3G".into(), spelling: "reuse.kv_host_pool_bytes".into() }).unwrap();
         let homed = patch.homed();
         let raw = |layer: &Layer, meta, family| layer.get(meta, family).map(|candidate| candidate.raw.clone());
-        assert_eq!((raw(&homed, lanes, None), raw(&homed, lanes, flash)), (None, Some("2".to_owned())));
+        assert_eq!((raw(&homed, rows, None), raw(&homed, rows, flash)), (None, Some("2".to_owned())));
         assert_eq!(homed.get(pool, None).map(|c| c.raw.as_str()), Some("3G"), "a field both families take stays at its group key");
 
         let mut removal = Layer::default();
-        removal.remove(lanes, None, "spec.decode_lanes".into()).unwrap();
+        removal.remove(rows, None, "spec.draft_rows".into()).unwrap();
         let named: Vec<_> = removal.homed().named().map(|(meta, family)| (meta.file_key(), family)).collect();
-        assert_eq!(named, [("spec.decode_lanes".to_owned(), flash)]);
+        assert_eq!(named, [("spec.draft_rows".to_owned(), flash)]);
 
         let mut both = Layer::default();
-        both.set(lanes, None, Candidate { raw: "2".into(), spelling: "spec.decode_lanes".into() }).unwrap();
-        both.remove(lanes, flash, "spec.qwen38flashnext.decode_lanes".into()).unwrap();
+        both.set(rows, None, Candidate { raw: "2".into(), spelling: "spec.draft_rows".into() }).unwrap();
+        both.remove(rows, flash, "spec.qwen38flashnext.draft_rows".into()).unwrap();
         let homed = both.homed();
         assert_eq!((homed.entries().count(), homed.removals().count()), (0, 1), "the section's own key wins: {homed:?}");
     }
@@ -878,30 +896,46 @@ mod tests {
     /// over, never refused.
     #[test]
     fn a_profile_value_the_family_cannot_take_is_passed_over() {
-        let meta = field("spec", "decode_lanes").unwrap();
-        let sources = Sources { profile: layer(meta, &[(None, "3")]), ..Sources::default() };
+        let meta = field("spec", "draft_rows").unwrap();
+        let sources = Sources { profile: layer(meta, &[(None, "6")]), ..Sources::default() };
         let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
-        assert_eq!(qwen.settings.spec.decode_lanes, None);
+        assert_eq!(qwen.settings.spec.draft_rows, None);
         let flash = resolve_settings(&sources, Some(ModelFamily::FlashNext), Fit::Start).unwrap();
-        assert_eq!(flash.settings.spec.decode_lanes, Some(3));
-        assert!(!flash.explicit("spec", "decode_lanes"), "a profile value is not the operator's");
+        assert_eq!(flash.settings.spec.draft_rows, Some(6));
+        assert!(!flash.explicit("spec", "draft_rows"), "a profile value is not the operator's");
+    }
+
+    /// GitHub #336: the decode lanes are both models', so a profile's
+    /// general value would be the 27B's too -- which is why the built-in
+    /// profiles scope theirs -- and each model's section is its own.
+    #[test]
+    fn the_decode_lanes_are_each_models_own_where_scoped_and_both_where_not() {
+        let lanes = field("spec", "decode_lanes").unwrap();
+        let (qwen, flash) = (Some(ModelFamily::Qwen38_27b), Some(ModelFamily::FlashNext));
+        let lanes_of = |sources: &Sources, family| resolve_settings(sources, family, Fit::Start).unwrap().settings.spec.decode_lanes;
+        let general = Sources { profile: layer(lanes, &[(None, "3")]), ..Sources::default() };
+        assert_eq!((lanes_of(&general, qwen), lanes_of(&general, flash)), (Some(3), Some(3)));
+        let scoped = Sources { profile: layer(lanes, &[(flash, "3"), (qwen, "2")]), ..Sources::default() };
+        assert_eq!((lanes_of(&scoped, qwen), lanes_of(&scoped, flash), lanes_of(&scoped, None)), (Some(2), Some(3), None));
+        let file = Sources { file: layer(lanes, &[(flash, "1")]), ..Sources::default() };
+        assert_eq!((lanes_of(&file, qwen), lanes_of(&file, flash)), (None, Some(1)));
     }
 
     /// A field only one family takes may sit in that family's own section —
     /// read there for that family, never for the other — and nowhere else.
     #[test]
     fn a_family_only_field_lives_in_its_familys_section_and_no_other() {
-        let lanes = field("spec", "decode_lanes").unwrap();
+        let rows = field("spec", "draft_rows").unwrap();
         let flash = Some(ModelFamily::FlashNext);
-        let sources = Sources { file: layer(lanes, &[(flash, "1")]), ..Sources::default() };
-        assert_eq!(resolve_settings(&sources, flash, Fit::Start).unwrap().settings.spec.decode_lanes, Some(1));
+        let sources = Sources { file: layer(rows, &[(flash, "6")]), ..Sources::default() };
+        assert_eq!(resolve_settings(&sources, flash, Fit::Start).unwrap().settings.spec.draft_rows, Some(6));
         let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
-        assert_eq!(qwen.settings.spec.decode_lanes, None, "the 27B never sees it, so never refuses it");
-        assert_eq!(resolve_settings(&sources, None, Fit::Start).unwrap().settings.spec.decode_lanes, None);
+        assert_eq!(qwen.settings.spec.draft_rows, None, "the 27B never sees it, so never refuses it");
+        assert_eq!(resolve_settings(&sources, None, Fit::Start).unwrap().settings.spec.draft_rows, None);
         let err = Layer::default()
-            .set(lanes, Some(ModelFamily::Qwen38_27b), Candidate { raw: "1".into(), spelling: "spec.qwen38.decode_lanes".into() })
+            .set(rows, Some(ModelFamily::Qwen38_27b), Candidate { raw: "6".into(), spelling: "spec.qwen38.draft_rows".into() })
             .unwrap_err();
-        assert!(err.0.contains("Qwen3.8-27B does not take spec.decode_lanes"), "{err}");
+        assert!(err.0.contains("Qwen3.8-27B does not take spec.draft_rows"), "{err}");
     }
 
     #[test]

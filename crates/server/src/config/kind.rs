@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use ignis_core::image::ImageSize;
 use ignis_core::ngram_cache::CacheLocation;
 use ignis_core::ngram_table::HotBudget;
-use ignis_core::{ExceptionWeights, KvFormat, KvPoolSize, PrefillAttention, ProposalHead, RopeSetting, SpeculativeBackend};
+use ignis_core::{ExceptionWeights, KvFormat, KvPoolSize, PrefillAttention, ProposalHeadSetting, RopeSetting, SpeculativeBackend};
 use serde_json::Value;
 
 use super::{ApiKey, ApiKeySetting, Expose, SpecChoice};
@@ -619,18 +619,19 @@ impl FieldKind for SpecBackend {
     }
 }
 
-/// The drafter's proposal head: `full` or `shortlist`.
+/// The drafter's proposal head: `full`, `shortlist` or `auto` (ADR 0063),
+/// kept as given; the load's speculation resolves `auto`.
 pub struct DraftHead;
 
 impl FieldKind for DraftHead {
-    type Value = ProposalHead;
+    type Value = ProposalHeadSetting;
     const TAG: &'static str = "head";
 
-    fn parse(raw: &str) -> Result<ProposalHead, String> {
-        ProposalHead::parse(&raw.to_ascii_lowercase())
+    fn parse(raw: &str) -> Result<ProposalHeadSetting, String> {
+        ProposalHeadSetting::parse(&raw.to_ascii_lowercase())
     }
 
-    fn render(value: &ProposalHead) -> Value {
+    fn render(value: &ProposalHeadSetting) -> Value {
         Value::String(value.as_str().to_owned())
     }
 }
@@ -932,7 +933,8 @@ mod tests {
         assert_eq!(SpecBackend::parse("off"), Ok(SpecChoice::Off));
         assert_eq!(SpecBackend::parse("mtp"), Ok(SpecChoice::Backend(SpeculativeBackend::Mtp)));
         assert!(SpecBackend::parse("eagle").unwrap_err().contains("eagle"));
-        assert_eq!(DraftHead::parse("shortlist"), Ok(ProposalHead::Shortlist));
+        assert_eq!(DraftHead::parse("shortlist"), Ok(ProposalHeadSetting::Fixed(ignis_core::ProposalHead::Shortlist)));
+        assert_eq!(DraftHead::parse("Auto"), Ok(ProposalHeadSetting::Auto));
         assert_eq!(ExposeKind::parse("cloudflare-quick"), Ok(Expose::CloudflareQuick));
         assert_eq!(TimeoutReplyKind::parse("Partial"), Ok(crate::deadline::TimeoutReply::Partial));
         round_trips::<KvFormatKind>(KvFormat::Bf16);
@@ -942,6 +944,8 @@ mod tests {
         round_trips::<DeveloperPolicy>(DeveloperMessagePolicy::IntoSystem);
         round_trips::<TimeoutReplyKind>(crate::deadline::TimeoutReply::Error);
         round_trips::<Rope>(RopeSetting::Auto);
+        round_trips::<DraftHead>(ProposalHeadSetting::Auto);
+        round_trips::<DraftHead>(ProposalHeadSetting::Fixed(ignis_core::ProposalHead::Shortlist));
         round_trips::<Rope>(RopeSetting::Fixed(RopeScaling::NONE));
         round_trips::<Rope>(RopeSetting::parse("yarn:4,t=0.25").unwrap());
     }

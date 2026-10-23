@@ -246,6 +246,18 @@ describe("a reply's visit to the image model", () => {
     expect(s.log).not.toContain("POST /v1/models/switch");
   });
 
+  // ADR 0064: the server would refuse a switch to an image model above the card's class, so none is begun.
+  it("switches nothing to an image model above the card's class, and says why in the server's words", async () => {
+    const reason = "ignis-image-2.1-turbo needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
+    const above = { id: "ignis-image-2.1-turbo", family: "qwenimage21", switchable: false, available: false, reason, source: "built-in", on_disk: "complete", loaded: false };
+    const s = server({ catalog: [above] });
+    const { runs } = await run([task(), task({ callId: "c2" })], s);
+    expect(runs.map((r) => r.status)).toEqual(["failed", "failed"]);
+    expect(runs[0].error).toBe(`The image model is not for this card: ${reason}`);
+    expect(s.log).not.toContain("POST /v1/models/switch");
+    expect(s.loaded()).toBe("qwen3.8-27b");
+  });
+
   it("switches nowhere for a turn stopped before its calls ran", async () => {
     const s = server();
     const stop = new AbortController();

@@ -12,7 +12,7 @@ import {
 import { canSend, imageLoaded, type LastSwitch, type ModelState } from "../api/model.ts";
 import { nthSeed, type Seed, seedOf } from "../api/seed.ts";
 import { lastSwitchLine } from "../server/outcome.ts";
-import { type CatalogRow, type ConfigDocument, switchTo } from "../server/routes.ts";
+import { type CatalogRow, type ConfigDocument, switchTo, unavailableReason } from "../server/routes.ts";
 
 // The pure parts of making a picture (spec image-model/05 §Playground, GitHub
 // #322), shared by the image view's sessions and the chat's picture tool:
@@ -112,8 +112,10 @@ export function imageModelRow(catalog: CatalogRow[] | null): CatalogRow | null {
  * What pressing Generate or Edit does with the model loaded now (GitHub #324): the button's words, a line on what
  * happens first or why it cannot, and whether it can. With a text model loaded the press is the owner's choice of the
  * image model: the request names it (`model`), and the server switches — after the rewrite, when enhancement is on and
- * the enhancer is the model loaded (spec image-model/05 §Prompt enhancement). `running`: the request is under way, and
- * the model reads switching or loading because of it, which is not a missing image model.
+ * the enhancer is the model loaded (spec image-model/05 §Prompt enhancement). An image model this card's class cannot
+ * load (ADR 0064) is never switched to — the server would refuse it — and the line gives the server's reason.
+ * `running`: the request is under way, and the model reads switching or loading because of it, which is not a missing
+ * image model.
  */
 export type RunPlan = { label: string; note: string | null; model?: string; ready: boolean };
 
@@ -125,6 +127,8 @@ export function runPlan(model: ModelState, limits: Limits, imageModel: CatalogRo
     const note = enhance ? `${limits.enhancer} rewrites the prompt first: the server loads it and then the image model again.` : null;
     return { label: plain, note, ready: true };
   }
+  const unavailable = imageModel && unavailableReason(imageModel);
+  if (unavailable) return { label: plain, note: `The image model is not for this card: ${unavailable}`, ready: false };
   if (!canSend(model) || !imageModel) return { label: plain, note: running ? null : "Needs the image model.", ready: false };
   if (!limits.allowImplicit) {
     return { label: plain, note: "switch.allow_implicit is off, so a request does not switch: switch to the image model first.", ready: false };

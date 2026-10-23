@@ -71,6 +71,7 @@ pub mod image_vision;
 pub mod identity;
 pub mod kv;
 pub mod kv_format;
+pub mod lane_lines;
 pub mod locate;
 pub mod mock;
 #[cfg(feature = "cuda")]
@@ -141,7 +142,7 @@ pub use rope_scaling::{
     DEFAULT_YARN_BETA_FAST, DEFAULT_YARN_BETA_SLOW, DEFAULT_YARN_TEMPERATURE,
     MAX_YARN_FACTOR, RopeScaling, RopeScalingError, RopeSetting, TRAINED_POSITION_ENVELOPE,
 };
-pub use speculation::{MAX_DRAFT_TOKENS, ProposalHead, Speculation, SpeculativeBackend};
+pub use speculation::{MAX_DRAFT_TOKENS, ProposalHead, ProposalHeadSetting, Speculation, SpeculativeBackend};
 pub use vision::{
     DEFAULT_VISION_MAX_TOKENS, VISION_MAX_TOKENS_LIMIT, VISION_OBJECTS, Vision,
     VisionEnvelopeOutOfRange,

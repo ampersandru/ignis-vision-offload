@@ -93,8 +93,8 @@ pub(crate) mod ffi {
         /// readout reads, and so the room the load reserves for one; 0 =
         /// none.
         pub attention_text_max_keys: u32,
-        /// GitHub #302: Flash-Next's decode lanes (0 = 3, at most 8); 0 on
-        /// the 27B.
+        /// GitHub #302: Flash-Next's decode lanes (0 = 3, at most 8); GitHub
+        /// #336: the 27B's too (0 = 8, at most 8).
         pub decode_lanes: u32,
         /// GitHub #302: Flash-Next's expert residency, borrowed for the
         /// model's life (`ignis_residency`); null on the 27B.
@@ -349,20 +349,23 @@ pub fn text_readout_keys(reader: &Reader) -> u32 {
 
 /// The options struct a load crosses the ABI with: `None` (a NULL pointer,
 /// ADR 0016's production defaults) when the load selects none of
-/// speculation, vision, a scaled rotary table or a text readout's room, so
-/// such a load is exactly what it was before any of them existed.
+/// speculation, vision, a scaled rotary table, a text readout's room or
+/// fewer decode lanes than the leaf's eight, so such a load is exactly what
+/// it was before any of them existed.
 fn load_options(
     speculation: Option<Speculation>,
     vision: Option<Vision>,
     rope_scaling: RopeScaling,
     text_keys: u32,
     prefill_attention: PrefillAttention,
+    decode_lanes: u32,
 ) -> Option<ffi::IgnisModelLoadOptions> {
     (speculation.is_some()
         || vision.is_some()
         || rope_scaling.is_yarn()
         || text_keys > 0
-        || prefill_attention != PrefillAttention::default())
+        || prefill_attention != PrefillAttention::default()
+        || decode_lanes != crate::N_DECODE_LANES as u32)
     .then(|| {
         ffi::IgnisModelLoadOptions {
             size: std::mem::size_of::<ffi::IgnisModelLoadOptions>() as u32,
@@ -380,7 +383,8 @@ fn load_options(
             rope_scaling_beta_slow: rope_scaling.beta_slow(),
             vision_item_max_tokens: vision.map_or(0, |v| v.item_max_tokens()),
             attention_text_max_keys: text_keys,
-            decode_lanes: 0,
+            // GitHub #336: the 27B's lanes, which the leaf reads 0 as 8 of.
+            decode_lanes,
             residency: std::ptr::null_mut(),
             draft_row_budget: 0,
             mtp_expert_slots: std::ptr::null(),
@@ -712,6 +716,43 @@ pub fn load_qwen38_27b_with_prefill_attention(
     rope_scaling: RopeScaling,
     prefill_attention: PrefillAttention,
 ) -> Result<Model, String> {
+    load_qwen38_27b_with_decode_lanes(
+        reader,
+        artifact,
+        handles,
+        prefill_chunk_tokens,
+        max_context_tokens,
+        kv_format,
+        speculation,
+        vision,
+        rope_scaling,
+        prefill_attention,
+        crate::N_DECODE_LANES as u32,
+    )
+}
+
+/// [`load_qwen38_27b_with_prefill_attention`] with the decode lanes chosen
+/// at load too (GitHub #336, `--spec-decode-lanes`): `1..=`[`crate::N_DECODE_LANES`],
+/// the widest round the load serves. Every reservation that scales with the
+/// round -- sampling, the decode and verify rounds' buffers, the drafter's --
+/// is sized for them, and the round graphs are captured for widths
+/// 1..=`decode_lanes` only; a round wider than them is refused. The leaf
+/// refuses a value past the maximum by name. The sequence pool's lanes are
+/// the caller's ([`crate::seq::SeqPoolBudget::slot_count`]).
+#[allow(clippy::too_many_arguments)]
+pub fn load_qwen38_27b_with_decode_lanes(
+    reader: &Reader,
+    artifact: &MaterializedArtifact,
+    handles: &[ObjectHandle],
+    prefill_chunk_tokens: u32,
+    max_context_tokens: u32,
+    kv_format: KvFormat,
+    speculation: Option<Speculation>,
+    vision: Option<Vision>,
+    rope_scaling: RopeScaling,
+    prefill_attention: PrefillAttention,
+    decode_lanes: u32,
+) -> Result<Model, String> {
     validate_prefill_config(prefill_chunk_tokens, max_context_tokens)?;
     let (_names, tensors) = build_bound_tensors(
         reader,
@@ -721,7 +762,8 @@ pub fn load_qwen38_27b_with_prefill_attention(
         device_placement(artifact),
     )?;
     let topology = ModelConfig::qwen38_27b().topology_abi();
-    let options = load_options(speculation, vision, rope_scaling, text_readout_keys(reader), prefill_attention);
+    let options =
+        load_options(speculation, vision, rope_scaling, text_readout_keys(reader), prefill_attention, decode_lanes);
 
     let mut handle: *mut ffi::IgnisModel = std::ptr::null_mut();
     let rc = unsafe {
@@ -745,12 +787,13 @@ pub fn load_qwen38_27b_with_prefill_attention(
     Ok(Model { handle })
 }
 
-/// What [`load_qwen38_27b_with_options`] would reserve beside the weights for
-/// the same options, asked before the weights are on the device (GitHub
-/// #210): `plan` and `handles` are what
+/// What [`load_qwen38_27b_with_decode_lanes`] would reserve beside the
+/// weights for the same options, asked before the weights are on the device
+/// (GitHub #210): `plan` and `handles` are what
 /// [`ignis_artifact::bind_model_scope_27b_with`] returned, not yet
 /// materialized. The leaf binds the descriptors and sizes every reservation
-/// exactly as the load would, and allocates nothing.
+/// exactly as the load would, and allocates nothing -- so a caller can ask
+/// it again at other `decode_lanes` before it loads anything (GitHub #336).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_qwen38_27b_reservations(
     reader: &Reader,
@@ -763,6 +806,7 @@ pub fn plan_qwen38_27b_reservations(
     vision: Option<Vision>,
     rope_scaling: RopeScaling,
     prefill_attention: PrefillAttention,
+    decode_lanes: u32,
 ) -> Result<IgnisModelReservations, String> {
     validate_prefill_config(prefill_chunk_tokens, max_context_tokens)?;
     let (_names, tensors) = build_bound_tensors(
@@ -773,7 +817,8 @@ pub fn plan_qwen38_27b_reservations(
         planned_placement(plan),
     )?;
     let topology = ModelConfig::qwen38_27b().topology_abi();
-    let options = load_options(speculation, vision, rope_scaling, text_readout_keys(reader), prefill_attention);
+    let options =
+        load_options(speculation, vision, rope_scaling, text_readout_keys(reader), prefill_attention, decode_lanes);
 
     let mut reservations = IgnisModelReservations::default();
     let rc = unsafe {
@@ -1227,40 +1272,43 @@ mod tests {
         );
     }
 
+    /// The leaf's eight lanes, which a load crosses no options struct for.
+    const LANES: u32 = crate::N_DECODE_LANES as u32;
+
     #[test]
     fn a_load_with_neither_option_crosses_a_null_options_pointer() {
         assert_eq!(
-            load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8),
+            load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES),
             None,
             "today's load, byte for byte"
         );
         // GitHub #227: `none` and an explicit factor of 1 are the same
         // no-op, and neither is worth an options struct.
-        assert_eq!(load_options(None, None, RopeScaling::parse("yarn:1").unwrap(), 0, PrefillAttention::Fp8), None);
+        assert_eq!(load_options(None, None, RopeScaling::parse("yarn:1").unwrap(), 0, PrefillAttention::Fp8, LANES), None);
     }
 
     /// GitHub #275: an artifact calibrated for `locate` reserves the text
     /// readout's room, and that alone is worth an options struct.
     #[test]
     fn a_text_readouts_room_crosses_the_options_struct() {
-        let options = load_options(None, None, RopeScaling::NONE, 4_554, PrefillAttention::Fp8).expect("options");
+        let options = load_options(None, None, RopeScaling::NONE, 4_554, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!(options.attention_text_max_keys, 4_554);
         assert_eq!(options.vision_max_tokens, 0);
-        let vision = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 4_554, PrefillAttention::Fp8).expect("options");
+        let vision = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 4_554, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!((vision.vision_max_tokens, vision.attention_text_max_keys), (8192, 4_554));
     }
 
     #[test]
     fn a_vision_only_load_crosses_the_envelope_with_no_speculation() {
         let options =
-            load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8).expect("options");
+            load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!(options.size as usize, std::mem::size_of::<ffi::IgnisModelLoadOptions>());
         assert_eq!(options.speculative_backend, 0);
         assert_eq!(options.draft_tokens, 0);
         assert_eq!(options.vision_max_tokens, 8192);
 
         let spec = Speculation::new(SpeculativeBackend::Dflash2, 7).unwrap();
-        let without_vision = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8).expect("options");
+        let without_vision = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!(without_vision.vision_max_tokens, 0);
         assert_eq!(without_vision.draft_tokens, 7);
         // Every load sends the rope scalars; with no scaling they are the
@@ -1274,7 +1322,7 @@ mod tests {
         // and a YaRN-only load would have crossed a NULL pointer -- serving
         // the linear table while the operator asked for a scaled one.
         let scaling = RopeScaling::parse("yarn:4,t=0.25,bf=16,bs=2").unwrap();
-        let options = load_options(None, None, scaling, 0, PrefillAttention::Fp8).expect("options");
+        let options = load_options(None, None, scaling, 0, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!(options.speculative_backend, 0);
         assert_eq!(options.vision_max_tokens, 0);
         assert_eq!(options.rope_scaling_factor, 4.0);
@@ -1295,7 +1343,7 @@ mod tests {
         let scaling = RopeScaling::parse("yarn:2.25,t=0.25,bf=16,bs=2").unwrap();
         let options = flash_next_options(3, std::ptr::null_mut(), None, scaling);
         assert_eq!(scalars(&options), [2.25, 0.25, 16.0, 2.0]);
-        assert_eq!(scalars(&options), scalars(&load_options(None, None, scaling, 0, PrefillAttention::Fp8).expect("options")), "the 27B's");
+        assert_eq!(scalars(&options), scalars(&load_options(None, None, scaling, 0, PrefillAttention::Fp8, LANES).expect("options")), "the 27B's");
         let none = flash_next_options(3, std::ptr::null_mut(), None, RopeScaling::NONE);
         assert_eq!(scalars(&none), [0.0, 0.1, 32.0, 1.0], "the factor 0 is the leaf's linear table");
         assert_eq!((none.decode_lanes, none.speculative_backend), (3, 0));
@@ -1304,28 +1352,46 @@ mod tests {
     #[test]
     fn a_vision_item_bound_crosses_beside_the_envelope() {
         let bounded = Vision::new(32_768).unwrap().with_item_max_tokens(16_384);
-        let options = load_options(None, Some(bounded), RopeScaling::NONE, 0, PrefillAttention::Fp8).expect("options");
+        let options = load_options(None, Some(bounded), RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!(options.vision_max_tokens, 32_768, "the envelope is still the request's");
         assert_eq!(options.vision_item_max_tokens, 16_384);
         // No bound named: 0, which the leaf reads as "the envelope".
-        let unbounded = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8)
+        let unbounded = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES)
             .expect("options");
         assert_eq!(unbounded.vision_item_max_tokens, 0);
         let spec = Speculation::new(SpeculativeBackend::Dflash2, 7).unwrap();
-        let text = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8).expect("options");
+        let text = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).expect("options");
         assert_eq!(text.vision_item_max_tokens, 0, "no vision, no item bound");
     }
 
     #[test]
     fn the_prefill_attention_option_crosses_only_when_it_is_not_the_default() {
-        assert_eq!(load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8), None, "8-bit is the NULL options' own");
-        let fp16 = load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp16).expect("options");
+        assert_eq!(load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES), None, "8-bit is the NULL options' own");
+        let fp16 = load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp16, LANES).expect("options");
         assert_eq!(fp16.prefill_attention, 1);
-        let with_vision = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8)
+        let with_vision = load_options(None, Some(Vision::new(8192).unwrap()), RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES)
             .expect("options");
         assert_eq!(with_vision.prefill_attention, 0);
         let flash = flash_next_options(3, std::ptr::null_mut(), None, RopeScaling::NONE);
         assert_eq!(flash.prefill_attention, 0, "Flash-Next's attention is QSA");
+    }
+
+    /// GitHub #336: fewer lanes than the leaf's eight cross the options
+    /// struct on their own; eight cross nothing, or ride beside another
+    /// option as the 8 the leaf reads 0 as, so a load at eight is today's.
+    #[test]
+    fn the_27bs_decode_lanes_cross_only_when_fewer_than_eight() {
+        for lanes in 1..LANES {
+            let options = load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8, lanes).expect("options");
+            assert_eq!((options.decode_lanes, options.speculative_backend, options.vision_max_tokens), (lanes, 0, 0));
+            assert!(options.residency.is_null() && options.draft_row_budget == 0 && options.mtp_expert_slots.is_null());
+        }
+        assert_eq!(load_options(None, None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES), None);
+        let spec = Speculation::new(SpeculativeBackend::Dflash2, 7).unwrap();
+        let eight = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).expect("options");
+        assert_eq!(eight.decode_lanes, LANES);
+        let two = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8, 2).expect("options");
+        assert_eq!((two.decode_lanes, two.draft_tokens), (2, 7));
     }
 
     #[test]

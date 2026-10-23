@@ -91,6 +91,9 @@ struct State {
     /// How many times [`ModelLoader::kind_of`] was asked: what a production
     /// loader answers by opening the artifact.
     kind_of_calls: AtomicUsize,
+    /// The family each id's artifact header names ([`MockLoader::header`]);
+    /// an id not here is of the family whose own id it is, or of none.
+    headers: Mutex<std::collections::HashMap<String, ModelFamily>>,
 }
 
 /// The mock loader. Clone the `Arc` into a `Switcher`, keep one to steer it.
@@ -214,6 +217,12 @@ impl MockLoader {
     pub fn fit_from(&self, config: Arc<ConfigState>, families: &[(&str, ModelFamily)]) {
         let families = families.iter().map(|(id, family)| (id.to_string(), *family)).collect();
         *self.state.fitting.lock().unwrap() = Some((config, families));
+    }
+
+    /// Have `id`'s artifact header name `family` ([`ModelLoader::family_of`]),
+    /// as the production loader reads it off the file (ADR 0047).
+    pub fn header(&self, id: &str, family: ModelFamily) {
+        self.state.headers.lock().unwrap().insert(id.to_owned(), family);
     }
 
     /// The options each fitted load ran with, in order.
@@ -381,6 +390,11 @@ impl ModelLoader for MockLoader {
     fn kind_of(&self, target: &ModelSource) -> Option<ignis_core::compute::ModelKind> {
         self.state.kind_of_calls.fetch_add(1, Ordering::SeqCst);
         ModelFamily::of_model_id(&target.model).map(ModelFamily::kind)
+    }
+
+    /// The family [`MockLoader::header`] gave the id, else the default's.
+    fn family_of(&self, target: &ModelSource) -> Option<ModelFamily> {
+        self.state.headers.lock().unwrap().get(&target.model).copied().or_else(|| ModelFamily::of_model_id(&target.model))
     }
 }
 

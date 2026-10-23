@@ -112,7 +112,7 @@ fn catalog_in(tag: &str, entries: &[(&str, Disk)]) -> CatalogModels {
     let mut yaml = String::from("models:\n");
     for (id, disk) in entries {
         yaml.push_str(&format!(
-            "  - id: {id}\n    repo: acme/{id}\n    revision: v1\n    artifact: {id}.ninfer\n    files:\n      - {{ name: {id}.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: {id}.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"
+            "  - id: {id}\n    repo: acme/{id}\n    revision: v1\n    artifact: {id}.ninfer\n    card_class: 32\n    files:\n      - {{ name: {id}.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: {id}.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"
         ));
         match disk {
             Disk::Complete => {

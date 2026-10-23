@@ -151,9 +151,9 @@ describe("ServerView: the configuration", () => {
     expect(bind).toContain("127.0.0.1:8000");
     expect(bind).toContain("Set at start");
     expect(bind).not.toMatch(/<input|<select|role="switch"/);
-    const lanes = rowOf(html, "spec.decode_lanes");
-    expect(lanes).toContain("Not used by Qwen3.8-27B");
-    expect(lanes).not.toMatch(/<input|<select/);
+    const rows = rowOf(html, "spec.draft_rows");
+    expect(rows).toContain("Not used by Qwen3.8-27B");
+    expect(rows).not.toMatch(/<input|<select/);
     const known = rowOf(html, "switch.known_models");
     expect(known).toContain("qwen3.8-27b-fail");
     expect(known).toContain("Read-only here");
@@ -222,10 +222,10 @@ describe("ServerView: the configuration in each scope", () => {
     const vision = rowOf(html, "vision.enabled");
     expect(vision).toContain("Qwen3.8-27B only");
     expect(vision).toContain('role="switch"');
-    const lanes = rowOf(html, "spec.decode_lanes");
-    expect(lanes).toContain("Qwen3.8-Flash-Next only");
-    expect(lanes).toMatch(/<input[^>]*name="spec\.decode_lanes"/);
-    expect(lanes).not.toContain("Not used by");
+    const rows = rowOf(html, "spec.draft_rows");
+    expect(rows).toContain("Qwen3.8-Flash-Next only");
+    expect(rows).toMatch(/<input[^>]*name="spec\.draft_rows"/);
+    expect(rows).not.toContain("Not used by");
   });
 
   it("in the running family's scope shows its own values and the shared ones, with the way back", () => {
@@ -241,7 +241,7 @@ describe("ServerView: the configuration in each scope", () => {
     // An own value over an unset shared one goes back to auto.
     expect(rowOf(html, "spec.backend")).toContain("Use shared value (auto)");
     expect(rowOf(html, "server.request_timeout")).toContain("Same for every model");
-    expect(rowOf(html, "spec.decode_lanes")).toContain("Not used by Qwen3.8-27B");
+    expect(rowOf(html, "spec.draft_rows")).toContain("Not used by Qwen3.8-27B");
   });
 
   it("in the other family's scope shows that family's values, and edits its fields while the first runs", () => {
@@ -249,9 +249,9 @@ describe("ServerView: the configuration in each scope", () => {
     expect(rowOf(html, "model.max_context")).toMatch(/<input[^>]*value="589824"/);
     expect(rowOf(html, "model.max_context")).toContain("Own value");
     expect(rowOf(html, "vision.enabled")).toContain("Not used by Qwen3.8-Flash-Next");
-    const lanes = rowOf(html, "spec.decode_lanes");
-    expect(lanes).toMatch(/<input[^>]*name="spec\.decode_lanes"/);
-    expect(lanes).not.toContain("Not used by");
+    const rows = rowOf(html, "spec.draft_rows");
+    expect(rows).toMatch(/<input[^>]*name="spec\.draft_rows"/);
+    expect(rows).not.toContain("Not used by");
     expect(rowOf(html, "spec.backend")).toContain("Shared");
   });
 

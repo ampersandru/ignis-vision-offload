@@ -17,6 +17,7 @@ use serde_json::Value;
 use super::field::{FieldMeta, FAMILIES};
 use super::file::{self, Files, Format};
 use super::schema::{all_fields, GROUPS};
+use super::profile::Card;
 use super::source;
 use super::{gather, Config, ConfigError, ConfigOutcome, FileChoice};
 use crate::download::{self, ListFormat, ModelCommand};
@@ -115,15 +116,15 @@ pub fn fields_json() -> String {
 }
 
 /// `config generate|print|patch …`.
-pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(ConfigError("`config` takes a verb: generate, print or patch".to_owned()));
     };
     let mut rest = rest.to_vec();
     match verb.as_str() {
-        "generate" => generate(&mut rest, env, files),
-        "print" => print(&mut rest, env, files),
-        "patch" => patch(&mut rest, env, files),
+        "generate" => generate(&mut rest, env, files, card),
+        "print" => print(&mut rest, env, files, card),
+        "patch" => patch(&mut rest, env, files, card),
         other => Err(ConfigError(format!("`config {other}`: the verbs are generate, print and patch"))),
     }
 }
@@ -132,8 +133,13 @@ pub(super) fn config(args: &[String], env: &dyn Fn(&str) -> Option<String>, file
 /// [--dry-run] [field flags]`: a fresh file from the flags, the environment,
 /// the profile and the defaults — no existing file is read, ever, since this
 /// is what makes one. Refuses to overwrite a file without `--force`;
-/// `--dry-run` checks and prints, and writes nothing.
-fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+/// `--dry-run` checks and prints, and writes nothing. Every resolved value is
+/// written as a FILE value, the profile's among them: under `--profile auto`
+/// the file names the numbers of the card class it was generated on, and since
+/// file values are explicit, nothing in them adapts at load (spec
+/// 27b-16gb/04). `--profile none` generates a card-independent file. It reads
+/// the card as a start does, so on a card of no class `auto` refuses here too.
+fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let format = take_value(args, "--format")?;
     let out = take_value(args, "--out")?.map(PathBuf::from);
     let force = take_switch(args, "--force");
@@ -143,7 +149,7 @@ fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files:
         return Err(ConfigError("`config generate` reads no config file: it writes one (`--out`)".to_owned()));
     }
     let profile = parsed.profile.clone();
-    let (sources, _) = gather(parsed, env, files, FileChoice::None)?;
+    let (sources, _) = gather(parsed, env, files, FileChoice::None, card)?;
     let config = Config::from_sources(sources)?;
     let format = match (format, &out) {
         (Some(name), _) => Format::parse(&name).ok_or_else(|| ConfigError(format!("`--format {name}`: the formats are json and yaml")))?,
@@ -173,7 +179,7 @@ fn generate(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files:
 /// place a start looks), the environment, and the flags given here. Never
 /// writes. A field `GET /v1/config` hides is shown as set or not, never its
 /// value: a terminal's scrollback is no place for a key.
-fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let path = take_value(args, "--file")?.map(PathBuf::from).unwrap_or_else(default_path);
     let format = match take_value(args, "--format")? {
         Some(name) => Format::parse(&name).ok_or_else(|| ConfigError(format!("`--format {name}`: the formats are json and yaml")))?,
@@ -183,7 +189,7 @@ fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
     if parsed.config.is_some() {
         return Err(ConfigError("`config print` names its file with `--file`".to_owned()));
     }
-    let (sources, _) = gather(parsed, env, files, FileChoice::IfPresent(path))?;
+    let (sources, _) = gather(parsed, env, files, FileChoice::IfPresent(path), card)?;
     let config = Config::from_sources(sources)?;
     let mut document = file::effective_document(&config);
     hide_invisible(&mut document);
@@ -197,7 +203,7 @@ fn print(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
 /// and writes: the environment's values land in the file, and a stale
 /// spelling in it is rewritten in canonical form. Every key it does not
 /// change — other fields, family sections, `profiles:` — is kept.
-fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let path = take_value(args, "--file")?.map(PathBuf::from).unwrap_or_else(default_path);
     let out = take_value(args, "--out")?.map(PathBuf::from);
     let parsed = source::parse_args(args)?;
@@ -205,7 +211,7 @@ fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
         return Err(ConfigError("`config patch` names its file with `--file`".to_owned()));
     }
     let profile = parsed.profile.clone();
-    let (sources, _) = gather(parsed, env, files, FileChoice::Required(path.clone()))?;
+    let (sources, _) = gather(parsed, env, files, FileChoice::Required(path.clone()), card)?;
     Config::from_sources(sources.clone())?;
     let mut changes = file::changes_of(&sources.file)?;
     changes.extend(file::changes_of(&sources.env)?);
@@ -224,14 +230,25 @@ fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
 /// configuration a start would read and the catalog it would load, turned
 /// into what to do, for `main` to run. `model verify` and `model convert`
 /// are reserved, so any other word is an unknown command.
-pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+///
+/// Neither needs a card: the CUDA build fetches and lists on a machine with
+/// no NVIDIA driver too, a Kubernetes CPU node or the machine that carries
+/// the files to an air-gapped one (`docs/user/README.md`). So a total NVML
+/// cannot read is no card here, as on a build without CUDA — `auto`
+/// resolves as `none` and no entry is fitted to a class — where a start, and
+/// the `config` verbs, whose values are the card's, refuse it.
+pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(ConfigError("`model` takes a command: download or list".to_owned()));
     };
+    let card = || match card() {
+        Card::Unreadable(_) => Card::Absent,
+        read => read,
+    };
     let mut rest = rest.to_vec();
     match verb.as_str() {
-        "download" => model_download(&mut rest, env, files),
-        "list" => model_list(&mut rest, env, files),
+        "download" => model_download(&mut rest, env, files, &card),
+        "list" => model_list(&mut rest, env, files, &card),
         other => Err(ConfigError(format!("unknown command `model {other}` (the model commands are download and list)"))),
     }
 }
@@ -242,7 +259,7 @@ pub(super) fn model(args: &[String], env: &dyn Fn(&str) -> Option<String>, files
 /// the token [`download::bearer_token`] picks. The ids may stand anywhere
 /// among the flags. `download.enabled` is not read: it gates only the start's own
 /// fetch, and this command is the operator's explicit yes.
-fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let all = take_switch(args, "--all");
     let out = take_value(args, "--out")?.map(PathBuf::from);
     let (named, flags) = super::source::split_positionals(args);
@@ -253,19 +270,11 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
             ids.push(id);
         }
     }
-    let config = super::start_config(args, env, files)?;
+    let config = super::start_config(args, env, files, card)?;
     let catalog = download::catalog::load(files, config.download_catalog.as_deref()).map_err(|err| ConfigError(err.0))?;
-    let lookup = |id: &str| {
-        catalog.entry(id).cloned().ok_or_else(|| {
-            ConfigError(format!("`{id}` is not in the catalog (the ids are {})", catalog.ids().join(", ")))
-        })
-    };
-    let entries = match (all, ids.as_slice()) {
-        (true, []) => catalog.entries().to_vec(),
-        (true, _) => return Err(ConfigError("`model download --all` fetches every entry: name ids or `--all`, not both".to_owned())),
-        (false, []) => vec![lookup(&config.model)?],
-        (false, ids) => ids.iter().map(|id| lookup(id)).collect::<Result<_, _>>()?,
-    };
+    // Fitted to the card's class (ADR 0064), as a start reads it from NVML's
+    // total; none without a card, which refuses nothing.
+    let entries = download::command::entries_to_fetch(&catalog, &ids, all, &config.model, config.card_class()).map_err(ConfigError)?;
     let token = download::bearer_token(&config.download_endpoint, config.download_token.as_ref(), env("HF_TOKEN").as_deref());
     Ok(ConfigOutcome::Model(ModelCommand::Download {
         entries,
@@ -277,13 +286,13 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
 
 /// `model list [--format text|json] [field flags]`: every entry of the
 /// catalog a start would load, with its state under `download.path`.
-fn model_list(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files) -> Result<ConfigOutcome, ConfigError> {
+fn model_list(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &dyn Files, card: &dyn Fn() -> Card) -> Result<ConfigOutcome, ConfigError> {
     let format = match take_value(args, "--format")?.as_deref() {
         None | Some("text") => ListFormat::Text,
         Some("json") => ListFormat::Json,
         Some(other) => return Err(ConfigError(format!("`model list --format {other}`: the formats are text and json"))),
     };
-    let config = super::start_config(args, env, files)?;
+    let config = super::start_config(args, env, files, card)?;
     let catalog = download::catalog::load(files, config.download_catalog.as_deref()).map_err(|err| ConfigError(err.0))?;
     Ok(ConfigOutcome::Model(ModelCommand::List { catalog, dir: config.model_download_path.clone(), format }))
 }
@@ -625,12 +634,61 @@ mod tests {
         assert_eq!((endpoint.as_str(), token.as_deref()), ("https://mirror.example.com", Some("tok")));
     }
 
+    /// [`run`] on a machine whose card the probe reads as `card`.
+    fn run_on(argv: &[&str], files: &MemFiles, card: Card) -> Result<ConfigOutcome, ConfigError> {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        crate::config::resolve_on(&argv, |_: &str| None, files, &move || card.clone())
+    }
+
+    /// ADR 0064 §3, through the command line: `model download` is fitted to
+    /// the class of the card the start reads — on a 16 GB card the default
+    /// id fetches the entry that answers to it, and an entry no 16 GB card
+    /// loads is refused before anything is fetched; on a 5090 nothing
+    /// changes.
+    #[test]
+    fn model_download_is_fitted_to_the_card_the_start_reads() {
+        let files = MemFiles::with(&[
+            ("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n"),
+            ("conf/acme.yaml", crate::download::catalog::testing::SIXTEEN),
+        ]);
+        let sixteen = Card::Total(16 << 30);
+        let config = ["--config", "conf/ignis.config.yaml"];
+        let (ids, ..) = download_of(run_on(&[&["model", "download"][..], &config].concat(), &files, sixteen.clone()).unwrap());
+        assert_eq!(ids, ["qwen3.8-27b-16g"]);
+        let err = run_on(&[&["model", "download", "qwen3.8-flash-next"][..], &config].concat(), &files, sixteen.clone()).unwrap_err().0;
+        assert!(err.contains("nothing fetched") && err.contains("32 GB") && err.contains("16 GB"), "{err}");
+        let err = run_on(&["model", "download"], &MemFiles::default(), sixteen).unwrap_err().0;
+        assert!(err.contains("qwen3.8-27b needs a 32 GB card"), "the built-in catalog alone: {err}");
+        let five_090 = Card::Total(super::super::profile::RTX_5090_TOTAL_BYTES);
+        let (ids, ..) = download_of(run_on(&[&["model", "download"][..], &config].concat(), &files, five_090).unwrap());
+        assert_eq!(ids, ["qwen3.8-27b"]);
+    }
+
+    /// `docs/user/README.md`: the CUDA build fetches and lists on a machine
+    /// with no NVIDIA driver. NVML that cannot be read is no card to the
+    /// `model` verbs — nothing is fitted to a class, nothing refused — while
+    /// a start and the `config` verbs still refuse it under `auto`.
+    #[test]
+    fn the_model_verbs_need_no_card() {
+        let files = MemFiles::default();
+        for card in [Card::Unreadable("NVML Shared Library Not Found".to_owned()), Card::Absent] {
+            let (ids, ..) = download_of(run_on(&["model", "download", "--all"], &files, card.clone()).unwrap());
+            assert_eq!(ids, ALL_IDS, "{card:?}");
+            assert!(matches!(run_on(&["model", "list"], &files, card.clone()).unwrap(), ConfigOutcome::Model(ModelCommand::List { .. })), "{card:?}");
+        }
+        let unreadable = || Card::Unreadable("NVML Shared Library Not Found".to_owned());
+        for argv in [&["config", "print"][..], &[]] {
+            let err = run_on(argv, &files, unreadable()).unwrap_err().0;
+            assert!(err.contains("NVML Shared Library Not Found") && err.contains("--profile"), "{argv:?}: {err}");
+        }
+    }
+
     /// AC 2, 3 and 13 through the command line: an operator catalog a config
     /// file names, beside it, joins the listing; one that cannot be read
     /// refuses the command.
     #[test]
     fn model_list_reads_the_catalog_the_config_file_names_beside_it() {
-        let catalog = "models:\n  - id: acme-ft\n    repo: acme/ft\n    revision: v1\n    artifact: a.ninfer\n    files:\n      - { name: a.ninfer.graft.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }\n      - { name: a.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }\n";
+        let catalog = "models:\n  - id: acme-ft\n    repo: acme/ft\n    revision: v1\n    artifact: a.ninfer\n    card_class: 32\n    files:\n      - { name: a.ninfer.graft.json, bytes: 1, sha256: 0000000000000000000000000000000000000000000000000000000000000001 }\n      - { name: a.ninfer, bytes: 2, sha256: 0000000000000000000000000000000000000000000000000000000000000002 }\n";
         let files = MemFiles::with(&[("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n  path: /srv/models\n"), ("conf/acme.yaml", catalog)]);
         match run(&["model", "list", "--config", "conf/ignis.config.yaml", "--format", "json"], &[], &files).unwrap() {
             ConfigOutcome::Model(ModelCommand::List { catalog, dir, format }) => {

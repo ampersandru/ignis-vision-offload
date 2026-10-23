@@ -6,7 +6,7 @@ import { nthSeed, parseKeepingSeeds, type Seed, seedFrom } from "../../api/seed.
 import { switchAndWait } from "../../api/switching.ts";
 import { fileFromDataUrl, imageModelRow, limitsOf, progressLine, refusalLine, shapeOf, transparentPrompt } from "../../image/studio.ts";
 import { keepOutside } from "../../markup/markup.ts";
-import { readCatalog, readConfig } from "../../server/routes.ts";
+import { readCatalog, readConfig, unavailableReason } from "../../server/routes.ts";
 import { unknownToolError } from "../errors.ts";
 
 // The picture tool: `make_image` lets the conversation's model make a picture,
@@ -271,6 +271,12 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
   const imageModel = imageModelRow(catalog.ok ? catalog.value : null);
   if (!imageModel) {
     failAll("ignis lists no image model. It is fetched with `ignis-server model download ignis-image-2.1-turbo`.");
+    return runs;
+  }
+  // A switch to an image model this card's class cannot load would be refused (ADR 0064): none is begun.
+  const unavailable = unavailableReason(imageModel);
+  if (unavailable) {
+    failAll(`The image model is not for this card: ${unavailable}`);
     return runs;
   }
   const back = text.state === "ready" || text.state === "unloaded" ? (text.kind === "image" ? null : text.id) : null;

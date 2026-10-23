@@ -202,7 +202,7 @@ use ignis_core::compute::ModelFamily;
 /// (the 27B 19 -> 70 ms a decode round, Flash-Next 4.6 tok/s), at 1.5 GiB
 /// neither moved (finding 2026-10-09-vram-headroom-wddm-paging).
 pub const DEFAULT_VRAM_HEADROOM_BYTES: u64 = 1536 * 1024 * 1024;
-pub use ignis_core::{MAX_DRAFT_TOKENS, ProposalHead, Speculation, SpeculativeBackend};
+pub use ignis_core::{MAX_DRAFT_TOKENS, ProposalHead, ProposalHeadSetting, Speculation, SpeculativeBackend};
 use ignis_core::speculation::FLASH_NEXT_DEFAULT_DRAFT_TOKENS;
 
 pub use ignis_core::{MAX_YARN_FACTOR, RopeScaling};
@@ -230,6 +230,18 @@ pub const DEFAULT_HOST_POOL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// leaves of the physical memory available at load (4 GiB since
 /// 2026-10-12, the owner's call; spec flash-next/03 set 6).
 pub const DEFAULT_HOST_MARGIN_BYTES: u64 = ignis_core::residency::DEFAULT_HOST_MARGIN_BYTES;
+
+/// `--model-adapt-context-step`'s default (ADR 0063 §3): a 27B context the
+/// load adapts goes down 65,536 tokens at a time, and never below 65,536 --
+/// spec 27b-16gb/04's 262,144 -> 196,608 -> 131,072 -> 65,536 on the 16 GB
+/// card, generalized to any profile's value.
+pub const DEFAULT_ADAPT_CONTEXT_STEP: u32 = 65_536;
+
+/// `--vram-adapt-spare-tokens`' default (ADR 0063 §3): at more than one
+/// decode lane, a context the 27B's load adapts is kept when its KV pool
+/// holds it and one more 65,536-token reservation, room for a second
+/// request beside a full one.
+pub const DEFAULT_ADAPT_SPARE_TOKENS: u32 = 65_536;
 
 /// `--reuse-prompt`'s default (GitHub #186, ADR 0029): on. Cross-request
 /// reuse is the owner's workload — an agent's tool loop re-sends its whole
@@ -384,7 +396,8 @@ pub struct Config {
     /// the device state arenas and are handed out first; host slots
     /// (`--reuse-retained-host`, [`DEFAULT_RETAINED_HOST_SLOTS`]) sit in one
     /// pinned host block and cost a PCIe copy per capture and per claim. Both
-    /// 0 with prompt reuse off unless named.
+    /// 0 with prompt reuse off unless named. Unnamed, the host slots are two
+    /// per decode lane of the 27B (GitHub #336): 16 at its default 8.
     pub retained_device_slots: u32,
     pub retained_host_slots: u32,
     /// Whether [`Config::retained_host_slots`] was given at all — by the
@@ -412,9 +425,11 @@ pub struct Config {
     /// round of w lanes verifies min(draft tokens, rows / w - 1) drafts per
     /// lane. `None`: the default's 8 rows; up to 32 (GitHub #329).
     pub draft_rows: Option<u32>,
-    /// Flash-Next's decode lanes (`--spec-decode-lanes`, GitHub #306),
-    /// 1..=[`ignis_core::N_DECODE_LANES`]. `None`: the engine's default of 3.
-    /// The 27B has a fixed lane count and refuses the flag.
+    /// The decode lanes (`--spec-decode-lanes`, GitHub #306; the 27B's too
+    /// since GitHub #336), 1..=[`ignis_core::N_DECODE_LANES`], family-scoped.
+    /// `None`: the model's own default
+    /// ([`ignis_core::compute::ModelFamily::default_decode_lanes`]), 8 on the
+    /// 27B and 3 on Flash-Next.
     pub decode_lanes: Option<u32>,
     /// Vision, chosen at load (`--vision-enabled` / `--vision-max-tokens`,
     /// GitHub #177). `None` binds and reserves nothing of the vision tower.
@@ -682,16 +697,35 @@ pub const PROFILE_ENV: &str = "IGNIS_PROFILE";
 /// start rather than at the first load of that family. The family checks
 /// that depend on which artifact loads (the 27B's attention envelope) wait
 /// for [`Config::for_family`].
+///
+/// Not for a caller that has a card: it injects a fixed RTX 5090 total
+/// ([`profile::RTX_5090_TOTAL_BYTES`]) in place of reading one, so `auto`
+/// resolves `rtx5090` whatever the machine. Test helpers and callers with no
+/// card go through it; the binary goes through [`resolve_on`].
 pub fn resolve_with(
     args: &[String],
     env: impl Fn(&str) -> Option<String>,
     files: &dyn file::Files,
 ) -> Result<ConfigOutcome, ConfigError> {
+    resolve_on(args, env, files, &|| profile::Card::Total(profile::RTX_5090_TOTAL_BYTES))
+}
+
+/// [`resolve_with`] on the card `card` reads (ADR 0063): what `--profile
+/// auto` chooses by, and what the start's catalog checks fit entries to. The
+/// binary's probe reads NVML's total on a CUDA build; [`resolve`] and
+/// [`resolve_with`], which every CPU test goes through, inject a 5090's, so
+/// they resolve `rtx5090` as they always have.
+pub fn resolve_on(
+    args: &[String],
+    env: impl Fn(&str) -> Option<String>,
+    files: &dyn file::Files,
+    card: &dyn Fn() -> profile::Card,
+) -> Result<ConfigOutcome, ConfigError> {
     match args.first().map(String::as_str) {
         Some("help") => return cli::help(&args[1..]),
         Some("version") => return Ok(ConfigOutcome::Version(version_text())),
-        Some("config") => return cli::config(&args[1..], &env, files),
-        Some("model") => return cli::model(&args[1..], &env, files),
+        Some("config") => return cli::config(&args[1..], &env, files, card),
+        Some("model") => return cli::model(&args[1..], &env, files, card),
         Some(word) if !word.starts_with('-') => {
             return Err(ConfigError(format!(
                 "unknown command `{word}` (the commands are help, version, config and model; with none, the server starts)"
@@ -706,21 +740,31 @@ pub fn resolve_with(
             _ => {}
         }
     }
-    start_config(args, &env, files).map(ConfigOutcome::Config)
+    start_config(args, &env, files, card).map(ConfigOutcome::Config)
 }
 
 /// The configuration a start reads from `args` (field flags, `--config`,
 /// `--profile`): the config file `--config` / `IGNIS_CONFIG` names or
 /// discovery finds, the environment, the profile — shared with the `model`
 /// subcommands, which act on exactly what a start would.
-pub(crate) fn start_config(args: &[String], env: &dyn Fn(&str) -> Option<String>, files: &dyn file::Files) -> Result<Config, ConfigError> {
+pub(crate) fn start_config(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    files: &dyn file::Files,
+    card: &dyn Fn() -> profile::Card,
+) -> Result<Config, ConfigError> {
     let parsed = source::parse_args(args)?;
     let named = parsed.config.clone().or_else(|| env(CONFIG_ENV).filter(|path| !path.is_empty()));
     let choice = match named {
         Some(path) => FileChoice::Explicit(PathBuf::from(path)),
         None => FileChoice::Discover,
     };
-    let (sources, _) = gather(parsed, env, files, choice)?;
+    let (mut sources, _) = gather(parsed, env, files, choice, card)?;
+    // A start reads the card's total whichever way its profile was chosen,
+    // so the catalog can check what fits it (ADR 0064).
+    if sources.card_total.is_none() {
+        sources.card_total = card().total();
+    }
     Config::from_sources(sources)
 }
 
@@ -751,11 +795,15 @@ pub(crate) enum FileChoice {
 /// looked up among the file's `profiles:` first and the built-in ones after,
 /// by one function. Returns the file's document as written too, for a
 /// caller that merges a change into it.
+///
+/// With no profile named, `auto` (ADR 0063) chooses by the total `card`
+/// reads ([`profile::auto`]); a named profile, `none` included, reads none.
 pub(crate) fn gather(
     parsed: source::ParsedArgs,
     env: &dyn Fn(&str) -> Option<String>,
     files: &dyn file::Files,
     choice: FileChoice,
+    card: &dyn Fn() -> profile::Card,
 ) -> Result<(Sources, Option<serde_json::Value>), ConfigError> {
     let (file_source, loaded) = match choice {
         FileChoice::None => (FileSource::None, None),
@@ -791,11 +839,21 @@ pub(crate) fn gather(
         Some((value, document)) => (Some(value), document),
         None => (None, file::Document::default()),
     };
-    let profile_name = parsed
+    let named = parsed
         .profile
         .or_else(|| env(PROFILE_ENV).filter(|name| !name.is_empty()))
         .or(document.profile)
         .unwrap_or_else(|| profile::DEFAULT_PROFILE.to_owned());
+    let profile_auto = named == profile::AUTO_PROFILE;
+    let mut card_total = None;
+    let profile_name = if profile_auto {
+        let card = card();
+        card_total = card.total();
+        // No card (a build without CUDA) resolves as `none` would.
+        profile::auto(card)?.unwrap_or(profile::NONE_PROFILE).to_owned()
+    } else {
+        named
+    };
     let profile = if profile_name == profile::NONE_PROFILE {
         source::Layer::default()
     } else {
@@ -809,6 +867,8 @@ pub(crate) fn gather(
         file_source,
         profile,
         profile_name,
+        profile_auto,
+        card_total,
     };
     Ok((sources, value))
 }
@@ -826,6 +886,51 @@ impl Config {
     /// The settings every field resolved to (`GET /v1/config`'s source).
     pub fn settings(&self) -> &schema::Settings {
         self.basis.settings()
+    }
+
+    /// The card's total memory in bytes, as NVML reports it, when the start
+    /// read it: always for `--profile auto` on a CUDA build (the `config` and
+    /// `model` verbs included, which resolve as a start would: on a card of
+    /// no class they refuse the same way, naming `--profile`, and so do the
+    /// `config` verbs on a total NVML cannot read, which the `model` verbs
+    /// take for no card), and for a start whichever way its profile was
+    /// named; `None` without a card (a build without CUDA, or NVML unread by
+    /// a `model` verb), or when a verb resolved under a named profile, which
+    /// reads none.
+    pub fn card_total_bytes(&self) -> Option<u64> {
+        self.basis.sources().card_total
+    }
+
+    /// The [`profile::CardClass`] of [`Config::card_total_bytes`]: what the
+    /// catalog fits an entry to (ADR 0064). `None` when no total was read or
+    /// the total is no class (a named profile may run on any card).
+    pub fn card_class(&self) -> Option<profile::CardClass> {
+        self.card_total_bytes().and_then(profile::CardClass::of_total)
+    }
+
+    /// The 27B's adaptation ladder (ADR 0063 §3): its context step
+    /// (`--model-adapt-context-step`) and its spare reservation
+    /// (`--vram-adapt-spare-tokens`). The load's shape carries it
+    /// ([`crate::runtime::EngineShape::adapt_ladder`]).
+    pub fn adapt_ladder(&self) -> crate::adaptation::Ladder {
+        let settings = self.settings();
+        crate::adaptation::Ladder {
+            context_step: settings.model.adapt_context_step,
+            spare_tokens: settings.vram.adapt_spare_tokens,
+        }
+    }
+
+    /// Which of the 27B's load values its **adaptation** may lower (ADR 0063
+    /// §3): the context, the decode lanes and the drafter's head, each when
+    /// the profile or the hardcoded default gave it. The load's shape carries
+    /// it ([`crate::runtime::EngineShape::adaptable`]).
+    pub fn adaptable(&self) -> crate::adaptation::Adaptable {
+        let resolution = self.basis.resolution();
+        crate::adaptation::Adaptable {
+            max_context: resolution.adapts("model", "max_context"),
+            decode_lanes: resolution.adapts("spec", "decode_lanes"),
+            draft_head: resolution.adapts("spec", "draft_head"),
+        }
     }
 
     /// The config file this configuration was read from — where a change to
@@ -1113,10 +1218,14 @@ fn derive(
             .reuse
             .retained_device
             .unwrap_or(if prompt_reuse { DEFAULT_RETAINED_DEVICE_SLOTS } else { 0 }),
-        retained_host_slots: s
-            .reuse
-            .retained_host
-            .unwrap_or(if prompt_reuse { DEFAULT_RETAINED_HOST_SLOTS } else { 0 }),
+        // The 27B's default, two per decode lane, from the lanes as named;
+        // Flash-Next's own replaces it at load (`EngineShape::for_family`,
+        // which asks the same function).
+        retained_host_slots: s.reuse.retained_host.unwrap_or(if prompt_reuse {
+            ModelFamily::Qwen38_27b.default_retained_host_slots(s.spec.decode_lanes.unwrap_or(0))
+        } else {
+            0
+        }),
         retained_host_named: s.reuse.retained_host.is_some(),
         retained_interactive_ttl_secs: s.reuse.retained_interactive_ttl,
         instruction_policy: InstructionPolicy {
@@ -1164,6 +1273,8 @@ pub fn log_source(config: &Config) {
         source = sources.file_source.kind(),
         path = path.as_deref().unwrap_or("none"),
         profile = %sources.profile_name,
+        profile_by = if sources.profile_auto { "auto" } else { "named" },
+        card_total_bytes = sources.card_total,
         "configuration source"
     );
 }
@@ -1294,7 +1405,9 @@ fn derive_speculation(
         }
         Some(SpecChoice::Backend(backend)) => backend,
     };
-    let head = s.draft_head.unwrap_or_default();
+    // ADR 0063: `auto` resolves here, where the load's speculation is
+    // built, as `auto` rope scaling does: to the full head, MTP's only one.
+    let head = s.draft_head.map_or(ProposalHead::Full, |setting| setting.resolve());
     if backend == SpeculativeBackend::Mtp && head != ProposalHead::Full {
         return Err(ConfigError(format!(
             "`{}`: `--spec-backend mtp` has no proposal head to choose",
@@ -1446,7 +1559,7 @@ fn version_text() -> String {
 /// `--help`: how to run the server, and every field's flag, env var and
 /// default, one line each, from the field table itself.
 pub fn help_text() -> String {
-    let mut text = String::from(
+    let mut text = format!(
         "ignis-server: the OpenAI-compatible HTTP entrypoint\n\
          \n\
          USAGE:\n    ignis-server [--config <path>] [--profile <name>] [FIELD FLAGS]\n\
@@ -1461,7 +1574,12 @@ pub fn help_text() -> String {
          Every field has a flag (--<group>-<field>), an env var (IGNIS_<GROUP>_<FIELD>)\n\
          and a config-file key (<group>.<field>). Precedence, highest first: flag, env\n\
          var, config file, profile, built-in default; a field's qwen38 / qwen38flashnext\n\
-         value wins within each. `help --fields` prints every field in full.\n",
+         value wins within each. `help --fields` prints every field in full.\n\
+         \n\
+         --profile defaults to `auto`: the built-in profile of the card's total memory\n\
+         ({}); a card of no class is refused, naming --profile. A named profile\n\
+         (or `none`) always wins.\n",
+        profile::classes_text(),
     );
     for (group, fields) in schema::GROUPS {
         text.push_str(&format!("\n{}:\n", group.to_ascii_uppercase()));

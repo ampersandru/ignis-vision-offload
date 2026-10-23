@@ -477,6 +477,15 @@ target_link_libraries(ignis_kernel_model_load_vision_options_test
 add_test(NAME ignis_kernel_model_load_vision_options_test
          COMMAND ignis_kernel_model_load_vision_options_test)
 
+# GitHub #336: OURS -- the 27B's decode lanes as a load option. Host-only for
+# the plan (0 is 8 byte for byte, 9 refused, every round line the formula at
+# every lane count); then a no-layer BF16 load on the device captures its
+# graphs at widths 1..lanes and refuses a round one wider.
+add_executable(ignis_kernel_model_load_decode_lanes_test test_model_load_decode_lanes.cpp)
+target_link_libraries(ignis_kernel_model_load_decode_lanes_test PRIVATE ignis_kernel ignis_vendor)
+add_test(NAME ignis_kernel_model_load_decode_lanes_test
+         COMMAND ignis_kernel_model_load_decode_lanes_test)
+
 # OURS -- the vision encoder's workspace size, pinned against the serving
 # load's own plan figure. Host-only layout arithmetic; it reaches into
 # `kernel/src` for `model_internal.h`, like the RoPE scaling test.

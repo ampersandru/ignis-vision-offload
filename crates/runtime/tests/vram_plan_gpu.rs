@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use ignis_artifact::{CudaDevice, Reader, bind_model_scope_27b_with, materialize};
 use ignis_core::gpu_profile;
+use ignis_core::lane_lines::lane_lines;
 use ignis_core::{ExceptionWeights, KvFormat, KvGeometry, N_DECODE_LANES, Speculation, SpeculativeBackend, Vision, model_load};
 use ignis_runtime::{CudaLeaf, CudaLeafConfig, Model, ReservedBytes};
 
@@ -310,4 +311,128 @@ fn the_vision_encoder_workspace_is_the_prefill_scratch_not_beside_it() {
         reserved(1024, SHORT_CONTEXT, None).workspace,
         "the prefill scratch already fits the encoder, and the text room a head point's readout"
     );
+}
+
+/// GitHub #336 (spec 27b-16gb/04 acceptance 1): every line that scales with
+/// the round follows the load's decode lanes, and at eight lanes the plan is
+/// main 75210360's to the byte. Two shapes: the `rtx5090` profile's 27B
+/// (917,504 tokens of hq-e8-2b, DFlash2 at 7, vision with the processor's
+/// 16,384-token item bound, 2,048-token chunks) and a 262,144-token text
+/// load at 1,024; two device and sixteen host retained slots on both, so
+/// the lines the lanes do not move are there to stay put. Asked of the
+/// leaf's plan only, so nothing here touches the device.
+///
+/// At 1, 2 and 8 lanes the leaf plans, to the byte, what
+/// `ignis_core::lane_lines` computes on the CPU -- sampling, the verify and
+/// the drafter's rounds, the lanes' state and the hq residual window -- which
+/// `cargo test` holds to main's eight-lane bytes and PIANO-VRAM's per-lane
+/// costs. The decode round is the kernel's alone (that module's doc says
+/// why): pinned here at one and two lanes, and exactly affine in them --
+/// ~10.27 MB a lane beside 1,024 bytes, and vision's rope positions -- so the
+/// four round lines are ~35.4 MB a lane beside ~33.6 MB that does not move
+/// (the drafter's 32 MiB allowance and its fixed buffers): PIANO-VRAM's
+/// "~35 MB a lane + 34 MB fixed" at DFlash2 7, fitted on 39 measured plans.
+#[test]
+#[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
+fn the_round_lines_follow_the_loads_lanes() {
+    let path = Path::new(ARTIFACT);
+    if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
+        return;
+    }
+    let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
+    let speculation = Speculation::new(SpeculativeBackend::Dflash2, 7).expect("dflash2-7");
+    let vision = Vision::new(ignis_core::DEFAULT_VISION_MAX_TOKENS).expect("default envelope").with_item_max_tokens(16_384);
+    let topology = ignis_core::ModelConfig::qwen38_27b();
+
+    // What main planned at eight lanes, and the decode round at one and two.
+    struct Shape {
+        label: &'static str,
+        max_context_tokens: u32,
+        prefill_chunk_tokens: u32,
+        vision: Option<Vision>,
+        main: ReservedBytes,
+        decode_graph: [u64; 2],
+    }
+    let main = |workspace, media_embedding, decode_graph, verify_round| ReservedBytes {
+        workspace,
+        media_embedding,
+        sampling: 4_623_344,
+        decode_graph,
+        verify_round,
+        drafter_round: 78_027_552,
+        lane_state: 1_575_043_072,
+        retained_slots: 393_760_768,
+        hq_residual_window: 356_516_480,
+        kv_pool: 0,
+    };
+    let shapes = [
+        Shape {
+            label: "rtx5090",
+            max_context_tokens: 917_504,
+            prefill_chunk_tokens: 2048,
+            vision: Some(vision),
+            main: main(908_592_896, 335_544_320, 82_125_920, 152_139_488),
+            decode_graph: [10_266_636, 20_532_248],
+        },
+        Shape {
+            label: "text262k",
+            max_context_tokens: 262_144,
+            prefill_chunk_tokens: 1024,
+            vision: None,
+            main: main(487_837_184, 0, 82_125_888, 152_139_232),
+            decode_graph: [10_266_632, 20_532_240],
+        },
+    ];
+    for shape in &shapes {
+        let scope = model_load::model_scope(Some(speculation), shape.vision, ExceptionWeights::Bf16);
+        let (plan, handles) = bind_model_scope_27b_with(&reader, scope).unwrap_or_else(|e| panic!("bind: {e}"));
+        let planned_at = |lanes: u32| {
+            let config = CudaLeafConfig {
+                max_context_tokens: shape.max_context_tokens,
+                kv_format: KvFormat::HqE8_2b,
+                slot_count: lanes,
+                prefill_chunk_tokens: shape.prefill_chunk_tokens,
+                speculation: Some(speculation),
+                vision: shape.vision,
+                retained_device_slots: 2,
+                retained_host_slots: 16,
+                ..CudaLeafConfig::default()
+            };
+            config.plan_reservations(&reader, &plan, &handles).unwrap_or_else(|e| panic!("plan at {lanes} lanes: {e}"))
+        };
+        let eight = planned_at(N_DECODE_LANES as u32);
+        assert_eq!(eight.reserved, shape.main, "{}: eight lanes are main's plan to the byte", shape.label);
+        assert_eq!(eight.retained_host_bytes, 16 * HOST_IMAGE_BYTES, "{}", shape.label);
+
+        let [decode_one, decode_two] = shape.decode_graph;
+        let mut rounds = Vec::new();
+        for (lanes, decode_graph) in [(1, decode_one), (2, decode_two), (8, shape.main.decode_graph)] {
+            let at = planned_at(lanes).reserved;
+            let lines = lane_lines(&topology, KvFormat::HqE8_2b, Some(speculation), shape.vision.is_some(), lanes, 2);
+            assert_eq!(
+                at,
+                ReservedBytes {
+                    sampling: lines.sampling,
+                    decode_graph,
+                    verify_round: lines.verify_round,
+                    drafter_round: lines.drafter_round,
+                    lane_state: lines.lane_state,
+                    hq_residual_window: lines.hq_residual_window,
+                    ..shape.main
+                },
+                "{} at {lanes} lanes: the CPU's lines, and the workspace, the media pool and the retained slots stay put",
+                shape.label
+            );
+            rounds.push(at.sampling + at.decode_graph + at.verify_round + at.drafter_round);
+        }
+        assert_eq!(
+            shape.main.decode_graph,
+            decode_one + 7 * (decode_two - decode_one),
+            "{}: the decode round is one lane and seven more of the step from one to two",
+            shape.label
+        );
+        let (per_lane, fixed) = (rounds[1] - rounds[0], 2 * rounds[0] - rounds[1]);
+        assert!(per_lane.abs_diff(35_000_000) <= 500_000, "{}: the round lines cost {per_lane} B a lane", shape.label);
+        assert!(fixed.abs_diff(34_000_000) <= 500_000, "{}: {fixed} B of round lines do not move", shape.label);
+    }
 }

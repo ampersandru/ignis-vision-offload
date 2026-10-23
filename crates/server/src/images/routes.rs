@@ -411,7 +411,7 @@ Prompt enhancement (`prompt_enhancement: true`, or `image.prompt_enhancement` wh
         (status = 400, description = "A field outside its rule: no `prompt`, `n` outside 1..`image.max_n`, a `size` not in `image.sizes`, or past the largest image the loaded model makes (the message lists the sizes), `response_format: url`, an `output_format` other than `png`, an unknown `background`, `partial_images` above 0; or a prompt longer than the condition budget (`condition_budget_exceeded`); or a request the image model refuses, in its words (`image_refused`: a prompt whose positions run past the model's RoPE table).", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
-        (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
+        (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`, naming both kinds and the loaded id). Or `model` names a catalog entry this card's class cannot load, and no entry that answers to it can (`model_above_card_class`, naming the entry's class and the card's, ADR 0064): refused before anything loads or switches, the loaded model serving on.", body = ApiError),
         (status = 500, description = "The image model failed a call (`engine_error`).", body = ApiError),
         (status = 503, description = "The queue is full (`engine_full`, with `Retry-After`); a model switch is under way (`model_switching`, with `Retry-After`) or did not land (`model_switch_failed`, also when a prompt enhancement visit could not switch back to the image model); the image model was stopped before the job finished (`model_stopped`, with `Retry-After`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
         (status = 504, description = "The job ran past `--server-request-timeout` from its start (`request_timeout`), whatever `--server-timeout-reply` says: an image cut short is no image.", body = ApiError),
@@ -445,7 +445,7 @@ Each condition image is resized to 1024x1024 pixels of area at its own aspect ra
         (status = 400, description = "As for a generation; or no condition image, more than `image.max_condition_images`, one that is not a PNG, JPEG or WebP, a `mask`, or condition images that do not fit the condition budget, or the image model's room for them, even at `image.condition_floor_px` (`condition_budget_exceeded`); or a condition image the image model refuses, in its words (`image_refused`: one its encoder's processor would not keep at its condition size, a panorama past 200:1).", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
-        (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`).", body = ApiError),
+        (status = 409, description = "The model that would serve the request is a text model (`model_kind_mismatch`). Or `model` names a catalog entry this card's class cannot load, and no entry that answers to it can (`model_above_card_class`, naming the entry's class and the card's, ADR 0064): refused before anything loads or switches, the loaded model serving on.", body = ApiError),
         (status = 500, description = "The image model failed a call (`engine_error`).", body = ApiError),
         (status = 503, description = "As for a generation: `engine_full`, `model_switching`, `model_switch_failed`, `model_stopped`, `model_load_failed`, `server_stopping`.", body = ApiError),
         (status = 504, description = "As for a generation: the job ran past its deadline (`request_timeout`).", body = ApiError),
@@ -610,7 +610,13 @@ fn switch_steps(events: mpsc::UnboundedSender<Streamed>, legs: u32) -> Steps {
 /// prompt is rewritten first. One the loaded image model takes as it is
 /// starts streaming once admitted, so every refusal before its job is still
 /// a status.
-async fn serve(server: Arc<Server>, request: ImageRequest, conditions: Conditions, route: Route) -> Response {
+async fn serve(server: Arc<Server>, mut request: ImageRequest, conditions: Conditions, route: Route) -> Response {
+    // The id this card serves the request under (ADR 0064): an alias
+    // rewritten, an entry above the card's class refused before anything.
+    request.model = match crate::api::model_on_this_card(&server, request.model.take()) {
+        Ok(model) => model,
+        Err(refusal) => return crate::api::above_card_class(&refusal),
+    };
     let named = split_model_lane(request.model.clone()).0;
     if let Err(refused) = check_kind(&server, ModelKind::Image, named.as_deref()) {
         return refused;
@@ -692,7 +698,7 @@ async fn admit(
     // the enhancer; else, naming an image model, the enhancer the server can
     // switch to.
     let unloaded = server.active();
-    let enhancer = server.live().image.prompt_enhancer.clone();
+    let enhancer = super::enhance::enhancer_on_this_card(&server, &server.live().image.prompt_enhancer);
     let rewrites_first = request.enhance && status.is_unloaded() && unloaded.kind() == ModelKind::Text;
     let load = match rewrites_first {
         true if unloaded.model_id() == enhancer => None,
@@ -878,7 +884,7 @@ async fn enhance(
     seed: u64,
     events: &mpsc::UnboundedSender<Streamed>,
 ) -> Result<Enhanced, Response> {
-    let enhancer = server.live().image.prompt_enhancer.clone();
+    let enhancer = super::enhance::enhancer_on_this_card(server, &server.live().image.prompt_enhancer);
     // The model the check reads is the one the rewrite runs on.
     let pinned = server.pinned();
     let loaded = pinned.active();

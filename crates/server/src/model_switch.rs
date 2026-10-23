@@ -77,6 +77,8 @@ use std::time::{Duration, Instant};
 
 use ignis_core::compute::{ModelFamily, ModelKind};
 
+use crate::config::profile::CardClass;
+use crate::download::ClassRefusal;
 use crate::load::LoadedModel;
 use crate::{ActiveModel, InFlight, ModelSource, ModelStatus, Server, StatusCell};
 
@@ -106,6 +108,16 @@ pub trait ModelLoader: Send + Sync {
     /// `None` when that says nothing.
     fn kind_of(&self, target: &ModelSource) -> Option<ModelKind> {
         ModelFamily::of_model_id(&target.model).map(ModelFamily::kind)
+    }
+
+    /// The model family `target`'s artifact is of, when that can be told
+    /// without loading it — its header's (ADR 0047): what an alias is
+    /// checked against before a switch to the entry that answers to it (ADR
+    /// 0064 §2: an alias resolves only within one model family). By default
+    /// the family whose own id `target` is served under; `None` when that
+    /// says nothing.
+    fn family_of(&self, target: &ModelSource) -> Option<ModelFamily> {
+        ModelFamily::of_model_id(&target.model)
     }
 }
 
@@ -181,6 +193,12 @@ impl ModelLoader for ArtifactLoader {
     fn kind_of(&self, target: &ModelSource) -> Option<ModelKind> {
         let family = crate::loader::artifact_family(&target.artifact).ok()?;
         Some(family.unwrap_or(ModelFamily::Qwen38_27b).kind())
+    }
+
+    /// The family the artifact's header names; `None` for a file that cannot
+    /// be read, or one of no family.
+    fn family_of(&self, target: &ModelSource) -> Option<ModelFamily> {
+        crate::loader::artifact_family(&target.artifact).ok().flatten()
     }
 }
 
@@ -291,6 +309,10 @@ pub struct Switcher {
     /// Set once the serve has begun to stop ([`Switcher::stop_waiting`]):
     /// from then on no request waits for a switch or a load (GitHub #329).
     stopping: tokio::sync::watch::Sender<bool>,
+    /// The card's class, when the start read one ([`Switcher::with_card_class`],
+    /// ADR 0064): what a catalog entry is fitted to before a switch, a
+    /// request or a listing names it. `None` refuses nothing.
+    card: Option<CardClass>,
 }
 
 /// The two tables a server's models are named by, computed together from the
@@ -370,6 +392,22 @@ pub enum Unswitchable {
     /// A catalog entry whose artifact is not under `download.path`: it has to
     /// be fetched first (`model download`), a switch never starts a download.
     NotDownloaded,
+    /// A catalog entry above the card's class with no entry answering to it
+    /// that fits (ADR 0064 §3): `409 model_above_card_class`, before anything
+    /// is prepared or torn down.
+    AboveClass(ClassRefusal),
+}
+
+/// A model `GET /v1/models` lists besides the loaded one
+/// ([`Switcher::servable_models`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Servable {
+    /// Its id.
+    pub id: String,
+    /// Why a request naming it is not served by it on this card (ADR 0064
+    /// §3): a catalog id on disk above the card's class. `None` for a model
+    /// a request naming it switches to.
+    pub unavailable: Option<String>,
 }
 
 /// A catalog's entries as known models (spec model-download/02 §Known
@@ -412,7 +450,16 @@ impl Switcher {
             settled: AtomicBool::new(true),
             start: Mutex::new(None),
             stopping: tokio::sync::watch::Sender::new(false),
+            card: None,
         }
+    }
+
+    /// Fit every catalog entry a switch, a request or a listing names to a
+    /// card of class `card` (ADR 0064): the class `main` reads from NVML's
+    /// total at start, `None` when it read none — which refuses nothing, the
+    /// VRAM plan's refusal still guarding.
+    pub fn with_card_class(self, card: Option<CardClass>) -> Self {
+        Self { card, ..self }
     }
 
     /// The serve has begun to stop (GitHub #329): a request waiting for a
@@ -551,7 +598,16 @@ impl Switcher {
     /// it gates the switch a request triggers by naming a model, not an
     /// operator's. Looked up at each call: a download landing in the
     /// directory needs no restart.
+    ///
+    /// A catalog id above the card's class is refused first, before a switch
+    /// begins (ADR 0064 §3) — listed or not: the class is the catalog
+    /// entry's, whatever path the operator gave its id; an id another entry
+    /// answers to on this card is the caller's to rewrite first
+    /// ([`Switcher::on_this_card`]).
     pub fn resolve(&self, model: &str) -> Result<PathBuf, Unswitchable> {
+        if let Some(refusal) = self.above_class(model) {
+            return Err(Unswitchable::AboveClass(refusal));
+        }
         if let Some(listed) = self.listed_models().remove(model) {
             return if listed.is_file() { Ok(listed) } else { Err(Unswitchable::KnownMissing { artifact: listed }) };
         }
@@ -559,6 +615,62 @@ impl Switcher {
         let entry = catalog.catalog.entries().iter().find(|entry| entry.id == model).ok_or(Unswitchable::Unknown)?;
         let artifact = entry.artifact_path(&catalog.dir);
         if artifact.is_file() { Ok(artifact) } else { Err(Unswitchable::NotDownloaded) }
+    }
+
+    /// The catalog's class-aware step ([`crate::download::Catalog::answering`],
+    /// ADR 0064 §2-3) for a request's `model` or a switch by id, lane tag
+    /// stripped: `Ok(None)` when `model` stands as it is — the catalog does
+    /// not hold it (an operator's own model, which has no class), or its own
+    /// entry fits the card; `Ok(Some(id))` when another entry of its family
+    /// answers to it on this card, the id the request is then served under
+    /// (an alias: the 27B's default id on a 16 GB card); `Err` when its own
+    /// entry is above the card's class and none answers for it, which
+    /// refuses the request or the switch before anything is drained or torn
+    /// down. A catalog id the operator also listed (`switch.known_models`)
+    /// is fitted all the same: the class is the catalog entry's. Whether
+    /// implicit switching is on does not matter: an alias served by the
+    /// loaded model is no switch.
+    ///
+    /// The entry that answers must hold an artifact of the alias's family:
+    /// when the artifact a switch to it would load is on disk, its header's
+    /// family (the loader's [`ModelLoader::family_of`], ADR 0047) is checked
+    /// here, before anything stops, and one of another family — or of none —
+    /// does not answer to the alias. One not on disk is a switch that cannot
+    /// begin, refused as such.
+    pub fn on_this_card(&self, model: &str) -> Result<Option<String>, ClassRefusal> {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return Ok(None);
+        };
+        let Some(entry) = catalog.catalog.answering(model, self.card)? else {
+            return Ok(None);
+        };
+        if let Ok(artifact) = self.resolve(&entry.id) {
+            let header = self.loader.family_of(&ModelSource { artifact, model: entry.id.clone() });
+            catalog.catalog.alias_holds(model, entry, header, self.card)?;
+        }
+        Ok(Some(entry.id.clone()))
+    }
+
+    /// Why the catalog entry `model` itself cannot be loaded on this card,
+    /// for `GET /v1/models` and `GET /v1/models/catalog` (ADR 0064 §3): its
+    /// class is above the card's, and when another entry serves a request
+    /// naming it here, which one. `None` for an entry that fits, a model the
+    /// catalog does not hold, or with no card class known.
+    pub fn unavailable_reason(&self, model: &str) -> Option<String> {
+        let refusal = self.above_class(model)?;
+        Some(match self.on_this_card(model) {
+            Ok(Some(serving)) => format!("{refusal}; a request naming it is served by {serving}"),
+            // The entry that would answer holds another family's artifact:
+            // that refusal says both.
+            Err(answered) => answered.to_string(),
+            Ok(None) => refusal.to_string(),
+        })
+    }
+
+    /// The class refusal of the catalog entry `model` itself
+    /// ([`crate::download::Catalog::above_class`]) on this card.
+    fn above_class(&self, model: &str) -> Option<ClassRefusal> {
+        self.catalog.as_ref()?.catalog.above_class(model, self.card)
     }
 
     /// How the last switch or reload ended; `None` before the first.
@@ -601,9 +713,9 @@ impl Switcher {
     /// enhancement): one an explicit switch by id may name — the listed
     /// models' entry for it, else a catalog entry on disk — whatever
     /// `switch.allow_implicit` says, since the operator named it in
-    /// `image.prompt_enhancer`; `None` for any other id, and for an image
-    /// model. Whether a listed model's file is there is the visit's prepare
-    /// to say.
+    /// `image.prompt_enhancer`; `None` for any other id, a catalog id above
+    /// the card's class (ADR 0064), and an image model. Whether a listed
+    /// model's file is there is the visit's prepare to say.
     pub fn text_model(&self, model: &str) -> Option<ModelSource> {
         self.text_model_among(model, &BTreeMap::new())
     }
@@ -611,6 +723,9 @@ impl Switcher {
     /// [`Switcher::text_model`] with `listing` listed too, over the listed
     /// models: what a config change about to list them would resolve.
     pub fn text_model_among(&self, model: &str, listing: &BTreeMap<String, PathBuf>) -> Option<ModelSource> {
+        if self.above_class(model).is_some() {
+            return None;
+        }
         let artifact = listing
             .get(model)
             .cloned()
@@ -628,14 +743,26 @@ impl Switcher {
     /// kept when [`Switcher::known`] resolves it (to a file, always). Blocking (one
     /// `stat` per candidate); no artifact is opened. `known` folds
     /// `switch.allow_implicit` in: off, nothing is servable but `active`.
-    pub fn servable_models(&self, active: &str) -> Vec<String> {
+    ///
+    /// A catalog id whose artifact is on disk — the catalog's, or the path
+    /// the operator listed it with — that the card cannot load (ADR 0064 §3)
+    /// is listed where it always was, with why it is not available
+    /// ([`Switcher::unavailable_reason`]).
+    pub fn servable_models(&self, active: &str) -> Vec<Servable> {
         let catalog = self.catalog.iter().flat_map(|catalog| catalog.catalog.entries().iter().map(|entry| entry.id.clone()));
-        let known = self.known_models().into_keys();
+        let known = self.known_models();
         let mut seen = std::collections::HashSet::from([active.to_owned()]);
+        let on_disk = |id: &str| {
+            known.get(id).is_some_and(|artifact| artifact.is_file())
+                || (self.catalog_on.load(Ordering::SeqCst) && self.catalog.as_ref().is_some_and(|catalog| catalog.artifact(id).is_some()))
+        };
         catalog
-            .chain(known)
+            .chain(known.keys().cloned())
             .filter(|id| seen.insert(id.clone()))
-            .filter(|id| self.known(id).is_some())
+            .filter_map(|id| match self.known(&id) {
+                Some(_) => Some(Servable { id, unavailable: None }),
+                None => on_disk(&id).then(|| self.unavailable_reason(&id)).flatten().map(|reason| Servable { id, unavailable: Some(reason) }),
+            })
             .collect()
     }
 
@@ -646,8 +773,12 @@ impl Switcher {
     /// as `GET /v1/models` does not list it, rather than tearing the loaded
     /// model down for a load that cannot begin. Looked up at each call, so a
     /// file put back is switchable at once. Its id still wins over a catalog
-    /// entry's.
+    /// entry's. A catalog id above the card's class is not one, listed or
+    /// not (ADR 0064 §3): a request naming it never switches.
     pub fn known(&self, model: &str) -> Option<PathBuf> {
+        if self.above_class(model).is_some() {
+            return None;
+        }
         if let Some(listed) = self.known.lock().expect("known models lock").get(model) {
             return listed.is_file().then(|| listed.clone());
         }

@@ -49,6 +49,40 @@ fn exit_after_flush(logging_handle: &ignis_logging::LoggingHandle, code: i32) ->
     std::process::exit(code);
 }
 
+/// The card `--profile auto` chooses by (ADR 0063): NVML's total memory of
+/// device 0 on a CUDA build — a total it cannot read refuses the start — and
+/// no card on a build without CUDA, where `auto` resolves as `none`. Read
+/// here, never in the config module, which runs on machines with no NVML.
+#[cfg(feature = "cuda")]
+fn card_probe() -> config::profile::Card {
+    match ignis_artifact::CudaDevice::nvml_memory(0) {
+        Ok((_, total)) => config::profile::Card::Total(total),
+        Err(error) => config::profile::Card::Unreadable(error.to_string()),
+    }
+}
+
+/// A build without CUDA has no card: `auto` resolves as `none`.
+#[cfg(not(feature = "cuda"))]
+fn card_probe() -> config::profile::Card {
+    config::profile::Card::Absent
+}
+
+/// Refuse the start (ADR 0064): the model it would load with no artifact
+/// named is a catalog entry this card's class cannot load, and no entry of
+/// its family that answers to it can — or the one that answers holds an
+/// artifact of another family.
+fn refuse_above_card_class(logging_handle: &ignis_logging::LoggingHandle, refusal: &download::ClassRefusal) -> ! {
+    tracing::error!(
+        name: "ignis.model.above_card_class",
+        model = %refusal.model,
+        card_class = refusal.needs.gb(),
+        card = refusal.card.gb(),
+        error = %refusal,
+        "refusing to start: name a model this card loads (`--model-id`), or its artifact (`--model-artifact`)"
+    );
+    exit_after_flush(logging_handle, 1);
+}
+
 #[tokio::main]
 async fn main() {
     // The canonical structured-logging system (GitHub #78, ADR 0011) — first
@@ -71,7 +105,7 @@ async fn main() {
     };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let config = match config::resolve_with(&args, |name| std::env::var(name).ok(), &config::file::RealFiles) {
+    let config = match config::resolve_on(&args, |name| std::env::var(name).ok(), &config::file::RealFiles, &card_probe) {
         Ok(ConfigOutcome::Config(config)) => config,
         Ok(ConfigOutcome::Help(text)) => {
             println!("{text}");
@@ -138,6 +172,11 @@ async fn main() {
     // from the fitted config. A model switch loads every later model from
     // the same options, fitted to its own family.
     let start_options = config.clone();
+    // The card's class (ADR 0063, ADR 0064): what the catalog's entries are
+    // fitted to at start, for a switch, a request and a listing — of the
+    // total NVML reported at resolution (`card_probe`). `None` without a
+    // card, or for a total of no class, which refuses nothing.
+    let card_class = config.card_class();
     let Config {
         model,
         model_named: _,
@@ -257,6 +296,20 @@ async fn main() {
         }
     };
 
+    // ADR 0064 (spec 27b-16gb/04 §6): with no artifact named, the model is
+    // the catalog's, fitted to the card's class before it is looked for or
+    // fetched — on a card below its own entry's class the entry that answers
+    // to it there, served under that entry's own id; one this card cannot
+    // load refuses the start before anything is fetched. A named artifact is
+    // the operator's word, which only the VRAM plan guards.
+    let served = match artifact {
+        Some(_) => model.clone(),
+        None => match download::start_model(&catalog, &model, card_class) {
+            Ok(served) => served,
+            Err(refusal) => refuse_above_card_class(&logging_handle, &refusal),
+        },
+    };
+
     // Where the artifact comes from (GitHub #234, ADR 0033): the path the
     // operator named, one already under `--download-path`, one fetched
     // now, or none at all — which is the placeholder start this server has
@@ -264,7 +317,7 @@ async fn main() {
     let source = download::artifact_source(
         &download::DownloadSettings {
             artifact: artifact.as_deref(),
-            model: &model,
+            model: &served,
             enabled: model_download,
             dir: &model_download_path,
             // A binary built without `cuda` could not run the weights it
@@ -282,7 +335,7 @@ async fn main() {
             tracing::warn!(
                 name: "ignis.model.placeholder_template",
                 reason = reason.as_str(),
-                model = %model,
+                model = %served,
                 download_path = %model_download_path.display(),
                 "no artifact — placeholder template (content is not natural text) and MockCompute"
             );
@@ -316,6 +369,19 @@ async fn main() {
                     exit_after_flush(&logging_handle, 1);
                 }
             }
+        }
+    };
+
+    // The entry the card's class chose in `model`'s place is served under its
+    // own id (ADR 0064 §2), as a switch to it would serve it — once its
+    // artifact's header says it is of the configured id's family.
+    let artifact_family = |path: &std::path::Path| ignis_server::loader::artifact_family(path).ok().flatten();
+    let start_options = match download::served_start_options(start_options, &served, artifact.as_deref(), &catalog, card_class, &artifact_family) {
+        Ok(options) => options,
+        Err(download::StartRefusal::AboveClass(refusal)) => refuse_above_card_class(&logging_handle, &refusal),
+        Err(download::StartRefusal::Config(err)) => {
+            tracing::error!(name: "ignis.config.invalid", error = %err, "refusing to start");
+            exit_after_flush(&logging_handle, 1);
         }
     };
 
@@ -365,7 +431,9 @@ async fn main() {
     } else {
         // Why there is no artifact was said once, with its reason, where the
         // decision was made (`ignis.model.placeholder_template` above).
-        (Server::from_active(placeholder_model(&model, default_max_tokens)), start_options.clone())
+        // Under the id the start resolved (ADR 0064 §2), the one the catalog
+        // and the switcher know it by.
+        (Server::from_active(placeholder_model(&served, default_max_tokens)), start_options.clone())
     };
     let server = server
         .with_request_timeout(std::time::Duration::from_secs(request_timeout_secs as u64))
@@ -410,7 +478,8 @@ async fn main() {
             switcher
                 .with_known_models(tables.known)
                 .with_listed_models(tables.listed)
-                .with_catalog(catalog_models, allow_model_switch),
+                .with_catalog(catalog_models, allow_model_switch)
+                .with_card_class(card_class),
         )
         .with_config(config_state);
 

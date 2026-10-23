@@ -441,6 +441,13 @@ config_group! {
         /// paged out. The image model makes no host plan: its start carries
         /// it for a switch to a text model.
         host_margin_bytes: Bytes = super::DEFAULT_HOST_MARGIN_BYTES, NO_RULE, ALL, [Visible, Patchable, ReloadRequired, Scoped];
+        /// The 27B's adaptation (ADR 0063): when its VRAM plan refuses a
+        /// `max_context` the profile or the default gave, the load lowers it
+        /// this many tokens at a time, never below this many -- a start whose
+        /// plan does not hold one step is refused. A whole number of KV pages
+        /// (64 tokens).
+        adapt_context_step: Tokens = super::DEFAULT_ADAPT_CONTEXT_STEP, Validator::MultipleOf(ignis_core::KV_PAGE_TOKENS as u64),
+            QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
     }
 }
 
@@ -475,6 +482,11 @@ config_group! {
         /// decode at 2 GiB). 0 pins none; the `rtx5090` profile pins 2 GiB. A
         /// card that holds every expert keeps none in RAM anyway and ignores it.
         pinned_expert_bytes: Bytes = 0, NO_RULE, FLASH_NEXT_ONLY, [Visible, Patchable, ReloadRequired];
+        /// The 27B's adaptation (ADR 0063): at more than one decode lane, a
+        /// context the load lowers is kept only when the KV pool holds it and
+        /// a spare reservation of this many tokens, room for a second request;
+        /// 0, one sequence is enough. At one lane the plan's own floor decides.
+        adapt_spare_tokens: Tokens = super::DEFAULT_ADAPT_SPARE_TOKENS, NO_RULE, QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
     }
 }
 
@@ -528,7 +540,7 @@ config_group! {
 }
 
 config_group! {
-    /// Speculative decoding, and Flash-Next's decode lanes.
+    /// Speculative decoding, and the decode lanes.
     SpecGroup = "spec" {
         /// The speculative backend: `dflash2` (the 27B's drafter), `mtp`
         /// (Flash-Next's head, with its companion container beside the
@@ -541,15 +553,20 @@ config_group! {
         /// lanes, 0 (= 8) or 2..=32; past 8, five to eight lanes draft too.
         draft_rows: Opt<DraftRows> = None, between(0, ignis_core::speculation::FLASH_NEXT_MAX_VERIFY_ROWS as i64), FLASH_NEXT_ONLY,
             [Visible, Patchable, ReloadRequired];
-        /// Flash-Next's decode lanes: the sequences it decodes at once,
-        /// sharing the KV pool — min(524,288 tokens, lanes x `max_context`),
-        /// never below one `max_context` and a page per retained slot. Unset,
-        /// 3. The 27B serves a fixed 8.
-        decode_lanes: Opt<Lanes> = None, between(1, ignis_core::N_DECODE_LANES as i64), FLASH_NEXT_ONLY, [Visible, Patchable, ReloadRequired];
-        /// The drafter's proposal head: `full` (the target's output head) or
+        /// The decode lanes: the sequences a model decodes at once. On the
+        /// 27B each lane reserves its state (~233 MB with `dflash2` under
+        /// hq-e8-2b) and its share of the round buffers, and takes two of the
+        /// default host retained slots. On Flash-Next they decode sharing the
+        /// KV pool — min(524,288 tokens, lanes x `max_context`), never below
+        /// one `max_context` and a page per retained slot. Unset, the model's
+        /// own: 8 on the 27B, 3 on Flash-Next.
+        decode_lanes: Opt<Lanes> = None, between(1, ignis_core::N_DECODE_LANES as i64), ALL, [Visible, Patchable, ReloadRequired, Scoped];
+        /// The drafter's proposal head: `full` (the target's output head),
         /// `shortlist` (the artifact's Q4 head over the 131,072 most frequent
-        /// tokens, +356 MB of VRAM). Needs a backend; `mtp` has only `full`.
-        draft_head: Opt<DraftHead> = None, Validator::OneOf(&["full", "shortlist"]), ALL, [Visible, Patchable, ReloadRequired, Scoped];
+        /// tokens, ~357 MB more VRAM) or `auto` (`full` on every card class: the
+        /// shortlist frees no VRAM and measured slower). Needs a backend; `mtp`
+        /// has only `full`. Unset, `full`.
+        draft_head: Opt<DraftHead> = None, Validator::OneOf(&["full", "shortlist", "auto"]), ALL, [Visible, Patchable, ReloadRequired, Scoped];
     }
 }
 

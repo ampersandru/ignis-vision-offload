@@ -17,7 +17,6 @@ use ignis_core::compute::{ModelFamily, ModelKind};
 use ignis_core::image::ImageRunner;
 use ignis_core::{ConcreteScheduler, SchedulerConfig, TokenId};
 
-#[cfg(feature = "cuda")]
 use crate::runtime::EngineShape;
 
 /// The mock-backed scheduler (ADR 0006, CPU-only): what serves when no
@@ -108,6 +107,9 @@ impl From<crate::runtime::Qwen27bLoadError> for LoadError {
     fn from(error: crate::runtime::Qwen27bLoadError) -> Self {
         match error {
             crate::runtime::Qwen27bLoadError::HostPlan(refusal) => Self::HostPlan(refusal),
+            // The VRAM plan's refusal reads as it always did: its deficit and
+            // the adaptations tried (ADR 0063 §3).
+            crate::runtime::Qwen27bLoadError::VramPlan(refusal) => Self::LoadFailed(refusal.to_string()),
             crate::runtime::Qwen27bLoadError::Other(message) => Self::LoadFailed(message),
         }
     }
@@ -221,9 +223,13 @@ pub struct PreparedModel {
 /// The template, thinking close and vision processor of a text model's load.
 struct PreparedText {
     provider: crate::artifact_template::ArtifactTemplateProvider,
-    acquirer: Option<Arc<crate::media::MediaAcquirer>>,
-    /// The vision processor's largest item, in tokens: what the encoder's
-    /// workspace is sized for.
+    /// The vision processor, checked against the model contract at the
+    /// configured context; [`load_model`] serves it at the context the load
+    /// runs ([`serve_vision`]).
+    processor: Option<ignis_artifact::vision::VisionProcessor>,
+    /// The vision processor's largest item at the configured context, in
+    /// tokens: what the encoder's workspace is sized for (a load that adapts
+    /// its context lowers it with the envelope, `EngineShape::at`).
     #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     item_bound: Option<u64>,
     #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
@@ -308,7 +314,8 @@ pub fn prepare_model(config: &crate::config::Config, artifact: &std::path::Path)
     // GitHub #179: a `--vision-enabled` load prepares images with the artifact's
     // processor and acquires them before admission. A tokenizer whose
     // placeholder ids are not the model contract's is refused. Built before
-    // the load, which sizes the encoder for the processor's item bound.
+    // the load, which sizes the encoder for the processor's item bound; the
+    // load serves it at the context it runs (`serve_vision`, ADR 0063 §3).
     let processor = config
         .vision
         .map(|v| crate::media::load_processor(&frontend, v, config.max_context))
@@ -322,17 +329,6 @@ pub fn prepare_model(config: &crate::config::Config, artifact: &std::path::Path)
 
     let item_bound = processor.as_ref().map(|p| p.options().max_item_tokens());
     let provider = crate::artifact_template::ArtifactTemplateProvider::new(frontend);
-    let (provider, acquirer) = match processor {
-        None => (provider, None),
-        Some(processor) => {
-            let acquirer = crate::media::MediaAcquirer::new(
-                Arc::new(processor.clone()),
-                processor.options().clone(),
-                crate::media::MediaPolicy::new(config.media.allow_private_network, config.media.cache_bytes),
-            );
-            (provider.with_vision(processor), Some(Arc::new(acquirer)))
-        }
-    };
 
     // A default the template cannot honour is a refusal (a model swap must
     // not silently change behaviour), as a missing EOS token or an unclean
@@ -349,7 +345,7 @@ pub fn prepare_model(config: &crate::config::Config, artifact: &std::path::Path)
         model,
         family,
         config,
-        text: Some(PreparedText { provider, acquirer, item_bound, thinking_close, eos }),
+        text: Some(PreparedText { provider, processor, item_bound, thinking_close, eos }),
     })
 }
 
@@ -394,25 +390,26 @@ fn prepare_image_model(
 /// engine's telemetry consumer is spawned onto it.
 pub fn load_model(prepared: PreparedModel) -> Result<LoadedModel, LoadError> {
     let PreparedModel { artifact, model, family, config, text } = prepared;
-    let Some(PreparedText { provider, acquirer, item_bound, thinking_close, eos }) = text else {
+    let Some(PreparedText { provider, processor, item_bound, thinking_close, eos }) = text else {
         return load_image_model(artifact, model, &config);
     };
     #[cfg(feature = "cuda")]
-    let (scheduler, reservations) = {
+    let (scheduler, reservations, max_context) = {
         let eos = eos.ok_or(LoadError::EosMissing)?;
-        let (scheduler, reserved) =
+        let (scheduler, reserved, max_context) =
             cuda_scheduler_for(&artifact, &model, family, eos, &config, item_bound, thinking_close)?;
-        (scheduler, Some(reserved))
+        (scheduler, Some(reserved), max_context)
     };
     #[cfg(not(feature = "cuda"))]
-    let (scheduler, reservations) = {
+    let (scheduler, reservations, max_context) = {
         let _ = (item_bound, thinking_close, eos);
         tracing::warn!(
             name: "ignis.model.mock_compute",
             "built without --features cuda — MockCompute despite --model-artifact/IGNIS_MODEL_ARTIFACT (the templated text is real, the completions are not)"
         );
-        (mock_scheduler(&model, config.default_max_tokens), None)
+        (mock_scheduler(&model, config.default_max_tokens), None, config.max_context)
     };
+    let (provider, acquirer) = serve_vision(provider, processor, &config, max_context);
     let (engine, driver) = start_engine(scheduler);
     let mut active = crate::ActiveModel::new(engine, Arc::new(provider))
         .with_driver(driver)
@@ -422,6 +419,54 @@ pub fn load_model(prepared: PreparedModel) -> Result<LoadedModel, LoadError> {
         active = active.with_media(acquirer);
     }
     Ok(LoadedModel { model: active, reservations })
+}
+
+/// `provider` with the vision processor a `--vision-enabled` load serves,
+/// and the acquirer that prepares images with it, both at `max_context`:
+/// the context the load runs, which its adaptation may have lowered from
+/// the configured one (ADR 0063 §3). So the processor's request budget and
+/// item bound are the envelope the leaf planned, never the configured
+/// context's.
+fn serve_vision(
+    provider: crate::artifact_template::ArtifactTemplateProvider,
+    processor: Option<ignis_artifact::vision::VisionProcessor>,
+    config: &crate::config::Config,
+    max_context: u32,
+) -> (crate::artifact_template::ArtifactTemplateProvider, Option<Arc<crate::media::MediaAcquirer>>) {
+    let Some((processor, vision)) = processor.zip(config.vision) else {
+        return (provider, None);
+    };
+    let processor = crate::media::processor_at(processor, vision, max_context);
+    let acquirer = crate::media::MediaAcquirer::new(
+        Arc::new(processor.clone()),
+        processor.options().clone(),
+        crate::media::MediaPolicy::new(config.media.allow_private_network, config.media.cache_bytes),
+    );
+    (provider.with_vision(processor), Some(Arc::new(acquirer)))
+}
+
+/// The shape a text model's GPU load is handed (`cuda_scheduler_for`): the
+/// resolution's ([`EngineShape::from`]), its vision encoder
+/// sized for the processor's item bound (`vision_item_bound`), and -- spec
+/// 27b-16gb/04 AC 5 -- a drafter's head left to `auto` says what it
+/// resolved to (`ignis.runtime.draft_head`, ADR 0063), once per load.
+pub fn load_shape(config: &crate::config::Config, vision_item_bound: Option<u64>) -> EngineShape {
+    let shape = EngineShape::from(config);
+    // The encoder holds one item at a time, and the processor bounds an item
+    // below the envelope (`ProcessorOptions::max_item_tokens`): the load
+    // sizes the encoder's workspace for that.
+    let shape = EngineShape {
+        vision: shape.vision.map(|vision| match vision_item_bound {
+            // Never above the processor's request budget, the u32 envelope.
+            Some(bound) => vision.with_item_max_tokens(u32::try_from(bound).expect("an item bound is at most the envelope")),
+            None => vision,
+        }),
+        ..shape
+    };
+    if let Some(speculation) = shape.speculation.filter(|_| config.settings().spec.draft_head.is_some_and(|head| head.is_auto())) {
+        crate::runtime::log_draft_head_auto(speculation.proposal_head());
+    }
+    shape
 }
 
 /// The image model's load (spec image-model/05): its runner — the image
@@ -499,7 +544,9 @@ fn cuda_image_runner(
 }
 
 /// The GPU-backed scheduler for `artifact` (GitHub #61 / P1-25), logged as
-/// `ignis.model.loaded` with the shape it was built with.
+/// `ignis.model.loaded` with the shape it runs: the 27B's at the values its
+/// adaptation kept (ADR 0063 §3). Beside it, what the load reserved and the
+/// context it runs.
 #[cfg(feature = "cuda")]
 fn cuda_scheduler_for(
     artifact: &std::path::Path,
@@ -509,19 +556,8 @@ fn cuda_scheduler_for(
     config: &crate::config::Config,
     vision_item_bound: Option<u64>,
     thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
-) -> Result<(Box<dyn ignis_core::Scheduler>, crate::metrics::LoadReservations), LoadError> {
-    let shape = EngineShape::from(config);
-    // The encoder holds one item at a time, and the processor bounds an item
-    // below the envelope (`ProcessorOptions::max_item_tokens`): the load
-    // sizes the encoder's workspace for that.
-    let shape = EngineShape {
-        vision: shape.vision.map(|vision| match vision_item_bound {
-            // Never above the processor's request budget, the u32 envelope.
-            Some(bound) => vision.with_item_max_tokens(u32::try_from(bound).expect("an item bound is at most the envelope")),
-            None => vision,
-        }),
-        ..shape
-    };
+) -> Result<(Box<dyn ignis_core::Scheduler>, crate::metrics::LoadReservations, u32), LoadError> {
+    let shape = load_shape(config, vision_item_bound);
     // GitHub #302: a Flash-Next artifact runs its own program and leaf.
     let loaded = match family {
         ModelFamily::FlashNext => crate::runtime::flash_next_load(
@@ -533,6 +569,7 @@ fn cuda_scheduler_for(
             config.ngram_cache.clone(),
             &config.kv_disk_location,
         )
+        .map(|(scheduler, reserved)| (scheduler, reserved, shape))
         .map_err(|error| LoadError::from_flash_next(error, config)),
         ModelFamily::Qwen38_27b => crate::runtime::qwen27b_load(
             artifact,
@@ -547,13 +584,17 @@ fn cuda_scheduler_for(
         // it, never this.
         ModelFamily::QwenImage21 => Err(LoadError::LoadFailed(format!("{} has no token scheduler", family.name()))),
     };
-    let (scheduler, reserved) = loaded?;
+    // The 27B's context, lanes and head are the ones its plan kept, and so
+    // its rope table: what the scheduler admits and `GET /v1/models` says.
+    let (scheduler, reserved, shape) = loaded?;
     tracing::info!(
         name: "ignis.model.loaded",
         artifact = %artifact.display(),
         eos,
         prefill_chunk = shape.prefill_chunk,
         max_context = shape.max_context,
+        // GitHub #336: the 27B's are a load setting too.
+        decode_lanes = shape.decode_lanes_for(family),
         kv_format = shape.kv_format.as_str(),
         speculation = %shape.speculation.map_or_else(
             || "off".to_owned(),
@@ -574,7 +615,7 @@ fn cuda_scheduler_for(
         rope_scaling_setting = %config.settings().model.rope_scaling,
         "model loaded on the GPU"
     );
-    Ok((Box::new(scheduler), reserved))
+    Ok((Box::new(scheduler), reserved, shape.max_context))
 }
 
 #[cfg(all(test, not(feature = "cuda")))]
@@ -626,7 +667,7 @@ mod tests {
         let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(&[], |_| None).expect("the options resolve") else {
             panic!("a config")
         };
-        let text = PreparedText { provider, acquirer: None, item_bound: None, thinking_close: None, eos: None };
+        let text = PreparedText { provider, processor: None, item_bound: None, thinking_close: None, eos: None };
         let prepared = PreparedModel { artifact: artifact.path.clone(), model: model.into(), family: ModelFamily::Qwen38_27b, config, text: Some(text) };
         (artifact, prepared)
     }

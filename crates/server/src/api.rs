@@ -431,8 +431,16 @@ fn switching_message(from: &str, to: &str) -> String {
 /// [`unknown_model`]), spec image-model/05: a request never loads or switches
 /// to a model only to be refused by it. The route checks again once pinned
 /// ([`check_served_kind`]).
-pub(crate) async fn switch_to_named_model(server: &Server, route: ModelKind, model: Option<&str>) -> Result<(), Response> {
-    let (named, _) = split_model_lane(model.map(str::to_owned));
+///
+/// Before all of it, `model` becomes the id this card serves the request
+/// under ([`model_on_this_card`], ADR 0064), rewritten in place so that
+/// everything after reads it: an alias the entry that answers to it, an entry
+/// above the card's class refused [`above_card_class`]. A route that switches
+/// through here cannot skip that step; the image, decision and counting
+/// routes, which switch their own way or not at all, take it themselves.
+pub(crate) async fn switch_to_named_model(server: &Server, route: ModelKind, model: &mut Option<String>) -> Result<(), Response> {
+    *model = model_on_this_card(server, model.take()).map_err(|refusal| above_card_class(&refusal))?;
+    let (named, _) = split_model_lane(model.clone());
     check_kind(server, route, named.as_deref())?;
     if let Some(named) = unswitchable_named(server, route, named.as_deref()) {
         return Err(unknown_model(server, named));
@@ -521,6 +529,49 @@ pub(crate) fn check_served_kind(server: &Server, route: ModelKind, model: Option
         return Ok(());
     }
     Err(unknown_model(server, model.unwrap_or_default()))
+}
+
+/// A request's `model`, lane tag and all, as this card serves it (ADR 0064,
+/// spec 27b-16gb/04 §6, [`crate::model_switch::Switcher::on_this_card`]): an
+/// id another catalog entry answers to on this card is rewritten to that
+/// entry's — on a 16 GB card `qwen3.8-27b` is served by `qwen3.8-27b-16g`,
+/// loaded or switched to — and an entry the card cannot load is refused
+/// before anything loads, drains or switches. The loaded model's own id
+/// stands, whatever its class. Run first, before anything else reads the
+/// request's `model`: the kind check, the implicit switch and the engine's
+/// own model check all see the id the request is served under, and the
+/// answer names it. Each route words the refusal its own way:
+/// [`above_card_class`] on all but `/v1/decide`.
+pub(crate) fn model_on_this_card(server: &Server, model: Option<String>) -> Result<Option<String>, crate::download::ClassRefusal> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let named = split_model_lane(Some(model.clone())).0.unwrap_or_default();
+    let Some(switcher) = server.switcher.as_ref().filter(|_| !named.is_empty() && named != server.active().model_id()) else {
+        return Ok(Some(model));
+    };
+    // What follows the id: `@<lane>`, or nothing.
+    let tag = &model[named.len()..];
+    Ok(Some(match switcher.on_this_card(&named)? {
+        Some(served) => format!("{served}{tag}"),
+        None => model,
+    }))
+}
+
+/// `409 model_above_card_class` (ADR 0064 §3): the model a request or a
+/// switch names is a catalog entry this card's class cannot load, and no
+/// entry that answers to it can either. Refused before anything is
+/// prepared, drained or torn down: the loaded model serves on. A conflict
+/// as `model_kind_mismatch` is — a model the server knows, that it cannot
+/// serve here — and never worth a retry.
+pub(crate) fn above_card_class(refusal: &crate::download::ClassRefusal) -> Response {
+    error_response_naming(
+        StatusCode::CONFLICT,
+        "invalid_request_error",
+        "model_above_card_class",
+        format!("{refusal}: it is not loaded on this card, and the loaded model serves on"),
+        Some("model"),
+    )
 }
 
 /// `404 model_not_found` for `model`, which the server neither serves nor
@@ -1764,7 +1815,7 @@ pub(crate) fn now() -> u64 {
     tag = "models",
     operation_id = "list_models",
     summary = "The servable models, the loaded one first",
-    description = "The models a request may name and be served by now, without a download. `data[0]` is always the model this server loaded (`active: true`), with its `kind` (`text` or `image`: the routes it serves) and for a text model the context a single request may spend (`max_model_len`, prompt plus completion). The other entries (`active: false`) are the models a request naming them switches to: every catalog entry whose artifact is under `download.path` (catalog order), then every known model (`switch.known_models`, and the model the server started on) whose artifact is a file (id order) — read at each request, so a model downloaded into a running server is listed at once. Their `kind` is given only when the id is a model family's own, and `max_model_len` never: it is known once a model is loaded. No entry carries a path. With `switch.allow_implicit` false only `data[0]` is listed. A server serves one model at a time: a request naming another entry waits while it replaces the loaded one; a text request naming the image model is refused `409 model_kind_mismatch`.
+    description = "The models a request may name and be served by now, without a download. `data[0]` is always the model this server loaded (`active: true`), with its `kind` (`text` or `image`: the routes it serves) and for a text model the context a single request may spend (`max_model_len`, prompt plus completion). The other entries (`active: false`) are the models a request naming them switches to: every catalog entry whose artifact is under `download.path` (catalog order), then every known model (`switch.known_models`, and the model the server started on) whose artifact is a file (id order) — read at each request, so a model downloaded into a running server is listed at once. Their `kind` is given only when the id is a model family's own, and `max_model_len` never: it is known once a model is loaded. No entry carries a path. With `switch.allow_implicit` false only `data[0]` is listed. Among the others, a catalog entry on disk whose `card_class` is above this card's (ADR 0064) is listed with `available: false` and the `reason`, naming its class and the card's: a request naming it is refused `409 model_above_card_class` and never switches to it — or, on a card where another entry answers to its id (on a 16 GB card `qwen3.8-27b-16g` to `qwen3.8-27b`), is served by that one, which the reason names. Every other entry is `available: true`. A server serves one model at a time: a request naming another entry waits while it replaces the loaded one; a text request naming the image model is refused `409 model_kind_mismatch`.
 
 `status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503.
 
@@ -1797,15 +1848,19 @@ fn models_now(server: &Server) -> ModelList {
         active: true,
         kind: Some(loaded.kind().as_str()),
         max_model_len: loaded.engine().map(Engine::max_model_len),
+        available: true,
+        reason: None,
     }];
     // No header read here: a family's own id says its kind, any other none.
-    data.extend(rest.into_iter().map(|id| ModelInfo {
-        kind: ModelFamily::of_model_id(&id).map(|family| family.kind().as_str()),
-        id,
+    data.extend(rest.into_iter().map(|servable| ModelInfo {
+        kind: ModelFamily::of_model_id(&servable.id).map(|family| family.kind().as_str()),
+        id: servable.id,
         object: "model",
         owned_by: "ignis",
         active: false,
         max_model_len: None,
+        available: servable.unavailable.is_none(),
+        reason: servable.unavailable,
     }));
     ModelList {
         object: "list",
@@ -1996,14 +2051,14 @@ struct SwitchAccepted {
     tag = "models",
     operation_id = "switch_model",
     summary = "Replace the loaded model",
-    description = "Unloads the model being served and loads `artifact` in its place under the id `model` — or, with `model` alone, the artifact the server knows it by: the `switch.known_models` entry for the id (which wins), else a catalog entry whose artifact is under `download.path` (`GET /v1/models/catalog` lists them, with whether each is switchable). `switch.allow_implicit` does not apply to that: it gates the switch a request triggers by naming a model. An id that is neither, or whose artifact is not on disk, is `404 model_not_found`; a switch never starts a download. The switch is on the same process: a full reload, the two models never resident together, every flag the server started with applied to the new load except one the new model does not take (`--vision-enabled` on Qwen3.8-Flash-Next, the other model's `--spec-backend` backend, the Flash-Next-only knobs), which is left off for it.\n\nAnswers `202` at once; the switch runs behind it. Meanwhile every other `/v1` route answers `503 model_switching` with `Retry-After`, and `GET /v1/models` reports `status: switching`. Requests already running on the old model get `--switch-drain-timeout` (30 s by default) to finish; any still running then ends with an `engine_error`. A target that can be refused without unloading anything — a path with no file, a checksum that is not clean, a model id of the other model, a flag it cannot take — leaves the old model serving. A target that fails to load after the old model was unloaded has the old model reloaded from its artifact; `GET /v1/models` reports `status: failed` until one of them serves.",
+    description = "Unloads the model being served and loads `artifact` in its place under the id `model` — or, with `model` alone, the artifact the server knows it by: the `switch.known_models` entry for the id (which wins), else a catalog entry whose artifact is under `download.path` (`GET /v1/models/catalog` lists them, with whether each is switchable). `switch.allow_implicit` does not apply to that: it gates the switch a request triggers by naming a model. An id that is neither, or whose artifact is not on disk, is `404 model_not_found`; a switch never starts a download. An id sent alone is fitted to the card's class first (ADR 0064), whether or not `switch.known_models` lists it, since the class is its catalog entry's: a catalog entry whose `card_class` is above the card's is refused `409 model_above_card_class` before anything is unloaded, unless another entry of its family answers to the id as an alias, fits, and holds an artifact whose header names that family — on a 16 GB card `qwen3.8-27b` switches to `qwen3.8-27b-16g`, and `to` names it. A switch naming its `artifact` is the operator's word and is not fitted: only the VRAM plan guards it. The switch is on the same process: a full reload, the two models never resident together, every flag the server started with applied to the new load except one the new model does not take (`--vision-enabled` on Qwen3.8-Flash-Next, the other model's `--spec-backend` backend, the Flash-Next-only knobs), which is left off for it.\n\nAnswers `202` at once; the switch runs behind it. Meanwhile every other `/v1` route answers `503 model_switching` with `Retry-After`, and `GET /v1/models` reports `status: switching`. Requests already running on the old model get `--switch-drain-timeout` (30 s by default) to finish; any still running then ends with an `engine_error`. A target that can be refused without unloading anything — a path with no file, a checksum that is not clean, a model id of the other model, a flag it cannot take — leaves the old model serving. A target that fails to load after the old model was unloaded has the old model reloaded from its artifact; `GET /v1/models` reports `status: failed` until one of them serves.",
     request_body = SwitchRequest,
     responses(
         (status = 202, description = "The switch began.", body = SwitchAccepted),
         (status = 400, description = "`artifact` (when given) or `model` is empty.", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 404, description = "`model` was sent alone and is not a known model or a catalog entry on disk (`model_not_found`); for a catalog entry not yet fetched the message names the `model download` command.", body = ApiError),
-        (status = 409, description = "A switch is already under way (`switch_in_progress`): switches are not queued.", body = ApiError),
+        (status = 409, description = "A switch is already under way (`switch_in_progress`): switches are not queued. Or `model`, sent alone, is a catalog entry this card's class cannot load, and no entry that answers to it can (`model_above_card_class`, naming the entry's class and the card's): refused before anything is unloaded.", body = ApiError),
         (status = 501, description = "This server was built without a model loader (`switch_unavailable`).", body = ApiError),
         (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`); or the server is stopping (`server_stopping`, with `Retry-After`): no switch begins, since the process would end under it.", body = ApiError),
     ),
@@ -2015,14 +2070,25 @@ async fn switch_model(State(server): State<Arc<Server>>, Json(req): Json<SwitchR
     if req.model.trim().is_empty() {
         return bad_request_param("`model` must name the id to serve it under", "model");
     }
-    let artifact = match req.artifact {
-        Some(artifact) => artifact.into(),
-        None => match resolve_by_id(&server, &req.model) {
-            Ok(artifact) => artifact,
-            Err(refused) => return refused,
-        },
+    // An artifact named is the operator's word (ADR 0047), guarded by the
+    // VRAM plan alone; an id sent alone is the catalog's, fitted to the card
+    // first (ADR 0064): an alias switches to the entry that answers to it
+    // here, an entry above the card's class is refused before anything stops.
+    let (artifact, model) = match req.artifact {
+        Some(artifact) => (artifact.into(), req.model),
+        None => {
+            let model = match server.switcher.as_ref().map(|switcher| switcher.on_this_card(&req.model)) {
+                Some(Err(refusal)) => return above_card_class(&refusal),
+                Some(Ok(Some(served))) => served,
+                Some(Ok(None)) | None => req.model,
+            };
+            match resolve_by_id(&server, &model) {
+                Ok(artifact) => (artifact, model),
+                Err(refused) => return refused,
+            }
+        }
     };
-    let target = ModelSource { artifact, model: req.model };
+    let target = ModelSource { artifact, model };
     match crate::model_switch::begin(&server, target) {
         Ok((started, _task)) => (
             StatusCode::ACCEPTED,
@@ -2044,6 +2110,7 @@ fn resolve_by_id(server: &Server, model: &str) -> Result<std::path::PathBuf, Res
     };
     switcher.resolve(model).map_err(|why| {
         let message = match why {
+            Unswitchable::AboveClass(refusal) => return above_card_class(&refusal),
             Unswitchable::Unknown => format!(
                 "unknown model: {model} is neither in switch.known_models nor a catalog entry; GET /v1/models/catalog lists the models this server can switch to"
             ),
@@ -2127,6 +2194,16 @@ struct ModelInfo {
     /// model's only.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_model_len: Option<u32>,
+    /// Whether a request naming it is served now (ADR 0064): `false` for a
+    /// catalog entry on disk whose `card_class` is above this card's, which
+    /// a request naming it never switches to. Always `true` on the active
+    /// entry.
+    available: bool,
+    /// Why the entry is not available, naming its class and the card's —
+    /// and, when another entry answers to its id on this card, that one.
+    /// Only with `available: false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 // ── POST /v1/chat/completions ─────────────────────────────────────────────
@@ -2228,7 +2305,7 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
 
 `max_completion_tokens` is `max_tokens` under its current name: the one cap on generated tokens, reasoning included; both sent with different values is a 400. `stop` (a string, or 1 to 4 strings) ends the answer before the first sequence to appear in its content, with `finish_reason: \"stop\"`; the sequence is never emitted, a stream holds back a possible prefix until the next delta resolves it, and it is never matched in the reasoning nor inside a tool call. `usage.prompt_tokens_details.cached_tokens` is the prompt this request resumed from retained state instead of prefilling, the quantity `/v1/responses` reports.
 
-`model` absent, or the loaded model's id, is served as it is. Another model this server lists (`--switch-known-models`, the model it started on always among them) switches the server to it first, unless `--switch-allow-implicit false`: the same switch `POST /v1/models/switch` runs, during which every other request is refused `503 model_switching`, and this one is held until the named model serves and is then answered by it. A switch that does not land refuses it `503 model_switch_failed` with the reason. Any other model is a 404.",
+`model` absent, or the loaded model's id, is served as it is. An id another catalog entry answers to on this card is that entry's (ADR 0064): on a 16 GB card `qwen3.8-27b` is served by `qwen3.8-27b-16g`, loaded or switched to, and the answer's `model` names it. Another model this server lists (`--switch-known-models`, the model it started on always among them) switches the server to it first, unless `--switch-allow-implicit false`: the same switch `POST /v1/models/switch` runs, during which every other request is refused `503 model_switching`, and this one is held until the named model serves and is then answered by it. A switch that does not land refuses it `503 model_switch_failed` with the reason. Any other model is a 404.",
     request_body = ChatCompletionsRequest,
     responses(
         (status = 200, description = "The completion. `application/json` when `stream` is false or absent; `text/event-stream` when it is true.", content(
@@ -2238,7 +2315,7 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
         (status = 400, description = "The request is malformed: an empty `messages`, an unknown role, a sampling parameter out of range, a tool definition this template cannot take.", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the request carried no matching bearer token.", body = ApiError),
         (status = 404, description = "The request named a model this server neither loads nor may switch to.", body = ApiError),
-        (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id).", body = ApiError),
+        (status = 409, description = "The model that would serve the request is the image model: the one loaded, with no `model` naming a text model to switch to, or the one `model` names (`model_kind_mismatch`, naming both kinds and the loaded id). Or `model` names a catalog entry this card's class cannot load, and no entry that answers to it can (`model_above_card_class`, naming the entry's class and the card's, ADR 0064): refused before anything loads or switches, the loaded model serving on.", body = ApiError),
         (status = 413, description = "The prompt is longer than this server's `--model-max-context`.", body = ApiError),
         (status = 500, description = "A non-streaming request the engine could not run (`engine_error`): it ended the request with an error, or let it go without a finish. Never a deadline, which is the 504.", body = ApiError),
         (status = 503, description = "The engine is at capacity and the request was not admitted (`engine_full`, with `Retry-After`: when a lane is expected to free, 1 to 60 s); or a model switch is under way (`model_switching`, with `Retry-After`); or the switch this request's `model` began did not land (`model_switch_failed`); or the model was unloaded while idle and loading it again failed (`model_load_failed`); or the server began to stop while the request waited for a switch or a load (`server_stopping`, with `Retry-After`).", body = ApiError),
@@ -2247,11 +2324,12 @@ Tool calls come back whole -- one complete `tool_calls` delta per call, never a 
 )]
 async fn chat_completions(
     State(server): State<Arc<Server>>,
-    Json(req): Json<ChatCompletionsRequest>,
+    Json(mut req): Json<ChatCompletionsRequest>,
 ) -> Response {
     // A `model` naming another known model switches to it first (spec
-    // model-switch/01 §Implicit switch), so the pin below takes that model.
-    if let Err(refused) = switch_to_named_model(&server, ModelKind::Text, req.model.as_deref()).await {
+    // model-switch/01 §Implicit switch), so the pin below takes that model —
+    // and is first the id this card serves it under (ADR 0064).
+    if let Err(refused) = switch_to_named_model(&server, ModelKind::Text, &mut req.model).await {
         return refused;
     }
     // One model for the whole request (spec model-switch/01), a text model

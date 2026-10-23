@@ -157,7 +157,7 @@ impl Validator {
 /// Which model families a field means anything for (spec config-v2/01
 /// §`applicable_to`).
 ///
-/// A field only one family has at all — Flash-Next's decode lanes, the
+/// A field only one family has at all — Flash-Next's draft row budget, the
 /// 27B's vision tower — is `Only` that family. An explicit value for it
 /// while the other family is the one being configured is refused at start
 /// (the operator named it for this load, so it is a mistake made now) and

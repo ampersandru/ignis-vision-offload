@@ -311,9 +311,13 @@ struct ignis_model_load_options {
    * most one vision item's span, as before. The caller passes the ceiling
    * its calibration measured (`LOCATE_MAX_KEYS`); capped by the context. */
   uint32_t attention_text_max_keys;
-  /* GitHub #302: Flash-Next's decode lanes -- the widest decode round, and
-   * the round graphs' widths 1..decode_lanes; the MoE workspace and the
-   * expert residency are sized by it. 0 = 3. At most 8. 0 on the 27B. */
+  /* The decode lanes -- the widest decode round, and the round graphs'
+   * widths 1..decode_lanes; a wider round is refused. GitHub #302:
+   * Flash-Next's MoE workspace and expert residency are sized by it, 0 = 3.
+   * GitHub #336: the 27B's sampling staging, decode and verify round buffers
+   * and the drafter's round buffers are, 0 = IGNIS_DECODE_MAX_BATCH (8),
+   * which is byte for byte the load before the option. At most 8 on
+   * either. */
   uint32_t decode_lanes;
   /* GitHub #302: Flash-Next's expert residency, BORROWED: the caller keeps
    * it alive until ignis_model_free has returned, and frees it after. A

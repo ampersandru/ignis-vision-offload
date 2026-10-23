@@ -76,7 +76,7 @@ fn catalog_in(tag: &str, entries: &[(&str, Disk)]) -> CatalogModels {
     let mut yaml = String::from("models:\n");
     for (id, disk) in entries {
         yaml.push_str(&format!(
-            "  - id: {id}\n    repo: acme/{id}\n    revision: v1\n    artifact: {id}.ninfer\n    files:\n      - {{ name: {id}.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: {id}.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"
+            "  - id: {id}\n    repo: acme/{id}\n    revision: v1\n    artifact: {id}.ninfer\n    card_class: 32\n    files:\n      - {{ name: {id}.ninfer.graft.json, bytes: 1, sha256: \"{zeros}\" }}\n      - {{ name: {id}.ninfer, bytes: 7, sha256: \"{zeros}\" }}\n"
         ));
         match disk {
             Disk::Complete => {
@@ -150,7 +150,7 @@ async fn the_catalog_lists_every_entry_then_every_known_model_with_its_state_on_
     assert!(built_in.get("family").is_none(), "no artifact, no header to name a family");
 
     let full = row(&rows, "acme-full");
-    assert_eq!(full, &json!({ "id": "acme-full", "source": "operator", "on_disk": "complete", "bytes": 8, "loaded": false, "switchable": true }));
+    assert_eq!(full, &json!({ "id": "acme-full", "source": "operator", "on_disk": "complete", "bytes": 8, "loaded": false, "switchable": true, "available": true }));
     assert_eq!(row(&rows, "acme-part")["on_disk"], "partial");
     assert_eq!(row(&rows, "acme-part")["switchable"], false, "its artifact is not there");
     assert_eq!((row(&rows, "acme-none")["on_disk"].clone(), row(&rows, "acme-none")["bytes"].clone()), (json!("absent"), json!(8)));

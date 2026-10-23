@@ -421,6 +421,12 @@ impl VisionProcessor {
         &self.options
     }
 
+    /// The same processor under other limits: the tokenizer [`Self::new`]
+    /// checked is the one it still prepares for, which limits do not touch.
+    pub fn with_options(self, options: ProcessorOptions) -> Self {
+        Self { options }
+    }
+
     /// Decode, resize and pack media item `item`.
     pub fn prepare_media(&self, item: usize, bytes: &[u8]) -> Result<PreparedMedia, ProcessorError> {
         let options = &self.options;

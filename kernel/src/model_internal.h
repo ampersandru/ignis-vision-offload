@@ -229,7 +229,7 @@ struct LayerWeights {
 // Everything below is a stable device address the verify graphs bake in
 // (ADR 0019 / 0020): the round refreshes the *_staging buffers in place by
 // one H2D copy each before a replay, the traversal writes the rest. `B` is
-// `IGNIS_DECODE_MAX_BATCH`; `k` is the window; a `[k+1, B]` matrix is
+// the load's `decode_lanes` (GitHub #336); `k` is the window; a `[k+1, B]` matrix is
 // contiguous with column `b`'s `k+1` entries adjacent, which is both the
 // vendored `speculative_*` ops' `[K+1,B]` and the traversal's lane-major
 // column order (lane b's columns are `b*(k+1) .. b*(k+1)+k`).
@@ -289,8 +289,9 @@ struct IgnisVerifyRound {
   std::unique_ptr<ninfer::DeviceBuffer> append_counts; // I32 [B]
   std::unique_ptr<ninfer::DeviceArena> drafter_scratch;
 
-  // One verify graph per exact width, captured by
-  // `ignis_decode_graph_capture` after the decode graphs.
+  // One verify graph per exact width 1..decode_lanes, captured by
+  // `ignis_decode_graph_capture` after the decode graphs; the tables stay
+  // the most a round serves wide (GitHub #336).
   std::array<cudaGraphExec_t, IGNIS_DECODE_MAX_BATCH> graph_exec{};
   std::array<bool, IGNIS_DECODE_MAX_BATCH> graph_ready{};
 
@@ -366,7 +367,7 @@ struct ignis_model {
   // one-sequence-at-a-time calls (`ignis_prefill`, `ignis_decode`'s
   // per-degenerate-step loop, `ignis_program_prefill`);
   // `sampling_decode_configs`/`sampling_decode_positions` are sized for
-  // `IGNIS_DECODE_MAX_BATCH` lanes and back `ignis_program_decode`.
+  // the load's `decode_lanes` lanes and back `ignis_program_decode`.
   // `sampling_workspace` is `ninfer::ops::sample`'s own transient scratch
   // (candidate selection, not the caller's inputs above), sized once for the
   // widest lane count and reset via its own Scope every call -- it carries
@@ -380,7 +381,7 @@ struct ignis_model {
   std::unique_ptr<ninfer::DeviceBuffer> sampling_decode_configs;
   std::unique_ptr<ninfer::DeviceBuffer> sampling_decode_positions;
   std::unique_ptr<ninfer::DeviceBuffer> sampling_decode_out;
-  // The decode round's batched logits: BF16 [vocab, IGNIS_DECODE_MAX_BATCH]
+  // The decode round's batched logits: BF16 [vocab, decode_lanes]
   // -- lane i's forward pass copies its own single-token logits into column
   // i (device-to-device, still inside its own scratch scope) so the round's
   // sampling is one `ninfer::ops::sample` call over every lane, not one call
@@ -388,7 +389,7 @@ struct ignis_model {
   std::unique_ptr<ninfer::DeviceBuffer> sampling_decode_logits;
   // P6-06 (GitHub #242): the round's per-lane permitted token sets, staged
   // like the configs above and at stable addresses for the same reason.
-  // `permitted` is I32 [IGNIS_DECODE_MAX_BATCH][IGNIS_MAX_PERMITTED_TOKENS],
+  // `permitted` is I32 [decode_lanes][IGNIS_MAX_PERMITTED_TOKENS],
   // `permitted_counts` is I32 [lanes] (0 = that lane is unconstrained), and
   // `permitted_probs` is the F32 [lanes] the post-sample kernel writes the
   // committed token's restricted probability into.
@@ -423,17 +424,19 @@ struct ignis_model {
   // `Scope`, sequentially across a graph's lanes -- the same reuse pattern
   // the eager per-lane decode loop already applies to `scratch`.
   std::unique_ptr<ninfer::DeviceArena> decode_graph_scratch;
-  // This round's token id per lane (I32 x IGNIS_DECODE_MAX_BATCH),
+  // This round's token id per lane (I32 x decode_lanes),
   // refreshed by one H2D copy before a replay; a captured graph's embedding
   // step reads lane i's id directly from column i, no per-lane device copy.
   std::unique_ptr<ninfer::DeviceBuffer> decode_graph_token_ids;
-  // This round's physical pool slot per lane (I32 x IGNIS_DECODE_MAX_BATCH),
+  // This round's physical pool slot per lane (I32 x decode_lanes),
   // refreshed the same way. The single value at column i serves both GQA's
   // `kv_table_rows` (selecting a row of the pool-wide block-table matrix)
   // and GDN's `initial_state_slots`/`snapshot_base_slots` (in place: same
   // buffer for both, since a physical slot is a physical slot) -- read by
   // the kernels at replay time, never baked at capture time (ADR 0019).
   std::unique_ptr<ninfer::DeviceBuffer> decode_graph_slots;
+  // One decode graph per exact width 1..decode_lanes; the tables stay the
+  // most a round serves wide.
   std::array<cudaGraphExec_t, IGNIS_DECODE_MAX_BATCH> decode_graph_exec{};
   std::array<bool, IGNIS_DECODE_MAX_BATCH> decode_graph_ready{};
   // Set by the most recent `ignis_program_decode` call: 1 if it replayed a
@@ -449,6 +452,12 @@ struct ignis_model {
   // built without the same backend is refused by the program entry points.
   int32_t speculative_backend = IGNIS_SPECULATIVE_NONE;
   uint32_t draft_tokens = 0;
+  // GitHub #336: the 27B's decode lanes, a load option (1..IGNIS_DECODE_MAX_BATCH):
+  // the widest decode or verify round, what every round buffer above and
+  // below is sized for, and the widths the round graphs are captured at. A
+  // round wider than it is refused. Flash-Next keeps its own
+  // (`FlashNextModel::decode_lanes`).
+  uint32_t decode_lanes = IGNIS_DECODE_MAX_BATCH;
   Dflash2Weights dflash2{};
   // The drafter's shortlist proposal head (`text/draft_head`, Q4 over the
   // 131,072 most frequent tokens) and the token id each of its rows stands
@@ -477,7 +486,7 @@ struct ignis_model {
   // which is what lets an embedding outlive the encode that made it.
   VisionEmbeddingPool vision_pool{};
   // GitHub #178: the decode round's per-lane rope positions (I32 x
-  // IGNIS_DECODE_MAX_BATCH), `position + rope_delta`, staged beside
+  // decode_lanes), `position + rope_delta`, staged beside
   // `sampling_decode_positions` and read by the graphs from this stable
   // address. Only a vision load has one: a text load's rounds rotate at the
   // positions themselves, exactly as before.

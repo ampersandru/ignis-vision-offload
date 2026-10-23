@@ -233,6 +233,8 @@ fn the_startup_log_names_the_config_source_in_all_three_states() {
         assert_eq!(field("source"), Some(source.into()), "{event}");
         assert_eq!(field("path"), Some(path.into()), "{event}");
         assert_eq!(field("profile"), Some("rtx5090".into()), "{event}");
+        assert_eq!(field("profile_by"), Some("auto".into()), "{event}");
+        assert_eq!(field("card_total_bytes"), Some(profile::RTX_5090_TOTAL_BYTES.into()), "{event}");
     }
 }
 
@@ -288,7 +290,7 @@ fn the_file_value_wins_over_its_own_profile_and_the_profile_is_named_by_flag_env
     let env = env_map(&[("IGNIS_PROFILE", "from-env")]);
     assert_eq!(with_files(&["--config", "c.yaml", "--profile", "from-file"], env, &files).unwrap().retained_device_slots, 2, "the flag over the env var");
     let err = with_files(&["--config", "c.yaml", "--profile", "h100"], no_env, &files).unwrap_err().0;
-    assert!(err.contains("`h100`") && err.contains("from-env, from-file, rtx5090"), "{err}");
+    assert!(err.contains("`h100`") && err.contains("from-env, from-file, rtx50-16gb, rtx5090"), "{err}");
     assert!(refused(&["--profile", "nope"]).contains("rtx5090"));
 }
 
@@ -895,6 +897,9 @@ fn the_help_says_lanes_share_the_pool_and_names_the_new_spellings() {
     assert!(!lanes.contains("whole context"), "{lanes}");
     assert!(lanes.contains("sharing the KV pool"), "{lanes}");
     assert!(lanes.contains("min(524,288 tokens, lanes x `max_context`)") && lanes.contains("retained slot"), "{lanes}");
+    // GitHub #336: the 27B's lanes are a setting too, and say what they cost.
+    assert!(lanes.contains("8 on the 27B, 3 on Flash-Next") && lanes.contains("~233 MB"), "{lanes}");
+    assert!(!lanes.contains("fixed 8"), "{lanes}");
     let pool = help_block("--vram-kv-pool-bytes");
     assert!(pool.contains("Ktok") && pool.contains("524,288"), "{pool}");
     let floor = help_block("--vram-allow-expert-cache-below-floor");
@@ -1624,6 +1629,21 @@ fn the_draft_head_defaults_to_full_and_takes_shortlist_by_flag_or_env() {
     assert_eq!(from_env.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Shortlist));
 }
 
+/// ADR 0063: `auto` is a third spelling of the head, which the config keeps
+/// as given and the load's speculation resolves to the full head -- with
+/// DFlash2, and with MTP, whose only head it is.
+#[test]
+fn the_draft_head_auto_is_kept_as_configured_and_resolves_to_full() {
+    let auto = config(&["--spec-backend", "dflash2", "--spec-draft-tokens", "7", "--spec-draft-head", "auto"]);
+    assert_eq!(auto.settings().spec.draft_head, Some(ProposalHeadSetting::Auto));
+    assert_eq!(auto.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Full));
+    let mtp = config(&["--spec-backend", "mtp", "--spec-draft-head", "auto"]);
+    assert_eq!(mtp.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Full), "mtp's one head");
+    // Without a backend there is still nothing to choose.
+    let err = refused(&["--spec-draft-head", "auto"]);
+    assert!(err.contains("--spec-draft-head auto") && err.contains("--spec-backend"), "{err}");
+}
+
 #[test]
 fn a_draft_head_without_spec_or_with_an_unknown_name_is_refused() {
     let err = refused(&["--spec-draft-head", "shortlist"]);
@@ -1826,9 +1846,11 @@ fn max_context_past_the_gqa_envelope_is_refused_for_the_27b_only() {
     assert!(served_model_for(&cfg("1048577", "hq-e8-2b"), ModelFamily::FlashNext).is_ok());
 }
 
-/// GitHub #306: `--spec-decode-lanes` is Flash-Next's, 1 to the engine's 8.
+/// GitHub #306, #336: `--spec-decode-lanes` is both models', 1 to the
+/// engine's 8, and scoped: each model reads its own section's value over the
+/// general one, and with neither its own default -- the 27B 8, Flash-Next 3.
 #[test]
-fn decode_lanes_parse_bound_and_refuse_the_27b() {
+fn decode_lanes_parse_bound_and_apply_to_both_models() {
     assert_eq!(config(&["--profile", "none"]).decode_lanes, None);
     let flag = config(&["--spec-decode-lanes", "1"]);
     assert_eq!(flag.decode_lanes, Some(1));
@@ -1838,9 +1860,42 @@ fn decode_lanes_parse_bound_and_refuse_the_27b() {
         let err = refused(&["--spec-decode-lanes", raw]);
         assert!(err.contains("--spec-decode-lanes") && err.contains(raw), "{err}");
     }
-    assert!(served_model_for(&flag, ModelFamily::FlashNext).is_ok());
-    let err = served_model_for(&flag, ModelFamily::Qwen38_27b).expect_err("a fixed lane count").0;
-    assert!(err.contains("--spec-decode-lanes 1") && err.contains("Qwen3.8-27B does not take it"), "{err}");
+    for family in [ModelFamily::FlashNext, ModelFamily::Qwen38_27b] {
+        assert_eq!(flag.for_family(family).unwrap().decode_lanes, Some(1), "{family:?} takes the general value");
+    }
+    let scoped = config(&["--qwen38-spec-decode-lanes", "2", "--qwen38flashnext-spec-decode-lanes", "4"]);
+    assert_eq!(scoped.for_family(ModelFamily::Qwen38_27b).unwrap().decode_lanes, Some(2));
+    assert_eq!(scoped.for_family(ModelFamily::FlashNext).unwrap().decode_lanes, Some(4));
+    let bare = config(&["--profile", "none"]);
+    let shape = |family| crate::runtime::EngineShape::from(&bare.for_family(family).unwrap()).decode_lanes_for(family);
+    assert_eq!(shape(ModelFamily::Qwen38_27b), 8, "the 27B's own default");
+    assert_eq!(shape(ModelFamily::FlashNext), 3, "Flash-Next's own default");
+}
+
+/// GitHub #336: the 27B's default host retained slots are two per decode
+/// lane of its load -- 16 at its default 8 -- and Flash-Next keeps its own
+/// 8 whatever its lanes; a named count is the operator's.
+#[test]
+fn the_27bs_default_host_retained_slots_follow_its_lanes() {
+    let host = |args: &[&str], family| config(args).for_family(family).unwrap().retained_host_slots;
+    assert_eq!(host(&["--profile", "none"], ModelFamily::Qwen38_27b), DEFAULT_RETAINED_HOST_SLOTS);
+    assert_eq!(host(&["--profile", "none", "--spec-decode-lanes", "2"], ModelFamily::Qwen38_27b), 4);
+    assert_eq!(host(&["--qwen38-spec-decode-lanes", "1"], ModelFamily::Qwen38_27b), 2);
+    assert_eq!(host(&["--spec-decode-lanes", "2", "--reuse-retained-host", "7"], ModelFamily::Qwen38_27b), 7);
+    assert_eq!(host(&["--spec-decode-lanes", "2", "--reuse-prompt", "off"], ModelFamily::Qwen38_27b), 0);
+    let flash = config(&["--spec-decode-lanes", "2"]).for_family(ModelFamily::FlashNext).unwrap();
+    let shape = crate::runtime::EngineShape::from(&flash).for_family(ModelFamily::FlashNext);
+    assert_eq!((shape.decode_lanes, shape.retained_host_slots), (2, 8));
+    // ADR 0046: the config's 27B default and a load's own re-resolution are
+    // one function's, at any lanes.
+    for lanes in [None, Some("1"), Some("2"), Some("8")] {
+        let mut args = vec!["--profile", "none"];
+        args.extend(lanes.map(|lanes| ["--spec-decode-lanes", lanes]).into_iter().flatten());
+        let fitted = config(&args).for_family(ModelFamily::Qwen38_27b).unwrap();
+        let shape = crate::runtime::EngineShape::from(&fitted);
+        let reloaded = crate::runtime::EngineShape { retained_host_slots: 0, ..shape }.for_family(ModelFamily::Qwen38_27b);
+        assert_eq!(reloaded.retained_host_slots, fitted.retained_host_slots, "{lanes:?} lanes");
+    }
 }
 
 /// `--ngram-hot-bytes` (GitHub #306): unnamed is `None`, the 1 GiB default
@@ -1967,8 +2022,10 @@ fn a_switch_drops_the_values_only_the_other_model_takes_and_names_them() {
 
     let flash = config(&["--spec-decode-lanes", "1", "--ngram-hot-bytes", "4G", "--vram-allow-expert-cache-below-floor", "--spec-draft-rows", "6"]);
     let (fitted, dropped) = fit_to_family(&flash, ModelFamily::Qwen38_27b).unwrap();
-    assert_eq!(dropped, ["--vram-allow-expert-cache-below-floor", "--spec-draft-rows", "--spec-decode-lanes", "--ngram-hot-bytes"]);
-    assert!(fitted.decode_lanes.is_none() && fitted.ngram_hot_bytes.is_none() && !fitted.allow_expert_cache_below_floor);
+    assert_eq!(dropped, ["--vram-allow-expert-cache-below-floor", "--spec-draft-rows", "--ngram-hot-bytes"]);
+    assert!(fitted.ngram_hot_bytes.is_none() && !fitted.allow_expert_cache_below_floor);
+    // GitHub #336: the lanes are both models'; a general value is the 27B's too.
+    assert_eq!(fitted.decode_lanes, Some(1));
 
     let (kept, dropped) = fit_to_family(&config(&["--vision-enabled"]), ModelFamily::Qwen38_27b).unwrap();
     assert!(kept.vision.is_some() && dropped.is_empty(), "nothing dropped for the model it was named for");
@@ -1992,10 +2049,10 @@ fn a_patch_wins_over_the_command_line_and_is_validated_whole() {
     assert_eq!(patched.basis.family(), Some(ModelFamily::FlashNext));
     assert_eq!(patched.model, "qwen3.8-flash-next");
 
-    let lanes = schema::field("spec", "decode_lanes").unwrap();
-    patch.set(lanes, None, source::Candidate { raw: "99".into(), spelling: "spec.decode_lanes".into() }).unwrap();
+    let rows = schema::field("spec", "draft_rows").unwrap();
+    patch.set(rows, None, source::Candidate { raw: "99".into(), spelling: "spec.draft_rows".into() }).unwrap();
     let err = started.with_patch(&patch).unwrap_err().0;
-    assert!(err.contains("spec.decode_lanes") && err.contains("99"), "{err}");
+    assert!(err.contains("spec.draft_rows") && err.contains("99"), "{err}");
 }
 
 /// One patch entry, as `PATCH /v1/config` would give it.
@@ -2046,14 +2103,33 @@ fn a_patch_on_a_switched_config_keeps_its_drops_and_judges_only_its_own_entries(
 #[test]
 fn a_patch_from_before_a_switch_never_refuses_a_later_one() {
     let flash = config(&[]).for_family(ModelFamily::FlashNext).unwrap();
-    let patched = flash.with_patch(&patch_of(&[("spec", "decode_lanes", "1"), ("spec", "backend", "mtp")])).unwrap();
+    let patched = flash.with_patch(&patch_of(&[("spec", "draft_rows", "6"), ("spec", "backend", "mtp")])).unwrap();
     let (on_27b, dropped) = fit_to_family(&patched, ModelFamily::Qwen38_27b).unwrap();
     assert_eq!(dropped, ["--spec-backend"], "a value both families read is dropped; the family-only one waits in its section");
-    assert_eq!(on_27b.decode_lanes, None);
+    assert_eq!(on_27b.draft_rows, None);
     let later = on_27b.with_patch(&patch_of(&[("server", "request_timeout", "60")])).unwrap();
     assert_eq!(later.request_timeout_secs, 60);
     let (back, _) = fit_to_family(&later, ModelFamily::FlashNext).unwrap();
-    assert_eq!((back.decode_lanes, back.request_timeout_secs), (Some(1), 60), "the earlier patch is the Flash-Next load's again");
+    assert_eq!((back.draft_rows, back.request_timeout_secs), (Some(6), 60), "the earlier patch is the Flash-Next load's again");
+}
+
+/// GitHub #336: the decode lanes are both models', so a patch at the group
+/// key is both models' value, and a patch in one model's section is that
+/// model's alone -- a switch takes the other model's own lanes.
+#[test]
+fn a_decode_lanes_patch_is_scoped_as_it_is_written() {
+    let flash = config(&["--profile", "none"]).for_family(ModelFamily::FlashNext).unwrap();
+    let mut own = source::Layer::default();
+    let lanes = schema::field("spec", "decode_lanes").unwrap();
+    own.set(lanes, Some(ModelFamily::FlashNext), source::Candidate { raw: "1".into(), spelling: "spec.qwen38flashnext.decode_lanes".into() })
+        .unwrap();
+    let patched = flash.with_patch(&own).unwrap();
+    assert_eq!(patched.decode_lanes, Some(1));
+    let (on_27b, dropped) = fit_to_family(&patched, ModelFamily::Qwen38_27b).unwrap();
+    assert!(dropped.is_empty() && on_27b.decode_lanes.is_none(), "the 27B keeps its own: {dropped:?}");
+    let general = flash.with_patch(&patch_of(&[("spec", "decode_lanes", "2")])).unwrap();
+    let (on_27b, _) = fit_to_family(&general, ModelFamily::Qwen38_27b).unwrap();
+    assert_eq!(on_27b.decode_lanes, Some(2), "a general value is both models'");
 }
 
 // ── vision as a load option (GitHub #177) ────────────────────────────────
@@ -2644,4 +2720,254 @@ fn an_image_field_past_its_bounds_is_refused_naming_it() {
     let err = refused(&["--image-sizes", "16416x32"]);
     assert!(err.contains("--image-sizes") && err.contains("16384"), "{err}");
     assert_eq!(config(&[]).settings().image.max_target_cells, 16_800, "2400x1792, the largest preset");
+}
+
+// ── `--profile auto` (ADR 0063, spec 27b-16gb/04) ────────────────────────
+
+const GIB_F: f64 = (1u64 << 30) as f64;
+
+fn on_card(flags: &[&str], card: profile::Card) -> Result<Config, ConfigError> {
+    resolve_on(&args(flags), no_env, &file::NoFiles, &|| card.clone()).map(expect_config)
+}
+
+fn on_total(flags: &[&str], gib: f64) -> Result<Config, ConfigError> {
+    on_card(flags, profile::Card::Total((gib * GIB_F) as u64))
+}
+
+/// Each card class gets its class's built-in profile, named by what it
+/// resolved to, never by `auto`.
+#[test]
+fn auto_picks_the_profile_of_the_cards_class() {
+    for (gib, name, class) in [
+        (15.9, "rtx50-16gb", profile::CardClass::Gb16),
+        (31.8, "rtx5090", profile::CardClass::Gb32),
+        (95.5, "rtxpro6000", profile::CardClass::Gb96),
+    ] {
+        let config = on_total(&[], gib).unwrap();
+        assert_eq!(config.basis.sources().profile_name, name, "{gib} GiB");
+        assert!(config.basis.sources().profile_auto);
+        assert_eq!(config.card_class(), Some(class));
+        assert_eq!(config.card_total_bytes(), Some((gib * GIB_F) as u64));
+        // `auto` spelled out is the default.
+        assert_eq!(on_total(&["--profile", "auto"], gib).unwrap().basis.sources().profile_name, name);
+    }
+}
+
+/// A total of no class refuses the start, naming the total and `--profile`
+/// and the profiles there are.
+#[test]
+fn auto_refuses_a_card_of_no_class_naming_profile() {
+    for gib in [24.0, 48.0] {
+        let err = on_total(&[], gib).unwrap_err().0;
+        assert!(err.contains(&format!("{gib:.1} GiB")), "{err}");
+        assert!(err.contains("--profile") && err.contains("rtx5090") && err.contains("rtx50-16gb"), "{err}");
+    }
+    let unreadable = on_card(&[], profile::Card::Unreadable("NVML is not installed".to_owned())).unwrap_err().0;
+    assert!(unreadable.contains("--profile") && unreadable.contains("total"), "{unreadable}");
+    assert!(unreadable.contains("NVML is not installed"), "the reason NVML failed is in the refusal: {unreadable}");
+}
+
+/// A build with no card (the mock engine, CI on Linux) resolves as `none`
+/// would: the hardcoded defaults, said so by the profile's name.
+#[test]
+fn auto_with_no_card_resolves_as_none() {
+    let absent = on_card(&[], profile::Card::Absent).unwrap();
+    let none = on_card(&["--profile", "none"], profile::Card::Absent).unwrap();
+    assert_eq!(absent.basis.sources().profile_name, "none");
+    assert_eq!(absent.settings(), none.settings());
+    assert_eq!(absent.card_class(), None);
+}
+
+/// A named profile always wins, `none` included, and no refusal of an odd
+/// card reaches it; the total is read for the catalog's sake at a start.
+#[test]
+fn a_named_profile_beats_auto_whatever_the_card() {
+    let flag = on_total(&["--profile", "rtxpro6000"], 24.0).unwrap();
+    assert_eq!(flag.basis.sources().profile_name, "rtxpro6000");
+    assert!(!flag.basis.sources().profile_auto);
+    assert_eq!(flag.card_class(), None, "24 GiB is no class; the named profile still starts");
+    assert_eq!(on_total(&["--profile", "none"], 31.8).unwrap().basis.sources().profile_name, "none");
+    let env = |key: &str| (key == "IGNIS_PROFILE").then(|| "rtx50-16gb".to_owned());
+    let from_env = resolve_on(&[], env, &file::NoFiles, &|| profile::Card::Total(profile::RTX_5090_TOTAL_BYTES)).map(expect_config).unwrap();
+    assert_eq!(from_env.basis.sources().profile_name, "rtx50-16gb");
+    assert_eq!(from_env.card_class(), Some(profile::CardClass::Gb32), "the total read is the card's, not the profile's");
+    let files = MemFiles::with(&[("c.yaml", "profile: none\n")]);
+    let from_file = resolve_on(&args(&["--config", "c.yaml"]), no_env, &files, &|| profile::Card::Total(24 << 30)).map(expect_config).unwrap();
+    assert_eq!(from_file.basis.sources().profile_name, "none");
+    // A named profile reads no total for the choice: a probe that panics
+    // is never called by `gather`.
+    let parsed = source::parse_args(&args(&["--profile", "rtx5090"])).unwrap();
+    gather(parsed, &no_env, &file::NoFiles, FileChoice::None, &|| panic!("a named profile reads no total")).unwrap();
+}
+
+/// AC 2's regression: on a 5090 `auto` resolves every field, for each
+/// family, exactly as `--profile rtx5090` does.
+#[test]
+fn auto_on_a_5090_resolves_exactly_as_rtx5090_does() {
+    let auto = on_card(&[], profile::Card::Total(profile::RTX_5090_TOTAL_BYTES)).unwrap();
+    let named = config(&["--profile", "rtx5090"]);
+    assert_eq!(auto.settings(), named.settings());
+    for family in field::FAMILIES {
+        let (a, n) = (auto.for_family(family).unwrap(), named.for_family(family).unwrap());
+        assert_eq!(a.settings(), n.settings(), "{family:?}");
+        assert_eq!(a.max_context, n.max_context, "{family:?}");
+    }
+    assert_eq!(auto.for_family(ModelFamily::Qwen38_27b).unwrap().max_context, 917_504);
+}
+
+/// `rtx50-16gb` for the 27B: the values the spec derives, and Flash-Next
+/// started under it resolves without refusal.
+#[test]
+fn the_rtx50_16gb_profile_serves_the_27b_text_only_and_flash_next_starts_under_it() {
+    let config = on_total(&[], 15.9).unwrap();
+    let s27 = config.for_family(ModelFamily::Qwen38_27b).unwrap();
+    assert_eq!(s27.max_context, 262_144);
+    assert!(!s27.settings().vision.enabled, "vision is off, explicitly");
+    assert_eq!(s27.vram, VramMode::Derived { headroom_bytes: 1200 << 20 });
+    assert_eq!(s27.settings().model.prefill_chunk, DEFAULT_PREFILL_CHUNK, "unset: 1,024");
+    assert!(s27.speculation.is_some(), "DFlash2 is on");
+    assert_eq!(s27.settings().spec.draft_tokens, Some(7));
+    // ADR 0063: two lanes, their four default host retained slots, and the
+    // head left to `auto`, which is the full head.
+    assert_eq!(s27.decode_lanes, Some(2));
+    assert_eq!(s27.retained_host_slots, 4, "two per lane");
+    assert_eq!(s27.settings().spec.draft_head, Some(ProposalHeadSetting::Auto));
+    assert_eq!(s27.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Full));
+    assert_eq!(s27.adaptable(), crate::adaptation::Adaptable::ALL, "every value the profile's, so every one adapts");
+    let flash = config.for_family(ModelFamily::FlashNext).expect("Flash-Next starts under the 27B's profile");
+    assert_eq!(flash.decode_lanes, None, "the 27B's lanes are its own section's");
+}
+
+/// ADR 0063 §3: a value the profile or the hardcoded default gave adapts at
+/// load; one the operator wrote -- by flag, env or file, even a file's value
+/// at the hardcoded default -- never does, each of the three alone.
+#[test]
+fn only_the_profiles_and_the_defaults_values_adapt() {
+    use crate::adaptation::Adaptable;
+    let qwen = |config: Config| config.for_family(ModelFamily::Qwen38_27b).unwrap().adaptable();
+    assert_eq!(qwen(config(&[])), Adaptable::ALL, "rtx5090's context, the default lanes and head");
+    assert_eq!(qwen(config(&["--model-max-context", "131072"])), Adaptable { max_context: false, ..Adaptable::ALL });
+    let env = env_map(&[("IGNIS_QWEN38_SPEC_DECODE_LANES", "2")]);
+    assert_eq!(qwen(expect_config(resolve(&[], env).unwrap())), Adaptable { decode_lanes: false, ..Adaptable::ALL });
+    let files = MemFiles::with(&[
+        ("head.yaml", "spec:\n  backend: dflash2\n  draft_tokens: 7\n  draft_head: auto\n"),
+        ("default.yaml", "model:\n  max_context: 40960\n"),
+    ]);
+    let head = with_files(&["--config", "head.yaml"], no_env, &files).unwrap();
+    assert_eq!(qwen(head), Adaptable { draft_head: false, ..Adaptable::ALL }, "an explicit `auto` too");
+    let default = with_files(&["--config", "default.yaml"], no_env, &files).unwrap();
+    assert_eq!(default.max_context, DEFAULT_MAX_CONTEXT);
+    assert!(!qwen(default).max_context, "a file's value is explicit, at the default or not");
+    // `--profile none`: the hardcoded defaults adapt as a profile's would.
+    assert_eq!(qwen(config(&["--profile", "none"])), Adaptable::ALL);
+}
+
+/// ADR 0063 §3, review of #336 part D: the adaptation ladder's step and
+/// spare reservation are fields, 65,536 tokens each unless named, by flag,
+/// env or file; they reach the 27B's ladder.
+#[test]
+fn the_adaptation_ladder_is_two_fields_at_65536_tokens() {
+    use crate::adaptation::Ladder;
+    let defaults = config(&[]);
+    assert_eq!((defaults.settings().model.adapt_context_step, defaults.settings().vram.adapt_spare_tokens), (65_536, 65_536));
+    assert_eq!((DEFAULT_ADAPT_CONTEXT_STEP, DEFAULT_ADAPT_SPARE_TOKENS), (65_536, 65_536));
+    assert_eq!(defaults.adapt_ladder(), Ladder::default());
+    let named = config(&["--model-adapt-context-step", "131072", "--vram-adapt-spare-tokens", "0"]);
+    assert_eq!(named.adapt_ladder(), Ladder { context_step: 131_072, spare_tokens: 0 }, "0: one sequence is enough");
+    let env = env_map(&[("IGNIS_MODEL_ADAPT_CONTEXT_STEP", "4096"), ("IGNIS_VRAM_ADAPT_SPARE_TOKENS", "32768")]);
+    let from_env = expect_config(resolve(&[], env).expect("resolve"));
+    assert_eq!(from_env.adapt_ladder(), Ladder { context_step: 4_096, spare_tokens: 32_768 });
+    let files = MemFiles::with(&[("c.yaml", "model:\n  adapt_context_step: 64\nvram:\n  adapt_spare_tokens: 1000\n")]);
+    let from_file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap();
+    assert_eq!(from_file.adapt_ladder(), Ladder { context_step: 64, spare_tokens: 1_000 }, "one KV page is the smallest step");
+}
+
+/// The context step is a whole number of KV pages, at least one: anything
+/// else is refused by name.
+#[test]
+fn an_adaptation_step_that_is_not_whole_kv_pages_is_refused() {
+    for raw in ["0", "100", "65537", "-64", "wide"] {
+        let err = refused(&["--model-adapt-context-step", raw]);
+        assert!(err.contains("--model-adapt-context-step"), "{raw}: {err}");
+    }
+    assert!(refused(&["--model-adapt-context-step", "100"]).contains("nonzero multiple of 64"));
+    assert!(refused(&["--vram-adapt-spare-tokens", "-1"]).contains("--vram-adapt-spare-tokens"));
+}
+
+/// Both fields are the 27B's alone (Flash-Next does not adapt, ADR 0063 §3):
+/// a Flash-Next start refuses an explicit value by name, and the defaults are
+/// no one's business.
+#[test]
+fn the_adaptation_fields_are_the_27bs_and_refuse_flash_next() {
+    for flags in [["--model-adapt-context-step", "131072"], ["--vram-adapt-spare-tokens", "0"]] {
+        let named = config(&flags);
+        assert!(served_model_for(&named, ModelFamily::Qwen38_27b).is_ok(), "{flags:?}");
+        let err = served_model_for(&named, ModelFamily::FlashNext).expect_err("the 27B's").0;
+        assert!(err.contains(flags[0]) && err.contains("Qwen3.8-Flash-Next"), "{err}");
+    }
+}
+
+/// The startup line says whether the profile was chosen by `auto` or named.
+#[test]
+fn the_startup_log_says_a_named_profile_is_named() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let config = config(&["--profile", "rtxpro6000"]);
+    let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
+    let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
+    tracing::subscriber::with_default(subscriber, || log_source(&config));
+    let event: serde_json::Value = serde_json::from_str(&sink.lines()[0]).unwrap();
+    let field = |name: &str| event.get(name).or_else(|| event["attributes"].get(name)).cloned();
+    assert_eq!(field("profile"), Some("rtxpro6000".into()), "{event}");
+    assert_eq!(field("profile_by"), Some("named".into()), "{event}");
+}
+
+/// `--help` says which profile each class gets, from the classes themselves.
+#[test]
+fn help_names_the_profile_of_every_card_class() {
+    let help = help_text();
+    for class in profile::CardClass::ALL {
+        assert!(help.contains(&format!("{class}: {}", class.profile())), "{class}: {help}");
+    }
+}
+
+/// The refusal of a card of no class spells the boundaries the constants hold.
+#[test]
+fn the_refusal_of_a_card_of_no_class_spells_every_boundary() {
+    let err = on_total(&[], 24.0).unwrap_err().0;
+    for bounds in ["16 GB below 20 GiB", "32 GB from 28 to 40 GiB", "96 GB from 88 to 104 GiB"] {
+        assert!(err.contains(bounds), "{bounds}: {err}");
+    }
+}
+
+/// A `profiles:` entry called `none` or `auto` could never be reached
+/// (`gather` resolves both words first): the file is refused when read.
+#[test]
+fn a_file_cannot_define_a_profile_called_none_or_auto() {
+    for name in ["none", "auto"] {
+        let contents = format!("profiles:\n  {name}:\n    vram:\n      headroom_bytes: 2G\n");
+        let files = MemFiles::with(&[("c.yaml", contents.as_str())]);
+        let err = resolve_with(&args(&["--config", "c.yaml"]), no_env, &files).map(expect_config).unwrap_err().0;
+        assert!(err.contains(&format!("`{name}`")) && err.contains("c.yaml"), "{name}: {err}");
+    }
+}
+
+/// `auto` picks by NAME through the lookup a named profile uses, so a file's
+/// `profiles:` redefining `rtx5090` replaces what `auto` picks for a 5090.
+#[test]
+fn a_file_redefining_a_built_in_profile_replaces_what_auto_picks() {
+    let files = MemFiles::with(&[("c.yaml", "profiles:\n  rtx5090:\n    model:\n      qwen38:\n        max_context: 131072\n")]);
+    let config = resolve_on(&args(&["--config", "c.yaml"]), no_env, &files, &|| profile::Card::Total(profile::RTX_5090_TOTAL_BYTES))
+        .map(expect_config)
+        .unwrap();
+    assert_eq!(config.basis.sources().profile_name, "rtx5090");
+    assert_eq!(config.for_family(ModelFamily::Qwen38_27b).unwrap().max_context, 131_072);
+}
+
+/// The `config` verbs resolve as a start would: on a card of no class,
+/// `config print` under `auto` refuses naming `--profile`.
+#[test]
+fn the_config_verbs_refuse_a_card_of_no_class_under_auto() {
+    let refused = resolve_on(&args(&["config", "print"]), no_env, &file::NoFiles, &|| profile::Card::Total(24 << 30)).unwrap_err().0;
+    assert!(refused.contains("--profile"), "{refused}");
+    resolve_on(&args(&["config", "print", "--profile", "none"]), no_env, &file::NoFiles, &|| profile::Card::Total(24 << 30)).unwrap();
 }
