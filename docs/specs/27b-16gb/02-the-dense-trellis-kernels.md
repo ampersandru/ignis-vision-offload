@@ -158,6 +158,7 @@ short:
      (64-66% across runs at the dominant K); eight tokens 1.03-1.04x one. The figures under the caps are in the
      finding.
   5. **Not met:** 212-238 TFLOPS at 1,024 tokens on the body's large matrices, 51-57% of 419 (42-47% of the 502 the
-     card's MMA loop measures). The owner's call, on GitHub #337.
+     card's MMA loop measures). The owner moved it to a follow-up on 2026-10-23: spec
+     [06](06-the-dense-trellis-prefill-at-the-tensor-peak.md), #345.
   6. Met: no exllamav3 or QTIP kernel source read or copied; every file is labelled ours.
   7. Met: `cargo test` workspace-wide; the leaf's 136 CTests green on the 5090.

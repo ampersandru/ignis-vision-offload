@@ -1,6 +1,6 @@
 # The 27B on 16 GB cards — the feature, its tickets, and how to run them
 
-GitHub: master #334; 03 #335, 04 #336, 02 #337, 01 #338, 05a #339, 05b #340.
+GitHub: master #334; 03 #335, 04 #336, 02 #337, 01 #338, 05a #339, 05b #340, 06 #345.
 
 The feature-level document the tickets decompose (`docs/agents/issue-tracker.md`). Read this first, then the ticket's
 spec.
@@ -74,6 +74,7 @@ The image model comes after phase 2.
 | [03](03-vram-recovered-on-every-card.md) | no prompt planes; token embedding in host memory; the 5090's profile re-measured | — | **yes, everything**, on the 5090 |
 | [04](04-the-runtime-follows-the-card-class.md) | one `decode_lanes` field; profile `auto` by card class + adaptation; catalog card class, alias, refusal before teardown; drafter head `auto` | — (the 16 GB entry's file pins come from 01) | yes: lanes, profile, adaptation and catalog work on the 5090 with an explicit budget |
 | [02](02-the-dense-trellis-kernels.md) | dense trellis GEMV/GEMM for decode, verify and prefill, and the head | — for reduced shapes; 01 for full-shape checks | yes: reduced-shape fixtures straight from exllamav3 |
+| [06](06-the-dense-trellis-prefill-at-the-tensor-peak.md) | 02's prefill to ≥ 60% of the FP16-accumulate peak (02's Acceptance 5, moved here 2026-10-23) | — | yes, on the 5090 |
 | [01](01-the-16gb-artifact.md) | the 16 GB artifact: body source, converter, DFlash2 graft, sidecar, catalog entry, HF upload | — (the body source is decided: repack, ADR 0060 §4) | yes: the repack, the copies and the sidecar need no kernel |
 | [05a](05-gates-and-simulation.md) | first light: the 16 GB artifact served end to end in ignis on the 5090 under a 16 GiB budget | 01, 02, 03, 04 | — |
 | [05b](05-gates-and-simulation.md) | the four quality gates on the artifact in ignis; 16 GB capacity simulation on the 5090; speed estimate; user bench | 05a for the final run | yes: the harnesses (M1's is reusable) |
