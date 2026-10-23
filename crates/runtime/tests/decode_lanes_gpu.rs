@@ -9,11 +9,13 @@
 //! `CANARIES`), in a user turn with thinking closed, as
 //! `cuda_leaf_dflash2_gpu.rs` asks: three of them read code.
 //!
-//! Two variables compare a build with another: `IGNIS_DECODE_LANES_RECORD`
-//! names a file the 8-lane load's token ids are written to, and
-//! `IGNIS_DECODE_LANES_EXPECT` one they must equal -- the token ids main's
-//! build recorded, for the spec's "at 8 lanes, greedy outputs identical to
-//! today's".
+//! The 8-lane load's greedy token ids, at every width, must equal main's
+//! (the spec's "at 8 lanes, greedy outputs identical to today's"), on every
+//! run: `fixtures/decode_lanes_greedy_8lanes.json`, recorded by this test
+//! on 2026-10-23 on main 75210360's engine (the tree then differed from it
+//! only by `config/profile.rs`'s card class and this file, at 8 lanes).
+//! `IGNIS_RECORD_DECODE_LANES_TOKENS=1` writes it again, and is only ever
+//! run on a build of main's engine.
 //!
 //! Its own test binary: it materializes the artifact, and the card fits one
 //! at a time.
@@ -21,7 +23,7 @@
 #![cfg(feature = "cuda")]
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ignis_artifact::{bind_model_scope_27b_with, materialize, CudaDevice, FrontendSet, Reader};
@@ -52,6 +54,15 @@ const PROMPTS: [&str; 4] = [
 /// too, so each width is compared across the loads that serve it.
 const LOADS: [(u32, &[usize]); 3] = [(1, &[1]), (2, &[1, 2]), (8, &[1, 2, 8])];
 
+const RECORD_ENV: &str = "IGNIS_RECORD_DECODE_LANES_TOKENS";
+
+fn fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("decode_lanes_greedy_8lanes.json")
+}
+
 #[test]
 #[ignore = "GPU profile only: scripts/gpu-profile.ps1"]
 fn a_load_decodes_at_its_lanes_and_a_width_says_the_same_at_every_load() {
@@ -76,16 +87,16 @@ fn a_load_decodes_at_its_lanes_and_a_width_says_the_same_at_every_load() {
         }
     }
 
-    let recorded = serde_json::to_string_pretty(widest).expect("token ids serialize");
-    if let Ok(record) = std::env::var("IGNIS_DECODE_LANES_RECORD") {
-        std::fs::write(&record, &recorded).unwrap_or_else(|e| panic!("record {record}: {e}"));
+    // And at eight lanes, every width says what main's engine said.
+    let path = fixture_path();
+    if std::env::var_os(RECORD_ENV).is_some() {
+        let json = serde_json::to_string_pretty(widest).expect("token ids serialize");
+        std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        return;
     }
-    if let Ok(expect) = std::env::var("IGNIS_DECODE_LANES_EXPECT") {
-        let expected = std::fs::read_to_string(&expect).unwrap_or_else(|e| panic!("read {expect}: {e}"));
-        let expected: BTreeMap<usize, Vec<Vec<TokenId>>> =
-            serde_json::from_str(&expected).unwrap_or_else(|e| panic!("{expect}: {e}"));
-        assert_eq!(widest, &expected, "the 8-lane load's greedy token ids against {expect}");
-    }
+    let recorded = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let recorded: BTreeMap<usize, Vec<Vec<TokenId>>> = serde_json::from_str(&recorded).expect("fixture json");
+    assert_eq!(widest, &recorded, "the 8-lane load's greedy token ids against main's");
 }
 
 /// Load the leaf at `lanes`, check it holds what its plan laid out, and
