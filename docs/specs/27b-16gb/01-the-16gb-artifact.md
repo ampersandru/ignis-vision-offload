@@ -179,7 +179,8 @@ as oracles), 0002 (the artifact format).
   - The tests that stood the 16 GB 27B up as an operator entry (`tests/fixtures/catalog/sixteen.yaml`) now read the
     built-in one; that fixture is the parsing tests' input, over the built-in entries without it.
   - **Release gate:** until #339 wires the trellis body, a 16 GB card resolving `qwen3.8-27b` fetches an artifact the
-    program cannot bind. No release ships this entry before #339.
+    program cannot bind. No release ships this entry before #339. *(Lifted 2026-10-23: #339 binds and serves it, spec
+    05a's As built.)*
 - **Beyond the spec, for the tool's own runs:** `--error-bound` (default 0.6, recorded in the sidecar; a threshold is a
   setting with a default, the owner's rule) and `--skip-errors` (a `dry-run` tree, which the packer refuses unless
   asked).

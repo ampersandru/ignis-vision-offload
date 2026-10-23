@@ -33,6 +33,59 @@ A3. A sanity KLD on two of the 2026-09-24 windows, engine path, reported beside 
 A4. The 32 GB NVFP4 artifact still serves exactly as before: greedy outputs on the canaries are identical.
 A5. `cargo test` workspace-wide; GPU tests green on a free 5090.
 
+### As built: the wiring (2026-10-23)
+
+- **The body is the head's.** `text/output_head` in a trellis format makes the body trellis, on both sides of the
+  ABI: `ignis_artifact::body_27b` reads the directory, and `model_scope_27b_of` gives the binder and the load's
+  descriptors spec 01's trellis text scope (`text_scope_27b_trellis`, K from the directory); the leaf's binder
+  (`kernel/src/model.cu`) reads the head's qtype and binds the whole body under that schema. `ModelScope` stays the
+  modules a load asks for. A tensor of the other body fails naming itself ("a load binds one body, never a mix").
+  `fp8_exceptions` converts BF16 tensors only, so on the trellis body, whose `attention/output` of layers 3 and 7
+  and `gdn/output` of layer 4 share the exception names, it is a no-op.
+- **ABI.** Six leaf-only qtype codes, `IGNIS_QTYPE_TRELLIS_MUL1_K2` .. `_K6` = 64 .. 69, and
+  `IGNIS_LAYOUT_TRELLIS_TILE16` = 64, past `ninfer::QType` / `QuantLayout` (vendored, untouched): a trellis tensor
+  binds into an `ignis_trellis_weight`, never a `ninfer::Weight`. Its `qhigh` and `scales` are the record's `suh` and
+  `svh` (the materializer's view names them); the binder checks both against the tiles' length and the record's
+  bytes against its K.
+- **Dispatch** (`kernel/src/trellis_body.h`): the three GDN bodies and the two GQA ones call the op in place of the
+  vendored NVFP4 ops on a trellis load -- `in_proj_qkv` / `in_proj_z` into `qkv` / `zbuf`, the output and down
+  projections as the op's residual add, the gate and up matrices as its SwiGLU, `k_proj` / `v_proj` into key and
+  value, `q_proj` into a `[T][12288]` buffer whose heads' halves two `cudaMemcpy2DAsync` move into the query and the
+  gate. The verify GDN body writes its projection into the conv record and runs the vendored
+  `gdn_projected_conv_record_launch` over it. Every head site -- the four prefill ones, the decode and verify rounds,
+  and the drafter's full head -- goes through `output_head`, the shortlist head staying the served Q4 one. The
+  test-only `kA16Only` mode is the NVFP4 arm's alone.
+- **The `trellis_workspace` plan line** (ADR 0030 amended, `ignis_model_reservations::trellis_workspace_bytes`,
+  `VramLines::trellis_workspace`, the plan event, `/metrics`, the Monitor): one buffer at a stable address on the
+  model's one stream (the drafter's calls run there too), zeroed once at load, `ignis_trellis_prepare` run by the
+  plan and the load. Its size is the op's own answer for the widest call: the body's shapes at 1..64 tokens (a short
+  prompt or a span's last chunk takes the decode route) and at the chunk, the head's at a round's columns across the
+  lanes (`lanes x (k + 1)`) or one span-logits block (32). 36,225,280 bytes at chunk 1,024 with `rtx50-16gb`'s two
+  lanes and seven drafts; 0 on the served body. The plan's scratch drops the vendored projections' workspaces and
+  adds the q_proj buffer.
+- **A fix in spec 02's op.** Its workspace's arrival counters sat in a room sized by the call's own output blocks,
+  with the rotated activations after it, so a narrow call (a down projection) left a wider call's counters nonzero
+  and that call reduced its splits early: every layer of the trellis body ran 0.17-0.86 from the oracle until the
+  room got one size (`kArrivalBlocks`, out at most 524,288; +16 KB of workspace). `test_trellis_linear`'s
+  `shared_workspace_arm` runs a load's calls of five shapes through one workspace, each against its own fresh one.
+- **Tests and what they measured on the 5090:**
+  - `kernel/tests/test_model_load_trellis.cpp` (the binder and the plan line) and `test_trellis_body.cu` (the q/gate
+    split, `query_gate`, the head, the epilogues); both fail on the split's halves swapped.
+  - `crates/core/tests/trellis_projections_gpu.rs`: every split part is the served plane's rows in spec 01's order,
+    cosine 0.928-0.997 per block, the q/gate halves the other way round 0.005 or less.
+  - `crates/core/tests/trellis_layers_gpu.rs`: GDN layer 0 and GQA layers 3 and 27, one and four tokens, against the
+    f64 oracle over the same decoded weights: relative L2 0.0018-0.0047 (bound 0.01); the split's halves swapped:
+    0.78-1.0.
+  - `crates/core/tests/trellis_logits_gpu.rs`: 768 positions of code, top-1 agreement with the served program
+    0.891, mean KL(served || trellis) 0.072 nats (floor 0.7, an error detector).
+  - `crates/server/tests/trellis_16g_gpu.rs`: the server's load path, `--profile rtx50-16gb --vram-budget-bytes
+    17179869184`: nothing adapted, 262,144 context, two lanes, a 509,184-token KV pool, weights 10,907,958,020
+    bytes; greedy code coherent and deterministic, DFlash2 7.68 tokens per round.
+  - `crates/artifact/tests/trellis_27b.rs`: the model scope binds the real artifact by its body at spec 01's device
+    bytes; CPU tests for the codes, the body detection, the fp8 guard and the structs' layouts on both sides.
+- **Left to the acceptance runs:** A1's plan log through `make start`, A2's canaries and 128K leg, A3's sanity KLD,
+  A4's canary identity on the served artifact.
+
 ## Part B (ticket 05b) - gates and simulation
 
 Blocked by 05a. Everything below this line is Part B.

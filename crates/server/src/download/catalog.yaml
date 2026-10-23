@@ -65,8 +65,7 @@ models:
   # The 27B for the 16 GB card class (spec 27b-16gb/01, GitHub #338): the
   # public SC_3.00bpw_H4 quant's trellis body and head, the rest the 32 GB
   # artifact's objects. It answers to the 27B's default id on a 16 GB card.
-  # The program binds its trellis body from GitHub #339 on: no release ships
-  # this entry before that.
+  # The program binds its trellis body by its head (GitHub #339).
   - id: qwen3.8-27b-16g
     repo: gpillon/Qwen3.8-27B-trellis-3bpw-ignis
     revision: "f5bbd2cc14c9ca573ef5553c100ac69410f1fe58"
