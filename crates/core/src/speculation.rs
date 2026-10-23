@@ -275,6 +275,56 @@ impl ProposalHead {
     }
 }
 
+/// The drafter's proposal head as configured (`--spec-draft-head`, ADR
+/// 0063): one of the two heads, or `auto`, which the load's shape resolves --
+/// as `auto` rope scaling is (ADR 0057) -- rather than a third head.
+///
+/// `auto` is [`ProposalHead::Full`] on every card class. The shortlist is
+/// bound beside the full head, so it frees no bytes: it costs its 356 MB.
+/// And the one card that measured it found it slower (-7.4% tokens/round,
+/// -5.5% tok/s on the 5090, finding 2026-09-24-upstream-quick-wins-ab). The
+/// rule is revisited when a real 16 GB card measures the trade (spec
+/// 27b-16gb/04, phase 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalHeadSetting {
+    Auto,
+    Fixed(ProposalHead),
+}
+
+impl ProposalHeadSetting {
+    /// `auto`, or what [`ProposalHead::parse`] takes, naming all three on a
+    /// refusal.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "auto" => Ok(Self::Auto),
+            other => ProposalHead::parse(other)
+                .map(Self::Fixed)
+                .map_err(|_| format!("unknown draft head `{other}` (expected full, shortlist or auto)")),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Fixed(head) => head.as_str(),
+        }
+    }
+
+    /// Whether the head is left to [`Self::resolve`] rather than spelled out.
+    pub fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    /// The head a load scores its drafts with: a spelled-out head is itself,
+    /// `auto` the full head.
+    pub fn resolve(&self) -> ProposalHead {
+        match self {
+            Self::Auto => ProposalHead::Full,
+            Self::Fixed(head) => *head,
+        }
+    }
+}
+
 /// A validated speculation option: a backend, its draft window and the
 /// drafter's proposal head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +479,24 @@ impl Speculation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR 0063: `auto` is a third spelling of the setting, not a third
+    /// head, and resolves to the full head; the two heads stay themselves.
+    #[test]
+    fn a_head_setting_is_a_head_or_auto_and_auto_is_the_full_head() {
+        for (raw, setting, head) in [
+            ("auto", ProposalHeadSetting::Auto, ProposalHead::Full),
+            ("full", ProposalHeadSetting::Fixed(ProposalHead::Full), ProposalHead::Full),
+            ("shortlist", ProposalHeadSetting::Fixed(ProposalHead::Shortlist), ProposalHead::Shortlist),
+        ] {
+            assert_eq!(ProposalHeadSetting::parse(raw), Ok(setting), "{raw}");
+            assert_eq!(setting.as_str(), raw);
+            assert_eq!(setting.resolve(), head, "{raw}");
+            assert_eq!(setting.is_auto(), raw == "auto");
+        }
+        let err = ProposalHeadSetting::parse("medium").unwrap_err();
+        assert!(err.contains("`medium`") && err.contains("full, shortlist or auto"), "{err}");
+    }
 
     #[test]
     fn every_window_in_range_is_accepted() {

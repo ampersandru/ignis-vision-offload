@@ -23,6 +23,7 @@
 //! wires the kernel-leaf adapter when it lands.
 
 pub mod active;
+pub mod adaptation;
 pub mod api;
 pub mod artifact_template;
 pub mod catalog_http;

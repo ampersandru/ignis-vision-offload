@@ -202,7 +202,7 @@ use ignis_core::compute::ModelFamily;
 /// (the 27B 19 -> 70 ms a decode round, Flash-Next 4.6 tok/s), at 1.5 GiB
 /// neither moved (finding 2026-10-09-vram-headroom-wddm-paging).
 pub const DEFAULT_VRAM_HEADROOM_BYTES: u64 = 1536 * 1024 * 1024;
-pub use ignis_core::{MAX_DRAFT_TOKENS, ProposalHead, Speculation, SpeculativeBackend};
+pub use ignis_core::{MAX_DRAFT_TOKENS, ProposalHead, ProposalHeadSetting, Speculation, SpeculativeBackend};
 use ignis_core::speculation::FLASH_NEXT_DEFAULT_DRAFT_TOKENS;
 
 pub use ignis_core::{MAX_YARN_FACTOR, RopeScaling};
@@ -896,6 +896,19 @@ impl Config {
         self.card_total_bytes().and_then(profile::CardClass::of_total)
     }
 
+    /// Which of the 27B's load values its **adaptation** may lower (ADR 0063
+    /// §3): the context, the decode lanes and the drafter's head, each when
+    /// the profile or the hardcoded default gave it. The load's shape carries
+    /// it ([`crate::runtime::EngineShape::adaptable`]).
+    pub fn adaptable(&self) -> crate::adaptation::Adaptable {
+        let resolution = self.basis.resolution();
+        crate::adaptation::Adaptable {
+            max_context: resolution.adapts("model", "max_context"),
+            decode_lanes: resolution.adapts("spec", "decode_lanes"),
+            draft_head: resolution.adapts("spec", "draft_head"),
+        }
+    }
+
     /// The config file this configuration was read from — where a change to
     /// it is written down (spec config-v2/02) — or `None` without one.
     pub fn file_path(&self) -> Option<&std::path::Path> {
@@ -1368,7 +1381,9 @@ fn derive_speculation(
         }
         Some(SpecChoice::Backend(backend)) => backend,
     };
-    let head = s.draft_head.unwrap_or_default();
+    // ADR 0063: `auto` resolves here, where the load's speculation is
+    // built, as `auto` rope scaling does: to the full head, MTP's only one.
+    let head = s.draft_head.map_or(ProposalHead::Full, |setting| setting.resolve());
     if backend == SpeculativeBackend::Mtp && head != ProposalHead::Full {
         return Err(ConfigError(format!(
             "`{}`: `--spec-backend mtp` has no proposal head to choose",

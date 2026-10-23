@@ -98,6 +98,16 @@ pub struct EngineShape {
     /// [`ignis_core::RopeScaling::NONE`] is the linear one, a YaRN factor
     /// rescales the checkpoint's trained position envelope.
     pub rope_scaling: ignis_core::RopeScaling,
+    /// Whether [`Self::rope_scaling`] is `auto`'s table for
+    /// [`Self::max_context`] (ADR 0057): a context the load adapts
+    /// re-resolves it ([`Self::at`]); a spelled-out table stays.
+    pub rope_scaling_auto: bool,
+    /// Which of the 27B's context, decode lanes and drafter head its load
+    /// may lower when the VRAM plan refuses them (ADR 0063 §3): those the
+    /// profile or the hardcoded default gave
+    /// ([`crate::config::Config::adaptable`]). The default shape names
+    /// nothing, so all three adapt; Flash-Next's load adapts nothing.
+    pub adaptable: crate::adaptation::Adaptable,
     /// The 27B's prompt attention precision (`--model-prefill-attention`,
     /// GitHub #335); Flash-Next ignores it.
     pub prefill_attention: ignis_core::PrefillAttention,
@@ -150,6 +160,9 @@ impl Default for EngineShape {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
+            // `auto`, the default, is the linear table at the default context.
+            rope_scaling_auto: true,
+            adaptable: crate::adaptation::Adaptable::ALL,
             prefill_attention: ignis_core::PrefillAttention::default(),
             exception_weights: ignis_core::ExceptionWeights::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::default(),
@@ -187,6 +200,8 @@ impl From<&crate::config::Config> for EngineShape {
             decode_lanes: config.decode_lanes.unwrap_or(0),
             vision: config.vision,
             rope_scaling: config.rope_scaling,
+            rope_scaling_auto: config.settings().model.rope_scaling.is_auto(),
+            adaptable: config.adaptable(),
             prefill_attention: config.prefill_attention,
             exception_weights: config.exception_weights,
             ngram_hot_bytes: config.ngram_hot_bytes.unwrap_or_default(),
@@ -249,6 +264,45 @@ impl EngineShape {
         }
         // The config's own function (ADR 0046), from the lanes as named.
         Self { retained_host_slots: family.default_retained_host_slots(this.decode_lanes), ..this }
+    }
+
+    /// The values the 27B's adaptation starts from (ADR 0063 §3): this
+    /// shape's context, its lanes and its drafter's head.
+    pub fn adaptation_start(&self) -> crate::adaptation::Attempt {
+        crate::adaptation::Attempt {
+            max_context: self.max_context,
+            decode_lanes: self.decode_lanes_for(ignis_core::compute::ModelFamily::Qwen38_27b),
+            draft_head: self.speculation.map(|speculation| speculation.proposal_head()),
+        }
+    }
+
+    /// This 27B shape at `attempt`'s values (ADR 0063 §3), each changed only
+    /// where it differs, with what follows it: the context, and an `auto`
+    /// rope table re-resolved for it (ADR 0057); the lanes, and the host
+    /// retained slots nobody named -- two a lane (GitHub #336), and with them
+    /// the plan's per-slot pages; the drafter's head. At its own values, the
+    /// shape itself.
+    pub fn at(self, attempt: crate::adaptation::Attempt) -> Self {
+        let family = ignis_core::compute::ModelFamily::Qwen38_27b;
+        let mut shape = self;
+        if attempt.max_context != self.max_context {
+            shape.max_context = attempt.max_context;
+            if self.rope_scaling_auto {
+                shape.rope_scaling = ignis_core::RopeSetting::Auto
+                    .resolve(attempt.max_context)
+                    .expect("adaptation only lowers a context `auto` resolved");
+            }
+        }
+        if attempt.decode_lanes != self.decode_lanes_for(family) {
+            shape.decode_lanes = attempt.decode_lanes;
+            if self.prompt_reuse && !self.retained_host_named {
+                shape.retained_host_slots = family.default_retained_host_slots(attempt.decode_lanes);
+            }
+        }
+        if let (Some(head), Some(speculation)) = (attempt.draft_head, self.speculation) {
+            shape.speculation = Some(speculation.with_proposal_head(head));
+        }
+        shape
     }
 
     /// KV-disk's budget on a load of `family` (spec vram-budget/03): the
@@ -426,8 +480,14 @@ pub struct RetainedSlotsPlan {
 /// `ignis.runtime.vram_oversubscribed` warning per reason the start proceeds
 /// anyway. `process_held_bytes` is what of the free memory this process
 /// already held (GitHub #324, [`ignis_runtime::held_before_load`]).
-pub fn log_vram_plan(plan: &ignis_core::VramPlan, retained: RetainedSlotsPlan, process_held_bytes: u64) {
+/// `adapted` is every adaptation the load took to fit the plan (ADR 0063
+/// §3), in order: the event's `adapted`, empty when it took none.
+pub fn log_vram_plan(
+    plan: &ignis_core::VramPlan, retained: RetainedSlotsPlan, process_held_bytes: u64,
+    adapted: &[crate::adaptation::Step],
+) {
     let lines = plan.lines;
+    let adapted = crate::adaptation::steps_text(adapted);
     macro_rules! vram_plan_event {
         ($($mode_field:ident = $mode_value:expr),*) => {
             // hotpath-lint-allow: one line per model load.
@@ -461,6 +521,7 @@ pub fn log_vram_plan(plan: &ignis_core::VramPlan, retained: RetainedSlotsPlan, p
                 retained_device_slots = retained.device_slots,
                 retained_host_slots = retained.host_slots,
                 retained_host_bytes = retained.host_bytes,
+                adapted = %adapted,
                 "vram plan"
             )
         };
@@ -475,6 +536,21 @@ pub fn log_vram_plan(plan: &ignis_core::VramPlan, retained: RetainedSlotsPlan, p
         } => vram_plan_event!(allow_oversubscription = allow_oversubscription),
     }
     log_vram_warnings(plan);
+}
+
+/// `ignis.runtime.draft_head` (ADR 0063, spec 27b-16gb/04 AC 5): a load whose
+/// drafter's head is left to `auto` says the head `auto` chose -- the full
+/// head on every card class, the shortlist being bound beside it rather than
+/// instead of it.
+pub fn log_draft_head_auto(head: ignis_core::ProposalHead) {
+    // hotpath-lint-allow: one line per model load.
+    tracing::info!(
+        name: "ignis.runtime.draft_head",
+        setting = "auto",
+        draft_head = head.as_str(),
+        "draft_head auto -> {}",
+        head.as_str()
+    );
 }
 
 /// A Flash-Next load the host plan refused (spec flash-next/03), as an agent
@@ -804,7 +880,9 @@ pub fn cuda_scheduler_with_thinking_close(
     thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
     kv_disk_location: &ignis_core::ngram_cache::CacheLocation,
 ) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations), String> {
-    qwen27b_load(artifact_path, model_id, eos, shape, thinking_close, kv_disk_location).map_err(|e| e.to_string())
+    qwen27b_load(artifact_path, model_id, eos, shape, thinking_close, kv_disk_location)
+        .map(|(scheduler, reserved, _)| (scheduler, reserved))
+        .map_err(|e| e.to_string())
 }
 
 /// GitHub #341: what a wider prefill chunk's workspace takes from the KV pool, if anything.
@@ -820,9 +898,36 @@ pub(crate) fn model_scope_27b(shape: &EngineShape) -> ignis_artifact::ModelScope
     ignis_core::model_load::model_scope(shape.speculation, shape.vision, shape.exception_weights)
 }
 
+/// A scope the binder bound, with its plan and handles.
+#[cfg(feature = "cuda")]
+type BoundScope = (ignis_artifact::ModelScope, ignis_artifact::MaterializationPlan, Vec<ignis_artifact::ObjectHandle>);
+
+/// The binder's plan and handles for `scope`, bound the first time a load
+/// asks for it: adaptation plans at a second scope only when it drops the
+/// shortlist head (ADR 0063 §3), which is bound beside the full one.
+#[cfg(feature = "cuda")]
+fn bound_scope<'a>(
+    reader: &ignis_artifact::Reader,
+    bound: &'a mut Vec<BoundScope>,
+    scope: ignis_artifact::ModelScope,
+) -> Result<&'a BoundScope, String> {
+    let at = match bound.iter().position(|(bound_scope, ..)| *bound_scope == scope) {
+        Some(at) => at,
+        None => {
+            let (plan, handles) =
+                ignis_artifact::bind_model_scope_27b_with(reader, scope).map_err(|e| format!("bind model scope: {e}"))?;
+            bound.push((scope, plan, handles));
+            bound.len() - 1
+        }
+    };
+    Ok(&bound[at])
+}
+
 /// [`cuda_scheduler_with_thinking_close`], with a host plan's refusal kept
 /// whole ([`Qwen27bLoadError::HostPlan`], ADR 0062): the server's load reads
-/// it.
+/// it. Beside the scheduler and its reservations, the shape the load runs:
+/// `shape` at the values its adaptation kept (ADR 0063 §3) -- `shape`
+/// itself when the plan fit as configured.
 #[cfg(feature = "cuda")]
 pub(crate) fn qwen27b_load(
     artifact_path: &std::path::Path,
@@ -831,17 +936,12 @@ pub(crate) fn qwen27b_load(
     shape: EngineShape,
     thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
     kv_disk_location: &ignis_core::ngram_cache::CacheLocation,
-) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations), Qwen27bLoadError> {
-    use ignis_artifact::{CudaDevice, Reader, bind_model_scope_27b_with, materialize};
+) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations, EngineShape), Qwen27bLoadError> {
+    use crate::adaptation::{AdaptError, Planned};
+    use ignis_artifact::{CudaDevice, Reader, materialize};
     use ignis_runtime::{CudaLeaf, KV_PAGE_TOKENS};
 
     let reader = Reader::open(artifact_path).map_err(|e| format!("open artifact: {e}"))?;
-    // P5-02 (GitHub #150) / GitHub #177: the drafter's and the vision tower's
-    // objects are bound and uploaded only when the operator asked for them;
-    // otherwise the plan is the text scope's alone, as before.
-    let scope = model_scope_27b(&shape);
-    let (plan, handles) =
-        bind_model_scope_27b_with(&reader, scope).map_err(|e| format!("bind model scope: {e}"))?;
     // GitHub #210: what is free before this process holds anything, as NVML
     // (and so nvidia-smi and Task Manager) reports it, read before the context
     // exists; the context is a plan line. Not `cudaMemGetInfo`, which on
@@ -854,8 +954,57 @@ pub(crate) fn qwen27b_load(
     let free_at_start_bytes = nvml_free_bytes + process_held_bytes;
     let mut device = CudaDevice::create(0).map_err(|e| format!("CUDA device: {e}"))?;
     let geometry = ignis_core::KvGeometry::qwen38_27b();
-    let planning = leaf_config_for_shape(shape, 0);
-    let reservations = planning.plan_reservations(&reader, &plan, &handles)?;
+    // ADR 0063 §3: the plan at the shape's values, and when it refuses them
+    // below its minimum, at each adaptation's in turn -- the leaf's lines
+    // planned again at the attempt's context (the hq prompt planes, the rope
+    // table), lanes and head, before anything is allocated.
+    // P5-02 (GitHub #150) / GitHub #177: the drafter's and the vision tower's
+    // objects are bound and uploaded only when the operator asked for them;
+    // otherwise the plan is the text scope's alone, as before.
+    let mut bound = Vec::new();
+    let adapted = crate::adaptation::adapt(shape.adaptation_start(), shape.adaptable, |attempt| {
+        let shape = shape.at(attempt);
+        let (_, plan, handles) = bound_scope(&reader, &mut bound, model_scope_27b(&shape))?;
+        let planning = leaf_config_for_shape(shape, 0);
+        let reservations = planning.plan_reservations(&reader, plan, handles)?;
+        // Asked once where its error can surface: the plan below reads a
+        // pool the leaf refuses to plan as one that never fits.
+        planning.kv_pool_arena_bytes(1)?;
+        let kv_arena_bytes = |pages: u32| planning.kv_pool_arena_bytes(pages).unwrap_or(u64::MAX);
+        let planned = ignis_core::plan_vram(&ignis_core::VramRequest {
+            mode: shape.vram,
+            free_at_start_bytes,
+            lines: vram_lines(plan.device_capacity_bytes, reservations.reserved),
+            kv_page_bytes: shape.kv_format.page_bytes(geometry),
+            max_context_tokens: shape.max_context,
+            // Every retained slot keeps one tail page, whichever kind it is.
+            retained_slots: shape.retained_slots(),
+            kv_pool: shape.kv_pool,
+            // ADR 0045: every weight is a line, so the pool takes the rest.
+            residency: ignis_core::Residency::Resident,
+            // GitHub #243: only so a refusal names the knob the operator set.
+            embedding_pool_named: shape
+                .vision
+                .is_some_and(|v| v.requested_pool_bytes() != ignis_core::vision::DEFAULT_EMBEDDING_POOL_BYTES),
+            kv_arena_bytes: &kv_arena_bytes,
+            // Windows WDDM pages an oversubscribed device allocation to system
+            // RAM; elsewhere it fails.
+            can_page: cfg!(windows),
+        });
+        Ok::<_, String>(match planned {
+            Ok(vram) => Planned::Fits { kv_tokens: vram.kv_token_capacity(), plan: (vram, reservations) },
+            Err(refusal) => Planned::Refused(refusal),
+        })
+    })
+    .map_err(|error| match error {
+        AdaptError::Refused(refused) => refused.to_string(),
+        AdaptError::Failed(error) => error,
+    })?;
+    let shape = shape.at(adapted.attempt);
+    let (vram, reservations) = adapted.plan;
+    let scope = model_scope_27b(&shape);
+    let at = bound.iter().position(|(bound_scope, ..)| *bound_scope == scope).expect("the kept plan's scope is bound");
+    let (_, plan, handles) = bound.swap_remove(at);
     if shape.prefill_chunk > ignis_runtime::DEFAULT_PREFILL_CHUNK {
         let narrow = EngineShape { prefill_chunk: ignis_runtime::DEFAULT_PREFILL_CHUNK, ..shape };
         let narrow = leaf_config_for_shape(narrow, 0).plan_reservations(&reader, &plan, &handles)?;
@@ -870,31 +1019,6 @@ pub(crate) fn qwen27b_load(
             );
         }
     }
-    // Asked once where its error can surface: the plan below reads a pool the
-    // leaf refuses to plan as one that never fits.
-    planning.kv_pool_arena_bytes(1)?;
-    let kv_arena_bytes = |pages: u32| planning.kv_pool_arena_bytes(pages).unwrap_or(u64::MAX);
-    let vram = ignis_core::plan_vram(&ignis_core::VramRequest {
-        mode: shape.vram,
-        free_at_start_bytes,
-        lines: vram_lines(plan.device_capacity_bytes, reservations.reserved),
-        kv_page_bytes: shape.kv_format.page_bytes(geometry),
-        max_context_tokens: shape.max_context,
-        // Every retained slot keeps one tail page, whichever kind it is.
-        retained_slots: shape.retained_slots(),
-        kv_pool: shape.kv_pool,
-        // ADR 0045: every weight is a line, so the pool takes the rest.
-        residency: ignis_core::Residency::Resident,
-        // GitHub #243: only so a refusal names the knob the operator set.
-        embedding_pool_named: shape
-            .vision
-            .is_some_and(|v| v.requested_pool_bytes() != ignis_core::vision::DEFAULT_EMBEDDING_POOL_BYTES),
-        kv_arena_bytes: &kv_arena_bytes,
-        // Windows WDDM pages an oversubscribed device allocation to system
-        // RAM; elsewhere it fails.
-        can_page: cfg!(windows),
-    })
-    .map_err(|e| e.to_string())?;
     log_vram_plan(
         &vram,
         RetainedSlotsPlan {
@@ -903,6 +1027,7 @@ pub(crate) fn qwen27b_load(
             host_bytes: reservations.retained_host_bytes,
         },
         process_held_bytes,
+        &adapted.steps,
     );
     // ADR 0062: the host plan, measured before the first pinned allocation
     // (the token embedding's, at materialization): the table, KV-disk's
@@ -1052,7 +1177,7 @@ pub(crate) fn qwen27b_load(
         kv_disk_bytes,
         flash_next: None,
     };
-    Ok((sched, reserved))
+    Ok((sched, reserved, shape))
 }
 
 /// GitHub #302: the scheduler for a Qwen3.8-Flash-Next artifact, over
@@ -1816,6 +1941,8 @@ mod tests {
             decode_lanes: 0,
             vision: None,
             rope_scaling: ignis_core::RopeScaling::NONE,
+            rope_scaling_auto: false,
+            adaptable: crate::adaptation::Adaptable::default(),
             prefill_attention: ignis_core::PrefillAttention::default(),
             exception_weights: ignis_core::ExceptionWeights::default(),
             ngram_hot_bytes: ignis_core::ngram_table::HotBudget::Auto,
@@ -1860,6 +1987,53 @@ mod tests {
                 assert_eq!(scheduler_config_for_shape("m".into(), shape, 64, 1024, 8).default_max_tokens, cap, "{family} {flags:?}");
             }
         }
+    }
+
+    /// The 27B's shape under `rtx5090` with `flags`, as its load is handed it.
+    fn rtx5090_27b(flags: &[&str]) -> EngineShape {
+        let args: Vec<String> = flags.iter().map(|flag| flag.to_string()).collect();
+        let crate::config::ConfigOutcome::Config(config) = crate::config::resolve(&args, |_| None).expect("resolve") else {
+            panic!("expected a runnable config");
+        };
+        EngineShape::from(&config.for_family(ignis_core::compute::ModelFamily::Qwen38_27b).expect("the 27B"))
+    }
+
+    /// ADR 0063 §3: the shape carries what may adapt, and at an adapted
+    /// attempt re-resolves what follows its values -- an `auto` rope table
+    /// for the context (ADR 0057; a spelled-out one stays), the host retained
+    /// slots nobody named for the lanes (two a lane), the drafter's head.
+    #[test]
+    fn a_shape_at_an_adapted_attempt_re_resolves_what_follows_its_values() {
+        use crate::adaptation::{Adaptable, Attempt};
+        use ignis_core::{ProposalHead, RopeScaling};
+        let shape = rtx5090_27b(&[]);
+        assert_eq!(shape.adaptable, Adaptable::ALL);
+        assert_eq!(rtx5090_27b(&["--model-max-context", "131072"]).adaptable, Adaptable { max_context: false, ..Adaptable::ALL });
+        assert!(shape.rope_scaling_auto);
+        assert_eq!((shape.max_context, shape.rope_scaling.factor()), (917_504, 3.5));
+        let start = shape.adaptation_start();
+        assert_eq!(start, Attempt { max_context: 917_504, decode_lanes: 8, draft_head: Some(ProposalHead::Full) });
+        assert_eq!(shape.at(start), shape, "at its own values, itself");
+
+        let narrower = shape.at(Attempt { max_context: 786_432, ..start });
+        assert_eq!((narrower.max_context, narrower.rope_scaling.factor()), (786_432, 3.0), "auto re-resolved");
+        assert_eq!(shape.at(Attempt { max_context: 196_608, ..start }).rope_scaling, RopeScaling::NONE, "within the trained positions");
+        let fixed = rtx5090_27b(&["--model-rope-scaling", "yarn:4"]);
+        assert!(!fixed.rope_scaling_auto);
+        assert_eq!(fixed.at(Attempt { max_context: 786_432, ..start }).rope_scaling, fixed.rope_scaling, "a spelled-out table stays");
+
+        let one = shape.at(Attempt { decode_lanes: 1, ..start });
+        assert_eq!((one.decode_lanes_for(ignis_core::compute::ModelFamily::Qwen38_27b), one.retained_host_slots), (1, 2));
+        assert_eq!((one.max_context, one.rope_scaling), (shape.max_context, shape.rope_scaling));
+        let named = rtx5090_27b(&["--reuse-retained-host", "16"]);
+        assert_eq!(named.at(Attempt { decode_lanes: 1, ..start }).retained_host_slots, 16, "a named count stays");
+        let off = rtx5090_27b(&["--reuse-prompt", "off"]);
+        assert_eq!(off.at(Attempt { decode_lanes: 1, ..start }).retained_host_slots, 0, "reuse off keeps none");
+
+        let full = shape.at(Attempt { draft_head: Some(ProposalHead::Full), ..start });
+        assert_eq!(full, shape);
+        let short = Attempt { draft_head: Some(ProposalHead::Shortlist), ..start };
+        assert_eq!(shape.at(short).speculation.map(|s| s.proposal_head()), Some(ProposalHead::Shortlist));
     }
 
     /// GitHub #336: a load's scheduler holds no more requests in flight, in
@@ -1982,11 +2156,15 @@ mod tests {
     };
 
     fn captured_vram_plan(plan: &ignis_core::VramPlan) -> Vec<serde_json::Value> {
+        captured_adapted_vram_plan(plan, &[])
+    }
+
+    fn captured_adapted_vram_plan(plan: &ignis_core::VramPlan, adapted: &[crate::adaptation::Step]) -> Vec<serde_json::Value> {
         use tracing_subscriber::layer::SubscriberExt;
         let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
         let subscriber =
             tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
-        tracing::subscriber::with_default(subscriber, || log_vram_plan(plan, DEFAULT_RETAINED, PROCESS_HELD));
+        tracing::subscriber::with_default(subscriber, || log_vram_plan(plan, DEFAULT_RETAINED, PROCESS_HELD, adapted));
         sink.lines()
             .iter()
             .map(|line| serde_json::from_str(line).expect("valid json"))
@@ -2230,6 +2408,45 @@ mod tests {
         assert_eq!(field("retained_device_slots"), DEFAULT_RETAINED.device_slots);
         assert_eq!(field("retained_host_slots"), DEFAULT_RETAINED.host_slots);
         assert_eq!(field("retained_host_bytes"), DEFAULT_RETAINED.host_bytes);
+        // ADR 0063 §3: a load that adapted nothing says so.
+        assert_eq!(field("adapted"), "");
+    }
+
+    /// ADR 0063 §3 (AC 4): the plan event names every adaptation the load
+    /// took, in the order taken, as one list.
+    #[test]
+    fn the_vram_plan_event_names_the_adaptations_the_load_took() {
+        use crate::adaptation::Step;
+        let plan = plan_for(ignis_core::VramMode::Derived { headroom_bytes: 1 << 30 }, 30 << 30);
+        let steps = [
+            Step::DraftHead { from: ignis_core::ProposalHead::Shortlist, to: ignis_core::ProposalHead::Full },
+            Step::DecodeLanes { from: 2, to: 1 },
+            Step::MaxContext { from: 262_144, to: 196_608, second_reservation: true },
+        ];
+        let records = captured_adapted_vram_plan(&plan, &steps);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(
+            records[0]["attributes"]["adapted"],
+            "draft_head shortlist -> full, decode_lanes 2 -> 1, max_context 262144 -> 196608",
+            "{}",
+            records[0]
+        );
+    }
+
+    /// ADR 0063 (AC 5): a drafter whose head is left to `auto` says what
+    /// `auto` chose.
+    #[test]
+    fn a_draft_head_left_to_auto_logs_what_it_resolved_to() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let sink = std::sync::Arc::new(ignis_logging::MemorySink::new());
+        let subscriber = tracing_subscriber::registry().with(ignis_logging::JsonLayer::new(sink.clone()));
+        tracing::subscriber::with_default(subscriber, || log_draft_head_auto(ignis_core::ProposalHead::Full));
+        let events: Vec<serde_json::Value> = sink.lines().iter().map(|line| serde_json::from_str(line).expect("json")).collect();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event["event_name"], "ignis.runtime.draft_head", "{event}");
+        assert_eq!(event["body"], "draft_head auto -> full");
+        assert_eq!((&event["attributes"]["setting"], &event["attributes"]["draft_head"]), (&"auto".into(), &"full".into()));
     }
 
     #[test]

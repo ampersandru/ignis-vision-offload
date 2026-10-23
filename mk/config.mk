@@ -177,7 +177,8 @@ STREAM_TIMEOUT ?=
 SPEC ?= dflash2
 DRAFT_TOKENS ?= 7
 # The drafter's proposal head (--spec-draft-head): empty = the server's default
-# (full), shortlist = the artifact's Q4 head over the most frequent tokens.
+# (full), shortlist = the artifact's Q4 head over the most frequent tokens,
+# auto = full on every card class (ADR 0063).
 DRAFT_HEAD ?=
 # The KV pool (--vram-kv-pool-bytes): a byte count (4G) or tokens (512Ktok), on
 # both models. Empty = the policy's (ADR 0045): the rest of the VRAM budget

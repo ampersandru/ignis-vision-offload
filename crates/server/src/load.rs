@@ -499,7 +499,8 @@ fn cuda_image_runner(
 }
 
 /// The GPU-backed scheduler for `artifact` (GitHub #61 / P1-25), logged as
-/// `ignis.model.loaded` with the shape it was built with.
+/// `ignis.model.loaded` with the shape it runs: the 27B's at the values its
+/// adaptation kept (ADR 0063 §3).
 #[cfg(feature = "cuda")]
 fn cuda_scheduler_for(
     artifact: &std::path::Path,
@@ -522,6 +523,10 @@ fn cuda_scheduler_for(
         }),
         ..shape
     };
+    // ADR 0063 (AC 5): a drafter's head left to `auto` says what it chose.
+    if let Some(speculation) = shape.speculation.filter(|_| config.settings().spec.draft_head.is_some_and(|head| head.is_auto())) {
+        crate::runtime::log_draft_head_auto(speculation.proposal_head());
+    }
     // GitHub #302: a Flash-Next artifact runs its own program and leaf.
     let loaded = match family {
         ModelFamily::FlashNext => crate::runtime::flash_next_load(
@@ -533,6 +538,7 @@ fn cuda_scheduler_for(
             config.ngram_cache.clone(),
             &config.kv_disk_location,
         )
+        .map(|(scheduler, reserved)| (scheduler, reserved, shape))
         .map_err(|error| LoadError::from_flash_next(error, config)),
         ModelFamily::Qwen38_27b => crate::runtime::qwen27b_load(
             artifact,
@@ -547,7 +553,9 @@ fn cuda_scheduler_for(
         // it, never this.
         ModelFamily::QwenImage21 => Err(LoadError::LoadFailed(format!("{} has no token scheduler", family.name()))),
     };
-    let (scheduler, reserved) = loaded?;
+    // The 27B's context, lanes and head are the ones its plan kept, and so
+    // its rope table: what the scheduler admits and `GET /v1/models` says.
+    let (scheduler, reserved, shape) = loaded?;
     tracing::info!(
         name: "ignis.model.loaded",
         artifact = %artifact.display(),

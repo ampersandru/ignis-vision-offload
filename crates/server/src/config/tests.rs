@@ -1629,6 +1629,21 @@ fn the_draft_head_defaults_to_full_and_takes_shortlist_by_flag_or_env() {
     assert_eq!(from_env.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Shortlist));
 }
 
+/// ADR 0063: `auto` is a third spelling of the head, which the config keeps
+/// as given and the load's speculation resolves to the full head -- with
+/// DFlash2, and with MTP, whose only head it is.
+#[test]
+fn the_draft_head_auto_is_kept_as_configured_and_resolves_to_full() {
+    let auto = config(&["--spec-backend", "dflash2", "--spec-draft-tokens", "7", "--spec-draft-head", "auto"]);
+    assert_eq!(auto.settings().spec.draft_head, Some(ProposalHeadSetting::Auto));
+    assert_eq!(auto.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Full));
+    let mtp = config(&["--spec-backend", "mtp", "--spec-draft-head", "auto"]);
+    assert_eq!(mtp.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Full), "mtp's one head");
+    // Without a backend there is still nothing to choose.
+    let err = refused(&["--spec-draft-head", "auto"]);
+    assert!(err.contains("--spec-draft-head auto") && err.contains("--spec-backend"), "{err}");
+}
+
 #[test]
 fn a_draft_head_without_spec_or_with_an_unknown_name_is_refused() {
     let err = refused(&["--spec-draft-head", "shortlist"]);
@@ -2812,7 +2827,45 @@ fn the_rtx50_16gb_profile_serves_the_27b_text_only_and_flash_next_starts_under_i
     assert_eq!(s27.settings().model.prefill_chunk, DEFAULT_PREFILL_CHUNK, "unset: 1,024");
     assert!(s27.speculation.is_some(), "DFlash2 is on");
     assert_eq!(s27.settings().spec.draft_tokens, Some(7));
-    config.for_family(ModelFamily::FlashNext).expect("Flash-Next starts under the 27B's profile");
+    // ADR 0063: two lanes, their four default host retained slots, and the
+    // head left to `auto`, which is the full head.
+    assert_eq!(s27.decode_lanes, Some(2));
+    assert_eq!(s27.retained_host_slots, 4, "two per lane");
+    assert_eq!(s27.settings().spec.draft_head, Some(ProposalHeadSetting::Auto));
+    assert_eq!(s27.speculation.map(|s| s.proposal_head()), Some(ProposalHead::Full));
+    assert_eq!(s27.adaptable(), crate::adaptation::Adaptable::ALL, "every value the profile's, so every one adapts");
+    let flash = config.for_family(ModelFamily::FlashNext).expect("Flash-Next starts under the 27B's profile");
+    assert_eq!(flash.decode_lanes, None, "the 27B's lanes are its own section's");
+}
+
+/// ADR 0063 §3: a value the profile or the hardcoded default gave adapts at
+/// load; one the operator wrote -- by flag, env or file, even a file's value
+/// at the hardcoded default -- never does, each of the three alone.
+#[test]
+fn only_the_profiles_and_the_defaults_values_adapt() {
+    use crate::adaptation::Adaptable;
+    let qwen = |config: Config| config.for_family(ModelFamily::Qwen38_27b).unwrap().adaptable();
+    assert_eq!(qwen(config(&[])), Adaptable::ALL, "rtx5090's context, the default lanes and head");
+    assert_eq!(qwen(config(&["--model-max-context", "131072"])), Adaptable { max_context: false, ..Adaptable::ALL });
+    let env = env_map(&[("IGNIS_QWEN38_SPEC_DECODE_LANES", "2")]);
+    assert_eq!(qwen(expect_config(resolve(&[], env).unwrap())), Adaptable { decode_lanes: false, ..Adaptable::ALL });
+    let files = MemFiles::with(&[
+        ("head.yaml", "spec:
+  backend: dflash2
+  draft_tokens: 7
+  draft_head: auto
+"),
+        ("default.yaml", "model:
+  max_context: 40960
+"),
+    ]);
+    let head = with_files(&["--config", "head.yaml"], no_env, &files).unwrap();
+    assert_eq!(qwen(head), Adaptable { draft_head: false, ..Adaptable::ALL }, "an explicit `auto` too");
+    let default = with_files(&["--config", "default.yaml"], no_env, &files).unwrap();
+    assert_eq!(default.max_context, DEFAULT_MAX_CONTEXT);
+    assert!(!qwen(default).max_context, "a file's value is explicit, at the default or not");
+    // `--profile none`: the hardcoded defaults adapt as a profile's would.
+    assert_eq!(qwen(config(&["--profile", "none"])), Adaptable::ALL);
 }
 
 /// The startup line says whether the profile was chosen by `auto` or named.

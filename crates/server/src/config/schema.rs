@@ -549,10 +549,12 @@ config_group! {
         /// one `max_context` and a page per retained slot. Unset, the model's
         /// own: 8 on the 27B, 3 on Flash-Next.
         decode_lanes: Opt<Lanes> = None, between(1, ignis_core::N_DECODE_LANES as i64), ALL, [Visible, Patchable, ReloadRequired, Scoped];
-        /// The drafter's proposal head: `full` (the target's output head) or
+        /// The drafter's proposal head: `full` (the target's output head),
         /// `shortlist` (the artifact's Q4 head over the 131,072 most frequent
-        /// tokens, +356 MB of VRAM). Needs a backend; `mtp` has only `full`.
-        draft_head: Opt<DraftHead> = None, Validator::OneOf(&["full", "shortlist"]), ALL, [Visible, Patchable, ReloadRequired, Scoped];
+        /// tokens, +356 MB of VRAM) or `auto` (`full` on every card class: the
+        /// shortlist frees no VRAM and measured slower). Needs a backend; `mtp`
+        /// has only `full`. Unset, `full`.
+        draft_head: Opt<DraftHead> = None, Validator::OneOf(&["full", "shortlist", "auto"]), ALL, [Visible, Patchable, ReloadRequired, Scoped];
     }
 }
 

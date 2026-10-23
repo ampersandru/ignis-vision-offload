@@ -443,10 +443,36 @@ the profile it resolved to. A build without CUDA has no card, so `auto` there is
   auto` picks it on this card; `--profile rtxpro6000` names it.
 - `rtx50-16gb` is the 16 GB class (RTX 5060 Ti 16 GB, 5070 Ti, 5080): derived,
   not measured, since no 16 GB card exists in the project. The 27B at
-  262,144 tokens of context with DFlash2 at 7 draft tokens and vision off, the
-  VRAM headroom of the 5090's 27B (1200M) and a 1,024-token prefill chunk.
+  262,144 tokens of context on two decode lanes, with DFlash2 at 7 draft
+  tokens and the drafter's head `auto`, vision off, the VRAM headroom of the
+  5090's 27B (1200M) and a 1,024-token prefill chunk.
   It names no model: a start with no artifact takes the catalog's 16 GB entry
   of the default id.
+
+**Adaptation.** A profile's values, and the built-in defaults, are what the
+27B asks for, not what it insists on: when the VRAM plan cannot hold them in
+the memory the start finds free, the load lowers them, in this order, and
+plans again after each step:
+
+1. the drafter's head: a `shortlist` from a profile falls to `full` (the
+   shortlist is bound beside the full head and costs ~357 MB);
+2. `--model-max-context`, down 65,536 tokens at a time to 65,536, keeping the
+   largest context at which the KV pool holds one whole sequence and one more
+   65,536-token request (at one lane, the sequence alone);
+3. `--spec-decode-lanes` to 1, after which the context steps down again from
+   the profile's value.
+
+A start that fits as configured changes nothing. A value you name (a flag, an
+env var, the config file, a live patch) never adapts: with the lanes named,
+the context steps down to the largest the plan holds and says it left no room
+for a second request. The `ignis.runtime.vram_plan` log event lists every step
+taken in `adapted` (`max_context 917504 -> 786432, decode_lanes 2 -> 1`), empty
+when none was; `GET /v1/models` reports the context the load runs
+(`max_model_len`), while `GET /v1/config` keeps the value configured. When not
+even 65,536 tokens on one lane fit, the start is refused with that plan's
+deficit and every step it tried. DFlash2 is never switched off, and a budget
+named with `--vram-allow-oversubscription` never adapts. Flash-Next does not
+adapt: its expert cache takes what the plan leaves.
 
 A file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
 card. `auto` picks the class's profile by name, the lookup a named profile
@@ -556,7 +582,7 @@ change does not reach and a `null` removes.
 | `--spec-backend <backend>` | `IGNIS_SPEC_BACKEND` | unset | Speculative decoding backend: `dflash2` (Qwen3.8-27B), `mtp` (Qwen3.8-Flash-Next, see [below](#flash-next-speculation-mtp)), `off`, or unset for none. |
 | `--spec-draft-tokens <n>` | `IGNIS_SPEC_DRAFT_TOKENS` | — | 1..7. Required with `--spec-backend dflash2`; with `--spec-backend mtp` the most drafts a lane verifies per round (default 2). |
 | `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..32. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only, and past 8 five to eight lanes draft too (`16`: 3 drafts up to four lanes, 2 at five, 1 from six to eight). A budget past 8 reserves the wider rounds' VRAM, taken from the expert cache: about 50 MB at 16 rows. Past 8 the round is held numerically equivalent to speculation off, not token for token: greedy output may differ from it where two tokens are nearly tied ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)). Measured slower than 8 on both the RTX 5090 and the RTX PRO 6000 ([below](#flash-next-speculation-mtp)). (`make` knob `DRAFT_ROWS`.) |
-| `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head) or `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, +356 MB of VRAM). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
+| `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head), `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, +356 MB of VRAM: it is loaded beside the full head) or `auto` (`full` on every card, the `rtx50-16gb` profile's value; the load logs `draft_head auto -> full`). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
 | `--model-rope-scaling <spec>` | `IGNIS_MODEL_ROPE_SCALING` | `auto` | `auto` decides from the model's `--model-max-context`: no scaling up to the checkpoint's trained 262,144 positions, else YaRN at `max_context / 262,144` (524,288 is 2, 786,432 is 3, 1,048,576 is 4); past 64x (16,777,216 tokens) the start is refused. `none` is the linear table whatever the context; `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]` rescales the envelope by `F` in (1, 64]. An explicit value overrides `auto`. Both models apply it; on Flash-Next one table serves attention, its sparse-attention indexer and the MTP head, with YaRN's attention factor on queries and keys alike, as the model's reference implementations apply it ([ADR 0059](../adr/0059-flash-next-applies-yarn-on-q-and-k.md)). The load log (`ignis.model.loaded`) names the table run (`rope_scaling`) beside the setting (`rope_scaling_setting`). (`make` knob `ROPE_SCALING`.) |
 
 ### Flash-Next speculation (MTP)

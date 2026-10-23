@@ -394,6 +394,15 @@ impl Resolution {
     pub fn explicit(&self, group: &str, name: &str) -> bool {
         self.origin(group, name).is_some_and(|origin| origin.source.explicit() && !origin.at_default)
     }
+
+    /// Whether `<group>.<name>`'s value is the profile's or the hardcoded
+    /// default's: what a load's **adaptation** may lower (ADR 0063 §3). By
+    /// source alone -- a value the operator wrote never adapts, not even one
+    /// equal to the default, since a file `config generate` wrote names the
+    /// numbers of the card it was generated on.
+    pub fn adapts(&self, group: &str, name: &str) -> bool {
+        !self.origin(group, name).is_some_and(|origin| origin.source.explicit())
+    }
 }
 
 /// Resolve every field of `sources` for `family` (`None`: before any

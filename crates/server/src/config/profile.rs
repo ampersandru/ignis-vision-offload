@@ -190,9 +190,11 @@ pub const NONE_PROFILE: &str = "none";
 /// vision off the workspace is the text scratch, and 2,048 would cost ~0.4 GB of
 /// KV pool. The profile names no model: a start with no artifact resolves the
 /// default id `qwen3.8-27b` through the catalog's class-aware alias to the 16 GB
-/// entry. NOT YET here, added when their fields land: `spec.qwen38.decode_lanes:
-/// 2` (the 27B takes `spec.decode_lanes`) and `spec.draft_head: auto` (the
-/// load-time adaptation). No other card ships a profile; a config file's
+/// entry. The 27B decodes two lanes, where eight would leave no room for its
+/// context, and leaves the drafter's head to `auto`, the full head (ADR 0063).
+/// Every one of these is a default the load adapts when the free memory it
+/// finds cannot hold it: the head, then the context down to 65,536, then one
+/// lane (ADR 0063 §3). No other card ships a profile; a config file's
 /// `profiles:` defines one for any other card.
 const BUILT_IN: &str = r#"{
     "rtx5090": {
@@ -232,7 +234,7 @@ const BUILT_IN: &str = r#"{
         },
         "vision": { "enabled": false },
         "spec": {
-            "qwen38": { "backend": "dflash2", "draft_tokens": 7 }
+            "qwen38": { "backend": "dflash2", "draft_tokens": 7, "decode_lanes": 2, "draft_head": "auto" }
         }
     }
 }"#;
