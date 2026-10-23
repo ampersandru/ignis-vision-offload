@@ -169,6 +169,12 @@ pub fn held_before_load(context_created: bool, qwen27b_state_charged: bool) -> u
 /// free-memory delta does not measure it: it moves with every process on the
 /// card (14 MB over the plan on 2026-10-14, 86 MB on this run). It was
 /// 88,028,656 B on 2026-09-17, at 262K with `--vision-enabled`.
+///
+/// Measured at eight decode lanes, whose decode and verify graphs are
+/// captured at every width up to eight, sixteen captures in all. A load of
+/// fewer lanes (GitHub #336) captures fewer and charges the same figure: the
+/// line over-reserves there -- conservative, never short -- until a load at
+/// its own lanes is measured.
 pub const LOAD_RESIDUAL_BYTES: u64 = 124_474_800;
 
 /// Device bytes a load holds beside its weights, line by line as the VRAM
