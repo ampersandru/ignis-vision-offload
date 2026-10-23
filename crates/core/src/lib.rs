@@ -99,6 +99,8 @@ pub mod speculation;
 pub mod thinking_budget;
 #[cfg(feature = "cuda")]
 pub mod step;
+#[cfg(feature = "cuda")]
+pub mod trellis;
 pub mod types;
 pub mod vision;
 pub mod vram;
