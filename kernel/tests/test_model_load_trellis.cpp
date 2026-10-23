@@ -15,16 +15,27 @@
 // - the trellis workspace is a plan line: the widest of the body's calls at
 //   1..64 tokens and the chunk and of the head's at a round's columns or a
 //   span-logits block, asked of the op on this device -- and 0 on the served
-//   body, whose plan is otherwise what it was.
+//   body, whose plan is otherwise what it was;
+// - the two lines the trellis body changes besides its own, `workspace` and
+//   `decode_graph`, are their closed forms (spec 05a's As built, "The plan's
+//   trellis lines"): the program's outer buffers and the wider of the two
+//   layers -- each its activations, the vendored queries the trellis body
+//   keeps (the GQA attention's, the GDN gating's and recurrence's) and, on the
+//   GQA layer, the q | gate buffer; no projection workspace -- at the 16 GiB
+//   load's shape.
 //
 // The op's workspace query needs a prepared device (the decode route splits
 // for its SM count), so this runs on the GPU like every CTest here. ADR 0006 /
 // docs/agents/testing.md: no SKIP_RETURN_CODE, so nothing here reads as a
 // skip; a host without a device fails.
 
+#include "ignis_gqa_workspace.h"
 #include "ignis_model.h"
 #include "ignis_seq.h"
 #include "ignis_trellis_linear.h"
+
+#include "ninfer/ops/gated_delta_net.h"
+#include "ninfer/ops/gdn_gating_proj.h"
 
 #include <cuda_runtime.h>
 
@@ -61,6 +72,7 @@ constexpr int32_t kKeyWidth = 16 * 128;
 constexpr int32_t kStateRows = kValueHeads * 128;
 constexpr int32_t kConvChannels = 2 * kKeyWidth + kStateRows;
 constexpr uint32_t kChunk = 1024;
+constexpr uint32_t kMaxContext = 4096;
 
 struct Topology {
   std::vector<int32_t> kinds;
@@ -201,7 +213,7 @@ struct Plan {
 };
 
 Plan plan(const std::vector<Entry> &entries, const Topology &topology, uint32_t lanes, int32_t backend = 0,
-          uint32_t draft_tokens = 0) {
+          uint32_t draft_tokens = 0, uint32_t max_context = kMaxContext) {
   std::vector<ignis_bound_tensor> tensors;
   for (const Entry &e : entries) {
     ignis_bound_tensor t{};
@@ -225,7 +237,7 @@ Plan plan(const std::vector<Entry> &entries, const Topology &topology, uint32_t 
   options.speculative_backend = backend;
   options.draft_tokens = draft_tokens;
   Plan p;
-  p.rc = ignis_model_plan_reservations(tensors.data(), tensors.size(), &topology.raw, kChunk, 4096,
+  p.rc = ignis_model_plan_reservations(tensors.data(), tensors.size(), &topology.raw, kChunk, max_context,
                                        IGNIS_KV_FORMAT_HQ_E8_2B, &options, &p.reserved);
   if (p.rc != 0) p.error = ignis_model_last_error();
   return p;
@@ -251,6 +263,46 @@ uint64_t expected_line(uint32_t head_tokens) {
     line = std::max(line, ignis_trellis_workspace_bytes(kHidden, kVocab, 1, t));
   }
   return line;
+}
+
+// The closed forms of the trellis body's `workspace` and `decode_graph`
+// (kernel/src/model.cu's `compute_program_scratch_bytes` over its trellis
+// arms), every buffer rounded to the arena's 256 bytes as the arena does.
+uint64_t aligned(uint64_t bytes) { return (bytes + 255) / 256 * 256; }
+uint64_t bf16(uint64_t elements) { return aligned(2 * elements); }
+uint64_t word(uint64_t elements) { return aligned(4 * elements); }
+
+// The program's outer scope at `T` columns a row, `B` rows: token ids, the
+// residual pair, the final norm (one column a row, or every column on a
+// verify round) and one row's logits a lane.
+uint64_t outer_bytes(uint64_t T, uint64_t B, bool head_every_column) {
+  const uint64_t c = T * B;
+  return word(c) + 2 * bf16(kHidden * c) + bf16(kHidden * (head_every_column ? c : B)) + bf16(kVocab * B) +
+         word(1);
+}
+
+// The GQA layer: normalized, post; query, gate, rotated query, attention;
+// key, value, rotated key; positions and KV rows; fused; the attention's
+// query; and `q_proj`'s interleaved q | gate before its split.
+uint64_t gqa_bytes(uint64_t T, uint64_t B, uint32_t max_context, uint64_t *attention) {
+  const uint64_t c = T * B;
+  *attention = aligned(ignis_gqa_attention_capacity_bytes(
+      ninfer::DType::U8, {1, max_context}, static_cast<int32_t>(B), 1, static_cast<int32_t>(T)));
+  return 2 * bf16(kHidden * c) + 4 * bf16(kQWidth * c) + 3 * bf16(kKvWidth * c) + word(c) + word(B) +
+         bf16(kFfn * c) + *attention + bf16(2ull * kQWidth * c);
+}
+
+// The GDN layer: h, post; qkv and its convolution; query, key; value, z, the
+// recurrence's readout, gated; g, beta; fused; the gating's and the
+// recurrence's queries.
+uint64_t gdn_bytes(uint64_t T, uint64_t B, uint64_t *gating, uint64_t *recurrence) {
+  const uint64_t c = T * B;
+  *gating = aligned(ninfer::ops::gdn_gating_proj_workspace_capacity_bytes(kValueHeads, kHidden, 1,
+                                                                          static_cast<int32_t>(c)));
+  *recurrence = aligned(ninfer::ops::gated_delta_net_workspace_capacity_bytes(
+      kKeyWidth / 128, kValueHeads, /*normalize_qk=*/true, 1, static_cast<int32_t>(c)));
+  return 2 * bf16(kHidden * c) + 2 * bf16(kConvChannels * c) + 2 * bf16(kKeyWidth * c) +
+         4 * bf16(kStateRows * c) + 2 * word(kValueHeads * c) + bf16(kFfn * c) + *gating + *recurrence;
 }
 
 }  // namespace
@@ -287,6 +339,45 @@ int main() {
     std::printf("trellis workspace at chunk %u: %llu bytes at 2 lanes, %llu at 8 lanes x 8 columns\n", kChunk,
                 static_cast<unsigned long long>(p.reserved.trellis_workspace_bytes),
                 static_cast<unsigned long long>(wide.reserved.trellis_workspace_bytes));
+  }
+
+  // `workspace` and `decode_graph` at the 16 GiB load's shape (chunk 1,024,
+  // 262,144 keys of hq-e8-2b, two lanes, window 7): their closed forms. The
+  // drafter's prefill append, which `rtx50-16gb`'s DFlash2 adds to
+  // `workspace`, is the served body's own term; the verify-only backend has
+  // the same round arena without it.
+  {
+    constexpr uint32_t kLanes = 2, kWindow = 7, kContext = 262144;
+    const Plan p = plan(trellis_body(4), four, kLanes, IGNIS_SPECULATIVE_VERIFY_ONLY, kWindow, kContext);
+    check(p.rc == 0, "the 16 GiB shape plans: " + p.error);
+    uint64_t attention = 0, gating = 0, recurrence = 0;
+    const uint64_t chunk_outer = outer_bytes(kChunk, 1, false);
+    const uint64_t chunk_gqa = gqa_bytes(kChunk, 1, kContext, &attention);
+    const uint64_t chunk_gdn = gdn_bytes(kChunk, 1, &gating, &recurrence);
+    const uint64_t workspace = chunk_outer + std::max(chunk_gqa, chunk_gdn);
+    std::printf("workspace at chunk %u: outer %llu + max(GQA %llu [attention %llu], GDN %llu [gating %llu, "
+                "recurrence %llu]) = %llu\n",
+                kChunk, static_cast<unsigned long long>(chunk_outer), static_cast<unsigned long long>(chunk_gqa),
+                static_cast<unsigned long long>(attention), static_cast<unsigned long long>(chunk_gdn),
+                static_cast<unsigned long long>(gating), static_cast<unsigned long long>(recurrence),
+                static_cast<unsigned long long>(workspace));
+    check(p.reserved.workspace_bytes == workspace,
+          "workspace is its closed form (" + std::to_string(p.reserved.workspace_bytes) + " vs " +
+              std::to_string(workspace) + ")");
+    const uint64_t round_outer = outer_bytes(kWindow + 1, kLanes, true);
+    const uint64_t round_gqa = gqa_bytes(kWindow + 1, kLanes, kContext, &attention);
+    const uint64_t round_gdn = gdn_bytes(kWindow + 1, kLanes, &gating, &recurrence);
+    const uint64_t decode_graph = round_outer + std::max(round_gqa, round_gdn) + 2 * 4 * kLanes;
+    std::printf("decode_graph at %u lanes x %u columns: outer %llu + max(GQA %llu [attention %llu], GDN %llu "
+                "[gating %llu, recurrence %llu]) + %u = %llu\n",
+                kLanes, kWindow + 1, static_cast<unsigned long long>(round_outer),
+                static_cast<unsigned long long>(round_gqa), static_cast<unsigned long long>(attention),
+                static_cast<unsigned long long>(round_gdn), static_cast<unsigned long long>(gating),
+                static_cast<unsigned long long>(recurrence), 2 * 4 * kLanes,
+                static_cast<unsigned long long>(decode_graph));
+    check(p.reserved.decode_graph_bytes == decode_graph,
+          "decode_graph is its closed form (" + std::to_string(p.reserved.decode_graph_bytes) + " vs " +
+              std::to_string(decode_graph) + ")");
   }
 
   // The served body: no trellis line; the trellis endpoints alone: one.

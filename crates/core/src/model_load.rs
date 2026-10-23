@@ -137,8 +137,10 @@ pub(crate) mod ffi {
         /// GitHub #302: Flash-Next's activations and MoE buffers outside the
         /// workspace; 0 on the 27B.
         pub activation_bytes: u64,
-        /// GitHub #339: the 27B trellis body's workspace (`ignis_trellis_workspace`,
-        /// [`crate::trellis::plan_bytes`]'s line); 0 on the NVFP4 body and on
+        /// GitHub #339: the 27B trellis body's workspace (`ignis_trellis_workspace`),
+        /// sized by the leaf's plan (`trellis_workspace_bytes` in
+        /// `kernel/src/model.cu`, behind `ignis_model_plan_reservations`) as the
+        /// op's answer for the load's widest call; 0 on the NVFP4 body and on
         /// Flash-Next.
         pub trellis_workspace_bytes: u64,
     }

@@ -6,6 +6,7 @@
 #include "model_internal.h"
 
 #include "ninfer/ops/linear.h"
+#include "ninfer/ops/rmsnorm.h"
 
 #include <cuda_runtime.h>
 
@@ -86,9 +87,23 @@ void query_gate(const ignis_model &model, const ignis_trellis_weight &q_proj, co
   }
 }
 
+std::int32_t mlp_width(const ignis_model &model, const TrellisTail &tail, const ninfer::Weight &gate_up) {
+  return model.is_trellis_body ? static_cast<std::int32_t>(tail.gate_proj.out) : gate_up.n / 2;
+}
+
+void output_and_mlp(const ignis_model &model, const TrellisTail &tail, const ninfer::Tensor &mixed,
+                    const ninfer::Tensor &post_norm, ninfer::Tensor &residual, ninfer::Tensor &post,
+                    ninfer::Tensor &fused, cudaStream_t stream) {
+  const auto hidden = static_cast<uint32_t>(model.hidden);
+  linear(model, tail.output, mixed, residual.data, hidden, IGNIS_TRELLIS_ADD, stream);
+  ninfer::ops::rmsnorm(residual, post_norm, model.rms_norm_eps, /*unit_offset=*/true, post, stream);
+  swiglu(model, tail.gate_proj, tail.up_proj, post, fused, stream);
+  linear(model, tail.down, fused, residual.data, hidden, IGNIS_TRELLIS_ADD, stream);
+}
+
 void output_head(const ignis_model &model, const ninfer::Tensor &normalized, ninfer::Tensor &logits,
                  cudaStream_t stream) {
-  if (!model.trellis_body) {
+  if (!model.is_trellis_body) {
     ninfer::ops::linear(normalized, model.output_head, logits, stream);
     return;
   }

@@ -72,12 +72,6 @@ ninfer::Tensor weight_tensor(const ninfer::Weight &w, ninfer::DType dtype,
   return ninfer::Tensor(const_cast<void *>(w.qdata), dtype, shape);
 }
 
-// The MLP intermediate: the SwiGLU gate_up plane's row count / 2, or on the
-// trellis body (GitHub #339) its gate matrix's rows.
-std::int32_t mlp_width(const ignis_model &model, const GdnLayerWeights &w) {
-  return model.trellis_body ? static_cast<std::int32_t>(w.trellis.gate_proj.out) : w.mlp_gate_up.n / 2;
-}
-
 // GitHub #339: the three linears every GDN body runs after its recurrence --
 // the output projection's residual add and the MLP tail -- on the body the
 // load bound: the vendored ops under the call's mode policy, or the trellis
@@ -88,13 +82,8 @@ void output_and_mlp(ignis_model &model, const GdnLayerWeights &w, const ninfer::
   const auto hidden = static_cast<std::int32_t>(model.hidden);
   const ninfer::Tensor post_norm =
       weight_tensor(w.post_attention_norm, ninfer::DType::BF16, {hidden, 1, 1, 1});
-  if (model.trellis_body) {
-    ignis::trellis_body::linear(model, w.trellis.output, gated, residual.data, static_cast<uint32_t>(hidden),
-                                IGNIS_TRELLIS_ADD, stream);
-    ninfer::ops::rmsnorm(residual, post_norm, model.rms_norm_eps, /*unit_offset=*/true, post, stream);
-    ignis::trellis_body::swiglu(model, w.trellis.gate_proj, w.trellis.up_proj, post, fused, stream);
-    ignis::trellis_body::linear(model, w.trellis.down, fused, residual.data, static_cast<uint32_t>(hidden),
-                                IGNIS_TRELLIS_ADD, stream);
+  if (model.is_trellis_body) {
+    ignis::trellis_body::output_and_mlp(model, w.trellis.tail, gated, post_norm, residual, post, fused, stream);
     return;
   }
   // P2-03 (GitHub #85): the output projection's residual add under the
@@ -123,7 +112,7 @@ void output_and_mlp(ignis_model &model, const GdnLayerWeights &w, const ninfer::
 // same.
 void input_projection(ignis_model &model, const GdnLayerWeights &w, const ninfer::Tensor &h, ninfer::Tensor &qkv,
                       ninfer::Tensor &z, ninfer::DeviceArena &arena, LinearPolicyMode mode, cudaStream_t stream) {
-  if (model.trellis_body) {
+  if (model.is_trellis_body) {
     ignis::trellis_body::linear(model, w.trellis.in_proj_qkv, h, qkv.data, static_cast<uint32_t>(qkv.ne[0]),
                                 IGNIS_TRELLIS_STORE, stream);
     ignis::trellis_body::linear(model, w.trellis.in_proj_z, h, z.data, static_cast<uint32_t>(z.ne[0]),
@@ -166,7 +155,7 @@ int32_t run_gdn_layer(ignis_model *model, ignis_seq_pool *pool, int32_t slot, ui
   const auto qk_heads = qk_width / head_dim;            // 2048 / 128 = 16
   // The MLP intermediate (the SwiGLU gate_up row count / 2), from the loaded
   // weight's row count.
-  const auto ffn = mlp_width(*model, w);                // 34816 / 2 = 17408
+  const auto ffn = ignis::trellis_body::mlp_width(*model, w.trellis.tail, w.mlp_gate_up);  // 34816 / 2 = 17408
   // The GDN readout scale (1 / sqrt of the (square) state dim), matching the
   // f64 reference's 1/sqrt(GDN_HEAD_DIM).
   const float readout_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
@@ -348,7 +337,7 @@ int32_t run_gdn_layer_graph(ignis_model *model, ignis_seq_pool *pool, uint32_t l
   const auto value_width = value_heads * head_dim;
   const auto qk_width = (conv_channels - value_width) / 2;
   const auto qk_heads = qk_width / head_dim;
-  const auto ffn = mlp_width(*model, w);
+  const auto ffn = ignis::trellis_body::mlp_width(*model, w.trellis.tail, w.mlp_gate_up);
   const auto slot_count = pool->gdn_pool.slot_count();
   const float readout_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
@@ -495,7 +484,7 @@ int32_t run_gdn_layer_record(ignis_model *model, ignis_seq_pool *pool, uint32_t 
   const auto value_width = value_heads * head_dim;
   const auto qk_width = (conv_channels - value_width) / 2;
   const auto qk_heads = qk_width / head_dim;
-  const auto ffn = mlp_width(*model, w);
+  const auto ffn = ignis::trellis_body::mlp_width(*model, w.trellis.tail, w.mlp_gate_up);
   const auto slot_count = pool->gdn_pool.slot_count();
   const float readout_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
@@ -541,7 +530,7 @@ int32_t run_gdn_layer_record(ignis_model *model, ignis_seq_pool *pool, uint32_t 
     ninfer::Tensor key_rows = key.view({qk_width, W, batch, 1});
     ninfer::Tensor value_rows = value.view({value_width, W, batch, 1});
     ninfer::Tensor z_rows = zbuf.view({value_width, W, batch, 1});
-    if (model->trellis_body) {
+    if (model->is_trellis_body) {
       // GitHub #339: the vendored record form has no trellis arm, so this is
       // its batched NVFP4 schedule with the trellis projection: the conv
       // input lands in the conv record itself (`[C, W, B]`, one flat

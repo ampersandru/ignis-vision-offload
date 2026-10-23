@@ -405,11 +405,11 @@ bool bind_gqa_layer_trellis(ModelBinder &binder, const std::string &prefix, cons
          binder.bind_trellis(prefix + "attention/v_proj", {g.gqa_kv_width, g.hidden}, t.v_proj) &&
          binder.bind(prefix + "attention/query_norm", {g.head_dim}, w.query_norm) &&
          binder.bind(prefix + "attention/key_norm", {g.head_dim}, w.key_norm) &&
-         binder.bind_trellis(prefix + "attention/output", {g.hidden, g.gqa_width}, t.output) &&
+         binder.bind_trellis(prefix + "attention/output", {g.hidden, g.gqa_width}, t.tail.output) &&
          binder.bind(prefix + "post_attention_norm", {g.hidden}, w.post_attention_norm) &&
-         binder.bind_trellis(prefix + "mlp/gate_proj", {g.ffn_intermediate, g.hidden}, t.gate_proj) &&
-         binder.bind_trellis(prefix + "mlp/up_proj", {g.ffn_intermediate, g.hidden}, t.up_proj) &&
-         binder.bind_trellis(prefix + "mlp/down", {g.hidden, g.ffn_intermediate}, t.down);
+         binder.bind_trellis(prefix + "mlp/gate_proj", {g.ffn_intermediate, g.hidden}, t.tail.gate_proj) &&
+         binder.bind_trellis(prefix + "mlp/up_proj", {g.ffn_intermediate, g.hidden}, t.tail.up_proj) &&
+         binder.bind_trellis(prefix + "mlp/down", {g.hidden, g.ffn_intermediate}, t.tail.down);
 }
 
 bool bind_gdn_layer_trellis(ModelBinder &binder, const std::string &prefix, const Geometry &g,
@@ -424,11 +424,11 @@ bool bind_gdn_layer_trellis(ModelBinder &binder, const std::string &prefix, cons
          binder.bind_trellis(prefix + "gdn/in_proj_qkv", {g.gdn_conv_channels, g.hidden}, t.in_proj_qkv) &&
          binder.bind_trellis(prefix + "gdn/in_proj_z", {g.gdn_z_width, g.hidden}, t.in_proj_z) &&
          binder.bind(prefix + "gdn/norm", {g.gdn_head_dim}, w.norm) &&
-         binder.bind_trellis(prefix + "gdn/output", {g.hidden, g.gdn_state_rows}, t.output) &&
+         binder.bind_trellis(prefix + "gdn/output", {g.hidden, g.gdn_state_rows}, t.tail.output) &&
          binder.bind(prefix + "post_attention_norm", {g.hidden}, w.post_attention_norm) &&
-         binder.bind_trellis(prefix + "mlp/gate_proj", {g.ffn_intermediate, g.hidden}, t.gate_proj) &&
-         binder.bind_trellis(prefix + "mlp/up_proj", {g.ffn_intermediate, g.hidden}, t.up_proj) &&
-         binder.bind_trellis(prefix + "mlp/down", {g.hidden, g.ffn_intermediate}, t.down);
+         binder.bind_trellis(prefix + "mlp/gate_proj", {g.ffn_intermediate, g.hidden}, t.tail.gate_proj) &&
+         binder.bind_trellis(prefix + "mlp/up_proj", {g.ffn_intermediate, g.hidden}, t.tail.up_proj) &&
+         binder.bind_trellis(prefix + "mlp/down", {g.hidden, g.ffn_intermediate}, t.tail.down);
 }
 
 // ---------------------------------------------------------------------------
@@ -705,8 +705,8 @@ std::size_t compute_program_scratch_bytes(const ignis_model &model, const ignis_
   for (const auto &layer : model.layers) {
     const std::size_t layer_bytes = layer.kind == IGNIS_LAYER_GQA
         ? gqa_layer_scratch_bytes(topology, layer.gqa, chunk, max_context_tokens, cache_dtype, batch,
-                                  model.trellis_body)
-        : gdn_layer_scratch_bytes(topology, layer.gdn, chunk, batch, model.trellis_body);
+                                  model.is_trellis_body)
+        : gdn_layer_scratch_bytes(topology, layer.gdn, chunk, batch, model.is_trellis_body);
     layer_peak = std::max(layer_peak, layer_bytes);
   }
   return program_outer_scratch_bytes(topology, chunk, batch, head_every_column) + layer_peak;
@@ -1335,10 +1335,10 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   // artifact's head is trellis like every one of its body's linears, the
   // served artifact's W8 beside its NVFP4 planes; the whole body binds under
   // the one schema, so a tensor of the other body fails naming itself.
-  model->trellis_body = binder.is_trellis("text/output_head");
+  model->is_trellis_body = binder.is_trellis("text/output_head");
   if (!binder.bind("text/token_embedding", {g.vocab, g.hidden}, model->token_embedding) ||
       !binder.bind("text/final_norm", {g.hidden}, model->final_norm) ||
-      !(model->trellis_body
+      !(model->is_trellis_body
             ? binder.bind_trellis("text/output_head", {g.vocab, g.hidden}, model->trellis_head)
             : binder.bind("text/output_head", {g.vocab, g.hidden}, model->output_head))) {
     return nullptr;
@@ -1350,7 +1350,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     const auto kind = static_cast<ignis_layer_kind>(topology->layer_kinds[i]);
     model->layers[i].kind = kind;
     const bool ok =
-        model->trellis_body
+        model->is_trellis_body
             ? ((kind == IGNIS_LAYER_GQA) ? bind_gqa_layer_trellis(binder, prefix, g, model->layers[i].gqa)
                                          : bind_gdn_layer_trellis(binder, prefix, g, model->layers[i].gdn))
             : ((kind == IGNIS_LAYER_GQA) ? bind_gqa_layer(binder, prefix, g, model->layers[i].gqa)
@@ -1491,8 +1491,25 @@ struct LoadSizes {
 // prefill samples from: never past `head_tokens`. Asking every width the
 // route splits differently at is what makes the line an upper bound; a call
 // past it fails by name (the op checks its workspace) rather than overrun it.
+//
+// The head is asked on the decode route alone, which holds only while its
+// widest call fits that route: a verify round's `lanes x (k + 1)` is at most
+// 8 x 8 = 64 by the load's own limits, and a span-logits block 32. Both are
+// pinned below at compile time, and a load whose head would still be wider is
+// refused here, naming why, rather than its first such round failing mid-
+// decode on a workspace sized for a narrower call.
+static_assert(IGNIS_DECODE_MAX_BATCH * (IGNIS_DFLASH2_MAX_DRAFT_TOKENS + 1) <= IGNIS_TRELLIS_DECODE_MAX_TOKENS,
+              "a verify round's head columns (lanes x (k + 1)) must stay on the trellis op's decode route");
+static_assert(kSpanLogitsBlockColumns <= IGNIS_TRELLIS_DECODE_MAX_TOKENS,
+              "a span-logits block's head columns must stay on the trellis op's decode route");
 std::size_t trellis_workspace_bytes(const ignis_model &model, uint32_t prefill_chunk_tokens,
                                     uint32_t head_tokens) {
+  if (head_tokens > IGNIS_TRELLIS_DECODE_MAX_TOKENS) {
+    throw std::runtime_error("the trellis head's widest call, " + std::to_string(head_tokens) +
+                             " columns (a round's lanes x (k + 1), or a span-logits block), is past the trellis " +
+                             "op's decode route (" + std::to_string(IGNIS_TRELLIS_DECODE_MAX_TOKENS) +
+                             " tokens), the only route the head's workspace is sized for");
+  }
   if (ignis_trellis_prepare() != 0) {
     // Kernel attributes and launch geometry only: no allocation the plan
     // would have to state (the SM probe runs under the debug cap alone).
@@ -1505,23 +1522,28 @@ std::size_t trellis_workspace_bytes(const ignis_model &model, uint32_t prefill_c
   const auto body = [&](const ignis_trellis_weight &w, uint32_t weights) {
     calls.push_back({w.in, w.out, weights, IGNIS_TRELLIS_DECODE_MAX_TOKENS, prefill_chunk_tokens});
   };
+  // The tail's output and down projections, and its gate and up as one SwiGLU.
+  const auto tail = [&](const TrellisTail &t) {
+    body(t.output, 1);
+    body(t.down, 1);
+    body(t.gate_proj, 2);
+  };
   for (const LayerWeights &layer : model.layers) {
     if (layer.kind == IGNIS_LAYER_GQA) {
       const GqaTrellisWeights &t = layer.gqa.trellis;
-      for (const ignis_trellis_weight *w : {&t.q_proj, &t.k_proj, &t.v_proj, &t.output, &t.down}) {
+      for (const ignis_trellis_weight *w : {&t.q_proj, &t.k_proj, &t.v_proj}) {
         body(*w, 1);
       }
-      body(t.gate_proj, 2);
+      tail(t.tail);
     } else {
       const GdnTrellisWeights &t = layer.gdn.trellis;
-      for (const ignis_trellis_weight *w : {&t.in_proj_qkv, &t.in_proj_z, &t.output, &t.down}) {
+      for (const ignis_trellis_weight *w : {&t.in_proj_qkv, &t.in_proj_z}) {
         body(*w, 1);
       }
-      body(t.gate_proj, 2);
+      tail(t.tail);
     }
   }
-  calls.push_back({model.trellis_head.in, model.trellis_head.out, 1,
-                   std::min<uint32_t>(head_tokens, IGNIS_TRELLIS_DECODE_MAX_TOKENS), 0});
+  calls.push_back({model.trellis_head.in, model.trellis_head.out, 1, head_tokens, 0});
   std::size_t line = 0;
   for (std::size_t i = 0; i < calls.size(); ++i) {
     const Call &c = calls[i];
@@ -1660,7 +1682,7 @@ LoadSizes plan_load_sizes(const ignis_model &model, const ignis_topology &topolo
 
   // GitHub #339: the trellis body's workspace, whose head runs at most a
   // round's columns across the load's lanes or one span-logits block.
-  if (model.trellis_body) {
+  if (model.is_trellis_body) {
     const uint32_t round_head_columns = lanes * static_cast<uint32_t>(round_columns);
     sizes.trellis_workspace = trellis_workspace_bytes(
         model, prefill_chunk_tokens,
@@ -1883,7 +1905,7 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // the address every trellis call -- eager or replayed from a round graph --
   // runs against, zeroed once on the model's stream before any of them (each
   // call leaves its counters zero). `plan_load_sizes` prepared the device.
-  if (model->trellis_body) {
+  if (model->is_trellis_body) {
     try {
       model->trellis_workspace_buffer = std::make_unique<ninfer::DeviceBuffer>(sizes.trellis_workspace);
       model->trellis_workspace.base = model->trellis_workspace_buffer->p;

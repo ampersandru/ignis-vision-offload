@@ -34,6 +34,11 @@
 #include <cstdint>
 
 struct ignis_model;
+struct TrellisTail;
+
+namespace ninfer {
+struct Weight;
+}
 
 namespace ignis::trellis_body {
 
@@ -88,6 +93,18 @@ void query_gate(const ignis_model &model, const ignis_trellis_weight &q_proj, co
 // one head's half; graph-capturable, no kernel of its own).
 cudaError_t split_query_gate(const void *interleaved, int32_t heads, int32_t head_dim, int32_t tokens, void *query,
                              void *gate, cudaStream_t stream);
+
+// The MLP intermediate of a layer: its gate matrix's rows on a trellis load,
+// the NVFP4 `gate_up` plane's rows / 2 otherwise.
+std::int32_t mlp_width(const ignis_model &model, const TrellisTail &tail, const ninfer::Weight &gate_up);
+
+// What every GDN and GQA body runs after its token mixer on a trellis load,
+// in this order: the output projection of `mixed` added into `residual`, the
+// post-attention norm (`post_norm`, BF16 `[hidden]`) into `post`, the SwiGLU
+// into `fused`, and the down projection added into `residual`.
+void output_and_mlp(const ignis_model &model, const TrellisTail &tail, const ninfer::Tensor &mixed,
+                    const ninfer::Tensor &post_norm, ninfer::Tensor &residual, ninfer::Tensor &post,
+                    ninfer::Tensor &fused, cudaStream_t stream);
 
 // The output head over `normalized` (BF16 `[hidden, N]`) into `logits` (BF16
 // `[vocab, N]`): the trellis head on a trellis load, `ninfer::ops::linear`

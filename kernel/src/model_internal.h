@@ -27,23 +27,27 @@
 // GitHub #339 (spec 27b-16gb/05a): a trellis body's linears, the 16 GB
 // artifact's split parts (spec 27b-16gb/01's As built) -- bound instead of a
 // layer's NVFP4 planes below, never beside them (kernel/src/trellis_body.h).
-struct GqaTrellisWeights {
-  ignis_trellis_weight q_proj;  // [24 heads x (q 256 | gate 256)] x hidden
-  ignis_trellis_weight k_proj;
-  ignis_trellis_weight v_proj;
+//
+// Both kinds of layer end the same way after their token mixer: the output
+// projection's residual add and the MLP (`ignis::trellis_body::output_and_mlp`).
+struct TrellisTail {
   ignis_trellis_weight output;
   ignis_trellis_weight gate_proj;
   ignis_trellis_weight up_proj;
   ignis_trellis_weight down;
 };
 
+struct GqaTrellisWeights {
+  ignis_trellis_weight q_proj;  // [24 heads x (q 256 | gate 256)] x hidden
+  ignis_trellis_weight k_proj;
+  ignis_trellis_weight v_proj;
+  TrellisTail tail;
+};
+
 struct GdnTrellisWeights {
   ignis_trellis_weight in_proj_qkv;  // [q 2048 | k 2048 | v 6144] x hidden: the conv input's channels
   ignis_trellis_weight in_proj_z;
-  ignis_trellis_weight output;
-  ignis_trellis_weight gate_proj;
-  ignis_trellis_weight up_proj;
-  ignis_trellis_weight down;
+  TrellisTail tail;
 };
 
 // One decoder layer's leaf-crossing weights (the reference's per-layer
@@ -360,7 +364,7 @@ struct ignis_model {
   // or the 16 GB artifact's trellis matrices -- each layer's `trellis`
   // weights and `trellis_head` -- which every linear and head site then
   // dispatches to (kernel/src/trellis_body.h). Never both.
-  bool trellis_body = false;
+  bool is_trellis_body = false;
   ignis_trellis_weight trellis_head{};
   // The trellis op's one workspace, reserved at load at a stable address the
   // round graphs bake (its plan line, `trellis_workspace_bytes`) and zeroed

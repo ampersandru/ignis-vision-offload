@@ -50,13 +50,6 @@ ninfer::Tensor weight_tensor(const ninfer::Weight &weight, ninfer::DType dtype,
   return ninfer::Tensor(const_cast<void *>(weight.qdata), dtype, shape);
 }
 
-// The MLP intermediate: the SwiGLU gate_up plane's row count / 2, or on the
-// trellis body (GitHub #339) its gate matrix's rows.
-std::int32_t mlp_width(const ignis_model &model, const GqaLayerWeights &weights) {
-  return model.trellis_body ? static_cast<std::int32_t>(weights.trellis.gate_proj.out)
-                            : weights.mlp_gate_up.n / 2;
-}
-
 // GitHub #339: the layer's query, output gate, key and value on the body the
 // load bound -- the vendored fused projection under the call's mode policy,
 // or the trellis body's three matrices: `q_proj`'s per-head [q | gate] rows
@@ -67,7 +60,7 @@ void input_projection(ignis_model &model, const GqaLayerWeights &weights, const 
                       ninfer::Tensor &query, ninfer::Tensor &gate, ninfer::Tensor &key, ninfer::Tensor &value,
                       std::int32_t heads, std::int32_t head_dim, ninfer::DeviceArena &arena, LinearPolicyMode mode,
                       cudaStream_t stream) {
-  if (model.trellis_body) {
+  if (model.is_trellis_body) {
     const GqaTrellisWeights &t = weights.trellis;
     ignis::trellis_body::query_gate(model, t.q_proj, normalized, heads, head_dim, arena, query, gate, stream);
     ignis::trellis_body::linear(model, t.k_proj, normalized, key.data, static_cast<uint32_t>(key.ne[0]),
@@ -88,14 +81,9 @@ void output_and_mlp(ignis_model &model, const GqaLayerWeights &weights, const ni
   const auto hidden = static_cast<std::int32_t>(model.hidden);
   const ninfer::Tensor post_norm =
       weight_tensor(weights.post_attention_norm, ninfer::DType::BF16, {hidden, 1, 1, 1});
-  if (model.trellis_body) {
-    const GqaTrellisWeights &t = weights.trellis;
-    ignis::trellis_body::linear(model, t.output, attention, residual.data, static_cast<uint32_t>(hidden),
-                                IGNIS_TRELLIS_ADD, stream);
-    ninfer::ops::rmsnorm(residual, post_norm, model.rms_norm_eps, /*unit_offset=*/true, post, stream);
-    ignis::trellis_body::swiglu(model, t.gate_proj, t.up_proj, post, fused, stream);
-    ignis::trellis_body::linear(model, t.down, fused, residual.data, static_cast<uint32_t>(hidden),
-                                IGNIS_TRELLIS_ADD, stream);
+  if (model.is_trellis_body) {
+    ignis::trellis_body::output_and_mlp(model, weights.trellis.tail, attention, post_norm, residual, post, fused,
+                                        stream);
     return;
   }
   // P2-03 (GitHub #85): the residual add takes the call's mode policy
@@ -136,7 +124,8 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
   const auto tokens = static_cast<std::int32_t>(num_tokens);
   const auto q_width = kHeadDim * kQHeads;
   const auto kv_width = kHeadDim * kKvHeads;
-  const auto ffn = mlp_width(*model, model->layers[layer].gqa);
+  const auto ffn = ignis::trellis_body::mlp_width(*model, model->layers[layer].gqa.trellis.tail,
+                                                  model->layers[layer].gqa.mlp_gate_up);
   const float attention_scale = 1.0F / std::sqrt(static_cast<float>(kHeadDim));
   const GqaLayerWeights &weights = model->layers[layer].gqa;
   const auto stream = model->stream;
@@ -420,7 +409,8 @@ int32_t run_gqa_layer_batch(ignis_model *model, ignis_seq_pool *pool, uint32_t l
   const auto hidden = static_cast<std::int32_t>(model->hidden);
   const auto q_width = kHeadDim * kQHeads;
   const auto kv_width = kHeadDim * kKvHeads;
-  const auto ffn = mlp_width(*model, model->layers[layer].gqa);
+  const auto ffn = ignis::trellis_body::mlp_width(*model, model->layers[layer].gqa.trellis.tail,
+                                                  model->layers[layer].gqa.mlp_gate_up);
   const float attention_scale = 1.0F / std::sqrt(static_cast<float>(kHeadDim));
   const GqaLayerWeights &weights = model->layers[layer].gqa;
   const auto stream = model->stream;

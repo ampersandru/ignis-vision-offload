@@ -114,7 +114,7 @@ struct Model {
   ignis_model m;
   DeviceBytes workspace;
   explicit Model(uint64_t bytes) : workspace(bytes) {
-    m.trellis_body = true;
+    m.is_trellis_body = true;
     m.trellis_workspace.base = workspace.p;
     m.trellis_workspace.bytes = bytes;
     TL_RC(ignis_trellis_workspace_init(&m.trellis_workspace, nullptr));

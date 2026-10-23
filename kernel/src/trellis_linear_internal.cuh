@@ -74,8 +74,8 @@ __host__ __device__ inline uint64_t align256(uint64_t v) { return (v + 255) / 25
 // counts sit where every other call's do. The rotated activations follow the room; sized by the
 // call's own blocks, it put a narrow call's activations over a wider call's counts, which that
 // call then found nonzero and reduced its splits early -- a load's calls of several shapes share
-// one workspace (GitHub #339). Bounds a call's out at kArrivalBlocks * 128.
-constexpr uint32_t kArrivalBlocks = 4096;
+// one workspace (GitHub #339). Bounds a call's out at IGNIS_TRELLIS_MAX_OUT.
+constexpr uint32_t kArrivalBlocks = IGNIS_TRELLIS_MAX_OUT / 128;
 
 // The decode route's split of the inputs: as many work units (output blocks x splits) as the
 // kernel has resident CTAs on the card (or on the SMs the debug cap admits), so each CTA runs one
