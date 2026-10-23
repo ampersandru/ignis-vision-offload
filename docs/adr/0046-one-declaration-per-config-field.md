@@ -21,8 +21,10 @@ macro cannot gather separate invocations into one table — each field is still
 written once; a field's name drops its group's own word where it would repeat
 (`--vram-headroom-bytes`, not `--vram-vram-headroom-bytes`); an explicit value
 equal to a field's default counts as unnamed, so a file `config generate`
-wrote with every default starts either model; and the thinking defaults are
-server-wide, not per family.
+wrote with every default starts either model (ADR 0063's adaptation reads a
+value's source instead: one the operator wrote never adapts, even at the
+default, `Resolution::adapts` beside `Resolution::explicit`); and the thinking
+defaults are server-wide, not per family.
 
 ## Context
 

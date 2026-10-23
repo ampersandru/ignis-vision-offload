@@ -456,23 +456,33 @@ plans again after each step:
 
 1. the drafter's head: a `shortlist` from a profile falls to `full` (the
    shortlist is bound beside the full head and costs ~357 MB);
-2. `--model-max-context`, down 65,536 tokens at a time to 65,536, keeping the
-   largest context at which the KV pool holds one whole sequence and one more
-   65,536-token request (at one lane, the sequence alone);
+2. `--model-max-context`, down `--model-adapt-context-step` tokens at a time
+   (65,536) to one step, keeping the largest context at which the KV pool
+   holds one whole sequence and a spare reservation of
+   `--vram-adapt-spare-tokens` (65,536) for a second request (at one lane,
+   the sequence alone);
 3. `--spec-decode-lanes` to 1, after which the context steps down again from
    the profile's value.
 
-A start that fits as configured changes nothing. A value you name (a flag, an
-env var, the config file, a live patch) never adapts: with the lanes named,
-the context steps down to the largest the plan holds and says it left no room
-for a second request. The `ignis.runtime.vram_plan` log event lists every step
-taken in `adapted` (`max_context 917504 -> 786432, decode_lanes 2 -> 1`), empty
-when none was; `GET /v1/models` reports the context the load runs
-(`max_model_len`), while `GET /v1/config` keeps the value configured. When not
-even 65,536 tokens on one lane fit, the start is refused with that plan's
-deficit and every step it tried. DFlash2 is never switched off, and a budget
-named with `--vram-allow-oversubscription` never adapts. Flash-Next does not
-adapt: its expert cache takes what the plan leaves.
+A start that fits as configured changes nothing, even when its pool has no
+room for a second request: a budget one byte smaller can therefore run a
+smaller context that has that room. A value you name (a flag, an env var, the
+config file, a live patch -- even one equal to the default) never adapts. With
+the lanes named, a context with room for the spare reservation still wins
+first; only when none has it does the load keep the largest context the plan
+holds, and the log says `one sequence only`. The `ignis.runtime.vram_plan` log
+event lists every step taken in `adapted`, empty when none was -- on the 5090
+under `rtx5090`, a 23.3 GB budget gave `decode_lanes 8 -> 1, max_context
+917504 -> 327680 (adapt_context_step 65536, one lane)`. `GET /v1/models`
+reports the context the load runs (`max_model_len`), while `GET /v1/config`
+keeps the value configured. When not even one step's context on one lane
+fits, the start is refused with that plan's deficit and every step it tried.
+DFlash2 is never switched off; a budget named with
+`--vram-allow-oversubscription` never adapts, nor does a named
+`--vram-kv-pool-bytes` below one sequence (refused by name, as before).
+Flash-Next does not adapt: its expert cache takes what the plan leaves. `make`
+leaves the 27B's context to the profile, so it adapts; `MAX_CONTEXT=n` names
+one, which does not.
 
 A file's `profiles: { <name>: { <group>: { … } } }` defines one for any other
 card. `auto` picks the class's profile by name, the lookup a named profile
@@ -569,7 +579,8 @@ change does not reach and a `null` removes.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--model-max-context <tokens>` | `IGNIS_MODEL_MAX_CONTEXT` | `40960` | Max per-sequence context (prompt + generation). The KV pool must be able to hold one of them or the load is refused. On the 27B the attention bounds it too: at most 524,288 on `bf16`, 1,048,576 on `hq-e8-2b`; past that the start is refused. Flash-Next has no such bound. |
+| `--model-max-context <tokens>` | `IGNIS_MODEL_MAX_CONTEXT` | `40960` | Max per-sequence context (prompt + generation). The KV pool must be able to hold one of them or the load is refused. On the 27B the attention bounds it too: at most 524,288 on `bf16`, 1,048,576 on `hq-e8-2b`; past that the start is refused. Flash-Next has no such bound. A 27B context the profile or the default gave adapts to the free memory ([Adaptation](#configuration)); a named one never does. |
+| `--model-adapt-context-step <tokens>` | `IGNIS_MODEL_ADAPT_CONTEXT_STEP` | `65536` | The 27B only: when its VRAM plan refuses a context the profile or the default gave, the load lowers it this many tokens at a time, never below this many; a start whose plan does not hold one step is refused. A whole number of KV pages (a nonzero multiple of 64). A Flash-Next start refuses it. |
 | `--model-default-max-tokens <n\|0>` | `IGNIS_MODEL_DEFAULT_MAX_TOKENS` | `38912` | The `max_tokens` of a request that sends none (see [Chat completions](#chat-completions)), its reasoning included, on both models. Never more than what the prompt leaves of `--model-max-context`, so a long prompt is never refused for it. An explicit cap always wins. `0` = none: such a request may generate to the end of the context, as before. (`make` knob `DEFAULT_MAX_TOKENS`.) |
 | `--model-prefill-chunk <tokens>` | `IGNIS_MODEL_PREFILL_CHUNK` | `1024`; `2048` for the 27B under the built-in profiles | The prefill chunk width, a nonzero multiple of 128. The program's prefill scratch is reserved for it at load. |
 | `--spec-decode-lanes <n>` | `IGNIS_SPEC_DECODE_LANES` | the model's own: `8` on the 27B, `3` on Flash-Next | `1..=8`, both models: the sequences decoded at once. Scoped like any field both models take (`--qwen38-spec-decode-lanes`, `--qwen38flashnext-spec-decode-lanes`); a general value is both models' on a switch. On the 27B each lane reserves its state (~233 MB with DFlash2 under hq-e8-2b) and its share of the round buffers (~35 MB at a 7-token draft window: sampling, the decode and verify rounds, the drafter's), its decode and verify graphs are captured at widths up to the lanes, and the default host retained slots are two per lane: `2` frees ~1.6 GB of VRAM for the KV pool against `8`. On Flash-Next the lanes share the KV pool ([below](#the-kv-pool)): min(524,288 tokens, lanes × `--model-max-context`), never below one `--model-max-context` sequence and a page per retained slot. At `make`'s 262,144 tokens that is one context at one lane and 524,288 tokens from two lanes on, so one lane leaves the expert cache about 1 GiB more, and further lanes cost only their state; at 131,072 tokens three lanes get 393,216. `make MODEL=flash-next` runs 3 lanes at up to 262,144 tokens each (the checkpoint's trained positions); the `make` knob is `LANES`, passed in the started model's own section. |
@@ -582,7 +593,7 @@ change does not reach and a `null` removes.
 | `--spec-backend <backend>` | `IGNIS_SPEC_BACKEND` | unset | Speculative decoding backend: `dflash2` (Qwen3.8-27B), `mtp` (Qwen3.8-Flash-Next, see [below](#flash-next-speculation-mtp)), `off`, or unset for none. |
 | `--spec-draft-tokens <n>` | `IGNIS_SPEC_DRAFT_TOKENS` | — | 1..7. Required with `--spec-backend dflash2`; with `--spec-backend mtp` the most drafts a lane verifies per round (default 2). |
 | `--spec-draft-rows <n>` | `IGNIS_SPEC_DRAFT_ROWS` | `0` (= 8) | Flash-Next MTP only: the rows one verify round may take across all lanes, `0` or 2..32. Each lane drafts `min(draft tokens, rows / lanes - 1)`, so `3` drafts at one lane only, and past 8 five to eight lanes draft too (`16`: 3 drafts up to four lanes, 2 at five, 1 from six to eight). A budget past 8 reserves the wider rounds' VRAM, taken from the expert cache: about 50 MB at 16 rows. Past 8 the round is held numerically equivalent to speculation off, not token for token: greedy output may differ from it where two tokens are nearly tied ([ADR 0056](../adr/0056-speculation-past-eight-verify-rows-is-numerically-equivalent.md)). Measured slower than 8 on both the RTX 5090 and the RTX PRO 6000 ([below](#flash-next-speculation-mtp)). (`make` knob `DRAFT_ROWS`.) |
-| `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head), `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, +356 MB of VRAM: it is loaded beside the full head) or `auto` (`full` on every card, the `rtx50-16gb` profile's value; the load logs `draft_head auto -> full`). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
+| `--spec-draft-head <head>` | `IGNIS_SPEC_DRAFT_HEAD` | `full` | Needs `--spec-backend`. The head the drafter proposes with: `full` (the target's output head), `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, ~357 MB more VRAM: it is loaded beside the full head) or `auto` (`full` on every card, the `rtx50-16gb` profile's value; the load logs `draft_head auto -> full`). What a round accepts is still the target's choice, so the text changes only at near ties; measured on coding prompts `shortlist` accepts 7% fewer tokens per round and is slower overall ([finding](../findings/2026-09-24-upstream-quick-wins-ab.md)). (`make` knob `DRAFT_HEAD`.) |
 | `--model-rope-scaling <spec>` | `IGNIS_MODEL_ROPE_SCALING` | `auto` | `auto` decides from the model's `--model-max-context`: no scaling up to the checkpoint's trained 262,144 positions, else YaRN at `max_context / 262,144` (524,288 is 2, 786,432 is 3, 1,048,576 is 4); past 64x (16,777,216 tokens) the start is refused. `none` is the linear table whatever the context; `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]` rescales the envelope by `F` in (1, 64]. An explicit value overrides `auto`. Both models apply it; on Flash-Next one table serves attention, its sparse-attention indexer and the MTP head, with YaRN's attention factor on queries and keys alike, as the model's reference implementations apply it ([ADR 0059](../adr/0059-flash-next-applies-yarn-on-q-and-k.md)). The load log (`ignis.model.loaded`) names the table run (`rope_scaling`) beside the setting (`rope_scaling_setting`). (`make` knob `ROPE_SCALING`.) |
 
 ### Flash-Next speculation (MTP)
@@ -705,6 +716,7 @@ class is refused whatever the flag says.
 | `--vram-headroom-bytes <b>` | `IGNIS_VRAM_HEADROOM_BYTES` | `1536M` | Derives the budget: the device memory free at start minus this. Not with `--vram-budget-bytes`. |
 | `--vram-budget-bytes <b>` | `IGNIS_VRAM_BUDGET_BYTES` | derived | The device memory the whole process may hold, weights included. More than is free refuses the start. |
 | `--vram-allow-oversubscription` | `IGNIS_VRAM_ALLOW_OVERSUBSCRIPTION` | off | With `--vram-budget-bytes` only: start above free memory (or below the plan's minimum) with a warning instead of a refusal. On Windows that pages. Both models. |
+| `--vram-adapt-spare-tokens <tokens>` | `IGNIS_VRAM_ADAPT_SPARE_TOKENS` | `65536` | The 27B only: at more than one decode lane, a context its load adapts is kept only when the KV pool holds it and a spare reservation of this many tokens, room for a second request ([Adaptation](#configuration)); `0`, one sequence is enough. At one lane the plan's own floor decides. A Flash-Next start refuses it. |
 | `--vram-allow-expert-cache-below-floor` | `IGNIS_VRAM_ALLOW_EXPERT_CACHE_BELOW_FLOOR` | off | Flash-Next only: start with an expert cache below its 12 GiB floor, with a warning ([above](#the-kv-pool)). The 27B, which has no expert cache, refuses it. (`make` knob `ALLOW_EXPERT_CACHE_BELOW_FLOOR=1`.) |
 | `--vram-pinned-expert-bytes <b>` | `IGNIS_VRAM_PINNED_EXPERT_BYTES` | `0`; `2G` under the `rtx5090` profile | Flash-Next only: the calibration-hottest experts held in the expert cache for the whole load, outside its LRU, with no copy in RAM, up to these bytes: the RAM the experts take shrinks by as much ([Host RAM for Flash-Next](#host-ram-for-flash-next)). `0` pins none. A pin that cannot leave every class the slots of the widest decode step (under MTP a verify round's lanes x (drafts + 1)) is refused, naming the most it can pin. The 27B refuses it when named, and passes the profile's value over. (`make` knob `PINNED_EXPERT_BYTES`.) |
 | `--reuse-prompt <on\|off>` | `IGNIS_REUSE_PROMPT` | `on` | `off`: no prompt checkpoint is captured or reused, and no prefix is shared unless `--reuse-retained-device` or `--reuse-retained-host` gives slots for it. |
@@ -1412,7 +1424,8 @@ With `--server-api-key`, add `-H "Authorization: Bearer $IGNIS_SERVER_API_KEY"`.
 chat template, tool block, thinking controls, system block — and answers how many
 tokens it prefills, **without submitting it**: no lane, no GPU, no KV page. The
 `count` is the `usage.prompt_tokens` the same body reports when served, and
-`max_model_len` is the server's `--model-max-context`, so one call says whether a body
+`max_model_len` is the context the load runs (`--model-max-context`, or what the 27B's
+load adapted it to, [Adaptation](#configuration)), so one call says whether a body
 fits.
 
 ```bash
@@ -1959,10 +1972,13 @@ chunk, speculation, KV format or vision, so `make` passes none of those flags;
 the settings every model shares (`BIND`, `API_KEY`, `IDLE_UNLOAD`, ...) apply as
 before. `make config MODEL=image` prints the server command.
 
-With `CUDA=1` the server starts with `MAX_CONTEXT=524288` and
-the server's `auto` rope scaling (here `yarn:2`) -- twice the checkpoint's
-trained 262,144 positions, and the YaRN table that stretches the envelope to
-match (the gate legs ran at `MAX_CONTEXT=262144 ROPE_SCALING=none`) -- `KV_FORMAT=hq-e8-2b`,
+With `CUDA=1` the server starts with the 27B's context left to the profile
+(`MAX_CONTEXT` empty: 917,504 tokens under `rtx5090`, adapted down to what the
+card has free, [Adaptation](#configuration)) and the server's `auto` rope scaling
+(`yarn:3.5` there, the table that stretches the checkpoint's trained 262,144
+positions to the context; `MAX_CONTEXT=524288` names a context, `yarn:2`, that
+never adapts; the gate legs ran at `MAX_CONTEXT=262144 ROPE_SCALING=none`) --
+`KV_FORMAT=hq-e8-2b`,
 `SPEC=dflash2` with
 `DRAFT_TOKENS=7`, `PREFILL_CHUNK` empty (the server's: the `rtx5090` profile's 2048), `KV_HOST_POOL_BYTES=8G` (the 27B's; Flash-Next's own arena
 is `FN_KV_HOST_POOL_BYTES=2G`, passed on every start so a switch to it gets it

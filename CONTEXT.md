@@ -1252,11 +1252,16 @@ When output names a domain concept, use the term as defined here.
   profile always wins.
 - **Adaptation** — a 27B load lowering the values its profile or the
   hardcoded defaults gave, in a fixed order, until its VRAM plan fits (ADR
-  0063): the drafter's `shortlist` head to `full`, then the context down
-  65,536 tokens at a time to 65,536 (keeping the largest whose KV pool holds
-  one full sequence and one more 65,536-token reservation), then one decode
-  lane. Only a plan refused below its minimum adapts; one that fits as
-  configured changes nothing. An explicit value never adapts.
+  0063): the drafter's `shortlist` head to `full`, then the context down its
+  **ladder**, then one decode lane. Only a plan refused below its minimum
+  adapts; one that fits as configured changes nothing. An explicit value never
+  adapts.
+- **Ladder** — the contexts an adaptation plans, from the configured one down
+  every multiple of the context step (`model.adapt_context_step`, 65,536) to
+  one step, keeping the largest whose KV pool holds one full sequence and a
+  spare reservation (`vram.adapt_spare_tokens`, 65,536) at more than one lane.
+  _Avoid_: step (bare) for one of its rungs: an adaptation taken is an
+  adaptation step.
 - **Live change** / **reload** — the two ways `PATCH /v1/config` applies a
   change, never both in one patch: a live change touches only server-level
   values (timeouts, message policies, thinking defaults, switch knobs) and no

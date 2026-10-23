@@ -155,20 +155,31 @@ ADR 0063's **As built** has the decisions and the measurements. In short:
   frees none, and it measured slower. So `auto` is `full` on every card class. It is a third spelling of the field
   (`ProposalHeadSetting`), resolved where the speculation is built, and the load logs `draft_head auto -> full`.
   The rule is revisited in phase 2, on a real 16 GB card.
-- **Solution 4's ladder** runs from any profile value `v` down every multiple of 65,536 to 65,536. It keeps the
-  largest context whose pool holds it and one more 65,536-token reservation (at one lane, the plan's floor alone).
-  It runs only when the plan refuses the configured values below its minimum, so a start that fits changes nothing.
+- **Solution 4's ladder** runs from any profile value `v` down every multiple of the context step to one step. It
+  keeps the largest context whose pool holds it and a spare reservation (at one lane, the plan's floor alone). The
+  step and the spare reservation are config fields, 65,536 tokens each by default: `model.adapt_context_step` and
+  `vram.adapt_spare_tokens` (the 27B's alone). It runs only when the plan refuses the configured values below its
+  minimum, so a start that fits changes nothing, whatever room its pool leaves: a budget one byte smaller is
+  refused, adapts, and can run a smaller context with room for a second request.
   - When no context meets that at the load's lanes, the lanes drop to one and the ladder runs again from `v`.
-  - Explicit lanes keep the largest context the plan holds, which the step names.
+  - Explicit lanes keep the largest context meeting the criterion; when none does, the largest the plan holds, which
+    the log names (`one sequence only`).
+  - A named KV pool below one sequence (`PoolBelowFloor`) never adapts.
   - Step 1 drops a profile's `shortlist` to `full`; it never fires on the built-in profiles.
   - A start that still does not fit is refused with the last attempt's deficit and every step tried.
 - **Code:**
   - the ladder: `crates/server/src/adaptation.rs`;
   - its closure: `runtime::qwen27b_load`;
-  - what may adapt: `Config::adaptable` → `EngineShape::adaptable`;
+  - what may adapt: `Config::adaptable` → `EngineShape::adaptable` (a hand-built shape adapts nothing). By source:
+    a value the operator wrote never adapts, even one equal to the default, unlike ADR 0046's `explicit`;
+  - the ladder's fields: `Config::adapt_ladder` → `EngineShape::adapt_ladder`;
+  - the vision processor at the context the load runs: `load::serve_vision`;
+  - the `auto` head's log: `load::load_shape`;
   - a shape at an attempt: `EngineShape::at`;
   - the log: the `adapted` field of `ignis.runtime.vram_plan`.
-- **Not adapted here:** Flash-Next (phase 2), and the context `make` passes. `mk/config.mk`'s `MAX_CONTEXT ?=
-  524288` reaches the 27B as `--model-max-context`, an explicit value; `MAX_CONTEXT=` leaves it to the profile.
-- **AC 4 and AC 5:** CPU tests in `adaptation.rs`, `runtime.rs` and `config/tests.rs`; GPU test
-  `crates/server/tests/adaptation_gpu.rs`, green on the 5090 (adapted context, lanes to one, 2 and 1 named lanes).
+- **Not adapted here:** Flash-Next (phase 2). `make` leaves the 27B's context to the profile (`MAX_CONTEXT` empty),
+  so it adapts; `MAX_CONTEXT=n` names one, which does not.
+- **AC 4 and AC 5:** CPU tests in `adaptation.rs`, `runtime.rs`, `media.rs`, `config/tests.rs` and
+  `tests/draft_head_auto_log.rs`; GPU test `crates/server/tests/adaptation_gpu.rs`, green on the 5090 (adapted
+  context, lanes to one, 2 and 1 named lanes, and `rtx50-16gb`'s two lanes and `draft_head auto -> full` through the
+  server's load path).
