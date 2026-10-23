@@ -357,7 +357,7 @@ mod tests {
     /// each entry once.
     #[test]
     fn a_download_fetches_the_entry_that_serves_an_id_on_the_card() {
-        let catalog = super::super::catalog::testing::with_sixteen();
+        let catalog = super::super::catalog::testing::built_in();
         let sixteen = Some(CardClass::Gb16);
         assert_eq!(fetched(&catalog, &[], false, sixteen), Ok(vec!["qwen3.8-27b-16g".to_owned()]), "the configured model");
         assert_eq!(fetched(&catalog, &["QWEN3.8-27B", "qwen3.8-27b-16g"], false, sixteen), Ok(vec!["qwen3.8-27b-16g".to_owned()]));
@@ -373,7 +373,7 @@ mod tests {
     /// card is, in a catalog without the 16 GB 27B.
     #[test]
     fn a_download_of_an_entry_above_the_card_class_is_refused_before_any_fetch() {
-        let catalog = super::super::catalog::testing::with_sixteen();
+        let catalog = super::super::catalog::testing::built_in();
         let sixteen = Some(CardClass::Gb16);
         let err = fetched(&catalog, &["qwen3.8-27b-16g", "qwen3.8-flash-next", "ignis-image-2.1-turbo"], false, sixteen).unwrap_err();
         assert!(err.starts_with("nothing fetched"), "{err}");

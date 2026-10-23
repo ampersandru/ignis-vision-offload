@@ -166,15 +166,16 @@ reports and what a request puts in `model`.
 
 Each entry states the smallest **card class** it loads on
 ([ADR 0064](../adr/0064-a-catalog-entry-states-its-card-class.md)): every
-built-in one is 32 GB, the RTX 5090's class, but `qwen3.8-27b-16g`, which is 16 GB. On a card of a smaller class (16
-GB), the server refuses an entry above it before unloading or fetching
+built-in one is 32 GB, the RTX 5090's class, except `qwen3.8-27b-16g` (16 GB).
+On a card of a smaller class (16 GB), the server refuses an entry above it before unloading or fetching
 anything: a switch to it and a request naming it are answered
 `409 model_above_card_class`, naming both classes, while the loaded model
 serves on; a start with no artifact that would load it, and its
 `model download`, are refused; `GET /v1/models`, `GET /v1/models/catalog` and
 the Playground list it as unavailable, with the reason. An entry may answer to
 its family's default id as an **alias**: the 16 GB 27B answers to
-`qwen3.8-27b` on a 16 GB card, so a client configured with
+`qwen3.8-27b` on a 16 GB card (ignis loads it from
+[#339](https://github.com/gpillon/ignis/issues/339) on), so a client configured with
 `qwen3.8-27b` is served by it, and the answer names it — only an entry whose
 artifact is of the 27B's family, by the artifact's header, answers to it; one
 of another family is refused, naming both. A model loaded from a path named

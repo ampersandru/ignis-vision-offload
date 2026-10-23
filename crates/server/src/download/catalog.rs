@@ -579,7 +579,7 @@ pub(crate) mod testing {
     pub(crate) const SIXTEEN: &str = include_str!("../../tests/fixtures/catalog/sixteen.yaml");
 
     /// The built-in catalog, which holds the 16 GB 27B (GitHub #338).
-    pub(crate) fn with_sixteen() -> super::Catalog {
+    pub(crate) fn built_in() -> super::Catalog {
         super::Catalog::built_in().clone()
     }
 

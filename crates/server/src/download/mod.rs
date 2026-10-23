@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn a_start_with_no_artifact_loads_the_entry_that_serves_its_id_on_the_card() {
         use crate::config::profile::CardClass;
-        let catalog = catalog::testing::with_sixteen();
+        let catalog = catalog::testing::built_in();
         assert_eq!(start_model(&catalog, crate::config::DEFAULT_MODEL, Some(CardClass::Gb16)), Ok("qwen3.8-27b-16g".to_owned()));
         for card in [Some(CardClass::Gb32), Some(CardClass::Gb96), None] {
             assert_eq!(start_model(&catalog, crate::config::DEFAULT_MODEL, card), Ok(crate::config::DEFAULT_MODEL.to_owned()), "{card:?}");
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn a_start_the_card_class_fitted_serves_the_answering_entry_under_its_own_id() {
         use crate::config::profile::CardClass;
-        let catalog = catalog::testing::with_sixteen();
+        let catalog = catalog::testing::built_in();
         let dir = PathBuf::from(DIR);
         let options = start_config_on(16 << 30);
         assert_eq!(options.card_class(), Some(CardClass::Gb16));
@@ -412,7 +412,7 @@ mod tests {
     /// start before it loads, naming both families.
     #[test]
     fn a_start_whose_answering_entry_holds_another_family_is_refused_once_fetched() {
-        let catalog = catalog::testing::with_sixteen();
+        let catalog = catalog::testing::built_in();
         let dir = PathBuf::from(DIR);
         let options = start_config_on(16 << 30);
         let served = start_model(&catalog, &options.model, options.card_class()).unwrap();
@@ -437,7 +437,7 @@ mod tests {
         use crate::config::profile::CardClass;
         let refusal = start_model(&catalog::testing::thirty_two(), crate::config::DEFAULT_MODEL, Some(CardClass::Gb16)).unwrap_err();
         assert_eq!((refusal.model.as_str(), refusal.needs, refusal.card), ("qwen3.8-27b", CardClass::Gb32, CardClass::Gb16));
-        let refusal = start_model(&catalog::testing::with_sixteen(), "Qwen3.8-Flash-Next", Some(CardClass::Gb16)).unwrap_err();
+        let refusal = start_model(&catalog::testing::built_in(), "Qwen3.8-Flash-Next", Some(CardClass::Gb16)).unwrap_err();
         assert!(refusal.to_string().contains("qwen3.8-flash-next needs a 32 GB card"), "{refusal}");
     }
 
