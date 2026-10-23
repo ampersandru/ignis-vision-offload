@@ -660,8 +660,10 @@ impl Switcher {
         let refusal = self.above_class(model)?;
         Some(match self.on_this_card(model) {
             Ok(Some(serving)) => format!("{refusal}; a request naming it is served by {serving}"),
+            // The entry that would answer holds another family's artifact:
+            // that refusal says both.
+            Err(answered) => answered.to_string(),
             Ok(None) => refusal.to_string(),
-            Err(refusal) => refusal.to_string(),
         })
     }
 
@@ -669,15 +671,6 @@ impl Switcher {
     /// ([`crate::download::Catalog::above_class`]) on this card.
     fn above_class(&self, model: &str) -> Option<ClassRefusal> {
         self.catalog.as_ref()?.catalog.above_class(model, self.card)
-    }
-
-    /// The artifact of the catalog entry `model` when it is on disk and the
-    /// card can load the entry itself: never one above the card's class,
-    /// even with another entry answering to its id here — a request naming
-    /// it is rewritten to that one first ([`Switcher::on_this_card`]).
-    fn catalog_artifact(&self, model: &str) -> Option<PathBuf> {
-        let artifact = self.catalog.as_ref()?.artifact(model)?;
-        self.above_class(model).is_none().then_some(artifact)
     }
 
     /// How the last switch or reload ended; `None` before the first.
@@ -720,9 +713,9 @@ impl Switcher {
     /// enhancement): one an explicit switch by id may name — the listed
     /// models' entry for it, else a catalog entry on disk — whatever
     /// `switch.allow_implicit` says, since the operator named it in
-    /// `image.prompt_enhancer`; `None` for any other id, and for an image
-    /// model. Whether a listed model's file is there is the visit's prepare
-    /// to say.
+    /// `image.prompt_enhancer`; `None` for any other id, a catalog id above
+    /// the card's class (ADR 0064), and an image model. Whether a listed
+    /// model's file is there is the visit's prepare to say.
     pub fn text_model(&self, model: &str) -> Option<ModelSource> {
         self.text_model_among(model, &BTreeMap::new())
     }
@@ -737,7 +730,7 @@ impl Switcher {
             .get(model)
             .cloned()
             .or_else(|| self.listed_models().remove(model))
-            .or_else(|| self.catalog_artifact(model))?;
+            .or_else(|| self.catalog.as_ref()?.artifact(model))?;
         let source = ModelSource { artifact, model: model.to_owned() };
         (self.loader.kind_of(&source) != Some(ModelKind::Image)).then_some(source)
     }
@@ -792,7 +785,7 @@ impl Switcher {
         if !self.catalog_on.load(Ordering::SeqCst) {
             return None;
         }
-        self.catalog_artifact(model)
+        self.catalog.as_ref()?.artifact(model)
     }
 }
 

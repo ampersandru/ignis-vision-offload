@@ -69,7 +69,8 @@ fn card_probe() -> config::profile::Card {
 
 /// Refuse the start (ADR 0064): the model it would load with no artifact
 /// named is a catalog entry this card's class cannot load, and no entry of
-/// its family that answers to it can.
+/// its family that answers to it can — or the one that answers holds an
+/// artifact of another family.
 fn refuse_above_card_class(logging_handle: &ignis_logging::LoggingHandle, refusal: &download::ClassRefusal) -> ! {
     tracing::error!(
         name: "ignis.model.above_card_class",
