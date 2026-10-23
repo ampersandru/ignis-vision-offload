@@ -151,6 +151,103 @@ A5. `cargo test` workspace-wide; GPU tests green on a free 5090.
 - **Left to the acceptance runs:** A1's plan log through `make start`, A2's canaries and 128K leg, A3's sanity KLD,
   A4's canary identity on the served artifact.
 
+### As built: acceptance (2026-10-23)
+
+Branch `339-first-light` at 60f4447b, release build, on the RTX 5090 (PCIe Gen 3, ~2 GB held by the desktop). The
+evidence is in `.scratch/339/acceptance/` (untracked); the finding is
+[2026-10-23-27b-16gb-first-light](../../findings/2026-10-23-27b-16gb-first-light.md).
+
+- **A1: pass.** `make start ARTIFACT=F:/ai/models/Qwen3.8-27B-trellis-3bpw-ignis/qwen3_8_27b_trellis_sc30-v2.ninfer
+  VRAM_BUDGET=17179869184 LOOP_GUARD=off IDLE_UNLOAD=0 ARGS="--profile rtx50-16gb"` (`a1-make-config.txt`,
+  `trellis-server-load.log`):
+  - nothing adapted: 262,144 context, two lanes, chunk 1,024, `dflash2 draft_tokens=7 draft_head=full`
+    (`draft_head auto -> full`), vision off, rope none;
+  - the three trellis lines equal their closed forms above: `workspace` 395,898,880, `trellis_workspace` 36,225,280,
+    `decode_graph` 20,621,328;
+  - the lane-scaled lines are spec 04's per-lane costs, the 8-lane NVFP4 plan's divided by four: `lane_state`
+    393,760,768 (196,880,384 a lane: GDN fp32 151 MB, conv 3 MB, penalties 1 MB, DFlash2 window 40 MiB) and
+    `hq_residual_window` 71,303,296 (35,651,648 a lane). `sampling` is 1,156,768, a quarter of the 8-lane 4,623,344
+    plus 932 bytes that do not scale. The round buffers, `decode_graph` + `verify_round` 38,034,808 +
+    `drafter_round` 44,673,544, are 103.3 MB against the formula's 2 x ~35 MB + 34 MB;
+  - `cuda_context` 452,595,712, `residual` 124,474,800, `media` 0, `retained_slots` 0, `weights` 10,907,958,020;
+  - the KV pool is 4,692,672,512 bytes, 7,956 pages, 509,184 tokens: one 262,144-token sequence and the 65,536-token
+    spare reservation fit, so the ladder never ran;
+  - total 17,179,375,716 of 17,179,869,184. On the release build every line equals the one `trellis_16g_gpu.rs`
+    measured on the server's load path, `residual` included (free at start: 31,642,738,688).
+- **A2: pass** on the spec's terms. Two lanes repeat their sequential text up to one near-tie. Same server.
+  - Canaries (`ignis-bench canary`, `trellis-canary.json`): 4 of 4 sane, deterministic and coherent (`v` becomes
+    `[1,2,3]`, 2 * 3 + 4 is 10). One lane: 4.41 tokens per round over 116 rounds, 12.83 ms a round.
+  - Two lanes: two `canary` processes at once, four runs, 64 requests (`trellis-canary-pair*`). In every overlap both
+    requests' `ignis.request.ttft` come before either's `done` (run 1: 18:55:37.883 and .941, then 38.123 and
+    38.138). 4.27 tokens per round over 960 rounds, 16.52 ms a width-2 round: ~517 tokens/s across the two lanes,
+    against ~344 for one.
+    - 56 of 64 equal their sequential text. The 8 that differ are every `math-greedy` served on lane 7 in a width-2
+      round: one token of reasoning ("on last line. Could" against "on the last line. We can"), same answer.
+    - At that position the trellis program's two candidates are one BF16 step apart: logit 28.125 against 28.0,
+      p 0.53 / 0.47 (`a2-neartie-probe.txt`). A near-tie, which `crates/core/tests/support/near_tie.rs` records as
+      not route-invariant. Run the same way on its 8-lane load (A4), the NVFP4 body differs from its width-1 text on
+      all 48 requests.
+  - The 128K leg (`soup_ttft.py`): word soup landed exactly on 131,072 tokens through `/v1/tokenize`, one warm-up
+    and two samples, each cold (`cached_tokens` 0) and coherent:
+    - TTFT 42,984 / 43,136 / 43,216 ms (~3,040 tokens/s);
+    - 4.47 tokens per round over 43 rounds, 19.33 ms a round.
+  - `ignis-bench ttft --cells 131072` cannot do this leg. Its filler generator tokenizes the whole message again after
+    every word it appends, and one 129K-token encode costs 0.49 s here, so a prompt would take ~8 h. It was stopped
+    after 5.5 min, before any request.
+  - A coding request of 129,992 tokens (`long_code.py`: `crates/bench/src/ttft.rs`, then four server sources), greedy,
+    thinking off, asks what `nonce(27)` returns:
+    - the answer is coherent, cold, at a TTFT of 42.5 s, and wrong in one letter: "`a027`", with the right mechanism
+      (27 % 26 = 1, zero-padded `027`) but index 1 read as `a`;
+    - the trellis body says the same at 23,996 tokens, and the served NVFP4 artifact says "`a027`" at both lengths.
+      This is the model answering without thinking, not the body;
+    - 3.56 tokens per round, 19.31 ms a round.
+  - `/metrics` after the leg: 1,151 rounds, 7,532 drafted, 3,772 accepted (4.28 tokens per round). Acceptance by
+    position: 87.7, 69.1, 54.9, 41.7, 33.5, 31.0, 26.1%.
+  - The log's only error is the start-up probe's 503: `make start`'s `/v1/models` landed between `model.loaded` and
+    `process.ready`. Besides the canaries' reasoning-only notes there is one warning,
+    `decode_graph_capture_incomplete` with `ready` 2 at two lanes and an empty error.
+    `crates/runtime/src/cuda_leaf.rs` compares the widths ready to 8, not to the load's lanes (since #336), so the
+    warning is spurious.
+- **A3: pass.** `span_logits` over windows 0 and 1 (`crates/server/src/api.rs` parts 0 and 1, 4,096 tokens), chunk
+  1,024, scored by `.scratch/kld-2026-09-24/ref_kld.py` against BF16 (`acc339-trellis.json`). KLD / top-1 / NLL:
+
+  | window | trellis, hq-e8-2b | trellis, BF16 KV | M1, weights only | NVFP4, BF16 KV | NVFP4, hq-e8-2b |
+  |---|---|---|---|---|---|
+  | 0 | 0.0534 / 90.80% / 1.2357 | 0.0421 / 91.72% / 1.2273 | 0.0420 / 91.60% / 1.2276 | 0.0553 / 91.70% / 1.2365 | 0.0666 / 90.89% / 1.2468 |
+  | 1 | 0.0304 / 93.82% / 0.9748 | 0.0270 / 94.53% / 0.9712 | 0.0271 / 94.51% / 0.9708 | 0.0363 / 93.65% / 0.9823 | 0.0401 / 93.43% / 0.9848 |
+
+  M1 is `RISULTATI-M1.md`'s per-window list (its order is `windows_meta.json`'s). The NVFP4 columns are the served
+  engine path at chunk 1,024: 2026-09-24's `bf16_1024` and #341's `c1024`. With BF16 KV the trellis engine path is M1
+  within 0.0001: the leaf's numerics add nothing visible. The codec adds +0.0113 / +0.0034, as it adds +0.0113 /
+  +0.0038 to NVFP4 on the same windows. Both windows: 0.0419 against NVFP4's 0.0534.
+- **A4: pass.** NVFP4 from this build: `make start IDLE_UNLOAD=0 MAX_CONTEXT=786432
+  ARTIFACT=F:/ai/q38/ninfer-models/qwen3_8_27b_nvfp4full-v2.ninfer` (main's `./models` link resolved):
+  - canaries identical to main 05ccde09's baseline (text and reasoning, both runs of each);
+  - `ignis-bench oracle compare`: 100%, 265 of 265 recorded tokens (`--first-n 128`);
+  - the plan's lines equal the baseline's but the pool's, which takes the 904,663,040 bytes more free at start
+    (31,651,422,208 against 30,746,759,168): 15,529 pages and 993,856 tokens against 13,995 and 895,680.
+    `trellis_workspace` is 0; `adapted` is empty because the context was named.
+  - `MAX_CONTEXT=786432` is the context the baseline adapted to. With the baseline's own command, the extra free
+    memory lets 917,504 fit without adapting, rope `auto` picks yarn:3.5 instead of yarn:3, and all four canaries
+    change: that is the rope factor, not the body (`nvfp4-canary-yarn35.json`).
+- **A5: green except one test that main fails the same way.** `cargo test --workspace`: 3,461 passed, 0 failed.
+  The GPU profile (`a5-gpu-profile-*.log`):
+  - `scripts/gpu-profile.ps1`: the leaf's stage (build and CTest, 138 of 138, 498.6 s) and the CPU oracle passed.
+    Its cargo stage then died compiling on a full F: (os error 112), and was rerun with `-SkipKernelBuild` once the
+    debug PDBs were deleted;
+  - the serialized sweep stopped at its first red, core's `vision_load_gpu`. A vision load adds 328,239,040 bytes
+    against the asserted 326,856,640 (1,382,400 more), and main 05ccde09 built and run alone gives the same two
+    numbers, so this red is not #339's;
+  - the packages it never reached (runtime, server, logging, vendor) ran with the same preflight, `IGNIS_GPU_PROFILE=1`
+    and arguments plus `--no-fail-fast`: 153 test binaries green;
+  - in all, 195 `#[ignore]`d tests passed and 1 failed. The five trellis tests are green: `trellis_projections_gpu`,
+    `trellis_layers_gpu`, `trellis_logits_gpu`, `trellis_lanes_gpu`, `trellis_16g_gpu` (7.68 tokens per round).
+    So are the NVFP4 guards: runtime's `decode_lanes_gpu` (the 8-lane greedy fixture recorded on main, every width),
+    `vram_plan_gpu`, `cuda_leaf_dflash2_gpu`, `adaptation_gpu`, `openai_http_gpu`;
+  - one SKIP line: `partial_exclusive_pool_study`, a CPU-only Flash-Next study (`#[ignore = "machine-local:
+    IGNIS_FLASH_NEXT_TRACES, ~minutes of CPU"]`, untouched since #329) that returns without its traces. It is not a
+    GPU test and does not ask `gpu_profile`.
+
 ## Part B (ticket 05b) - gates and simulation
 
 Blocked by 05a. Everything below this line is Part B.
