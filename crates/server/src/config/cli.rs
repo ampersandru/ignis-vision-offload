@@ -577,7 +577,7 @@ mod tests {
         }
     }
 
-    const ALL_IDS: [&str; 4] = ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo"];
+    const ALL_IDS: [&str; 5] = ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3.8-27b-16g"];
 
     /// Spec model-download/02 AC 12, the resolution half: the ids named, or
     /// every entry, or the configured `model.id`; into `download.path` or
@@ -642,25 +642,19 @@ mod tests {
 
     /// ADR 0064 §3, through the command line: `model download` is fitted to
     /// the class of the card the start reads — on a 16 GB card the default
-    /// id fetches the entry that answers to it, and an entry no 16 GB card
-    /// loads is refused before anything is fetched; on a 5090 nothing
-    /// changes.
+    /// id fetches the built-in entry that answers to it (GitHub #338), and an
+    /// entry no 16 GB card loads is refused before anything is fetched; on a
+    /// 5090 nothing changes.
     #[test]
     fn model_download_is_fitted_to_the_card_the_start_reads() {
-        let files = MemFiles::with(&[
-            ("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n"),
-            ("conf/acme.yaml", crate::download::catalog::testing::SIXTEEN),
-        ]);
+        let files = MemFiles::default();
         let sixteen = Card::Total(16 << 30);
-        let config = ["--config", "conf/ignis.config.yaml"];
-        let (ids, ..) = download_of(run_on(&[&["model", "download"][..], &config].concat(), &files, sixteen.clone()).unwrap());
+        let (ids, ..) = download_of(run_on(&["model", "download"], &files, sixteen.clone()).unwrap());
         assert_eq!(ids, ["qwen3.8-27b-16g"]);
-        let err = run_on(&[&["model", "download", "qwen3.8-flash-next"][..], &config].concat(), &files, sixteen.clone()).unwrap_err().0;
+        let err = run_on(&["model", "download", "qwen3.8-flash-next"], &files, sixteen).unwrap_err().0;
         assert!(err.contains("nothing fetched") && err.contains("32 GB") && err.contains("16 GB"), "{err}");
-        let err = run_on(&["model", "download"], &MemFiles::default(), sixteen).unwrap_err().0;
-        assert!(err.contains("qwen3.8-27b needs a 32 GB card"), "the built-in catalog alone: {err}");
         let five_090 = Card::Total(super::super::profile::RTX_5090_TOTAL_BYTES);
-        let (ids, ..) = download_of(run_on(&[&["model", "download"][..], &config].concat(), &files, five_090).unwrap());
+        let (ids, ..) = download_of(run_on(&["model", "download"], &files, five_090).unwrap());
         assert_eq!(ids, ["qwen3.8-27b"]);
     }
 
@@ -692,7 +686,7 @@ mod tests {
         let files = MemFiles::with(&[("conf/ignis.config.yaml", "download:\n  catalog: acme.yaml\n  path: /srv/models\n"), ("conf/acme.yaml", catalog)]);
         match run(&["model", "list", "--config", "conf/ignis.config.yaml", "--format", "json"], &[], &files).unwrap() {
             ConfigOutcome::Model(ModelCommand::List { catalog, dir, format }) => {
-                assert_eq!(catalog.ids(), ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "acme-ft"]);
+                assert_eq!(catalog.ids(), ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3.8-27b-16g", "acme-ft"]);
                 assert_eq!((dir, format), (PathBuf::from("/srv/models"), ListFormat::Json));
             }
             other => panic!("{other:?}"),

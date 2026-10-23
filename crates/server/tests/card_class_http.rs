@@ -7,10 +7,9 @@
 //! and only by an entry whose artifact is of the 27B's family;
 //! `GET /v1/models` and `GET /v1/models/catalog` list such entries as
 //! unavailable, with the reason. On a 32 GB card, or one of no known class,
-//! nothing changes. The catalog is the built-in one with the 16 GB 27B as an
-//! operator entry in place of the one GitHub #338 adds; every artifact is a
-//! file under `download.path`, and the models are `support/switch.rs`'s
-//! mocks, loaded by id.
+//! nothing changes. The catalog is the built-in one, which holds the 16 GB
+//! 27B (GitHub #338); every artifact is a file under `download.path`, and the
+//! models are `support/switch.rs`'s mocks, loaded by id.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,11 +35,9 @@ mod responses;
 
 const PATIENT: Duration = Duration::from_secs(30);
 
-/// The 16 GB 27B's catalog entry, the one the catalog's own tests read.
-const SIXTEEN_CATALOG: &str = include_str!("fixtures/catalog/sixteen.yaml");
-
-/// The 16 GB 27B's served id, and the id it answers to.
+/// The 16 GB 27B's served id and artifact, and the id it answers to.
 const SIXTEEN: &str = "qwen3.8-27b-16g";
+const SIXTEEN_ARTIFACT: &str = "qwen3_8_27b_trellis_sc30-v2.ninfer";
 const DEFAULT_27B: &str = "qwen3.8-27b";
 const FLASH_NEXT: &str = "qwen3.8-flash-next";
 const IMAGE: &str = "ignis-image-2.1-turbo";
@@ -48,8 +45,8 @@ const IMAGE: &str = "ignis-image-2.1-turbo";
 /// A condition image an edit decodes.
 const PNG: &[u8] = include_bytes!("../../artifact/tests/fixtures/vision/images/on_grid.png");
 
-/// The built-in catalog and the operator's `yaml`, every entry's artifact a
-/// file under a fresh `download.path`.
+/// The built-in catalog and the operator's `yaml` (`models: []` for none),
+/// every entry's artifact a file under a fresh `download.path`.
 fn catalog_on_disk(tag: &str, yaml: &str) -> CatalogModels {
     let dir = std::env::temp_dir().join(format!("ignis-card-class-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -62,11 +59,11 @@ fn catalog_on_disk(tag: &str, yaml: &str) -> CatalogModels {
 }
 
 /// A server on `start`, on a card of class `card`, whose requests may switch
-/// to any catalog entry on disk — the built-in ones and the 16 GB 27B, whose
-/// artifact's header names the 27B's family.
+/// to any built-in catalog entry on disk, the 16 GB 27B's artifact's header
+/// naming the 27B's family.
 fn server_on(loader: &Arc<MockLoader>, start: &str, card: Option<CardClass>, tag: &str) -> Server {
     loader.header(SIXTEEN, ModelFamily::Qwen38_27b);
-    server_over(loader, start, card, catalog_on_disk(tag, SIXTEEN_CATALOG))
+    server_over(loader, start, card, catalog_on_disk(tag, "models: []"))
 }
 
 fn server_over(loader: &Arc<MockLoader>, start: &str, card: Option<CardClass>, catalog: CatalogModels) -> Server {
@@ -283,7 +280,7 @@ async fn on_a_16gb_card_the_default_id_switches_to_the_entry_that_answers_to_it(
     assert_eq!(completion["model"], SIXTEEN);
     assert_eq!(loader.loads(), [SIXTEEN]);
     let dir = server.switcher.as_ref().unwrap().catalog().unwrap().dir.clone();
-    assert_eq!(loader.prepared_artifacts(), [dir.join("q16.ninfer")], "the 16 GB entry's artifact, not the 32 GB one's");
+    assert_eq!(loader.prepared_artifacts(), [dir.join(SIXTEEN_ARTIFACT)], "the 16 GB entry's artifact, not the 32 GB one's");
 
     // And by id: the explicit switch resolves the alias the same way.
     let (status, _) = send(&app, Method::POST, "/v1/models/switch", Some(json!({ "model": FLASH_NEXT, "artifact": "flash.ninfer" }))).await;
@@ -296,29 +293,28 @@ async fn on_a_16gb_card_the_default_id_switches_to_the_entry_that_answers_to_it(
 }
 
 /// ADR 0064 §2: an alias only ever resolves within one model family, and the
-/// family is the artifact's header's (ADR 0047), not the alias's. An
-/// operator entry that answers to the 27B's default id but holds a
-/// Flash-Next artifact — on disk, so its header is read before anything
-/// stops — does not answer to it: a request or a switch naming the default
-/// id is refused naming both families, nothing is prepared, and the lists
-/// say why. The same entry with a 27B header answers to it.
+/// family is the artifact's header's (ADR 0047), not the alias's. The entry
+/// that answers to the 27B's default id, holding a Flash-Next artifact — on
+/// disk, so its header is read before anything stops — does not answer to
+/// it: a request or a switch naming the default id is refused naming both
+/// families, nothing is prepared, and the lists say why. The same entry with
+/// a 27B header answers to it.
 #[tokio::test]
 async fn an_alias_never_resolves_to_an_artifact_of_another_family() {
-    let acme = SIXTEEN_CATALOG.replace("id: qwen3.8-27b-16g", "id: acme-fn-16g");
     for (header, tag) in [(ModelFamily::FlashNext, "family-other"), (ModelFamily::Qwen38_27b, "family-same")] {
         let loader = MockLoader::new();
-        loader.header("acme-fn-16g", header);
-        let server = server_over(&loader, "mock-a", Some(CardClass::Gb16), catalog_on_disk(tag, &acme));
+        loader.header(SIXTEEN, header);
+        let server = server_over(&loader, "mock-a", Some(CardClass::Gb16), catalog_on_disk(tag, "models: []"));
         let app = server.app();
         if header == ModelFamily::Qwen38_27b {
             let (status, completion) = send(&app, Method::POST, "/v1/chat/completions", Some(chat(DEFAULT_27B))).await;
-            assert_eq!((status, completion["model"].as_str()), (StatusCode::OK, Some("acme-fn-16g")), "{completion}");
+            assert_eq!((status, completion["model"].as_str()), (StatusCode::OK, Some(SIXTEEN)), "{completion}");
             continue;
         }
         let (status, refused) = send(&app, Method::POST, "/v1/chat/completions", Some(chat(DEFAULT_27B))).await;
         refused_by_class(status, &refused, DEFAULT_27B);
         let message = refused["error"]["message"].as_str().unwrap();
-        for named in ["acme-fn-16g lists it as an alias", "Qwen3.8-Flash-Next", "Qwen3.8-27B", "one model family"] {
+        for named in ["qwen3.8-27b-16g lists it as an alias", "Qwen3.8-Flash-Next", "Qwen3.8-27B", "one model family"] {
             assert!(message.contains(named), "{named}: {message}");
         }
         let (status, refused) = send(&app, Method::POST, "/v1/models/switch", Some(json!({ "model": DEFAULT_27B }))).await;
@@ -328,9 +324,9 @@ async fn an_alias_never_resolves_to_an_artifact_of_another_family() {
         let default = models["data"].as_array().unwrap().iter().find(|entry| entry["id"] == DEFAULT_27B).cloned().unwrap();
         assert_eq!(default["available"], false, "{default}");
         assert!(default["reason"].as_str().unwrap().contains("one model family"), "{default}");
-        // Named by its own id, the entry is the operator's word: served.
-        let (status, completion) = send(&app, Method::POST, "/v1/chat/completions", Some(chat("acme-fn-16g"))).await;
-        assert_eq!((status, completion["model"].as_str()), (StatusCode::OK, Some("acme-fn-16g")), "{completion}");
+        // Named by its own id, the entry is the request's word: served.
+        let (status, completion) = send(&app, Method::POST, "/v1/chat/completions", Some(chat(SIXTEEN))).await;
+        assert_eq!((status, completion["model"].as_str()), (StatusCode::OK, Some(SIXTEEN)), "{completion}");
     }
 }
 
@@ -457,13 +453,14 @@ async fn the_prompt_enhancer_is_served_by_the_entry_that_answers_to_it() {
     let visited = server_on(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb16), "enhancer-visit");
     assert_eq!(enhancer_on_this_card(&visited, DEFAULT_27B), SIXTEEN);
     let via = visited.switcher.as_ref().unwrap().text_model(SIXTEEN).expect("a visit loads the 16 GB 27B");
-    assert_eq!(via.artifact.file_name().and_then(|name| name.to_str()), Some("q16.ninfer"));
+    assert_eq!(via.artifact.file_name().and_then(|name| name.to_str()), Some(SIXTEEN_ARTIFACT));
     assert_eq!(unknown_enhancer(&visited, DEFAULT_27B, &none), None);
 
-    // The built-in catalog alone: no entry answers to the default id here.
-    let alone = server_over(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb16), catalog_on_disk("enhancer-alone", "models: []"));
-    assert_eq!(enhancer_on_this_card(&alone, DEFAULT_27B), DEFAULT_27B);
-    assert!(unknown_enhancer(&alone, DEFAULT_27B, &none).is_some_and(|reason| reason.contains(DEFAULT_27B)));
+    // An enhancer no entry answers to on this card: the abliterated 27B's id.
+    const ABLITERATED: &str = "qwen3.8-27b-abliterated";
+    let alone = server_on(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb16), "enhancer-alone");
+    assert_eq!(enhancer_on_this_card(&alone, ABLITERATED), ABLITERATED);
+    assert!(unknown_enhancer(&alone, ABLITERATED, &none).is_some_and(|reason| reason.contains(ABLITERATED)));
 
     let thirty_two = server_on(&MockLoader::new(), FLASH_NEXT, Some(CardClass::Gb32), "enhancer-32");
     assert_eq!(enhancer_on_this_card(&thirty_two, DEFAULT_27B), DEFAULT_27B, "its own entry fits");

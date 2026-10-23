@@ -1,8 +1,8 @@
-# The 16 GB 27B's catalog entry as spec 27b-16gb/01 describes it (ADR 0064):
-# an operator catalog in place of the built-in entry GitHub #338 adds with
-# its pins — its own served id, the 16 GB class, and the 27B's default id as its
-# alias. Shared by the catalog's unit tests (`download::catalog::testing`) and
-# the integration tests (`tests/card_class_http.rs`).
+# The 16 GB 27B's catalog entry as an operator catalog would state it (ADR
+# 0064): its own served id, the 16 GB class, and the 27B's default id as its
+# alias. The built-in catalog holds the real one (GitHub #338); the catalog's
+# unit tests (`download::catalog::testing`) parse this one over the built-in
+# entries without it.
 models:
   - id: qwen3.8-27b-16g
     repo: acme/qwen3.8-27b-16g

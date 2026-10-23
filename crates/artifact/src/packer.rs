@@ -44,6 +44,11 @@
 //! And the image model's container ([`Family::QwenImage21`], spec
 //! image-model/01): `frontend/`, then four units of tensors.json tensors
 //! ([`crate::qwen_image::WORK_UNITS`]), with no Flash-Next geometry.
+//!
+//! And the 27B's 16 GB artifact ([`Family::Qwen27bTrellis`], spec
+//! 27b-16gb/01): `frontend/`, then the tensors.json units of
+//! [`TRELLIS_27B_UNITS`], each object under its unit's prefix, written by
+//! `tools/27b-16gb-converter`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -108,6 +113,26 @@ pub fn qwen_image_identity() -> ArtifactIdentity {
     }
 }
 
+/// The 27B's 16 GB artifact's file name, beside the converter's `work/`
+/// (spec 27b-16gb/01).
+pub const TRELLIS_27B_ARTIFACT_FILE_NAME: &str = "qwen3_8_27b_trellis_sc30-v2.ninfer";
+
+/// The 16 GB artifact's header reservation: its directory is ~0.25 MB.
+pub const TRELLIS_27B_HEADER_BYTES: u64 = 4 << 20;
+
+/// The 16 GB artifact's tensor units after `frontend/`, in container order
+/// (the served artifact's): each object's name starts with its unit.
+pub const TRELLIS_27B_UNITS: &[&str] = &["text", "mtp", "vision", "dflash2"];
+
+/// The 16 GB artifact's identity: the 27B family, its body the public
+/// `SC_3.00bpw_H4` quant's trellis (ADR 0060 §4).
+pub fn trellis_27b_identity() -> ArtifactIdentity {
+    ArtifactIdentity {
+        model_id: "qwen3.8-27b".into(),
+        weights_id: "trellis-sc30".into(),
+    }
+}
+
 /// The MTP companion container's identity (layout.md §13.2).
 pub fn mtp_identity() -> ArtifactIdentity {
     ArtifactIdentity {
@@ -127,6 +152,9 @@ pub enum Family {
     /// The image model (spec image-model/01): `frontend/` and the four
     /// tensor units of [`crate::qwen_image::WORK_UNITS`].
     QwenImage21,
+    /// The 27B's 16 GB artifact (spec 27b-16gb/01): `frontend/` and the
+    /// tensor units of [`TRELLIS_27B_UNITS`].
+    Qwen27bTrellis,
 }
 
 /// What one [`pack`] call is asked to do.
@@ -194,6 +222,21 @@ impl PackOptions {
         }
     }
 
+    /// The defaults for the 27B's 16 GB artifact: `work_dir` → `artifact`.
+    pub fn trellis_27b(work_dir: PathBuf, artifact: PathBuf) -> Self {
+        Self {
+            work_dir,
+            artifact,
+            geometry: None,
+            identity: trellis_27b_identity(),
+            header_bytes: TRELLIS_27B_HEADER_BYTES,
+            keep_work: false,
+            delete_batch_bytes: DEFAULT_DELETE_BATCH_BYTES,
+            accept_status: vec!["complete".into()],
+            family: Family::Qwen27bTrellis,
+        }
+    }
+
     /// The layer count the state records: Flash-Next's, 0 for the image model.
     fn layers(&self) -> usize {
         self.geometry.as_ref().map_or(0, |g| g.layers)
@@ -242,6 +285,9 @@ pub fn family_units(family: &Family, layers: usize) -> Vec<String> {
         Family::QwenImage21 => {
             std::iter::once("frontend").chain(crate::qwen_image::WORK_UNITS).map(String::from).collect()
         }
+        Family::Qwen27bTrellis => {
+            std::iter::once("frontend").chain(TRELLIS_27B_UNITS.iter().copied()).map(String::from).collect()
+        }
     }
 }
 
@@ -272,7 +318,7 @@ pub fn pack(options: &PackOptions, progress: &mut dyn FnMut(&str)) -> Result<Pac
     let units = family_units(&options.family, options.layers());
     let pair = match &options.family {
         Family::Mtp { pair_main } => Some(pair_record(pair_main)?),
-        Family::Main | Family::QwenImage21 => None,
+        Family::Main | Family::QwenImage21 | Family::Qwen27bTrellis => None,
     };
 
     let mut state = if state_file.exists() {
@@ -386,7 +432,7 @@ pub fn pack(options: &PackOptions, progress: &mut dyn FnMut(&str)) -> Result<Pac
     let mut writer = ContainerWriter::resume(&options.artifact, state.writer.clone())?;
     let mut largest_unit_directory = 0u64;
     for (position, unit) in units.iter().enumerate().skip(state.units_done.len()) {
-        let Some(plan) = plan_unit(&options.work_dir, unit, options.geometry.as_ref())? else {
+        let Some(plan) = plan_unit(&options.work_dir, unit, &options.family, options.geometry.as_ref())? else {
             return Ok(PackOutcome::Waiting {
                 appended: position,
                 total: units.len(),
@@ -628,9 +674,14 @@ fn read_done(dir: &Path) -> Result<Option<Done>> {
     Ok(Some(done))
 }
 
-/// Plan one unit, or `None` when it is not complete yet. `geometry` is
-/// Flash-Next's, which its expert and n-gram units need.
-fn plan_unit(work_dir: &Path, unit: &str, geometry: Option<&FlashNextGeometry>) -> Result<Option<UnitPlan>> {
+/// Plan one unit of `family`, or `None` when it is not complete yet.
+/// `geometry` is Flash-Next's, which its expert and n-gram units need.
+fn plan_unit(
+    work_dir: &Path,
+    unit: &str,
+    family: &Family,
+    geometry: Option<&FlashNextGeometry>,
+) -> Result<Option<UnitPlan>> {
     let dir = work_dir.join(unit);
     let Some(done) = read_done(&dir)? else {
         return Ok(None);
@@ -653,6 +704,12 @@ fn plan_unit(work_dir: &Path, unit: &str, geometry: Option<&FlashNextGeometry>) 
                 });
             }
         }
+        // the image model's and the 16 GB 27B's units: tensors.json only,
+        // every name under the unit's own prefix (`vision/...`, `vae/...`,
+        // `text/...`; the 27B's `mtp/...` is not Flash-Next's `mtp` unit)
+        _ if *family == Family::Qwen27bTrellis || crate::qwen_image::WORK_UNITS.contains(&unit) => {
+            plan_tensors_json(&mut plan, &done, Some(&format!("{unit}/")))?;
+        }
         "global" => plan_tensors_json(&mut plan, &done, None)?,
         "mtp" => {
             plan_tensors_json(&mut plan, &done, Some(MTP_PREFIX))?;
@@ -662,11 +719,6 @@ fn plan_unit(work_dir: &Path, unit: &str, geometry: Option<&FlashNextGeometry>) 
             if !plan_ngram(&mut plan, &done, flash_next()?)? {
                 return Ok(None);
             }
-        }
-        // the image model's units: tensors.json only, every name under the
-        // unit's own prefix (`vision/...`, `vae/...`)
-        _ if crate::qwen_image::WORK_UNITS.contains(&unit) => {
-            plan_tensors_json(&mut plan, &done, Some(&format!("{unit}/")))?;
         }
         _ => {
             let layer: usize = unit

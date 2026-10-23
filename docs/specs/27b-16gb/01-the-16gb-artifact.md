@@ -99,3 +99,87 @@ as oracles), 0002 (the artifact format).
   spec 05's gates send the choice elsewhere.
 - Licences: the checkpoint and the public quant are both Apache-2.0. exllamav3 is MIT. The card cites turboderp's
   quant.
+
+## As built (2026-10-23)
+
+- **Who writes the container.** `tools/27b-16gb-converter/convert.py run` writes the packer's work tree (units
+  `frontend`, `text`, `mtp`, `vision`, `dflash2`: a `tensors.json`, one payload file per tensor, `DONE`, as
+  `docs/specs/flash-next/layout.md` §2) and `converter.json`; `ignis-artifact-pack --family qwen3.8-27b-trellis`
+  (`Family::Qwen27bTrellis`) assembles the container and merges `converter.json` into the sidecar. Python never writes
+  the container, as for Flash-Next and the image model. The step that needs the GPU is the reconstruction errors only.
+- **The artifact.** `qwen3_8_27b_trellis_sc30-v2.ninfer`, identity `qwen3.8-27b` / `trellis-sc30`, 13,379,877,124
+  bytes, sha256 `2c4c9ee4d6b25c08da6c2d85840126e73d120564e230f926b6230b5b95ee8b3c`; sidecar
+  `<artifact>.conversion.json`. 1,222 objects: 401 trellis tensors (the body's 400 matrices and the head) and 821
+  copied objects (815 tensors and the 6 resources). The 247 `*_input_scale_divisor` scalars of the NVFP4 planes are
+  dropped with them; the quant's MTP layer (8 matrices) is not taken: the MTP layer is the served W8 one.
+- **The object names** (`plan.py`; `ignis_artifact::text_scope_27b_trellis` on the Rust side). Under
+  `text/layers/{i}/`:
+
+  | served NVFP4 / BF16 plane | in the 16 GB artifact (trellis) | rows × columns |
+  |---|---|---|
+  | `gdn/query_key_value_z` | `gdn/in_proj_qkv`, `gdn/in_proj_z` | 10,240 / 6,144 × 5,120 |
+  | `gdn/output` | `gdn/output` | 5,120 × 6,144 |
+  | `attention/query_key_gate_value` | `attention/q_proj`, `attention/k_proj`, `attention/v_proj` | 12,288 / 1,024 / 1,024 × 5,120 |
+  | `attention/output` | `attention/output` | 5,120 × 6,144 |
+  | `mlp/gate_up` | `mlp/gate_proj`, `mlp/up_proj` | 17,408 / 17,408 × 5,120 |
+  | `mlp/down` | `mlp/down` | 5,120 × 17,408 |
+
+  and `text/output_head` (248,320 × 5,120) in trellis at K = 4. Every other object keeps its served name, format and
+  bytes, in the served directory's order (the frontend resources sorted by name).
+- **Row orders, for spec 05a's binding** (exllamav3's and Hugging Face's, not the served artifact's):
+  - `attention/q_proj` is 24 heads of [q 256 | gate 256], interleaved per head (transformers' `q_proj(x).view(...,
+    head_dim * 2)` then `chunk(2)`); the served `query_key_gate_value` is the blocks q | k | gate | v.
+  - `gdn/in_proj_qkv` is [q 2,048 | k 2,048 | v 6,144], split by key and value width as transformers'
+    `Qwen3_5GatedDeltaNet` does; `gdn/in_proj_z` is the 6,144-row output gate.
+  - Each split matrix has its own `suh`/`svh` and its own K; a record's tile order and scales are exllamav3's
+    (`docs/specs/flash-next/layout.md` §3), the records spec 02's `ignis_trellis_linear` decodes.
+- **The token embedding stays W8G32** (ADR 0060 left W8 or BF16 open): copied byte for byte, it lives in mapped host
+  memory (ADR 0062), so its format costs no VRAM, and the loader reads it already.
+- **K per matrix** (the quant's): K2 34, K3 297, K4 66, K5 4; trellis bytes 9,772,122,112. **Reconstruction error**
+  against BF16: max 0.3383 (`text/layers/0/mlp/down`), mean 0.1500, the head 0.0765; per matrix equal to M1's harness
+  within 4.1e-5 (M1 cast to BF16 before the difference).
+- **Acceptance:**
+  1. Met: the sidecar pins `turboderp/Qwen3.8-27B-exl3`, branch `SC_3.00bpw_H4`, revision
+     `86b95530f9d365d90dd24d01a997a8de0cdf6c55` (from the download's Hugging Face records), the two shards (each
+     checked against its LFS oid) and the index, quantization config and config by sha256. The BF16 checkpoint the
+     reconstruction errors are measured against is pinned the same way (`reference`: `Qwen/Qwen3.8-27B`, its
+     revision, index and 18 shards).
+  2. Met: two conversions from the committed converter, each packed, give the same container (the sha256 above), and
+     two packs of one work tree are byte-identical; the converter writes no timestamp or local path
+     (`test_the_same_inputs_give_the_same_work_tree`, `the_same_tree_packs_to_the_same_bytes`). The sidecar carries
+     the provenance of the solution's point 3, the commit the converter ran from (and whether its files differed from
+     it), and the served graft sidecar's NVFP4 records of the copied drafter, which `checksum::verify` reads clean
+     (34 of 34).
+  3. Met: `convert.py verify` reads every trellis object back equal to its source tensors and every copied object's
+     sha256 equal to the served one's (VERIFY PASS, 401 + 821), and the Rust test cross-checks copies of every kind
+     through the crate's own reader (`tests/trellis_27b.rs`). Every object binds against its descriptor to `finish`
+     (ADR 0002's contract, as for the served artifact); against the model's own tables, the trellis text scope, the
+     DFlash2 module, the draft head and the vision tower bind, and the rest is the MTP layer and the frontend, which
+     no 27B scope binds on the served artifact either. Binding it in the program is 05a's (below).
+  4. Met: the binder's materialization plan for the text scope, the embedding in mapped host memory, is 9,825,087,488
+     bytes of device arena; with the DFlash2 module and the draft head 11,264,998,400; with the vision tower too
+     11,560,717,824. The trellis op's workspace (`trellis::plan_bytes`, 72.4 MB at 16 decode and 2,048 prefill
+     tokens: spec 02) and the VRAM plan's other lines come with the load, in spec 05a.
+  5. Met: see the Hugging Face paragraph below.
+  6. Met: `cargo test` workspace-wide.
+- **Moved to spec 05a** (a coordinator call, listed on #338 for the owner). The testing decision "the artifact loads in
+  ignis on the 5090 under a 16 GiB budget" is 05a's Acceptance A1 word for word: the 27B program binds the NVFP4 text
+  scope only until 05a wires the trellis one.
+- **Hugging Face and the catalog (Acceptance 5, met).**
+  - Repository `gpillon/Qwen3.8-27B-trellis-3bpw-ignis`, uploaded private on 2026-10-23 and made public the same day on
+    the owner's go, after the privacy scan: the container's payload is the quant's and the served artifact's public
+    bytes (`verify`), and its directory, the sidecar, the card and the LICENSE name no local path or person.
+  - Hub commit `f5bbd2cc14c9ca573ef5553c100ac69410f1fe58`; the container's LFS sha256 is the local one, and the
+    served sidecar is byte-identical to the local one (sha256 `210ab54b…a340d`).
+  - Files: the container, its `.conversion.json`, a `.sha256`, the Apache-2.0 LICENSE distributed with
+    Qwen/Qwen3.8-27B. The card states measured values only and cites turboderp's quant; it says there is no command
+    to run it yet, which comes with #339.
+  - The built-in catalog's entry `qwen3.8-27b-16g`: `card_class: 16`, `aliases: [qwen3.8-27b]`, both files pinned
+    (bytes and sha256) at that commit.
+  - The tests that stood the 16 GB 27B up as an operator entry (`tests/fixtures/catalog/sixteen.yaml`) now read the
+    built-in one; that fixture is the parsing tests' input, over the built-in entries without it.
+  - **Release gate:** until #339 wires the trellis body, a 16 GB card resolving `qwen3.8-27b` fetches an artifact the
+    program cannot bind. No release ships this entry before #339.
+- **Beyond the spec, for the tool's own runs:** `--error-bound` (default 0.6, recorded in the sidecar; a threshold is a
+  setting with a default, the owner's rule) and `--skip-errors` (a `dry-run` tree, which the packer refuses unless
+  asked).

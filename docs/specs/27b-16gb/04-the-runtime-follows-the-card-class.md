@@ -143,8 +143,8 @@ ADRs: 0063, 0064; 0030 (the VRAM plan), 0045 (KV pool policy, fixed reservations
 
 ## Further Notes
 
-- The 16 GB catalog entry's file pins (repo, revision, sha256) come from spec 01. Until then a test fixture entry
-  stands in.
+- The 16 GB catalog entry's file pins (repo, revision, sha256) come from spec 01: the built-in entry
+  `qwen3.8-27b-16g` (#338).
 - On the 5090, `auto` must not change anything a user sees. AC 2 is the regression test for that.
 
 ## As built: adaptation and `draft_head: auto` (2026-10-23)
