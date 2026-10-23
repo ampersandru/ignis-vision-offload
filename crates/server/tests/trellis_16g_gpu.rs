@@ -7,9 +7,16 @@
 //! trellis workspace as its own VRAM line, runs the profile's two decode
 //! lanes with DFlash2, and serves greedy coding completions that are coherent
 //! (they hold what the prompt asks for) and deterministic (the same prompt
-//! twice gives the same text). Each request's speculative rounds are read off
-//! its `ignis.request.done` line, and the tokens per round printed beside the
-//! plan's lines -- the figures Acceptance A1 and A2 report.
+//! twice gives the same text) -- one at a time, and the two prompts at once,
+//! each then its own sequential text: the two requests in flight together
+//! (both decoding before either is done, read off the request log) are what
+//! runs the verify rounds two lanes wide. Each request's speculative rounds
+//! are read off its `ignis.request.done` line, and the tokens per round
+//! printed beside the plan's lines -- the figures Acceptance A1 and A2 report.
+//!
+//! The plan's three lines the trellis body changes are pinned to the bytes
+//! spec 05a's As built derives them from (its "The plan's trellis lines"):
+//! `workspace`, `trellis_workspace` and `decode_graph`.
 //!
 //! Its own test binary: the request log is written on the engine's telemetry
 //! task, so the capture is the process's global subscriber.
@@ -38,6 +45,14 @@ const TRELLIS: &str = "F:/ai/models/Qwen3.8-27B-trellis-3bpw-ignis/qwen3_8_27b_t
 const MODEL: &str = "qwen3.8-27b";
 /// A 16 GB card's whole memory: spec 05a Acceptance A1's budget.
 const BUDGET: &str = "17179869184";
+/// The 16 GiB load's trellis lines on the 5090 (spec 05a's As built, "The
+/// plan's trellis lines"): the prefill chunk's scratch without the vendored
+/// projection workspaces and with the q | gate buffer, the head-width-bounded
+/// trellis workspace at its widest call (`mlp/down` at the 1,024-token
+/// chunk), and the round arena at 2 lanes x 8 columns.
+const WORKSPACE_BYTES: u64 = 395_898_880;
+const TRELLIS_WORKSPACE_BYTES: u64 = 36_225_280;
+const DECODE_GRAPH_BYTES: u64 = 20_621_328;
 
 fn the_27b(flags: &[&str]) -> ignis_server::config::Config {
     let args: Vec<String> = flags.iter().map(|flag| flag.to_string()).collect();
@@ -120,16 +135,21 @@ async fn the_16gb_artifact_serves_greedy_code_on_two_dflash2_lanes_in_a_16_gib_b
     assert_eq!(lines["budget_bytes"], 17_179_869_184u64);
     assert_eq!(lines["mode"], "explicit");
     let trellis_workspace = lines["trellis_workspace_bytes"].as_u64().expect("the trellis line");
-    assert!(trellis_workspace > 0, "the trellis body plans its workspace");
     let weights = lines["weights_bytes"].as_u64().unwrap();
     // Spec 01's As built: the text scope is 9,825,087,488 bytes of device
     // arena; the drafter adds its 66 objects (the full head: no shortlist).
     assert!((9_825_087_488..11_264_998_400).contains(&weights), "{weights}");
     assert!(lines["total_bytes"].as_u64().unwrap() <= 17_179_869_184, "the plan fits the budget");
     println!(
-        "plan: weights {weights}, trellis workspace {trellis_workspace}, workspace {}, kv pool {} tokens, adapted '{}'",
-        lines["workspace_bytes"], lines["kv_pool_tokens"], lines["adapted"]
+        "plan: weights {weights}, trellis workspace {trellis_workspace}, workspace {}, decode graph {}, kv pool {} \
+         tokens, adapted '{}'",
+        lines["workspace_bytes"], lines["decode_graph_bytes"], lines["kv_pool_tokens"], lines["adapted"]
     );
+    // The profile's shape fits a 16 GiB card as asked: nothing adapted.
+    assert_eq!(lines["adapted"], "", "the 16 GiB load adapted its shape");
+    assert_eq!(trellis_workspace, TRELLIS_WORKSPACE_BYTES, "the trellis workspace line");
+    assert_eq!(lines["workspace_bytes"].as_u64(), Some(WORKSPACE_BYTES), "the workspace line");
+    assert_eq!(lines["decode_graph_bytes"].as_u64(), Some(DECODE_GRAPH_BYTES), "the decode graph line");
     let load = named(&logged, "ignis.model.loaded");
     println!("model.loaded: {}", load[0]);
     assert_eq!(load[0]["attributes"]["decode_lanes"], 2);
@@ -146,36 +166,66 @@ async fn the_16gb_artifact_serves_greedy_code_on_two_dflash2_lanes_in_a_16_gib_b
     ];
     let mut rounds = 0u64;
     let mut accepted = 0u64;
+    let mut sequential = Vec::new();
     for (prompt, needle) in prompts {
         let first = complete(&app, prompt, 160).await;
         let again = complete(&app, prompt, 160).await;
         println!("completion: {first:?}");
         assert!(first.contains(needle), "the completion holds `{needle}`: {first:?}");
         assert_eq!(first, again, "greedy decoding is deterministic");
+        sequential.push(first);
     }
     // The request log is written on the telemetry task after each response.
-    let mut done = Vec::new();
-    for _ in 0..100 {
-        done = events().into_iter().filter(|e| e["event_name"] == "ignis.request.done").collect();
-        if done.len() >= 2 * prompts.len() {
-            break;
+    let settled = |count: usize| async move {
+        let mut done = Vec::new();
+        for _ in 0..100 {
+            done = events().into_iter().filter(|e| e["event_name"] == "ignis.request.done").collect::<Vec<_>>();
+            if done.len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(done.len(), 2 * prompts.len(), "every request logs its done line");
-    for line in &done {
+        done
+    };
+    assert_eq!(settled(2 * prompts.len()).await.len(), 2 * prompts.len(), "every request logs its done line");
+
+    // The two prompts at once: two lanes, so both are admitted and decode
+    // together, and each lane's text is the one it had alone.
+    let before = events().len();
+    let (left, right) = tokio::join!(complete(&app, prompts[0].0, 160), complete(&app, prompts[1].0, 160));
+    assert_eq!([left, right], [sequential[0].clone(), sequential[1].clone()], "a lane beside another keeps its text");
+    let done = settled(3 * prompts.len()).await;
+    assert_eq!(done.len(), 3 * prompts.len(), "every request logs its done line");
+    // In flight together: both requests' first tokens are logged before
+    // either request's done line.
+    let pair: Vec<serde_json::Value> = events().split_off(before);
+    let first_done = pair.iter().position(|e| e["event_name"] == "ignis.request.done").expect("a done line");
+    let ttft_before_done = pair[..first_done].iter().filter(|e| e["event_name"] == "ignis.request.ttft").count();
+    assert_eq!(ttft_before_done, 2, "the two requests did not decode together: {pair:?}");
+    let (mut pair_rounds, mut pair_accepted) = (0u64, 0u64);
+    for (index, line) in done.iter().enumerate() {
         let a = &line["attributes"];
         let (r, d, c) = (a["spec.rounds"].as_u64(), a["spec.drafted"].as_u64(), a["spec.accepted"].as_u64());
         println!(
-            "request {}: tokens {}, {:.1} tok/s, spec.rounds {r:?}, drafted {d:?}, accepted {c:?}, pos {}",
-            a["request_id"], a["tokens"], a["tok_s"].as_f64().unwrap_or(0.0), a["spec.pos"]
+            "request {}: tokens {}, {:.1} tok/s, lane {}, spec.rounds {r:?}, drafted {d:?}, accepted {c:?}, pos {}",
+            a["request_id"], a["tokens"], a["tok_s"].as_f64().unwrap_or(0.0), a["lane"], a["spec.pos"]
         );
-        rounds += r.expect("a DFlash2 load's request runs verify rounds");
-        accepted += c.unwrap_or(0);
+        let r = r.expect("a DFlash2 load's request runs verify rounds");
+        if index < 2 * prompts.len() {
+            rounds += r;
+            accepted += c.unwrap_or(0);
+        } else {
+            pair_rounds += r;
+            pair_accepted += c.unwrap_or(0);
+        }
     }
     // A round commits its accepted drafts and the target's own token.
     let per_round = (accepted + rounds) as f64 / rounds as f64;
-    println!("tokens per round: {per_round:.2} over {rounds} rounds");
+    println!("tokens per round: {per_round:.2} over {rounds} rounds (one request at a time)");
+    println!(
+        "tokens per round: {:.2} over {pair_rounds} rounds (the pair, two lanes)",
+        (pair_accepted + pair_rounds) as f64 / pair_rounds.max(1) as f64
+    );
     assert!(per_round > 1.0, "the drafter's proposals are accepted at all: {per_round}");
 
     drop(app);
