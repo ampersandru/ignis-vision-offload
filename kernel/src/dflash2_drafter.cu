@@ -2,6 +2,7 @@
 // verify round -- see kernel/src/dflash2_drafter.h for the contract.
 
 #include "dflash2_drafter.h"
+#include "trellis_body.h"
 
 #include "ignis_dflash2_topk.h"
 
@@ -256,12 +257,17 @@ void ignis_dflash2_propose(ignis_model *model, ignis_seq_pool *pool, std::uint32
   // is the target's own unless the load bound the shortlist one, whose rows
   // are the most frequent tokens: its top-k are row indices, mapped back to
   // token ids before the selector reads them, so everything past this point
-  // sees token ids either way.
+  // sees token ids either way. GitHub #339: the target's own head is the
+  // trellis one on a trellis body (the shortlist head is the served Q4 one on
+  // either body).
   const bool shortlist = model->proposal_token_ids != nullptr;
-  const ninfer::Weight &head = shortlist ? model->proposal_head : model->output_head;
-  const std::int32_t head_rows = shortlist ? head.n : vocab;
+  const std::int32_t head_rows = shortlist ? model->proposal_head.n : vocab;
   ninfer::Tensor logits = arena.alloc(ninfer::DType::BF16, {head_rows, draft_columns, 1, 1});
-  ninfer::ops::linear(proposal_hidden, head, logits, stream);
+  if (shortlist) {
+    ninfer::ops::linear(proposal_hidden, model->proposal_head, logits, stream);
+  } else {
+    ignis::trellis_body::output_head(*model, proposal_hidden, logits, stream);
+  }
   ninfer::Tensor candidate_ids    = arena.alloc(ninfer::DType::I32, {top_k, draft_columns, 1, 1});
   ninfer::Tensor candidate_values = arena.alloc(ninfer::DType::BF16, {top_k, draft_columns, 1, 1});
   // Ours rather than the vendored op (kernel/include/ignis_dflash2_topk.h): the

@@ -33,6 +33,7 @@ const VRAM_LINES: [string, number][] = [
   ["weights", 17_179_869_184],
   ["cuda_context", 587_202_560],
   ["workspace", 1_342_177_280],
+  ["trellis_workspace", 0],
   ["media_embedding", 402_653_184],
   ["sampling", 33_554_432],
   ["decode_graph", 16_777_216],

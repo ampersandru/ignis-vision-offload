@@ -2345,7 +2345,7 @@ mod tests {
         });
 
         let text = metrics.render();
-        // The twelve lines are the plan's, in the plan's order and spelling,
+        // The thirteen lines are the plan's, in the plan's order and spelling,
         // then Flash-Next's two (GitHub #306) and the image model's condition
         // budget (GitHub #324).
         let exported: Vec<String> = samples(&text)

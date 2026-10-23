@@ -13,6 +13,7 @@
 #include "ignis_seq_internal.h"
 #include "layer_internal.h"
 #include "model_internal.h"
+#include "trellis_body.h"
 
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/gqa_attention.h"
@@ -49,6 +50,79 @@ ninfer::Tensor weight_tensor(const ninfer::Weight &weight, ninfer::DType dtype,
   return ninfer::Tensor(const_cast<void *>(weight.qdata), dtype, shape);
 }
 
+// The MLP intermediate: the SwiGLU gate_up plane's row count / 2, or on the
+// trellis body (GitHub #339) its gate matrix's rows.
+std::int32_t mlp_width(const ignis_model &model, const GqaLayerWeights &weights) {
+  return model.trellis_body ? static_cast<std::int32_t>(weights.trellis.gate_proj.out)
+                            : weights.mlp_gate_up.n / 2;
+}
+
+// GitHub #339: the layer's query, output gate, key and value on the body the
+// load bound -- the vendored fused projection under the call's mode policy,
+// or the trellis body's three matrices: `q_proj`'s per-head [q | gate] rows
+// split into the query and the gate (kernel/src/trellis_body.h), `k_proj`
+// and `v_proj` straight into theirs. The trellis op has no policy to
+// resolve; `mode` is the NVFP4 arm's alone.
+void input_projection(ignis_model &model, const GqaLayerWeights &weights, const ninfer::Tensor &normalized,
+                      ninfer::Tensor &query, ninfer::Tensor &gate, ninfer::Tensor &key, ninfer::Tensor &value,
+                      std::int32_t heads, std::int32_t head_dim, ninfer::DeviceArena &arena, LinearPolicyMode mode,
+                      cudaStream_t stream) {
+  if (model.trellis_body) {
+    const GqaTrellisWeights &t = weights.trellis;
+    ignis::trellis_body::query_gate(model, t.q_proj, normalized, heads, head_dim, arena, query, gate, stream);
+    ignis::trellis_body::linear(model, t.k_proj, normalized, key.data, static_cast<uint32_t>(key.ne[0]),
+                                IGNIS_TRELLIS_STORE, stream);
+    ignis::trellis_body::linear(model, t.v_proj, normalized, value.data, static_cast<uint32_t>(value.ne[0]),
+                                IGNIS_TRELLIS_STORE, stream);
+    return;
+  }
+  ninfer::ops::attn_input_proj(normalized, weights.query_key_gate_value, query, gate, key, value,
+                               ignis_policy_for(weights.query_key_gate_value.qtype, mode), arena, stream);
+}
+
+// GitHub #339: the output projection's residual add and the MLP tail on the
+// body the load bound (see `input_projection`).
+void output_and_mlp(ignis_model &model, const GqaLayerWeights &weights, const ninfer::Tensor &attention,
+                    ninfer::Tensor &residual, ninfer::Tensor &post, ninfer::Tensor &fused,
+                    ninfer::DeviceArena &arena, LinearPolicyMode mode, std::int32_t tokens, cudaStream_t stream) {
+  const auto hidden = static_cast<std::int32_t>(model.hidden);
+  const ninfer::Tensor post_norm =
+      weight_tensor(weights.post_attention_norm, ninfer::DType::BF16, {hidden, 1, 1, 1});
+  if (model.trellis_body) {
+    const GqaTrellisWeights &t = weights.trellis;
+    ignis::trellis_body::linear(model, t.output, attention, residual.data, static_cast<uint32_t>(hidden),
+                                IGNIS_TRELLIS_ADD, stream);
+    ninfer::ops::rmsnorm(residual, post_norm, model.rms_norm_eps, /*unit_offset=*/true, post, stream);
+    ignis::trellis_body::swiglu(model, t.gate_proj, t.up_proj, post, fused, stream);
+    ignis::trellis_body::linear(model, t.down, fused, residual.data, static_cast<uint32_t>(hidden),
+                                IGNIS_TRELLIS_ADD, stream);
+    return;
+  }
+  // P2-03 (GitHub #85): the residual add takes the call's mode policy
+  // (AllowA4 on the NVFP4 output projection under the engine default, so
+  // its W4A4 route is the vendored dispatch's own decision) or A16Only
+  // under the override.
+  ninfer::ops::linear_add(attention, weights.output, residual, ignis_policy_for(weights.output.qtype, mode), arena,
+                          stream);
+  ninfer::ops::rmsnorm(residual, post_norm, model.rms_norm_eps, /*unit_offset=*/true, post, stream);
+  // P2-03 (GitHub #85): the MLP tail takes the call's mode policy too.
+  // The reference's text-model policy is AllowA4 on the NVFP4 gate_up at
+  // every width under the engine default, and the route (A16 small-T vs
+  // the W4A4/TMA large-T) is the vendored plan's own decision per its
+  // token thresholds (GitHub #85's acceptance: the engine encodes no
+  // threshold of its own there). Under the test-only A16 override the
+  // width-aware `linear_swiglu` counterpart (kernel/src/layer_internal.h)
+  // forces the A16 route where it is registered (T<=16) and the op's only
+  // runnable route above its A16 cap -- the pre-#85 behavior. The scratch
+  // was already reserved for AllowA4 at any T (P2-01, GitHub #83), so a
+  // chunk's A4 route needs nothing new.
+  ninfer::ops::linear_swiglu(post, weights.mlp_gate_up, fused,
+                             ignis_linear_swiglu_policy_for(weights.mlp_gate_up.qtype, mode, tokens), arena,
+                             stream);
+  ninfer::ops::linear_add(fused, weights.mlp_down, residual, ignis_policy_for(weights.mlp_down.qtype, mode), arena,
+                          stream);
+}
+
 int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
                       uint32_t layer, void *in_residual, void *out_residual,
                       uint32_t gqa_layer, uint64_t num_tokens, LinearPolicyMode mode,
@@ -62,7 +136,7 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
   const auto tokens = static_cast<std::int32_t>(num_tokens);
   const auto q_width = kHeadDim * kQHeads;
   const auto kv_width = kHeadDim * kKvHeads;
-  const auto ffn = model->layers[layer].gqa.mlp_gate_up.n / 2;
+  const auto ffn = mlp_width(*model, model->layers[layer].gqa);
   const float attention_scale = 1.0F / std::sqrt(static_cast<float>(kHeadDim));
   const GqaLayerWeights &weights = model->layers[layer].gqa;
   const auto stream = model->stream;
@@ -94,10 +168,10 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
     // vendored dispatch's own decision per its token thresholds, not ours --
     // or A16Only when the override forces it. The transient workspace comes
     // from the model's scratch (reserved at load for the widest policy,
-    // P2-01, GitHub #83), so a chunk's A4 route needs nothing new.
-    ninfer::ops::attn_input_proj(normalized, weights.query_key_gate_value, query, gate, key,
-                                 value, ignis_policy_for(weights.query_key_gate_value.qtype, mode),
-                                 *model->scratch, stream);
+    // P2-01, GitHub #83), so a chunk's A4 route needs nothing new. GitHub
+    // #339: the trellis body's three matrices instead.
+    input_projection(*model, weights, normalized, query, gate, key, value, kQHeads, kHeadDim, *model->scratch,
+                     mode, stream);
 
     // The future full prefill/decode step supplies the same offset to every
     // GQA layer for a token, so positions advance per token, never per layer.
@@ -295,35 +369,7 @@ int32_t run_gqa_layer(ignis_model *model, ignis_seq_pool *pool, ignis_seq *seq,
                 cudaGetErrorString(error));
       return -1;
     }
-    // P2-03 (GitHub #85): the residual add takes the call's mode policy
-    // (AllowA4 on the NVFP4 output projection under the engine default, so
-    // its W4A4 route is the vendored dispatch's own decision) or A16Only
-    // under the override.
-    ninfer::ops::linear_add(attention, weights.output, residual,
-                            ignis_policy_for(weights.output.qtype, mode), *model->scratch, stream);
-
-    const ninfer::Tensor post_norm =
-        weight_tensor(weights.post_attention_norm, ninfer::DType::BF16, {hidden, 1, 1, 1});
-    ninfer::ops::rmsnorm(residual, post_norm, model->rms_norm_eps, /*unit_offset=*/true, post,
-                         stream);
-    // P2-03 (GitHub #85): the MLP tail takes the call's mode policy too.
-    // The reference's text-model policy is AllowA4 on the NVFP4 gate_up at
-    // every width under the engine default, and the route (A16 small-T vs
-    // the W4A4/TMA large-T) is the vendored plan's own decision per its
-    // token thresholds (GitHub #85's acceptance: the engine encodes no
-    // threshold of its own there). Under the test-only A16 override the
-    // width-aware `linear_swiglu` counterpart (kernel/src/layer_internal.h)
-    // forces the A16 route where it is registered (T<=16) and the op's only
-    // runnable route above its A16 cap -- the pre-#85 behavior. The scratch
-    // was already reserved for AllowA4 at any T (P2-01, GitHub #83), so a
-    // chunk's A4 route needs nothing new.
-    ninfer::ops::linear_swiglu(
-        post, weights.mlp_gate_up, fused,
-        ignis_linear_swiglu_policy_for(weights.mlp_gate_up.qtype, mode, tokens), *model->scratch,
-        stream);
-    ninfer::ops::linear_add(fused, weights.mlp_down, residual,
-                            ignis_policy_for(weights.mlp_down.qtype, mode), *model->scratch,
-                            stream);
+    output_and_mlp(*model, weights, attention, residual, post, fused, *model->scratch, mode, tokens, stream);
 
     // No stream synchronization here (P2-01, GitHub #83): the layer body
     // only enqueues work, so a later chunk loop can run every layer as one
@@ -374,7 +420,7 @@ int32_t run_gqa_layer_batch(ignis_model *model, ignis_seq_pool *pool, uint32_t l
   const auto hidden = static_cast<std::int32_t>(model->hidden);
   const auto q_width = kHeadDim * kQHeads;
   const auto kv_width = kHeadDim * kKvHeads;
-  const auto ffn = model->layers[layer].gqa.mlp_gate_up.n / 2;
+  const auto ffn = mlp_width(*model, model->layers[layer].gqa);
   const float attention_scale = 1.0F / std::sqrt(static_cast<float>(kHeadDim));
   const GqaLayerWeights &weights = model->layers[layer].gqa;
   const auto stream = model->stream;
@@ -406,9 +452,8 @@ int32_t run_gqa_layer_batch(ignis_model *model, ignis_seq_pool *pool, uint32_t l
     ninfer::ops::rmsnorm(input, input_norm, model->rms_norm_eps, /*unit_offset=*/true,
                          normalized, stream);
 
-    ninfer::ops::attn_input_proj(normalized, weights.query_key_gate_value, query, gate, key,
-                                 value, ignis_policy_for(weights.query_key_gate_value.qtype, mode),
-                                 *model->decode_graph_scratch, stream);
+    input_projection(*model, weights, normalized, query, gate, key, value, kQHeads, kHeadDim,
+                     *model->decode_graph_scratch, mode, stream);
 
     // Graph-safe positions (ADR 0019): the round's staged absolute
     // positions, read from device memory at replay -- `fill_i32_positions`'s
@@ -526,21 +571,8 @@ int32_t run_gqa_layer_batch(ignis_model *model, ignis_seq_pool *pool, uint32_t l
                 cudaGetErrorString(error));
       return -1;
     }
-    ninfer::ops::linear_add(attention, weights.output, residual,
-                            ignis_policy_for(weights.output.qtype, mode), *model->decode_graph_scratch,
-                            stream);
-
-    const ninfer::Tensor post_norm =
-        weight_tensor(weights.post_attention_norm, ninfer::DType::BF16, {hidden, 1, 1, 1});
-    ninfer::ops::rmsnorm(residual, post_norm, model->rms_norm_eps, /*unit_offset=*/true, post,
-                         stream);
-    ninfer::ops::linear_swiglu(
-        post, weights.mlp_gate_up, fused,
-        ignis_linear_swiglu_policy_for(weights.mlp_gate_up.qtype, mode, columns),
-        *model->decode_graph_scratch, stream);
-    ninfer::ops::linear_add(fused, weights.mlp_down, residual,
-                            ignis_policy_for(weights.mlp_down.qtype, mode), *model->decode_graph_scratch,
-                            stream);
+    output_and_mlp(*model, weights, attention, residual, post, fused, *model->decode_graph_scratch, mode, columns,
+                   stream);
     return 0;
   } catch (const std::exception &error) {
     set_error(std::string(op) + ": " + error.what());

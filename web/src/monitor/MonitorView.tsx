@@ -685,6 +685,7 @@ const LINE_LABEL: Record<VramLine, string> = {
   weights: "Weights",
   cuda_context: "CUDA context",
   workspace: "Workspace",
+  trellis_workspace: "Trellis workspace",
   media_embedding: "Media embedding",
   sampling: "Sampling",
   decode_graph: "Decode graph",

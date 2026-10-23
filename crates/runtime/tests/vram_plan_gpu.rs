@@ -355,6 +355,8 @@ fn the_round_lines_follow_the_loads_lanes() {
     }
     let main = |workspace, media_embedding, decode_graph, verify_round| ReservedBytes {
         workspace,
+        // GitHub #339: the served artifact's body is NVFP4.
+        trellis_workspace: 0,
         media_embedding,
         sampling: 4_623_344,
         decode_graph,

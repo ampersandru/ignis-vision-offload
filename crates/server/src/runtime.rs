@@ -464,6 +464,7 @@ pub fn vram_lines(
         weights: weights_bytes,
         cuda_context: ignis_runtime::CUDA_CONTEXT_BYTES,
         workspace: reserved.workspace,
+        trellis_workspace: reserved.trellis_workspace,
         media_embedding: reserved.media_embedding,
         sampling: reserved.sampling,
         decode_graph: reserved.decode_graph,
@@ -514,6 +515,7 @@ pub fn log_vram_plan(
                 weights_bytes = lines.weights,
                 cuda_context_bytes = lines.cuda_context,
                 workspace_bytes = lines.workspace,
+                trellis_workspace_bytes = lines.trellis_workspace,
                 media_embedding_bytes = lines.media_embedding,
                 sampling_bytes = lines.sampling,
                 decode_graph_bytes = lines.decode_graph,
@@ -2174,6 +2176,7 @@ mod tests {
     fn the_plan_lines_carry_every_reservation_the_leaf_planned() {
         let reserved = ignis_runtime::ReservedBytes {
             workspace: 1,
+            trellis_workspace: 2,
             media_embedding: 3,
             sampling: 4,
             decode_graph: 5,
@@ -2191,6 +2194,7 @@ mod tests {
                 100,
                 ignis_runtime::CUDA_CONTEXT_BYTES,
                 1,
+                2,
                 3,
                 4,
                 5,

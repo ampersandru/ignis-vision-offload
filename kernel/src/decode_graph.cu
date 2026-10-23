@@ -19,6 +19,7 @@
 #include "ignis_gqa_layer.h"
 #include "layer_internal.h"
 #include "model_internal.h"
+#include "trellis_body.h"
 #include "flash_next/program.h"
 
 #include "ninfer/ops/argmax.h"
@@ -120,7 +121,7 @@ int32_t ignis_decode_graph_run_batch(ignis_model *model, ignis_seq_pool *pool, u
     // needed at all any more.
     ninfer::Tensor logits(model->sampling_decode_logits->p, ninfer::DType::BF16,
                           {vocab, batch, 1, 1});
-    ninfer::ops::linear(normalized, model->output_head, logits, model->stream);
+    ignis::trellis_body::output_head(*model, normalized, logits, model->stream);
     return 0;
   } catch (const std::exception &e) {
     set_error("ignis_decode_graph: width " + std::to_string(width) + ": " + e.what());
@@ -239,7 +240,7 @@ int32_t ignis_verify_graph_run_batch(ignis_model *model, ignis_seq_pool *pool, u
     ninfer::ops::rmsnorm(left, norm_weight, model->rms_norm_eps, /*unit_offset=*/true, normalized,
                          model->stream);
     ninfer::Tensor logits(verify.logits->p, ninfer::DType::BF16, {vocab, columns, 1, 1});
-    ninfer::ops::linear(normalized, model->output_head, logits, model->stream);
+    ignis::trellis_body::output_head(*model, normalized, logits, model->stream);
     ninfer::Tensor target_tokens(verify.target_tokens->p, ninfer::DType::I32, {columns, 1, 1, 1});
     ninfer::ops::argmax(logits, target_tokens, vocab, model->stream);
 
