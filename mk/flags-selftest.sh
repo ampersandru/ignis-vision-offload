@@ -122,6 +122,12 @@ done
 
 out="$(flags)"
 lacks "27B" "$out" "--spec-decode-lanes"
+# GitHub #336 (ADR 0063 §3): the 27B's context is the profile's, which the
+# load adapts to the free memory; a named one is explicit and never adapts.
+lacks "27B context" "$out" "--model-max-context"
+has "27B MAX_CONTEXT=524288" "$(flags MAX_CONTEXT=524288)" "--model-max-context 524288"
+engine="$(make config CUDA=1 2>/dev/null | sed -n 's/^engine (CUDA=1) //p')"
+case "$engine" in *"context=default"*) ;; *) fail "27B engine line: 'context=default' missing from: $engine" ;; esac
 
 out="$(flags MODEL=flash-next SPEC=off)"
 has "SPEC=off" "$out" "--spec-backend off"

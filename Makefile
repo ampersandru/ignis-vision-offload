@@ -197,7 +197,7 @@ help: ## Show this list
 	  /^[a-zA-Z0-9_.%-]+:.*## / { printf "  %-16s %s\n", $$1, $$2 }' Makefile
 	@echo ""
 	@echo "Knobs (make config for all):  CUDA=$(CUDA)  PROFILE=$(PROFILE)  UI=$(UI)  METRICS=$(METRICS)  BIND=$(BIND)  host=$(HOST_OS)"
-	@echo "GPU engine: MAX_CONTEXT=$(MAX_CONTEXT)  SPEC=$(or $(SPEC),server default)  DRAFT_TOKENS=$(DRAFT_TOKENS)  KV_FORMAT=$(KV_FORMAT)"
+	@echo "GPU engine: MAX_CONTEXT=$(or $(MAX_CONTEXT),the profile's)  SPEC=$(or $(SPEC),server default)  DRAFT_TOKENS=$(DRAFT_TOKENS)  KV_FORMAT=$(KV_FORMAT)"
 	@echo "  e.g.  make dev CUDA=0 PROFILE=dev      make dev-ui SPEC=off MAX_CONTEXT=40960"
 
 .PHONY: config

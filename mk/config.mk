@@ -159,16 +159,19 @@ IDLE_UNLOAD ?=
 LOOP_GUARD ?=
 
 # The GPU engine configuration (CUDA=1 only; the CPU mock gets none of it).
-# Defaults: a 524288-token context -- twice the checkpoint's trained 262,144
-# positions, which the server's auto rope scaling answers with yarn:2 -- then
-# hq-e8-2b KV, DFlash2 speculation with a 7-token draft window. The G5 gate
-# legs (docs/specs/runtime/05) ran at MAX_CONTEXT=262144 ROPE_SCALING=none.
+# Defaults: the 27B's context left to the server -- the card class's profile
+# (`auto`): 917,504 tokens on the 5090, which the load adapts down to the
+# largest the free memory holds rather than refusing or dropping lanes (ADR
+# 0063 §3; a context named here is explicit and never adapts) -- then
+# hq-e8-2b KV, DFlash2 speculation with a 7-token draft window. MAX_CONTEXT=n
+# names a context (524288 was make's own until #336). The G5 gate legs
+# (docs/specs/runtime/05) ran at MAX_CONTEXT=262144 ROPE_SCALING=none.
 # Empty = leave the flag off (the server's default); SPEC=off turns speculation
 # off (SPEC= leaves it to the server, and the card class's profile speculates).
 # PREFILL_CHUNK is left to the server too: the card class's profile (`auto`):
 # 2048 on the 5090 (GitHub #341; free there, vision's encoder sizes the
 # arena), 1024 without it.
-MAX_CONTEXT ?= 524288
+MAX_CONTEXT ?=
 KV_FORMAT ?= hq-e8-2b
 PREFILL_CHUNK ?=
 DECODE_SHARE ?=
@@ -219,8 +222,9 @@ VISION ?=
 VISION_MAX_TOKENS ?=
 # RoPE scaling (--model-rope-scaling, GitHub #227): the text rotary table.
 # Empty (or `auto`) is the server's default: none up to 262,144 positions, the
-# linear table the checkpoint was trained with, else YaRN at MAX_CONTEXT /
-# 262,144 -- MAX_CONTEXT=524288 gets yarn:2 without being told. `none` forces
+# linear table the checkpoint was trained with, else YaRN at the context /
+# 262,144 -- MAX_CONTEXT=524288 gets yarn:2 without being told, the 5090's
+# 917,504 yarn:3.5, and a context the load adapts its own. `none` forces
 # the linear table; `yarn:F` rescales the envelope by F, whatever the context.
 # The full spelling is `yarn:F[,t=<c>][,bf=<n>][,bs=<n>]`. A YaRN table
 # rescales every request's table, short ones included. Both models take it
