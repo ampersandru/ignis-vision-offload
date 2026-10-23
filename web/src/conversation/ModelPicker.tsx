@@ -1,9 +1,9 @@
 import { createPortal } from "react-dom";
 import { loadUnderWay, type ModelState } from "../api/model.ts";
-import type { CatalogRow } from "../server/routes.ts";
+import { type CatalogRow, unavailableReason } from "../server/routes.ts";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconChevron } from "../ui/icons.tsx";
-import { type NextModel, nextLine, rowLine, sizeOf, unavailableReason, usable } from "./nextModel.ts";
+import { type NextModel, nextLine, rowLine, sizeOf, usable } from "./nextModel.ts";
 
 // Under the prompt box: the model the next message goes to, and what sending
 // does first — nothing, a load, or a switch. Pressing it lists the text

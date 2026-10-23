@@ -338,6 +338,21 @@ describe("what Generate and Edit do (GitHub #324)", () => {
     const busy: ModelState[] = [{ state: "switching", from: "a", to: "b", since: 0 }, { state: "loading", to: "b", since: 0 }, { state: "reading" }];
     for (const model of busy) expect(runPlan(model, DEFAULT_LIMITS, row, false, false)).toMatchObject({ ready: false });
   });
+
+  // ADR 0064: on a card below the image model's class a switch to it is a sure 409, so none is offered, and the line
+  // gives the server's reason — whatever enhancement and the form say.
+  it("offers no switch to an image model above the card's class, and gives the server's reason", () => {
+    const reason = "ignis-image-2.1-turbo needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
+    const above: CatalogRow = { ...row, switchable: false, available: false, reason };
+    for (const enhance of [false, true]) {
+      for (const edit of [false, true]) {
+        expect(runPlan(text, DEFAULT_LIMITS, above, enhance, edit)).toEqual({ label: edit ? "Edit" : "Generate", note: `The image model is not for this card: ${reason}`, ready: false });
+      }
+    }
+    expect(runPlan(text, DEFAULT_LIMITS, { ...above, reason: undefined }, false, false).note).toBe("The image model is not for this card: Too large for this card");
+    // `available: true`, or a server that sends no class at all, leaves the switch as it was.
+    expect(runPlan(text, DEFAULT_LIMITS, { ...row, available: true }, false, false)).toMatchObject({ ready: true, model: "ignis-image-2.1-turbo" });
+  });
 });
 
 describe("the gallery's download", () => {

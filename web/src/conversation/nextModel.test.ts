@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelState } from "../api/model.ts";
-import type { CatalogRow } from "../server/routes.ts";
-import { nextLine, nextModel, rowLine, sizeOf, textModels, unavailableReason, usable } from "./nextModel.ts";
+import { type CatalogRow, unavailableReason } from "../server/routes.ts";
+import { nextLine, nextModel, rowLine, sizeOf, textModels, usable } from "./nextModel.ts";
 
 // The model the chat's next message goes to (conversation/nextModel.ts): the
 // one loaded unless the owner chose another, the way back to a text model when

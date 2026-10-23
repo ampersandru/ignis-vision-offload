@@ -1,6 +1,6 @@
 import { loadUnderWay, type ModelState } from "../api/model.ts";
 import { formatBytes, formatSeconds } from "../monitor/format.ts";
-import type { CatalogRow } from "./routes.ts";
+import { type CatalogRow, unavailableReason } from "./routes.ts";
 
 // The model band's rows (spec playground/05 §Model band): one per
 // GET /v1/models/catalog row, switched to by id alone. An absent model is
@@ -54,7 +54,8 @@ export function rowAction(row: CatalogRow, model: ModelState): RowAction {
   if (row.loaded) return { kind: "loaded" };
   // The card's class decides before anything on disk: such an entry is never
   // switchable, and `model download` refuses it.
-  if (row.available === false) return { kind: "unavailable", reason: row.reason ?? "Too large for this card" };
+  const unavailable = unavailableReason(row);
+  if (unavailable !== null) return { kind: "unavailable", reason: unavailable };
   // `switchable` decides first: the server knows a switch by id alone can begin
   // (a catalog entry fetched since the last read, the model torn down by a
   // failed restore), whatever `on_disk` last said.

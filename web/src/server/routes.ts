@@ -71,6 +71,9 @@ export type CatalogRow = {
   reason?: string;
 };
 
+/** Why the card cannot load a row (ADR 0064), as the server words it; null when it can. The one wording every view shows. */
+export const unavailableReason = (row: CatalogRow): string | null => (row.available === false ? (row.reason ?? "Too large for this card") : null);
+
 /** A `PATCH /v1/config` that was applied (`200`) or began a reload (`202`). */
 export type PatchApplied = {
   applied: "live" | "reload";
