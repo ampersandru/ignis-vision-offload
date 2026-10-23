@@ -232,13 +232,16 @@ fn qtype_code(format: NumericFormat) -> i32 {
         NumericFormat::I32 => 6,
         NumericFormat::Nvfp4 => 7,
         NumericFormat::Fp8E4M3FnRowBf16S => 8,
-        // Flash-Next formats are not bound by the 27B loader.
+        // Flash-Next formats are not bound by the 27B loader, nor (until
+        // spec 27b-16gb/05 binds them) the 27B's own trellis body.
         NumericFormat::I64
         | NumericFormat::Q4G32F16S
         | NumericFormat::TrellisMul1K2
         | NumericFormat::TrellisMul1K2p5
         | NumericFormat::TrellisMul1K3
-        | NumericFormat::TrellisMul1K4 => -1,
+        | NumericFormat::TrellisMul1K4
+        | NumericFormat::TrellisMul1K5
+        | NumericFormat::TrellisMul1K6 => -1,
     }
 }
 
