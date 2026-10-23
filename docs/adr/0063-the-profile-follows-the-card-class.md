@@ -64,6 +64,84 @@ the free memory at start varies with what else holds the card, and 256K with DFl
    - Below 65,536 the start is refused with the deficit, as today.
    - Each step taken is named in the VRAM plan's log event (`adapted: max_context 262144 -> 131072`).
 
+**As built** (2026-10-23, GitHub #336), adaptation and the drafter's head, where the decision left a choice or rested
+on a wrong premise:
+
+- **`draft_head: auto` is the full head on every card class.** Spec 04 proposed `shortlist` "when the plan needs the
+  bytes it frees, or on the 16 GB class with the pool short of two full reservations". It frees none: the shortlist
+  head is bound beside the full head (`ProposalHead::Shortlist`, "costs its 356 MB"). The measured plans: text +
+  DFlash2 18,289,864,964 B, with the shortlist 18,646,905,344 B (+357,040,380). On the one card that measured it, it
+  was slower too: −7.4% tokens/round, −5.5% tok/s (finding 2026-09-24-upstream-quick-wins-ab). Both clauses of the
+  rule were about bytes, so with the facts right `auto` is `full`. The rule is revisited in phase 2, when a real
+  16 GB card measures the trade.
+  - `auto` is a third spelling of the field (`full | shortlist | auto`), not a third head:
+    `ignis_core::ProposalHeadSetting` beside `ProposalHead`, as `RopeSetting` is beside `RopeScaling` (ADR 0057).
+  - It resolves where the load's speculation is built (`derive_speculation`). `GET /v1/config` keeps `auto`.
+  - It is valid with `dflash2` and with `mtp`, whose only head is `full`. Without a backend it is refused, as any head
+    is.
+  - A load whose head is `auto` logs `ignis.runtime.draft_head`: `draft_head auto -> full`.
+- **Step 1 drops a `shortlist` only.** A head the profile or the default gave falls to `full` when it is `shortlist`.
+  Since `auto` is `full`, it never fires on today's built-in profiles; a test profile that sets `shortlist`
+  exercises it.
+- **The context ladder generalizes §3's.** 262,144 → 196,608 → 131,072 → 65,536 is "down 65,536 at a time". From any
+  value `v` the candidates are `v`, then every multiple of 65,536 below it, down to 65,536: 917,504 → 851,968 → … on
+  the 5090, 1,048,576 → … on the RTX PRO 6000. The owner, 2026-10-21: with `auto` the 5090's context finds the
+  largest that fits.
+- **The criterion, at more than one lane:** a context `c` is kept when the plan fits and its KV pool holds `c` +
+  65,536 tokens: one full sequence and one more 65,536-token reservation. The plan's own floor, a tail page per
+  retained slot, still applies. At one lane a second reservation has no lane to serve, so the plan's floor alone
+  decides.
+- **Only a plan refused below its minimum adapts** (`VramPlanError::BelowMinimum`).
+  - A start whose plan fits as configured takes no step, and its `adapted` is empty. On the 5090, a start that fits
+    today is byte-identical.
+  - A budget above free memory, or a named KV pool below its floor, is refused as before.
+  - A budget with `--vram-allow-oversubscription` never refuses, so it never adapts.
+- **Step 3 runs the ladder again.** When the ladder reaches 65,536 without meeting the criterion, the lanes drop to 1
+  (if not explicit and above 1). The ladder then runs again from the profile's value, against the one-lane
+  criterion. The lines that follow the lanes are planned again at one lane. So is the 27B's default of host
+  retained slots (two a lane), unless the operator named it.
+  - When the lanes cannot drop, the load keeps the largest context the plan itself holds, and the step says so:
+    `(one sequence only: …)`. Below 262,144 tokens the pool only grows as the context falls, so that context is
+    65,536 whenever it happens.
+- **The refusal** carries the last, smallest attempt's deficit, in the plan's own words. After it come every
+  adaptation tried, in order: `; adaptation tried, in order: draft_head shortlist -> full, max_context 262144 ->
+  196608 -> 131072 -> 65536, decode_lanes 2 -> 1, max_context 262144 -> …`. With nothing adaptable it reads exactly
+  as before.
+- **The 27B only.** Flash-Next's plan sizes an expert cache from the rest; its 16 GB story is phase 2.
+- **The 65,536 step, its floor and the 65,536-token second reservation are constants beside the ladder**
+  (`CONTEXT_STEP_TOKENS`, `SECOND_RESERVATION_TOKENS`, `crates/server/src/adaptation.rs`). Neither refuses a start
+  that code without adaptation accepted: each such start was refused already.
+- **Where it lives.**
+  - The ladder is a pure function, `adaptation::adapt`. Its inputs are the values, which of them may adapt, and a
+    closure that plans at an attempt.
+  - The closure lives in the planner's caller, `runtime::qwen27b_load`. At each attempt it plans the leaf's lines
+    again: the hq prompt planes follow the context up to 262,144 keys, the rope table, the lanes, and the head's
+    bound scope. It then calls `plan_vram`, unchanged.
+  - Which values may adapt is decided by source alone (`Resolution::adapts`, `Config::adaptable`, carried as
+    `EngineShape::adaptable`). The profile's and the hardcoded default's adapt. A flag, env var, file value or live
+    patch never does, a file's value equal to the default included: a file `config generate` wrote names the
+    numbers of the card it was generated on.
+- **The values the load kept are the load's everywhere after the plan.**
+  - They reach the leaf, the scheduler (admission, `max_model_len` in `GET /v1/models` and the tokenize route, the
+    lanes Decide fans out to) and KV-disk's identity (its rope table).
+  - An `auto` rope table is resolved again for an adapted context (`EngineShape::at`); a spelled-out table stays.
+  - `ignis.model.loaded` names the kept values, and `/metrics` the adapted plan's lines.
+  - `GET /v1/config` keeps the values configured.
+- **`ignis.runtime.vram_plan` gains `adapted`**: the steps taken, in order, comma-separated; empty when none.
+- **`rtx50-16gb`** gains `spec.qwen38.decode_lanes: 2` and `spec.qwen38.draft_head: auto`, scoped to the 27B. The
+  other profiles leave the head unset, which is `full`.
+- **Measured on the 5090** (`crates/server/tests/adaptation_gpu.rs`, explicit budgets, 2026-10-23). Each budget was
+  derived from the plan's own refusal at 1 GiB, which names what the plan needs. The desktop held 2.6 GB of the card.
+  - Under `rtx5090` the 917,504-token plan needs 30,607,308,032 bytes, more than the 30.41 GB that was free.
+  - A 30,143,774,720-byte budget loads at `max_context 917504 -> 786432` (pool 868,224 tokens), serves
+    `max_model_len` 786,432 and decodes.
+  - A 23,349,097,728-byte budget, where no eight-lane context keeps a second reservation, loads at `decode_lanes 8
+    -> 1, max_context 917504 -> 327680` with 2 host retained slots (pool 334,528 tokens) and decodes.
+  - The 27B with 2 and with 1 lane named, at 262,144 tokens inside a budget 256 MB above its plan, loads with
+    `adapted` empty and decodes.
+  - The spec's 17,179,869,184-byte budget cannot hold today's NVFP4 27B: its weights line alone is 17,234,723,840
+    bytes. The 16 GB body is #337/#338.
+
 ## Considered options
 
 - **Detect whether the card drives a display** (NVML `display_active`) and choose the context from it. Rejected by

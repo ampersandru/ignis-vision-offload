@@ -146,3 +146,29 @@ ADRs: 0063, 0064; 0030 (the VRAM plan), 0045 (KV pool policy, fixed reservations
 - The 16 GB catalog entry's file pins (repo, revision, sha256) come from spec 01. Until then a test fixture entry
   stands in.
 - On the 5090, `auto` must not change anything a user sees. AC 2 is the regression test for that.
+
+## As built: adaptation and `draft_head: auto` (2026-10-23)
+
+ADR 0063's **As built** has the decisions and the measurements. In short:
+
+- **Solution 5's proposed rule did not hold.** The shortlist is bound beside the full head: it costs ~357 MB and
+  frees none, and it measured slower. So `auto` is `full` on every card class. It is a third spelling of the field
+  (`ProposalHeadSetting`), resolved where the speculation is built, and the load logs `draft_head auto -> full`.
+  The rule is revisited in phase 2, on a real 16 GB card.
+- **Solution 4's ladder** runs from any profile value `v` down every multiple of 65,536 to 65,536. It keeps the
+  largest context whose pool holds it and one more 65,536-token reservation (at one lane, the plan's floor alone).
+  It runs only when the plan refuses the configured values below its minimum, so a start that fits changes nothing.
+  - When no context meets that at the load's lanes, the lanes drop to one and the ladder runs again from `v`.
+  - Explicit lanes keep the largest context the plan holds, which the step names.
+  - Step 1 drops a profile's `shortlist` to `full`; it never fires on the built-in profiles.
+  - A start that still does not fit is refused with the last attempt's deficit and every step tried.
+- **Code:**
+  - the ladder: `crates/server/src/adaptation.rs`;
+  - its closure: `runtime::qwen27b_load`;
+  - what may adapt: `Config::adaptable` → `EngineShape::adaptable`;
+  - a shape at an attempt: `EngineShape::at`;
+  - the log: the `adapted` field of `ignis.runtime.vram_plan`.
+- **Not adapted here:** Flash-Next (phase 2), and the context `make` passes. `mk/config.mk`'s `MAX_CONTEXT ?=
+  524288` reaches the 27B as `--model-max-context`, an explicit value; `MAX_CONTEXT=` leaves it to the profile.
+- **AC 4 and AC 5:** CPU tests in `adaptation.rs`, `runtime.rs` and `config/tests.rs`; GPU test
+  `crates/server/tests/adaptation_gpu.rs`, green on the 5090 (adapted context, lanes to one, 2 and 1 named lanes).
