@@ -44,8 +44,8 @@
  * - Activations are device-resident, token-major BF16: x [tokens][in] contiguous, 16-byte
  *   aligned. Outputs are BF16 [tokens][ldy]: token t's `out` values at y + t * ldy, so a call can
  *   write its columns into a wider fused buffer; ldy is a multiple of 4, y 8-byte aligned.
- * - `in` and `out` are positive multiples of 128; trellis 16-byte aligned, suh and svh 8-byte
- *   aligned.
+ * - `in` and `out` are positive multiples of 128, `out` at most 524,288; trellis 16-byte aligned,
+ *   suh and svh 8-byte aligned.
  * - Every call enqueues on `stream` (a cudaStream_t, NULL for the legacy stream), allocates
  *   nothing, never synchronizes the host, and is capturable in a CUDA graph. Its workspace is a
  *   plan line (ADR 0030): sized by ignis_trellis_workspace_bytes from the load's maxima, reserved

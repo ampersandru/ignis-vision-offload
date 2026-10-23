@@ -17,6 +17,8 @@
 //   determinism  the same call twice, twice under the SM cap at 36 (the prefill also against
 //                uncapped: it does not split), and replayed three times from a CUDA graph captured
 //                in global mode (which refuses an allocation): the same bits every time.
+//   shared workspace  one workspace through a load's calls of five shapes in turn, both routes:
+//                each call's bits are its own fresh workspace's (GitHub #339).
 //   rejects      the arguments the ops refuse.
 //
 // ADR 0006 / docs/agents/testing.md: no SKIP_RETURN_CODE; a missing GPU or fixture fails.
@@ -458,6 +460,56 @@ void determinism_arm() {
   MOE_CUDA(cudaStreamDestroy(s));
 }
 
+// GitHub #339: one workspace serves a load's calls of every shape in turn, as the 27B's layer
+// programs make them on one stream -- each call's bits are the ones it gives on a fresh
+// workspace. A call's rotated activations follow its arrival counters; when those counters'
+// room followed the call's own output blocks, a narrow call's activations sat where a wider
+// call's counters are and left them nonzero (the down projection before the next layer's
+// in_proj_qkv: 16 of its 80 output blocks reduced early).
+void shared_workspace_arm() {
+  DeviceWeight down, qkv, q, g, u;
+  make_weight(down, 4, 17408, 5120, 90000);
+  make_weight(qkv, 8, 5120, 10240, 90100);
+  make_weight(q, 6, 5120, 12288, 90200);
+  make_weight(g, 6, 5120, 17408, 90300);
+  make_weight(u, 6, 5120, 17408, 90400);
+  struct Call {
+    const char *name;
+    const DeviceWeight *a, *b;
+    int tokens;
+  };
+  const Call calls[] = {{"down", &down, nullptr, 1},       {"in_proj_qkv", &qkv, nullptr, 1}, {"swiglu", &g, &u, 1},
+                        {"down", &down, nullptr, 8},       {"q_proj", &q, nullptr, 1},        {"q_proj", &q, nullptr, 80},
+                        {"in_proj_qkv", &qkv, nullptr, 2}, {"swiglu", &g, &u, 80},            {"in_proj_qkv", &qkv, nullptr, 1}};
+  uint64_t bytes = 0;
+  for (const Call &c : calls) {
+    bytes = std::max(bytes, ignis_trellis_workspace_bytes(c.a->in, c.a->out, c.b == nullptr ? 1 : 2, c.tokens));
+  }
+  Workspace shared(bytes);
+  cudaStream_t s;
+  MOE_CUDA(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking));
+  const int failed_before = moe_test::g_failed;
+  int i = 0;
+  for (const Call &c : calls) {
+    const std::vector<uint16_t> x = make_x(91000 + i, c.tokens, static_cast<int>(c.a->in));
+    DeviceBytes d_x(x.size() * 2), d_y(static_cast<size_t>(c.tokens) * c.a->out * 2);
+    upload(d_x, x);
+    const auto in_turn = run_bits(*c.a, c.b, c.tokens, shared, s, d_x, d_y);
+    Workspace fresh(ignis_trellis_workspace_bytes(c.a->in, c.a->out, c.b == nullptr ? 1 : 2, c.tokens));
+    const auto alone = run_bits(*c.a, c.b, c.tokens, fresh, s, d_x, d_y);
+    std::size_t differ = 0;
+    for (std::size_t k = 0; k < alone.size(); ++k) differ += in_turn[k] != alone[k];
+    check(differ == 0, std::string("shared workspace: call ") + std::to_string(i) + " (" + c.name + " at " +
+                           std::to_string(c.tokens) + " tokens): " + std::to_string(differ) +
+                           " outputs differ from a fresh workspace's");
+    ++i;
+  }
+  MOE_CUDA(cudaStreamDestroy(s));
+  if (moe_test::g_failed == failed_before) {
+    std::printf("  shared workspace: %d calls of five shapes in turn, each bit-identical to its own fresh workspace\n", i);
+  }
+}
+
 void rejects_arm() {
   DeviceWeight d;
   make_weight(d, 6, 256, 128, 80000);
@@ -490,6 +542,7 @@ int main() {
   epilogues_arm();
   fp16_cap_arm();
   determinism_arm();
+  shared_workspace_arm();
   rejects_arm();
   std::printf("worst share of the bound: decode %.3f, prefill %.3f\n", g_worst_decode, g_worst_prefill);
   if (moe_test::g_failed != 0) {
