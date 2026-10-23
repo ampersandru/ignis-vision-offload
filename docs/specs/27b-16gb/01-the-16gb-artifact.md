@@ -160,11 +160,26 @@ as oracles), 0002 (the artifact format).
      bytes of device arena; with the DFlash2 module and the draft head 11,264,998,400; with the vision tower too
      11,560,717,824. The trellis op's workspace (`trellis::plan_bytes`, 72.4 MB at 16 decode and 2,048 prefill
      tokens: spec 02) and the VRAM plan's other lines come with the load, in spec 05a.
-  5. See the Hugging Face paragraph below.
+  5. Met: see the Hugging Face paragraph below.
   6. Met: `cargo test` workspace-wide.
 - **Moved to spec 05a** (a coordinator call, listed on #338 for the owner). The testing decision "the artifact loads in
   ignis on the 5090 under a 16 GiB budget" is 05a's Acceptance A1 word for word: the 27B program binds the NVFP4 text
   scope only until 05a wires the trellis one.
+- **Hugging Face and the catalog (Acceptance 5, met).**
+  - Repository `gpillon/Qwen3.8-27B-trellis-3bpw-ignis`, uploaded private on 2026-10-23 and made public the same day on
+    the owner's go, after the privacy scan: the container's payload is the quant's and the served artifact's public
+    bytes (`verify`), and its directory, the sidecar, the card and the LICENSE name no local path or person.
+  - Hub commit `f5bbd2cc14c9ca573ef5553c100ac69410f1fe58`; the container's LFS sha256 is the local one, and the
+    served sidecar is byte-identical to the local one (sha256 `210ab54b…a340d`).
+  - Files: the container, its `.conversion.json`, a `.sha256`, the Apache-2.0 LICENSE distributed with
+    Qwen/Qwen3.8-27B. The card states measured values only and cites turboderp's quant; it says there is no command
+    to run it yet, which comes with #339.
+  - The built-in catalog's entry `qwen3.8-27b-16g`: `card_class: 16`, `aliases: [qwen3.8-27b]`, both files pinned
+    (bytes and sha256) at that commit.
+  - The tests that stood the 16 GB 27B up as an operator entry (`tests/fixtures/catalog/sixteen.yaml`) now read the
+    built-in one; that fixture is the parsing tests' input, over the built-in entries without it.
+  - **Release gate:** until #339 wires the trellis body, a 16 GB card resolving `qwen3.8-27b` fetches an artifact the
+    program cannot bind. No release ships this entry before #339.
 - **Beyond the spec, for the tool's own runs:** `--error-bound` (default 0.6, recorded in the sidecar; a threshold is a
   setting with a default, the owner's rule) and `--skip-errors` (a `dry-run` tree, which the packer refuses unless
   asked).

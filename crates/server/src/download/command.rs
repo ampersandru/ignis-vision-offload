@@ -311,7 +311,7 @@ mod tests {
             path.ends_with(&entry.artifact).then_some(ModelFamily::Qwen38_27b)
         };
         let rows = list_rows(&catalog, Path::new("m"), &sizes(&on), &family_of);
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         assert_eq!(
             rows.iter().map(|row| (row.entry.id.as_str(), row.on_disk, row.family)).collect::<Vec<_>>(),
             [
@@ -319,6 +319,7 @@ mod tests {
                 ("qwen3.8-27b-abliterated", OnDisk::Absent, None),
                 ("qwen3.8-flash-next", OnDisk::Absent, None),
                 ("ignis-image-2.1-turbo", OnDisk::Absent, None),
+                ("qwen3.8-27b-16g", OnDisk::Absent, None),
                 // On disk, but its header names neither family: `—`.
                 ("acme-ft", OnDisk::Partial, None),
             ]
@@ -327,12 +328,13 @@ mod tests {
 
         let text = render_list(&rows, ListFormat::Text);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 6, "{text}");
+        assert_eq!(lines.len(), 7, "{text}");
         assert!(lines[0].starts_with("ID") && lines[0].contains("REPO@REVISION") && lines[0].contains("FAMILY"), "{text}");
         assert!(lines[1].contains("built-in") && lines[1].contains("gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer@e961b419b672e183aa55df8c4b975abc82006e8a"), "{text}");
         assert!(lines[1].contains("18.1 GiB") && lines[1].contains("complete") && lines[1].ends_with("Qwen3.8-27B"), "{text}");
         assert!(lines[3].contains("67.8 GiB") && lines[3].contains("absent") && lines[3].ends_with('—'), "{text}");
-        assert!(lines[5].contains("operator") && lines[5].contains("acme/ft@v1") && lines[5].contains("partial"), "{text}");
+        assert!(lines[5].contains("built-in") && lines[5].contains("gpillon/Qwen3.8-27B-trellis-3bpw-ignis@f5bbd2cc") && lines[5].contains("12.5 GiB"), "{text}");
+        assert!(lines[6].contains("operator") && lines[6].contains("acme/ft@v1") && lines[6].contains("partial"), "{text}");
 
         let json: Vec<Value> = serde_json::from_str(&render_list(&rows, ListFormat::Json)).unwrap();
         assert_eq!(json[0]["id"], "qwen3.8-27b");
@@ -341,8 +343,8 @@ mod tests {
         assert_eq!(json[0]["bytes"], entry.total_bytes());
         assert_eq!(json[0]["on_disk"], "complete");
         assert_eq!(json[0]["family"], "Qwen3.8-27B");
-        assert_eq!(json[4]["layer"], "operator");
-        assert_eq!(json[4]["family"], Value::Null);
+        assert_eq!(json[5]["layer"], "operator");
+        assert_eq!(json[5]["family"], Value::Null);
     }
 
     fn fetched(catalog: &Catalog, ids: &[&str], all: bool, card: Option<CardClass>) -> Result<Vec<String>, String> {
@@ -367,8 +369,8 @@ mod tests {
 
     /// ADR 0064 §3: a download of an entry above the card's class is
     /// refused whole, before anything is fetched — each such entry named
-    /// with both classes, `--all` too — and the built-in catalog's default
-    /// model on a 16 GB card is, until GitHub #338 adds the 16 GB 27B.
+    /// with both classes, `--all` too — and the default model on a 16 GB
+    /// card is, in a catalog without the 16 GB 27B.
     #[test]
     fn a_download_of_an_entry_above_the_card_class_is_refused_before_any_fetch() {
         let catalog = super::super::catalog::testing::with_sixteen();
@@ -382,7 +384,7 @@ mod tests {
         // 27B's own resolves to the 16 GB entry, the others are refused.
         let err = fetched(&catalog, &[], true, sixteen).unwrap_err();
         assert!(err.contains("qwen3.8-27b-abliterated") && err.contains("qwen3.8-flash-next") && !err.contains("qwen3.8-27b needs"), "{err}");
-        let err = fetched(Catalog::built_in(), &[], false, sixteen).unwrap_err();
+        let err = fetched(&super::super::catalog::testing::thirty_two(), &[], false, sixteen).unwrap_err();
         assert!(err.contains("qwen3.8-27b needs a 32 GB card"), "{err}");
         assert!(fetched(&catalog, &["acme-nothing"], false, sixteen).unwrap_err().contains("not in the catalog"));
     }

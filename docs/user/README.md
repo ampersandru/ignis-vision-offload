@@ -149,7 +149,7 @@ one container, verified against its provenance sidecar (`.graft.json` or
 ### The catalog
 
 The models the server knows how to fetch are its **catalog**
-([ADR 0047](../adr/0047-a-catalog-the-operator-can-extend.md)). Four are built
+([ADR 0047](../adr/0047-a-catalog-the-operator-can-extend.md)). Five are built
 into the binary, each pinned file by file — byte count and SHA-256 — at a fixed
 revision of its Hugging Face repository:
 
@@ -159,21 +159,22 @@ revision of its Hugging Face repository:
 | `qwen3.8-27b-abliterated` | [`gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer`](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer) | 18.1 GiB |
 | `qwen3.8-flash-next` | [`gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis`](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis) | 67.8 GiB (with its MTP companion) |
 | `ignis-image-2.1-turbo` | [`gpillon/ignis-image-2.1-turbo`](https://huggingface.co/gpillon/ignis-image-2.1-turbo) | 15.6 GiB (the [image model](#image-generation); non-commercial licence) |
+| `qwen3.8-27b-16g` | [`gpillon/Qwen3.8-27B-trellis-3bpw-ignis`](https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis) | 12.5 GiB (the 27B for 16 GB cards; ignis does not load it yet: [#339](https://github.com/gpillon/ignis/issues/339)) |
 
 The id is the **served id**: what `--model-id` names, what `/v1/models`
 reports and what a request puts in `model`.
 
 Each entry states the smallest **card class** it loads on
 ([ADR 0064](../adr/0064-a-catalog-entry-states-its-card-class.md)): every
-built-in one is 32 GB, the RTX 5090's class. On a card of a smaller class (16
+built-in one is 32 GB, the RTX 5090's class, but `qwen3.8-27b-16g`, which is 16 GB. On a card of a smaller class (16
 GB), the server refuses an entry above it before unloading or fetching
 anything: a switch to it and a request naming it are answered
 `409 model_above_card_class`, naming both classes, while the loaded model
 serves on; a start with no artifact that would load it, and its
 `model download`, are refused; `GET /v1/models`, `GET /v1/models/catalog` and
 the Playground list it as unavailable, with the reason. An entry may answer to
-its family's default id as an **alias**: the 16 GB 27B, once published,
-answers to `qwen3.8-27b` on a 16 GB card, so a client configured with
+its family's default id as an **alias**: the 16 GB 27B answers to
+`qwen3.8-27b` on a 16 GB card, so a client configured with
 `qwen3.8-27b` is served by it, and the answer names it — only an entry whose
 artifact is of the 27B's family, by the artifact's header, answers to it; one
 of another family is refused, naming both. A model loaded from a path named

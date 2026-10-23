@@ -360,7 +360,7 @@ mod tests {
         let dir = PathBuf::from(DIR);
         let mut settings = settings("qwen3.8-27b-16g", &dir);
         settings.catalog = &catalog;
-        assert_eq!(artifact_source(&settings, |_| true, never_asked), ArtifactSource::Use(dir.join("q16.ninfer")));
+        assert_eq!(artifact_source(&settings, |_| true, never_asked), ArtifactSource::Use(dir.join("qwen3_8_27b_trellis_sc30-v2.ninfer")));
     }
 
     /// The start options a configuration resolves to on a card of `total`
@@ -394,7 +394,7 @@ mod tests {
         let ArtifactSource::Use(path) = artifact_source(&settings, |_| true, never_asked) else { panic!("on disk") };
         let card = options.card_class();
         let serving = served_start_options(options.clone(), &served, Some(&path), &catalog, card, &|_| Some(ModelFamily::Qwen38_27b)).unwrap();
-        assert_eq!((serving.model.as_str(), serving.artifact.as_deref()), ("qwen3.8-27b-16g", Some(dir.join("q16.ninfer").as_path())));
+        assert_eq!((serving.model.as_str(), serving.artifact.as_deref()), ("qwen3.8-27b-16g", Some(dir.join("qwen3_8_27b_trellis_sc30-v2.ninfer").as_path())));
         let placeholder = served_start_options(options.clone(), &served, None, &catalog, card, &|_| panic!("no artifact, no header"));
         assert_eq!(placeholder.unwrap(), options, "a placeholder start loads nothing");
 
@@ -430,12 +430,12 @@ mod tests {
     }
 
     /// ADR 0064 §3: a start whose model no entry loads on this card is
-    /// refused naming both classes — the built-in catalog's default model on
-    /// a 16 GB card, until GitHub #338 adds the 16 GB 27B.
+    /// refused naming both classes — the default model on a 16 GB card in a
+    /// catalog without the 16 GB 27B.
     #[test]
     fn a_start_with_no_artifact_the_card_cannot_load_is_refused_naming_both_classes() {
         use crate::config::profile::CardClass;
-        let refusal = start_model(Catalog::built_in(), crate::config::DEFAULT_MODEL, Some(CardClass::Gb16)).unwrap_err();
+        let refusal = start_model(&catalog::testing::thirty_two(), crate::config::DEFAULT_MODEL, Some(CardClass::Gb16)).unwrap_err();
         assert_eq!((refusal.model.as_str(), refusal.needs, refusal.card), ("qwen3.8-27b", CardClass::Gb32, CardClass::Gb16));
         let refusal = start_model(&catalog::testing::with_sixteen(), "Qwen3.8-Flash-Next", Some(CardClass::Gb16)).unwrap_err();
         assert!(refusal.to_string().contains("qwen3.8-flash-next needs a 32 GB card"), "{refusal}");
