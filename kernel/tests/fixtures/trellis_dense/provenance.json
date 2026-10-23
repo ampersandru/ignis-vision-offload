@@ -1,0 +1,587 @@
+{
+  "checksums": {
+    "down_k2": {
+      "checksum": "e5d2633f76447abd",
+      "in_out": [
+        17408,
+        5120
+      ],
+      "stream": 34102
+    },
+    "down_k2p5": {
+      "checksum": "f1d0a4c7117d30f0",
+      "in_out": [
+        17408,
+        5120
+      ],
+      "stream": 34202
+    },
+    "down_k3": {
+      "checksum": "ef36faf377348a91",
+      "in_out": [
+        17408,
+        5120
+      ],
+      "stream": 34302
+    },
+    "down_k4": {
+      "checksum": "ec8db826d9c6ee7f",
+      "in_out": [
+        17408,
+        5120
+      ],
+      "stream": 34502
+    },
+    "down_k5": {
+      "checksum": "eb097a92acaa91b0",
+      "in_out": [
+        17408,
+        5120
+      ],
+      "stream": 34702
+    },
+    "down_k6": {
+      "checksum": "f092298ae9c4c329",
+      "in_out": [
+        17408,
+        5120
+      ],
+      "stream": 34902
+    },
+    "gate_k2": {
+      "checksum": "f7dbbec6f979eb6e",
+      "in_out": [
+        5120,
+        17408
+      ],
+      "stream": 34101
+    },
+    "gate_k2p5": {
+      "checksum": "ea63d55bde4cd438",
+      "in_out": [
+        5120,
+        17408
+      ],
+      "stream": 34201
+    },
+    "gate_k3": {
+      "checksum": "f40eafc06349991b",
+      "in_out": [
+        5120,
+        17408
+      ],
+      "stream": 34301
+    },
+    "gate_k4": {
+      "checksum": "ebe631781d59da98",
+      "in_out": [
+        5120,
+        17408
+      ],
+      "stream": 34501
+    },
+    "gate_k5": {
+      "checksum": "f0641103ed619240",
+      "in_out": [
+        5120,
+        17408
+      ],
+      "stream": 34701
+    },
+    "gate_k6": {
+      "checksum": "f54200b4ef9569a4",
+      "in_out": [
+        5120,
+        17408
+      ],
+      "stream": 34901
+    },
+    "gate_up_k2": {
+      "checksum": "e2372b807acd096c",
+      "in_out": [
+        5120,
+        34816
+      ],
+      "stream": 34100
+    },
+    "gate_up_k2p5": {
+      "checksum": "d55f0c90aac37e53",
+      "in_out": [
+        5120,
+        34816
+      ],
+      "stream": 34200
+    },
+    "gate_up_k3": {
+      "checksum": "ddd6f8a71bb99b73",
+      "in_out": [
+        5120,
+        34816
+      ],
+      "stream": 34300
+    },
+    "gate_up_k4": {
+      "checksum": "e12e453dab16c19e",
+      "in_out": [
+        5120,
+        34816
+      ],
+      "stream": 34500
+    },
+    "gate_up_k5": {
+      "checksum": "e2853cb130b44ef9",
+      "in_out": [
+        5120,
+        34816
+      ],
+      "stream": 34700
+    },
+    "gate_up_k6": {
+      "checksum": "de3cd6d89cff1076",
+      "in_out": [
+        5120,
+        34816
+      ],
+      "stream": 34900
+    },
+    "gdn_out_k2": {
+      "checksum": "e5d37b1d0961035e",
+      "in_out": [
+        6144,
+        5120
+      ],
+      "stream": 34106
+    },
+    "gdn_out_k2p5": {
+      "checksum": "e6400112f0b0cdf8",
+      "in_out": [
+        6144,
+        5120
+      ],
+      "stream": 34206
+    },
+    "gdn_out_k3": {
+      "checksum": "ea571dd07f5d4db3",
+      "in_out": [
+        6144,
+        5120
+      ],
+      "stream": 34306
+    },
+    "gdn_out_k4": {
+      "checksum": "ee85c0f6faafbd50",
+      "in_out": [
+        6144,
+        5120
+      ],
+      "stream": 34506
+    },
+    "gdn_out_k5": {
+      "checksum": "e5a6efd18bb8fbcd",
+      "in_out": [
+        6144,
+        5120
+      ],
+      "stream": 34706
+    },
+    "gdn_out_k6": {
+      "checksum": "ea2c985990f9a92d",
+      "in_out": [
+        6144,
+        5120
+      ],
+      "stream": 34906
+    },
+    "head_k2": {
+      "checksum": "a4d07ab373e200fc",
+      "in_out": [
+        5120,
+        248320
+      ],
+      "stream": 34110
+    },
+    "head_k2p5": {
+      "checksum": "cbc4d56dfb3d2016",
+      "in_out": [
+        5120,
+        248320
+      ],
+      "stream": 34210
+    },
+    "head_k3": {
+      "checksum": "c0443cd236ed97b6",
+      "in_out": [
+        5120,
+        248320
+      ],
+      "stream": 34310
+    },
+    "head_k4": {
+      "checksum": "c12e60dd2e42af11",
+      "in_out": [
+        5120,
+        248320
+      ],
+      "stream": 34510
+    },
+    "head_k5": {
+      "checksum": "9b665c26818ba69c",
+      "in_out": [
+        5120,
+        248320
+      ],
+      "stream": 34710
+    },
+    "head_k6": {
+      "checksum": "c81105cd50706c88",
+      "in_out": [
+        5120,
+        248320
+      ],
+      "stream": 34910
+    },
+    "kv_k2": {
+      "checksum": "d2164d06cef376d4",
+      "in_out": [
+        5120,
+        1024
+      ],
+      "stream": 34109
+    },
+    "kv_k2p5": {
+      "checksum": "d177ef6c537451eb",
+      "in_out": [
+        5120,
+        1024
+      ],
+      "stream": 34209
+    },
+    "kv_k3": {
+      "checksum": "ce6421337d74c540",
+      "in_out": [
+        5120,
+        1024
+      ],
+      "stream": 34309
+    },
+    "kv_k4": {
+      "checksum": "d0eb192178d23615",
+      "in_out": [
+        5120,
+        1024
+      ],
+      "stream": 34509
+    },
+    "kv_k5": {
+      "checksum": "cfbc5fb7647f3752",
+      "in_out": [
+        5120,
+        1024
+      ],
+      "stream": 34709
+    },
+    "kv_k6": {
+      "checksum": "d15f40f3bf3c61c8",
+      "in_out": [
+        5120,
+        1024
+      ],
+      "stream": 34909
+    },
+    "q_k2": {
+      "checksum": "d6c6c4e3b79b8d9f",
+      "in_out": [
+        5120,
+        12288
+      ],
+      "stream": 34108
+    },
+    "q_k2p5": {
+      "checksum": "d8cb65cbbd085f11",
+      "in_out": [
+        5120,
+        12288
+      ],
+      "stream": 34208
+    },
+    "q_k3": {
+      "checksum": "ce8c3343ce29c5cf",
+      "in_out": [
+        5120,
+        12288
+      ],
+      "stream": 34308
+    },
+    "q_k4": {
+      "checksum": "d4fea8c5edab2e98",
+      "in_out": [
+        5120,
+        12288
+      ],
+      "stream": 34508
+    },
+    "q_k5": {
+      "checksum": "d98ecf6604ce3959",
+      "in_out": [
+        5120,
+        12288
+      ],
+      "stream": 34708
+    },
+    "q_k6": {
+      "checksum": "d2091e1bfef79957",
+      "in_out": [
+        5120,
+        12288
+      ],
+      "stream": 34908
+    },
+    "qkgv_k2": {
+      "checksum": "832f8423c8f6dddb",
+      "in_out": [
+        5120,
+        14336
+      ],
+      "stream": 34107
+    },
+    "qkgv_k2p5": {
+      "checksum": "78b872000f353917",
+      "in_out": [
+        5120,
+        14336
+      ],
+      "stream": 34207
+    },
+    "qkgv_k3": {
+      "checksum": "7bd631dfa58eef08",
+      "in_out": [
+        5120,
+        14336
+      ],
+      "stream": 34307
+    },
+    "qkgv_k4": {
+      "checksum": "7c8f41b3ddd0d64d",
+      "in_out": [
+        5120,
+        14336
+      ],
+      "stream": 34507
+    },
+    "qkgv_k5": {
+      "checksum": "7a5df6ed0b6135d8",
+      "in_out": [
+        5120,
+        14336
+      ],
+      "stream": 34707
+    },
+    "qkgv_k6": {
+      "checksum": "7aecd04cf185750f",
+      "in_out": [
+        5120,
+        14336
+      ],
+      "stream": 34907
+    },
+    "qkv_k2": {
+      "checksum": "31692ef22a2d7158",
+      "in_out": [
+        5120,
+        10240
+      ],
+      "stream": 34104
+    },
+    "qkv_k2p5": {
+      "checksum": "2bdee46f86139cef",
+      "in_out": [
+        5120,
+        10240
+      ],
+      "stream": 34204
+    },
+    "qkv_k3": {
+      "checksum": "30c62af20582e6cc",
+      "in_out": [
+        5120,
+        10240
+      ],
+      "stream": 34304
+    },
+    "qkv_k4": {
+      "checksum": "2d98fea2cc9d3d50",
+      "in_out": [
+        5120,
+        10240
+      ],
+      "stream": 34504
+    },
+    "qkv_k5": {
+      "checksum": "25fe6964666a23f0",
+      "in_out": [
+        5120,
+        10240
+      ],
+      "stream": 34704
+    },
+    "qkv_k6": {
+      "checksum": "2e4eecb2998e5580",
+      "in_out": [
+        5120,
+        10240
+      ],
+      "stream": 34904
+    },
+    "qkvz_k2": {
+      "checksum": "1b829570d2f3fd89",
+      "in_out": [
+        5120,
+        16384
+      ],
+      "stream": 34103
+    },
+    "qkvz_k2p5": {
+      "checksum": "253a794ca2d696e0",
+      "in_out": [
+        5120,
+        16384
+      ],
+      "stream": 34203
+    },
+    "qkvz_k3": {
+      "checksum": "25c067b63b06ff98",
+      "in_out": [
+        5120,
+        16384
+      ],
+      "stream": 34303
+    },
+    "qkvz_k4": {
+      "checksum": "1f993d8f21f252c4",
+      "in_out": [
+        5120,
+        16384
+      ],
+      "stream": 34503
+    },
+    "qkvz_k5": {
+      "checksum": "16621c17472c36fc",
+      "in_out": [
+        5120,
+        16384
+      ],
+      "stream": 34703
+    },
+    "qkvz_k6": {
+      "checksum": "20a4af78dec5e84c",
+      "in_out": [
+        5120,
+        16384
+      ],
+      "stream": 34903
+    },
+    "z_k2": {
+      "checksum": "ec002c893c16490f",
+      "in_out": [
+        5120,
+        6144
+      ],
+      "stream": 34105
+    },
+    "z_k2p5": {
+      "checksum": "eb93a32e1049aece",
+      "in_out": [
+        5120,
+        6144
+      ],
+      "stream": 34205
+    },
+    "z_k3": {
+      "checksum": "e68cda9de41d1ef6",
+      "in_out": [
+        5120,
+        6144
+      ],
+      "stream": 34305
+    },
+    "z_k4": {
+      "checksum": "ea237a621b92380d",
+      "in_out": [
+        5120,
+        6144
+      ],
+      "stream": 34505
+    },
+    "z_k5": {
+      "checksum": "ea873b3c9d900a2c",
+      "in_out": [
+        5120,
+        6144
+      ],
+      "stream": 34705
+    },
+    "z_k6": {
+      "checksum": "ea6a838185872825",
+      "in_out": [
+        5120,
+        6144
+      ],
+      "stream": 34905
+    }
+  },
+  "date_utc": "2026-10-23T11:51:59Z",
+  "device": "NVIDIA GeForce RTX 5090",
+  "exllamav3": "1.5.3",
+  "recorded_by": "kernel/tests/fixtures/trellis_dense/record.py",
+  "torch": "2.13.0+cu130",
+  "trellis": {
+    "k2": {
+      "file": "trellis_k2.bin",
+      "shape_in_out": [
+        256,
+        128
+      ],
+      "y64_vs_exllamav3_forward_max_rel": 0.0004999979596604769
+    },
+    "k2p5": {
+      "file": "trellis_k2p5.bin",
+      "shape_in_out": [
+        256,
+        128
+      ],
+      "y64_vs_exllamav3_forward_max_rel": 0.0005852111712194157
+    },
+    "k3": {
+      "file": "trellis_k3.bin",
+      "shape_in_out": [
+        256,
+        128
+      ],
+      "y64_vs_exllamav3_forward_max_rel": 0.0006569220756213192
+    },
+    "k4": {
+      "file": "trellis_k4.bin",
+      "shape_in_out": [
+        256,
+        128
+      ],
+      "y64_vs_exllamav3_forward_max_rel": 0.000389533604802592
+    },
+    "k5": {
+      "file": "trellis_k5.bin",
+      "shape_in_out": [
+        256,
+        128
+      ],
+      "y64_vs_exllamav3_forward_max_rel": 0.00042759122659123645
+    },
+    "k6": {
+      "file": "trellis_k6.bin",
+      "shape_in_out": [
+        256,
+        128
+      ],
+      "y64_vs_exllamav3_forward_max_rel": 0.0004180765764513591
+    }
+  }
+}
