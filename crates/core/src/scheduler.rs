@@ -932,6 +932,16 @@ pub trait Scheduler: Send {
     /// tokens (for `GET /v1/models`; `submit` refuses anything over it).
     fn max_sequence_tokens(&self) -> u32;
 
+    /// How many requests this scheduler holds in flight at once (GitHub
+    /// #336): past it, [`Scheduler::submit`] answers [`SubmitError::Full`].
+    /// What a caller that fans out sizes its waves by -- a load's decode
+    /// lanes, since the 27B's are a load setting. The default is the most
+    /// any load serves, [`crate::N_DECODE_LANES`]: a wave that wide is
+    /// slower to admit on a narrower engine, never wrong.
+    fn max_in_flight(&self) -> usize {
+        crate::N_DECODE_LANES
+    }
+
     /// The operating mode (reported by telemetry interval lines).
     fn mode(&self) -> crate::types::EngineMode;
 

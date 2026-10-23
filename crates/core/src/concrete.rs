@@ -5483,6 +5483,11 @@ impl Scheduler for ConcreteScheduler {
         self.config.max_sequence_tokens
     }
 
+    /// The cap admission holds (GitHub #336): the load's lanes.
+    fn max_in_flight(&self) -> usize {
+        self.config.max_in_flight
+    }
+
     fn mode(&self) -> EngineMode {
         if self.in_flight() > 0 {
             EngineMode::Serving

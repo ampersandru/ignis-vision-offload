@@ -154,6 +154,10 @@ pub struct Engine {
     model_id: String,
     /// The scheduler's per-sequence context, captured the same way.
     max_model_len: u32,
+    /// How many requests the scheduler holds in flight (GitHub #336): the
+    /// load's decode lanes, captured the same way -- what a fan-out sizes
+    /// its waves by.
+    max_in_flight: usize,
     /// The content hash of the artifact the backend runs on (GitHub #260),
     /// captured the same way: what the pointing head is keyed on.
     artifact: ignis_core::ArtifactHash,
@@ -232,6 +236,7 @@ impl Clone for Engine {
         Self {
             model_id: self.model_id.clone(),
             max_model_len: self.max_model_len,
+            max_in_flight: self.max_in_flight,
             artifact: self.artifact,
             commands: self.commands.clone(),
             facts: self.facts.clone(),
@@ -278,6 +283,7 @@ impl Engine {
     ) -> (Self, std::thread::JoinHandle<()>) {
         let model_id = scheduler.model_id().to_string();
         let max_model_len = scheduler.max_sequence_tokens();
+        let max_in_flight = scheduler.max_in_flight();
         let artifact = scheduler.artifact();
         let (command_tx, command_rx) = std_mpsc::channel();
         let (facts_tx, facts_rx) = unbounded_channel();
@@ -302,6 +308,7 @@ impl Engine {
             Self {
                 model_id,
                 max_model_len,
+                max_in_flight,
                 artifact,
                 commands: command_tx,
                 facts: facts_tx,
@@ -347,6 +354,13 @@ impl Engine {
     /// tokens (for `GET /v1/models`) — immutable like the model id.
     pub fn max_model_len(&self) -> u32 {
         self.max_model_len
+    }
+
+    /// How many requests the engine admits at once before it answers
+    /// `SubmitError::Full` (GitHub #336): the load's decode lanes --
+    /// immutable like the model id.
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight
     }
 
     /// The content hash of the artifact this engine's backend runs on
@@ -1719,6 +1733,7 @@ mod tests {
         let engine = Engine {
             model_id: "test-model".into(),
             max_model_len: 8192,
+            max_in_flight: ignis_core::N_DECODE_LANES,
             commands: command_tx,
             facts: consumer_tx.clone(),
             counters,
@@ -1798,6 +1813,7 @@ mod tests {
         let engine = Engine {
             model_id: "test-model".into(),
             max_model_len: 8192,
+            max_in_flight: ignis_core::N_DECODE_LANES,
             commands: command_tx,
             facts: consumer_tx.clone(),
             counters,
