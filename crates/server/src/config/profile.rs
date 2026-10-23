@@ -400,7 +400,7 @@ mod tests {
         use super::super::source::{resolve_settings, Fit, Sources};
         use ignis_core::compute::ModelFamily;
 
-        for (profile, flash_next_lanes) in [(DEFAULT_PROFILE, 3), ("rtxpro6000", 8)] {
+        for (profile, flash_next_lanes) in [("rtx5090", 3), ("rtxpro6000", 8)] {
             let sources = Sources { profile: built_in()[profile].clone(), ..Sources::default() };
             let qwen = resolve_settings(&sources, Some(ModelFamily::Qwen38_27b), Fit::Start).unwrap();
             assert_eq!(qwen.settings.spec.decode_lanes, None, "{profile}: the 27B's default");
