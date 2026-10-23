@@ -11,7 +11,7 @@
 //                covered), over counter-hash words, at 1, 2, 8, 16, 64 and 1,024 tokens. Large
 //                token counts are checked on 128 rows spread over every 128-token tile.
 //   epilogues    the residual add and SwiGLU (gate and up of different K) on both routes.
-//   fp16 cap     the prefill's fp16 accumulation at in = 17,408 with every product of every fold
+//   fp16 cap     both routes' fp16 accumulation at in = 17,408 with every product of every fold
 //                at the activation scale's bound (a constant weight at the codebook's extreme,
 //                activations that rotate to a constant): no overflow, still inside tolerance.
 //   determinism  the same call twice, twice under the SM cap at 36 (the prefill also against
@@ -362,7 +362,7 @@ void fp16_cap_arm() {
   // Activations whose every 128-block rotates to a constant: one entry per block (x o suh = a
   // sqrt(128) e_0 gives H(.) = a 1). 11.25 / sqrt(128) = 0.9944 scales to 509.1, just under the
   // bound of 512, so every fold sums 32 products of 509.1 x |w| = 32 x 1,758 = 56,256 < 65,504.
-  const int tokens = 130;
+  for (const int tokens : {8, 130}) {  // both routes: decode and prefill
   std::vector<uint16_t> x(static_cast<size_t>(tokens) * in, 0);
   for (int t = 0; t < tokens; ++t)
     for (uint32_t b = 0; b < in; b += 128) x[static_cast<size_t>(t) * in + b] = moe_test::f32_to_bf16(t % 2 ? -11.25f : 11.25f);
@@ -378,9 +378,11 @@ void fp16_cap_arm() {
   for (size_t i = 0; i < bounds.size(); ++i) bounds[i] = bound(ref.y[i], ref.s[i]);
   const Agreement a = agree(bf16_to_f64(pick_rows(y, rows, out, out)), ref.y, bounds);
   note(tokens, a.worst);
-  check(a.bad == 0, "fp16 accumulation at its bound, in = 17,408: " + std::to_string(a.bad) + " outputs outside the tolerance");
+  check(a.bad == 0, "fp16 accumulation at its bound, in = 17,408, " + std::to_string(tokens) + " tokens: " +
+                        std::to_string(a.bad) + " outputs outside the tolerance");
   std::printf("  fp16 cap: weight %.4f everywhere, in 17408, %d tok: worst %.3f of the bound, rel rms %.2e\n", best,
               tokens, a.worst, a.rel_rms);
+  }
 }
 
 std::vector<uint16_t> run_bits(const DeviceWeight &g, const DeviceWeight *u, int tokens, const Workspace &ws, cudaStream_t s,

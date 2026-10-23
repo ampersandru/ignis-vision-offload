@@ -137,7 +137,8 @@ fn one_call_runs_through_the_binding() {
         trellis::workspace_init(&ws, std::ptr::null_mut())
             .and_then(|_| trellis::linear(&w, ptr(&d_x), 1, ptr(&d_y), out, trellis::STORE, &ws, std::ptr::null_mut()))
     };
-    if let Err(e) = ran {
+    // The call ran on the legacy stream; the device copies on its own non-blocking one.
+    if let Err(e) = ran.and_then(|_| ignis_core::moe::stream_sync(std::ptr::null_mut())) {
         gpu_profile::skip_or_fail(&format!("ignis_trellis_linear: {e}"));
         return;
     }

@@ -1,5 +1,5 @@
 /* ignis kernel leaf: the dense trellis linear -- OURS (spec 27b-16gb/02, GitHub #337; ADR 0060,
- * ADR 0051), adapted from our own Flash-Next trellis decode (kernel/src/trellis_decode.cuh,
+ * ADR 0051), built on our own Flash-Next trellis decode (kernel/src/trellis_decode.cuh,
  * spec flash-next/02). No exllamav3 or QTIP kernel source is read or copied: exllamav3's
  * `reconstruct` is the oracle the tile decode is held to (kernel/tests/fixtures/trellis_dense/),
  * nothing more.

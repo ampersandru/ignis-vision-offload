@@ -1,5 +1,6 @@
-// ignis kernel leaf: the trellis decode of an expert projection -- OURS (spec flash-next/02,
-// ADR 0044), written from the format's definition (kernel/tests/fixtures/flash_next/record.py,
+// ignis kernel leaf: the trellis decode of a tile, for Flash-Next's expert projections and the
+// 27B's dense matrices -- OURS (spec flash-next/02, ADR 0044; spec 27b-16gb/02 adds K = 5 and 6),
+// written from the format's definition (kernel/tests/fixtures/flash_next/record.py,
 // `decode_inner`), not from any engine's source.
 //
 // The format, as the expert ops read it. A projection's inner weight W (in x out, fp16) is

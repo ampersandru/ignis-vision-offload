@@ -9,8 +9,9 @@
 //            width-cost ratios 8 / 1 and 64 / 1.
 //   prefill  TFLOP/s (2 tokens in out per call) at 1,024 and 8,192 tokens, against the 5090's FP16
 //            accumulate peak (whitepaper Table 3: 419 TFLOPS dense).
-//   body     one decode token through the whole body (48 GDN and 16 GQA layers' matrices at their
-//            K): its bytes over its time, the figure Acceptance 4 asks to reach 65% of the roofline.
+//   body     one decode token through the whole body (48 GDN and 16 GQA layers' matrices, each at
+//            the K the public SC_3.00bpw_H4 quant gives it): its bytes over its time, the figure
+//            Acceptance 4 asks to reach 65% of the roofline; and eight tokens against one.
 //   peak     the card's own fp16-input, fp16-accumulate m16n8k16 rate from a register-only loop
 //            (eight independent chains a warp), with the SM clock it ran at: the measured
 //            denominator beside the whitepaper's 419 TFLOPS.
@@ -40,20 +41,37 @@ constexpr uint64_t kPoolBytes = 512ull << 20;  // > 5 x the 96 MB L2
 struct Shape {
   const char *name;
   uint32_t in, out, k2;
-  int swiglu;           // the gate/up pair, one call
-  int per_token_calls;  // calls of this shape in one decode token through the body
+  int swiglu;  // the gate/up pair, one call
 };
 
-// The repack's matrices (spec 01) at the quant's dominant K, and how often a token meets them.
+// The repack's matrices (spec 01) at the quant's dominant K.
 const Shape kBody[] = {
-    {"gdn qkv", 5120, 10240, 6, 0, 48},  {"gdn z", 5120, 6144, 6, 0, 48},     {"gdn out", 6144, 5120, 6, 0, 48},
-    {"gqa q", 5120, 12288, 6, 0, 16},    {"gqa k", 5120, 1024, 8, 0, 16},      {"gqa v", 5120, 1024, 8, 0, 16},
-    {"gqa o", 6144, 5120, 6, 0, 16},     {"mlp gate+up", 5120, 17408, 6, 1, 64}, {"mlp down", 17408, 5120, 6, 0, 64},
+    {"gdn qkv", 5120, 10240, 6, 0}, {"gdn z", 5120, 6144, 6, 0}, {"gdn out", 6144, 5120, 6, 0},
+    {"gqa q", 5120, 12288, 6, 0},   {"gqa k", 5120, 1024, 8, 0},  {"gqa v", 5120, 1024, 8, 0},
+    {"gqa o", 6144, 5120, 6, 0},    {"mlp gate+up", 5120, 17408, 6, 1}, {"mlp down", 17408, 5120, 6, 0},
 };
 const Shape kOther[] = {
-    {"fused gate_up", 5120, 34816, 6, 0, 0}, {"fused qkvz", 5120, 16384, 6, 0, 0}, {"fused qkgv", 5120, 14336, 6, 0, 0},
-    {"head", 5120, 248320, 8, 0, 0},
-    {"floor 128x128", 128, 128, 6, 0, 0},  // a call's fixed cost: two launches, one unit, no bytes to speak of
+    {"fused gate_up", 5120, 34816, 6, 0}, {"fused qkvz", 5120, 16384, 6, 0}, {"fused qkgv", 5120, 14336, 6, 0},
+    {"head", 5120, 248320, 8, 0},
+    {"floor 128x128", 128, 128, 6, 0},  // a call's fixed cost: two launches, one unit, no bytes to speak of
+};
+
+// One decode token through the body: every (matrix, K) the public quant has and how many of its
+// 64 layers have it (its quantization_config.json; gate and up, and k and v, share a K in every
+// layer, so the pair is one call at that K).
+struct MixEntry {
+  Shape shape;
+  int calls;
+};
+const MixEntry kMix[] = {
+    {{"gdn qkv", 5120, 10240, 4, 0}, 4},  {{"gdn qkv", 5120, 10240, 6, 0}, 42}, {{"gdn qkv", 5120, 10240, 8, 0}, 2},
+    {{"gdn z", 5120, 6144, 4, 0}, 3},     {{"gdn z", 5120, 6144, 6, 0}, 40},    {{"gdn z", 5120, 6144, 8, 0}, 5},
+    {{"gdn out", 6144, 5120, 6, 0}, 40},  {{"gdn out", 6144, 5120, 8, 0}, 8},
+    {{"gqa q", 5120, 12288, 4, 0}, 6},    {{"gqa q", 5120, 12288, 6, 0}, 10},
+    {{"gqa k, v", 5120, 1024, 8, 0}, 28}, {{"gqa k, v", 5120, 1024, 10, 0}, 4},
+    {{"gqa o", 6144, 5120, 6, 0}, 14},    {{"gqa o", 6144, 5120, 8, 0}, 2},
+    {{"mlp gate+up", 5120, 17408, 4, 1}, 9}, {{"mlp gate+up", 5120, 17408, 6, 1}, 49}, {{"mlp gate+up", 5120, 17408, 8, 1}, 6},
+    {{"mlp down", 17408, 5120, 4, 0}, 3}, {{"mlp down", 17408, 5120, 6, 0}, 53}, {{"mlp down", 17408, 5120, 8, 0}, 8},
 };
 
 int g_calls = 64;
@@ -240,7 +258,6 @@ void report(int cap, bool prefill, cudaStream_t stream) {
   std::printf("\n== SM cap %s ==\n", cap == 0 ? "none (all SMs)" : std::to_string(cap).c_str());
   std::printf("%-15s %6s %7s %3s | %9s %6s | %9s %9s %9s | %6s %6s | %8s %8s\n", "matrix", "in", "out", "K",
               "1 tok us", "%roof", "8 tok us", "16 tok us", "64 tok us", "8/1", "64/1", "1K TF/s", "8K TF/s");
-  double body_bytes = 0.0, body_us = 0.0, body_us8 = 0.0;
   auto row = [&](const Shape &s) {
     Pool pool;
     make_pool(pool, s);
@@ -257,16 +274,19 @@ void report(int cap, bool prefill, cudaStream_t stream) {
     }
     std::printf("%-15s %6u %7u %3.1f | %9.2f %5.1f%% | %9.2f %9.2f %9.2f | %6.3f %6.3f | %8.1f %8.1f\n", s.name, s.in,
                 s.out, s.k2 / 2.0, t1, 100.0 * gbs / kRooflineGBs, t8, t16, t64, t8 / t1, t64 / t1, tf1, tf8);
-    if (s.per_token_calls > 0) {
-      body_bytes += static_cast<double>(weight_bytes(s)) * s.per_token_calls;
-      body_us += t1 * s.per_token_calls;
-      body_us8 += t8 * s.per_token_calls;
-    }
   };
   for (const Shape &s : kBody) row(s);
   for (const Shape &s : kOther) row(s);
+  double body_bytes = 0.0, body_us = 0.0, body_us8 = 0.0;
+  for (const MixEntry &e : kMix) {
+    Pool pool;
+    make_pool(pool, e.shape);
+    body_bytes += static_cast<double>(weight_bytes(e.shape)) * e.calls;
+    body_us += time_call(pool, e.shape, 1, stream) * e.calls;
+    body_us8 += time_call(pool, e.shape, 8, stream) * e.calls;
+  }
   const double body_gbs = body_bytes / (body_us * 1e-6) / 1e9;
-  std::printf("body, one token: %.1f MB in %.1f us = %.0f GB/s, %.1f%% of the %.0f GB/s roofline; 8 tokens %.1f us (%.3fx)\n",
+  std::printf("body at the quant's K mix, one token: %.1f MB in %.1f us = %.0f GB/s, %.1f%% of the %.0f GB/s roofline; 8 tokens %.1f us (%.3fx)\n",
               body_bytes / 1e6, body_us, body_gbs, 100.0 * body_gbs / kRooflineGBs, kRooflineGBs, body_us8, body_us8 / body_us);
   if (prefill) {
     double tflops = 0.0, mhz = 0.0;

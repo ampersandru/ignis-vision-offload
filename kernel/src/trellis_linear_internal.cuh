@@ -203,6 +203,21 @@ template <typename F> __device__ __forceinline__ void dispatch_k2(int k2, F &&f)
   }
 }
 
+// A 4-byte cp.async (the activations' inverse scales, whose runs are not 16-byte aligned).
+__device__ __forceinline__ void cp_async4(void *smem, const void *gmem) {
+  const uint32_t s = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
+  asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(s), "l"(gmem));
+}
+
+// m16n8k16, fp16 inputs and fp16 accumulation: both routes' MMA (folded into fp32 every 32 inputs).
+__device__ __forceinline__ void mma_f16acc(uint32_t (&d)[2], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+      "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};\n"
+      : "+r"(d[0]), "+r"(d[1])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
 // The weights' streaming read: used once per call, so it should not displace the activations,
 // partial sums and counters from the L2.
 __device__ __forceinline__ uint32_t load_stream(const uint32_t *p) { return __ldcs(p); }

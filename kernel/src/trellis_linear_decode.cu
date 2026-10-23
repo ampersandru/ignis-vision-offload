@@ -1,5 +1,5 @@
 // ignis kernel leaf: the dense trellis linear's decode / verify route, 1..64 tokens -- OURS
-// (kernel/include/ignis_trellis_linear.h), adapted from our own Flash-Next register decode
+// (kernel/include/ignis_trellis_linear.h), built on our own Flash-Next register decode
 // (moe_decode.cu): the same one-word-per-lane loads with shuffles, the same decode straight into
 // m16n8k16 fragments.
 //
@@ -68,11 +68,6 @@ __device__ __forceinline__ Smem carve(unsigned char *base, int tokens) {
   return s;
 }
 
-__device__ __forceinline__ void cp_async4(void *smem, const void *gmem) {
-  const uint32_t s = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
-  asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(s), "l"(gmem));
-}
-
 // Block `blk` of weight `wsel`'s rotated activations and inverse scales into stage `buf`.
 __device__ __forceinline__ void stage_block(const DecodeParams &p, const Smem &s, int buf, int wsel, int blk) {
   const int tokens = p.tokens;
@@ -134,14 +129,6 @@ __device__ __forceinline__ void tile_fragment(const uint32_t (&r)[kRegs<K2>], co
     const uint32_t w1 = __shfl_sync(0xFFFFFFFFu, r[0], plan.w1);
     ignis_trellis::decode_fragment<K2>(w0, w1, plan, frag);
   }
-}
-
-__device__ __forceinline__ void mma_f16acc(uint32_t (&d)[2], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-      "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};\n"
-      : "+r"(d[0]), "+r"(d[1])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
 // acc += (W_block^T . x'_block) * inv for every group of eight tokens, from one stage. The weight

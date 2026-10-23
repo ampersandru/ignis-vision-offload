@@ -125,9 +125,12 @@ short:
   `ignis_trellis_linear_swiglu` (gate and up as two weights, each its own scales and K), `ignis_trellis_reconstruct`,
   the workspace query and `ignis_trellis_prepare`. A weight's `tile_stride` lets a call read a view of a fused plane's
   columns; `ldy` lets it write into a wider fused output. Rust: `ignis_core::trellis`, with `plan_bytes` the plan line.
-  The layer code does not call it yet (spec 05).
+  The layer code does not call it yet, and no load reserves the plan line yet: both are spec 05's.
 - **Both routes** rotate the activations in a first launch (fp32 Hadamard, fp16 with a power-of-two scale per token and
   128-input block) and accumulate in fp16 folded into fp32 every 32 inputs; the scale bounds every fold below 56,576.
+  Solution 3 decided the fold for the prefill only; the decode route takes the same one as built (fp32 accumulation
+  ran the tensor pipe at half rate and held the body at 60%; a fold every 128 inputs exceeded the tolerance), held by
+  the same tests, the bound's adversarial input included.
   - **Decode / verify (1..64 tokens):** the decoded tile is the MMA's **A** operand and the tokens its N, so one
     m16n8k16 serves eight tokens (Solution 2 said "for every column"; with the tokens as M, one token cost two MMAs).
     One persistent launch of work units taken by ticket; the inputs are split so the units fill the card's resident CTAs
@@ -142,13 +145,19 @@ short:
   and every launch's grid still covers the card, the others' CTAs leaving at once.
 - **Acceptance:**
   1. Met: K = 2, 2.5, 3, 4, 5, 6 bit-exact against exllamav3 at a reduced shape and at all 11 of the 27B's shapes
-     (`test_trellis_dense_decode`).
+     (`test_trellis_dense_decode`), through `ignis_trellis_reconstruct`. The serving routes run the same
+     `decode_window` on words they gather their own way (shuffles, shared memory); those gathers are held by the fp64
+     tests, where one wrong word moves an output far past the tolerance. The full shapes use counter-hash words;
+     the real weights wait for spec 01's artifact (as #337 planned).
   2. Met: every shape at 1, 2, 8, 16, 64 and 1,024 tokens, the epilogues, the fixtures' recorded outputs and an
      adversarial input at the scale's bound (`test_trellis_linear`).
   3. Met: graph capture in global mode replayed three times, reruns and capped reruns bit-identical; the workspace is
-     `ignis_trellis_workspace_bytes` / `trellis::plan_bytes` (72.4 MB at 16 decode and 2,048 prefill tokens).
-  4. Met, thinly: the body at one token 65.6% of the roofline (64-66% across runs); eight tokens 1.04x one.
+     `ignis_trellis_workspace_bytes` / `trellis::plan_bytes` (72.4 MB at 16 decode and 2,048 prefill tokens), which
+     spec 05's load reserves.
+  4. Met at the threshold: the body at one token, at the public quant's K per matrix, 65.0-65.4% of the roofline
+     (64-66% across runs at the dominant K); eight tokens 1.03-1.04x one. The figures under the caps are in the
+     finding.
   5. **Not met:** 212-238 TFLOPS at 1,024 tokens on the body's large matrices, 51-57% of 419 (42-47% of the 502 the
-     card's MMA loop measures). The owner's call (`.scratch/decisions-337.md` of the #337 worktree).
+     card's MMA loop measures). The owner's call, on GitHub #337.
   6. Met: no exllamav3 or QTIP kernel source read or copied; every file is labelled ours.
   7. Met: `cargo test` workspace-wide; the leaf's 136 CTests green on the 5090.

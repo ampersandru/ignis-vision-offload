@@ -7,7 +7,7 @@
 //! Rust-side tests and tools. Every pointer argument is a device pointer the caller vouches for,
 //! so the wrappers are `unsafe`; the shapes and counts they take are checked by the leaf.
 //!
-//! All of it is our own implementation, adapted from our own Flash-Next trellis decode (ADR 0051).
+//! All of it is our own implementation, built on our own Flash-Next trellis decode (ADR 0051).
 
 #![cfg(feature = "cuda")]
 
