@@ -650,6 +650,24 @@ foreach(name IN ITEMS moe_experts moe_block)
   add_test(NAME ignis_kernel_${name}_clusters_test COMMAND ignis_kernel_${name}_test clusters)
   add_test(NAME ignis_kernel_${name}_registers_test COMMAND ignis_kernel_${name}_test registers)
 endforeach()
+# --- the 27B's dense trellis linear (spec 27b-16gb/02, GitHub #337): OURS ---------------------
+#
+# kernel/include/ignis_trellis_linear.h. The fixtures under fixtures/trellis_dense/ were recorded
+# once from exllamav3's quantizer and `reconstruct` by fixtures/trellis_dense/record.py; the
+# real-shape arms regenerate their counter-hash words on the device. Same no-SKIP_RETURN_CODE
+# rule as every other GPU test here (ADR 0006).
+set(IGNIS_TRELLIS_DENSE_FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/trellis_dense")
+foreach(name IN ITEMS trellis_dense_decode trellis_linear)
+  add_executable(ignis_kernel_${name}_test test_${name}.cu)
+  target_compile_definitions(ignis_kernel_${name}_test PRIVATE
+    IGNIS_TRELLIS_DENSE_FIXTURE_DIR="${IGNIS_TRELLIS_DENSE_FIXTURE_DIR}")
+  target_link_libraries(ignis_kernel_${name}_test PRIVATE ignis_kernel ignis_vendor)
+  add_test(NAME ignis_kernel_${name}_test COMMAND ignis_kernel_${name}_test)
+endforeach()
+# The dense trellis microbenchmark: spec 02's report (DRAM bandwidth at 1..64 tokens, prefill
+# TFLOP/s, under the debug SM caps). A tool and NOT a CTest; timing wants the card to itself.
+add_executable(ignis_kernel_trellis_linear_bench bench_trellis_linear.cu)
+target_link_libraries(ignis_kernel_trellis_linear_bench PRIVATE ignis_kernel ignis_vendor)
 # The MoE microbenchmark: a report of every op's achieved bandwidth or throughput. The spec's
 # decode floor (one-token routed decode >= 50% of the DRAM roofline) is its one pass/fail,
 # opt-in with --check-floor; it is a tool and NOT a CTest while that floor is open, so the stage

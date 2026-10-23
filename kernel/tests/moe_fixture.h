@@ -91,6 +91,20 @@ struct DeviceBytes {
   }
   DeviceBytes(const DeviceBytes &) = delete;
   DeviceBytes &operator=(const DeviceBytes &) = delete;
+  DeviceBytes(DeviceBytes &&o) noexcept : p(o.p), bytes(o.bytes) {
+    o.p = nullptr;
+    o.bytes = 0;
+  }
+  DeviceBytes &operator=(DeviceBytes &&o) noexcept {
+    if (this != &o) {
+      if (p != nullptr) { cudaFree(p); }
+      p = o.p;
+      bytes = o.bytes;
+      o.p = nullptr;
+      o.bytes = 0;
+    }
+    return *this;
+  }
   template <typename T> T *as() const { return static_cast<T *>(p); }
 };
 

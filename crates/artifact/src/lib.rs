@@ -163,11 +163,12 @@ const V1_MAGIC: [u8; 8] = *b"NINFER\x00\x01";
 
 /// Persistent numeric formats (the closed v2 registry).
 ///
-/// The last six are Flash-Next's (spec flash-next/01, layout.md): the
-/// n-gram hash buffers' I64, the n-gram table's INT4, and the expert
-/// projections' trellis at each K (ADR 0044) — K is part of the format
-/// because the closed directory entry has no other place for it, and the
-/// stored size, which the reader checks, depends on it.
+/// I64, Q4G32_F16S and the trellis codes up to K4 are Flash-Next's (spec
+/// flash-next/01, layout.md): the n-gram hash buffers' I64, the n-gram
+/// table's INT4, and the expert projections' trellis at each K (ADR 0044) —
+/// K is part of the format because the closed directory entry has no other
+/// place for it, and the stored size, which the reader checks, depends on it.
+/// K5 and K6 are the 27B's trellis body and head (ADR 0060, spec 27b-16gb/02).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NumericFormat {
     Bf16,
@@ -183,11 +184,13 @@ pub enum NumericFormat {
     I64,
     /// 4-bit codes (value = nibble − 8) with one fp16 scale per 32 values.
     Q4G32F16S,
-    /// ExLlamaV3's trellis, mul1 codebook, at K = 2, 2.5, 3, 4 bits.
+    /// ExLlamaV3's trellis, mul1 codebook, at K = 2, 2.5, 3, 4, 5, 6 bits.
     TrellisMul1K2,
     TrellisMul1K2p5,
     TrellisMul1K3,
     TrellisMul1K4,
+    TrellisMul1K5,
+    TrellisMul1K6,
 }
 
 impl NumericFormat {
@@ -208,16 +211,20 @@ impl NumericFormat {
             Self::TrellisMul1K2p5 => "TRELLIS_MUL1_K2P5",
             Self::TrellisMul1K3 => "TRELLIS_MUL1_K3",
             Self::TrellisMul1K4 => "TRELLIS_MUL1_K4",
+            Self::TrellisMul1K5 => "TRELLIS_MUL1_K5",
+            Self::TrellisMul1K6 => "TRELLIS_MUL1_K6",
         }
     }
 
-    /// `2·K` for a trellis format (4, 5, 6, 8), `None` for any other.
+    /// `2·K` for a trellis format (4, 5, 6, 8, 10, 12), `None` for any other.
     pub fn trellis_k2(self) -> Option<u64> {
         match self {
             Self::TrellisMul1K2 => Some(4),
             Self::TrellisMul1K2p5 => Some(5),
             Self::TrellisMul1K3 => Some(6),
             Self::TrellisMul1K4 => Some(8),
+            Self::TrellisMul1K5 => Some(10),
+            Self::TrellisMul1K6 => Some(12),
             _ => None,
         }
     }
@@ -239,6 +246,8 @@ impl NumericFormat {
             "TRELLIS_MUL1_K2P5" => Self::TrellisMul1K2p5,
             "TRELLIS_MUL1_K3" => Self::TrellisMul1K3,
             "TRELLIS_MUL1_K4" => Self::TrellisMul1K4,
+            "TRELLIS_MUL1_K5" => Self::TrellisMul1K5,
+            "TRELLIS_MUL1_K6" => Self::TrellisMul1K6,
             other => return Err(fail(format!("unknown tensor format: {other}"))),
         })
     }
@@ -1551,6 +1560,27 @@ mod tests {
             );
         }
         assert_eq!(tensor_alignment(StorageLayout::TrellisTile16V1), 4096);
+    }
+
+    #[test]
+    fn the_dense_trellis_codes_carry_k5_and_k6() {
+        // Spec 27b-16gb/02: the 27B's body and head take K up to 6. By hand: k_proj [1024, 5120]
+        // at K = 5 is 1024 * 5120 / 16 * 10 trellis bytes, then 5120 + 1024 fp16 scales, which
+        // lands on a 4096 boundary; the head [248320, 5120] at K = 6 pads 3,072 bytes.
+        let classes = [
+            ([1024u64, 5120], NumericFormat::TrellisMul1K5, 10, 3_276_800, 3_289_088, 3_289_088),
+            ([248_320u64, 5120], NumericFormat::TrellisMul1K6, 12, 953_548_800, 954_055_680, 954_056_704),
+        ];
+        for (shape, format, k2, trellis, data, record) in classes {
+            assert_eq!(format.trellis_k2(), Some(k2));
+            assert_eq!(NumericFormat::parse(format.name()).unwrap(), format);
+            let g = trellis_geometry(format, &shape).unwrap();
+            assert_eq!((g.trellis_bytes, g.data_bytes, g.encoded_bytes), (trellis, data, record), "{format:?}");
+            assert_eq!(g.svh_offset, trellis + 2 * shape[1]);
+        }
+        assert_eq!(NumericFormat::TrellisMul1K5.name(), "TRELLIS_MUL1_K5");
+        assert_eq!(NumericFormat::TrellisMul1K6.name(), "TRELLIS_MUL1_K6");
+        assert!(NumericFormat::parse("TRELLIS_MUL1_K7").is_err());
     }
 
     #[test]

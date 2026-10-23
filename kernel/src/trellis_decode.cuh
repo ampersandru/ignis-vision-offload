@@ -1,5 +1,6 @@
-// ignis kernel leaf: the trellis decode of an expert projection -- OURS (spec flash-next/02,
-// ADR 0044), written from the format's definition (kernel/tests/fixtures/flash_next/record.py,
+// ignis kernel leaf: the trellis decode of a tile, for Flash-Next's expert projections and the
+// 27B's dense matrices -- OURS (spec flash-next/02, ADR 0044; spec 27b-16gb/02 adds K = 5 and 6),
+// written from the format's definition (kernel/tests/fixtures/flash_next/record.py,
 // `decode_inner`), not from any engine's source.
 //
 // The format, as the expert ops read it. A projection's inner weight W (in x out, fp16) is
@@ -17,7 +18,10 @@
 // order: lane t of a warp owns steps 8t .. 8t+7, which are exactly its m16n8k16 B-operand
 // registers (k = r, n = c) for both n8 halves of the tile. So a warp decodes a tile straight
 // into MMA fragments: lane t needs only the 16 + 8K - K stream bits ending its last step, which
-// for every K in {2, 2.5, 3, 4} lie inside two consecutive u32 words of the tile.
+// for every K in {2, 2.5, 3, 4} lie inside two consecutive u32 words of the tile. For K = 5 and
+// 6 (the 27B's dense matrices, spec 27b-16gb/02) they are 51 and 58 bits starting anywhere in a
+// word, so some lanes read three: lane_plan3 / decode_fragment3, the same decode over a window
+// built from three words.
 #ifndef IGNIS_TRELLIS_DECODE_CUH
 #define IGNIS_TRELLIS_DECODE_CUH
 
@@ -65,16 +69,10 @@ __host__ __device__ constexpr int state_shift(int k2, int j) {
   return 64 - (16 + step_end(k2, j) - step_end(k2, 0));
 }
 
-// Lane `plan`'s eight weights of one tile of class K2, from that tile's u32 words `word0`
-// (= tile[w0]) and `word1` (= tile[w1]), as four half2 registers in fragment order: frag[0] = B
-// rows (k0, k0 + 1) of n8 half 0, frag[1] = rows (k0 + 8, k0 + 9) of half 0, frag[2] and frag[3]
-// the same for half 1.
+// The eight weights of a lane from its normalized window (`hi` the top 32 bits, `lo` the next
+// 32, the lane's first bit at bit 31 of `hi`), as four half2 registers in fragment order.
 template <int K2>
-__device__ __forceinline__ void decode_fragment(uint32_t word0, uint32_t word1, const LanePlan &plan,
-                                                uint32_t (&frag)[4]) {
-  const uint64_t window = ((static_cast<uint64_t>(word0) << 32) | word1) << plan.off;
-  const uint32_t hi = static_cast<uint32_t>(window >> 32);
-  const uint32_t lo = static_cast<uint32_t>(window);
+__device__ __forceinline__ void decode_window(uint32_t hi, uint32_t lo, uint32_t (&frag)[4]) {
   uint32_t bits[8];
 #pragma unroll
   for (int j = 0; j < 8; ++j) {
@@ -90,6 +88,37 @@ __device__ __forceinline__ void decode_fragment(uint32_t word0, uint32_t word1, 
     const __half2 v = __hfma2(*reinterpret_cast<const __half2 *>(&packed), k_inv, k_bias);
     frag[i] = *reinterpret_cast<const uint32_t *>(&v);
   }
+}
+
+// Lane `plan`'s eight weights of one tile of class K2, from that tile's u32 words `word0`
+// (= tile[w0]) and `word1` (= tile[w1]), as four half2 registers in fragment order: frag[0] = B
+// rows (k0, k0 + 1) of n8 half 0, frag[1] = rows (k0 + 8, k0 + 9) of half 0, frag[2] and frag[3]
+// the same for half 1.
+template <int K2>
+__device__ __forceinline__ void decode_fragment(uint32_t word0, uint32_t word1, const LanePlan &plan,
+                                                uint32_t (&frag)[4]) {
+  const uint64_t window = ((static_cast<uint64_t>(word0) << 32) | word1) << plan.off;
+  decode_window<K2>(static_cast<uint32_t>(window >> 32), static_cast<uint32_t>(window), frag);
+}
+
+// K = 5 and 6: the lane's window spans up to three consecutive words w0, w1, w2 of the tile
+// (wrapping, as for lane 0 at every K). `off` is as in LanePlan, always below 32.
+struct LanePlan3 {
+  int w0;
+  int w1;
+  int w2;
+  uint32_t off;
+};
+
+__host__ __device__ inline LanePlan3 lane_plan3(int k2, int lane) {
+  const LanePlan p = lane_plan(k2, lane);
+  return LanePlan3{p.w0, p.w1, (p.w1 + 1) % tile_words(k2), p.off};
+}
+
+template <int K2>
+__device__ __forceinline__ void decode_fragment3(uint32_t word0, uint32_t word1, uint32_t word2,
+                                                 const LanePlan3 &plan, uint32_t (&frag)[4]) {
+  decode_window<K2>(__funnelshift_l(word1, word0, plan.off), __funnelshift_l(word2, word1, plan.off), frag);
 }
 
 }  // namespace ignis_trellis

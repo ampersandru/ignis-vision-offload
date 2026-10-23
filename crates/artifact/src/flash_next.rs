@@ -790,6 +790,9 @@ mod tests {
             assert_eq!(k.format().trellis_k2(), Some(u64::from(k.k2())));
         }
         assert_eq!(TrellisK::from_format(NumericFormat::Bf16), None);
+        // The 27B's K5/K6 (spec 27b-16gb/02) are no expert bit width (ADR 0044).
+        assert_eq!(TrellisK::from_format(NumericFormat::TrellisMul1K5), None);
+        assert_eq!(TrellisK::from_format(NumericFormat::TrellisMul1K6), None);
     }
 
     #[test]
