@@ -794,25 +794,25 @@ mod tests {
     /// was named, and lets a key named in the section win over the group's.
     #[test]
     fn homing_moves_a_family_only_fields_value_and_removal_to_its_section() {
-        let lanes = field("spec", "draft_rows").unwrap();
+        let rows = field("spec", "draft_rows").unwrap();
         let pool = field("reuse", "kv_host_pool_bytes").unwrap();
         let flash = Some(ModelFamily::FlashNext);
         let mut patch = Layer::default();
-        patch.set(lanes, None, Candidate { raw: "2".into(), spelling: "spec.draft_rows".into() }).unwrap();
+        patch.set(rows, None, Candidate { raw: "2".into(), spelling: "spec.draft_rows".into() }).unwrap();
         patch.set(pool, None, Candidate { raw: "3G".into(), spelling: "reuse.kv_host_pool_bytes".into() }).unwrap();
         let homed = patch.homed();
         let raw = |layer: &Layer, meta, family| layer.get(meta, family).map(|candidate| candidate.raw.clone());
-        assert_eq!((raw(&homed, lanes, None), raw(&homed, lanes, flash)), (None, Some("2".to_owned())));
+        assert_eq!((raw(&homed, rows, None), raw(&homed, rows, flash)), (None, Some("2".to_owned())));
         assert_eq!(homed.get(pool, None).map(|c| c.raw.as_str()), Some("3G"), "a field both families take stays at its group key");
 
         let mut removal = Layer::default();
-        removal.remove(lanes, None, "spec.draft_rows".into()).unwrap();
+        removal.remove(rows, None, "spec.draft_rows".into()).unwrap();
         let named: Vec<_> = removal.homed().named().map(|(meta, family)| (meta.file_key(), family)).collect();
         assert_eq!(named, [("spec.draft_rows".to_owned(), flash)]);
 
         let mut both = Layer::default();
-        both.set(lanes, None, Candidate { raw: "2".into(), spelling: "spec.draft_rows".into() }).unwrap();
-        both.remove(lanes, flash, "spec.qwen38flashnext.draft_rows".into()).unwrap();
+        both.set(rows, None, Candidate { raw: "2".into(), spelling: "spec.draft_rows".into() }).unwrap();
+        both.remove(rows, flash, "spec.qwen38flashnext.draft_rows".into()).unwrap();
         let homed = both.homed();
         assert_eq!((homed.entries().count(), homed.removals().count()), (0, 1), "the section's own key wins: {homed:?}");
     }

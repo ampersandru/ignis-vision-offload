@@ -279,9 +279,9 @@ describe("the reload a draft causes", () => {
     expect(waits(draft)).toEqual([{ family: "qwen38flashnext", keys: ["model.qwen38flashnext.max_context"] }]);
     expect(waitingLine(waits(draft)[0])).toBe("Takes effect when Qwen3.8-Flash-Next loads: model.qwen38flashnext.max_context");
     // A field only that family takes is the same.
-    const lanes = edit({}, "spec.draft_rows", "4", null);
-    expect(reload(lanes)).toBe(false);
-    expect(waits(lanes)).toEqual([{ family: "qwen38flashnext", keys: ["spec.qwen38flashnext.draft_rows"] }]);
+    const rows = edit({}, "spec.draft_rows", "4", null);
+    expect(reload(rows)).toBe(false);
+    expect(waits(rows)).toEqual([{ family: "qwen38flashnext", keys: ["spec.qwen38flashnext.draft_rows"] }]);
     // And from the other side.
     expect(reload(edit({}, "model.max_context", "524288", "qwen38"), "qwen38flashnext")).toBe(false);
     expect(waits(edit({}, "model.max_context", "524288", "qwen38"), "qwen38flashnext")).toEqual([{ family: "qwen38", keys: ["model.qwen38.max_context"] }]);
