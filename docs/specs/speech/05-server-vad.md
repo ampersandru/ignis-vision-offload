@@ -155,10 +155,10 @@ something the spec left open, or differs from it:
   last word, the items joined score 7.58% pooled WER (47 edits in 620
   words); a manual commit of each whole dictation through the same path
   scores 4.03% (25 edits). Six dictations of eleven are within a word;
-  d04, d06, d07, d10 and d11 are three to seven words worse. No speech is
-  lost to a cut: the errors are the kind a different start brings, numbers in
-  spoken form ("ventisette b" for 27B), an identifier read out, a word heard
-  differently ("web file" for WAV file). One run of two more arms places the
+  d04, d06, d07, d10 and d11 are three to seven words worse. In their
+  transcripts no speech is lost to a cut: the errors are the kind a different
+  start brings, numbers in spoken form ("ventisette b" for 27B), an
+  identifier read out, a word heard differently ("web file" for WAV file). One run of two more arms places the
   cost:
   - a control, the whole dictation as **one** item from where
     `server_vad`'s first item starts (its leading silence trimmed to the
