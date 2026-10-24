@@ -56,9 +56,10 @@ The speech executor's kernels and ops are checked against fp64 in the default
 suite, and its front end against a recorded Transformers fixture. The checks
 on the real model files are `--ignored` CPU legs: every layer against
 Transformers FP32, teacher-forced top-1, the WER gates, the token counts and
-the kernels on the catalog files' own tensors. They read the study disk
-(`IGNIS_SPEECH_STUDY`, default `H:/speech-study`) and fail without it, and
-they run alone on the machine, like a GPU run:
+the kernels on the catalog files' own tensors. They read the study directory
+named by `IGNIS_SPEECH_STUDY` (the converted GGUF files, the FLEURS clips, the
+dictations) and fail without it, and they run alone on the machine, like a GPU
+run. The GPU profile leaves them out:
 
 ```sh
 cargo test --release -p ignis-speech --test oracle -- --ignored --test-threads=1

@@ -150,24 +150,13 @@ pub unsafe fn quantize_q80(x: *const f32, y: *mut BlockQ80, nb: usize) {
 
 // ---------------------------------------------------------------- Q4_K × Q8_K, the file's layout
 
-/// The 12-byte Q4_K scale field as (8 scales, 8 mins), i16 each.
+/// The 12-byte Q4_K scale field as (8 scales, 8 mins), i16 each: the scalar decode, widened.
 #[target_feature(enable = "avx2,fma,f16c")]
 #[inline]
 fn q4k_scales_vec(s: &[u8; 12]) -> (__m128i, __m128i) {
-    const KM1: u32 = 0x3f3f_3f3f;
-    const KM2: u32 = 0x0f0f_0f0f;
-    const KM3: u32 = 0x0303_0303;
-    let mut u = [0u32; 4];
-    for (i, w) in u.iter_mut().take(3).enumerate() {
-        *w = u32::from_le_bytes([s[4 * i], s[4 * i + 1], s[4 * i + 2], s[4 * i + 3]]);
-    }
-    u[3] = ((u[2] >> 4) & KM2) | (((u[1] >> 6) & KM3) << 4);
-    let uaux = u[1] & KM1;
-    u[1] = (u[2] & KM2) | (((u[0] >> 6) & KM3) << 4);
-    u[2] = uaux;
-    u[0] &= KM1;
-    let ms = _mm256_cvtepu8_epi16(_mm_set_epi32(u[3] as i32, u[2] as i32, u[1] as i32, u[0] as i32));
-    (_mm256_castsi256_si128(ms), _mm256_extracti128_si256::<1>(ms))
+    let (sc, m) = q4k_scales(s);
+    let widen = |b: [u8; 8]| _mm_cvtepu8_epi16(_mm_set_epi64x(0, i64::from_le_bytes(b)));
+    (widen(sc), widen(m))
 }
 
 #[target_feature(enable = "avx2,fma,f16c")]

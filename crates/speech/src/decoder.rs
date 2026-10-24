@@ -5,7 +5,8 @@
 //!
 //! The KV cache is one contiguous per-transcription buffer of f16 keys and
 //! values, 112 KiB per token for both sizes (28 layers × 2 × 8 heads × 128 ×
-//! 2 B), allocated zeroed so its pages become resident only as they fill.
+//! 2 B). It is sized for the longest clip but grows to it on demand,
+//! doubling, so a short transcription commits memory for what it holds.
 
 use crate::cpu::Isa;
 use crate::encoder::Tap;
@@ -19,20 +20,51 @@ pub struct Cache {
     k: Vec<u16>,
     v: Vec<u16>,
     kvs: usize,
+    layers: usize,
+    /// Positions allocated, and the most it may grow to.
     cap: usize,
+    max: usize,
     /// Positions filled.
     pub len: usize,
 }
 
 impl Cache {
+    /// A cache of exactly `cap` positions.
     pub fn new(dec: &Decoder, cap: usize) -> Cache {
-        let kvs = dec.kv_heads * dec.head_dim;
-        let n = dec.layers.len() * cap * kvs;
-        Cache { k: vec![0; n], v: vec![0; n], kvs, cap, len: 0 }
+        Cache::growing(dec, cap, cap)
     }
 
-    pub fn capacity(&self) -> usize {
-        self.cap
+    /// A cache of `initial` positions that grows on demand up to `max`.
+    pub fn growing(dec: &Decoder, initial: usize, max: usize) -> Cache {
+        let kvs = dec.kv_heads * dec.head_dim;
+        let layers = dec.layers.len();
+        let cap = initial.min(max);
+        Cache { k: vec![0; layers * cap * kvs], v: vec![0; layers * cap * kvs], kvs, layers, cap, max, len: 0 }
+    }
+
+    /// The most positions this cache may hold.
+    pub fn max_positions(&self) -> usize {
+        self.max
+    }
+
+    /// Makes room for `positions` in all, doubling the allocation; false past the maximum.
+    pub fn reserve(&mut self, positions: usize) -> bool {
+        if positions <= self.cap {
+            return true;
+        }
+        if positions > self.max {
+            return false;
+        }
+        let cap = positions.max(2 * self.cap).min(self.max);
+        let (mut k, mut v) = (vec![0u16; self.layers * cap * self.kvs], vec![0u16; self.layers * cap * self.kvs]);
+        let used = self.len * self.kvs;
+        for l in 0..self.layers {
+            let (d, s) = (l * cap * self.kvs, l * self.cap * self.kvs);
+            k[d..d + used].copy_from_slice(&self.k[s..s + used]);
+            v[d..d + used].copy_from_slice(&self.v[s..s + used]);
+        }
+        (self.k, self.v, self.cap) = (k, v, cap);
+        true
     }
 
     /// Rolls the cache back to its first `len` positions.
@@ -42,9 +74,8 @@ impl Cache {
 
     /// Copies positions `0..len` of every layer from `other` (the prefix cache's entry).
     pub fn copy_prefix(&mut self, other: &Cache, len: usize) {
-        assert!(self.kvs == other.kvs && len <= other.len && len <= self.cap);
-        let layers = self.k.len() / (self.cap * self.kvs);
-        for l in 0..layers {
+        assert!(self.kvs == other.kvs && len <= other.len && self.reserve(len));
+        for l in 0..self.layers {
             let (d, s) = (l * self.cap * self.kvs, l * other.cap * other.kvs);
             self.k[d..d + len * self.kvs].copy_from_slice(&other.k[s..s + len * self.kvs]);
             self.v[d..d + len * self.kvs].copy_from_slice(&other.v[s..s + len * self.kvs]);
@@ -84,7 +115,7 @@ pub fn forward(dec: &Decoder, pool: &Pool, isa: Isa, cache: &mut Cache, mut x: V
     let hd = dec.head_dim;
     let n = x.len() / dec.hidden;
     let past = cache.len;
-    assert!(n > 0 && past + n <= cache.cap, "the KV cache holds {} positions", cache.cap);
+    assert!(n > 0 && cache.reserve(past + n), "the KV cache holds {} positions", cache.max);
     let (hq, hkv) = (dec.heads, dec.kv_heads);
     let shape = AttnShape { hq, hkv, hd };
     let rope = Rope::text(past, n, dec.sections, dec.theta, hd);

@@ -15,11 +15,16 @@ use super::executor::{LoadSettings, Partial, SessionOpen, SpeechError, SpeechExe
 /// The reason a person reads on a CPU without AVX2, FMA and F16C.
 pub const NO_AVX2_REASON: &str = "the CPU lacks AVX2, which the speech model needs";
 
-type Slot = Option<(SpeechFiles, LoadSettings, ignis_speech::Executor)>;
+/// A loaded model: what it was loaded from and with, and the crate's executor.
+struct Loaded {
+    files: SpeechFiles,
+    settings: LoadSettings,
+    exec: ignis_speech::Executor,
+}
 
 pub struct CpuExecutor {
     features: Features,
-    loaded: Mutex<Slot>,
+    loaded: Mutex<Option<Loaded>>,
 }
 
 impl Default for CpuExecutor {
@@ -38,7 +43,7 @@ impl CpuExecutor {
         CpuExecutor { features, loaded: Mutex::new(None) }
     }
 
-    fn slot(&self) -> MutexGuard<'_, Slot> {
+    fn slot(&self) -> MutexGuard<'_, Option<Loaded>> {
         self.loaded.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -63,17 +68,18 @@ impl SpeechExecutor for CpuExecutor {
     fn load(&self, files: &SpeechFiles, settings: LoadSettings) -> Result<(), SpeechError> {
         self.availability().map_err(SpeechError)?;
         let mut slot = self.slot();
-        if let Some((f, s, e)) = slot.as_ref() {
-            if f == files && *s == settings && e.is_loaded() {
+        if let Some(l) = slot.as_ref() {
+            if l.files == *files && l.settings == settings && l.exec.is_loaded() {
                 return Ok(());
             }
         }
-        // The encoder is the entry's other file, found beside the decoder (spec speech/01 §6).
+        // The encoder is the entry's file under the fixed `mmproj-` name, beside the decoder
+        // (spec speech/01 §6).
         let encoder = files
             .files
             .iter()
-            .find(|f| **f != files.decoder)
-            .ok_or_else(|| SpeechError(format!("{}: no audio encoder beside {}", files.id, files.decoder.display())))?
+            .find(|f| *f != &files.decoder && f.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("mmproj-")))
+            .ok_or_else(|| SpeechError(format!("{}: no audio encoder (mmproj-*.gguf) beside {}", files.id, files.decoder.display())))?
             .clone();
         let model = ModelFiles { decoder: files.decoder.clone(), encoder };
         let threads = settings.threads.map_or(Threads::Auto, |n| Threads::Count(n as usize));
@@ -81,7 +87,7 @@ impl SpeechExecutor for CpuExecutor {
         *slot = None;
         let exec = ignis_speech::Executor::new(s, model, self.features);
         exec.load().map_err(err)?;
-        *slot = Some((files.clone(), settings, exec));
+        *slot = Some(Loaded { files: files.clone(), settings, exec });
         Ok(())
     }
 
@@ -90,13 +96,13 @@ impl SpeechExecutor for CpuExecutor {
     }
 
     fn is_loaded(&self) -> bool {
-        self.slot().as_ref().is_some_and(|(_, _, e)| e.is_loaded())
+        self.slot().as_ref().is_some_and(|l| l.exec.is_loaded())
     }
 
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {
         let slot = self.slot();
-        let (_, _, exec) = slot.as_ref().ok_or_else(|| SpeechError("the speech model is not loaded".into()))?;
-        let s = exec.open_capped(&open.context, open.language.as_deref(), open.context_max_tokens as usize).map_err(err)?;
+        let l = slot.as_ref().ok_or_else(|| SpeechError("the speech model is not loaded".into()))?;
+        let s = l.exec.open_capped(&open.context, open.language.as_deref(), open.context_max_tokens as usize).map_err(err)?;
         Ok(Box::new(CpuSession(s)))
     }
 }
@@ -147,10 +153,16 @@ mod tests {
     fn a_load_needs_the_encoder_beside_the_decoder_and_names_a_missing_file() {
         let e = CpuExecutor::new();
         if e.availability().is_err() {
+            eprintln!("SKIP: this CPU lacks AVX2; the load is not reached");
             return;
         }
         let dir = std::env::temp_dir().join(format!("ignis-speech-cpu-{}", std::process::id()));
         let r = e.load(&files(&dir, false), LoadSettings::default());
+        assert!(matches!(&r, Err(SpeechError(m)) if m.contains("no audio encoder")), "{r:?}");
+        // A file beside the decoder that is not the encoder's fixed name is not taken for it.
+        let mut odd = files(&dir, false);
+        odd.files.push(dir.join("README.md"));
+        let r = e.load(&odd, LoadSettings::default());
         assert!(matches!(&r, Err(SpeechError(m)) if m.contains("no audio encoder")), "{r:?}");
         let r = e.load(&files(&dir, true), LoadSettings { threads: Some(2), pinned_weights: false });
         assert!(matches!(&r, Err(SpeechError(m)) if m.contains("Qwen3-ASR-1.7B-Q4_K_M.gguf")), "{r:?}");

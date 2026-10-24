@@ -293,7 +293,10 @@ fn transcribe(exec: &Executor, audio: &[f32], realtime: bool) -> (ignis_speech::
             }
         }
     } else {
-        s.push(audio).unwrap();
+        // The batch path as the server drives it: 8 s at a time (spec 02's worker).
+        for chunk in audio.chunks(128_000) {
+            s.push(chunk).unwrap();
+        }
     }
     let stats = s.stats().clone();
     (s.commit().unwrap(), stables, stats)

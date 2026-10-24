@@ -79,6 +79,10 @@ fn pinned_weights_hold_no_mapping_of_the_files() {
     let e = exec(&files, Settings { pinned_weights: true, ..settings() });
     let r = e.load().unwrap().unwrap();
     assert!(r.pinned);
+    // The copy holds every tensor but the repacked Q4_K ones, whose only copy is the repack.
+    assert_eq!(r.repacked_bytes, synthetic::q4k_bytes());
+    let file_bytes = std::fs::metadata(&files.decoder).unwrap().len() as usize + std::fs::metadata(&files.encoder).unwrap().len() as usize;
+    assert!(r.pinned_bytes > 0 && r.pinned_bytes + r.repacked_bytes <= file_bytes, "{} + {} over {file_bytes}", r.pinned_bytes, r.repacked_bytes);
     let moved = files.decoder.with_extension("moved");
     std::fs::rename(&files.decoder, &moved).expect("pinned weights still map the decoder");
     let mut s = e.open("", None).unwrap();
@@ -104,12 +108,13 @@ fn the_prefix_cache_holds_one_context() {
 }
 
 /// The incremental session against a whole-clip run: pushed 100 ms at a time or all at once, a
-/// clip gives the same transcript, each window encoded once into the audio prefix.
+/// clip gives the same transcript, each window encoded once into the audio prefix. 40 s outgrow
+/// the KV cache's first allocation, so it grows on the way.
 #[test]
 fn pushing_in_pieces_gives_the_whole_clip_transcript() {
     let files = synthetic::pair("pieces");
     let e = exec(&files, settings());
-    let audio = synthetic::audio(20.0);
+    let audio = synthetic::audio(40.0);
     let mut whole = e.open("", None).unwrap();
     whole.push(&audio).unwrap();
     let ws = whole.stats().clone();
@@ -121,10 +126,11 @@ fn pushing_in_pieces_gives_the_whole_clip_transcript() {
     let ps = s.stats().clone();
     let p = s.commit().unwrap();
     assert_eq!(p, w);
-    // 20 s is 2,000 frames: two whole windows while pushing, the third at commit.
-    assert_eq!((ws.windows, ps.windows), (2, 2));
-    assert_eq!((ws.audio_prefilled, ps.audio_prefilled), (208, 208));
-    assert_eq!(w.audio_tokens, 260);
+    // 40 s is 4,000 frames: four whole windows while pushing (the fifth needs the last 200
+    // samples' frame), the fifth at commit.
+    assert_eq!((ws.windows, ps.windows), (4, 4));
+    assert_eq!((ws.audio_prefilled, ps.audio_prefilled), (416, 416));
+    assert_eq!(w.audio_tokens, 520);
     assert_eq!(w.tokens.len(), 1, "the synthetic decoder emits one token");
 }
 

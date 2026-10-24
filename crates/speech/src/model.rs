@@ -7,6 +7,7 @@
 //! only copy kept; every other tensor is read from the mapped file, or from a
 //! private copy when the weights are pinned (Q31, Q53).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -119,6 +120,8 @@ pub struct LoadReport {
     /// Bytes read from the mapped files (or copied, when pinned).
     pub mapped_bytes: usize,
     pub pinned: bool,
+    /// Bytes of the pinned copy: every tensor but the repacked ones (0 when mapped).
+    pub pinned_bytes: usize,
     /// Whether the pinned copy's pages are locked in RAM (best effort).
     pub locked: bool,
 }
@@ -148,43 +151,78 @@ fn err<T>(m: impl Into<String>) -> Result<T, LoadError> {
 /// Where a file's tensor bytes come from: the mapping, or a private copy of its data section.
 struct Source {
     gguf: Arc<Gguf>,
-    copy: Option<Arc<memmap2::Mmap>>,
+    /// The pinned copy, and where each copied tensor starts in it.
+    copy: Option<(Arc<memmap2::Mmap>, HashMap<String, usize>)>,
+}
+
+/// Whether the load repacks this tensor (a Q4_K matmul weight in rows of 8): its only copy is
+/// the repacked one, so a pinned copy leaves it out. The embedding is a row lookup, not a matmul.
+fn repacked(t: &TensorInfo) -> bool {
+    t.ty == TensorType::Q4K && t.dims.last().is_some_and(|n| n % 8 == 0) && t.name != "token_embd.weight"
 }
 
 impl Source {
-    /// With `pinned`, the data section is copied into anonymous memory and its pages locked
-    /// (best effort); the second value says whether the lock held.
+    fn pinned_bytes(&self) -> usize {
+        self.copy.as_ref().map_or(0, |(c, _)| c.len())
+    }
+
+    /// With `pinned`, every tensor the load does not repack is copied into anonymous memory and
+    /// its pages locked (best effort); the second value says whether the lock held.
     fn new(gguf: Gguf, pinned: bool) -> Result<(Source, bool), LoadError> {
         let gguf = Arc::new(gguf);
         if !pinned {
             return Ok((Source { gguf, copy: None }, false));
         }
-        let section = gguf.data_section();
+        let kept: Vec<&TensorInfo> = gguf.tensors().iter().filter(|t| !repacked(t)).collect();
+        // 64-byte aligned starts, as the mapped file's 32-byte alignment would serve.
+        let mut at = HashMap::new();
+        let mut len = 0usize;
+        for t in &kept {
+            at.insert(t.name.clone(), len);
+            len = (len + t.size as usize).div_ceil(64) * 64;
+        }
         let fail = |e: std::io::Error| LoadError(format!("pinning {}: {e}", gguf.path().display()));
-        let mut anon = MmapMut::map_anon(section.len().max(1)).map_err(fail)?;
-        anon[..section.len()].copy_from_slice(section);
+        let mut anon = MmapMut::map_anon(len.max(1)).map_err(fail)?;
+        for t in &kept {
+            let o = at[&t.name];
+            anon[o..o + t.size as usize].copy_from_slice(gguf.data(t));
+        }
         let ro = anon.make_read_only().map_err(fail)?;
         // mlock where the OS offers it to a mapping; elsewhere the private copy is what pins.
         #[cfg(unix)]
         let locked = ro.lock().is_ok();
         #[cfg(not(unix))]
         let locked = false;
-        Ok((Source { gguf: gguf.clone(), copy: Some(Arc::new(ro)) }, locked))
+        Ok((Source { gguf: gguf.clone(), copy: Some((Arc::new(ro), at)) }, locked))
     }
 
+    /// A tensor's bytes: from the pinned copy, or from the mapping (a repacked tensor, read
+    /// once by its repack while the load holds the file).
     fn bytes(&self, t: &TensorInfo) -> &[u8] {
         match &self.copy {
-            None => self.gguf.data(t),
-            Some(c) => &c[t.offset as usize..(t.offset + t.size) as usize],
+            Some((c, at)) if at.contains_key(&t.name) => &c[at[&t.name]..at[&t.name] + t.size as usize],
+            _ => self.gguf.data(t),
         }
     }
 
     fn owner(&self) -> Arc<dyn Send + Sync> {
         match &self.copy {
             None => self.gguf.clone(),
-            Some(c) => c.clone(),
+            Some((c, _)) => c.clone(),
         }
     }
+}
+
+/// The weight format of a tensor type the executor serves (the file's layout).
+fn wtype(name: &str, ty: TensorType) -> Result<WType, LoadError> {
+    Ok(match ty {
+        TensorType::Q4K => WType::Q4K,
+        TensorType::Q6K => WType::Q6K,
+        TensorType::Q8_0 => WType::Q80,
+        TensorType::F16 => WType::F16,
+        TensorType::F32 => WType::F32,
+        other => return err(format!("{name}: {} weights are not served by the CPU executor", other.name())),
+    })
 }
 
 struct Loader {
@@ -213,18 +251,11 @@ impl Loader {
         let n = *t.dims.last().unwrap() as usize;
         let k = (t.elements() / n as u64) as usize;
         let bytes = self.src.bytes(&t);
-        let ty = match t.ty {
-            TensorType::Q4K if n % 8 == 0 => {
-                self.repacked += bytes.len();
-                return Ok(Weight::repack_q4k(name, n, k, bytes));
-            }
-            TensorType::Q4K => WType::Q4K,
-            TensorType::Q6K => WType::Q6K,
-            TensorType::Q8_0 => WType::Q80,
-            TensorType::F16 => WType::F16,
-            TensorType::F32 => WType::F32,
-            other => return err(format!("{name}: {} weights are not served by the CPU executor", other.name())),
-        };
+        if repacked(&t) {
+            self.repacked += bytes.len();
+            return Ok(Weight::repack_q4k(name, n, k, bytes));
+        }
+        let ty = wtype(name, t.ty)?;
         self.mapped += bytes.len();
         Ok(Weight::new(name, ty, n, k, Blob::borrowed(bytes, self.src.owner())))
     }
@@ -289,6 +320,7 @@ impl Model {
             repacked_bytes: d.repacked + e.repacked,
             mapped_bytes: d.mapped + e.mapped,
             pinned,
+            pinned_bytes: d.src.pinned_bytes() + e.src.pinned_bytes(),
             locked: pinned && dl && el,
         };
         Ok(Model { encoder, decoder, text, report })
@@ -310,14 +342,7 @@ fn load_decoder(l: &mut Loader) -> Result<Decoder, LoadError> {
     };
     let sections = [sec.first().copied().unwrap_or(0), sec.get(1).copied().unwrap_or(0), sec.get(2).copied().unwrap_or(0)];
     let et = l.tensor("token_embd.weight")?.clone();
-    let ety = match et.ty {
-        TensorType::Q4K => WType::Q4K,
-        TensorType::Q6K => WType::Q6K,
-        TensorType::Q8_0 => WType::Q80,
-        TensorType::F16 => WType::F16,
-        TensorType::F32 => WType::F32,
-        other => return err(format!("token_embd.weight: {} is not served by the CPU executor", other.name())),
-    };
+    let ety = wtype("token_embd.weight", et.ty)?;
     let vocab = et.dims[1] as usize;
     let embed = Embedding { ty: ety, dim: et.dims[0] as usize, rows: vocab, data: Blob::borrowed(l.src.bytes(&et), l.src.owner()) };
     let mut layers = Vec::with_capacity(layers_n);

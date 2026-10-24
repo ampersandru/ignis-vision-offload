@@ -190,13 +190,6 @@ pub fn f32_to_f16(f: f32) -> u16 {
 
 // ---------------------------------------------------------------- activation quantizers
 
-/// Round to nearest, ties to even, for |f| < 2^22 (the Q8_K rule).
-#[inline]
-fn nearest_int(f: f32) -> i32 {
-    let v = f + 12582912.0;
-    (v.to_bits() as i32 & 0x007f_ffff) - 0x0040_0000
-}
-
 /// f32 → Q8_K: per 256-element block, scale −127 / (the signed value of
 /// largest magnitude), so that value maps to −127; the 16 sums of 16 are kept
 /// for the Q4_K mins and the Q6_K offset.
@@ -221,7 +214,8 @@ pub fn quantize_q8k(x: &[f32], y: &mut [BlockQ8K]) {
             continue;
         }
         for j in 0..QK_K {
-            b.qs[j] = nearest_int(iscale * xs[j]).min(127) as i8;
+            // Round half to even, as the AVX2 path's vroundps does.
+            b.qs[j] = ((iscale * xs[j]).round_ties_even() as i32).min(127) as i8;
         }
         for j in 0..16 {
             b.bsums[j] = b.qs[j * 16..j * 16 + 16].iter().map(|&q| q as i32).sum::<i32>() as i16;

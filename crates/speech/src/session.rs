@@ -27,6 +27,10 @@ use crate::mel::{self, audio_tokens, frames_of, normalise, CHUNK_FRAMES, HOP, MI
 use crate::text::{parse, Prompt};
 
 const WINDOW_FRAMES: usize = CHUNK_FRAMES * WINDOW_CHUNKS;
+const WINDOW_TOKENS: usize = 104;
+/// Decode steps per unit of compute: about a window's prefill, so a long decode interleaves
+/// with other sessions' windows (Q44).
+const DECODE_UNIT: usize = 16;
 
 /// A partial result: the stable text (never revised) and the provisional tail.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,7 +84,7 @@ impl std::fmt::Display for SessionError {
 impl std::error::Error for SessionError {}
 
 pub struct Session {
-    lm: Arc<Loaded>,
+    loaded: Arc<Loaded>,
     core: Arc<Core>,
     prompt: Prompt,
     language: Option<String>,
@@ -103,17 +107,20 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn open(lm: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>, context_max_tokens: usize) -> Session {
+    pub(crate) fn open(loaded: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>, context_max_tokens: usize) -> Session {
         let guard = core.clone();
         let _unit = guard.unit();
         let s = &core.settings;
-        let text = &lm.model.text;
+        let text = &loaded.model.text;
         let prompt = Prompt::new(text, context, context_max_tokens, language);
-        let dec = &lm.model.decoder;
+        let dec = &loaded.model.decoder;
         let audio_cap = audio_tokens(frames_of(s.max_clip_seconds as usize * mel::SAMPLE_RATE));
-        // Sized for the context cap, the longest clip's audio tokens and the decode (§2).
-        let cap = prompt.head.len() + audio_cap + prompt.tail.len() + audio_cap / 2 + 64;
-        let mut cache = Cache::new(dec, cap);
+        // Sized for the context cap, the longest clip's audio tokens and the decode (§2): room
+        // for half as many text tokens as audio tokens, where speech gives about a third. It
+        // starts at the head, a window and the tail, and grows as the transcription does.
+        let max = prompt.head.len() + audio_cap + prompt.tail.len() + audio_cap / 2 + 64;
+        let first = prompt.head.len() + 2 * WINDOW_TOKENS + prompt.tail.len() + 64;
+        let mut cache = Cache::growing(dec, first, max);
         let mut stats = Stats::default();
         {
             let mut entry = core.prefix.lock().unwrap_or_else(|e| e.into_inner());
@@ -121,7 +128,7 @@ impl Session {
                 Some(e) if e.head == prompt.head => cache.copy_prefix(&e.cache, e.head.len()),
                 _ => {
                     let x = decoder::embed(dec, &prompt.head);
-                    decoder::forward(dec, &lm.pool, lm.isa, &mut cache, x, Logits::None, None);
+                    decoder::forward(dec, &loaded.pool, loaded.isa, &mut cache, x, Logits::None, None);
                     stats.context_prefilled = prompt.context_tokens;
                     let mut keep = Cache::new(dec, prompt.head.len());
                     keep.copy_prefix(&cache, prompt.head.len());
@@ -131,7 +138,7 @@ impl Session {
         }
         let audio_prefix = cache.len;
         Session {
-            lm,
+            loaded,
             core,
             prompt,
             language: language.map(str::to_string),
@@ -193,10 +200,10 @@ impl Session {
     }
 
     fn compute_frames(&mut self, n: usize) {
-        let lm = &self.lm;
+        let l = &self.loaded;
         let first = self.next_frame - self.sample_base / HOP;
         let start = self.frames.len();
-        lm.mel.log_frames(&lm.pool, lm.isa, &self.samples, first, n, false, &mut self.frames);
+        l.mel.log_frames(&l.pool, l.isa, &self.samples, first, n, false, &mut self.frames);
         self.max_log = self.frames[start..].iter().fold(self.max_log, |m, &v| m.max(v));
         self.next_frame += n;
     }
@@ -213,10 +220,10 @@ impl Session {
 
     /// Encodes a window into the audio prefix and drops what no later frame needs.
     fn prefill_window(&mut self, mel: &[f32], frames: usize) {
-        let lm = &self.lm;
-        let x = encode_window(&lm.model.encoder, &lm.pool, lm.isa, mel, frames, None);
-        let n = x.len() / lm.model.decoder.hidden;
-        decoder::forward(&lm.model.decoder, &lm.pool, lm.isa, &mut self.cache, x, Logits::None, None);
+        let l = &self.loaded;
+        let x = encode_window(&l.model.encoder, &l.pool, l.isa, mel, frames, None);
+        let n = x.len() / l.model.decoder.hidden;
+        decoder::forward(&l.model.decoder, &l.pool, l.isa, &mut self.cache, x, Logits::None, None);
         self.audio_prefix = self.cache.len;
         self.windows += 1;
         self.stats.windows += 1;
@@ -245,39 +252,46 @@ impl Session {
         let total = frames_of(self.total_samples);
         let n = total.saturating_sub(self.next_frame);
         let mut out = Vec::new();
-        let lm = &self.lm;
-        lm.mel.log_frames(&lm.pool, lm.isa, &x, self.next_frame - self.sample_base / HOP, n, true, &mut out);
+        let l = &self.loaded;
+        l.mel.log_frames(&l.pool, l.isa, &x, self.next_frame - self.sample_base / HOP, n, true, &mut out);
         (out, total)
     }
 
-    /// Greedy decoding after the audio: the prompt's tail and the stable text, then up to EOS.
+    /// Greedy decoding after the audio: the prompt's tail and the stable text, then up to EOS
+    /// or the cache's end (§2), a unit of compute per `DECODE_UNIT` steps.
     fn decode_after_audio(&mut self) -> Result<Vec<u32>, SessionError> {
-        let lm = &self.lm;
-        let dec = &lm.model.decoder;
+        let core = self.core.clone();
+        let loaded = self.loaded.clone();
+        let dec = &loaded.model.decoder;
         let mut ids = self.prompt.tail.clone();
         ids.extend(&self.stable);
-        if self.cache.len + ids.len() >= self.cache.capacity() {
+        if !self.cache.reserve(self.cache.len + ids.len() + 1) {
             return Err(SessionError::CacheFull);
         }
-        let mut logits = decoder::forward(dec, &lm.pool, lm.isa, &mut self.cache, decoder::embed(dec, &ids), Logits::Last, None);
+        let mut unit = core.unit();
+        let mut logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &ids), Logits::Last, None);
         let mut out = Vec::new();
         loop {
             let t = argmax(&logits);
-            if lm.model.text.eos.contains(&t) {
+            if loaded.model.text.eos.contains(&t) {
                 return Ok(out);
             }
             out.push(t);
-            if self.cache.len >= self.cache.capacity() {
-                return Err(SessionError::CacheFull);
+            if !self.cache.reserve(self.cache.len + 1) {
+                return Ok(out);
             }
-            logits = decoder::forward(dec, &lm.pool, lm.isa, &mut self.cache, decoder::embed(dec, &[t]), Logits::Last, None);
+            if out.len() % DECODE_UNIT == 0 {
+                drop(unit);
+                unit = core.unit();
+            }
+            logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &[t]), Logits::Last, None);
         }
     }
 
     /// The transcript text of output ids: after the `<asr_text>` header, or all of it under a
     /// forced language. Ids that end inside the header give no text yet.
     fn body(&self, ids: &[u32]) -> (String, Option<String>) {
-        let text = &self.lm.model.text;
+        let text = &self.loaded.model.text;
         if self.language.is_none() && !ids.contains(&text.asr_text) {
             return (String::new(), None);
         }
@@ -295,24 +309,26 @@ impl Session {
             return Ok(Partial { stable: String::new(), provisional: String::new(), language: self.language.clone() });
         }
         let core = self.core.clone();
-        let _unit = core.unit();
-        let (tail, total) = self.tail_frames();
-        let first = self.windows * WINDOW_FRAMES;
-        let decoded = if total > first {
-            let mel = self.window_mel(first, total - first, &tail);
-            let lm = &self.lm;
-            let x = encode_window(&lm.model.encoder, &lm.pool, lm.isa, &mel, total - first, None);
-            decoder::forward(&lm.model.decoder, &lm.pool, lm.isa, &mut self.cache, x, Logits::None, None);
-            self.decode_after_audio()
-        } else {
-            self.decode_after_audio()
-        };
+        {
+            let _unit = core.unit();
+            let (tail, total) = self.tail_frames();
+            let first = self.windows * WINDOW_FRAMES;
+            if total > first {
+                let mel = self.window_mel(first, total - first, &tail);
+                let l = &self.loaded;
+                let x = encode_window(&l.model.encoder, &l.pool, l.isa, &mel, total - first, None);
+                if self.cache.reserve(self.cache.len + x.len() / l.model.decoder.hidden) {
+                    decoder::forward(&l.model.decoder, &l.pool, l.isa, &mut self.cache, x, Logits::None, None);
+                }
+            }
+        }
+        let decoded = self.decode_after_audio();
         self.cache.truncate(self.audio_prefix);
         let decoded = decoded?;
         let r = self.core.settings.rollback_tokens;
         let mut cut = if self.stats.partials <= self.core.settings.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
         // The stable text ends on a whole character: byte-level tokens may split one.
-        while cut > 0 && self.lm.model.text.decode(&[&self.stable[..], &decoded[..cut]].concat()).ends_with('\u{FFFD}') {
+        while cut > 0 && self.loaded.model.text.decode(&[&self.stable[..], &decoded[..cut]].concat()).ends_with('\u{FFFD}') {
             cut -= 1;
         }
         self.stable.extend_from_slice(&decoded[..cut]);
@@ -343,13 +359,9 @@ impl Session {
             let mel = self.window_mel(first, n, &[]);
             self.prefill_window(&mel, n);
         }
-        let out = {
-            let core = self.core.clone();
-            let _unit = core.unit();
-            self.decode_after_audio()?
-        };
+        let out = self.decode_after_audio()?;
         let all: Vec<u32> = [&self.stable[..], &out[..]].concat();
-        let text = &self.lm.model.text;
+        let text = &self.loaded.model.text;
         let p = parse(&text.decode(&all), self.language.as_deref());
         Ok(Transcript {
             text: p.text,
