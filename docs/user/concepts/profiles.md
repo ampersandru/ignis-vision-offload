@@ -154,7 +154,8 @@ Why each:
 - **Two lanes.** Eight would leave no room for the context.
 - **The 1,024-token chunk.** With vision off the workspace is the text scratch,
   and 2,048 would cost about 0.4 GB of KV pool.
-- **The headroom** is the 5090's 27B value until a real card says otherwise.
+- **The headroom** is the 5090's 27B value until a real card says otherwise
+  ([measure yours](../guides/measure-a-16gb-card.md)).
 
 ## When a profile does not fit
 
@@ -163,7 +164,9 @@ what it insists on. When the VRAM plan cannot hold them in the memory the
 start finds free, the load lowers them one at a time and plans again: the
 drafter's head first, then the context in steps, then the lanes. A value you
 name yourself never adapts, and the `ignis.runtime.vram_plan` log event lists
-every step taken ([Configuration](../configuration/index.md)).
+every step taken ([Configuration](../configuration/index.md)); so does
+`GET /v1/models`, in `adapted`, beside the context and the decode lanes the
+load runs ([the API](../api/index.md)).
 
 ## Defining your own
 

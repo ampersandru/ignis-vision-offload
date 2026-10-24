@@ -1,0 +1,160 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are a coding agent working in a repository through tools. Read files before you change them, keep edits small, run the tests after every change, and answer with the change you made and why. Never invent file contents: call read_file or grep first. Prefer minimal diffs over rewrites. When a tool fails, say what failed and try one different approach before asking the user."
+  },
+  {
+   "role": "user",
+   "content": "The test `parses_negative_durations` in the `durations` module fails. Can you find out why and fix it?"
+  },
+  {
+   "role": "assistant",
+   "content": null,
+   "tool_calls": [
+    {
+     "id": "call_1",
+     "type": "function",
+     "function": {
+      "name": "run_tests",
+      "arguments": "{\"filter\": \"parses_negative_durations\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_1",
+   "content": "running 1 test\ntest durations::tests::parses_negative_durations ... FAILED\n\nfailures:\n---- durations::tests::parses_negative_durations stdout ----\nthread 'durations::tests::parses_negative_durations' panicked at src/durations.rs:41:9:\nassertion `left == right` failed\n  left: Err(InvalidDigit)\n right: Ok(-90)\n"
+  },
+  {
+   "role": "assistant",
+   "content": null,
+   "tool_calls": [
+    {
+     "id": "call_2",
+     "type": "function",
+     "function": {
+      "name": "read_file",
+      "arguments": "{\"path\": \"src/durations.rs\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_2",
+   "content": "/// Parse `90s`, `5m`, `2h` into whole seconds.\npub fn parse(input: &str) -> Result<i64, ParseError> {\n    let input = input.trim();\n    let (digits, unit) = input.split_at(input.len() - 1);\n    let n: i64 = digits.parse().map_err(|_| ParseError::InvalidDigit)?;\n    match unit {\n        \"s\" => Ok(n),\n        \"m\" => Ok(n * 60),\n        \"h\" => Ok(n * 3600),\n        _ => Err(ParseError::UnknownUnit),\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn parses_negative_durations() {\n        assert_eq!(parse(\"-90s\"), Ok(-90));\n    }\n}\n"
+  },
+  {
+   "role": "assistant",
+   "content": "The parser looks fine for the digits, so I want to see how `ParseError` is built before I touch anything."
+  },
+  {
+   "role": "assistant",
+   "content": null,
+   "tool_calls": [
+    {
+     "id": "call_3",
+     "type": "function",
+     "function": {
+      "name": "grep",
+      "arguments": "{\"pattern\": \"InvalidDigit\", \"glob\": \"src/**/*.rs\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_3",
+   "content": "src/durations.rs:5:    let n: i64 = digits.parse().map_err(|_| ParseError::InvalidDigit)?;\nsrc/error.rs:3:    InvalidDigit,\n"
+  },
+  {
+   "role": "user",
+   "content": "Okay, so what is wrong with `-90s` and what is the smallest change that fixes it? Show me the edit you would make."
+  }
+ ],
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "read_file",
+    "description": "Read a UTF-8 text file from the repository.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "grep",
+    "description": "Search the repository for a regular expression.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "pattern": {
+       "type": "string"
+      },
+      "glob": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "pattern"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "edit_file",
+    "description": "Replace an exact string in a file.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "old": {
+       "type": "string"
+      },
+      "new": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path",
+      "old",
+      "new"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "run_tests",
+    "description": "Run the project's test suite and return its output.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "filter": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  }
+ ],
+ "tool_choice": "auto"
+}

@@ -164,7 +164,7 @@ impl Drop for Harness {
 /// profile allows a skip.
 fn harness(shape: EngineShape, eos: u32, frontend: FrontendSet) -> Option<Harness> {
     let (loaded, events) = captured(|| qwen27b_load(Path::new(ARTIFACT), MODEL.into(), eos, shape, None, &Default::default()));
-    let (scheduler, _reservations, kept) = match loaded {
+    let (scheduler, _reservations, kept, steps) = match loaded {
         Ok(loaded) => loaded,
         Err(e) => {
             gpu_profile::skip_or_fail(&format!("load the 27B at {:?}: {e}", shape.adaptation_start()));
@@ -173,6 +173,8 @@ fn harness(shape: EngineShape, eos: u32, frontend: FrontendSet) -> Option<Harnes
     };
     let vram_plan = named(&events, "ignis.runtime.vram_plan").first().copied().cloned().expect("the load logs its plan");
     println!("vram_plan: {vram_plan}");
+    // #340: the steps the load hands back are the ones its plan event logs.
+    assert_eq!(vram_plan["attributes"]["adapted"], ignis_server::adaptation::steps_text(&steps).as_str());
     let (engine, driver) = Engine::with_clock_and_driver(Box::new(scheduler), Arc::new(SystemClock));
     let server = Server::with_artifact_template(engine, frontend).with_request_timeout(Duration::from_secs(300));
     Some(Harness { app: Some(server.app()), driver: Some(driver), vram_plan, kept })

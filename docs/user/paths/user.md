@@ -24,6 +24,9 @@ defaults are the ones measured on the owner's own cards.
    key, the OpenAI SDKs, coding agents and chat front ends.
 7. **[Troubleshooting](../troubleshooting.md)** — what a refusal or a WARN line
    means, and what to do about it.
+8. **[Measure a 16 GB card](../guides/measure-a-16gb-card.md)** — on an RTX
+   5060 Ti 16 GB, 5070 Ti or 5080, one command writes a record of what the
+   server does there, to paste into a GitHub issue.
 
 :::tip
 The server holds one model at a time and gives it the whole card. A client

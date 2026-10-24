@@ -196,3 +196,25 @@ fn http_endpoint_reports_a_connection_error() {
         "a dead endpoint must return Err"
     );
 }
+#[test]
+fn http_endpoint_reads_and_posts_json_on_its_own_deadline() {
+    // The routes a preset reads beside the completions (`small_card`): a GET
+    // and a POST through the same client, its deadline and its errors.
+    let engine = MockEngine::start();
+    let ep = HttpEndpoint::new(engine.url());
+    let models = ep.get_json("/v1/models").expect("the models list");
+    assert_eq!(models["data"][0]["id"], engine.state.model());
+    let missing = ep.get_text("/v1/nothing-here").expect_err("a 404 is an Err");
+    assert!(missing.contains("404"), "{missing}");
+    let body = serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }], "max_tokens": 2 });
+    let answer = ep.post_json("/v1/chat/completions", &body).expect("a chat completion");
+    assert_eq!(answer["object"], "chat.completion", "{answer}");
+    engine.state.set_fail_503(true);
+    let refused = ep.post_json("/v1/chat/completions", &body).expect_err("a 503 is an Err");
+    assert!(refused.contains("503"), "the status: {refused}");
+    engine.state.set_fail_503(false);
+    // the endpoint's deadline holds here as for a completion, and is named
+    let hasty = HttpEndpoint::with_timeout(engine.url(), Some(std::time::Duration::from_millis(1)));
+    let late = hasty.post_json("/v1/chat/completions", &body).expect_err("past the deadline");
+    assert!(late.contains(ignis_bench::client::REQUEST_TIMEOUT_ENV), "{late}");
+}

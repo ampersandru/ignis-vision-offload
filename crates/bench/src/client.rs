@@ -462,11 +462,21 @@ fn is_client_deadline(err: &std::io::Error) -> bool {
 
 /// What to say when the harness's own deadline, not the engine, ended a
 /// request: name the deadline and how to move it (GitHub #138).
-fn deadline_elapsed(url: &str, phase: &str) -> String {
+fn deadline_elapsed(method: &str, url: &str, phase: &str) -> String {
     format!(
-        "POST {url}: {phase}: the client's own request deadline elapsed while the engine was \
+        "{method} {url}: {phase}: the client's own request deadline elapsed while the engine was \
          still responding — raise it with {REQUEST_TIMEOUT_ENV}=<seconds> (0 removes it)"
     )
+}
+
+/// A `send` or a body read that failed: the deadline named when it was the
+/// client's own ([`deadline_elapsed`]), the transport's error otherwise.
+fn transport_error(method: &str, url: &str, phase: &str, e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        deadline_elapsed(method, url, phase)
+    } else {
+        format!("{method} {url}: {phase}: {e}")
+    }
 }
 
 /// The real HTTP transport: drives the running engine (the `ignis-server`'s
@@ -551,16 +561,7 @@ impl HttpEndpoint {
     /// `GET /v1/models` — a readiness probe: the servable model ids in the
     /// server's order, the loaded one first (spec model-switch/03).
     pub fn list_models(&self) -> Result<Vec<String>, String> {
-        let url = format!("{}/v1/models", self.base_url);
-        let value: serde_json::Value = self
-            .client
-            .get(&url)
-            .send()
-            .map_err(|e| format!("GET {url} failed: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("GET {url} -> {e}"))?
-            .json()
-            .map_err(|e| format!("GET {url}: parse: {e}"))?;
+        let value = self.get_json("/v1/models")?;
         value
             .get("data")
             .and_then(|d| d.as_array())
@@ -569,7 +570,45 @@ impl HttpEndpoint {
                     .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
                     .collect()
             })
-            .ok_or_else(|| format!("GET {url}: no models in the list"))
+            .ok_or_else(|| format!("GET {}/v1/models: no models in the list", self.base_url))
+    }
+
+    /// `GET <base><path>`'s body, on this endpoint's deadline: the server's
+    /// other routes as a preset reads them (`small_card`), and the metrics
+    /// listener through an endpoint of its own base. A status other than 2xx
+    /// is an `Err` naming it.
+    pub fn get_text(&self, path: &str) -> Result<String, String> {
+        let url = format!("{}{path}", self.base_url);
+        self.client
+            .get(&url)
+            .send()
+            .map_err(|e| transport_error("GET", &url, "send", &e))?
+            .error_for_status()
+            .map_err(|e| format!("GET {url} -> {e}"))?
+            .text()
+            .map_err(|e| transport_error("GET", &url, "read", &e))
+    }
+
+    /// [`HttpEndpoint::get_text`], parsed as JSON.
+    pub fn get_json(&self, path: &str) -> Result<serde_json::Value, String> {
+        let text = self.get_text(path)?;
+        serde_json::from_str(&text).map_err(|e| format!("GET {}{path}: parse: {e}", self.base_url))
+    }
+
+    /// `POST <base><path>` with the JSON `body`, the answer parsed as JSON,
+    /// on this endpoint's deadline. A status other than 2xx is an `Err`
+    /// naming it and the server's `error.message`.
+    pub fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self.client.post(&url).json(body).send().map_err(|e| transport_error("POST", &url, "send", &e))?;
+        let status = response.status();
+        let text = response.text().map_err(|e| transport_error("POST", &url, "read", &e))?;
+        let value: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+        if !status.is_success() {
+            let message = value.as_ref().and_then(|v| v.pointer("/error/message")).and_then(|m| m.as_str()).unwrap_or(&text);
+            return Err(format!("POST {url} -> {status}: {message}"));
+        }
+        value.ok_or_else(|| format!("POST {url}: the answer is not JSON"))
     }
 }
 
@@ -754,7 +793,7 @@ impl HttpEndpoint {
                 Ok(resp) => resp,
                 Err(e) => {
                     let msg = if e.is_timeout() {
-                        deadline_elapsed(&url, "send")
+                        deadline_elapsed("POST", &url, "send")
                     } else {
                         format!("POST {url} failed: {e}")
                     };
@@ -804,7 +843,7 @@ impl HttpEndpoint {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let value: serde_json::Value = resp.json().map_err(|e| {
             if e.is_timeout() {
-                deadline_elapsed(&url, "parse")
+                deadline_elapsed("POST", &url, "parse")
             } else {
                 format!("POST {url}: parse: {e}")
             }
@@ -911,7 +950,7 @@ pub fn read_sse_stream<R: BufRead>(
     for line in reader.lines() {
         let line = line.map_err(|e| {
             if is_client_deadline(&e) {
-                deadline_elapsed(url, "read SSE")
+                deadline_elapsed("POST", url, "read SSE")
             } else {
                 format!("POST {url}: read SSE: {e}")
             }

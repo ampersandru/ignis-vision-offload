@@ -43,6 +43,12 @@ pub const MODEL: &str = "mock-model";
 const PREFILL: Duration = Duration::from_millis(20);
 /// The decode interval between SSE chunks (the mock's "tok-s" pacing), in ms.
 const TOKEN: Duration = Duration::from_millis(2);
+/// The context the mock reports for its loaded model (`max_model_len`).
+pub const MAX_MODEL_LEN: u32 = 20_000;
+/// The decode lanes the mock reports for its loaded model (`decode_lanes`).
+pub const DECODE_LANES: u32 = 2;
+/// What the mock's load adapted (`adapted`), as the server spells it.
+pub const ADAPTED: &str = "max_context 262144 -> 20000 (adapt_context_step 65536, adapt_spare_tokens 65536)";
 /// Cap on the tokens the mock generates per request (keep the tests fast).
 const MAX_TOKENS: u32 = 32;
 
@@ -252,6 +258,14 @@ pub struct MockEngine {
 impl MockEngine {
     /// Start the mock on a random local port.
     pub fn start() -> Self {
+        Self::start_with(Router::new())
+    }
+
+    /// [`MockEngine::start`] with `extra` routes beside the engine's own
+    /// (the server's `/v1/tokenize`, `/v1/config`, ... for a test that reads
+    /// them). A path the mock already serves is not to be repeated in it.
+    #[allow(dead_code)] // each test binary uses a subset of the mock
+    pub fn start_with(extra: Router) -> Self {
         let state = MockState::new(MODEL);
         let state_for_router = state.clone();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -267,7 +281,8 @@ impl MockEngine {
             let app = Router::new()
                 .route("/v1/models", get(list_models))
                 .route("/v1/chat/completions", post(completions))
-                .with_state(state_for_router);
+                .with_state(state_for_router)
+                .merge(extra);
             // The serve task runs on the runtime's worker threads (the
             // runtime is dropped on cleanup, cancelling the task).
             tokio::spawn(async move {
@@ -295,7 +310,12 @@ impl MockEngine {
 async fn list_models(State(state): State<MockState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "object": "list",
-        "data": [{ "id": state.model(), "object": "model", "owned_by": "ignis" }],
+        "data": [{
+            "id": state.model(), "object": "model", "owned_by": "ignis",
+            "active": true, "max_model_len": MAX_MODEL_LEN,
+            "decode_lanes": DECODE_LANES, "adapted": ADAPTED,
+        }],
+        "status": "serving",
     }))
 }
 
