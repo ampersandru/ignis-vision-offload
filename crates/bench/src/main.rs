@@ -61,6 +61,19 @@
 //!       The G2 verdict over two such records: the ratio of medians per
 //!       cell against 1.5. Refuses a verdict when the records are not
 //!       live/live (different sessions, a missing cell, a void sample).
+//!   `small-card --endpoint <url> [--metrics <url>|off] [--cells 8192,65536]
+//!             [--samples 3] [--decode-tokens 256] [--out <small-card.json>]`
+//!       The small-card preset (spec 27b-16gb/05, #340): one command against a
+//!       running server, a few minutes, ONE JSON to paste into a GitHub
+//!       issue. It records the card (name, VRAM, PCIe link, from
+//!       `nvidia-smi`), the load's VRAM plan lines and shape (the metrics
+//!       listener, `/v1/models`, `/v1/config`), decode tok/s on the coding
+//!       prompts and on synthetic agent-like turns, and TTFT at the cells
+//!       (8K and 64K; the prompts are counted through the server's own
+//!       `/v1/tokenize`, so no artifact is needed). `--metrics` defaults to
+//!       the endpoint's host on the default metrics port 9464; `off` skips it.
+//!       A piece that cannot be read is `null` with a line in `notes`. The
+//!       record carries no credentials and no paths.
 //!   `record  --listen <proxy> --target <engine-url> --out <load>-trace.jsonl
 //!             [--class <policy>]`
 //!       The capture proxy (spec 03): accepts OpenAI chat-completions from a
@@ -144,6 +157,7 @@ use ignis_bench::{
     report::PerformanceReport,
     time::new_session_id,
     trace::Trace,
+    small_card,
     ttft::{self, CellSpec, ImageCellSpec, TtftConfig},
 };
 
@@ -157,6 +171,7 @@ fn main() -> ExitCode {
         Some("record") => cmd_record(&args[1..]),
         Some("oracle") => cmd_oracle(&args[1..]),
         Some("ttft") => cmd_ttft(&args[1..]),
+        Some("small-card") => cmd_small_card(&args[1..]),
         Some("g2") => cmd_g2(&args[1..]),
         Some("g3") => cmd_g3(&args[1..]),
         Some("g3-gate") => cmd_g3_gate(&args[1..]),
@@ -187,6 +202,8 @@ fn print_usage() {
   ignis-bench ttft --endpoint <url> --artifact <artifact.ninfer> --cells 8192,32768 [--samples 5] [--max-tokens 8]
                    [--image <screenshot.png> [--image-question <text>]]
                    [--label ignis] [--profile <text>] [--session <id>] [--corpus <bank.ids>] [--out <record.json>]
+  ignis-bench small-card --endpoint <url> [--metrics <url>|off] [--cells 8192,65536] [--samples 3]
+                         [--decode-tokens 256] [--out <small-card.json>]
   ignis-bench g2 --ours <ignis-record.json> --ref <reference-record.json> [--note <text>] [--out <verdict.json>]
   ignis-bench g3 --endpoint <url> --artifact <artifact.ninfer> [--label ignis] [--profile <text>]
                  [--session <id>] [--corpus <bank.ids>] [--out <record.json>]
@@ -835,6 +852,78 @@ fn cmd_ttft(args: &[String]) -> ExitCode {
         );
         ExitCode::FAILURE
     }
+}
+
+/// `small-card` (#340, spec 27b-16gb/05 Part B): the one-command record a
+/// 16 GB card's owner pastes into an issue. Prints the JSON on stdout (the
+/// progress goes to stderr), and writes it to `--out` too when given.
+fn cmd_small_card(args: &[String]) -> ExitCode {
+    let endpoint = match require(args, "endpoint") {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{e}");
+            print_usage();
+            return ExitCode::FAILURE;
+        }
+    };
+    let metrics = match opt(args, "metrics").as_deref() {
+        Some("off") => None,
+        Some(url) => Some(url.to_string()),
+        None => Some(small_card::default_metrics_url(&endpoint)),
+    };
+    let mut cells = Vec::new();
+    match opt(args, "cells") {
+        None => cells.extend(small_card::DEFAULT_CELLS),
+        Some(raw) => {
+            for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                match part.parse::<u32>() {
+                    Ok(n) => cells.push(n),
+                    Err(_) => {
+                        eprintln!("error: --cells expects comma-separated token counts, got `{part}`");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        }
+    }
+    let whole = |key: &str, default: usize| -> Result<usize, String> {
+        match opt(args, key) {
+            None => Ok(default),
+            Some(v) => v.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| format!("--{key} {v}: not a positive whole number")),
+        }
+    };
+    let (samples, decode_tokens) = match (whole("samples", small_card::DEFAULT_SAMPLES), whole("decode-tokens", small_card::DEFAULT_DECODE_TOKENS as usize)) {
+        (Ok(s), Ok(d)) => (s, d as u32),
+        (s, d) => {
+            for err in [s.err(), d.err()].into_iter().flatten() {
+                eprintln!("error: {err}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let opts = small_card::Options { endpoint, metrics, cells, samples, decode_tokens };
+    let report = small_card::run(&opts, &small_card::run_nvidia_smi);
+    let json = match serde_json::to_string_pretty(&report) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("{json}");
+    if let Some(path) = opt(args, "out") {
+        if let Err(e) = std::fs::write(&path, format!("{json}
+")) {
+            eprintln!("error: {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+        eprintln!("wrote {path}");
+    }
+    if report.server.model_id.is_none() {
+        eprintln!("error: no model answered at {}/v1/models: nothing was measured", report.endpoint);
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 /// `g2` (P2-05, GitHub #87): the G2 verdict over two TTFT records. Refuses

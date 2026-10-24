@@ -1,0 +1,160 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are a coding agent working in a repository through tools. Read files before you change them, keep edits small, run the tests after every change, and answer with the change you made and why. Never invent file contents: call read_file or grep first. Prefer minimal diffs over rewrites. When a tool fails, say what failed and try one different approach before asking the user."
+  },
+  {
+   "role": "user",
+   "content": "`Inventory::restock` and `Inventory::sell` both loop over `self.items` to find an item by sku. Please pull that into one helper."
+  },
+  {
+   "role": "assistant",
+   "content": null,
+   "tool_calls": [
+    {
+     "id": "call_1",
+     "type": "function",
+     "function": {
+      "name": "read_file",
+      "arguments": "{\"path\": \"src/inventory.rs\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_1",
+   "content": "pub struct Item { pub sku: String, pub qty: u32 }\npub struct Inventory { items: Vec<Item> }\n\nimpl Inventory {\n    pub fn restock(&mut self, sku: &str, qty: u32) -> bool {\n        for item in self.items.iter_mut() {\n            if item.sku == sku {\n                item.qty += qty;\n                return true;\n            }\n        }\n        false\n    }\n\n    pub fn sell(&mut self, sku: &str, qty: u32) -> Result<(), SellError> {\n        for item in self.items.iter_mut() {\n            if item.sku == sku {\n                if item.qty < qty {\n                    return Err(SellError::Insufficient);\n                }\n                item.qty -= qty;\n                return Ok(());\n            }\n        }\n        Err(SellError::UnknownSku)\n    }\n}\n"
+  },
+  {
+   "role": "assistant",
+   "content": null,
+   "tool_calls": [
+    {
+     "id": "call_2",
+     "type": "function",
+     "function": {
+      "name": "grep",
+      "arguments": "{\"pattern\": \"\\\\.restock\\\\(|\\\\.sell\\\\(\", \"glob\": \"**/*.rs\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_2",
+   "content": "src/shop.rs:18:        inv.restock(&line.sku, line.qty);\nsrc/shop.rs:31:        inv.sell(&line.sku, line.qty)?;\ntests/inventory.rs:9:    assert!(inv.restock(\"A1\", 5));\n"
+  },
+  {
+   "role": "assistant",
+   "content": "Two callers and a test use the public methods, so the helper stays private and the signatures do not change."
+  },
+  {
+   "role": "assistant",
+   "content": null,
+   "tool_calls": [
+    {
+     "id": "call_3",
+     "type": "function",
+     "function": {
+      "name": "run_tests",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_3",
+   "content": "running 4 tests\ntest restock_adds ... ok\ntest sell_decrements ... ok\ntest sell_unknown_sku ... ok\ntest sell_insufficient ... ok\n\ntest result: ok. 4 passed; 0 failed\n"
+  },
+  {
+   "role": "user",
+   "content": "Good, the baseline is green. Write the refactor: the helper `find_mut`, and the two methods rewritten on top of it."
+  }
+ ],
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "read_file",
+    "description": "Read a UTF-8 text file from the repository.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "grep",
+    "description": "Search the repository for a regular expression.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "pattern": {
+       "type": "string"
+      },
+      "glob": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "pattern"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "edit_file",
+    "description": "Replace an exact string in a file.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "old": {
+       "type": "string"
+      },
+      "new": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path",
+      "old",
+      "new"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "run_tests",
+    "description": "Run the project's test suite and return its output.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "filter": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  }
+ ],
+ "tool_choice": "auto"
+}
