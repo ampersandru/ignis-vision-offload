@@ -1220,7 +1220,7 @@ The model names OpenAI clients send that the speech model answers to, so an unmo
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The threads the speech model computes with: `auto` is the physical cores less one. Read by the load, so a change holds from the next one.
+The threads the speech model computes with: `auto` is the physical cores less one, counted within the CPUs the server may run on (a container's cpuset or quota). Read by the load, so a change holds from the next one; each load logs the count (`ignis.speech.threads`).
 
 ### `speech.max_clip_seconds`
 

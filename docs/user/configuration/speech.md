@@ -15,10 +15,10 @@ every default, is [the configuration reference](../reference/configuration.md).
 |---|---|---|---|
 | `--speech-model` | `IGNIS_SPEECH_MODEL` | `auto` | `auto` is `qwen3-asr-1.7b`, the 1.7B model with a Q4_K_M decoder; a catalog id picks another entry; `off` turns the speech model off. It is on when its files are on disk (`ignis-server model download <id>`); nothing downloads by itself. |
 | `--speech-compat-names` | `IGNIS_SPEECH_COMPAT_NAMES` | `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-transcribe`, `gpt-live-transcribe` | The `model` names OpenAI clients send that the speech model answers to (Aider hard-codes `whisper-1`). `;`- or `,`-separated. Not catalog aliases and not listed by `GET /v1/models`. A name equal to a served model id is refused at start. |
-| `--speech-threads` | `IGNIS_SPEECH_THREADS` | `auto` | The CPU threads the model computes with; `auto` is the physical cores less one. |
+| `--speech-threads` | `IGNIS_SPEECH_THREADS` | `auto` | The CPU threads the model computes with; `auto` is the physical cores less one, counted within the CPUs the server may run on (a container's cpuset or CPU quota). Each load logs the count and whether `auto` chose it (`ignis.speech.threads`). |
 | `--speech-max-clip-seconds` | `IGNIS_SPEECH_MAX_CLIP_SECONDS` | `1200` | The longest clip one transcription takes (1..1200, the model's limit). A longer one is a `400`; nothing is split. |
 | `--speech-context-max-tokens` | `IGNIS_SPEECH_CONTEXT_MAX_TOKENS` | `512` | The most tokens of `prompt` and `keywords[]` a transcription reads; past it the last are kept. 0 reads none. |
-| `--speech-pinned-weights` | `IGNIS_SPEECH_PINNED_WEIGHTS` | off | Pin the weights in host memory instead of mapping the file. |
+| `--speech-pinned-weights` | `IGNIS_SPEECH_PINNED_WEIGHTS` | off | Pin the weights in host memory instead of mapping the file: the model's tensors are copied into the server's own memory at load (and locked in RAM where the OS allows it, on Linux), so the files are not held open. |
 | `--speech-idle-unload` | `IGNIS_SPEECH_IDLE_UNLOAD` | `300` | Seconds with no transcription after which the model is unloaded; the next one loads it again. 0 never unloads. |
 | `--speech-max-queue` | `IGNIS_SPEECH_MAX_QUEUE` | `4` | The transcriptions that may wait behind the one running; one more is `503 engine_full` with `Retry-After`. 0 runs one at a time. |
 | `--speech-max-sessions` | `IGNIS_SPEECH_MAX_SESSIONS` | `4` | The most Realtime sessions open at once. Read by the Realtime route, which is not served yet. |

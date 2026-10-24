@@ -1138,6 +1138,7 @@ dependencies = [
  "ignis-core",
  "ignis-logging",
  "ignis-runtime",
+ "ignis-speech",
  "libc",
  "miniz_oxide 0.9.1",
  "png",
