@@ -33,11 +33,11 @@ pub const FRAME: usize = 512;
 const PER_MS: u64 = 16;
 
 /// What reads a frame: its speech probability, from 0 to 1. The model, or a script in tests.
-pub trait Frames {
+pub trait SpeechProbability {
     fn frame(&mut self, samples: &[f32]) -> f32;
 }
 
-impl<F: FnMut(&[f32]) -> f32> Frames for F {
+impl<F: FnMut(&[f32]) -> f32> SpeechProbability for F {
     fn frame(&mut self, samples: &[f32]) -> f32 {
         self(samples)
     }
@@ -49,8 +49,10 @@ const CONTEXT: usize = 64;
 const WINDOW: usize = 256;
 const HOP: usize = 128;
 const BINS: usize = WINDOW / 2 + 1;
-/// The windows in one frame read with its context, reflect-padded by 64.
-const STEPS: usize = (CONTEXT + FRAME + 64 - WINDOW) / HOP + 1;
+/// The reflect padding after the frame, a quarter of a window.
+const PAD: usize = WINDOW / 4;
+/// The windows in one frame read with its context and its padding.
+const STEPS: usize = (CONTEXT + FRAME + PAD - WINDOW) / HOP + 1;
 /// The LSTM's width.
 const HIDDEN: usize = 128;
 
@@ -185,16 +187,16 @@ impl Vad {
     }
 }
 
-impl Frames for Vad {
+impl SpeechProbability for Vad {
     /// One frame of [`FRAME`] samples: its speech probability.
     fn frame(&mut self, samples: &[f32]) -> f32 {
         assert_eq!(samples.len(), FRAME, "the VAD reads 512-sample frames");
         let m = self.model;
-        // The frame after its context, reflect-padded by 64 at the end.
-        let mut x = [0f32; CONTEXT + FRAME + 64];
+        // The frame after its context, reflect-padded at the end.
+        let mut x = [0f32; CONTEXT + FRAME + PAD];
         x[..CONTEXT].copy_from_slice(&self.context);
         x[CONTEXT..CONTEXT + FRAME].copy_from_slice(samples);
-        for i in 0..64 {
+        for i in 0..PAD {
             x[CONTEXT + FRAME + i] = x[CONTEXT + FRAME - 2 - i];
         }
         self.context.copy_from_slice(&samples[FRAME - CONTEXT..]);
@@ -265,7 +267,7 @@ enum State {
 }
 
 /// The turns in one stream of 16 kHz samples.
-pub struct Turns<V: Frames> {
+pub struct Turns<V: SpeechProbability> {
     vad: V,
     settings: TurnSettings,
     state: State,
@@ -288,7 +290,7 @@ pub struct Turns<V: Frames> {
     skip: usize,
 }
 
-impl<V: Frames> Turns<V> {
+impl<V: SpeechProbability> Turns<V> {
     /// No turn yet: the stream's samples so far are `at`.
     pub fn new(vad: V, settings: TurnSettings, at: u64) -> Self {
         Self {
@@ -322,8 +324,13 @@ impl<V: Frames> Turns<V> {
         matches!(self.state, State::Speaking { .. })
     }
 
-    /// New settings, from the next frame on.
+    /// New settings, from the next frame on. A changed idle timeout counts from here: the
+    /// audio before it was not kept for one.
     pub fn set_settings(&mut self, settings: TurnSettings) {
+        if settings.idle_timeout_ms != self.settings.idle_timeout_ms {
+            self.idle.clear();
+            self.idle_since = self.position + self.skip as u64;
+        }
         self.settings = settings;
     }
 
@@ -358,7 +365,7 @@ impl<V: Frames> Turns<V> {
         self.position = end;
         match self.state {
             State::Idle if speech => {
-                let pad = ms(self.settings.prefix_padding_ms).min(self.ring.len() as u64).min(from - self.floor) as usize;
+                let pad = ms_samples(self.settings.prefix_padding_ms).min(self.ring.len() as u64).min(from - self.floor) as usize;
                 let mut audio: Vec<f32> = self.ring.range(self.ring.len() - pad..).copied().collect();
                 audio.extend_from_slice(fresh);
                 self.idle.clear();
@@ -367,7 +374,7 @@ impl<V: Frames> Turns<V> {
                 self.state = State::Speaking { last_speech: end };
             }
             State::Idle => {
-                if let Some(idle) = self.settings.idle_timeout_ms.map(ms) {
+                if let Some(idle) = self.settings.idle_timeout_ms.map(ms_samples) {
                     self.idle.extend_from_slice(fresh);
                     if end - self.idle_since >= idle {
                         let audio = std::mem::take(&mut self.idle);
@@ -380,7 +387,7 @@ impl<V: Frames> Turns<V> {
                 out.push(TurnEvent::Audio(fresh.to_vec()));
                 if speech {
                     self.state = State::Speaking { last_speech: end };
-                } else if end - last_speech >= ms(self.settings.silence_duration_ms) {
+                } else if end - last_speech >= ms_samples(self.settings.silence_duration_ms) {
                     out.push(TurnEvent::Stopped { end });
                     self.state = State::Idle;
                     (self.floor, self.idle_since) = (last_speech, end);
@@ -388,7 +395,7 @@ impl<V: Frames> Turns<V> {
             }
         }
         self.ring.extend(fresh);
-        let keep = ms(self.settings.prefix_padding_ms) as usize;
+        let keep = ms_samples(self.settings.prefix_padding_ms) as usize;
         if self.ring.len() > keep {
             self.ring.drain(..self.ring.len() - keep);
         }
@@ -396,7 +403,7 @@ impl<V: Frames> Turns<V> {
 }
 
 /// `ms` milliseconds in samples at 16 kHz.
-fn ms(ms: u32) -> u64 {
+fn ms_samples(ms: u32) -> u64 {
     u64::from(ms) * PER_MS
 }
 
@@ -529,6 +536,25 @@ mod tests {
         assert_eq!(seen, [Seen::Started(0), Seen::Audio(4 * FRAME), Seen::Stopped(4 * f), Seen::TimedOut(4 * f, 7 * f, 3 * FRAME)]);
         let (seen, _) = run(&mut turns(SETTINGS), &frames(&[0.1; 40]));
         assert_eq!(seen, [], "no idle timeout");
+    }
+
+    /// An idle timeout set, changed or dropped mid-stream counts from the change: the silence
+    /// before it is no turn, and a timed-out turn holds every sample it spans.
+    #[test]
+    fn a_new_idle_timeout_counts_from_the_change() {
+        let f = FRAME as u64;
+        let mut t = turns(SETTINGS);
+        let (seen, _) = run(&mut t, &frames(&[0.1; 10]));
+        assert_eq!(seen, []);
+        t.set_settings(TurnSettings { idle_timeout_ms: Some(96), ..SETTINGS });
+        let (seen, _) = run(&mut t, &frames(&[0.1; 4]));
+        assert_eq!(seen, [Seen::TimedOut(10 * f, 13 * f, 3 * FRAME)]);
+        t.set_settings(SETTINGS);
+        let (seen, _) = run(&mut t, &frames(&[0.1; 2]));
+        assert_eq!(seen, []);
+        t.set_settings(TurnSettings { idle_timeout_ms: Some(96), ..SETTINGS });
+        let (seen, _) = run(&mut t, &frames(&[0.1; 3]));
+        assert_eq!(seen, [Seen::TimedOut(16 * f, 19 * f, 3 * FRAME)], "nothing from before the change, no gap");
     }
 
     /// A commit during a turn ends it at once: the samples it holds not yet read into a frame

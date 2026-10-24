@@ -127,18 +127,19 @@ itself.
   `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`. The item
   keeps `prefix_padding_ms` of the audio before the speech, so a soft first
   syllable is not cut; `audio_start_ms` is where that padding begins. The
-  padding takes the silence before the speech, even the end of the item
-  before, and never an earlier item's speech.
+  padding takes the silence before the speech, even the silence that ended
+  the item before, and never an earlier item's speech: when speech resumes
+  right after an item ends, the two items' times overlap by that silence.
 - Once the speech has been under `threshold` for `silence_duration_ms`,
   `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server
   commits the item with that silence in it: `input_audio_buffer.committed`,
   then its transcription, as for a commit of the client's.
 - Audio outside an item goes nowhere and is not transcribed.
 - With `idle_timeout_ms` set, that much audio with no speech, since the
-  session opened or the last item ended, is committed as an item of its own
-  after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms,
-  item_id}`. It costs a transcription of the silence, whose transcript is
-  usually empty.
+  session opened, the last item ended or the field was set, is committed as
+  an item of its own after `input_audio_buffer.timeout_triggered`
+  `{audio_start_ms, audio_end_ms, item_id}`. It costs a transcription of the
+  silence, whose transcript is usually empty.
 
 Every time is in milliseconds of the audio the session has received, from its
 first sample, and falls on a 32 ms step. The client may still commit: a commit

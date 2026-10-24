@@ -114,23 +114,29 @@ something the spec left open, or differs from it:
   - An item starts at the first speech frame. Its padding is up to
     `prefix_padding_ms` of the audio before that frame, but never earlier than
     the end of an earlier item's last speech frame, a commit or a clear: it may
-    take the silence that ended the item before, never its speech. With
-    padding that stopped at the item before, AC 7's first run had an item
-    start right at its speech and come out as one word. Letting the padding
-    take that silence fixed it, and moved the pooled WER from 8.06% to 7.58%.
+    take the silence that ended the item before, never its speech, so two
+    items' times overlap by that silence when speech resumes at once (speech
+    under the threshold in it can reach both). With padding that stopped at
+    the item before, AC 7's first run had an item start right at its speech
+    and come out as one word. Letting the padding take that silence fixed it,
+    and moved the pooled WER from 8.06% to 7.58%; the rule was found on AC 7's
+    own dictations.
   - The item ends at the end of the first frame where the silence since its
     last speech frame reaches `silence_duration_ms`. It holds that silence,
     and `audio_end_ms` is there.
   - `idle_timeout_ms` follows OpenAI's documented shape: that much audio with
-    no speech, since the session opened or the last item ended, is committed
-    after `input_audio_buffer.timeout_triggered` and transcribed (usually to
-    an empty transcript). It counts audio time, and takes 1 ms to
-    `speech.max_clip_seconds`.
+    no speech, since the session opened, the last item ended or the field
+    changed, is committed after `input_audio_buffer.timeout_triggered` and
+    transcribed (usually to an empty transcript). It counts audio time, and
+    takes 1 ms to `speech.max_clip_seconds`; OpenAI's SDK types state no
+    range, so none narrower is refused.
 - **Commit and clear under `server_vad`.** A client commit ends the item under
-  way, with no `speech_stopped` (OpenAI's `speech_started` says as much); with
-  no speech heard since the last item it is `input_audio_buffer_commit_empty`.
-  The resampler is not flushed, since the stream goes on. A clear drops the
-  utterance and the padding the VAD holds.
+  way, with no `speech_stopped` (OpenAI's `speech_started` says as much). With
+  no speech heard since the last item it is `input_audio_buffer_commit_empty`,
+  where OpenAI would commit what its buffer holds: audio the VAD heard no
+  speech in goes nowhere here. Neither a commit nor a clear resets the
+  resampler, since the stream goes on and its clock with it. A clear drops
+  the utterance and the padding the VAD holds.
 - **`session.update`** merges `server_vad`'s fields as it does the
   transcription's: a field left out keeps its value, and `null` is the
   server's default (`speech.vad_*`, read when the session opens; no idle
@@ -156,10 +162,13 @@ something the spec left open, or differs from it:
   cost:
   - a control, the whole dictation as **one** item from where
     `server_vad`'s first item starts (its leading silence trimmed to the
-    300 ms padding, nothing cut), scores the same 7.58%: d06 goes from 4
-    edits to 13, d03 from 3 to 9. The model's output depends on how much
-    audio comes before the speech, and the 1-pt gate against the untrimmed
-    commit is below that;
+    300 ms padding, nothing cut), scores the same 7.58% pooled: d06 goes from
+    4 edits to 13, d03 from 3 to 9. Dictation by dictation the control and
+    `server_vad` differ (d03 is worse trimmed, d04 worse cut), so the run
+    shows that trimming the leading silence alone costs as much as the whole
+    gap, not that the cuts cost nothing. The model's output depends on how
+    much audio comes before the speech, and the 1-pt gate against the
+    untrimmed commit is below that;
   - `server_vad`'s items, each with its predecessors' transcript as its
     context, which is not built (Q50's context is the client's), score
     6.94%.

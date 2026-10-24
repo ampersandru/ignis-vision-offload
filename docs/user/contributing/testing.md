@@ -68,6 +68,17 @@ cargo test --release -p ignis-speech --test oracle -- --ignored --test-threads=1
 The fixtures and their bounds are recorded by `tools/speech-oracle/record.py`
 ([spec speech/01](../../specs/speech/01-cpu-executor.md)).
 
+`server_vad`'s voice activity detection has its own: the default suite checks
+the port against Silero's recorded probabilities on the fixture clip, and the
+`--ignored` legs check the FLEURS clips and the dictations and run the
+`server_vad` WER gate on the dictations, which is CPU-heavy and runs alone.
+Its records come from `tools/speech-vad/record.py`
+([spec speech/05](../../specs/speech/05-server-vad.md)):
+
+```sh
+cargo test --release -p ignis-speech --test vad -- --ignored --test-threads=1
+```
+
 ## The Playground
 
 The Playground's logic lives in pure modules with vitest tests. A change under

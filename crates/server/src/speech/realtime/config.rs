@@ -301,41 +301,29 @@ impl SessionConfig {
         }
         let defaults = self.vad_defaults;
         let mut vad = self.turn_detection.take().unwrap_or_else(|| defaults.server_vad());
-        let invalid = |field: &str, what: String| Refusal::invalid(format!("{PARAM}.{field} must be {what}"), &format!("{PARAM}.{field}"));
-        let millis = |field: &str, least: u64| -> Result<Option<Option<u32>>, Refusal> {
-            match detection.get(field) {
-                None => Ok(None),
-                Some(Value::Null) => Ok(Some(None)),
-                Some(value) => match value.as_u64().filter(|ms| (least..=u64::from(defaults.max_ms)).contains(ms)) {
-                    Some(ms) => Ok(Some(Some(ms as u32))),
-                    None => Err(invalid(field, format!("a whole number of milliseconds from {least} to {} (speech.max_clip_seconds)", defaults.max_ms))),
-                },
-            }
+        let millis = |least: u64| {
+            let what = format!("a whole number of milliseconds from {least} to {} (speech.max_clip_seconds)", defaults.max_ms);
+            move |value: &Value| value.as_u64().filter(|ms| (least..=u64::from(defaults.max_ms)).contains(ms)).map(|ms| ms as u32).ok_or(what.clone())
         };
-        match detection.get("threshold") {
-            None => {}
-            Some(Value::Null) => vad.threshold = defaults.threshold,
-            Some(value) => match value.as_f64().filter(|p| (0.0..=1.0).contains(p)) {
-                Some(threshold) => vad.threshold = threshold,
-                None => return Err(invalid("threshold", "a number from 0 to 1".to_owned())),
-            },
+        let number = |value: &Value| value.as_f64().filter(|p| (0.0..=1.0).contains(p)).ok_or("a number from 0 to 1".to_owned());
+        let flag = |value: &Value| value.as_bool().ok_or("true or false".to_owned());
+        if let Some(threshold) = detection_field(detection, "threshold", number)? {
+            vad.threshold = threshold.unwrap_or(defaults.threshold);
         }
-        if let Some(ms) = millis("prefix_padding_ms", 0)? {
+        if let Some(ms) = detection_field(detection, "prefix_padding_ms", millis(0))? {
             vad.prefix_padding_ms = ms.unwrap_or(defaults.prefix_padding_ms);
         }
-        if let Some(ms) = millis("silence_duration_ms", 0)? {
+        if let Some(ms) = detection_field(detection, "silence_duration_ms", millis(0))? {
             vad.silence_duration_ms = ms.unwrap_or(defaults.silence_duration_ms);
         }
-        if let Some(ms) = millis("idle_timeout_ms", 1)? {
+        if let Some(ms) = detection_field(detection, "idle_timeout_ms", millis(1))? {
             vad.idle_timeout_ms = ms;
         }
-        for (field, slot) in [("create_response", &mut vad.create_response), ("interrupt_response", &mut vad.interrupt_response)] {
-            match detection.get(field) {
-                None => {}
-                Some(Value::Null) => *slot = None,
-                Some(Value::Bool(on)) => *slot = Some(*on),
-                Some(_) => return Err(invalid(field, "true or false".to_owned())),
-            }
+        if let Some(on) = detection_field(detection, "create_response", flag)? {
+            vad.create_response = on;
+        }
+        if let Some(on) = detection_field(detection, "interrupt_response", flag)? {
+            vad.interrupt_response = on;
         }
         self.turn_detection = Some(vad);
         Ok(())
@@ -379,6 +367,18 @@ fn model_refusal(refusal: ModelRefusal) -> Refusal {
     match refusal {
         ModelRefusal::KindMismatch(message) => Refusal { code: "model_kind_mismatch", message, param },
         ModelRefusal::NotFound(message) => Refusal { code: "model_not_found", message, param },
+    }
+}
+
+/// A field of `turn_detection`: `None` when absent, `Some(None)` when `null`,
+/// or what `read` makes of it, which names what the field takes when it
+/// refuses the value.
+fn detection_field<T>(detection: &Map<String, Value>, name: &str, read: impl Fn(&Value) -> Result<T, String>) -> Result<Option<Option<T>>, Refusal> {
+    const PARAM: &str = "session.audio.input.turn_detection";
+    match detection.get(name) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(value) => read(value).map(|v| Some(Some(v))).map_err(|what| Refusal::invalid(format!("{PARAM}.{name} must be {what}"), &format!("{PARAM}.{name}"))),
     }
 }
 

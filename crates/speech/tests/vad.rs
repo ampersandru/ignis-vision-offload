@@ -14,7 +14,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::*;
-use ignis_speech::vad::{Frames, TurnEvent, TurnSettings, Turns, Vad, FRAME};
+use ignis_speech::vad::{SpeechProbability, TurnEvent, TurnSettings, Turns, Vad, FRAME};
 use ignis_speech::{Executor, Features, Settings, Threads};
 
 fn vad_fixtures() -> PathBuf {
@@ -166,8 +166,8 @@ fn by_server_vad(exec: &Executor, audio: &[f32]) -> Vec<String> {
 ///
 /// **It fails as built** (spec 05, As built): 7.58% against 4.03% on the i9, 2026-10-24. The
 /// whole dictation as one item from where `server_vad`'s first item starts, its leading silence
-/// trimmed to the padding, scores the same 7.58%: the cost is where an item begins, not where the
-/// VAD cuts. The leg asserts the criterion as written, for the owner's decision.
+/// trimmed to the padding, scores the same 7.58% pooled: trimming the leading silence alone costs
+/// as much as the whole gap. The leg asserts the criterion as written, for the owner's decision.
 #[test]
 #[ignore]
 fn server_vad_items_joined_are_within_a_point_of_a_manual_commit() {
