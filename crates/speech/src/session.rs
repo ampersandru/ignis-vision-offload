@@ -102,12 +102,12 @@ pub struct Session {
 }
 
 impl Session {
-    pub(crate) fn open(lm: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>) -> Session {
+    pub(crate) fn open(lm: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>, context_max_tokens: usize) -> Session {
         let guard = core.clone();
         let _unit = guard.unit();
         let s = &core.settings;
         let text = &lm.model.text;
-        let prompt = Prompt::new(text, context, s.context_max_tokens, language);
+        let prompt = Prompt::new(text, context, context_max_tokens, language);
         let dec = &lm.model.decoder;
         let audio_cap = audio_tokens(frames_of(s.max_clip_seconds as usize * mel::SAMPLE_RATE));
         // Sized for the context cap, the longest clip's audio tokens and the decode (§2).

@@ -263,8 +263,14 @@ impl Executor {
     /// Opens a transcription with `context` as the system turn, loading the model if needed.
     /// `language` forces the official prefill (Q6); `None` lets the model detect it.
     pub fn open(&self, context: &str, language: Option<&str>) -> Result<Session, ExecError> {
+        self.open_capped(context, language, self.core.settings.context_max_tokens)
+    }
+
+    /// [`open`](Self::open) with the context capped at `context_max_tokens` (the live
+    /// `speech.context_max_tokens` the server passes per request) rather than the settings'.
+    pub fn open_capped(&self, context: &str, language: Option<&str>, context_max_tokens: usize) -> Result<Session, ExecError> {
         let (l, _) = self.loaded()?;
-        Ok(Session::open(l, self.core.clone(), context, language))
+        Ok(Session::open(l, self.core.clone(), context, language, context_max_tokens))
     }
 
     /// The idle unloader: wakes when the idle time may have run out and unloads once

@@ -1,9 +1,9 @@
 //! The seam between the server and the speech model's executor (spec
 //! speech/01 §4, speech/02): the operations the server needs of it and no
-//! more. The real executor is `ignis-speech` (`crates/speech`, ticket #351);
-//! the route, the slot and the queue are built and tested against
-//! [`FakeExecutor`] behind this trait, and the adapter to the real crate is
-//! the one place that knows both.
+//! more. The real executor is `ignis-speech` (`crates/speech`, ticket #351),
+//! adapted in [`super::cpu`]; the route, the slot and the queue are built and
+//! tested against [`FakeExecutor`] behind this trait, and the adapter is the
+//! one place that knows both.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -107,7 +107,7 @@ pub trait SpeechExecutor: Send + Sync {
 }
 
 /// The executor of a binary that has none yet: every host is unavailable,
-/// saying so. What `main` wires until `ignis-speech` is adapted.
+/// saying so.
 #[derive(Debug, Default)]
 pub struct NoExecutor;
 
