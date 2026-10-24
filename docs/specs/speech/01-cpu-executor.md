@@ -305,9 +305,10 @@ Same method as the image model (Q25), with Q52's changes:
     with the same context prefills no context token; a new context replaces
     the cache's one entry (Q15, Q50).
 18. Fed each dictation at real-time pace, a session encodes each window once
-    and prefills the audio prefix once. It reports a partial every
-    `speech.partial_interval_ms`, and its completed transcript begins with
-    every stable text it reported (Q37, Q43).
+    and prefills the audio prefix once. It reports a partial at most every
+    `speech.partial_interval_ms`, skipping one while the previous partial or a
+    window is still in work (Q74; owner, 2026-10-24), and its completed
+    transcript begins with every stable text it reported (Q37, Q43).
 19. One compute worker does one unit of work, a window or less, at a time
     (Q44).
 20. `speech.threads: auto` resolves to physical cores − 1, an explicit value
@@ -329,8 +330,11 @@ Same method as the image model (Q25), with Q52's changes:
     on the 4-core container, for a 10 s and a 60 s clip per catalog variant,
     and its load at first use, are written in "As built" and update
     `spec.md`'s requirements (Q34, Q53).
-24. With 23's times, every catalog variant is inside Q34's go band (at least
-    2x real time) on the i9 and on the 4-core container, and its pooled WER
+24. With 23's times, the default variant (`auto`) is inside Q34's go band
+    (at least 2x real time) on the i9 and on the 4-core container, and every
+    catalog variant is inside it on the i9; `qwen3-asr-1.7b-q8` is an
+    explicit choice, documented as under 2x on four cores (Q73; owner,
+    2026-10-24). Every variant's pooled WER
     on the finding's FLEURS clips and the 11 dictations is within 1 pt of
     llama.cpp b11840's on the same clips. The spike timed the matmuls alone
     (ADR 0067), so this is the whole executor's gate. The ratio to llama.cpp
@@ -349,3 +353,139 @@ Same method as the image model (Q25), with Q52's changes:
 - AVX-VNNI and AVX-512 kernels: not in phase 1. A later ticket, if a
   measurement on such a CPU shows a gap to ggml's variants for it (Q67,
   ADR 0067).
+
+## As built (GitHub #351, 2026-10-24)
+
+Built on `speech-351`; measured on the i9-10900K (Windows 11) and on the
+4-core container (podman on WSL, `--cpuset-cpus=0-3`, the Linux build).
+Where the build decided something the spec left open, or differs from it:
+
+- **The crate.** `crates/speech` (`ignis-speech`): `gguf.rs` (the reader),
+  `quant.rs` (formats, quantizers, scalar dots, the fp64 reference),
+  `avx2.rs` (the kernels, compiled on x86-64 only), `cpu.rs` (detection and
+  the `Isa` an AVX2 kernel needs), `matmul.rs` (weights, the GEMV/GEMM driver),
+  `pool.rs`, `ops.rs` and `math.rs` (the other ops), `mel.rs`, `text.rs` (the
+  tokenizer, the prompt, the parser), `model.rs` (the GGUF pair),
+  `encoder.rs`, `decoder.rs`, `session.rs` (§4) and `executor.rs`. About
+  5,700 lines with the kernels; no build script, no feature, no C.
+- **The server serves it.** #352 left the adapter open
+  (`crates/server/src/speech/cpu.rs`): a load builds the crate's executor from
+  the catalog entry's decoder and the `mmproj-` file beside it, with the
+  load's threads and pinned weights; the crate's idle unload stays off (the
+  worker keeps the idle clock); `open` takes the request's context cap.
+- **`speech.threads: auto`** is the physical cores less one *counted within
+  the CPUs the process may run on*: on Linux `num_cpus::get_physical` reads
+  `/proc/cpuinfo`, which a cpuset does not narrow (the container saw 10 cores
+  on 4 CPUs), so it is capped by the affinity mask and the cgroup quota. The i9
+  runs 9 threads, the container 3.
+- **The mel floor** (max − 8) is taken over the frames computed so far: a
+  stream cannot know the clip's maximum, and the server's batch path pushes 8 s
+  at a time. Only bins 80 dB under the loudest so far move. The batch WER legs
+  push 8 s at a time, as the server does.
+- **Partials.** The first two fix nothing (`unfixed_partials`, the official
+  streaming's `unfixed_chunk_num`): fixing from the first partial decided the
+  language on 2 s of audio and labelled an Italian dictation Portuguese (the
+  incremental path then lost 1.45 pt on the dictations). The stable text ends
+  on a whole word and a whole character. `unfixed_partials` is a plain
+  executor setting today; it needs a `speech` field when spec 03 wires
+  partials (the owner's rule on thresholds), as do `rollback_tokens` and
+  `partial_interval_ms`, which #352's seam does not carry yet.
+- **The KV cache** is sized for `speech.max_clip_seconds` (the executor's
+  default, 1,200 s: the seam carries no clip length) plus half as many text
+  tokens as audio tokens, but grows to it on demand, doubling from the head, two
+  windows and the tail; decoding stops at its end. A decode yields the compute
+  unit every 16 steps, about a window's prefill.
+- **Pinned weights** copy every tensor but the repacked Q4_K ones into
+  anonymous memory (locked with `mlock` on Linux; memmap2 offers no lock on
+  Windows, where the private copy is what pins). The files are not held open.
+- **A context's special tokens are encoded as text**, never as control tokens;
+  for ordinary text the tokens are the official processor's (AC 17).
+- **No repetition fix.** The checkpoint's parser runs
+  `_detect_and_fix_repetitions` on the text; ours does not.
+- **Testing decisions.** The per-layer checks need the catalog files, so they
+  are an `--ignored` leg with the WER gate and the timings; the default suite
+  holds the front end against the fixture and the executor on a synthetic GGUF
+  pair. The legs read `IGNIS_SPEECH_STUDY` and fail without it.
+- **The files** (AC 22): `tools/speech-gguf/convert.sh` with b11840's
+  converter and quantizer, from Qwen's *original* repos (`Qwen/Qwen3-ASR-1.7B`
+  @ `7278e1e7`, `Qwen/Qwen3-ASR-0.6B` @ `5eb14417`): the converter's mmproj
+  class reads their `thinker_config`, which the `-hf` twins (the oracle's
+  checkpoints) lack. The converter needs `sentencepiece` in its venv. Our Q8_0
+  tensors are ggml-org's byte for byte except `a.position_embd.weight`, a
+  sinusoid table the converter computes in f32: at late positions an angle near
+  1,500 rad has an f32 ulp of 1.2e-4; the 13 positions a chunk uses differ by
+  9.4e-7. Our Q4_K_M is the study's self-quantized file byte for byte, so the
+  finding's llama.cpp runs read the same weights. llama-quantize also made an
+  mmproj Q4_K_M (rehost only). sha256 in `SHA256SUMS` beside the files.
+  **Open:** the HF upload (the owner's OK and a privacy scan) and the three
+  catalog entries, which need its revision.
+- **The oracle** (ACs 11-13). `tools/speech-oracle/record.py` records
+  Transformers FP32 on FLEURS `it_it` 1703 (9.06 s: two windows, 104 + 14
+  tokens, and a partial last chunk): the log-mel and six rows of every tapped
+  tensor, per size; and the 40 clips' greedy outputs. The bound of each tensor
+  is twice its error under the sim yardstick (the GGUF pair dequantized with
+  b11840's `gguf-py`, each matmul's input quantized as ours), at least 1e-5;
+  the log-mel's is twice torch's fp32 front end against fp64 (2.0e-5). Our
+  error is the yardstick's within a few percent at every layer of every
+  variant (1.7B Q4_K_M decoder layer 0: 9.73e-2 against 9.69e-2). The decoder
+  bounds are wide because Q4_K's own error is 12-17% of each row of the
+  residual stream: swapping a layer's Q and K norms stayed inside them, so the
+  decoder's negative control swaps two layers' down projections (an off-by-one
+  load); the encoder's drops a layer's attention output bias. Teacher-forced
+  top-1 over the 40 clips: 99.27% (1.7B), 99.82% (1.7B Q8), 99.45% (0.6B).
+  Every FLEURS clip and dictation has the official token count (d01: 135).
+- **WER** (ACs 14, 15, 24), pooled, the official prompt. Batch pushed 8 s at
+  a time as the server does; incremental pushed 100 ms at a time with a partial
+  every 2 s.
+
+  | variant | FLEURS 40: batch / incremental (5) / incremental (10) / Transformers / llama.cpp | 11 dictations: the same |
+  |---|---|---|
+  | `qwen3-asr-1.7b` | 4.05 / 4.25 / 3.94 / 3.63 / 4.36 | 3.23 / **4.35** / 4.03 / 3.06 / 3.39 |
+  | `qwen3-asr-1.7b-q8` | 3.73 / 3.73 / 3.63 / 3.63 / 4.15 | 2.90 / 3.71 / **4.19** / 3.06 / 3.06 |
+  | `qwen3-asr-0.6b` | 5.91 / 6.64 / 6.43 / 6.64 / 6.33 | 7.74 / **9.68** / 8.71 / 8.23 / 8.55 |
+
+  (%, the incremental path with a provisional tail of 5 tokens, the default,
+  and of 10.) Pushing the batch path 8 s at a time or whole gives the same
+  WER. **AC 15 is not met at the default tail of 5:** the
+  incremental path loses 1.12 pt (1.7B) and 1.94 pt (0.6B) on the dictations,
+  0.0-0.7 pt on FLEURS. A tail of 10 brings the 1.7B and the 0.6B inside the
+  point and moves the 1.7B Q8 out (1.29 pt): the eleven dictations are 620
+  words, a point is six errors, and their technical vocabulary (identifiers,
+  numbers, English terms in Italian) is where a word fixed with one or two
+  seconds of right context differs from the batch's spelling ("api.rs" as
+  "api. rs", "4" as "quattro"). The paper's own streaming loses 0.6-1.1 pt on
+  its benchmarks. Which default (or which partial design) is the owner's call.
+
+  llama.cpp's figures are the finding's runs (10 threads; its FLEURS runs had no
+  system turn, its dictation arm A the official one).
+- **Times** (ACs 23-24), warm, the median of the last three of four runs
+  (`examples/transcribe.rs`, batch path, one gated run at a time after 20 s
+  with no build; logs in `H:\speech-study\results\executor-351\`).
+  `speech.threads: auto`: 9 threads on the i9, 3 in the container.
+
+  | variant | i9, 10.26 s | i9, 60.8 s | 4 cores, 10.26 s | 4 cores, 60.8 s |
+  |---|---|---|---|---|
+  | `qwen3-asr-1.7b` | 2.47 s, 4.1x | 13.05 s, 4.7x | 3.58 s, 2.9x | 20.42 s, 3.0x |
+  | `qwen3-asr-1.7b-q8` | 3.81 s, 2.7x | 19.46 s, 3.1x | 6.54 s, **1.6x** | 34.89 s, **1.7x** |
+  | `qwen3-asr-0.6b` | 1.70 s, 6.0x | 9.25 s, 6.6x | 2.84 s, 3.6x | 16.31 s, 3.7x |
+
+  Against llama.cpp b11840's end-to-end time on the same clips, at its thread
+  count (10 on the i9, 4 in the container) and ours at the same count
+  (reported, not gated, Q65): 1.7B 1.04 / 1.05 / 0.82 / 0.83, 1.7B Q8 1.01 /
+  1.06 / 1.03 / 1.06, 0.6B 0.96 / 1.03 / 1.00 / 1.09 (i9 10 s, i9 60 s,
+  container 10 s, container 60 s). **AC 24 misses on `qwen3-asr-1.7b-q8` in
+  the container:** 1.6x and 1.7x at `auto`, 1.9x and 2.1x at 4 threads, where
+  llama.cpp does 1.9x and 2.2x: on four cores that variant is under the go
+  band whichever executor runs it. The other two pass everywhere.
+- **Load at first use** (the files in the OS cache): 0.54 s for 1.7B Q4_K_M on
+  the i9 (645 MB repacked), 0.13 s for the two Q8_0 variants (mapped: their
+  pages fault in on the first transcription, which takes 0.5-1 s longer than
+  the warm ones). In the container, whose files cross WSL's `/mnt` mount, the
+  Q4_K_M repack takes 3.9-4.2 s.
+- **Partials at real-time pace** (spec 03's concern, measured here): a 60.8 s
+  clip with a partial every 2 s, run flat out, takes 46.6 s of compute on the
+  i9 for 1.7B (0.77 of real time; commit 1.6 s), 76 s for 1.7B Q8 (1.25),
+  35.2 s for 0.6B (0.58); in the container 83 s, 159 s and 71 s. Each partial
+  re-encodes the incomplete window and prefills the prompt's tail and the whole
+  stable text again (it sits after the growing audio, so its cache cannot be
+  kept), so on four cores no variant keeps up with a partial every 2 s.

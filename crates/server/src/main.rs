@@ -472,10 +472,10 @@ async fn main() {
     );
     // ADR 0066, spec speech/02: the speech model beside the active one. Its
     // files are looked for in the same catalog and directory; its executor is
-    // `ignis-speech`'s once that crate is adapted (GitHub 351), until then none,
-    // and the model is unavailable, saying so.
+    // `ignis-speech` on the CPU (spec speech/01), unavailable with its reason
+    // on a CPU without AVX2.
     let speech = ignis_server::speech::Speech::new(
-        Arc::new(ignis_server::speech::executor::NoExecutor),
+        Arc::new(ignis_server::speech::cpu::CpuExecutor::new()),
         Some(ignis_server::speech::SpeechModels { catalog: Arc::clone(&catalog), dir: model_download_path.clone() }),
     );
     // Spec model-download/02 §Known models: a catalog entry whose artifact is

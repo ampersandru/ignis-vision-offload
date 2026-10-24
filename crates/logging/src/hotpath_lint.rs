@@ -47,6 +47,14 @@ pub const HOT_PATH_FILES: &[&str] = &[
     "crates/server/src/runtime.rs",
     "crates/server/src/engine.rs",
     "crates/server/src/decoder.rs",
+    // The speech model's CPU executor (spec speech/01): its kernels, graphs and session units.
+    "crates/speech/src/matmul.rs",
+    "crates/speech/src/ops.rs",
+    "crates/speech/src/pool.rs",
+    "crates/speech/src/mel.rs",
+    "crates/speech/src/encoder.rs",
+    "crates/speech/src/decoder.rs",
+    "crates/speech/src/session.rs",
 ];
 
 /// One flagged line: which file, which line number (1-based), and the

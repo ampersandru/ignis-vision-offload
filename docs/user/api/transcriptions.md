@@ -138,5 +138,11 @@ gauges `ignis_speech_sessions_open` and `ignis_speech_queue_length`, shown in
 the Playground's [Monitor](../playground/monitor.md). The fields are in
 [the speech configuration](../configuration/speech.md).
 
+Each load of the model writes two lines: `ignis.speech.threads`, the threads it
+computes with and whether `auto` chose them, and `ignis.speech.load`, how long
+it took and how many bytes it repacked into its own memory (the Q4_K weights,
+rearranged for the CPU's kernels) and read from the files, and whether the
+weights are pinned.
+
 `POST /v1/audio/translations` is not served (`404`): the model transcribes the
 language it hears.

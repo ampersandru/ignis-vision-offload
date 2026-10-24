@@ -264,10 +264,11 @@ decided something the spec left open, or differs from it:
 - **The seam.** `SpeechExecutor` has exactly spec 01 §4's operations plus
   `name`, `availability` (a reason a person reads), `load`, `unload` and
   `is_loaded`. `Transcript` carries the model's label (`None` is `None`) and
-  the decoded token ids, for `verbose_json`'s segment. **The adapter to
-  `ignis-speech` is the one open item**: `main` wires `NoExecutor`, so a real
-  server reports the speech model unavailable ("this build has no speech
-  executor") until #351's crate is adapted.
+  the decoded token ids, for `verbose_json`'s segment. The adapter to
+  `ignis-speech` came with #351 (`crates/server/src/speech/cpu.rs`): `main`
+  wires it, a load builds the crate's executor from the entry's files with
+  the crate's idle unload off (the worker keeps the idle clock), and a CPU
+  without AVX2 reads "the CPU lacks AVX2, which the speech model needs".
 - **The context cap lives in the executor** (it owns the tokenizer): the
   route passes the context and `speech.context_max_tokens` to `open`. AC 9 is
   tested up to that call.

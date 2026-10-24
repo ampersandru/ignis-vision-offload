@@ -33,6 +33,11 @@ crates/server/tests/fixtures/catalog/*.yaml text eol=lf
 # unit's DONE pins the sha256 of its JSON files, so a CRLF checkout would break the pack.
 crates/artifact/tests/fixtures/qwen_image_work/** -text
 
+# The speech oracle's fixtures (crates/speech/tests): f32 tensors and the FLEURS clip, read byte
+# for byte by front_end.rs and oracle.rs.
+crates/speech/tests/fixtures/oracle/**/*.bin -text
+crates/speech/tests/fixtures/oracle/*.wav -text
+
 # Audio fixtures are binary: no end-of-line conversion.
 crates/server/tests/fixtures/audio/*.wav binary
 crates/server/tests/fixtures/audio/*.flac binary

@@ -18,6 +18,7 @@
 //! [`executor::FakeExecutor`].
 
 pub mod audio;
+pub mod cpu;
 pub mod executor;
 pub mod languages;
 pub mod route;

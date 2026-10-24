@@ -303,6 +303,37 @@ Image.open(src + "on_grid.png").convert("RGBA").resize((224, 160), Image.LANCZOS
 alpha.resize((96, 64), Image.LANCZOS).save(out + "images/alpha_96x64.webp", lossless=True)
 ```
 
+## The speech oracle (GitHub #351)
+
+The speech executor (`crates/speech`) is checked against Transformers FP32
+on the CPU, never against llama.cpp (spec speech/01 §5, ADR 0043). The
+default suite holds the kernels and ops against fp64, the log-mel against
+the recorded fixture, and the executor on a synthetic GGUF pair. The checks
+on the real catalog files are `--ignored` CPU legs in
+`crates/speech/tests/oracle.rs`: every layer within `thresholds.json`, the
+teacher-forced top-1, the token counts, the context's tokens, the batch and
+incremental WER gates, the real-time session, the reader and the Q8_0 check,
+the kernels on the files' own tensors. They read the study directory
+(`IGNIS_SPEECH_STUDY`, `H:/speech-study` on the owner's machine: the GGUF
+files in `models/ignis-conv/`, the FLEURS clips, the private dictations and
+their records in `results/oracle/`) and fail without it. They are CPU-heavy
+(the WER legs take about 15 minutes per variant): run them alone, as a GPU
+run, and never inside the GPU profile, whose stage 3 excludes the crate.
+
+```sh
+cargo test --release -p ignis-speech --test oracle -- --ignored --test-threads=1
+```
+
+The fixtures under `crates/speech/tests/fixtures/oracle/` come from
+`tools/speech-oracle/record.py` (its `requirements.txt` pins the venv), in
+two steps per size and variant: `record` (Transformers on the FLEURS fixture
+clip and every clip; the dictations' records go to the study directory, never
+the repo) and `yardstick` (the GGUF pair's weights dequantized with
+llama.cpp b11840's `gguf-py`, each matmul's input quantized as the executor
+does). Each tapped tensor's bound is twice the yardstick's error, at least
+1e-5; the log-mel's is twice torch's fp32 front end against fp64. The GGUF
+files themselves come from `tools/speech-gguf/convert.sh`.
+
 ## The entailment fixture
 
 `crates/server/tests/fixtures/entailment/` is a contributed set of 18
