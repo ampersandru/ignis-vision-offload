@@ -58,7 +58,8 @@ Related:
 
 - Every user-visible change updates `docs/user/` in the same commit (`AGENTS.md`, `docs/agents/user-docs.md`).
 - A page's file name is its route: lowercase words joined by dashes, `index.md` for a section's landing page.
-- A test reads `docs/user/reference/`, an exception to the release workflow's "no test reads docs/": only a code
-  change can make those pages stale, and a code change runs the workflow. A hand edit of a generated page is
-  overwritten by the next `make docs-reference`.
+- A test reads `docs/user/reference/`, an exception to the release workflow's "no test reads docs/": a code
+  change that makes those pages stale runs the release workflow's `cargo test`, and a push that edits only the
+  pages runs that one test in `.github/workflows/docs-reference.yml`.
+- The landing page's cards link by route, outside what the link plugin sees; a test holds each to a page.
 - The site's dependencies are pinned in `docs/site/package-lock.json`; the workflow installs with `npm ci`.

@@ -1,0 +1,37 @@
+# Hold the guide's generated reference (docs/user/reference/) to the code on a
+# push that changes only the pages (ADR 0066). A code change runs the same
+# test in the release workflow, whose paths-ignore skips docs/**; this
+# workflow covers the other way a page can drift, a hand edit, with the one
+# test that compares them.
+
+name: docs-reference
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "docs/user/reference/**"
+      - ".github/workflows/docs-reference.yml"
+  pull_request:
+    paths:
+      - "docs/user/reference/**"
+      - ".github/workflows/docs-reference.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-reference-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-cpu
+      - name: The generated reference equals the code's
+        run: cargo test --locked -p ignis-server --test user_docs_reference

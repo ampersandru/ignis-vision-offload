@@ -191,7 +191,7 @@ answers it with no `Retry-After`, and only a successful switch helps.
 ### `503 engine_full`
 
 Every lane is in use. The response carries `Retry-After`, an estimate of when a
-lane frees (2 to 60 s). The OpenAI SDKs honour it; other clients should retry
+lane frees (1 to 60 s). The OpenAI SDKs honour it; other clients should retry
 after it. Only the Responses API's WebSocket mode queues a request instead
 ([The API](api/index.md)).
 

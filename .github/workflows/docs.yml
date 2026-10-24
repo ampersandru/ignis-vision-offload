@@ -18,7 +18,7 @@ name: docs
 
 on:
   push:
-    branches: [main, "ci/**"]
+    branches: ["**"]
     tags: ["v*.*.*"]
     paths:
       - "docs/user/**"

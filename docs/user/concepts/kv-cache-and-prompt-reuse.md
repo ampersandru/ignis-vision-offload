@@ -78,8 +78,9 @@ all hit.
 
 Each image of mutable state occupies a **retained slot**, reserved at load. By
 default there are none on the device and two per decode lane in one pinned host
-block. A host slot costs a PCIe copy per capture and per claim (about 15 to
-19 ms) but no VRAM, so the KV pool gets that room: at the default load it raised
+block. A host slot costs a PCIe copy where a device slot costs a device copy
+(a claim of 182 MiB measured 15.6 ms from the host against 0.29 ms on the
+device) but no VRAM, so the KV pool gets that room: at the default load it raised
 the pool from about 475K to about 680K tokens at level throughput, and in an
 eight-agent run 51 of 52 checkpoint hits came back from host slots
 ([retained slots on the host](../../findings/2026-09-28-retained-slots-on-the-host.md)).
