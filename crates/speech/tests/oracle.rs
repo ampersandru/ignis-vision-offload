@@ -308,7 +308,12 @@ struct Pools {
 }
 
 fn run_wer(v: &Variant, realtime: bool) -> Pools {
-    let exec = Executor::new(Settings { threads: Threads::Count(threads()), ..Settings::default() }, v.files(), Features::detect());
+    run_wer_with(v, realtime, Settings::default().rollback_tokens)
+}
+
+fn run_wer_with(v: &Variant, realtime: bool, rollback_tokens: usize) -> Pools {
+    let settings = Settings { threads: Threads::Count(threads()), rollback_tokens, ..Settings::default() };
+    let exec = Executor::new(settings, v.files(), Features::detect());
     let clips = fleurs_clips();
     let mut ids: Vec<&String> = clips.keys().collect();
     ids.sort();
@@ -396,17 +401,29 @@ fn batch_wer_is_within_a_point_of_transformers_and_llama_cpp() {
 }
 
 /// Acceptance 15: through the incremental path at real-time pace (100 ms pushes, a partial every
-/// `partial_interval_ms`), pooled WER not worse than the batch path's by more than 1 pt.
+/// `partial_interval_ms`), pooled WER not worse than the batch path's by more than 1 pt, at the
+/// default `rollback_tokens`. A longer provisional tail (10) is measured beside it, for the
+/// owner's choice of that default.
 #[test]
 #[ignore]
 fn incremental_wer_is_within_a_point_of_batch() {
+    let mut over = Vec::new();
     for v in &VARIANTS {
         let b = run_wer(v, false);
-        let r = run_wer(v, true);
-        let (bf, bd, rf, rd) = (pooled_wer(&b.fleurs), pooled_wer(&b.dictations), pooled_wer(&r.fleurs), pooled_wer(&r.dictations));
-        println!("{} incremental: FLEURS {:.2}% (batch {:.2}%), dictations {:.2}% (batch {:.2}%)", v.id, 100.0 * rf, 100.0 * bf, 100.0 * rd, 100.0 * bd);
-        assert!(rf <= bf + 0.01 && rd <= bd + 0.01, "{}: incremental WER over the batch path's + 1 pt", v.id);
+        let (bf, bd) = (pooled_wer(&b.fleurs), pooled_wer(&b.dictations));
+        for rollback in [Settings::default().rollback_tokens, 10] {
+            let r = run_wer_with(v, true, rollback);
+            let (rf, rd) = (pooled_wer(&r.fleurs), pooled_wer(&r.dictations));
+            println!(
+                "{} incremental, rollback {rollback}: FLEURS {:.2}% (batch {:.2}%), dictations {:.2}% (batch {:.2}%)",
+                v.id, 100.0 * rf, 100.0 * bf, 100.0 * rd, 100.0 * bd
+            );
+            if rollback == Settings::default().rollback_tokens && (rf > bf + 0.01 || rd > bd + 0.01) {
+                over.push(v.id);
+            }
+        }
     }
+    assert!(over.is_empty(), "incremental WER over the batch path's + 1 pt: {over:?}");
 }
 
 /// Acceptance 18: fed each dictation at real-time pace, a session encodes each window once,

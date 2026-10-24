@@ -327,8 +327,15 @@ impl Session {
         let decoded = decoded?;
         let r = self.core.settings.rollback_tokens;
         let mut cut = if self.stats.partials <= self.core.settings.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
-        // The stable text ends on a whole character: byte-level tokens may split one.
-        while cut > 0 && self.loaded.model.text.decode(&[&self.stable[..], &decoded[..cut]].concat()).ends_with('\u{FFFD}') {
+        // The stable text ends on a whole word: the provisional tail starts where a word does
+        // (a token that decodes with a leading space), so an identifier the audio has not
+        // finished (`model_switch.rs`) stays provisional whole. A whole word also ends on a
+        // whole character, which byte-level tokens may split.
+        let text = &self.loaded.model.text;
+        while cut > 0 && cut < decoded.len() && !text.decode(&decoded[cut..cut + 1]).starts_with(char::is_whitespace) {
+            cut -= 1;
+        }
+        while cut > 0 && text.decode(&[&self.stable[..], &decoded[..cut]].concat()).ends_with('\u{FFFD}') {
             cut -= 1;
         }
         self.stable.extend_from_slice(&decoded[..cut]);

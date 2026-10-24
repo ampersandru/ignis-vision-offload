@@ -2,7 +2,7 @@
 //! (one push, one commit) or at real-time pace with partials, and prints each transcript with
 //! its times: the tool behind spec speech/01's "As built" numbers.
 //!
-//! usage: transcribe DECODER.gguf ENCODER.gguf [--threads N] [--realtime] [--reps N] FILE.wav...
+//! usage: transcribe DECODER.gguf ENCODER.gguf [--threads N] [--realtime] [--rollback N] [--unfixed N] [--reps N] FILE.wav...
 
 use std::time::Instant;
 
@@ -38,9 +38,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let take = |args: &mut Vec<String>, name: &str| args.iter().position(|a| a == name).map(|i| { args.remove(i); args.remove(i) });
     let threads = take(&mut args, "--threads").map(|v| Threads::Count(v.parse().expect("--threads N"))).unwrap_or(Threads::Auto);
     let reps: usize = take(&mut args, "--reps").map(|v| v.parse().expect("--reps N")).unwrap_or(1);
-    assert!(args.len() >= 3, "usage: transcribe DECODER.gguf ENCODER.gguf [--threads N] [--realtime] [--reps N] FILE.wav...");
+    let d = Settings::default();
+    let rollback_tokens = take(&mut args, "--rollback").map(|v| v.parse().expect("--rollback N")).unwrap_or(d.rollback_tokens);
+    let unfixed_partials = take(&mut args, "--unfixed").map(|v| v.parse().expect("--unfixed N")).unwrap_or(d.unfixed_partials);
+    assert!(args.len() >= 3, "usage: transcribe DECODER.gguf ENCODER.gguf [--threads N] [--realtime] [--rollback N] [--unfixed N] [--reps N] FILE.wav...");
     let files = ModelFiles { decoder: args[0].clone().into(), encoder: args[1].clone().into() };
-    let exec = Executor::new(Settings { threads, idle_unload: std::time::Duration::ZERO, ..Settings::default() }, files, Features::detect());
+    let settings = Settings { threads, idle_unload: std::time::Duration::ZERO, rollback_tokens, unfixed_partials, ..d };
+    let exec = Executor::new(settings, files, Features::detect());
     let t0 = Instant::now();
     let report = exec.load()?.expect("a fresh load");
     println!("load {} ms (wall {} ms), repacked {} MB, mapped {} MB, threads {:?}",
