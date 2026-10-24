@@ -182,6 +182,39 @@ fn softmax_body(x: &mut [f32]) {
     }
 }
 
+/// f32 → f16, round to nearest even: the KV cache's store. The AVX2 path's `vcvtps2ph` and the
+/// scalar conversion give the same bits.
+pub fn to_f16(isa: Isa, src: &[f32], dst: &mut [u16]) {
+    assert_eq!(src.len(), dst.len());
+    #[cfg(target_arch = "x86_64")]
+    if isa.avx2() {
+        // SAFETY: an AVX2 Isa exists only after detection; both slices hold src.len() elements.
+        unsafe { to_f16_avx2(src, dst) };
+        return;
+    }
+    let _ = isa;
+    for (d, &s) in dst.iter_mut().zip(src) {
+        *d = crate::quant::f32_to_f16(s);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma,f16c")]
+unsafe fn to_f16_avx2(src: &[f32], dst: &mut [u16]) {
+    use std::arch::x86_64::*;
+    let n8 = src.len() / 8 * 8;
+    for i in (0..n8).step_by(8) {
+        // SAFETY: i + 8 <= len for both slices.
+        unsafe {
+            let h = _mm256_cvtps_ph::<0>(_mm256_loadu_ps(src.as_ptr().add(i)));
+            _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, h);
+        }
+    }
+    for i in n8..src.len() {
+        dst[i] = crate::quant::f32_to_f16(src[i]);
+    }
+}
+
 // ---------------------------------------------------------------- RoPE / M-RoPE
 
 /// The rotation angles of a forward pass's rows: M-RoPE as the decoder GGUF

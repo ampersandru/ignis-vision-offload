@@ -1,0 +1,227 @@
+//! Text: the Qwen3 vocabulary the decoder GGUF carries, built into a BPE
+//! tokenizer with the `tokenizers` crate (Q41); the official prompt (Q15);
+//! and the model output's parser (Q51).
+//!
+//! The tokenizer is the checkpoint's: NFC, the Qwen2 split regex, byte-level
+//! BPE, byte-level decoding, and the added tokens as whole tokens. The
+//! prompt's special tokens are placed by id, never parsed out of text, and
+//! special tokens inside a context are encoded as plain text.
+
+use tokenizers::decoders::byte_level::ByteLevel as ByteLevelDecoder;
+use tokenizers::models::bpe::{Vocab, BPE};
+use tokenizers::normalizers::unicode::NFC;
+use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+use tokenizers::pre_tokenizers::sequence::Sequence;
+use tokenizers::pre_tokenizers::split::{Split, SplitPattern};
+use tokenizers::pre_tokenizers::PreTokenizerWrapper;
+use tokenizers::{AddedToken, SplitDelimiterBehavior, Tokenizer};
+
+use crate::gguf::{Gguf, Value};
+
+/// The Qwen2 pre-tokenizer's split (`tokenizer.ggml.pre = qwen2`).
+const QWEN2_SPLIT: &str =
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
+/// GGUF token types: a control token is special (skipped when decoding), a user-defined one is
+/// an added token that decodes as text (`<asr_text>`).
+const TOKEN_CONTROL: i64 = 3;
+const TOKEN_USER_DEFINED: i64 = 4;
+
+pub struct Text {
+    tok: Tokenizer,
+    pub im_start: u32,
+    pub im_end: u32,
+    pub audio_start: u32,
+    pub audio_end: u32,
+    pub asr_text: u32,
+    /// Decoding stops at any of these (151643 and 151645 for Qwen3-ASR).
+    pub eos: Vec<u32>,
+}
+
+fn arr<'a>(g: &'a Gguf, key: &str) -> Result<&'a [Value], String> {
+    g.get(key).and_then(Value::as_array).ok_or_else(|| format!("{}: no {key}", g.path().display()))
+}
+
+impl Text {
+    pub fn from_gguf(g: &Gguf) -> Result<Text, String> {
+        let model = g.get("tokenizer.ggml.model").and_then(Value::as_str);
+        let pre = g.get("tokenizer.ggml.pre").and_then(Value::as_str);
+        if model != Some("gpt2") || pre != Some("qwen2") {
+            return Err(format!("{}: tokenizer {model:?}/{pre:?}, not gpt2/qwen2", g.path().display()));
+        }
+        let tokens: Vec<&str> =
+            arr(g, "tokenizer.ggml.tokens")?.iter().map(|v| v.as_str().ok_or("a token is not a string")).collect::<Result<_, _>>()?;
+        let types: Vec<i64> = match g.get("tokenizer.ggml.token_type").and_then(Value::as_array) {
+            Some(a) => a.iter().map(|v| v.as_f64().unwrap_or(1.0) as i64).collect(),
+            None => vec![1; tokens.len()],
+        };
+        let merges: Vec<(String, String)> = arr(g, "tokenizer.ggml.merges")?
+            .iter()
+            .map(|v| {
+                let m = v.as_str().ok_or("a merge is not a string")?;
+                let (a, b) = m.split_once(' ').ok_or("a merge without a space")?;
+                Ok((a.to_string(), b.to_string()))
+            })
+            .collect::<Result<_, &str>>()?;
+        // Added tokens are matched whole by the tokenizer, not by the BPE model.
+        let added: Vec<usize> = (0..tokens.len()).filter(|&i| matches!(types.get(i), Some(&TOKEN_CONTROL) | Some(&TOKEN_USER_DEFINED))).collect();
+        let vocab: Vocab = tokens.iter().enumerate().map(|(i, t)| (t.to_string(), i as u32)).collect();
+        let bpe = BPE::builder().vocab_and_merges(vocab, merges).build().map_err(|e| format!("BPE: {e}"))?;
+        let mut tok = Tokenizer::new(bpe);
+        let split = Split::new(SplitPattern::Regex(QWEN2_SPLIT.into()), SplitDelimiterBehavior::Isolated, false).map_err(|e| format!("split: {e}"))?;
+        tok.with_normalizer(Some(NFC));
+        tok.with_pre_tokenizer(Some(Sequence::new(vec![
+            PreTokenizerWrapper::Split(split),
+            PreTokenizerWrapper::ByteLevel(ByteLevel::new(false, true, false)),
+        ])));
+        tok.with_decoder(Some(ByteLevelDecoder::default()));
+        let special: Vec<AddedToken> =
+            added.iter().filter(|&&i| types[i] == TOKEN_CONTROL).map(|&i| AddedToken::from(tokens[i].to_string(), true).normalized(false)).collect();
+        let user: Vec<AddedToken> =
+            added.iter().filter(|&&i| types[i] == TOKEN_USER_DEFINED).map(|&i| AddedToken::from(tokens[i].to_string(), false).normalized(false)).collect();
+        tok.add_special_tokens(&special);
+        tok.add_tokens(&user);
+        tok.set_encode_special_tokens(true);
+        let id = |s: &str| tokens.iter().position(|t| *t == s).map(|i| i as u32).ok_or_else(|| format!("no {s} in the vocabulary"));
+        let mut eos = vec![id("<|im_end|>")?];
+        eos.extend(id("<|endoftext|>"));
+        if let Some(e) = g.get("tokenizer.ggml.eos_token_id").and_then(Value::as_u64) {
+            if !eos.contains(&(e as u32)) {
+                eos.push(e as u32);
+            }
+        }
+        Ok(Text {
+            tok,
+            im_start: id("<|im_start|>")?,
+            im_end: id("<|im_end|>")?,
+            audio_start: id("<|audio_start|>")?,
+            audio_end: id("<|audio_end|>")?,
+            asr_text: id("<asr_text>")?,
+            eos,
+        })
+    }
+
+    /// Token ids of plain text: special tokens in it are encoded as text.
+    pub fn encode(&self, s: &str) -> Vec<u32> {
+        match self.tok.encode(s, false) {
+            Ok(e) => e.get_ids().to_vec(),
+            Err(e) => panic!("encoding text: {e}"),
+        }
+    }
+
+    /// Text of token ids, control tokens skipped (`<asr_text>` is kept: it is the output's marker).
+    pub fn decode(&self, ids: &[u32]) -> String {
+        self.tok.decode(ids, true).unwrap_or_default()
+    }
+}
+
+/// The official prompt around the audio (Q15):
+/// `<|im_start|>system\n{context}<|im_end|>\n<|im_start|>user\n<|audio_start|>` (the head,
+/// the prefix cache's entry), the audio tokens, then
+/// `<|audio_end|><|im_end|>\n<|im_start|>assistant\n` (the tail), with a forced language's
+/// official prefill `language <Name><asr_text>` after it (Q6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prompt {
+    pub head: Vec<u32>,
+    pub tail: Vec<u32>,
+    /// Context tokens in the head (after the cap).
+    pub context_tokens: usize,
+}
+
+impl Prompt {
+    /// The context's last `max_context` tokens form the system turn (spec 02: the oldest are dropped).
+    pub fn new(text: &Text, context: &str, max_context: usize, language: Option<&str>) -> Prompt {
+        let ctx = text.encode(context);
+        // The rendered template tokenizes "system\n{context}" as one span; over the cap the kept
+        // tail of the context follows "system\n" on its own.
+        let (system, context_tokens) = if ctx.len() <= max_context {
+            let s = text.encode(&format!("system\n{context}"));
+            (s, ctx.len())
+        } else {
+            let mut s = text.encode("system\n");
+            s.extend_from_slice(&ctx[ctx.len() - max_context..]);
+            (s, max_context)
+        };
+        let nl = text.encode("\n");
+        let mut head = vec![text.im_start];
+        head.extend(system);
+        head.push(text.im_end);
+        head.extend(&nl);
+        head.push(text.im_start);
+        head.extend(text.encode("user\n"));
+        head.push(text.audio_start);
+        let mut tail = vec![text.audio_end, text.im_end];
+        tail.extend(&nl);
+        tail.push(text.im_start);
+        match language {
+            Some(l) => {
+                tail.extend(text.encode(&format!("assistant\nlanguage {l}")));
+                tail.push(text.asr_text);
+            }
+            None => tail.extend(text.encode("assistant\n")),
+        }
+        Prompt { head, tail, context_tokens }
+    }
+
+    /// Text tokens around the audio.
+    pub fn text_tokens(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+}
+
+/// A transcript as the model gave it (Q51).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parsed {
+    /// The model's label, `None` when it said `language None` or gave none.
+    pub language: Option<String>,
+    pub text: String,
+}
+
+/// Splits `language X<asr_text>text` into X and the text, as the checkpoint's own parser does:
+/// `language None` followed by text is speech (the text is kept), `language None` alone is no
+/// speech (an empty transcript), and output without the marker is all text. A forced language's
+/// prefill is not part of the output, so its `forced` name is the label.
+pub fn parse(output: &str, forced: Option<&str>) -> Parsed {
+    const MARKER: &str = "<asr_text>";
+    let s = output.trim();
+    if let Some(l) = forced {
+        let t = s.split_once(MARKER).map_or(s, |(_, t)| t);
+        return Parsed { language: Some(l.to_string()), text: t.trim().to_string() };
+    }
+    let Some((prefix, text)) = s.split_once(MARKER) else {
+        return Parsed { language: None, text: s.to_string() };
+    };
+    let prefix = prefix.trim();
+    let text = text.trim().to_string();
+    if prefix.eq_ignore_ascii_case("language none") {
+        return Parsed { language: None, text };
+    }
+    let first = prefix.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let language = match first.get(..9) {
+        Some(p) if p.eq_ignore_ascii_case("language ") => Some(first[9..].trim().to_string()),
+        _ => Some(first.to_string()),
+    }
+    .filter(|l| !l.is_empty());
+    Parsed { language, text }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_parser_keeps_the_label_and_the_text() {
+        let p = parse("language Italian<asr_text>Ieri Martelli ha giurato.", None);
+        assert_eq!(p, Parsed { language: Some("Italian".into()), text: "Ieri Martelli ha giurato.".into() });
+        // `None` followed by text is speech: the text is kept, with no label.
+        assert_eq!(parse("language None<asr_text>uh, yes", None), Parsed { language: None, text: "uh, yes".into() });
+        // `None` alone is no speech: an empty transcript.
+        assert_eq!(parse("language None<asr_text>", None), Parsed { language: None, text: String::new() });
+        assert_eq!(parse("  ", None), Parsed { language: None, text: String::new() });
+        // No marker: all of it is text.
+        assert_eq!(parse("just words", None), Parsed { language: None, text: "just words".into() });
+        // A forced language: the output has no header, and the forced name is the label.
+        assert_eq!(parse("Buongiorno a tutti.", Some("Italian")), Parsed { language: Some("Italian".into()), text: "Buongiorno a tutti.".into() });
+        assert_eq!(parse("language English<asr_text>", None), Parsed { language: Some("English".into()), text: String::new() });
+    }
+}

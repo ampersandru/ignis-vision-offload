@@ -336,3 +336,19 @@ fn the_convolution_stem_matches_fp64() {
         fail("conv", &bad, &r, plane);
     }
 }
+
+#[test]
+fn to_f16_is_bit_identical_on_both_paths() {
+    let mut rng = Rng::new(10);
+    let mut x: Vec<f32> = rng.activations(4099);
+    // Ties at f16 precision, subnormals, overflow and infinities.
+    x.extend([1.0 + 1.0 / 2048.0, 1.0 + 3.0 / 2048.0, 6e-8, -3e-5, 65520.0, 1e9, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0]);
+    let isa = isas();
+    let mut s = vec![0u16; x.len()];
+    to_f16(Isa::scalar(), &x, &mut s);
+    for v in &isa {
+        let mut a = vec![1u16; x.len()];
+        to_f16(*v, &x, &mut a);
+        assert_eq!(a, s, "{v:?}");
+    }
+}

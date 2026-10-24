@@ -333,9 +333,9 @@ impl Gguf {
         &self.map[start..start + t.size as usize]
     }
 
-    /// Bytes of the whole tensor data section.
-    pub fn data_len(&self) -> usize {
-        self.map.len() - self.data_offset.min(self.map.len())
+    /// The whole tensor data section: a tensor's `offset` indexes it.
+    pub fn data_section(&self) -> &[u8] {
+        &self.map[self.data_offset.min(self.map.len())..]
     }
 }
 
