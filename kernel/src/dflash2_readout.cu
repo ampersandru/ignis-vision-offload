@@ -57,6 +57,12 @@ extern "C" int32_t ignis_dflash2_readout(struct ignis_model *model, struct ignis
   }
   IgnisVerifyRound &verify = *model->verify;
   const std::uint32_t k = verify.window;
+  // The caller sized every output by its window; the copies below are the
+  // load's, so another window would over- or under-run them.
+  if (readout->window != k) {
+    return fail("ignis_dflash2_readout: window " + std::to_string(readout->window) +
+                " is not the load's draft window " + std::to_string(k));
+  }
   if (readout->extent > k) {
     return fail("ignis_dflash2_readout: extent " + std::to_string(readout->extent) +
                 " is past the load's window of " + std::to_string(k));
@@ -79,7 +85,7 @@ extern "C" int32_t ignis_dflash2_readout(struct ignis_model *model, struct ignis
 
   // Lane 0 of a width-1 round, staged where the forward reads it. Host
   // values outlive the synchronize below.
-  const std::int32_t anchor        = readout->anchor < 0 ? seq->pending_token : readout->anchor;
+  const std::int32_t anchor        = seq->pending_token;
   if (anchor < 0) {
     return fail("ignis_dflash2_readout: the sequence has no pending token (it was not prefilled)");
   }
@@ -129,13 +135,19 @@ extern "C" int32_t ignis_dflash2_readout(struct ignis_model *model, struct ignis
   return 0;
 }
 
-extern "C" int32_t ignis_verify_readout_logits(struct ignis_model *model, uint32_t lanes,
+extern "C" int32_t ignis_verify_readout_logits(struct ignis_model *model, uint32_t lanes, uint32_t window,
                                                uint16_t *out_logits) {
   if (model == nullptr || out_logits == nullptr) {
     return fail("ignis_verify_readout_logits: null argument");
   }
   if (model->verify == nullptr) {
     return fail("ignis_verify_readout_logits: this model was loaded without a draft window");
+  }
+  // The caller sized `out_logits` by its window; the copy below is the
+  // load's `k + 1` rows a lane.
+  if (window != model->verify->window) {
+    return fail("ignis_verify_readout_logits: window " + std::to_string(window) +
+                " is not the load's draft window " + std::to_string(model->verify->window));
   }
   // GitHub #336: the round's buffers, its logits included, are sized for the
   // load's decode lanes, not for IGNIS_DECODE_MAX_BATCH.

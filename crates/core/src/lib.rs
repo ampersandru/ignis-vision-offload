@@ -103,6 +103,9 @@ pub mod speculation;
 pub mod thinking_budget;
 #[cfg(feature = "cuda")]
 pub mod step;
+// GitHub #340: the step ABI's decode options, a kernel-free mirror whose
+// layout pin runs on CPU.
+pub(crate) mod step_abi;
 #[cfg(feature = "cuda")]
 pub mod trellis;
 pub mod types;

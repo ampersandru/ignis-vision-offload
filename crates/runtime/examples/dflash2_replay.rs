@@ -254,7 +254,7 @@ fn main() {
             let (mut rounds, mut disagreements, mut round_s) = (0usize, 0usize, 0f64);
             let mut at = start;
             while at < end {
-                let proposal = dflash2_readout::propose(model, pool, &seq, None, WINDOW as u32, WINDOW as u32, true)
+                let proposal = dflash2_readout::propose(model, pool, &seq, WINDOW as u32, WINDOW as u32, true)
                     .unwrap_or_else(|e| panic!("{name} turn {turn_id} at {at}: readout: {e}"));
                 let mut forced = [-1i32; COLUMNS];
                 for (j, slot) in forced.iter_mut().enumerate() {

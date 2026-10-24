@@ -10,13 +10,12 @@
  *
  * `ignis_dflash2_readout` runs the drafter's forward
  * (`ignis_dflash2_propose`, kernel/src/dflash2_drafter.h) for one sequence,
- * eagerly, at width 1: the query block is `anchor` and `extent` mask tokens
- * at the sequence's frontier `position + j`, over the sequence's own window.
- * That is the forward a verify round runs for this sequence with `anchor` as
- * its pending token and `extent` as its extent -- the same ops on the same
- * inputs, so the same drafts a width-1 round would verify. A negative
- * `anchor` takes the sequence's own pending token: the proposals the next
- * round will verify. It copies out:
+ * eagerly, at width 1: the query block is the sequence's pending token and
+ * `extent` mask tokens at its frontier `position + j`, over its own window.
+ * That is the forward the sequence's next verify round runs at `extent` --
+ * the same ops on the same inputs, so the same drafts a width-1 round would
+ * verify. `window` is the caller's draft window, which sizes its buffers: it
+ * must be the load's, since the leaf writes the load's. It copies out:
  *
  *   out_drafts            I32 [k]         the selector walk's drafts
  *   out_candidate_ids     I32 [k][16]     each draft column's top-16 token ids
@@ -47,8 +46,9 @@
  *
  * Returns 0, or -1 with `ignis_dflash2_readout_last_error()` set: a null
  * argument, a size this leaf does not recognize, a load without the drafter,
- * a pool built for another backend, a sequence from another pool, an
- * `extent` past the window, or a kernel error. Synchronous: the outputs are
+ * a `window` that is not the load's, a pool built for another backend, a
+ * sequence from another pool, an `extent` past the window, a sequence with
+ * no pending token, or a kernel error. Synchronous: the outputs are
  * filled when it returns. Not thread-safe with any other call on the model.
  */
 #ifndef IGNIS_DFLASH2_READOUT_H
@@ -69,8 +69,8 @@ struct ignis_seq;
 #define IGNIS_DFLASH2_READOUT_TOP_K 16
 
 struct ignis_dflash2_readout {
-  uint32_t size; /* sizeof(struct ignis_dflash2_readout) */
-  int32_t anchor;
+  uint32_t size;   /* sizeof(struct ignis_dflash2_readout) */
+  uint32_t window; /* the load's draft window `k`, which sizes the outputs */
   uint32_t extent;
   int32_t *out_drafts;
   int32_t *out_candidate_ids;
@@ -92,7 +92,8 @@ int32_t ignis_dflash2_readout(struct ignis_model *model, struct ignis_seq_pool *
                               const struct ignis_seq *seq, const struct ignis_dflash2_readout *readout);
 
 /* The most recent verify round's target logits, BF16 `[lanes][k + 1][vocab]`
- * for its first `lanes` lanes: row `j` of lane `i` is the target's
+ * for its first `lanes` lanes, `k` the caller's `window`, which must be the
+ * load's draft window (it sizes `out_logits`): row `j` of lane `i` is the target's
  * distribution after that lane's column `j` -- its anchor, then its drafts in
  * order (columns past the lane's extent repeat the anchor at the last valid
  * position). What the round's accept read, as it read it; valid until the
@@ -101,7 +102,8 @@ int32_t ignis_dflash2_readout(struct ignis_model *model, struct ignis_seq_pool *
  * is the trellis one on a trellis body); `lanes` at most the load's decode
  * lanes (GitHub #336), which the round's logits are sized for. Synchronous.
  * Returns 0, or -1 with `ignis_dflash2_readout_last_error()` set. */
-int32_t ignis_verify_readout_logits(struct ignis_model *model, uint32_t lanes, uint16_t *out_logits);
+int32_t ignis_verify_readout_logits(struct ignis_model *model, uint32_t lanes, uint32_t window,
+                                    uint16_t *out_logits);
 
 const char *ignis_dflash2_readout_last_error(void);
 

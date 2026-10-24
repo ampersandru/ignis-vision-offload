@@ -4,11 +4,12 @@
 //!
 //! A measurement seam, not a serving one -- the `out_span_logits` precedent
 //! ([`crate::step::prefill_program_span_logits`]). The replay of recorded agent
-//! turns (`crates/core/examples/dflash2_replay.rs`) walks a turn's recorded
+//! turns (`crates/runtime/examples/dflash2_replay.rs`) walks a turn's recorded
 //! text: it reads the drafter's proposals here, counts how many of them the
-//! recorded text accepts, and advances the sequence by prefilling what a
-//! round would have committed. A round cannot do that walk, because it
-//! commits what the target samples, not what the recording says.
+//! recorded text accepts, and advances the sequence by a teacher-forced round
+//! ([`crate::step::decode_program_verify_forced`]) that commits the recorded
+//! text. A live round cannot do that walk, because it commits what the
+//! target samples, not what the recording says.
 //!
 //! Beside the drafts it returns what the selector read to choose them -- each
 //! draft column's 16 candidates, their proposal-head logits and the lattice's
@@ -81,18 +82,15 @@ impl Dflash2Proposal {
     }
 }
 
-#[cfg(feature = "cuda")]
-mod ffi {
-    use std::os::raw::c_char;
-
-    use crate::model_load::ffi::IgnisModel;
-    use crate::seq::ffi::{IgnisSeq, IgnisSeqPool};
-
+/// The leaf's struct, plain `repr(C)` with no kernel behind it, so its layout
+/// pin runs in the CPU suite.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+mod abi {
     /// 1:1 with `struct ignis_dflash2_readout`.
     #[repr(C)]
     pub struct IgnisDflash2Readout {
         pub size: u32,
-        pub anchor: i32,
+        pub window: u32,
         pub extent: u32,
         pub out_drafts: *mut i32,
         pub out_candidate_ids: *mut i32,
@@ -100,6 +98,15 @@ mod ffi {
         pub out_scores: *mut f32,
         pub out_drafter_logits: *mut u16,
     }
+}
+
+#[cfg(feature = "cuda")]
+mod ffi {
+    use std::os::raw::c_char;
+
+    use super::abi::IgnisDflash2Readout;
+    use crate::model_load::ffi::IgnisModel;
+    use crate::seq::ffi::{IgnisSeq, IgnisSeqPool};
 
     unsafe extern "C" {
         pub fn ignis_dflash2_readout(
@@ -108,7 +115,7 @@ mod ffi {
             seq: *const IgnisSeq,
             readout: *const IgnisDflash2Readout,
         ) -> i32;
-        pub fn ignis_verify_readout_logits(model: *mut IgnisModel, lanes: u32, out_logits: *mut u16) -> i32;
+        pub fn ignis_verify_readout_logits(model: *mut IgnisModel, lanes: u32, window: u32, out_logits: *mut u16) -> i32;
         pub fn ignis_dflash2_readout_last_error() -> *const c_char;
     }
 }
@@ -119,22 +126,21 @@ fn last_error() -> String {
     message.to_string_lossy().into_owned()
 }
 
-/// The drafter's proposals for `sequence` at its frontier, as a verify round
-/// with `anchor` pending and `extent` draft columns would compute them.
-/// `None` takes the sequence's own pending token: the proposals its next
+/// The drafter's proposals for `sequence` at its frontier, as its next verify
+/// round with `extent` draft columns would compute them: the proposals that
 /// round verifies.
 ///
-/// `window` is the load's draft window ([`crate::Speculation::draft_tokens`]);
-/// `extent` is at most that. With `with_logits`, the proposal head's whole
-/// logits come back too (4 MB a readout at window 7). Nothing the sequence or
-/// any other one reads is written; the leaf refuses a sequence whose window
-/// does not stand at its frontier.
+/// `window` is the load's draft window ([`crate::Speculation::draft_tokens`]),
+/// which sizes the outputs; the leaf refuses any other. `extent` is at most
+/// that. With `with_logits`, the proposal head's whole logits come back too
+/// (4 MB a readout at window 7). Nothing the sequence or any other one reads
+/// is written; the leaf refuses a sequence whose window does not stand at its
+/// frontier.
 #[cfg(feature = "cuda")]
 pub fn propose(
     model: &crate::model_load::Model,
     pool: &crate::seq::SeqPool,
     sequence: &crate::seq::Seq<'_>,
-    anchor: Option<i32>,
     extent: u32,
     window: u32,
     with_logits: bool,
@@ -146,9 +152,9 @@ pub fn propose(
     let mut candidate_logits = vec![0f32; k * TOP_K];
     let mut scores = vec![0f32; k * TOP_K * TOP_K];
     let mut drafter_logits = with_logits.then(|| vec![0u16; k * vocab]);
-    let readout = ffi::IgnisDflash2Readout {
-        size: std::mem::size_of::<ffi::IgnisDflash2Readout>() as u32,
-        anchor: anchor.unwrap_or(-1),
+    let readout = abi::IgnisDflash2Readout {
+        size: std::mem::size_of::<abi::IgnisDflash2Readout>() as u32,
+        window,
         extent,
         out_drafts: drafts.as_mut_ptr(),
         out_candidate_ids: candidate_ids.as_mut_ptr(),
@@ -156,8 +162,6 @@ pub fn propose(
         out_scores: scores.as_mut_ptr(),
         out_drafter_logits: drafter_logits.as_mut().map_or(std::ptr::null_mut(), |v| v.as_mut_ptr()),
     };
-    // The leaf sizes every output by the load's window: a caller's window
-    // that is not the load's would over- or under-run these buffers.
     if extent > window {
         return Err(format!("dflash2 readout: extent {extent} is past the window {window}"));
     }
@@ -178,11 +182,12 @@ pub fn propose(
 /// BF16 `[lanes][window + 1][vocab]`: row `j` of a lane is the target's
 /// distribution after its column `j` (its anchor, then its drafts), as the
 /// round's accept read it. Valid until the model's next verify round.
+/// `window` sizes the copy and must be the load's: the leaf refuses another.
 #[cfg(feature = "cuda")]
 pub fn verify_logits(model: &crate::model_load::Model, lanes: u32, window: u32) -> Result<Vec<u16>, String> {
     let vocab = crate::compute::ModelConfig::qwen38_27b().vocab as usize;
     let mut logits = vec![0u16; lanes as usize * (window as usize + 1) * vocab];
-    let rc = unsafe { ffi::ignis_verify_readout_logits(model.handle(), lanes, logits.as_mut_ptr()) };
+    let rc = unsafe { ffi::ignis_verify_readout_logits(model.handle(), lanes, window, logits.as_mut_ptr()) };
     if rc != 0 {
         return Err(last_error());
     }
@@ -229,14 +234,14 @@ mod tests {
         assert_eq!(proposal.walk(), vec![0, 0]);
     }
 
-    /// uint32 size, int32 anchor, uint32 extent, padding, then five
-    /// pointers; the leaf pins the same numbers
-    /// (kernel/include/ignis_dflash2_readout.h) and refuses any other `size`.
-    #[cfg(feature = "cuda")]
+    /// uint32 size, window and extent, padding, then five pointers; the
+    /// leaf pins the same numbers (kernel/include/ignis_dflash2_readout.h)
+    /// and refuses any other `size`.
     #[test]
     fn the_readout_mirror_is_the_leaf_structs_layout() {
-        assert_eq!(std::mem::size_of::<ffi::IgnisDflash2Readout>(), 56);
-        assert_eq!(std::mem::offset_of!(ffi::IgnisDflash2Readout, out_drafts), 16);
-        assert_eq!(std::mem::offset_of!(ffi::IgnisDflash2Readout, out_drafter_logits), 48);
+        assert_eq!(std::mem::size_of::<abi::IgnisDflash2Readout>(), 56);
+        assert_eq!(std::mem::offset_of!(abi::IgnisDflash2Readout, window), 4);
+        assert_eq!(std::mem::offset_of!(abi::IgnisDflash2Readout, out_drafts), 16);
+        assert_eq!(std::mem::offset_of!(abi::IgnisDflash2Readout, out_drafter_logits), 48);
     }
 }

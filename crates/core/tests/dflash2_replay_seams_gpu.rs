@@ -99,6 +99,13 @@ fn leading_agreement(drafts: &[i32], forced: &[i32]) -> usize {
     drafts.iter().zip(forced).take_while(|(d, f)| d == f).count()
 }
 
+/// Each lane's verify runs, and the token its last round left pending.
+type Lanes = (Vec<Vec<LaneVerifyRun>>, Vec<i32>);
+
+fn pending(seqs: &[Seq<'_>]) -> Vec<i32> {
+    seqs.iter().map(|seq| seq.pending_token().expect("a lane that ran a round has a pending token")).collect()
+}
+
 /// The lattice's own consistency: the host walk over the scores lands on the
 /// drafts, every draft is one of its column's candidates, the candidates are
 /// the head logits' top 16 in descending order and carry those logits
@@ -229,7 +236,9 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
 
     // --- the engine's own rounds: the text and the runs ------------------
     // `readout`: read the drafter before every round (and check the reads).
-    let generate = |pool: &SeqPool, lanes: &[usize], sampled: bool, readout: bool| -> Vec<Vec<LaneVerifyRun>> {
+    // Beside each lane's runs, the token its last round left pending: the
+    // successor a recording of the text carries after it.
+    let generate = |pool: &SeqPool, lanes: &[usize], sampled: bool, readout: bool| -> Lanes {
         let mut seqs: Vec<Seq<'_>> = lanes.iter().map(|_| pool.alloc(MAX_CONTEXT).unwrap()).collect();
         for (seq, &lane) in seqs.iter_mut().zip(lanes) {
             prefill_program_sampled(model, pool, seq, &prompts[lane], 0, sampling_of(sampled, lane), None)
@@ -247,7 +256,7 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
                         // The round's extent: its budget leaves room for this many drafts.
                         let extent = WINDOW.min((TOTAL - emitted[i]) as u32 - 1);
                         let before = seqs[i].snapshot().unwrap_or_else(|e| panic!("snapshot: {e:?}"));
-                        let proposal = dflash2_readout::propose(model, pool, &seqs[i], None, extent, WINDOW, true)
+                        let proposal = dflash2_readout::propose(model, pool, &seqs[i], extent, WINDOW, true)
                             .unwrap_or_else(|e| panic!("readout: {e}"));
                         let after = seqs[i].snapshot().unwrap_or_else(|e| panic!("snapshot: {e:?}"));
                         assert!(before == after, "the readout moved the sequence's state");
@@ -282,13 +291,16 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
                 per_lane[i].push(run);
             }
         }
-        per_lane
+        (per_lane, pending(&seqs))
     };
 
-    // The same lanes replayed through forced rounds over `texts`, prefilled
+    // The same lanes replayed through forced rounds over `recorded` -- each
+    // lane's text, then the successor its live rounds left pending -- prefilled
     // as `generate` prefilled them (a sampled prefill draws the same first
-    // anchor: the draw is keyed by seed and position).
-    let replay = |pool: &SeqPool, lanes: &[usize], sampled: bool, texts: &[Vec<i32>]| -> Vec<Vec<LaneVerifyRun>> {
+    // anchor: the draw is keyed by seed and position). A text that ends at its
+    // budget has no stop to end it, so its last forced round takes the
+    // successor in place of the pad, as the live round drew one.
+    let replay = |pool: &SeqPool, lanes: &[usize], sampled: bool, recorded: &[Vec<i32>]| -> Lanes {
         let mut seqs: Vec<Seq<'_>> = lanes.iter().map(|_| pool.alloc(MAX_CONTEXT).unwrap()).collect();
         for (seq, &lane) in seqs.iter_mut().zip(lanes) {
             prefill_program_sampled(model, pool, seq, &prompts[lane], 0, sampling_of(sampled, lane), None)
@@ -296,9 +308,10 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
         }
         let mut at = vec![0usize; lanes.len()];
         let mut forced_runs: Vec<Vec<LaneVerifyRun>> = vec![Vec::new(); lanes.len()];
-        while (0..lanes.len()).any(|i| at[i] < texts[i].len()) {
-            let active: Vec<usize> = (0..lanes.len()).filter(|&i| at[i] < texts[i].len()).collect();
-            let forced: Vec<Vec<i32>> = active.iter().map(|&i| forced_slice(&texts[i], at[i] + 1)).collect();
+        let unwalked = |i: usize, at: &[usize]| at[i] + 1 < recorded[i].len();
+        while (0..lanes.len()).any(|i| unwalked(i, &at)) {
+            let active: Vec<usize> = (0..lanes.len()).filter(|&i| unwalked(i, &at)).collect();
+            let forced: Vec<Vec<i32>> = active.iter().map(|&i| forced_slice(&recorded[i], at[i] + 1)).collect();
             let forced_refs: Vec<&[i32]> = forced.iter().map(Vec::as_slice).collect();
             let mut remaining: Vec<Option<&mut Seq<'_>>> = seqs.iter_mut().map(Some).collect();
             let mut refs: Vec<&mut Seq<'_>> = active.iter().map(|&i| remaining[i].take().unwrap()).collect();
@@ -313,7 +326,7 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
                 forced_runs[i].push(run);
             }
         }
-        forced_runs
+        (forced_runs, pending(&seqs))
     };
 
     // Widths 1 and 2, greedy and sampled: the readout reads what the rounds
@@ -321,7 +334,7 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
     // and forced rounds fed a run's own text are that run's rounds, bit for
     // bit. Sampled, that is the replay's whole claim: a live round accepts a
     // one-hot draft exactly when the text it samples agrees, so forcing the
-    // text gives back the live rounds.
+    // text gives back the live rounds -- and the token they leave pending.
     for sampled in [false, true] {
         for lanes in [&[0usize][..], &[1, 2][..]] {
             let label = format!("width {}, {}", lanes.len(), if sampled { "sampled" } else { "greedy" });
@@ -331,11 +344,13 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
             let read = generate(&pool, lanes, sampled, true);
             assert_eq!(plain, read, "{label}: reading the drafter changed the rounds");
             let texts: Vec<Vec<i32>> =
-                plain.iter().map(|runs| runs.iter().flat_map(|r| r.tokens.clone()).collect()).collect();
-            let forced = replay(&pool, lanes, sampled, &texts);
+                plain.0.iter().map(|runs| runs.iter().flat_map(|r| r.tokens.clone()).collect()).collect();
+            let recorded: Vec<Vec<i32>> =
+                texts.iter().zip(&plain.1).map(|(text, &after)| text.iter().copied().chain([after]).collect()).collect();
+            let forced = replay(&pool, lanes, sampled, &recorded);
             assert_eq!(forced, plain, "{label}: forced with its own text, the rounds are not the live rounds");
             let committed: usize = texts.iter().map(Vec::len).sum();
-            let rounds: usize = plain.iter().map(Vec::len).sum();
+            let rounds: usize = plain.0.iter().map(Vec::len).sum();
             println!("{label}: {committed} tokens in {rounds} rounds, {:.2} per round", committed as f64 / rounds as f64);
         }
     }
@@ -344,34 +359,40 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
     // Prompt 0's anchor, then prompt 1's answer: text the target never chose.
     // The runs commit it exactly; each forced round accepts precisely the
     // read drafts' leading agreement with it; the token after each run is the
-    // next round's anchor.
+    // next round's anchor. The lane's budget ends with the text, as the
+    // rounds that made it ended, and the token prompt 1's rounds left pending
+    // follows it: a text that ends at its budget has no stop to end it.
     let pool = pool(1);
     let _ = capture_decode_graphs(model, &pool).unwrap_or_else(|e| panic!("capture: {e}"));
-    let own = generate(&pool, &[0], false, false);
-    let other = generate(&pool, &[1], false, false);
+    let (own, _) = generate(&pool, &[0], false, false);
+    let (other, other_after) = generate(&pool, &[1], false, false);
     let mut text = vec![own[0][0].tokens[0]];
     text.extend(other[0].iter().flat_map(|r| r.tokens.clone()).skip(1));
+    let recorded: Vec<i32> = text.iter().copied().chain([other_after[0]]).collect();
     let mut seq = pool.alloc(MAX_CONTEXT).unwrap();
     prefill(model, &pool, &mut seq, &prompts[0]);
     let mut at = 0usize;
     let mut committed = Vec::new();
     let mut accepted_any = false;
     while at < text.len() {
-        let proposal = dflash2_readout::propose(model, &pool, &seq, None, WINDOW, WINDOW, false)
+        let remaining = (text.len() - at) as u32;
+        let extent = WINDOW.min(remaining - 1);
+        let proposal = dflash2_readout::propose(model, &pool, &seq, extent, WINDOW, false)
             .unwrap_or_else(|e| panic!("readout: {e}"));
-        let forced = forced_slice(&text, at + 1);
+        let forced = forced_slice(&recorded, at + 1);
         let run = decode_program_verify_forced(
             model,
             &pool,
             &mut [&mut seq],
-            &[VerifyLane { stop_ids, ..VerifyLane::greedy(&[]) }],
+            &[VerifyLane { remaining_tokens: remaining, stop_ids, ..VerifyLane::greedy(&[]) }],
             WINDOW,
             &[&forced],
         )
         .unwrap_or_else(|e| panic!("forced round: {e}"))
         .remove(0);
         assert_eq!(run.tokens[0], text[at], "the round's anchor is the recorded token after the last run");
-        let expected = leading_agreement(&proposal.drafts, &forced);
+        assert_eq!(run.extent, extent, "the readout's extent is not the round's");
+        let expected = leading_agreement(&proposal.drafts, &forced).min(extent as usize);
         let cut = run.tokens.iter().position(|t| stop_ids.contains(t)).map_or(usize::MAX, |p| p + 1);
         assert_eq!(run.tokens.len(), (expected + 1).min(cut), "the forced round's acceptance is the read drafts' agreement");
         accepted_any |= expected > 0;
@@ -409,6 +430,27 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
     // GitHub #336: the round's logits hold the load's lanes, no more.
     let err = dflash2_readout::verify_logits(model, decode_lanes + 1, WINDOW).expect_err("more lanes than the load decodes");
     assert!(err.contains("decode lanes"), "the wrong refusal: {err}");
+    // Both readouts size their buffers by the caller's window, the leaf
+    // writes the load's: another window is refused, not over- or under-run.
+    let err = dflash2_readout::verify_logits(model, 1, WINDOW - 1).expect_err("a window not the load's");
+    assert!(err.contains("not the load's draft window"), "the wrong refusal: {err}");
+    let err = dflash2_readout::propose(model, &pool, &seq, WINDOW - 1, WINDOW - 1, false).expect_err("a window not the load's");
+    assert!(err.contains("not the load's draft window"), "the wrong refusal: {err}");
+
+    // A forced successor outside the vocabulary would be the next round's
+    // anchor: refused, the sequence unmoved -- an id past the vocabulary, and
+    // the pad after a recording that ends without a stop (the anchor here is
+    // mid-answer).
+    let anchor = seq.pending_token().expect("a pending anchor");
+    assert!(!stop_ids.contains(&anchor), "the refusal below needs an anchor that is no stop id");
+    let position = seq.stats().position;
+    let vocab_id = ModelConfig::qwen38_27b().vocab as i32;
+    for (forced, what) in [(vec![vocab_id; WINDOW as usize + 1], "an id past the vocabulary"), (vec![-1; WINDOW as usize + 1], "the pad with no stop")] {
+        let err = decode_program_verify_forced(model, &pool, &mut [&mut seq], &greedy_lanes(1), WINDOW, &[&forced])
+            .expect_err(what);
+        assert!(err.contains("outside the vocabulary"), "{what}: the wrong refusal: {err}");
+        assert_eq!((seq.stats().position, seq.pending_token()), (position, Some(anchor)), "{what}: the refused round moved the sequence");
+    }
 
     // Refusals: a sampling lane, a forced run of the wrong length, and a
     // sequence whose window carries an extent-0 round's anchor.
@@ -433,7 +475,7 @@ fn seams(model: &Model, prompts: &[Vec<i32>], stop_ids: &[i32], decode_lanes: u3
     .unwrap()
     .remove(0);
     assert_eq!(ended.extent, 0, "a one-token budget runs at extent 0");
-    let err = dflash2_readout::propose(model, &pool, &seq, None, WINDOW, WINDOW, false)
+    let err = dflash2_readout::propose(model, &pool, &seq, WINDOW, WINDOW, false)
         .expect_err("a window one column behind was read");
     assert!(err.contains("extent-0"), "the wrong refusal: {err}");
 }

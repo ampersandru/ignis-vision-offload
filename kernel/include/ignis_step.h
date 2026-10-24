@@ -583,19 +583,24 @@ struct ignis_decode_options {
    * kernel's verdict, lane i accepts the leading drafts equal to its forced
    * tokens (at most its extent) and takes the forced token after them as the
    * correction: the committed run is the recorded text, cut and committed as
-   * any run is. Only greedy lanes may be forced (the round draws nothing),
-   * and only a verify round. NULL: the accept kernel decides, as always. */
+   * any run is. That token is the run's successor, the sequence's pending
+   * token, so it must be a vocabulary id; the pad -1 is taken only after a
+   * recording that ends at a stop id, and leaves the sequence with no pending
+   * token until a prefill gives it one (kernel/src/teacher_forcing.h). Only
+   * greedy lanes may be forced (the round draws nothing), only a verify round,
+   * and only on the 27B: a Flash-Next load refuses it. NULL: the accept kernel
+   * decides, as always. */
   const int32_t *forced_tokens; /* [batch_size][speculative_window + 1], or NULL */
 };
 
 #ifdef __cplusplus
 /* Beside the `size` check, both sides pin the layout (here, and
- * crates/core/src/step.rs's mirror test): GitHub #267 appended
+ * crates/core/src/step_abi.rs's mirror test, on CPU): GitHub #267 appended
  * `forced_tokens` last, after every field the serving path sets. */
 static_assert(sizeof(struct ignis_decode_options) == 88 &&
                   offsetof(struct ignis_decode_options, out_logits) == 72 &&
                   offsetof(struct ignis_decode_options, forced_tokens) == 80,
-              "ignis_decode_options drifted from crates/core/src/step.rs IgnisDecodeOptions");
+              "ignis_decode_options drifted from crates/core/src/step_abi.rs IgnisDecodeOptions");
 #endif
 
 /* Complete one decode round for a batch of sequence handles.  Each output is
