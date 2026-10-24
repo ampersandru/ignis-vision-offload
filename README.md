@@ -44,7 +44,7 @@
 Ignis is a deliberately specialized engine: **one model family, one class of
 card**. It gives up generality and takes back speed. It loads an NVFP4
 Qwen3.8-27B onto a single Blackwell card — an **RTX 5090** or an **RTX PRO
-6000**, both `SM120a` ([why not DGX Spark?](docs/user/dgx-spark.md)) — serves streaming and non-streaming
+6000**, both `SM120a` ([why not DGX Spark?](docs/user/guides/dgx-spark.md)) — serves streaming and non-streaming
 completions over the OpenAI v1 API, and is shaped around the workload a
 developer actually produces — *one main agent plus a handful of subagents
 hitting the same card at once*. Eight resident decode lanes run as one
@@ -438,7 +438,7 @@ edited again:
 The Server view: the model serving and the switch that brought it, every model
 the catalog knows with what is on disk and a **Load** button, and the running
 configuration, for all models or one family, field by field with where each
-value comes from ([docs/user](docs/user/README.md#the-playground)):
+value comes from ([docs/user](docs/user/playground/index.md)):
 
 ![The Server view, after a switch to the image model](docs/user/images/server_config.png)
 
