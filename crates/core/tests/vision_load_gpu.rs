@@ -58,7 +58,14 @@ fn a_vision_load_binds_the_tower_and_reserves_its_workspace_and_a_plain_load_rep
         .unwrap_or_else(|e| panic!("bind with vision: {e}"));
     let text_len = text_scope_27b().len();
     assert_eq!(handles.len(), text_len + VISION_OBJECTS);
-    let vision_weight_bytes: u64 = plan.device_objects[text_len..].iter().map(|p| p.bytes).sum();
+    // ADR 0062: the token embedding is the text scope's one host-mapped
+    // object, so the text scope holds one device object fewer than handles
+    // and the tower's objects are the rest. Slicing at `text_len`, as this did
+    // before the embedding moved, dropped the tower's first object (its
+    // 1,382,400-byte Q6 patch embedding) from the figure.
+    let text_device_objects = text_len - plan.host_mapped_objects.len();
+    assert_eq!(plan.device_objects.len(), text_device_objects + VISION_OBJECTS);
+    let vision_weight_bytes: u64 = plan.device_objects[text_device_objects..].iter().map(|p| p.bytes).sum();
 
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,
