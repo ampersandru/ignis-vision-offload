@@ -140,6 +140,7 @@ default, never a constant (the owner's rule).
 | `speech.idle_unload` | 300 s without a transcription, `model.idle_unload`'s default | Q53 | 01 |
 | `speech.partial_interval_ms` | 2000 | Q37 | 01, 03 |
 | `speech.rollback_tokens` | 5 (the official package's `unfixed_token_num`) | Q37 | 01 |
+| `speech.unfixed_partials` | 2 (the official package's `unfixed_chunk_num`): the first partials fix nothing. **Proposed by #351, not yet a field**: the executor takes it as a setting, and the field comes when spec 03 wires partials | #351 | 01, 03 |
 | `speech.max_sessions` | 4 open Realtime sessions | Q44 | 02, 03 |
 | `speech.max_queue` | 4 waiting batch requests | Q44 | 02 |
 | `speech.vad_threshold`, `speech.vad_prefix_padding_ms`, `speech.vad_silence_duration_ms` | 0.5, 300, 500 | Q22 | 05 |
@@ -156,10 +157,18 @@ Every field name above, and every default no Q gave, is the owner's
   what it finds; one binary serves every x86-64 CPU. Without AVX2 the speech
   model runs only on a loan, or is unavailable (ADR 0066, 0067).
 - **The 4-core figure goes into the requirements** (Q34). On a 4-core
-  container sharing the i9's L3 and memory bandwidth, 1.7B Q4_K_M ran at
-  3.0x real time. That container is optimistic, and a real budget 4-core
-  with slower RAM can fall under 2x. The documented fallback for a weak CPU
-  is `speech.model` set to the 0.6B Q8_0 entry: 5.0x on the same container.
+  container sharing the i9's L3 and memory bandwidth, our CPU executor at
+  `speech.threads: auto` (3 threads there) runs `qwen3-asr-1.7b` at 2.9-3.0x
+  real time and `qwen3-asr-0.6b` at 3.6-3.7x; `qwen3-asr-1.7b-q8` runs at
+  1.6-1.7x, under the 2x go band (1.9-2.1x at 4 threads, where llama.cpp
+  b11840 does 1.9-2.2x). On the i9 at `auto` (9 threads) the three run at
+  4.1-4.7x, 2.7-3.1x and 6.0-6.6x (spec 01, As built). That container is
+  optimistic, and a real budget 4-core with slower RAM can fall under 2x. The
+  documented fallback for a weak CPU is `speech.model` set to the 0.6B Q8_0
+  entry; `qwen3-asr-1.7b-q8` reached 2x only at 4 threads on the 60 s clip
+  and stayed under it on the 10 s clip. Live partials every 2 s
+  cost more than real time on four cores with every variant (spec 01, As
+  built; spec 03's concern).
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
   model is in use, KV at a 4,096-token context included. Nothing once
   `speech.idle_unload` has unloaded it (Q53).

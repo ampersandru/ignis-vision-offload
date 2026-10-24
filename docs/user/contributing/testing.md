@@ -50,6 +50,24 @@ make kernel-test    # the kernel leaf's CTest op tests alone
 The card fits one run at a time, in any worktree: check `make gpu-status`
 before every GPU run.
 
+## The speech executor's CPU legs
+
+The speech executor's kernels and ops are checked against fp64 in the default
+suite, and its front end against a recorded Transformers fixture. The checks
+on the real model files are `--ignored` CPU legs: every layer against
+Transformers FP32, teacher-forced top-1, the WER gates, the token counts and
+the kernels on the catalog files' own tensors. They read the study directory
+named by `IGNIS_SPEECH_STUDY` (the converted GGUF files, the FLEURS clips, the
+dictations) and fail without it, and they run alone on the machine, like a GPU
+run. The GPU profile leaves them out:
+
+```sh
+cargo test --release -p ignis-speech --test oracle -- --ignored --test-threads=1
+```
+
+The fixtures and their bounds are recorded by `tools/speech-oracle/record.py`
+([spec speech/01](../../specs/speech/01-cpu-executor.md)).
+
 ## The Playground
 
 The Playground's logic lives in pure modules with vitest tests. A change under

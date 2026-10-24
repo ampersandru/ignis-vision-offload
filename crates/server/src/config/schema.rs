@@ -690,8 +690,9 @@ config_group! {
         compat_names: Names = super::DEFAULT_SPEECH_COMPAT_NAMES.iter().map(|name| (*name).to_owned()).collect(), NO_RULE, ALL,
             [Visible, Patchable];
         /// The threads the speech model computes with: `auto` is the physical
-        /// cores less one. Read by the load, so a change holds from the next
-        /// one.
+        /// cores less one, counted within the CPUs the server may run on (a
+        /// container's cpuset or quota). Read by the load, so a change holds
+        /// from the next one; each load logs the count (`ignis.speech.threads`).
         threads: Threads = None, NO_RULE, ALL, [Visible, Patchable];
         /// The longest clip one transcription takes, in seconds; a longer one
         /// is refused and nothing is split. 1,200, the model's limit.

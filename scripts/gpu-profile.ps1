@@ -148,8 +148,10 @@ try {
         # decomposition sweep tables (GitHub #92) and the materialize upload
         # figure (GitHub #135) among them. Nothing interleaves at
         # `--test-threads=1`, so there is no reason to capture here.
+        # `--exclude ignis-speech`: the speech executor's ignored tests are CPU legs on the study
+        # disk, hours long and run alone on the machine (spec speech/01), not GPU tests.
         Invoke-Stage "gpu tests (serialized)" {
-            & cargo test --workspace --features cuda -- --ignored --test-threads=1 --nocapture --skip $CpuOracleTest
+            & cargo test --workspace --exclude ignis-speech --features cuda -- --ignored --test-threads=1 --nocapture --skip $CpuOracleTest
         }
     }
 
