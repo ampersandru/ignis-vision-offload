@@ -26,7 +26,7 @@
 
 <table align="center">
   <tr>
-    <td align="center"><b>~170 tok/s</b><br><sub>one lane, average; peaks ~370</sub></td>
+    <td align="center"><b>~170-370 tok/s</b><br><sub>one lane, free prose to coding prompts</sub></td>
     <td align="center"><b>1,065 tok/s</b><br><sub>eight lanes, aggregate</sub></td>
     <td align="center"><b>~9,700 tok/s</b><br><sub>cold prefill, 46K prompt</sub></td>
     <td align="center"><b>~100 tok/s</b><br><sub>Flash-Next 125B MoE, one lane</sub></td>
@@ -186,12 +186,14 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 
 - **One batch-wide round for all eight lanes**, replayed from **per-width CUDA
   graphs** (widths 1..8), not one launch sequence per sequence.
-- The round is **1,166 graph nodes and 15.81 ms of device time that is weight
-  streaming at the card's bandwidth** — the backbone GEMM at 100% of roofline,
-  the output head at 86%. Graph submission costs 2.2% of it, and the whole
-  remaining headroom is the 4.8% the device spends idle.
-- Prefill and decode **interleave at chunk level**, so a long prompt never
-  stalls the lanes already generating.
+- At one lane with DFlash2, the round is **1,166 graph nodes and 15.81 ms of
+  device time that is weight streaming at the card's bandwidth** — the backbone
+  GEMM at 100% of roofline (a fit good to about ±10%), the output head at 86%.
+  Graph submission costs 2.2% of it, and the whole remaining headroom is the
+  4.8% the device spends idle. At eight lanes the round is 32.18 ms.
+- Prefill and decode **take turns a chunk at a time**, so a long prompt holds
+  the lanes already generating for one chunk, not for the whole prompt;
+  `model.decode_share` sets the share of the card they keep meanwhile.
 
 ### Speculative decoding (DFlash2)
 
@@ -291,9 +293,10 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   and the generation goes on in the same response. The client sees a tag where
   the loop was and `rewound_tokens` in the usage; the reasoning sent back on
   the next turn is repaired to what the model saw.
-- Scored on recorded runs, it catches **25 of 25 harmful loops** (6 of 7 on
-  40 fresh seeds), with **no fire on the reasoning of real opencode and qwen-code
-  sessions**; on 79K- and 138K-token agent contexts a rewind restores the
+- Scored on recorded runs of the prompt its thresholds were tuned on, it
+  catches **25 of 25 harmful loops**, and **6 of 7 on 40 fresh seeds**; it
+  never fires on the recorded opencode and qwen-code sessions it was also
+  tuned against. On 79K- and 138K-token agent contexts a rewind restores the
   prompt in 0.08-0.10 s
   ([a loop persists](docs/findings/2026-10-16-a-loop-persists.md),
   [the guard](docs/findings/2026-10-14-reasoning-loop-guard.md)).
@@ -317,8 +320,9 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   model's distribution, and the readout costs **~36.5 ms and zero decoded
   tokens** at 0.934 balanced accuracy on the layout first measured; moving the
   evidence into the system block takes it to **0.963**.
-- `point` reads a click target off a 4096px screenshot to within 84 px worst
-  case, inside the button on every scene tested.
+- `point` lands inside the target on four pre-registered sets of screenshots
+  through the served endpoint: **236 of 240, 240 of 240, 120 of 120 and 60 of
+  60** ([the sub-cell reading](docs/findings/2026-09-23-the-sub-cell-reading-holds-through-decide.md)).
 - `locate` finds the line on fresh cluster logs of **100K to 1M tokens 21 times
   out of 23, median 2.6 s**, with no long prefill and no token decoded
   ([zero-decode locate](docs/findings/2026-09-28-zero-decode-locate-very-long-logs-and-prose.md)).
@@ -388,7 +392,9 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   **1,048,576**; factor up to 64).
   `--model-rope-scaling yarn:F` or `none` overrides it. What a long-context
   probe must ask is a question about *relative* position — a literal needle
-  at 320K is recalled with YaRN and without it.
+  at 320K is recalled with YaRN and without it. No probe so far separates the
+  two tables, so `auto` is the principled default, not a measured gain in
+  long-context recall.
 
 ### Batteries in the binary
 
