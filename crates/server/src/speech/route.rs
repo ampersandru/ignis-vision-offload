@@ -34,7 +34,7 @@ use serde_json::{json, Map, Value};
 use tokio::sync::{mpsc, oneshot};
 use utoipa::ToSchema;
 
-use super::audio::{self, AudioError};
+use super::audio;
 use super::executor::{LoadSettings, SessionOpen, SpeechExecutor, SpeechFiles, Transcript, WINDOW_SAMPLES};
 use super::languages;
 use super::worker::{Job, Step};
@@ -560,6 +560,12 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
     let Some(bytes) = form.file else {
         return bad_request_param("`file` is required: the audio to transcribe", "file");
     };
+    // A full queue is answered before the clip is decoded: the decode is the
+    // route's own CPU work, and a refused request should not cost it. The
+    // submit below checks again, the room being gone by then at times.
+    if let Err(full) = server.speech.admit(group) {
+        return engine_full(group.max_queue, full);
+    }
     let max_seconds = group.max_clip_seconds;
     // A decoder that panics on a malformed stream answers this request, not
     // the connection.
@@ -607,14 +613,7 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
     let timeout = Timeout::of(&live, asked.stream);
     let deadline = timeout.from_now();
     if let Err(full) = server.speech.submit(Box::new(job), group) {
-        let mut response = error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "server_error",
-            "engine_full",
-            format!("the speech model has {} transcriptions waiting (speech.max_queue); retry in {} s", group.max_queue, full.retry_after_secs),
-        );
-        response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
-        return response;
+        return engine_full(group.max_queue, full);
     }
     let ending = Ending {
         server: Arc::clone(&server),
@@ -633,6 +632,18 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
         return Sse::new(Events { events: stream }).into_response();
     }
     answer(ending, replied, deadline, timeout, asked.format).await
+}
+
+/// `503 engine_full` with the `Retry-After` the queue estimated.
+fn engine_full(max_queue: u32, full: super::worker::Full) -> Response {
+    let mut response = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "server_error",
+        "engine_full",
+        format!("the speech model has {max_queue} transcriptions waiting (speech.max_queue); retry in {} s", full.retry_after_secs),
+    );
+    response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
+    response
 }
 
 /// A transcription's end: what is logged and counted once, and the job's

@@ -537,6 +537,31 @@ async fn past_max_queue_the_answer_is_503_with_a_bounded_retry_after() {
     assert_eq!(transcribe(&app, &[]).await.0, StatusCode::OK, "room again");
 }
 
+/// Admission comes before the decode: a request that finds the queue full is
+/// refused `503` whatever its bytes are. A body that is no audio would be a
+/// `400` had it been decoded, so the `503` shows the decode did not run; with
+/// room again, the same body is decoded and refused as audio.
+#[tokio::test]
+async fn a_full_queue_is_answered_before_the_clip_is_decoded() {
+    let executor = fake();
+    executor.set_step_delay(Duration::from_millis(300));
+    let (server, _dir) = speech::server(executor.clone(), |group| group.max_queue = 0);
+    let app = app(&server);
+    let first = tokio::spawn({
+        let app = app.clone();
+        async move { transcribe(&app, &[]).await }
+    });
+    until(|| !executor.opened.lock().unwrap().is_empty()).await;
+    let not_audio = || speech::transcription(&[Part::File("file", b"not audio")]);
+    let (status, headers, body) = answer(&app, not_audio()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["code"], "engine_full");
+    assert!(headers.contains_key("retry-after"));
+    assert_eq!(first.await.unwrap().0, StatusCode::OK);
+    let (status, _, body) = answer(&app, not_audio()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "room again, so it is decoded: {body}");
+}
+
 /// `speech.max_queue` 0 runs one at a time with none waiting.
 #[tokio::test]
 async fn a_queue_of_zero_serves_one_at_a_time() {
@@ -681,6 +706,41 @@ async fn a_speech_entry_is_no_model_to_switch_to() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "model_kind_mismatch");
     assert!(body["error"]["message"].as_str().unwrap().contains("speech model"));
+}
+
+/// A speech entry is told by the catalog's `kind`, not by its id: one named
+/// `acme-asr` is never switched to, and a text entry named like a Qwen3-ASR
+/// model still is.
+#[tokio::test]
+async fn a_speech_entry_is_told_by_its_kind_and_not_by_its_id() {
+    use ignis_core::compute::ModelKind;
+    use ignis_server::download::{Catalog, CatalogEntry, CatalogFile, CatalogLayer};
+    use ignis_server::model_switch::{CatalogModels, Switcher, Unswitchable};
+    let dir = speech::temp_dir("kind-not-id");
+    let entry = |id: &str, kind: Option<ModelKind>| CatalogEntry {
+        id: id.to_owned(),
+        repo: "test/asr".to_owned(),
+        revision: "0".repeat(40),
+        artifact: format!("{id}.gguf"),
+        kind,
+        card_class: None,
+        aliases: Vec::new(),
+        files: vec![CatalogFile { name: format!("{id}.gguf"), bytes: 4, sha256: "0".repeat(64) }],
+        layer: CatalogLayer::Operator,
+    };
+    let catalog = Catalog::from_entries(vec![entry("acme-asr", Some(ModelKind::Speech)), entry("qwen3-asr-text", None)]);
+    for id in ["acme-asr", "qwen3-asr-text"] {
+        std::fs::write(dir.join(format!("{id}.gguf")), b"gguf").unwrap();
+    }
+    let switcher = Switcher::new(Arc::new(NeverLoads), Duration::from_secs(1))
+        .with_catalog(CatalogModels { catalog: Arc::new(catalog), dir: dir.clone() }, true);
+    assert!(switcher.is_speech("acme-asr") && !switcher.is_speech("qwen3-asr-text"));
+    assert_eq!(switcher.resolve("acme-asr"), Err(Unswitchable::Speech));
+    assert!(switcher.known("acme-asr").is_none());
+    assert!(switcher.resolve("qwen3-asr-text").is_ok());
+    assert!(switcher.known("qwen3-asr-text").is_some());
+    let servable: Vec<String> = switcher.servable_models("other").into_iter().map(|servable| servable.id).collect();
+    assert_eq!(servable, ["qwen3-asr-text"]);
 }
 
 /// A loader that loads nothing: the switch tests need a switcher, not a load.

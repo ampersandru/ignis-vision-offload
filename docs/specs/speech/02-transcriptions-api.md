@@ -41,7 +41,7 @@ decided by the owner on 2026-10-24, cited as `(owner, 2026-10-24)`.
 - **Unavailable, and why** (Q35, Q39), in the words the Playground shows
   (spec 04):
   - turned off (`speech.model = off`);
-  - no files, naming `ignis model download <id>`;
+  - no files, naming `ignis-server model download <id>`;
   - the CPU lacks AVX2 and no loan fits.
 - **`GET /v1/models`** lists the speech model in `data` only while it is
   available, with `kind: "speech"` (Q11, Q39, Q55). Available means it can
@@ -196,7 +196,7 @@ stereo 16-bit WAV is ~230 MB. That adds no new threshold (owner,
    entry, and `off` to none. The speech model is enabled when its files are
    on disk, and nothing downloads by itself (Q39, Q49).
 2. Each unavailable state reports its reason: off; files missing, naming
-   `ignis model download <id>`; no AVX2 and no loan. `GET /v1/models` always
+   `ignis-server model download <id>`; no AVX2 and no loan. `GET /v1/models` always
    carries a top-level `speech {available, reason}` object (Q35, Q39, Q55).
    The route answers an off or missing model with `503 speech_unavailable`
    and no `Retry-After` (owner, 2026-10-24).
@@ -279,14 +279,16 @@ decided something the spec left open, or differs from it:
   off, an id the catalog lacks, a host that cannot run it, files missing. The
   download command is spelled `ignis-server model download <id>`, the binary's
   real name.
-- **A speech entry is no model to switch to.** The catalog has no `kind` key,
-  so `speech::is_speech_id` (`qwen3-asr-` prefix) keeps those entries out of
-  the switch listing, the implicit switch and `POST /v1/models/switch` (`409
-  model_kind_mismatch`). #351's ids follow that prefix; if they change, so does
-  the constant.
+- **A speech entry is no model to switch to.** A catalog entry says it is one
+  with `kind: speech` (#351), the one kind a catalog states; `Switcher::is_speech`
+  reads it, so an id like `acme-asr` is kept out of the switch listing, the
+  implicit switch and `POST /v1/models/switch` (`409 model_kind_mismatch`)
+  as `qwen3-asr-1.7b` is, and a text entry named like a Qwen3-ASR model is
+  not. (#352 first told them by the `qwen3-asr-` id prefix.)
 - **The route.** Order of answers: `404`/`409` on `model`, `503
-  speech_unavailable`, the field rules (`400`), the audio (`400`), admission
-  (`503 engine_full`), the deadline (`504`). `speech_unavailable` is also the
+  speech_unavailable`, the field rules (`400`), admission (`503 engine_full`,
+  looked at before the clip is decoded and again at the submit), the audio
+  (`400`), the deadline (`504`). `speech_unavailable` is also the
   answer to a model that will not load. The gate lets the route through in
   every status, a warm-up included, and `MODEL_ROUTES` does not list it.
 - **Deadline.** Counted from admission, the queue's wait included, as this
@@ -320,5 +322,15 @@ decided something the spec left open, or differs from it:
   stays refused with the accepted set named. Symphonia (MPL-2.0, pure Rust)
   decodes WAV, FLAC, MP3, AAC and demuxes Ogg and Matroska; there is no Vorbis
   decoder.
+- **Symphonia 0.6.1.** #352 built on 0.5 (the lock held 0.5.5, the notes said
+  0.6.1); the follow-up moved to 0.6.1, which builds on this host (it pulls
+  no `cmake` or `windows-sys` >= 0.59) with `audio.rs` ported to its API
+  (`Probe::probe`, `make_audio_decoder`, `copy_to_slice_interleaved`). The
+  audio tests, which decode every accepted format to the tone, pass
+  unchanged.
+- **Admission before the decode.** The route looks at the queue
+  (`Speech::admit`) before it decodes the clip, so a request that finds it full
+  is a `503 engine_full` and costs no decode; the submit checks again, as the
+  room can go in between.
 - **Open:** AC 16 (the 5090's decode while a 60 s transcription runs) needs the
-  real executor and the GPU; the executor adapter above; Opus.
+  real executor and the GPU; AC 9's cap against the real tokenizer; Opus.

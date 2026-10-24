@@ -56,7 +56,7 @@ png = "0.18"
 # native code, no codec beyond these (no Vorbis, no Opus: libopus is a
 # separate decision, spec speech/spec.md "Native code outside `cuda`").
 # MPL-2.0, a dependency and not copied code (ADR 0051).
-symphonia = { version = "0.5.4", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aac", "isomp4", "ogg", "mkv"] }
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aac", "isomp4", "ogg", "mkv"] }
 
 # `_exit` (GitHub #329, `shutdown::exit_now`): a stop before serving ends the
 # process without running its exit handlers. Already in the tree.

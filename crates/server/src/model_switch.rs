@@ -589,6 +589,13 @@ impl Switcher {
         listed
     }
 
+    /// Whether `model` names a speech model's catalog entry (`kind: speech`,
+    /// ADR 0066): loaded beside the active model, never switched to, so it
+    /// is no model a switch resolves, lists or fetches an artifact for.
+    pub fn is_speech(&self, model: &str) -> bool {
+        self.catalog.as_ref().and_then(|catalog| catalog.catalog.entry(model)).is_some_and(|entry| entry.is_speech())
+    }
+
     /// The catalog a switch can go to, with the directory it is looked up in.
     pub fn catalog(&self) -> Option<&CatalogModels> {
         self.catalog.as_ref()
@@ -611,7 +618,7 @@ impl Switcher {
         if let Some(refusal) = self.above_class(model) {
             return Err(Unswitchable::AboveClass(refusal));
         }
-        if crate::speech::is_speech_id(model) {
+        if self.is_speech(model) {
             return Err(Unswitchable::Speech);
         }
         if let Some(listed) = self.listed_models().remove(model) {
@@ -764,7 +771,7 @@ impl Switcher {
         };
         catalog
             .chain(known.keys().cloned())
-            .filter(|id| !crate::speech::is_speech_id(id))
+            .filter(|id| !self.is_speech(id))
             .filter(|id| seen.insert(id.clone()))
             .filter_map(|id| match self.known(&id) {
                 Some(_) => Some(Servable { id, unavailable: None }),
@@ -784,7 +791,7 @@ impl Switcher {
     /// not (ADR 0064 §3): a request naming it never switches.
     pub fn known(&self, model: &str) -> Option<PathBuf> {
         // A speech model is no model to switch to (ADR 0066).
-        if crate::speech::is_speech_id(model) {
+        if self.is_speech(model) {
             return None;
         }
         if self.above_class(model).is_some() {

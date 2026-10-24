@@ -142,14 +142,21 @@ impl Worker {
         }
     }
 
+    /// Whether a batch job would be queued now: `Ok` unless `max_queue` jobs
+    /// already wait behind the one running. A look, not a reservation — the
+    /// room can go before the caller's [`Worker::submit`], which checks
+    /// again — so a route asks it before the work that precedes a submit
+    /// (decoding the clip) and still answers the submit's refusal.
+    pub fn room(&self, max_queue: u32) -> Result<(), Full> {
+        let state = self.shared.lock();
+        self.shared.room(&state, max_queue)
+    }
+
     /// Queue a batch job, unless `max_queue` jobs already wait behind the one
     /// running.
     pub fn submit(&self, job: Box<dyn Job>, max_queue: u32) -> Result<(), Full> {
         let mut state = self.shared.lock();
-        if state.jobs() > max_queue as usize {
-            let front = state.stepping.or_else(|| state.batch.front().map(|entry| entry.job.audio_seconds())).unwrap_or(0.0);
-            return Err(Full { retry_after_secs: self.shared.retry_after(front) });
-        }
+        self.shared.room(&state, max_queue)?;
         state.batch.push_back(Entry { job, computed: Duration::ZERO });
         self.shared.queue_changed(&state);
         drop(state);
@@ -205,6 +212,16 @@ impl Shared {
         // The gauge counts the batch requests waiting, not the one running.
         self.gauges.queue.store(state.jobs().saturating_sub(1), Ordering::SeqCst);
         self.gauges.publish();
+    }
+
+    /// `Err` when `max_queue` jobs already wait behind the one running, with
+    /// when room frees.
+    fn room(&self, state: &State, max_queue: u32) -> Result<(), Full> {
+        if state.jobs() > max_queue as usize {
+            let front = state.stepping.or_else(|| state.batch.front().map(|entry| entry.job.audio_seconds())).unwrap_or(0.0);
+            return Err(Full { retry_after_secs: self.retry_after(front) });
+        }
+        Ok(())
     }
 
     /// Seconds until room frees: the clip at the front, at the speed made so

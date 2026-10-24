@@ -11,13 +11,12 @@
 
 use std::io::Cursor;
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 /// The rate the speech model takes.
 pub const TARGET_RATE: u32 = 16_000;
@@ -67,40 +66,40 @@ impl Clip {
 /// as its length is known or reached. Blocking.
 pub fn decode(bytes: Vec<u8>, max_seconds: u32) -> Result<Clip, AudioError> {
     let source = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
-    let probed = symphonia::default::get_probe()
-        .format(&Hint::new(), source, &FormatOptions::default(), &MetadataOptions::default())
+    let mut format = symphonia::default::get_probe()
+        .probe(&Hint::new(), source, FormatOptions::default(), MetadataOptions::default())
         .map_err(|error| AudioError::Unsupported(format!("no container recognised: {error}")))?;
-    let mut format = probed.format;
     let track = format
         .tracks()
         .iter()
-        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|track| track.codec_params.as_ref().and_then(|params| params.audio()).is_some())
         .ok_or_else(|| AudioError::Unsupported("no audio track whose codec this server decodes (Opus is not decoded)".to_owned()))?;
     let track_id = track.id;
-    let params = track.codec_params.clone();
+    let params = track.codec_params.as_ref().and_then(|params| params.audio()).expect("found by it").clone();
     // A length the container states is checked before a sample is decoded.
-    if let (Some(frames), Some(rate)) = (params.n_frames, params.sample_rate) {
+    if let (Some(frames), Some(rate)) = (track.num_frames, params.sample_rate) {
         if rate > 0 && frames / u64::from(rate) > u64::from(max_seconds) {
             return Err(AudioError::TooLong { limit_seconds: max_seconds });
         }
     }
     let mut decoder = symphonia::default::get_codecs()
-        .make(&params, &DecoderOptions::default())
-        .map_err(|error| AudioError::Unsupported(format!("the codec is not decoded: {error}")))?;
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .map_err(|error| AudioError::Unsupported(format!("the codec is not decoded (Opus is not): {error}")))?;
 
     let max_samples = u64::from(max_seconds) * u64::from(TARGET_RATE);
     let mut resampler: Option<Resampler> = None;
     let mut samples: Vec<f32> = Vec::new();
-    let mut interleaved: Option<SampleBuffer<f32>> = None;
+    let mut interleaved: Vec<f32> = Vec::new();
     let mut mono: Vec<f32> = Vec::new();
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(SymphoniaError::IoError(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(SymphoniaError::ResetRequired) => break,
             Err(error) => return Err(AudioError::Unreadable(error.to_string())),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
@@ -109,16 +108,13 @@ pub fn decode(bytes: Vec<u8>, max_seconds: u32) -> Result<Clip, AudioError> {
             Err(SymphoniaError::DecodeError(_)) => continue,
             Err(error) => return Err(AudioError::Unreadable(error.to_string())),
         };
-        let spec = *decoded.spec();
-        let channels = spec.channels.count().max(1);
-        let buffer = interleaved.get_or_insert_with(|| SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
-        if buffer.capacity() < decoded.capacity() * channels {
-            *buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        }
-        buffer.copy_interleaved_ref(decoded);
+        let spec = decoded.spec().clone();
+        let channels = spec.channels().count().max(1);
+        interleaved.resize(decoded.samples_interleaved(), 0.0);
+        decoded.copy_to_slice_interleaved(&mut interleaved);
         mono.clear();
-        mono.extend(buffer.samples().chunks_exact(channels).map(|frame| frame.iter().sum::<f32>() / channels as f32));
-        let rate = spec.rate;
+        mono.extend(interleaved.chunks_exact(channels).map(|frame| frame.iter().sum::<f32>() / channels as f32));
+        let rate = spec.rate();
         if rate == TARGET_RATE {
             samples.extend_from_slice(&mono);
         } else {
