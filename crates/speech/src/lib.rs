@@ -16,8 +16,10 @@
 pub mod avx2;
 pub mod cpu;
 pub mod gguf;
+pub mod math;
 pub mod matmul;
 pub mod mem;
+pub mod ops;
 pub mod pool;
 pub mod quant;
 
