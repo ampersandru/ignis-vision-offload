@@ -33,17 +33,6 @@ use crate::download::Catalog;
 use executor::{NoExecutor, SpeechExecutor, SpeechFiles};
 use worker::{Full, Gauges, Job, Worker};
 
-/// What marks a catalog entry as a speech model rather than one a switch can
-/// load: the Qwen3-ASR entries' ids (`qwen3-asr-1.7b`, `-1.7b-q8`, `-0.6b`).
-/// The catalog has no `kind` key, so the id is the discriminator; the
-/// listing, the switch and the kind check read it here.
-pub const SPEECH_ID_PREFIX: &str = "qwen3-asr-";
-
-/// Whether `id` names a speech model (a catalog entry never switched to).
-pub fn is_speech_id(id: &str) -> bool {
-    id.starts_with(SPEECH_ID_PREFIX)
-}
-
 /// The catalog and the directory the speech model's files are looked for in:
 /// `download.path`.
 #[derive(Debug, Clone)]
@@ -142,6 +131,13 @@ impl Speech {
         Ok(SpeechFiles { id, decoder: entry.artifact_path(&models.dir), files })
     }
 
+    /// Whether a batch job would be queued now, or when room frees: the look
+    /// a route takes before it decodes a clip, so a full queue costs a
+    /// refusal and not a decode. [`Speech::submit`] checks again.
+    pub fn admit(&self, group: &SpeechGroup) -> Result<(), Full> {
+        self.worker().room(group.max_queue)
+    }
+
     /// Queue a batch job, or say when room frees. Starts the worker, and
     /// hands it the live idle time.
     pub fn submit(&self, job: Box<dyn Job>, group: &SpeechGroup) -> Result<(), Full> {
@@ -217,6 +213,7 @@ mod tests {
             artifact: format!("{id}-decoder.gguf"),
             card_class: None,
             aliases: Vec::new(),
+            kind: Some(ignis_core::compute::ModelKind::Speech),
             files: vec![file(&format!("{id}-encoder.gguf")), file(&format!("{id}-decoder.gguf"))],
             layer: CatalogLayer::BuiltIn,
         };

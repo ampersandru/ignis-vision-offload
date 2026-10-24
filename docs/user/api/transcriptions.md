@@ -23,8 +23,9 @@ by itself:
 ignis-server model download qwen3-asr-1.7b
 ```
 
-`speech.model` picks it: `auto` (the default) is `qwen3-asr-1.7b`, the 1.7B
-model with a Q4_K_M decoder; a catalog id picks another entry; `off` turns it
+`speech.model` picks it: `auto` (the default) is `qwen3-asr-1.7b` (1.5 GiB), the 1.7B
+model with a Q4_K_M decoder; a catalog id picks another entry (`qwen3-asr-1.7b-q8`,
+2.3 GiB, or `qwen3-asr-0.6b`, 0.9 GiB); `off` turns it
 off. It is loaded by the first request, about a second or two of delay, and
 unloaded after `speech.idle_unload` seconds (300) without a transcription.
 `GET /v1/models` says whether it can serve:
@@ -118,6 +119,8 @@ to the audio: on a 10-thread desktop CPU (4.8 times real time) a minute of speec
 and a 20-minute clip four minutes or so. Up to `speech.max_queue` (4) requests
 wait behind the one running; the next is `503 engine_full` with a `Retry-After`
 of one to fifteen seconds, an estimate of when room frees.
+It is answered before the audio is decoded, so a body that is not audio gets
+the `503`, not a `400`, while the queue is full.
 
 A request is held to the [deadline](deadlines.md) from its admission, queue
 included: `server.request_timeout`, or `server.stream_timeout` when it

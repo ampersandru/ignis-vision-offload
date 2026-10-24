@@ -211,10 +211,16 @@ Same method as the image model (Q25), with Q52's changes:
 - Three built-in catalog entries (Q49), pinned like every other (ADR 0047):
   `qwen3-asr-1.7b`, `qwen3-asr-1.7b-q8` and `qwen3-asr-0.6b`, from
   `gpillon/Qwen3-ASR-1.7B-GGUF-ignis` and `gpillon/Qwen3-ASR-0.6B-GGUF-ignis`
-  (owner, 2026-10-24). `ignis model download <id>` fetches them (Q39).
+  (owner, 2026-10-24). `ignis-server model download <id>` fetches them (Q39).
   - **Two files, one entry** (owner, 2026-10-24). `artifact` names the
     decoder GGUF. The encoder GGUF is found beside it under a fixed name and
     listed in `files`, as Flash-Next's MTP companion is.
+  - **As built** (#351): the entry states `kind: speech`, the one kind a
+    catalog says. It takes the speech rules in place of the sidecar rule: the
+    artifact is a `.gguf`, and an `mmproj-*.gguf` file is among the `files`.
+    It states no `card_class` (the CPU runs it; no card refuses it). The two
+    1.7B entries share one encoder file, `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf`;
+    the 1.7B Q4_K_M decoder is the `auto` default.
   - The family is read from the GGUF pair's metadata (a `qwen3vl` decoder
     with no deepstack layers, a `qwen3a` projector), never from a file name
     (ADR 0047; owner, 2026-10-24).
@@ -293,9 +299,14 @@ Same method as the image model (Q25), with Q52's changes:
 14. Per catalog variant, through the batch path: pooled WER on FLEURS 40 and
     on the 11 dictations, official prompt, is not worse than Transformers
     FP32's by more than 1 pt. No transcript is compared for equality (Q52).
-15. Through the incremental path at real-time pace, pooled WER is not worse
-    than the batch path's by more than 1 pt. The paper's streaming mode lost
-    0.6-1.1 pt against offline (Q37, Q52; owner, 2026-10-24).
+15. Through the incremental path at real-time pace, at the default tail of 10
+    (`speech.rollback_tokens`, Q75), pooled WER is not worse than the batch
+    path's by more than 1 pt, for the default variant and `qwen3-asr-0.6b`.
+    `qwen3-asr-1.7b-q8` is documented at +1.29 pt on the dictations, the
+    same explicit-choice treatment as AC 24 (Q73). The paper's streaming mode
+    lost 0.6-1.1 pt against offline (Q37, Q52; owner, 2026-10-24). At the
+    former tail of 5 the 1.7B lost 1.12 pt and the 0.6B 1.94 pt, which is why
+    the default moved.
 16. The parser strips `language X<asr_text>` and keeps X. `None` plus text
     keeps the text. `None` alone gives an empty transcript. No language is
     forced unless asked, and a forced one is the official prefill (Q51, Q6).
@@ -324,7 +335,7 @@ Same method as the image model (Q25), with Q52's changes:
     `gpillon/Qwen3-ASR-0.6B-GGUF-ignis`. Our Q8_0 is checked against
     ggml-org's. The catalog entries `qwen3-asr-1.7b`, `qwen3-asr-1.7b-q8` and
     `qwen3-asr-0.6b` download and verify by sha256 through
-    `ignis model download`. Nothing is uploaded before the owner's OK and a
+    `ignis-server model download`. Nothing is uploaded before the owner's OK and a
     privacy scan (Q47, Q49, Q39; owner, 2026-10-24).
 23. The executor's own times, warm, at `speech.threads: auto`, on the i9 and
     on the 4-core container, for a 10 s and a 60 s clip per catalog variant,

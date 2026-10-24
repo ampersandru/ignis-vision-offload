@@ -124,7 +124,7 @@ line:
 | cause | text | from |
 |---|---|---|
 | plain http, not localhost | The microphone needs https or localhost. Open the Playground through an https proxy, or start the server with `--server-expose cloudflare-quick`. | Q18 |
-| no speech model | No speech model on this server. Download one with `ignis model download <id>`. | Q39 |
+| no speech model | No speech model on this server. Download one with `ignis-server model download <id>`. | Q39 |
 | speech turned off | Speech is turned off on this server (`speech.model = off`). | Q39 |
 | browser blocked the mic | Microphone access is blocked for this site. Allow it in the browser's site settings, then press the mic again. | Q17 |
 | no CPU path, no room | Speech is unavailable on this machine: the CPU lacks AVX2 and the card has no free room to lend. | Q35 |

@@ -75,3 +75,37 @@ models:
     files:
       - { name: qwen3_8_27b_trellis_sc30-v2.ninfer.conversion.json, bytes: 309495, sha256: "210ab54bfe8b04e5fc4337ee3755c340ea3f21239aa625c505aa2406645a340d" }
       - { name: qwen3_8_27b_trellis_sc30-v2.ninfer, bytes: 13379877124, sha256: "2c4c9ee4d6b25c08da6c2d85840126e73d120564e230f926b6230b5b95ee8b3c" }
+
+  # The speech models (ADR 0066, spec speech/01 §6, GitHub #351): the
+  # Qwen3-ASR decoder and its audio encoder as GGUFs, converted by the owner
+  # (tools/speech-gguf/convert.sh) and run on the CPU beside the active model.
+  # `kind: speech` marks them: no sidecar, never switched to. The artifact is
+  # the decoder; the encoder is the `mmproj-` file beside it. The 1.7B Q4_K_M
+  # is what `speech.model: auto` serves; the 1.7B Q8_0 and the 0.6B Q8_0 are
+  # explicit choices. The two 1.7B entries share one encoder file.
+  - id: qwen3-asr-1.7b
+    repo: gpillon/Qwen3-ASR-1.7B-GGUF-ignis
+    revision: "f8a5263e398c1b3606abedc6b9c74dcbced9f93f"
+    artifact: Qwen3-ASR-1.7B-Q4_K_M.gguf
+    kind: speech
+    files:
+      - { name: mmproj-Qwen3-ASR-1.7B-Q8_0.gguf, bytes: 355709472, sha256: "f325a44bdbc23b2df78ed35ad6342da3aabf1e618e1a9ffd1ef8861cb3b1b0f6" }
+      - { name: Qwen3-ASR-1.7B-Q4_K_M.gguf, bytes: 1282435136, sha256: "5c5f878af090a70b25dc7a0f1090620e734654e9eceb6f4ac4656423c243974c" }
+
+  - id: qwen3-asr-1.7b-q8
+    repo: gpillon/Qwen3-ASR-1.7B-GGUF-ignis
+    revision: "f8a5263e398c1b3606abedc6b9c74dcbced9f93f"
+    artifact: Qwen3-ASR-1.7B-Q8_0.gguf
+    kind: speech
+    files:
+      - { name: mmproj-Qwen3-ASR-1.7B-Q8_0.gguf, bytes: 355709472, sha256: "f325a44bdbc23b2df78ed35ad6342da3aabf1e618e1a9ffd1ef8861cb3b1b0f6" }
+      - { name: Qwen3-ASR-1.7B-Q8_0.gguf, bytes: 2165035072, sha256: "9039c0cbbc13be5c25f2b34fcb70258f68f06b64f67a48831c7e13c72593e1e7" }
+
+  - id: qwen3-asr-0.6b
+    repo: gpillon/Qwen3-ASR-0.6B-GGUF-ignis
+    revision: "af02916ea7a532a667a907c2a163b16a8c04b433"
+    artifact: Qwen3-ASR-0.6B-Q8_0.gguf
+    kind: speech
+    files:
+      - { name: mmproj-Qwen3-ASR-0.6B-Q8_0.gguf, bytes: 214392608, sha256: "ee5e87436bcf8b1c550edd4300fd0516067d55b547611734d27fbc55ecaec3bc" }
+      - { name: Qwen3-ASR-0.6B-Q8_0.gguf, bytes: 804749376, sha256: "027ad3329549cd2c14e4ebd7d104e0390566e06570270c33062529474ec56015" }

@@ -311,7 +311,7 @@ mod tests {
             path.ends_with(&entry.artifact).then_some(ModelFamily::Qwen38_27b)
         };
         let rows = list_rows(&catalog, Path::new("m"), &sizes(&on), &family_of);
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 9);
         assert_eq!(
             rows.iter().map(|row| (row.entry.id.as_str(), row.on_disk, row.family)).collect::<Vec<_>>(),
             [
@@ -320,6 +320,9 @@ mod tests {
                 ("qwen3.8-flash-next", OnDisk::Absent, None),
                 ("ignis-image-2.1-turbo", OnDisk::Absent, None),
                 ("qwen3.8-27b-16g", OnDisk::Absent, None),
+                ("qwen3-asr-1.7b", OnDisk::Absent, None),
+                ("qwen3-asr-1.7b-q8", OnDisk::Absent, None),
+                ("qwen3-asr-0.6b", OnDisk::Absent, None),
                 // On disk, but its header names neither family: `—`.
                 ("acme-ft", OnDisk::Partial, None),
             ]
@@ -328,13 +331,14 @@ mod tests {
 
         let text = render_list(&rows, ListFormat::Text);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 7, "{text}");
+        assert_eq!(lines.len(), 10, "{text}");
         assert!(lines[0].starts_with("ID") && lines[0].contains("REPO@REVISION") && lines[0].contains("FAMILY"), "{text}");
         assert!(lines[1].contains("built-in") && lines[1].contains("gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer@e961b419b672e183aa55df8c4b975abc82006e8a"), "{text}");
         assert!(lines[1].contains("18.1 GiB") && lines[1].contains("complete") && lines[1].ends_with("Qwen3.8-27B"), "{text}");
         assert!(lines[3].contains("67.8 GiB") && lines[3].contains("absent") && lines[3].ends_with('—'), "{text}");
         assert!(lines[5].contains("built-in") && lines[5].contains("gpillon/Qwen3.8-27B-trellis-3bpw-ignis@f5bbd2cc") && lines[5].contains("12.5 GiB"), "{text}");
-        assert!(lines[6].contains("operator") && lines[6].contains("acme/ft@v1") && lines[6].contains("partial"), "{text}");
+        assert!(lines[9].contains("operator") && lines[9].contains("acme/ft@v1") && lines[9].contains("partial"), "{text}");
+        assert!(lines[6].contains("gpillon/Qwen3-ASR-1.7B-GGUF-ignis@f8a5263e") && lines[6].contains("1.5 GiB") && lines[6].contains("absent"), "{text}");
 
         let json: Vec<Value> = serde_json::from_str(&render_list(&rows, ListFormat::Json)).unwrap();
         assert_eq!(json[0]["id"], "qwen3.8-27b");
@@ -343,8 +347,8 @@ mod tests {
         assert_eq!(json[0]["bytes"], entry.total_bytes());
         assert_eq!(json[0]["on_disk"], "complete");
         assert_eq!(json[0]["family"], "Qwen3.8-27B");
-        assert_eq!(json[5]["layer"], "operator");
-        assert_eq!(json[5]["family"], Value::Null);
+        assert_eq!(json[8]["layer"], "operator");
+        assert_eq!(json[8]["family"], Value::Null);
     }
 
     fn fetched(catalog: &Catalog, ids: &[&str], all: bool, card: Option<CardClass>) -> Result<Vec<String>, String> {
@@ -363,7 +367,7 @@ mod tests {
         assert_eq!(fetched(&catalog, &["QWEN3.8-27B", "qwen3.8-27b-16g"], false, sixteen), Ok(vec!["qwen3.8-27b-16g".to_owned()]));
         for card in [Some(CardClass::Gb32), None] {
             assert_eq!(fetched(&catalog, &["qwen3.8-27b"], false, card), Ok(vec!["qwen3.8-27b".to_owned()]), "{card:?}: nothing changes");
-            assert_eq!(fetched(&catalog, &[], true, card).unwrap().len(), 5, "{card:?}");
+            assert_eq!(fetched(&catalog, &[], true, card).unwrap().len(), 8, "{card:?}");
         }
     }
 

@@ -67,6 +67,7 @@ fn entry() -> CatalogEntry {
         artifact: ARTIFACT.to_owned(),
         card_class: Some(ignis_server::config::profile::CardClass::Gb32),
         aliases: Vec::new(),
+        kind: None,
         // Listed large first: the fetch order is the transfer's, not the list's.
         files: vec![pinned(ARTIFACT, &artifact_bytes()), pinned(SIDECAR, SIDECAR_BODY)],
         layer: CatalogLayer::Operator,

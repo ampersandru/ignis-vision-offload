@@ -68,7 +68,7 @@ impl Default for Settings {
             pinned_weights: false,
             idle_unload: Duration::from_secs(300),
             partial_interval_ms: 2000,
-            rollback_tokens: 5,
+            rollback_tokens: 10,
             unfixed_partials: 2,
             context_max_tokens: 512,
             max_clip_seconds: 1200,
