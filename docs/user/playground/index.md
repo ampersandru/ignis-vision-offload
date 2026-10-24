@@ -1,14 +1,78 @@
 ---
 title: "The Playground"
-description: "The browser UI at /ui: chat, Decide, Image, Monitor and Server views."
+description: "The browser UI that ships inside ignis-server: every feature of the engine, one view at a time."
 sidebar:
   order: 1
+  label: "Overview"
 ---
 
-The Playground (`web/`, React + Vite) is served at `/ui/` unless `--server-ui false`, but
-it is embedded into `ignis-server` only if `web/dist` exists when cargo builds
-it — cargo never runs npm. Build the frontend first (needs Node.js), then the
-server:
+The Playground is a web app built into `ignis-server` and served at
+**`/ui/`**, on the same port as the API: open <http://127.0.0.1:8000/ui/>
+once the server is up. It is the quickest way to see what ignis does, and it
+is built to show its work: every reply carries the figures the browser
+measured, subagents run on their own lanes in front of you, a decision shows
+the whole distribution behind its answer, and the Monitor draws the server's
+own metrics as they move.
+
+![The Playground: a reply with its reasoning, its figures and the context meter](../images/playground/chat-reply.png)
+
+Nothing in it is a private API. Every view talks to the same `/v1` routes a
+client of yours would, so each page of this section names the request a
+control sends: what you click in the Playground is what you can script.
+
+## The views
+
+The header switches between five views. The chat stays mounted under the
+others, so a reply keeps streaming while you look at the Monitor.
+
+| View | What it is for | What it asks the server | Page |
+|---|---|---|---|
+| **Playground** | Chat with the model: reasoning, tools, subagents, images and files in the prompt, several sessions | `/v1/responses` over a WebSocket, or `/v1/chat/completions` | [Chat](chat.md), [Settings](settings.md), [Tools and agents](tools-and-agents.md), [Sessions](sessions.md) |
+| **Decide** | Ask many questions over one piece of evidence, answered from one prefill with nothing generated | `POST /v1/decide` | [Decide](decide.md) |
+| **Image** | Make and edit pictures with the image model, step by step | `/v1/images/generations`, `/v1/images/edits` | [Image studio](image-studio.md) |
+| **Monitor** | The server's Prometheus metrics, drawn live: load, latency, the VRAM plan, reuse, speculation | `GET /ui/metrics` | [Monitor](monitor.md) |
+| **Server** | The loaded model, the models a switch can go to, and the running configuration as a form | `/v1/models`, `/v1/models/switch`, `/v1/config` | [Server](server.md) |
+
+The Monitor tab appears only while the server serves metrics (`server.metrics`,
+on by default). Below 640 px wide the tabs become one menu, and below 1024 px
+the side columns of the chat, Decide and Image views open as drawers from the
+header.
+
+## The header
+
+Left to right: the flame, which burns while a reply streams or a model loads;
+the view tabs; the **model status** (the model's id with a green square when
+it serves, `Loading…` or `Switching to…` while it does not, `· unloaded` in
+grey after an [idle unload](../api/idle-unload.md)); in the chat, a chip with
+how many requests are running and the server's token rate, which opens the
+Monitor; **Memory**, the notes the model keeps about you
+([Tools and agents](tools-and-agents.md#memory)); and **Lock** while an API key
+is stored.
+
+## An API key
+
+When the server runs with a key ([access](../configuration/access.md)), the
+first `/v1` request answers 401 and the page asks for it. The key is checked
+with `GET /v1/models`, kept in this browser (`localStorage`), and sent on every
+request as `Authorization: Bearer`; the WebSocket offers it as a subprotocol.
+**Lock** forgets it.
+
+![The key page](../images/playground/key-page.png)
+
+## What the page keeps
+
+The chat's sessions, the Decide tab's decisions and the Image view's sessions
+and pictures are stored in this browser (IndexedDB) and come back after a
+reload; nothing is stored on the server. Settings are not stored: a reload
+puts the defaults back. The details, and what each key holds:
+[Sessions and storage](sessions.md).
+
+## Turning it off, building it in
+
+`--server-ui false` (config `server.ui`) stops serving it. The Playground is
+embedded into `ignis-server` only if `web/dist` exists when cargo builds it;
+cargo never runs npm. The release archives and the container image have it.
+From a checkout, build the frontend first (it needs Node.js), then the server:
 
 ```
 npm --prefix web ci
@@ -19,57 +83,14 @@ cargo build --release -p ignis-server
 A server built without `web/dist` still serves `/ui/`, as a page with these
 instructions.
 
-The **Server** view changes the running server from the page (GitHub #316). It
-lists the models a switch can go to (`GET /v1/models/catalog`); **Load**
-switches to one by id, whatever `--switch-allow-implicit` says, and a model not
-on disk shows the `ignis-server model download <id>` command instead. Below,
-every field `GET /v1/config` shows is a form (`GET /v1/config/fields` says
-which can change and which reload the model); **Apply** sends the changed
-fields as one `PATCH /v1/config`, which writes them to the config file in use,
-and reads **Apply and reload** when one of them reloads the model.
+For frontend work, `npm --prefix web run dev` serves the page with hot reload
+and proxies `/v1` and `/ui/metrics` to a running server (`IGNIS_URL`, default
+`http://127.0.0.1:8000`). `npm --prefix web run dev:mock` answers from a fake
+engine instead, so no GPU is needed; it has no WebSocket, no image routes and
+no idle unload, and its replies are canned.
 
-The **Image** view is a studio of **image sessions** (GitHub #326; web only,
-the server is unchanged). A session keeps every picture uploaded into it, made
-by it or marked in it, each named `#N`, and its steps: the prompt, the input
-images it was sent with and the pictures it made. The next step's input
-defaults to the last step's first picture, so a picture is edited step after
-step; no input makes a new one. A picture can be **marked** — circles and
-brush strokes drawn on it, or sent as a mask image — and "Change only the
-marked area" lays each result over the original through the marked area, so
-nothing outside it changes. **Transparent** pictures use the card's own
-wording. Sessions are stored in the browser (IndexedDB) and survive a reload.
-An edit is never sent the seed behind its inputs unless "Same seed between
-edits" is on: the same noise again builds up into grain
-([finding](../../findings/2026-10-16-image-edit-same-seed-grain.md)).
+## Where to go next
 
-In the **chat**, the `make_image` tool (on by default, not for agents) lets the
-model make pictures: the page switches to the image model, makes them, and
-switches back to the text model before the next request. The pictures the
-user sent and the ones the tool made can be referenced, marked, and opened in
-an image session. A picker under the prompt box names the model the next
-message goes to and what sending does first (nothing, a load or a switch);
-with the image model loaded, the next message goes back to a text model on
-its own.
-
-The **chat's sessions** and the **Decide tab's decisions** are stored in the
-browser too (IndexedDB, GitHub #171), with the image sessions, and come back
-after a reload with the session that was open: every message with its
-reasoning, tool runs, figures and log, the attached files, and the decisions'
-drafts, evidence and answers. A reply that was streaming comes back stopped
-with the text it had got, and a call it left running is answered as stopped. A
-picture sent in the chat is stored at its own size (with its marks), once,
-beside the Image view's pictures; deleting a session deletes the pictures no
-other session — chat or image — still names. The store belongs to the browser
-and the origin: the dev server on :5173 and the page on `/ui/` keep separate
-ones, and nothing goes to the server. When the browser refuses the space, the
-session list says so and the page goes on without saving.
-
-A model [unloaded while idle](../api/idle-unload.md) shows as **unloaded** under its id
-— in the header and the Server view, not as an error — and the page does not
-poll it; **Load** on it loads it now, and a message sent meanwhile loads it and
-is answered once it is warm (the header reads **Loading** until it serves).
-
-For frontend work, `npm --prefix web run dev` proxies `/v1` and `/ui/metrics` to
-a running engine (`IGNIS_URL`, default `http://127.0.0.1:8000`);
-`npm --prefix web run dev:mock` serves a fake engine instead, so no GPU is
-needed.
+- [Chat](chat.md): a reply, its figures, the model picker, the context meter.
+- [Tools and agents](tools-and-agents.md): subagents on agent lanes, the web, code, files, pictures.
+- [Why ignis](../why-ignis/index.mdx): the engine features these views make visible.

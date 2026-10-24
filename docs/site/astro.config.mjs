@@ -2,10 +2,12 @@
 // published to GitHub Pages by .github/workflows/docs.yml. Nothing here is
 // content: a page is added by adding a Markdown file to a section's folder,
 // and the sidebar lists it by its `sidebar.order` (src/sidebar.mjs).
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
 import { satteri } from "@astrojs/markdown-satteri";
 import starlight from "@astrojs/starlight";
+import { adrFiles, writeChangelog } from "./src/changelog.mjs";
 import relativeLinks, { deadLinksFailTheBuild } from "./src/plugins/relative-links.mjs";
 import { sectionItems } from "./src/sidebar.mjs";
 
@@ -17,6 +19,17 @@ const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const ref = process.env.DOCS_GITHUB_REF || "main";
 // Every dead link the pages hold; a build that found one fails, naming them all.
 const dead = [];
+
+// The Changelog section, written from the GitHub releases before the sidebar
+// reads its folder (src/changelog.mjs). In CI a build that cannot read them fails.
+await writeChangelog(path.join(guide, "changelog"), {
+  slug: new URL(repo).pathname.slice(1),
+  repo,
+  ref,
+  adrs: adrFiles(path.join(repoRoot, "docs/adr")),
+  token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN,
+  ci: Boolean(process.env.CI),
+});
 
 const section = (label, directory, extra = {}) => ({ label, items: sectionItems(guide, directory), ...extra });
 
@@ -50,14 +63,16 @@ export default defineConfig({
       tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 4 },
       sidebar: [
         section("Start here", "start"),
+        section("Why ignis", "why-ignis"),
+        section("Playground", "playground"),
         section("Reading paths", "paths"),
         section("Guides", "guides"),
         section("Concepts", "concepts"),
         section("Configuration", "configuration"),
-        section("Playground", "playground"),
         section("API", "api"),
         section("Reference", "reference"),
         { label: "Troubleshooting", link: "/troubleshooting/" },
+        section("Changelog", "changelog", { collapsed: true }),
         section("Contributing", "contributing", { collapsed: true }),
       ],
     }),

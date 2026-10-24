@@ -12,6 +12,10 @@ node_modules/
 dist/
 .vitest/
 
+# the guide's Changelog section, written from the GitHub releases by each
+# site build (docs/site/src/changelog.mjs, #348)
+/docs/user/changelog/
+
 # logs
 *.log
 *.log.err

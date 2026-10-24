@@ -1,0 +1,56 @@
+---
+title: "Sessions and storage"
+description: "The chat's sessions, what the Playground keeps in this browser, and what a reload forgets."
+sidebar:
+  order: 5
+---
+
+A **session** is one conversation. The left-hand column lists them:
+**New session** starts one, a click opens one, and each row reads the
+first line of its first prompt with how many replies it has (or `Streaming`,
+with an orange square, while one streams). The cross on a row deletes it, with
+its stream and the pictures no other session still uses.
+
+![Three sessions](../images/playground/sessions.png)
+
+A session answers one reply at a time. Several sessions can stream at once
+when **Parallel sessions** is on ([Settings](settings.md#parallel-sessions-and-the-transport)):
+over the WebSocket they share one connection; over HTTP the browser carries
+five streams, agents included, and the rest wait. Each session is a separate
+conversation for the server too: its prompt state is retained and found by
+content, so going back to an older session resumes from the cache when the
+server still holds it ([State that outlives its request](../why-ignis/state-that-outlives.md)).
+
+## What is kept, and where
+
+Everything the Playground keeps lives in **this browser**, for this origin;
+nothing is sent to the server for safekeeping.
+
+| What | Where | Survives a reload |
+|---|---|---|
+| Chat sessions: every message, its reasoning, tool runs, figures and log, attached files | IndexedDB `ignis-playground`, collection `chat-sessions` | yes |
+| Decide's decisions: drafts, evidence, answers | same database, `decide-sessions` | yes |
+| Image sessions and their steps | same database, `image-sessions` | yes |
+| Pictures (sent in the chat, made, marked), stored once and shared | same database, `images` and `bytes` | yes |
+| The session that was open, per view | same database, `active-session` | yes |
+| The API key | `localStorage` `ignis.apiKey` | yes |
+| Parallel sessions, the HTTP transport | `localStorage` `ignis.parallelSessions`, `ignis.httpTransport` | yes |
+| The Tavily key, memory notes, the image view's "Enhance the prompt" | `localStorage` `ignis.tavilyKey`, `ignis.memory`, `ignis.imageEnhance` | yes |
+| Settings, tool switches, the prompt box, the Server view's draft, the Monitor's history | memory only | no |
+
+A reply that was streaming when the page closed comes back stopped, with the
+text it had got; a tool call it left running is answered as stopped.
+
+:::note[One store per origin]
+The page served by ignis at `http://127.0.0.1:8000/ui/` and the development
+server on `localhost:5173` are different origins, so they keep separate
+stores. Clearing the site's data in the browser deletes the sessions.
+:::
+
+When the browser refuses the space, the session list says so in red and the
+page goes on without saving.
+
+## Read more
+
+- [Chat](chat.md): the session log at the foot of each session.
+- [KV cache and prompt reuse](../concepts/kv-cache-and-prompt-reuse.md): what the server keeps of a conversation, and for how long.

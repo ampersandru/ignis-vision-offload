@@ -490,8 +490,14 @@ docs-build: $(DOCS_DEPS) ## Build the guide's site into docs/site/dist; a dead l
 	$(NPM) --prefix docs/site run build
 
 .PHONY: docs-test
-docs-test: $(DOCS_DEPS) ## The site's link-plugin tests (vitest)
+docs-test: $(DOCS_DEPS) ## The site's tests: links, sidebar, changelog (vitest)
 	$(NPM) --prefix docs/site run test
+
+# Against the dev mock unless PLAYGROUND_URL names a running Playground
+# (http://127.0.0.1:8000/ui/); SCENES=chat-reply,monitor retakes only those.
+.PHONY: docs-screenshots
+docs-screenshots: $(DOCS_DEPS) $(WEB_DEPS) ## Retake the Playground's screenshots in docs/user/images/playground/ (installed Chrome)
+	node docs/site/scripts/screenshots.mjs
 
 .PHONY: docs-reference
 docs-reference: ## Regenerate docs/user/reference/ from the code: fields, profiles, catalog, metrics, routes, CLI

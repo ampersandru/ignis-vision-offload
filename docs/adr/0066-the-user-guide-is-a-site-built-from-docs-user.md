@@ -9,6 +9,10 @@ Accepted (2026-10-24, owner decisions in the session that opened GitHub #347):
 - published on a `v*.*.*` tag;
 - four reading paths: user, advanced user, developer (who builds on the API), contributor (who works on ignis).
 
+Amended 2026-10-24 (GitHub #348): the site deploys once the release is published, not when its tag is pushed,
+and two parts of it are produced by tools rather than written: the Changelog section and the Playground's
+screenshots. See **Amendment** below.
+
 Related:
 - [ADR 0036](0036-the-v1-surface-documents-itself.md): the `/v1` surface documents itself;
 - [ADR 0046](0046-one-declaration-per-config-field.md): one declaration per config field;
@@ -44,6 +48,7 @@ Related:
    needs no Rust build.
 5. **`.github/workflows/docs.yml` builds on every push that touches the guide or the site, and deploys on a
    `v*.*.*` tag** (and on `workflow_dispatch`), so the published guide describes the released binary.
+   (Amended: once the tag's release is published.)
 
 ## Considered options
 
@@ -63,3 +68,22 @@ Related:
   pages runs that one test in `.github/workflows/docs-reference.yml`.
 - The landing page's cards link by route, outside what the link plugin sees; a test holds each to a page.
 - The site's dependencies are pinned in `docs/site/package-lock.json`; the workflow installs with `npm ci`.
+
+## Amendment (2026-10-24, GitHub #348)
+
+1. **The Changelog section is read from the GitHub releases at build time**, one page per `v*.*.*` release,
+   newest first (`docs/site/src/changelog.mjs`). The notes live on GitHub only: the release workflow writes the
+   install text, and what changed is written by hand into the release after it is published. A page generated
+   and committed would be stale the moment the notes are edited, and would add a step to every release. The
+   pages land in `docs/user/changelog/`, which git ignores. A CI build that cannot read the releases fails; a
+   local one writes a placeholder.
+2. **The site deploys when the release workflow's run for a `v*.*.*` tag succeeds** (`workflow_run`), and again
+   when that release is edited (`release: edited`), not on the tag push: at the push the release does not
+   exist yet, so its notes would be missing from the section. The release is created with `GITHUB_TOKEN`,
+   whose `release: published` starts no workflow. Only the newest release is deployed; a re-run or an edit of
+   an older one builds and stops. `workflow_dispatch` still deploys the chosen ref.
+3. **The Playground's screenshots are taken by a script** (`make docs-screenshots`,
+   `docs/site/scripts/screenshots.mjs`) that drives the Playground in the installed Chrome through
+   playwright-core, against the dev mock (no GPU, the same answers each run) or a running server
+   (`PLAYGROUND_URL`). Each picture is a named scene, and a change that alters a pictured screen retakes its
+   scene. The pictures are committed: the workflow has no Chrome and no server to take them with.

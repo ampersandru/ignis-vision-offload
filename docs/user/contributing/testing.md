@@ -66,10 +66,19 @@ A change to `docs/user/` or `docs/site/` builds the site; a link to a missing
 page, a missing heading or a missing repository file fails the build.
 
 ```sh
-make docs-test      # the link plugin's own tests
-make docs-build     # the site, into docs/site/dist
-make docs-dev       # the site with hot reload, at http://localhost:4321/ignis/
+make docs-test         # the site's own tests: links, sidebar, changelog
+make docs-build        # the site, into docs/site/dist
+make docs-dev          # the site with hot reload, at http://localhost:4321/ignis/
+make docs-screenshots  # retake the Playground's pictures (SCENES=a,b for some)
 ```
+
+The build reads the GitHub releases for the Changelog section, so it needs
+the network; offline, it writes a placeholder page and says so. The
+Playground's pictures under `images/playground/` are taken by a script that
+drives the Playground in the installed Chrome: against the dev mock by
+default, or a running server with
+`PLAYGROUND_URL=http://127.0.0.1:8000/ui/` (the committed pictures come from a
+real server). A change that alters a pictured screen retakes its scene.
 
 `make test-all` runs all of the above that need no GPU: `cargo test`, the
 Playground's typecheck and tests, and the guide's tests and build.

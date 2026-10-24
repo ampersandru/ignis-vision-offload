@@ -129,3 +129,43 @@ starlight-tabs [role="tab"] {
     overflow-x: auto;
   }
 }
+
+/* The headline numbers (the landing page, Why ignis): the README's strip of
+   figures as chamfered tiles, each figure in the display face over its
+   condition, linking to the page that measures it. */
+.ignis-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.75rem;
+  margin-block: 1.5rem;
+}
+.ignis-stats a {
+  --cut-size: 12px;
+  display: block;
+  padding: 0.85rem 1rem;
+  background: var(--sl-color-gray-6);
+  border-left: 3px solid var(--sl-color-accent);
+  clip-path: polygon(var(--cut-size) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut-size));
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-sm);
+  line-height: 1.35;
+  text-decoration: none;
+}
+.ignis-stats a:hover {
+  background: var(--sl-color-gray-5);
+}
+.ignis-stats b {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-family: var(--ignis-display);
+  font-size: 1.65rem;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--sl-color-white);
+}
+
+/* A screenshot in a page (the guide's only images): framed like a panel. */
+.sl-markdown-content img {
+  border: 1px solid var(--sl-color-gray-5);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.28);
+}
