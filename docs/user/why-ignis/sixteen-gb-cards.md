@@ -5,8 +5,8 @@ sidebar:
   order: 4.5
 ---
 
-The 27B's served NVFP4 weights are 18 GiB: they do not fit a 16 GB card before
-a single token of context. ignis ships a second encoding of the same model for
+The 27B's served NVFP4 artifact is 18 GiB on disk, and its text weights alone
+are 16 GiB: it cannot load on a 16 GB card at any context. ignis ships a second encoding of the same model for
 that class of card, `qwen3.8-27b-16g`: the body re-encoded in a trellis code at
 about 3 bits per weight, **12.5 GiB on disk**, with the same DFlash2 drafter.
 On a 16 GB card the server picks the matching profile and the matching
@@ -24,8 +24,7 @@ how the profile gets real numbers.
 ## How it works
 
 **A body that fits** ([ADR 0060](../../adr/0060-the-27b-has-a-trellis-body-for-small-cards.md)).
-The NVFP4 body cannot load on 16 GiB at any context: its text weights alone
-are 16 GiB. The 16 GB entry's linear layers are a trellis code at about 3 bits
+The 16 GB entry's linear layers are a trellis code at about 3 bits
 per weight (a repack of a public 3.0 bpw EXL3 quantization), the code ignis
 already uses for Flash-Next's experts, read by dense kernels of its own at
 55-65% of the card's memory bandwidth. The body runs with 16-bit activations
