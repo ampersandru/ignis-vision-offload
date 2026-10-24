@@ -26,10 +26,11 @@ target's, and a loop rate no worse than the NVFP4's?
 
 ## Evidence
 
-Main at 711b1d85 (release build, v0.7.3), RTX 5090 on PCIe Gen 3, 2026-10-24, the desktop alone on the card before and
-after. Every trellis run loads as a 16 GB card would (owner, 2026-10-24): budget 17,179,869,184 bytes, profile
-`rtx50-16gb`, 262,144 context, 2 lanes, chunk 1,024, hq-e8-2b. Raw logs, JSON, scripts: `.scratch/340/quality/`,
-`.scratch/340/loops/` (untracked); KLD dumps on `H:/kld-340/`.
+Main at 711b1d85 (release build, v0.7.3) for gates 1, 2 and 4, the branch `340-replay` on it for gate 3; RTX 5090 on
+PCIe Gen 3, 2026-10-24, the desktop alone on the card before and after. Every trellis run loads as a 16 GB card would
+(owner, 2026-10-24): budget 17,179,869,184 bytes, profile `rtx50-16gb`, 262,144 context, 2 lanes, chunk 1,024, hq-e8-2b.
+Raw logs, JSON, scripts: `.scratch/340/quality/`, `.scratch/340/loops/`, `.scratch/340/replay-run/` (untracked); the KLD
+dumps were deleted once scored (the per-position results are in `.scratch/340/quality/results/`).
 
 **The 16 GiB rule for the KLD dumps.** `span_logits` takes no budget. Against the server's `rtx50-16gb` load (#339's
 `ignis.model.loaded`) it has the same KV (hq-e8-2b), chunk (1,024), rope (none), prompt attention (8-bit) and exceptions
@@ -103,16 +104,44 @@ quality number; the accuracy table above is what the marks measure.
 
 ### Gate 3 (Acceptance 3): DFlash2 tokens per round on the teacher-forced replay
 
-<!-- GATE 3: filled by the coordinator -->
+A free read from #339's logs (1-lane greedy canaries, same build, 256 tokens a side) gave 4.41 against 4.92 tokens per
+round, a ratio of 0.897: too small a sample to decide, so the owner chose the spec's instrument and the #267
+teacher-forced replay (branch `dflash2-sampled-acceptance-267`, [its finding](2026-09-24-dflash2-sampled-acceptance.md))
+was ported onto main (branch `340-replay`, `tools/dflash2-replay/`, the examples in `crates/runtime/examples/`).
 
-Method only, no number yet. The #267 teacher-forced replay (branch `dflash2-sampled-acceptance-267`) was ported onto main
-as `340-replay`: the recorded texts are fed to the target as forced successors, so both artifacts see the same 200 turns
-and the drafter proposes against the same traces; the figure is DFlash2's tokens per round on them. The trellis leg loads as the 16 GB card does (above); the NVFP4 leg uses the trellis leg's engine shape (262,144,
-rope none, chunk 1,024, vision off, 8 lanes: #267's shape, not the served 786,432 / `yarn:3`, which would be the NVFP4's
-worse case), both on one build. Port and its fixes: `.scratch/340/replay-port/handoff.md`,
-`.scratch/340/replay-fixes/handoff.md`. A free read from #339's logs (1-lane greedy canaries, same build, 256 tokens a
-side) gave 4.41 against 4.92 tokens per round, a ratio of 0.897: too small a sample to decide, which is why the replay
-was ported.
+- **Method.** #267's 200 recorded agent turns (116 token streams, 6.47 M prefilled context tokens, 208,860 replayed output
+  tokens, sampled by ninfer at T = 1.0, top_p 0.95, top_k 20) walked through real verify rounds that commit the recorded
+  text: the leading drafts it agrees with, then the recorded token. Tokens per round = output tokens / rounds, pooled and
+  with #267's traffic weights; a bootstrap over the 116 streams (10,000 resamples) for the interval.
+- **Loads, one build.** The trellis leg is the 16 GiB load (the plan printed equals #339 A1: 7,956 pages, 17,179,375,716 of
+  17,179,869,184). The NVFP4 leg uses the same engine shape (262,144, rope none, chunk 1,024, vision off), 8 lanes on the
+  card's derived budget: #267's shape, not the served 786,432 / `yarn:3` (the NVFP4's worse case). A 2-lane NVFP4 smoke
+  wrote records byte-identical to the 8-lane one's, so the legs differ in lanes only and the lanes do not move a round.
+- **Checks.** `dflash2_replay_seams_gpu.rs` passed on both bodies (forced rounds equal live ones bit for bit, greedy and
+  sampled, widths 1 and 2; the readouts refuse a window that is not the load's; an out-of-vocabulary forced successor is
+  refused with the sequence unmoved). 0 readout disagreements on either leg. The NVFP4 leg reproduces #267's 2026-09-24
+  run: 3.383 against 3.386, every source within 0.3%.
+
+| set | turns | trellis | NVFP4 | trellis / NVFP4 | #267 (NVFP4, 2026-09-24) |
+|---|---:|---:|---:|---:|---:|
+| all | 200 | 3.370 | 3.383 | **0.996** | 3.386 |
+| A (opencode, complete contexts) | 50 | 3.007 | 3.007 | 1.000 | 3.016 |
+| B (qwen-code main chats) | 75 | 3.483 | 3.500 | 0.995 | 3.508 |
+| C (qwen-code subagents) | 75 | 3.389 | 3.403 | 0.996 | 3.400 |
+| think | 101 | 3.246 | 3.260 | 0.996 | 3.259 |
+| content | 99 | 3.933 | 3.941 | 0.998 | 3.963 |
+| traffic-weighted | | 3.438 | 3.452 | **0.996** | 3.455 |
+
+- Rounds: trellis 61,978, NVFP4 61,739 (#267: 61,692). Bootstrap 95% interval of the pooled ratio [0.993, 0.999]; per
+  stream median 0.996, p10 0.965, p90 1.047, none below 0.90.
+- P(accepted >= i), i = 1..7: trellis .712 .508 .370 .276 .210 .164 .131, NVFP4 .714 .511 .373 .279 .211 .164 .131.
+- The texts are the NVFP4's (ninfer sampled them on that artifact), so the replay leans against the trellis: 1.20% of the
+  recorded tokens fall outside the trellis's own sampling support, 0.84% outside the NVFP4's. With each body's own accept
+  distribution on the same drafts (`analyze.py`'s exact expectation) the ratio is 3.420 / 3.397 = 1.007.
+- Wall time on the 5090: the trellis leg 58 min (prefill 32.8, rounds 25.2, 17.2 ms a round), the NVFP4 leg 40 min.
+- Evidence: `.scratch/340/replay-run/handoff.md` (`score.py`, `score.txt`, `validate-*.txt`, `analyze-*.txt`), the
+  records on `H:/replay-340/`; the port and its review fixes: `.scratch/340/replay-port/handoff.md`,
+  `.scratch/340/replay-fixes/handoff.md`.
 
 ### Gate 4 (Acceptance 4): loop rate, four prompts x seeds 101-108
 
@@ -152,11 +181,14 @@ Observed:
    M1's 0.0340 weights-only: the engine path adds 0.006.
 2. **Gate 2 passes.** 65.84% against BF16's 67.97%, exact McNemar p = 0.3075 (b 15, c 9). The NVFP4 is at 66.55%, p = 0.5966.
    The trellis and the NVFP4 are indistinguishable on these marks (b 14, c 16, p 0.8555).
-3. **Gate 4 passes.** 9 of 32 against 14 of 32; one-sided p = 0.941 for "the trellis is worse".
-4. **The trellis is worse than the NVFP4 only on zh and math on set B** (and python by 1%); on the other domains
+3. **Gate 3 passes with room.** On the same 200 recorded turns DFlash2 commits 3.370 tokens a round on the trellis against
+   3.383 on the NVFP4: 0.996 (95% interval [0.993, 0.999]) against a floor of 0.90, the same traffic-weighted, and within
+   0.8% on every source and kind. The 0.897 of #339's canaries was sampling noise, not the body.
+4. **Gate 4 passes.** 9 of 32 against 14 of 32; one-sided p = 0.941 for "the trellis is worse".
+5. **The trellis is worse than the NVFP4 only on zh and math on set B** (and python by 1%); on the other domains
    it is lower by 14-30% (mmlu aside). Python's 0.168 is the model's own sensitivity, the same on both bodies and on M1 (0.1667).
-5. **Forced close is about twice as frequent on the trellis**: 15 of 32 requests against 8 of 32 (the guard's "My thinking
-   time is over" close at the 14,336-token thinking budget), driven by nobel-en (7 of 8 against 2 of 8) and math-en (5
+6. **Forced close is about twice as frequent on the trellis**: 15 of 32 requests against 8 of 32 (the thinking budget's
+   "My thinking time is over" close at 14,336 tokens), driven by nobel-en (7 of 8 against 2 of 8) and math-en (5
    against 2). This is not part of the gate.
 
 Inferred:
@@ -169,8 +201,9 @@ Inferred:
 
 ## Implications
 
-- Gates 1, 2 and 4 hold: nothing in them blocks shipping the 16 GB artifact. Gate 3 (above) is the one the quality bar
-  still waits on.
+- All four gates hold: nothing in the owner's quality bar blocks shipping the 16 GB artifact (#346).
+- DFlash2 keeps its acceptance on the trellis target, so the drafter grafted byte for byte from the served artifact (ADR
+  0060) needs no retraining for the 16 GB body.
 - Gate 2's pre-registration means no 3.25 bpw work is triggered.
 - A user reading the forced-close rate should not take it for quality: it is the loops' budget cost.
 - Gate 1's chunk-2,048 NVFP4 row, not the spec's chunk 1,024, is the honest comparison for the artifact a user runs
@@ -187,14 +220,14 @@ Inferred:
   prefill, not re-run at 262,144), and the NVFP4 dumps carry no YaRN.
 - Gate 2 is 281 marks: a 2-point gap is inside its noise (M1's 3.2-point gap gave p = 0.0525). Ties at the marks (6, 9, 5)
   mean the marks' argmax is sometimes a coin flip.
-- Gate 3's number is not in this document yet; the replay's recorded texts are ninfer's, so the forced successors are not
-  this artifact's own text.
-- DFlash2's acceptance on agent traffic at long context is not measured by any of these gates.
+- Gate 3's recorded texts are ninfer's on the NVFP4 artifact, so the forced successors are not the trellis's own text
+  (the bias leans against the trellis; with each body's own accept the ratio is 1.007). The turns stop at 148K of
+  context (#267 left out longer ones), and the NVFP4 leg runs 8 lanes and no YaRN, not the served shape.
+- DFlash2's acceptance past 150K of context is not measured by any of these gates.
 - Gate 4's NVFP4 `run.py` crashed on its final print (cp1252 stdout, U+014D) after all eight responses were written; that
   arm has no SUMMARY line and its forced and finish counts were recomputed from the raw files.
 
 ## Follow-ups
 
-- Fill gate 3 (Acceptance 3) once the replay has run.
 - Whether a larger loop sample or the 0.20-0.30 band changes gate 4's reading is not tracked: the point estimate does not
   call for it.

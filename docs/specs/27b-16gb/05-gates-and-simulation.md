@@ -316,7 +316,8 @@ Blocked by 05a. Everything below this line is Part B.
 
 ### As built: Part B (2026-10-24)
 
-Main at 711b1d85, release build, on the RTX 5090 (PCIe Gen 3). Every trellis run loads as a 16 GB card would (owner,
+Main at 711b1d85 and the branches `340-replay` (gate 3) and `340-gates` (capacity, speed, `small-card`) on it, release
+builds, on the RTX 5090 (PCIe Gen 3). Every trellis run loads as a 16 GB card would (owner,
 2026-10-24): budget 17,179,869,184, `rtx50-16gb`, 262,144 context, 2 lanes, chunk 1,024, hq-e8-2b. The evidence is in
 `.scratch/340/` (untracked); the findings are
 [the quality gates](../../findings/2026-10-24-27b-16gb-quality-gates.md),
@@ -330,7 +331,12 @@ Main at 711b1d85, release build, on the RTX 5090 (PCIe Gen 3). Every trellis run
 2. **Gate 2: pass.** MMLU-Pro n = 281: trellis 65.84% against BF16's 67.97%, exact McNemar p = 0.3075 (pre-registered: pass
    iff p > 0.05) ([quality gates](../../findings/2026-10-24-27b-16gb-quality-gates.md), gate 2;
    `.scratch/340/quality/gate2-analysis.txt`). The per-domain KLD of set B is in the same finding.
-3. **Gate 3:** <!-- GATE 3: filled by the coordinator -->
+3. **Gate 3: pass.** The #267 teacher-forced replay, ported onto main (`340-replay`), on its 200 recorded agent turns:
+   DFlash2 commits 3.370 tokens a round on the trellis against 3.383 on the NVFP4, 0.996 (95% interval [0.993, 0.999]),
+   traffic-weighted the same; the NVFP4 leg reproduces #267 (3.383 against 3.386) and the seams test holds forced rounds
+   to live ones on both bodies. The NVFP4 leg runs the trellis's engine shape (262,144, rope none, chunk 1,024) at 8 lanes,
+   not the served one ([quality gates](../../findings/2026-10-24-27b-16gb-quality-gates.md), gate 3;
+   `.scratch/340/replay-run/handoff.md`).
 4. **Gate 4: pass.** Loops 9/32 on the trellis against 14/32 on the NVFP4 (four prompts, seeds 101-108, loop guard at its
    default); one-sided Fisher exact p = 0.941 for "the trellis is worse" ([quality gates](../../findings/2026-10-24-27b-16gb-quality-gates.md),
    gate 4; `.scratch/340/loops/report.md`). Forced closes are
