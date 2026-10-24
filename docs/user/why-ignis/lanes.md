@@ -47,6 +47,8 @@ instead ([the Responses API over a WebSocket](responses-websocket.md)).
 Where admission sits in the request's path:
 [How ignis serves a request](../concepts/how-ignis-serves.md#2-admission-decides-whether-and-where-it-runs).
 
+![A subagent's request in the agent reader: its own prompt, answer and figures, on an agent lane](../images/playground/agent-reader.png)
+
 ## The numbers
 
 | Figure | Measured on | Source |

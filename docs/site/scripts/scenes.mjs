@@ -11,6 +11,15 @@
 
 const MINUTE = 60_000;
 
+/** The scenes a run takes: all of them, or those `names` lists (comma-separated); an unknown name fails before Chrome starts. */
+export function pickScenes(all, names) {
+  if (!names) return all;
+  const wanted = new Set(names.split(",").map((name) => name.trim()).filter(Boolean));
+  const unknown = [...wanted].filter((name) => !all.some((scene) => scene.name === name));
+  if (unknown.length) throw new Error(`no scene named ${unknown.join(", ")}; the scenes are ${all.map((scene) => scene.name).join(", ")}`);
+  return all.filter((scene) => wanted.has(scene.name));
+}
+
 /** Open one of the header's views. */
 const view = (page, name) => page.getByRole("navigation", { name: "View" }).getByRole("button", { name, exact: true }).click();
 // The chat's prompt box (the Image view has one of the same name).

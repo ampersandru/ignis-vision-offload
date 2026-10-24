@@ -37,6 +37,8 @@ decision defaults to the `agent` lane class: it holds no residency and takes no
 decode lane, so a fan-out of questions queues behind conversations instead of
 cutting ahead of them. The request and response are in [Decisions](../api/decide.md).
 
+![Three questions over one message in the Decide tab: a yes/no, a choice with its distribution, a score](../images/playground/decide-text.png)
+
 ## The numbers
 
 | Figure | Measured on | Source |

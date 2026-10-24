@@ -20,7 +20,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { scenes } from "./scenes.mjs";
+import { pickScenes, scenes } from "./scenes.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const out = path.join(repoRoot, "docs/user/images/playground");
@@ -62,18 +62,14 @@ async function startMock() {
   return { url, stop: () => child.kill() };
 }
 
-const wanted = process.env.SCENES ? new Set(process.env.SCENES.split(",").map((s) => s.trim())) : null;
-const unknown = wanted ? [...wanted].filter((name) => !scenes.some((scene) => scene.name === name)) : [];
-if (unknown.length) throw new Error(`no scene named ${unknown.join(", ")}; the scenes are ${scenes.map((s) => s.name).join(", ")}`);
-
+const chosen = pickScenes(scenes, process.env.SCENES);
 const mock = process.env.PLAYGROUND_URL ? null : await startMock();
 const url = process.env.PLAYGROUND_URL || mock.url;
 const browser = await chromium.launch(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: "chrome" });
 fs.mkdirSync(out, { recursive: true });
 let failed = 0;
 try {
-  for (const scene of scenes) {
-    if (wanted && !wanted.has(scene.name)) continue;
+  for (const scene of chosen) {
     // A scene only one kind of Playground can stage is left to that kind's run.
     if ((mock && scene.mock === false) || (!mock && scene.real === false)) {
       console.log(`${scene.name}: skipped (${mock ? "needs a running server" : "needs the dev mock"})`);

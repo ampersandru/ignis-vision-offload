@@ -22,7 +22,7 @@ export function stableReleases(releases) {
     });
 }
 
-/** Each line of `markdown` outside fenced code, through `edit(line)`; fenced lines as they are. */
+/** Each line of `markdown` outside fenced code, through `edit(line)` (null drops it); fenced lines as they are. */
 function outsideFences(markdown, edit) {
   let fence = null;
   return markdown
@@ -36,6 +36,7 @@ function outsideFences(markdown, edit) {
       }
       return fence === null ? edit(line) : line;
     })
+    .filter((line) => line !== null)
     .join("\n");
 }
 
@@ -64,10 +65,7 @@ export function linkReferences(markdown, { repo, ref, adrs }) {
  */
 export function noteBody(markdown) {
   const title = /^#{1,6}\s+ignis\s+v\d/i;
-  const body = outsideFences(markdown.replace(/\r\n/g, "\n"), (line) => (title.test(line) ? "\0" : line))
-    .split("\n")
-    .filter((line) => line !== "\0")
-    .join("\n")
+  const body = outsideFences(markdown, (line) => (title.test(line) ? null : line))
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   let lowest = 7;
@@ -89,6 +87,9 @@ export function noteBody(markdown) {
  * that item's opening clause, else the notes' opening sentence.
  */
 export function headline(body) {
+  // A lead before `: ` names the change when it is this long ("Config v2" is not); a table cell holds this much.
+  const NAMED_LEAD = 12;
+  const CELL = 140;
   const plain = (text) =>
     text
       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -101,8 +102,8 @@ export function headline(body) {
   if (first) {
     const item = plain(first[1]);
     const named = item.split(": ")[0];
-    const clause = named !== item && named.length >= 12 ? named : item.split(/[.;] | — | \(/)[0];
-    return clause.length > 140 ? `${clause.slice(0, 139).trimEnd()}…` : clause.replace(/[.:]$/, "");
+    const clause = named !== item && named.length >= NAMED_LEAD ? named : item.split(/[.;] | — | \(/)[0];
+    return clause.length > CELL ? `${clause.slice(0, CELL - 1).trimEnd()}…` : clause.replace(/[.:]$/, "");
   }
   const opening = notes.split(/\n\s*\n/).find((paragraph) => /^[A-Z]/.test(paragraph.trim()));
   if (opening) return plain(opening).split(/(?<=\.)\s/)[0].replace(/\.$/, "");

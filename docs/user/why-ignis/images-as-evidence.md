@@ -37,6 +37,8 @@ For the Playground and for agents, the same image can also go through
 [`/v1/decide`](decisions.md) as the `state`, where `point` and `box` read where
 something is on the screen.
 
+![A point and a box answered in the pixels of an image](../images/playground/decide-image.png)
+
 ## The numbers
 
 | Figure | Measured on | Source |

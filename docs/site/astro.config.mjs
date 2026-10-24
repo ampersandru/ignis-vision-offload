@@ -23,7 +23,7 @@ const dead = [];
 // The Changelog section, written from the GitHub releases before the sidebar
 // reads its folder (src/changelog.mjs). In CI a build that cannot read them fails.
 await writeChangelog(path.join(guide, "changelog"), {
-  slug: "gpillon/ignis",
+  slug: new URL(repo).pathname.slice(1),
   repo,
   ref,
   adrs: adrFiles(path.join(repoRoot, "docs/adr")),

@@ -38,6 +38,8 @@ switches once. The Playground's [Image studio](../playground/image-studio.md)
 adds image sessions, marks drawn on a picture, and a `make_image` tool the chat
 can call: it switches to the image model, makes the pictures and switches back.
 
+![A 2752×1536 picture made in the Playground's image studio](../images/playground/image-studio.png)
+
 ## The numbers
 
 | Figure | Measured on | Source |

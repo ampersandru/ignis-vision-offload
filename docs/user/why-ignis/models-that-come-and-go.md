@@ -41,6 +41,8 @@ Hugging Face resolve route (Artifactory, Nexus, a static server) for air-gapped
 machines. The whole picture is in
 [Switching and idle unload](../concepts/switching-and-idle-unload.md).
 
+![A switch from the 27B to Flash-Next in the Server view](../images/playground/server-switching.png)
+
 ## The numbers
 
 | Figure | Measured on | Source |

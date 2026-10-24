@@ -43,6 +43,8 @@ so both show as a larger KV pool.
 The budget, line by line, and why a refusal beats a run:
 [The VRAM plan](../concepts/vram-plan.md).
 
+![The VRAM plan of a 27B load, as the Monitor draws it](../images/playground/monitor-vram.png)
+
 ## The numbers
 
 | Figure | Measured on | Source |

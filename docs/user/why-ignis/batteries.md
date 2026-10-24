@@ -48,6 +48,8 @@ requires a key ([ADR 0028](../../adr/0028-expose-modes-always-keyed.md)). The
 **Platforms.** A `v*` tag publishes a Windows `.zip`, a Linux `.tar.gz` and a
 `linux/amd64` container image on ghcr.io, all compiled for `SM120a`.
 
+![The Monitor, live, from the same binary](../images/playground/monitor.png)
+
 ## The numbers
 
 There are no performance figures here. These are the defaults:

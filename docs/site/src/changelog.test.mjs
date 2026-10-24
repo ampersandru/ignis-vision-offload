@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { changelogPages, headline, linkReferences, noteBody, stableReleases, writeChangelog } from "./changelog.mjs";
+import { adrFiles, changelogPages, fetchReleases, headline, linkReferences, noteBody, stableReleases, writeChangelog } from "./changelog.mjs";
 import { sidebarFields } from "./sidebar.mjs";
 
 const repo = "https://github.com/gpillon/ignis";
@@ -90,6 +90,37 @@ describe("changelogPages", () => {
     expect(page).toContain(`[the release on GitHub](${repo}/releases/tag/v0.7.3)`);
     expect(page).toContain(`- **Something new** ([#12](${repo}/issues/12))`);
     expect(page).not.toContain("## ignis v0.7.3");
+  });
+});
+
+describe("fetchReleases", () => {
+  it("reads page after page until one comes back short, with the token when there is one", async () => {
+    const asked = [];
+    const fetchImpl = async (url, { headers }) => {
+      asked.push([new URL(url).searchParams.get("page"), headers.Authorization]);
+      const page = Number(new URL(url).searchParams.get("page"));
+      const count = page === 1 ? 100 : 7;
+      return { ok: true, status: 200, json: async () => Array.from({ length: count }, (_, i) => release(`v0.${page}.${i}`)) };
+    };
+    const all = await fetchReleases("gpillon/ignis", { token: "t0k", fetchImpl });
+    expect(all).toHaveLength(107);
+    expect(asked).toEqual([
+      ["1", "Bearer t0k"],
+      ["2", "Bearer t0k"],
+    ]);
+  });
+});
+
+describe("adrFiles", () => {
+  it("maps each ADR's number to its file, and nothing else", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adr-"));
+    for (const name of ["0046-config-v2.md", "0066-the-guide.md", "README.md", "0001-draft.txt"]) fs.writeFileSync(path.join(dir, name), "");
+    expect(adrFiles(dir)).toEqual(
+      new Map([
+        ["0046", "0046-config-v2.md"],
+        ["0066", "0066-the-guide.md"],
+      ]),
+    );
   });
 });
 
