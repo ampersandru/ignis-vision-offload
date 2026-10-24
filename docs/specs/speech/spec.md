@@ -165,7 +165,8 @@ Every field name above, and every default no Q gave, is the owner's
   4.1-4.7x, 2.7-3.1x and 6.0-6.6x (spec 01, As built). That container is
   optimistic, and a real budget 4-core with slower RAM can fall under 2x. The
   documented fallback for a weak CPU is `speech.model` set to the 0.6B Q8_0
-  entry; `qwen3-asr-1.7b-q8` wants six cores or more. Live partials every 2 s
+  entry; `qwen3-asr-1.7b-q8` reached 2x only at 4 threads on the 60 s clip
+  and stayed under it on the 10 s clip. Live partials every 2 s
   cost more than real time on four cores with every variant (spec 01, As
   built; spec 03's concern).
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
