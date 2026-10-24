@@ -44,7 +44,7 @@
 Ignis is a deliberately specialized engine: **one model family, one class of
 card**. It gives up generality and takes back speed. It loads an NVFP4
 Qwen3.8-27B onto a single Blackwell card — an **RTX 5090** or an **RTX PRO
-6000**, both `SM120a` ([why not DGX Spark?](docs/user/dgx-spark.md)) — serves streaming and non-streaming
+6000**, both `SM120a` ([why not DGX Spark?](docs/user/guides/dgx-spark.md)) — serves streaming and non-streaming
 completions over the OpenAI v1 API, and is shaped around the workload a
 developer actually produces — *one main agent plus a handful of subagents
 hitting the same card at once*. Eight resident decode lanes run as one
@@ -114,7 +114,7 @@ Monitor on <http://127.0.0.1:8000/ui/>, and Prometheus on
 flavours, the standard one and an uncensored one, and Flash-Next:
 [The weights](#the-weights). Everything
 else — the container, building from a checkout, every flag — is
-[Quick start](#quick-start) and [docs/user](docs/user/README.md).
+[Quick start](#quick-start) and the [user guide](https://gpillon.github.io/ignis/).
 
 ## How fast
 
@@ -438,7 +438,7 @@ edited again:
 The Server view: the model serving and the switch that brought it, every model
 the catalog knows with what is on disk and a **Load** button, and the running
 configuration, for all models or one family, field by field with where each
-value comes from ([docs/user](docs/user/README.md#the-playground)):
+value comes from ([the Playground](docs/user/playground/index.md)):
 
 ![The Server view, after a switch to the image model](docs/user/images/server_config.png)
 
@@ -518,7 +518,8 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 ```
 
 Full flag table, API surface, model handling, container and release detail:
-**[docs/user](docs/user/README.md)**.
+the **[user guide](https://gpillon.github.io/ignis/)** (its source:
+[`docs/user/`](docs/user/README.md)).
 
 Every field of the OpenAI request bodies is honoured, accepted as inert (a
 value asking for what the server already does, like `n: 1` or `store: false`),
@@ -582,7 +583,8 @@ time — check `make gpu-status` before starting anything on it.
 
 | | |
 |---|---|
-| [`docs/user/`](docs/user/README.md) | Running it: flags, API, models, container, releases, telemetry. |
+| [User guide](https://gpillon.github.io/ignis/) | Running it, tuning it, calling it, working on it: install, models, every config field, the API, the Playground, telemetry, troubleshooting, contributing. Its source is [`docs/user/`](docs/user/README.md). |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to report a bug and how a change ships. |
 | [`docs/adr/`](docs/adr/) | Every architectural decision, and why it was taken. |
 | [`docs/findings/`](docs/findings/README.md) | Durable, evidence-backed measurements. |
 | [`docs/agents/`](docs/agents/) | Conventions for agents working in this repo. |

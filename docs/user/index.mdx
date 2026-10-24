@@ -1,0 +1,66 @@
+---
+title: ignis
+description: A CUDA inference engine for Qwen3.8 on RTX 50-series and RTX PRO 6000 cards. Install it, configure it, call it, extend it.
+template: splash
+hero:
+  tagline: A CUDA inference engine for Qwen3.8 on Blackwell cards. OpenAI-compatible API, a Playground in the browser, one binary.
+  image:
+    file: ../../web/src/brand/flame.webp
+    alt: The ignis flame
+  actions:
+    - text: Get started
+      link: start/
+      icon: right-arrow
+    - text: API
+      link: api/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/gpillon/ignis
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+## Pick your path
+
+Every page of this guide belongs to one site; each path is an order to read
+it in, from the first command to the deepest knob.
+
+<CardGrid>
+  <Card title="I want to run it" icon="rocket">
+    Install the image or the archive, fetch a model, open the Playground and
+    chat. No configuration needed.
+
+    <a href="paths/user/">The user path →</a>
+  </Card>
+  <Card title="I want to tune it" icon="setting">
+    Context length, VRAM and the KV pool, speculation, host RAM, KV-disk,
+    profiles, air-gapped machines, Knative.
+
+    <a href="paths/advanced/">The advanced path →</a>
+  </Card>
+  <Card title="I want to build on it" icon="laptop">
+    The OpenAI-compatible API, the Responses API, streaming, tools,
+    deadlines, model switching, images and decisions.
+
+    <a href="paths/developer/">The developer path →</a>
+  </Card>
+  <Card title="I want to work on it" icon="github">
+    Build from source, the tests and the GPU discipline, make, specs, ADRs
+    and findings, and how a change ships.
+
+    <a href="paths/contributor/">The contributor path →</a>
+  </Card>
+</CardGrid>
+
+## Jump in
+
+<CardGrid>
+  <LinkCard title="Install" description="The container image and the release archives." href="start/install/" />
+  <LinkCard title="Get a model" description="The catalog, model download, and pointing at your own artifact." href="guides/models/" />
+  <LinkCard title="Configuration" description="Every setting is one field: flag, env var, config file." href="configuration/" />
+  <LinkCard title="Every config field" description="The generated reference, straight from the server's field table." href="reference/configuration/" />
+  <LinkCard title="The Playground" description="Chat, Decide, Image, Monitor and Server, at /ui." href="playground/" />
+  <LinkCard title="Troubleshooting" description="A start refused, a slow decode, a busy GPU: what each message means." href="troubleshooting/" />
+</CardGrid>
