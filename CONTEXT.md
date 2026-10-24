@@ -895,6 +895,29 @@ When output names a domain concept, use the term as defined here.
   window** in the same pass that verifies them, or a fake drafter in the
   substrate's own tests (`verify-only` load: the verify substrate with nothing
   bound, the drafts passed per call).
+- **Teacher-forced round** — a **verify round** whose accept verdict is a
+  recorded text's instead of the target's draw (GitHub #267; test-only, the
+  decode options' `forced_tokens`, which no serving path sets). The pass is
+  any round's — under **DFlash2** the drafter proposes from the lane's
+  **drafter window** — but the lane accepts the leading drafts the recording
+  agrees with, at most its **extent**, and takes the recorded token after them
+  as its correction, so the **committed run** is the recording's. A live round
+  under sampling accepts a one-hot draft exactly when its sample equals it, so
+  these are the rounds a live run that sampled the recording would have made:
+  the acceptance replay of recorded agent turns walks a turn in them. The
+  recorded token after the run is the lane's pending token, so it must be a
+  vocabulary id; the pad past a recording's end is taken only after a stop id,
+  and leaves no pending token until a prefill gives one. Greedy lanes, 27B
+  loads only.
+- **Proposal readout** — the drafter's proposals at a sequence's frontier,
+  read without running a round (GitHub #267, test-only): the drafts, each draft
+  column's 16 candidates, their proposal-head logits and the selector's
+  transition scores, the lattice the replay walks other selection rules over.
+  Named after the **readout**'s precedent — a measurement beside the program,
+  never a second way to generate — but not one: a **readout** reads named
+  tokens' target logits at one position and costs a prefill; this reads the
+  drafter's lattice and costs one eager drafter forward. The name is #267's
+  (`dflash2_readout`).
 - **MTP** — the model's native multi-token-prediction head, the alternative
   drafter (draft window 1..7 chosen at load, verification width chosen per
   round). Deferred behind **DFlash2** at G5.
@@ -965,7 +988,8 @@ When output names a domain concept, use the term as defined here.
   sampling a token there. The **decode** path samples and never ships logits
   to the host (**per-lane sampling**); a readout is the opposite of that in
   both halves — it receives logits and draws no sample. A readout costs one
-  prefill and generates nothing.
+  prefill and generates nothing. Not the DFlash2 replay's **proposal
+  readout**, which reads the drafter, not the target.
 - **Answer token** — the single token that stands for one option of a
   **decision**, and whose logit the **readout** reads. Nothing to do with a
   decode **lane**, a **GDN slot** or a **retained slot**, which are all

@@ -22,6 +22,7 @@
 #include "model_internal.h"
 #include "permitted_tokens.h"
 #include "step_internal.h"
+#include "teacher_forcing.h"
 #include "trellis_body.h"
 #include "flash_next/program.h"
 
@@ -1867,6 +1868,19 @@ int32_t run_verify_round(ignis_model *model, ignis_seq_pool *pool,
               "proposes every lane's drafts; drafts and draft_counts must be NULL");
     return -1;
   }
+  // GitHub #267 (test-only): a teacher-forced round licenses the caller's
+  // recorded text, so it draws nothing -- and a lane at temperature > 0
+  // would have had the accept kernel count its own draw in the lane's
+  // penalty row, which the forced text then contradicts.
+  if (options.forced_tokens != nullptr) {
+    for (uint64_t i = 0; i < batch_size; ++i) {
+      if (sampling[i].greedy == 0 && sampling[i].temperature > 0.0f) {
+        set_error("ignis_program_decode: a teacher-forced round is greedy; lane " +
+                  std::to_string(i) + " samples at temperature > 0");
+        return -1;
+      }
+    }
+  }
 
   std::vector<std::int32_t> anchors(batch_size, 0);
   std::vector<std::int32_t> drafts(static_cast<std::size_t>(k) * batch_size, 0);
@@ -2018,6 +2032,46 @@ int32_t run_verify_round(ignis_model *model, ignis_seq_pool *pool,
       set_error(std::string("ignis_program_decode: cudaStreamSynchronize(verify) failed: ") +
                 cudaGetErrorString(err));
       return -1;
+    }
+
+    // GitHub #267 (test-only): teacher forcing. The pass ran exactly as a
+    // round does -- the drafter's proposals, every column's K/V, taps and
+    // ReplaySSM records -- and only the accept's verdict is replaced: the
+    // lane accepts the leading drafts its recorded text agrees with and
+    // takes the recorded token after them as its correction. Every column
+    // the commit keeps is then one the pass computed on the recorded text,
+    // so the commit below lands the sequence exactly where a round that
+    // sampled that text would have. The token after the agreement is the
+    // run's successor, so it must be a vocabulary id -- or the pad after a
+    // recording that ends at a stop id (kernel/src/teacher_forcing.h).
+    if (options.forced_tokens != nullptr) {
+      if (drafter) {
+        err = cudaMemcpyAsync(drafts.data(), verify.drafts->p, drafts.size() * sizeof(std::int32_t),
+                              cudaMemcpyDeviceToHost, model->stream);
+        if (err == cudaSuccess) {
+          err = cudaStreamSynchronize(model->stream);
+        }
+        if (err != cudaSuccess) {
+          set_error(std::string("ignis_program_decode: reading the drafter's proposals failed: ") +
+                    cudaGetErrorString(err));
+          return -1;
+        }
+      }
+      for (uint64_t i = 0; i < batch_size; ++i) {
+        const std::int32_t *forced = options.forced_tokens + i * lane_columns;
+        const IgnisForcedVerdict verdict = ignis_teacher_forced_verdict(
+            anchors[i], drafts.data() + i * k, forced, extents[i], static_cast<std::int32_t>(model->vocab),
+            sampling[i].stop_ids, sampling[i].stop_id_count, licensed.data() + i * lane_columns);
+        if (verdict.refused) {
+          set_error("ignis_program_decode: lane " + std::to_string(i) + "'s forced token " +
+                    std::to_string(forced[verdict.accepted]) + " after its " +
+                    std::to_string(verdict.accepted) +
+                    " agreed drafts is outside the vocabulary (the pad -1 ends a recording only "
+                    "after a stop id)");
+          return -1;
+        }
+        accepted[i] = verdict.accepted;
+      }
     }
 
     // The host half of the commit: the run, its cut, the fold rows.
@@ -2239,6 +2293,15 @@ extern "C" int32_t ignis_program_decode(struct ignis_model *model,
                                           const struct ignis_decode_options *options) {
   // GitHub #302: a Flash-Next load runs its own program.
   if (model != nullptr && model->flash_next) {
+    // GitHub #267: teacher forcing is the 27B verify round's; Flash-Next's
+    // program has none, and a forced round run there would commit what its
+    // target samples. Refused before the dispatch -- read only from options
+    // of this leaf's size, a shorter one is the program's own to refuse.
+    if (options != nullptr && options->size == sizeof(struct ignis_decode_options) &&
+        options->forced_tokens != nullptr) {
+      set_error("ignis_program_decode: forced_tokens is the 27B verify round's; a Flash-Next load has none");
+      return -1;
+    }
     return ignis::flash_next::program_decode(model, pool, sequences, batch_size, sampling, out_token_ids,
                                              options);
   }
@@ -2276,6 +2339,12 @@ extern "C" int32_t ignis_program_decode(struct ignis_model *model,
     // left unwritten.
     if (options->out_logits != nullptr) {
       set_error("ignis_program_decode: out_logits is read on a Flash-Next load only");
+      return -1;
+    }
+    // GitHub #267: teacher forcing replaces a verify round's accept; a plain
+    // round has none to replace.
+    if (options->speculative_window == 0 && options->forced_tokens != nullptr) {
+      set_error("ignis_program_decode: forced_tokens needs a verify round (speculative_window > 0)");
       return -1;
     }
     if (options->speculative_window != 0) {

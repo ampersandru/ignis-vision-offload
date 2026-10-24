@@ -72,42 +72,9 @@ pub(crate) mod ffi {
     /// truncated.
     pub const MAX_PERMITTED_TOKENS: usize = 32;
 
-    /// 1:1 with `struct ignis_decode_options` (ADR 0016; P5-04, GitHub
-    /// #153). `size` must be `sizeof(struct ignis_decode_options)`; a null
-    /// options pointer is today's round.
-    #[repr(C)]
-    #[derive(Debug, Clone, Copy)]
-    pub struct IgnisDecodeOptions {
-        pub size: u32,
-        pub speculative_window: u32,
-        pub drafts: *const i32,
-        pub draft_counts: *const u32,
-        pub out_committed_counts: *mut i32,
-        /// P5-05 (GitHub #155): each lane's extent this round, or null.
-        pub out_extents: *mut u32,
-        /// P6-06 (GitHub #242): each lane's committed token's probability
-        /// within its own permitted set, or 0 for a lane that declared
-        /// none. Null asks for nothing. One float per lane rather than a
-        /// logits row — the per-digit confidence a number's uncertainty is
-        /// summed from has to come from somewhere, and this is the cheapest
-        /// thing that is not the host reading logits (ADR 0034).
-        pub out_permitted_probs: *mut f32,
-        /// GitHub #302: each lane's n-gram table rows on a Flash-Next load,
-        /// host `[batch][16][90]` (a verify round: `[batch][window + 1]
-        /// [16][90]`); null on the 27B.
-        pub ngram_rows: *const u8,
-        /// GitHub #307: a Flash-Next MTP load's drafts for each lane's next
-        /// round, `[batch][window]`; null asks for nothing.
-        pub out_drafts: *mut i32,
-        /// GitHub #315 (ADR 0048): per lane, 1 when the round redirected the
-        /// lane's successor to its `reasoning_close_id`, else 0; null asks
-        /// for nothing.
-        pub out_reasoning_redirected: *mut i32,
-        /// GitHub #329 item 5 (ADR 0056): a Flash-Next round's BF16 logits,
-        /// every row its head produced (`[batch][vocab]`, a verify round
-        /// `[batch][window + 1][vocab]`); null asks for nothing.
-        pub out_logits: *mut u16,
-    }
+    /// 1:1 with `struct ignis_decode_options`, kept beside the kernel-free
+    /// mirrors so its layout pin runs in the CPU suite.
+    pub use crate::step_abi::IgnisDecodeOptions;
 
     /// 1:1 with `struct ignis_prefill_options` (ADR 0016, P2-02, GitHub
     /// #84). `size` must be `sizeof(struct ignis_prefill_options)`; the
@@ -1172,6 +1139,7 @@ fn program_round(
         out_drafts: std::ptr::null_mut(),
         out_reasoning_redirected: redirected.as_mut_ptr(),
         out_logits,
+        forced_tokens: std::ptr::null(),
     };
     let mut tokens = vec![-1; handles.len()];
     let rc = unsafe {
@@ -1441,7 +1409,50 @@ pub fn decode_program_verify_runs(
     lanes: &[VerifyLane<'_>],
     window: u32,
 ) -> Result<Vec<LaneVerifyRun>, String> {
-    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut())
+    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut(), std::ptr::null())
+}
+
+/// [`decode_program_verify_runs`], **teacher-forced** (GitHub #267): the
+/// measurement seam that replays a recorded turn through real verify rounds.
+/// No serving path calls it.
+///
+/// `forced[i]` is lane `i`'s recorded text after its anchor, `window + 1`
+/// tokens (pad past the recording's end with `-1`, which no draft equals).
+/// The round's pass is the ordinary one -- on a DFlash2 load the drafter
+/// proposes from the lane's window -- but the lane accepts the leading drafts
+/// its recorded text agrees with (at most its extent) and takes the recorded
+/// token after them as the correction, so the committed run is the
+/// recording's, and the sequence stands where a round that sampled that text
+/// would have left it. The recorded token after the run becomes the pending
+/// anchor, so the leaf refuses one outside the vocabulary: the `-1` pad is
+/// taken only after a run that ends at a stop id, and leaves the sequence
+/// with no pending token until a prefill gives it one -- a recording that
+/// ends without a stop must carry the token after it. Every lane must be
+/// greedy: the round draws nothing. A Flash-Next load refuses the forcing.
+pub fn decode_program_verify_forced(
+    model: &Model,
+    pool: &SeqPool,
+    sequences: &mut [&mut Seq<'_>],
+    lanes: &[VerifyLane<'_>],
+    window: u32,
+    forced: &[&[i32]],
+) -> Result<Vec<LaneVerifyRun>, String> {
+    if forced.len() != sequences.len() {
+        return Err(format!(
+            "decode_program_verify_forced: {} forced runs for {} sequences",
+            forced.len(),
+            sequences.len()
+        ));
+    }
+    let columns = window as usize + 1;
+    if let Some(index) = forced.iter().position(|run| run.len() != columns) {
+        return Err(format!(
+            "decode_program_verify_forced: lane {index} forces {} tokens, not window + 1 = {columns}",
+            forced[index].len()
+        ));
+    }
+    let flat: Vec<i32> = forced.iter().flat_map(|run| run.iter().copied()).collect();
+    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut(), flat.as_ptr())
 }
 
 /// GitHub #307 (spec flash-next/07): one Flash-Next verify round at the
@@ -1475,7 +1486,7 @@ pub fn decode_flash_next_verify(
     }
     let out_logits =
         out_logits_ptr(out_logits, sequences.len() * columns, flash_next_vocab(), "decode_flash_next_verify")?;
-    verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr(), out_logits)
+    verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr(), out_logits, std::ptr::null())
 }
 
 fn verify_round(
@@ -1486,6 +1497,7 @@ fn verify_round(
     window: u32,
     ngram_rows: *const u8,
     out_logits: *mut u16,
+    forced_tokens: *const i32,
 ) -> Result<Vec<LaneVerifyRun>, String> {
     if lanes.len() != sequences.len() {
         return Err(format!(
@@ -1553,6 +1565,7 @@ fn verify_round(
         out_drafts: next_drafts.as_mut_ptr(),
         out_reasoning_redirected: redirected.as_mut_ptr(),
         out_logits,
+        forced_tokens,
     };
     let rc = unsafe {
         ffi::ignis_program_decode(

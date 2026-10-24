@@ -37,6 +37,10 @@ pub mod checkpoint;
 pub mod compute;
 pub mod concrete;
 pub mod decision;
+// GitHub #267: the drafter's proposals at a sequence's frontier, for the
+// replay of recorded turns (its leaf call is cuda-only; the lattice walk is
+// not).
+pub mod dflash2_readout;
 pub mod disk;
 #[cfg(feature = "cuda")]
 pub mod flash_next;
@@ -99,6 +103,9 @@ pub mod speculation;
 pub mod thinking_budget;
 #[cfg(feature = "cuda")]
 pub mod step;
+// GitHub #340: the step ABI's decode options, a kernel-free mirror whose
+// layout pin runs on CPU.
+pub(crate) mod step_abi;
 #[cfg(feature = "cuda")]
 pub mod trellis;
 pub mod types;

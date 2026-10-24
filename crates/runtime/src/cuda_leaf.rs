@@ -359,6 +359,22 @@ fn reserved_bytes(
     }
 }
 
+/// What a loaded model and its pool hold beside the weights, read off their
+/// own buffers (GitHub #210): the lines a load checks against its VRAM plan
+/// ([`ReservedBytes::check_planned`]). The leaf's stats report it, and the
+/// replay examples' load, which holds the model and pool itself, reads it
+/// here (GitHub #340).
+pub fn loaded_reserved_bytes(model: &CoreModel, pool: &SeqPool) -> ReservedBytes {
+    let pool_stats = pool.stats();
+    reserved_bytes(
+        model.stats().reserved,
+        pool_stats.lane_state_bytes,
+        pool_stats.retained_state_bytes,
+        pool_stats.hq_residual_bytes,
+        pool_stats.kv_arena_bytes,
+    )
+}
+
 /// What [`CudaLeafConfig::plan_reservations`] found (GitHub #210).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlannedReservations {
@@ -641,7 +657,6 @@ impl StepLeaf for CudaLeaf {
         let program = step::program_stats(&model.model, &model.pool)
             .map_err(|e| leaf_error("program stats", e))?;
         let pool_stats = model.pool.stats();
-        let reserved = model.model.stats().reserved;
         Ok(RuntimeStats {
             vram_bytes: program.vram_bytes,
             // The leaf's paged KV page size is fixed at 64 tokens
@@ -663,13 +678,7 @@ impl StepLeaf for CudaLeaf {
             free_vram_bytes: self.device.free_bytes().unwrap_or(0),
             // GitHub #210: read off the model's and the pool's own buffers,
             // for the load to check against its VRAM plan.
-            reserved: reserved_bytes(
-                reserved,
-                pool_stats.lane_state_bytes,
-                pool_stats.retained_state_bytes,
-                pool_stats.hq_residual_bytes,
-                pool_stats.kv_arena_bytes,
-            ),
+            reserved: loaded_reserved_bytes(&model.model, &model.pool),
         })
     }
 
