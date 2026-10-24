@@ -1,6 +1,6 @@
 ---
 title: "Counting a prompt"
-description: "POST /v1/count: a prompt's token count before you send it."
+description: "POST /v1/tokenize: how many tokens a chat body prefills, without serving it; and /v1/detokenize."
 sidebar:
   order: 8
 ---

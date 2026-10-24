@@ -2,7 +2,7 @@
 title: "Working with make"
 description: "The make targets a developer and an agent use, and how a run is guarded."
 sidebar:
-  order: 3
+  order: 4
 ---
 
 The `Makefile` wraps all of the above (GNU make and a POSIX `sh` — on Windows,

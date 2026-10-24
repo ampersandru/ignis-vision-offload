@@ -32,12 +32,30 @@ only where the guide or the root README quotes one.
 
 ## Where it goes
 
-- **`docs/user/README.md`** is the user reference. A behaviour lives in one
-  section, the one a user would open for it; every other mention links there.
-- **`docs/user/<topic>.md`** holds a topic that outgrows a section
-  (`dgx-spark.md`), linked from the reference.
-- **`docs/user/images/`** holds the screenshots; a Playground change that
-  alters a pictured screen replaces its image.
+`docs/user/` is a tree of pages by kind; a behaviour lives on one page, the
+one a user would open for it, and every other mention links there.
+
+| Folder | Holds | A change that goes there |
+|---|---|---|
+| `start/` | what ignis is, install, quick start, connecting a client | a new install route, a changed first-run step, a client's setup |
+| `guides/` | how-to pages: models, air-gapped, Knative, telemetry, cards | a new task a user performs end to end |
+| `concepts/` | explanations: how a request is served, KV and reuse, the VRAM plan, speculation, reasoning, switching, profiles | a mechanism's behaviour or its reason |
+| `configuration/` | the fields by topic, with the why and the trade-offs | a field added, renamed, re-defaulted, or its trade-off moved |
+| `playground/` | the Playground's views | a view, a control, what a screen shows |
+| `api/` | the HTTP surface by route, deadlines, switching, idle unload | a route, a request or response field, a status code, an error |
+| `reference/` | generated pages, plus the glossary | never edited by hand: change the code, run `make docs-reference` |
+| `paths/` | the four reading paths | a page added that a path should walk through |
+| `troubleshooting.md` | symptoms, their causes and fixes | a new refusal, WARN line or failure mode |
+| `contributing/` | building, tests, make, conventions, releases | a contributor-facing workflow |
+| `images/` | screenshots | a Playground change that alters a pictured screen replaces its image |
+
+- **A page's file name is its route**: lowercase words joined by dashes,
+  `index.md` for a section's landing page. Its front matter carries `title`,
+  `description` and `sidebar.order`; the body starts at `##`.
+- **Links are relative paths to Markdown files** (`../api/deadlines.md#…`),
+  which GitHub follows and the site turns into routes; a link out of
+  `docs/user/` becomes a GitHub URL. `make docs-build` fails on a link to a
+  missing page, heading or file.
 - **The root `README.md`** is the overview: it changes when a headline
   feature, the quick start or a headline number changes, and links into the
   guide for the rest. It links no individual ADR.
@@ -45,21 +63,22 @@ only where the guide or the root README quotes one.
   renamed, or a number a card quotes changes, the card is updated too
   (`hf upload <repo> README.md README.md`).
 
-`docs/user/` is the published tree: the GitHub Pages site builds from it
-alone, through a workflow (owner decision 2026-10-24; the site is not built
-yet). Specs, ADRs, findings and these agent docs stay in their own trees; the
-guide links to them for the reasons behind a behaviour.
+`docs/user/` is the published tree (ADR 0066): `.github/workflows/docs.yml`
+builds the site from it alone on every push that touches it and publishes it
+on a release tag. Specs, ADRs, findings and these agent docs stay in their own
+trees; the guide links to them for the reasons behind a behaviour.
 
 ## How it is written
 
 - **What a user does and sees**: the command, the field, the request, the
   answer, the log line. The reason behind it is one sentence and a link to its
   ADR.
-- **Generated references stay the reference.** `ignis-server help --fields`
-  lists every config field with its default and rule, `/v1/openapi.json` and
-  `/v1/docs/` describe the HTTP surface (ADR 0036), `make help` lists the
-  targets. The guide adds the why and the worked example; where its prose
-  names a default or a field, that value moves with the code.
+- **Generated references stay the reference.** The pages under
+  `docs/user/reference/` are rendered from the code (`make docs-reference`,
+  held by `cargo test`): every config field, the profiles, the catalog, the
+  metrics, the routes, the commands. The rest of the guide adds the why and
+  the worked example, and links there for the list; where its prose names a
+  default or a field, that value moves with the code.
 - **Every command runs as written** on the build the commit produces, with
   current flag names.
 - **Public by construction**: examples use placeholder hosts, keys and paths,
