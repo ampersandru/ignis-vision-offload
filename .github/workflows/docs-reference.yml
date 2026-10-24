@@ -29,9 +29,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The repository's .cargo/config.toml defaults to the Windows target, as
+      # the release workflow's test job notes: name the runner's own.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
         with:
           key: test-cpu
       - name: The generated reference equals the code's
-        run: cargo test --locked -p ignis-server --test user_docs_reference
+        run: cargo test --locked --target x86_64-unknown-linux-gnu -p ignis-server --test user_docs_reference
