@@ -222,7 +222,8 @@ impl Shared {
             }
             if let Some(task) = state.interactive.pop_front() {
                 drop(state);
-                task();
+                // A panic in a task is that task's, not the worker's.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
                 self.touch();
                 continue;
             }
@@ -230,7 +231,9 @@ impl Shared {
                 state.stepping = Some(entry.job.audio_seconds());
                 drop(state);
                 let began = Instant::now();
-                let step = entry.job.step();
+                // A job that panics (an executor fault) is over: its request hears
+                // its reply dropped, and the worker serves the next.
+                let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.job.step())).unwrap_or(Step::Done);
                 entry.computed += began.elapsed();
                 self.touch();
                 let mut state = self.lock();
@@ -409,6 +412,30 @@ mod tests {
         assert_eq!(full.retry_after_secs, 1, "a 2 s clip is a second away");
         open(&held);
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "a");
+    }
+
+    /// A job whose executor panics ends there, and the worker serves the next.
+    #[test]
+    fn a_job_that_panics_does_not_take_the_worker_with_it() {
+        struct Panics;
+        impl Job for Panics {
+            fn audio_seconds(&self) -> f64 {
+                1.0
+            }
+            fn step(&mut self) -> Step {
+                panic!("the executor faulted");
+            }
+        }
+        let (worker, gauges) = worker();
+        let (done, finished) = mpsc::channel();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        worker.submit(Box::new(Panics), 4).unwrap();
+        worker.submit(job("after", 1, 1.0, &log, &done), 4).unwrap();
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "after");
+        while worker.jobs() > 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(gauges.queue.load(Ordering::SeqCst), 0);
     }
 
     /// The idle clock lives on the worker: a loaded model unused for

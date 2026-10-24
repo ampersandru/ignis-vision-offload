@@ -422,7 +422,7 @@ struct Transcription {
     cancelled: Arc<AtomicBool>,
     /// The stable text, as it grows, when the request streams.
     deltas: Option<mpsc::UnboundedSender<String>>,
-    emitted: usize,
+    emitted: String,
     reply: Option<oneshot::Sender<Result<Done, Failure>>>,
     began: Option<Instant>,
 }
@@ -439,11 +439,14 @@ impl Transcription {
     /// Send what `text` adds to what was sent, when it extends it.
     fn emit(&mut self, text: &str) {
         let Some(deltas) = &self.deltas else { return };
-        if text.len() > self.emitted && text.is_char_boundary(self.emitted) {
-            if deltas.send(text[self.emitted..].to_owned()).is_err() {
+        // Only text that extends what was sent is a delta: the executor's
+        // stable text is never revised, and a violation sends nothing rather
+        // than deltas that do not join to the answer.
+        if text.len() > self.emitted.len() && text.starts_with(self.emitted.as_str()) {
+            if deltas.send(text[self.emitted.len()..].to_owned()).is_err() {
                 self.cancelled.store(true, Ordering::SeqCst);
             }
-            self.emitted = text.len();
+            self.emitted = text.to_owned();
         }
     }
 
@@ -558,10 +561,14 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
         return bad_request_param("`file` is required: the audio to transcribe", "file");
     };
     let max_seconds = group.max_clip_seconds;
-    let decoded = tokio::task::spawn_blocking(move || audio::decode(bytes, max_seconds)).await.expect("decoding audio does not panic");
+    // A decoder that panics on a malformed stream answers this request, not
+    // the connection.
+    let decoded = match tokio::task::spawn_blocking(move || audio::decode(bytes, max_seconds)).await {
+        Ok(decoded) => decoded,
+        Err(_) => return bad_request_param("`file` could not be decoded as audio", "file"),
+    };
     let clip = match decoded {
         Ok(clip) => clip,
-        Err(error @ AudioError::TooLong { .. }) => return bad_request_param(&error.message(), "file"),
         Err(error) => return bad_request_param(&error.message(), "file"),
     };
     let audio_seconds = clip.seconds();
@@ -592,7 +599,7 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
         audio_seconds,
         cancelled: Arc::clone(&cancelled),
         deltas,
-        emitted: 0,
+        emitted: String::new(),
         reply: Some(reply),
         began: None,
     };

@@ -30,8 +30,7 @@ pub const ACCEPTED: &str = "WAV, FLAC, MP3 and AAC (ADTS or MP4/M4A), and the Og
 pub enum AudioError {
     /// Not a format the route accepts, or a codec it does not decode.
     Unsupported(String),
-    /// Longer than `speech.max_clip_seconds`; the clip's length when it was
-    /// stopped at (at least, never more than a packet over).
+    /// Longer than `speech.max_clip_seconds`, the limit it was held to.
     TooLong { limit_seconds: u32 },
     /// Accepted, but it holds no audio, or is damaged beyond what was read.
     Unreadable(String),
