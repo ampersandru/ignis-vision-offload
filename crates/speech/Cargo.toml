@@ -1,0 +1,24 @@
+[package]
+name = "ignis-speech"
+description = "ignis: the speech model's CPU executor (Qwen3-ASR), ours in Rust: GGUF reader, quantized kernels, the AuT encoder and Qwen3 decoder graphs, the mel front end and the incremental API (ADR 0067)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Pure Rust, no build script, no cargo feature (spec speech/01 acceptance 1,
+# ADR 0067): the speech model is in every build. The AVX2 kernels are
+# `#[target_feature]` functions picked at run time, never a global
+# `target-cpu`.
+[dependencies]
+# The GGUF tensor data is read from the mapped file (spec speech/01 §1, Q31).
+memmap2 = { workspace = true }
+# The Qwen3 vocabulary the decoder GGUF carries, built into a BPE tokenizer
+# (Q41). Already a dependency of ignis-artifact.
+tokenizers = "0.21"
+# `speech.threads: auto` = physical cores - 1 (Q38). Pulls no `windows-sys`.
+num_cpus = "1"
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The oracle fixtures' index and thresholds (tools/speech-oracle/).
+serde_json = { workspace = true }
