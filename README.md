@@ -322,9 +322,12 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   without one more tool call — the deferral that kept two agent sessions
   looping for 15 and 32 turns ([a close that answers](docs/findings/2026-10-01-a-close-that-answers.md)).
 
-### Jev-like decisions, answered without generating (`/v1/decide`)
+### System One decisions, answered without generating (`/v1/systemone`, `/v1/decide`)
 
-- A **classification is not a completion**. `POST /v1/decide` prefills the
+- **The System One API, on a local model**: the typed-decision API the Jev
+  model is served under, with the same route (`POST /v1/systemone`), body and
+  error statuses, also served as `POST /v1/decide`.
+- A **classification is not a completion**. The endpoint prefills the
   evidence once and reads the answer out of the logits at a single position.
 - Seven primitives: **`noul`** (yes/no), **`choice`** and **`score`**; one
   constrained digit per step, **`number`**, **`point`** and **`box`**; and
@@ -340,8 +343,8 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - `locate` finds the line on fresh cluster logs of **100K to 1M tokens 21 times
   out of 23, median 2.6 s**, with no long prefill and no token decoded
   ([zero-decode locate](docs/findings/2026-09-28-zero-decode-locate-very-long-logs-and-prose.md)).
-- The same handler is served as **`/v1/systemone`**, so a Jev client reaches
-  this engine by changing the URL and nothing else.
+- A System One client reaches this engine by changing its base URL; `model`
+  is left out or names the model ignis serves.
 
 ### Images as evidence
 

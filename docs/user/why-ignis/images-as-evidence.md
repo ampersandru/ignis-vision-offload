@@ -84,5 +84,5 @@ about one new image takes the same time as before.
 ## Read more
 
 - [Vision](../configuration/vision.md): the flags and their defaults.
-- [Decisions without decoding](decisions.md): `point` and `box` over an image.
+- [System One decisions, without decoding](decisions.md): `point` and `box` over an image.
 - [ADR 0035](../../adr/0035-the-vision-embedding-outlives-its-encode.md): why the embedding outlives its encode.

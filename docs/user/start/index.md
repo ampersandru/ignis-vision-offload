@@ -69,9 +69,16 @@ generates no real text. Use it to smoke-test a client, not to get answers.
   route, and `/v1/docs/` on a running server is an interactive reference.
 - **The Responses API**, over HTTP and over a WebSocket
   ([Responses](../api/responses.md)).
-- **A decision endpoint**, `/v1/decide`, that answers a question over text or
-  an image from one prefill without generating tokens
-  ([Decide](../api/decide.md)).
+- **A System One-compatible decision API**, `/v1/systemone` and `/v1/decide`,
+  that answers typed questions over text or an image from one prefill without
+  generating tokens ([Decisions](../api/decide.md)).
+- **The models**, each a public Hugging Face repository the server fetches
+  and checks by itself: the 27B ([NVFP4](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer),
+  [for 16 GB cards](https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis),
+  [uncensored](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer)),
+  [Flash-Next](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis)
+  and the [image model](https://huggingface.co/gpillon/ignis-image-2.1-turbo)
+  ([Get a model](../guides/models.md)).
 - **The Playground** at `/ui/`: chat with agents, Decide, an Image studio, a
   Monitor and a Server view for loading models and changing the configuration
   ([The Playground](../playground/index.md)).

@@ -104,4 +104,4 @@ and are missed. A false rewind found later reopens the defaults
 
 - [Reasoning and the loop guard](../concepts/reasoning.md): detection, action, modes and tuning.
 - [ADR 0052](../../adr/0052-a-reasoning-loop-is-taken-back-and-nudged.md) and [ADR 0053](../../adr/0053-a-loop-is-acted-on-once-it-persists.md): why a loop is taken back, and why it must persist first.
-- [Decisions without decoding](decisions.md): the route that never reasons at all.
+- [System One decisions, without decoding](decisions.md): the route that never reasons at all.

@@ -1,19 +1,28 @@
 ---
-title: "Decisions"
-description: "POST /v1/decide: a decision read from the model's distribution, and locating a line or an item."
+title: "Decisions: a System One-compatible API"
+description: "POST /v1/decide and POST /v1/systemone: the System One API's typed decisions, answered from one prefill of the model's distribution, plus locating a line or an item."
 sidebar:
   order: 10
+  label: "Decisions (System One)"
 ---
 
-`POST /v1/decide` answers typed questions about one piece of evidence. Three
-primitives (`noul`, `choice`, `score`) are read from the logits of named answer
-tokens at a single position: **nothing is generated**, they cost one prefill,
-and `usage.output_tokens` is 0. Three more (`number`, `point`, `box`) generate
-one constrained digit per step, so they cost a prefill plus a round per digit.
+ignis serves the **System One API**, the typed-decision API the Jev model is
+served under, on its own model. The same handler answers on two routes,
+**`POST /v1/systemone`**, System One's own, and `POST /v1/decide`, so a client
+written for System One reaches ignis by changing its base URL. The wire shape
+is copied, not invented: one `state`, a map of `questions`, typed answers with
+a probability on each, and System One's own error statuses (a request body
+that fails validation is a `422`). The one field that differs is `model`: leave
+it out or name the model ignis serves, since a Jev model name is refused with
+`422 model_not_found`.
 
-The wire shape is Jev's `POST /v1/systemone`, copied rather than invented, so an
-unmodified Jev client reaches this engine by changing the URL. The body is one
-`state` and a map of `questions`:
+System One's three primitives (`noul`, `choice`, `score`) are read from the
+logits of named answer tokens at a single position: **nothing is generated**,
+they cost one prefill, and `usage.output_tokens` is 0. ignis adds four of its
+own: `number`, `point` and `box` generate one constrained digit per step, so
+they cost a prefill plus a round per digit, and `locate` names a line or an
+item ([below](#finding-a-line-or-an-item)). The body is one `state` and a map
+of `questions`:
 
 ```bash
 curl http://127.0.0.1:8000/v1/decide \

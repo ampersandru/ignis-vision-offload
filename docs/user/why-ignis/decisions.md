@@ -1,14 +1,17 @@
 ---
-title: "Decisions without decoding"
-description: "POST /v1/decide reads a yes/no, a choice or a score from one position of the model's distribution: one prefill, no tokens generated."
+title: "System One decisions, without decoding"
+description: "A System One-compatible API (POST /v1/systemone, POST /v1/decide) that reads a yes/no, a choice or a score from one position of the model's distribution: one prefill, no tokens generated."
 sidebar:
   order: 11
 ---
 
 An agent asks small questions all day: is this the right queue, did the test
 pass, which of these three files matters. Answering each with a generated
-completion is slow and hard to parse. `POST /v1/decide` reads the answer from
-the model's distribution instead. The evidence is prefilled once, each option
+completion is slow and hard to parse. ignis answers them through the **System
+One API**, the typed-decision API the Jev model is served under: the same
+`POST /v1/systemone` route and body, so a System One client points its base
+URL at ignis and keeps working, here on a local model. It reads the answer
+from the model's distribution instead of generating one. The evidence is prefilled once, each option
 gets a one-token label, and the answer is the restricted softmax over those
 labels at the single position after the prompt. A decision costs **one prefill
 and decodes zero tokens**: 36.5 ms at the median in the measured run.
@@ -31,9 +34,9 @@ narrow the text to a few candidates and a labelled `choice` decides. A log is
 first folded into templates plus values, so nothing near its length is
 prefilled.
 
-The wire shape follows Jev's `POST /v1/systemone`, and `/v1/systemone` is the
-same handler, so a client written for it reaches ignis by changing the URL. A
-decision defaults to the `agent` lane class: it holds no residency and takes no
+`POST /v1/decide` and `POST /v1/systemone` are the same handler, and the
+errors follow System One's own table; only `model` must be left out or name
+the model ignis serves. A decision defaults to the `agent` lane class: it holds no residency and takes no
 decode lane, so a fan-out of questions queues behind conversations instead of
 cutting ahead of them. The request and response are in [Decisions](../api/decide.md).
 

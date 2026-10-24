@@ -96,4 +96,4 @@ and without the tag.
 - [How ignis serves a request](../concepts/how-ignis-serves.md): admission in the path of a request.
 - [KV cache and prompt reuse](../concepts/kv-cache-and-prompt-reuse.md#where-it-lives-three-tiers): where evicted state goes.
 - [State that outlives its request](state-that-outlives.md): the tiers a lane's state moves through.
-- [Decisions without decoding](decisions.md): why `/v1/decide` defaults to `agent`.
+- [System One decisions, without decoding](decisions.md): why `/v1/decide` defaults to `agent`.
