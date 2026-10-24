@@ -140,7 +140,7 @@ fn partials_roll_back_and_the_transcript_keeps_the_stable_text() {
     whole.push(&audio).unwrap();
     let w = whole.commit().unwrap();
     for rollback in [5, 0] {
-        let e = exec(&files, Settings { rollback_tokens: rollback, ..settings() });
+        let e = exec(&files, Settings { rollback_tokens: rollback, unfixed_partials: 0, ..settings() });
         let mut s = e.open("", None).unwrap();
         let mut partials = Vec::new();
         for c in audio.chunks(1600) {

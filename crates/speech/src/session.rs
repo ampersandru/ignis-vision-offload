@@ -9,7 +9,8 @@
 //! 3. `partial` encodes the incomplete window, appends it, the prompt's tail and the stable
 //!    text, decodes greedily, keeps the last `rollback_tokens` of what it decoded as the
 //!    provisional tail (the rest joins the stable text, never revised), and rolls the cache
-//!    back to the audio prefix.
+//!    back to the audio prefix. The first `unfixed_partials` fix nothing, as the official
+//!    streaming's first chunks do.
 //! 4. `commit` encodes the last window and decodes from the stable text to EOS, so the
 //!    transcript begins with every stable text reported (Q43).
 //!
@@ -309,7 +310,7 @@ impl Session {
         self.cache.truncate(self.audio_prefix);
         let decoded = decoded?;
         let r = self.core.settings.rollback_tokens;
-        let mut cut = decoded.len().saturating_sub(r);
+        let mut cut = if self.stats.partials <= self.core.settings.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
         // The stable text ends on a whole character: byte-level tokens may split one.
         while cut > 0 && self.lm.model.text.decode(&[&self.stable[..], &decoded[..cut]].concat()).ends_with('\u{FFFD}') {
             cut -= 1;

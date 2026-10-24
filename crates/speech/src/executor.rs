@@ -50,6 +50,10 @@ pub struct Settings {
     pub partial_interval_ms: u64,
     /// `speech.rollback_tokens`: the provisional tail's length (Q37).
     pub rollback_tokens: usize,
+    /// The first partials fix no token: the official streaming's `unfixed_chunk_num` (2), so
+    /// the language label and the opening words are decided on more than one interval of
+    /// audio. Fixing at the first partial, on 2 s, labelled an Italian dictation Portuguese.
+    pub unfixed_partials: usize,
     /// `speech.context_max_tokens` (Q50).
     pub context_max_tokens: usize,
     /// `speech.max_clip_seconds`: the KV cache is sized for it (Q19, Q36).
@@ -65,6 +69,7 @@ impl Default for Settings {
             idle_unload: Duration::from_secs(300),
             partial_interval_ms: 2000,
             rollback_tokens: 5,
+            unfixed_partials: 2,
             context_max_tokens: 512,
             max_clip_seconds: 1200,
         }
