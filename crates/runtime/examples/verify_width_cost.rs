@@ -5,17 +5,18 @@
 //!
 //! ```text
 //! cargo run --release -p ignis-runtime --features cuda --example verify_width_cost -- \
-//!     ARTIFACT TOKENS_BIN CONTEXTS ROUNDS OUT_JSONL [WINDOWS]
+//!     [--lanes N] [--prefill-chunk N] ARTIFACT TOKENS_BIN CONTEXTS ROUNDS OUT_JSONL [WINDOWS]
 //! ```
 //!
 //! `TOKENS_BIN` is int32 LE text (any real stream). `CONTEXTS` is an ascending
 //! comma list: lane `i` reads the text from `i * last context`, so the lanes
 //! are distinct, and is prefilled to the first context, measured, extended by
 //! prefill to the next, measured again. Per load (plain, then DFlash2-k for
-//! each k in `WINDOWS`, default 1..7), each planned as the server plans its own
-//! at the artifact's body's shape (`support/replay_load.rs`: the trellis one
-//! in `rtx50-16gb`'s 16 GiB plan at its two lanes, the NVFP4 one at eight),
-//! graphs captured: per context and lane count `n`, `ROUNDS` greedy rounds
+//! each k in `WINDOWS`, default 1..7), each at the artifact's body's shape
+//! (`support/replay_shape.rs`: the trellis one in `rtx50-16gb`'s 16 GiB plan
+//! at its two lanes, the NVFP4 one at eight or `--lanes`) planned with the
+//! server's plan pieces (`support/replay_load.rs`), graphs captured: per
+//! context and lane count `n`, `ROUNDS` greedy rounds
 //! over the first `n` lanes after 3 warm-up rounds, each timed on the host
 //! around the call (the call returns after its device work). One JSON line
 //! per (load, context, lanes): median, mean and p10/p90 round milliseconds.
@@ -31,10 +32,12 @@ use ignis_core::model_load::Model;
 use ignis_core::seq::{Seq, SeqPool};
 use ignis_core::step::{decode_program_batch_sampled, decode_program_verify_runs, prefill_program_sampled, SamplingParams, VerifyLane};
 
+#[path = "support/replay_shape.rs"]
+mod replay_shape;
 #[path = "support/replay_load.rs"]
 mod replay_load;
 
-use replay_load::LoadShape;
+use replay_shape::{LoadShape, ShapeFlags};
 
 const WARMUP: usize = 3;
 const LANE_COUNTS: [usize; 4] = [1, 2, 4, 8];
@@ -64,9 +67,12 @@ fn extend_lanes(model: &Model, pool: &SeqPool, seqs: &mut [Seq<'_>], text: &[i32
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    let flags = ShapeFlags::take(&mut args).unwrap_or_else(|e| panic!("{e}"));
     if !(6..=7).contains(&args.len()) {
-        eprintln!("usage: verify_width_cost ARTIFACT TOKENS_BIN CONTEXTS ROUNDS OUT_JSONL [WINDOWS]");
+        eprintln!(
+            "usage: verify_width_cost [--lanes N] [--prefill-chunk N] ARTIFACT TOKENS_BIN CONTEXTS ROUNDS OUT_JSONL [WINDOWS]"
+        );
         std::process::exit(2);
     }
     let bytes = std::fs::read(&args[2]).unwrap_or_else(|e| panic!("read {}: {e}", args[2]));
@@ -81,7 +87,7 @@ fn main() {
     let mut out = std::fs::OpenOptions::new().create(true).append(true).open(&args[5]).expect("open out");
 
     let reader = Reader::open(Path::new(&args[1])).unwrap_or_else(|e| panic!("open artifact: {e}"));
-    let base = LoadShape::from_env(body_27b(&reader)).unwrap_or_else(|e| panic!("load shape: {e}"));
+    let base = LoadShape::new(body_27b(&reader), flags).unwrap_or_else(|e| panic!("load shape: {e}"));
     let lanes = base.lanes as usize;
     let lane_counts: Vec<usize> = LANE_COUNTS.into_iter().filter(|&n| n <= lanes).collect();
     assert!(text.len() >= lanes * stride, "the text holds {} tokens, not {}", text.len(), lanes * stride);

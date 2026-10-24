@@ -1,4 +1,4 @@
-"""Reader for dflash2_replay's per-round records (crates/core/examples/dflash2_replay.rs)."""
+"""Reader for dflash2_replay's per-round records (crates/runtime/examples/dflash2_replay.rs)."""
 import json
 import os
 

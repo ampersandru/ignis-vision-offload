@@ -5,18 +5,19 @@
 //!
 //! ```text
 //! cargo run --release -p ignis-runtime --features cuda --example dflash2_replay -- \
-//!     ARTIFACT MANIFEST_JSON INPUT_DIR OUT_DIR [FIRST_JOB [LAST_JOB]]
+//!     [--lanes N] [--prefill-chunk N] ARTIFACT MANIFEST_JSON INPUT_DIR OUT_DIR [FIRST_JOB [LAST_JOB]]
 //! ```
 //!
 //! The manifest (`tools/dflash2-replay/select.py`) lists jobs: a token stream
 //! (`INPUT_DIR/<job>.tok`, int32 LE) and the recorded assistant turns in it.
-//! The load is planned as the server plans its own and follows the artifact's
-//! body (`support/replay_load.rs`): the trellis one in `rtx50-16gb`'s 16 GiB
-//! plan, the NVFP4 one at the same engine shape on the card's derived budget
-//! -- 262,144 context, DFlash2-7 with the full head, hq-e8-2b KV, 1024-token
-//! prefill chunks, rope none, verify graphs captured. On the NVFP4 body the
-//! server's `IGNIS_MODEL_PREFILL_CHUNK` picks another chunk (its served 2048).
-//! For each job, on one sequence:
+//! The load follows the artifact's body (`support/replay_shape.rs`), planned
+//! with the server's plan pieces (`support/replay_load.rs`): the trellis one in
+//! `rtx50-16gb`'s 16 GiB plan, the NVFP4 one at the same engine shape on the
+//! card's derived budget -- 262,144 context, DFlash2-7 with the full head,
+//! hq-e8-2b KV, 1024-token prefill chunks, rope none, verify graphs captured.
+//! On the NVFP4 body `--prefill-chunk` picks another chunk (its served 2048)
+//! and `--lanes` another lane count than its eight; the trellis body refuses
+//! both. For each job, on one sequence:
 //!
 //! - everything before a turn is prefilled, its last draw forced to the turn's
 //!   first recorded token (a permitted set of one), which becomes the pending
@@ -50,16 +51,21 @@ use ignis_core::compute::ModelConfig;
 use ignis_core::dflash2_readout;
 use ignis_core::step::{decode_program_verify_forced, prefill_program_permitted, SamplingParams, VerifyLane};
 
+#[path = "support/replay_shape.rs"]
+mod replay_shape;
 #[path = "support/replay_load.rs"]
 mod replay_load;
 
-use replay_load::LoadShape;
+use replay_shape::{LoadShape, ShapeFlags};
 
 /// The record's draft window: the load's (`LoadShape::window`).
 const WINDOW: usize = 7;
 const COLUMNS: usize = WINDOW + 1;
 /// The vendored sampler's candidate cap (`kSamplerCandidateCap`).
 const TARGET_TOP: usize = 20;
+/// One record's bytes, `tools/dflash2-replay/records.py`'s `RECORD` (pinned
+/// there by `test_records.py`).
+const RECORD_BYTES: usize = 9_520;
 
 /// One round's record, every field little-endian, in this order:
 ///
@@ -94,7 +100,7 @@ struct Record {
 
 impl Record {
     fn write(&self, out: &mut impl Write) -> std::io::Result<()> {
-        let mut bytes = Vec::with_capacity(9_600);
+        let mut bytes = Vec::with_capacity(RECORD_BYTES);
         self.header.iter().for_each(|v| bytes.extend(v.to_le_bytes()));
         self.forced.iter().for_each(|v| bytes.extend(v.to_le_bytes()));
         for ints in [&self.drafts, &self.candidate_ids] {
@@ -108,6 +114,9 @@ impl Record {
             floats.iter().for_each(|v| bytes.extend(v.to_le_bytes()));
         }
         bytes.extend(self.agreed.to_le_bytes());
+        // A table of the wrong length would shift every later record the
+        // reader slices at this size.
+        assert_eq!(bytes.len(), RECORD_BYTES, "a round's record is not the reader's layout");
         out.write_all(&bytes)
     }
 }
@@ -177,9 +186,13 @@ fn row_lse(row: &[u16], max: f32) -> f32 {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    let flags = ShapeFlags::take(&mut args).unwrap_or_else(|e| panic!("{e}"));
     if !(5..=7).contains(&args.len()) {
-        eprintln!("usage: dflash2_replay ARTIFACT MANIFEST_JSON INPUT_DIR OUT_DIR [FIRST_JOB [LAST_JOB]]");
+        eprintln!(
+            "usage: dflash2_replay [--lanes N] [--prefill-chunk N] ARTIFACT MANIFEST_JSON INPUT_DIR OUT_DIR \
+             [FIRST_JOB [LAST_JOB]]"
+        );
         std::process::exit(2);
     }
     let manifest: serde_json::Value = serde_json::from_str(
@@ -196,7 +209,7 @@ fn main() {
     let longest = jobs.iter().map(|j| j["tokens"].as_u64().unwrap()).max().unwrap_or(0) as u32;
 
     let reader = Reader::open(Path::new(&args[1])).unwrap_or_else(|e| panic!("open artifact: {e}"));
-    let shape = LoadShape::from_env(body_27b(&reader)).unwrap_or_else(|e| panic!("load shape: {e}"));
+    let shape = LoadShape::new(body_27b(&reader), flags).unwrap_or_else(|e| panic!("load shape: {e}"));
     assert_eq!(shape.window as usize, WINDOW, "the record's window is the load's");
     // A round at the turn's end still runs its whole window.
     let max_context = shape.max_context;
@@ -356,4 +369,5 @@ fn main() {
         drop(records);
         std::fs::write(out_dir.join(format!("{name}.done")), b"").unwrap();
     }
+    loaded.release();
 }
