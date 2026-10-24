@@ -415,7 +415,10 @@ async fn a_queued_or_running_image_job_keeps_the_image_model_loaded() {
     let ended = Instant::now();
     drop(running);
     unloaded(&server).await;
-    assert!(ended.elapsed() >= IDLE, "the idle time counts from the job's end: {:?}", ended.elapsed());
+    // A job driven here holds no request's `InUse`, so its last use is the
+    // clock's last tick that saw it running: up to one TICK before its end
+    // (985 ms on a Windows runner, whose timer moves in ~15 ms steps).
+    assert!(ended.elapsed() >= IDLE - TICK, "the idle time counts from the job's end: {:?}", ended.elapsed());
     assert_eq!(loader.resident(), 0, "the unloaded image model's runner was dropped");
     assert!(jobs.is_closed(), "the unloaded model's queue admits nothing more");
     assert!(loader.loads().is_empty());
