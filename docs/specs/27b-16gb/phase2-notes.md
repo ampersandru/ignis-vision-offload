@@ -14,6 +14,16 @@ shipped. After phase 2 comes the image model on 16 GB.
 - **The abliterated variant** at the same bpw: same converter (spec 01), its own catalog entry and alias.
 - **A speed gate on a real card**, ignis against llama.cpp on the same card (Q8). The card comes from renting by the
   hour, from users running spec 05's bench, or from a purchase; decided when phase 2 starts.
+- **The headroom on a real card** (GitHub #346; inferred, not measured).
+  - Phase 1's capacity runs named their budget with `--vram-budget-bytes`, which skips the profile's 1,200 MiB
+    headroom. On a real card the budget is the free memory less that headroom, from a total of about 15.9 GiB.
+  - From the capacity finding's plan lines (1,820 pages a GiB; 262,144 needs a pool of 327,680 tokens):
+    - the context stays at 262,144 only with about 0.3 GiB or less held by anything else;
+    - with 1 GiB of desktop the load adapts to 131,072;
+    - with 3 GiB the pool is ~11.5K tokens, ~37K at one lane, short of the 131,072 that 65,536 needs, so the load
+      would be refused.
+  - The first real card's `ignis-bench small-card` record settles it. If it holds, `rtx50-16gb` gets its own
+    `vram.headroom_bytes` or `vram.adapt_spare_tokens`, measured on that card.
 - **Per-card 16 GB profiles** (`rtx5060ti`, `rtx5070ti`, `rtx5080`), only where measurements show the lanes or draft
   tokens should differ.
   - The 5060 Ti is the likely one: it turns compute-bound past 2-3 lanes in the estimates.
