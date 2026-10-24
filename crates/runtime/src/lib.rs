@@ -24,7 +24,7 @@ pub use disk_transfer::StagingWindow;
 #[cfg(feature = "cuda")]
 mod cuda_leaf;
 #[cfg(feature = "cuda")]
-pub use cuda_leaf::{CudaLeaf, CudaLeafConfig, CudaModel, PlannedReservations};
+pub use cuda_leaf::{loaded_reserved_bytes, CudaLeaf, CudaLeafConfig, CudaModel, PlannedReservations};
 #[cfg(feature = "cuda")]
 mod flash_next_leaf;
 #[cfg(feature = "cuda")]
@@ -200,6 +200,42 @@ pub struct ReservedBytes {
     pub hq_residual_window: u64,
     /// The KV pool's arena, planes and block tables.
     pub kv_pool: u64,
+}
+
+impl ReservedBytes {
+    /// These lines, read back off a loaded model and its pool, against the
+    /// ones its VRAM plan laid out (GitHub #210): `planned`, every line but
+    /// the KV pool's, and `kv_pool_bytes`, the pool the plan sized from the
+    /// rest. A load whose buffers are not its plan's is refused: the plan no
+    /// longer describes what the process holds.
+    pub fn check_planned(self, planned: ReservedBytes, kv_pool_bytes: u64) -> Result<(), String> {
+        let planned = ReservedBytes { kv_pool: kv_pool_bytes, ..planned };
+        if self == planned {
+            return Ok(());
+        }
+        Err(format!("the load holds {self:?} beside its weights, not the {planned:?} its VRAM plan laid out"))
+    }
+}
+
+/// The VRAM plan's lines for a load (GitHub #210): the weights' arena, the
+/// CUDA context, what the leaf planned beside them -- its retained slots
+/// included (GitHub #215) -- and the measured residual, in plan order.
+pub fn vram_lines(weights_bytes: u64, reserved: ReservedBytes) -> ignis_core::VramLines {
+    ignis_core::VramLines {
+        weights: weights_bytes,
+        cuda_context: CUDA_CONTEXT_BYTES,
+        workspace: reserved.workspace,
+        trellis_workspace: reserved.trellis_workspace,
+        media_embedding: reserved.media_embedding,
+        sampling: reserved.sampling,
+        decode_graph: reserved.decode_graph,
+        verify_round: reserved.verify_round,
+        drafter_round: reserved.drafter_round,
+        lane_state: reserved.lane_state,
+        retained_slots: reserved.retained_slots,
+        hq_residual_window: reserved.hq_residual_window,
+        residual: LOAD_RESIDUAL_BYTES,
+    }
 }
 
 /// A failure returned by the step ABI.
@@ -2243,5 +2279,39 @@ impl<L: StepLeaf> Drop for RuntimeCompute<L> {
         for (_, prefix) in prefixes {
             self.release_prefix_handle(prefix);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(base: u64) -> ReservedBytes {
+        ReservedBytes {
+            workspace: base + 1,
+            trellis_workspace: base + 2,
+            media_embedding: base + 3,
+            sampling: base + 4,
+            decode_graph: base + 5,
+            verify_round: base + 6,
+            drafter_round: base + 7,
+            lane_state: base + 8,
+            retained_slots: base + 9,
+            hq_residual_window: base + 10,
+            kv_pool: 0,
+        }
+    }
+
+    /// GitHub #210, #340: the read-back check the server's 27B load and the
+    /// replay examples' both run. The plan's lines carry no pool (the plan
+    /// sizes it from the rest), so the pool is the plan's own figure.
+    #[test]
+    fn a_load_is_its_plan_line_by_line_or_refused() {
+        let built = ReservedBytes { kv_pool: 1 << 30, ..lines(0) };
+        assert_eq!(built.check_planned(lines(0), 1 << 30), Ok(()));
+        let err = built.check_planned(lines(0), 1 << 29).expect_err("another pool");
+        assert!(err.contains("its VRAM plan laid out"), "{err}");
+        let err = ReservedBytes { verify_round: 0, ..built }.check_planned(lines(0), 1 << 30).expect_err("a missing line");
+        assert!(err.contains("verify_round: 0"), "{err}");
     }
 }

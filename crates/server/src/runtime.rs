@@ -453,29 +453,9 @@ fn scheduler_config_for_shape(
     }
 }
 
-/// The VRAM plan's lines for a load (GitHub #210): the weights' arena, the
-/// CUDA context, what the leaf planned beside them -- its retained slots
-/// included (GitHub #215) -- and the measured residual, in plan order.
-pub fn vram_lines(
-    weights_bytes: u64,
-    reserved: ignis_runtime::ReservedBytes,
-) -> ignis_core::VramLines {
-    ignis_core::VramLines {
-        weights: weights_bytes,
-        cuda_context: ignis_runtime::CUDA_CONTEXT_BYTES,
-        workspace: reserved.workspace,
-        trellis_workspace: reserved.trellis_workspace,
-        media_embedding: reserved.media_embedding,
-        sampling: reserved.sampling,
-        decode_graph: reserved.decode_graph,
-        verify_round: reserved.verify_round,
-        drafter_round: reserved.drafter_round,
-        lane_state: reserved.lane_state,
-        retained_slots: reserved.retained_slots,
-        hq_residual_window: reserved.hq_residual_window,
-        residual: ignis_runtime::LOAD_RESIDUAL_BYTES,
-    }
-}
+/// The VRAM plan's lines for a load (GitHub #210), in `ignis_runtime` since
+/// GitHub #340 so the replay examples plan with the same lines.
+pub use ignis_runtime::vram_lines;
 
 /// A load's retained slots beside its VRAM plan (GitHub #281): how many of
 /// each kind, and the pinned host block the host ones live in -- host
@@ -1138,17 +1118,7 @@ pub fn qwen27b_load(
     // GitHub #210: the same for every reservation the plan laid out -- the
     // leaf's buffers, read back, must be the plan's lines, or the plan no
     // longer describes what this process holds.
-    let planned = ignis_runtime::ReservedBytes {
-        kv_pool: vram.kv_pool_bytes,
-        ..reservations.reserved
-    };
-    if stats.reserved != planned {
-        return Err(format!(
-            "the load holds {:?} beside its weights, not the {:?} its VRAM plan laid out",
-            stats.reserved, planned
-        )
-        .into());
-    }
+    stats.reserved.check_planned(reservations.reserved, vram.kv_pool_bytes)?;
     // What NVML says the load took, beside what the plan said it would
     // (GitHub #210): every line, the retained slots included -- since GitHub
     // #215 serving allocates nothing more. The delta also moves with anything
