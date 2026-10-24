@@ -40,5 +40,11 @@ GitHub Release and pushes the container image. The image is built by the same
 job as the Linux tarball, out of the same compile, so the two can never carry
 different binaries (ADR 0032).
 
+The user guide follows the release. `.github/workflows/docs.yml` builds the
+site from the tag and publishes it once the release run has ended, and again
+whenever the release is edited. The guide's Changelog section is read from the
+release notes, so the notes written with `gh release edit` after publishing are
+what its page for the release shows (ADR 0066).
+
 CI cannot run the GPU profile: no runner has an NVIDIA card. Correctness on
 the card stays on the development machine (`docs/agents/testing.md`).
