@@ -266,15 +266,18 @@ async fn the_provisional_tail_reaches_only_a_session_that_opted_in() {
 
 // ── AC 7: usage and failures ────────────────────────────────────────────────
 
-/// AC 7: an item over `speech.max_clip_seconds` gets `failed` naming the
-/// limit, at its commit; one whose transcription fails gets `failed` with the
-/// error; the session goes on serving the next.
+/// AC 7: an item over `speech.max_clip_seconds` gets an `error` naming the
+/// limit at once and `failed` at its commit; one whose transcription fails
+/// gets `failed` with the error; the session goes on serving the next.
 #[tokio::test]
 async fn an_item_over_the_limit_or_failing_gets_failed() {
     let executor = saying(&["hi"]);
     let (live, _server, _dir) = served(&executor, |group| group.max_clip_seconds = 2).await;
     let mut socket = session_16k(&live).await;
     send(&mut socket, append(48_000)).await;
+    let at_once = next_event(&mut socket).await;
+    assert_eq!(at_once["type"], "error", "{at_once}");
+    assert!(at_once["error"]["message"].as_str().unwrap().contains("speech.max_clip_seconds"), "{at_once}");
     send(&mut socket, commit()).await;
     let events = until(&mut socket, FAILED).await;
     let committed = of(&events, "input_audio_buffer.committed")[0];
@@ -311,6 +314,8 @@ async fn an_item_past_the_stream_timeout_fails() {
     tokio::time::sleep(Duration::from_millis(1_300)).await;
     send(&mut socket, commit()).await;
     let events = until(&mut socket, FAILED).await;
+    assert_eq!(events[0]["type"], "error", "the deadline said so when it passed: {events:?}");
+    assert_eq!(events[0]["error"]["code"], "request_timeout");
     assert_eq!(of(&events, FAILED)[0]["error"]["code"], "request_timeout");
     assert!(of(&events, FAILED)[0]["error"]["message"].as_str().unwrap().contains("--server-stream-timeout"));
 }
@@ -482,6 +487,20 @@ async fn a_session_and_its_items_are_counted() {
     assert!(text.contains("ignis_speech_audio_seconds_total 1\n"), "{text}");
     drop(socket);
     until_true("the closed session left the gauge", || server.speech.sessions_open() == 0).await;
+}
+
+/// An open session keeps the speech model loaded past `speech.idle_unload`,
+/// however quiet; the model is unloaded once the session ends.
+#[tokio::test]
+async fn an_open_session_keeps_the_speech_model_loaded() {
+    let executor = saying(&["hi"]);
+    let (live, _server, _dir) = served(&executor, |group| group.idle_unload = 1).await;
+    let (socket, _) = session(&live).await;
+    until_true("the speech model loaded", || executor.loaded.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(1_800)).await;
+    assert!(executor.loaded.load(Ordering::SeqCst), "the session holds it");
+    drop(socket);
+    until_true("unloaded after the session ended", || !executor.loaded.load(Ordering::SeqCst)).await;
 }
 
 // ── AC 14: sessions, turns, idle close ──────────────────────────────────────

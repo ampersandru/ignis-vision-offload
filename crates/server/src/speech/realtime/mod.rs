@@ -25,8 +25,8 @@
 //!   inside the rollback zone, as `ignis.input_audio_transcription.provisional`.
 //! - **Limits.** An item past `speech.max_clip_seconds`, past
 //!   `server.stream_timeout` from its first append, or whose transcription
-//!   fails, gets `failed`: at its commit, or at once if it is already
-//!   committed. A socket idle past `server.socket_idle_close` is closed, by
+//!   fails, gets `failed`: at its commit, after an `error` saying why at
+//!   once, or at once if it is already committed. A socket idle past `server.socket_idle_close` is closed, by
 //!   the Responses sockets' rule.
 //!
 //! Neither the audio nor the transcript is logged: each committed item writes
@@ -41,9 +41,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
-use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -52,21 +52,17 @@ use tokio::time::Instant;
 use super::executor::{LoadSettings, Partial, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession, Transcript, WINDOW_SAMPLES};
 use super::route::{self, Ending};
 use super::SessionGuard;
-use crate::api::{self, bad_request_param, error_response, ApiError};
+use crate::api::{self, bad_request_param, ApiError};
 use crate::deadline::Timeout;
 use crate::metrics::SpeechOutcome;
-use crate::responses::socket::{offered, CREDENTIAL_PREFIX};
+use crate::responses::ids::random_suffix;
+use crate::responses::socket::{close_idle, offered, CREDENTIAL_PREFIX};
 use crate::Server;
 use config::{Refusal, SessionConfig};
 use pcm::Pcm;
 
 /// The most base64 `audio` one append carries: OpenAI's limit, 15 MiB.
 pub(crate) const MAX_APPEND_BYTES: usize = 15 << 20;
-
-/// How long an idle close waits for the client's own Close frame, as the
-/// Responses socket's does: a grace for the closing handshake, not an
-/// operator limit.
-const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// `GET /v1/realtime` — a Realtime transcription session.
 #[utoipa::path(
@@ -121,14 +117,10 @@ pub(crate) async fn connect(
     let guard = match server.speech.open_session(group) {
         Ok(guard) => guard,
         Err(full) => {
-            let mut response = error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "server_error",
-                "engine_full",
+            return route::engine_full(
                 format!("the speech model has {} Realtime sessions open (speech.max_sessions); retry in {} s", group.max_sessions, full.retry_after_secs),
-            );
-            response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
-            return response;
+                full,
+            )
         }
     };
     // The client's own names, never the credential.
@@ -243,6 +235,8 @@ struct Connection {
     guard: SessionGuard,
     files: SpeechFiles,
     session_id: String,
+    /// What this session's event ids begin with: a piece of its id.
+    event_prefix: String,
     config: SessionConfig,
     pcm: Pcm,
     slot: Arc<Mutex<Slot>>,
@@ -264,23 +258,18 @@ struct Connection {
     quiet_since: Instant,
 }
 
-/// 128 random bits as 32 hex digits: the session's and the items' ids.
-fn random_hex() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("the OS random source");
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 impl Connection {
     fn new(server: Arc<Server>, socket: WebSocket, guard: SessionGuard, files: SpeechFiles) -> Self {
         let (results_tx, results) = unbounded_channel();
         let config = SessionConfig::new(files.id.clone());
+        let suffix = random_suffix();
         Self {
             server,
             socket,
             guard,
             files,
-            session_id: format!("sess_{}", random_hex()),
+            event_prefix: format!("event_{}", &suffix[..16]),
+            session_id: format!("sess_{suffix}"),
             pcm: Pcm::new(config.rate),
             config,
             slot: Arc::default(),
@@ -338,7 +327,7 @@ impl Connection {
                 Some(done) = self.results.recv() => self.done(done),
                 () = &mut look => {
                     if let Some(after) = self.idle_past() {
-                        self.close_idle(after).await;
+                        close_idle(&mut self.socket, after, "realtime").await;
                         break;
                     }
                     self.tick();
@@ -355,7 +344,7 @@ impl Connection {
     /// Queue a server event, with its `event_id`.
     fn send(&mut self, mut event: Value) {
         self.next_event += 1;
-        event["event_id"] = json!(format!("event_{}{:08x}", &self.session_id[5..21], self.next_event));
+        event["event_id"] = json!(format!("{}{:08x}", self.event_prefix, self.next_event));
         self.outbox.push(event);
     }
 
@@ -522,7 +511,7 @@ impl Connection {
         let limit = live.speech.max_clip_seconds;
         let item = self.current();
         if item.id.is_none() {
-            item.id = Some(format!("item_{}", random_hex()));
+            item.id = Some(format!("item_{}", random_suffix()));
             // `server.stream_timeout`, per item from its first append (ADR 0058).
             item.timeout = Timeout::of(&live, true);
             item.deadline = Some(item.timeout.from_now());
@@ -561,16 +550,8 @@ impl Connection {
 
     fn commit(&mut self, event_id: Option<String>) {
         if self.current().samples_in == 0 {
-            return self.send(json!({
-                "type": "error",
-                "error": {
-                    "type": "invalid_request_error",
-                    "code": "input_audio_buffer_commit_empty",
-                    "message": "the input audio buffer is empty: append audio before committing",
-                    "param": null,
-                    "event_id": event_id,
-                },
-            }));
+            let empty = "the input audio buffer is empty: append audio before committing".to_owned();
+            return self.refuse(Refusal { code: "input_audio_buffer_commit_empty", message: empty, param: None }, event_id);
         }
         let mut rest = Vec::new();
         self.pcm.finish(&mut rest);
@@ -601,15 +582,11 @@ impl Connection {
     }
 
     fn clear(&mut self) {
-        let opted_in = self.config.provisional_tail;
         let current = self.current();
         if current.samples_in > 0 || current.id.is_some() {
             current.cancel.store(true, Ordering::SeqCst);
-            if opted_in && !current.tail.is_empty() {
-                let id = current.id.clone();
-                self.send(json!({ "type": "ignis.input_audio_transcription.provisional", "item_id": id, "content_index": 0, "text": "" }));
-            }
-            self.items.pop_back();
+            let mut cleared = self.items.pop_back().expect("a current item");
+            self.end_tail(&mut cleared);
             self.pcm.reset();
             self.open_next();
         }
@@ -617,13 +594,24 @@ impl Connection {
     }
 
     /// The current item fails before its commit: its audio goes nowhere from
-    /// now, and its commit answers `failed`.
+    /// now, an `error` says why at once, and its commit answers `failed`.
     fn fail_current(&mut self, failure: Failure) {
+        let mut error = failure.error();
+        error["event_id"] = Value::Null;
         let item = self.current();
         item.failure = Some(failure);
         item.cancel.store(true, Ordering::SeqCst);
         self.pending.clear();
         self.next_partial = None;
+        self.send(json!({ "type": "error", "error": error }));
+    }
+
+    /// The committed item at `index` fails: `failed` now.
+    fn fail_committed(&mut self, index: usize, failure: Failure) {
+        let item = &mut self.items[index];
+        item.failure = Some(failure);
+        item.cancel.store(true, Ordering::SeqCst);
+        self.end_failed(index);
     }
 
     /// Send `failed` for the committed item at `index`, end it and drop it.
@@ -694,7 +682,11 @@ impl Connection {
                     None if !transcript.text.starts_with(item.emitted.as_str()) => {
                         // The executor revised stable text, which spec 01 §4
                         // says it never does: the transcript is still its own.
-                        tracing::warn!(name: "ignis.speech.failed", variant = %self.files.id, reason = "the transcript does not begin with the stable text sent", "a transcription broke its deltas");
+                        tracing::warn!(
+                            name: "ignis.speech.stable_text_revised",
+                            variant = %self.files.id,
+                            "a transcript does not begin with the stable text its deltas sent, so they do not join to it"
+                        );
                     }
                     None => {}
                 }
@@ -716,10 +708,7 @@ impl Connection {
                     return;
                 }
                 if self.items[index].ending.is_some() {
-                    let item = &mut self.items[index];
-                    item.failure = Some(failure);
-                    item.cancel.store(true, Ordering::SeqCst);
-                    self.end_failed(index);
+                    self.fail_committed(index, failure);
                 } else {
                     self.fail_current(failure);
                 }
@@ -748,10 +737,7 @@ impl Connection {
             if item.failure.is_none() && item.deadline.is_some_and(|deadline| deadline <= now) {
                 let failure = Failure::TimedOut(item.timeout);
                 if item.ending.is_some() {
-                    let item = &mut self.items[index];
-                    item.failure = Some(failure);
-                    item.cancel.store(true, Ordering::SeqCst);
-                    self.end_failed(index);
+                    self.fail_committed(index, failure);
                     continue;
                 }
                 self.fail_current(failure);
@@ -788,15 +774,6 @@ impl Connection {
             at = at.min(self.quiet_since + after);
         }
         at
-    }
-
-    /// Close an idle socket with a normal close frame its client can show,
-    /// then wait a moment for the client's own, as the Responses socket does.
-    async fn close_idle(&mut self, after: Duration) {
-        tracing::info!(name: "ignis.ws.idle_closed", after_ms = after.as_millis() as u64, "closed a Realtime transcription socket idle past server.socket_idle_close");
-        let reason = format!("idle for {after:?} (server.socket_idle_close); open a new session to continue");
-        let _ = self.socket.send(Message::Close(Some(CloseFrame { code: close_code::NORMAL, reason: reason.into() }))).await;
-        let _ = tokio::time::timeout(CLOSE_GRACE, async { while let Some(Ok(_)) = self.socket.recv().await {} }).await;
     }
 }
 

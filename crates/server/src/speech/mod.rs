@@ -203,6 +203,11 @@ impl Drop for SessionGuard {
     fn drop(&mut self) {
         self.speech.gauges.sessions.fetch_sub(1, Ordering::SeqCst);
         self.speech.gauges.publish();
+        // The session's end is the model's last use: the idle clock runs from
+        // here (an open session holds the model, `worker`).
+        if let Some(worker) = self.speech.worker.get() {
+            worker.touch();
+        }
     }
 }
 

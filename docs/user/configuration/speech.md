@@ -19,14 +19,14 @@ every default, is [the configuration reference](../reference/configuration.md).
 | `--speech-max-clip-seconds` | `IGNIS_SPEECH_MAX_CLIP_SECONDS` | `1200` | The longest clip one transcription takes (1..1200, the model's limit). A longer one is a `400`; nothing is split. |
 | `--speech-context-max-tokens` | `IGNIS_SPEECH_CONTEXT_MAX_TOKENS` | `512` | The most tokens of `prompt` and `keywords[]` a transcription reads; past it the last are kept. 0 reads none. |
 | `--speech-pinned-weights` | `IGNIS_SPEECH_PINNED_WEIGHTS` | off | Pin the weights in host memory instead of mapping the file. |
-| `--speech-idle-unload` | `IGNIS_SPEECH_IDLE_UNLOAD` | `300` | Seconds with no transcription after which the model is unloaded; the next one loads it again. 0 never unloads. |
+| `--speech-idle-unload` | `IGNIS_SPEECH_IDLE_UNLOAD` | `300` | Seconds with no transcription, and no live session open, after which the model is unloaded; the next one loads it again. 0 never unloads. |
 | `--speech-max-queue` | `IGNIS_SPEECH_MAX_QUEUE` | `4` | The transcriptions that may wait behind the one running; one more is `503 engine_full` with `Retry-After`. 0 runs one at a time. |
 | `--speech-max-sessions` | `IGNIS_SPEECH_MAX_SESSIONS` | `4` | The most [live transcription](../api/realtime-transcription.md) sessions open at once; one more is refused at the upgrade, `503 engine_full` with `Retry-After`. |
 | `--speech-partial-interval-ms` | `IGNIS_SPEECH_PARTIAL_INTERVAL_MS` | `2000` | How often a live session's transcript refreshes while audio arrives: each refresh sends the new stable text, and the provisional tail to a session that asked for it. Shorter is livelier text and more CPU per session. |
-| `--speech-rollback-tokens` | `IGNIS_SPEECH_ROLLBACK_TOKENS` | `5` | The tokens of a live transcript held back as provisional, the rest being stable. Read by the speech executor, which this build does not have yet. |
+| `--speech-rollback-tokens` | `IGNIS_SPEECH_ROLLBACK_TOKENS` | `5` | The tokens of a live transcript held back as provisional, the rest being stable: the [provisional tail](../api/realtime-transcription.md#the-text) a session that asks for it gets. Read by the speech executor when it opens a session. |
 | `--speech-vad-threshold`, `--speech-vad-prefix-padding-ms`, `--speech-vad-silence-duration-ms` | `IGNIS_SPEECH_VAD_*` | `0.5`, `300`, `500` | `server_vad`'s threshold, the audio kept from before speech, and the silence that ends a turn. Not served yet. |
 | `--speech-loan-grace-seconds`, `--speech-loan-wait-seconds` | `IGNIS_SPEECH_LOAN_*` | `30`, `5` | The loan of free KV pages to the speech model. Not served yet. |
 
-The fields marked "not served yet", and `rollback_tokens`, are declared so that a configuration file
+The fields marked "not served yet" are declared so that a configuration file
 written today keeps its meaning: the routes and the loan that read them come
 with their own tickets ([ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).

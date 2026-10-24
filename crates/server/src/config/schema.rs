@@ -702,9 +702,9 @@ config_group! {
         /// Pin the speech model's weights in host memory instead of mapping
         /// the file. Read by the load, so a change holds from the next one.
         pinned_weights: Bool = false, NO_RULE, ALL, [Visible, Patchable];
-        /// Seconds with no transcription after which the speech model is
-        /// unloaded, its host memory given back; the next transcription loads
-        /// it again. 0 never unloads.
+        /// Seconds with no transcription, and no Realtime session open, after
+        /// which the speech model is unloaded, its host memory given back; the
+        /// next transcription loads it again. 0 never unloads.
         idle_unload: Secs = super::DEFAULT_MODEL_IDLE_UNLOAD_SECS, between(0, super::MAX_MODEL_IDLE_UNLOAD_SECS as i64), ALL,
             [Visible, Patchable];
         /// How often a Realtime session's live transcript is refreshed while
@@ -713,8 +713,8 @@ config_group! {
         /// by every open session at its next refresh.
         partial_interval_ms: Millis = 2000, between(100, 60_000), ALL, [Visible, Patchable];
         /// The tokens of a live transcript held back as provisional, the rest
-        /// being stable. Read by the speech executor (spec speech/01), which
-        /// this build does not have yet.
+        /// being stable: the tail a Realtime session that asks for it gets.
+        /// Read by the speech executor when it opens a session.
         rollback_tokens: Tokens = 5, between(0, 64), ALL, [Visible, Patchable];
         /// The most Realtime transcription sessions open at once; past it
         /// the next is refused at the upgrade `503` with `Retry-After`.

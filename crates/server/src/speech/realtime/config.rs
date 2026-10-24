@@ -334,13 +334,15 @@ fn include(value: Option<&Value>) -> Result<(), Refusal> {
         Some(Value::Array(items)) => items,
         Some(_) => return Err(Refusal::invalid(format!("{PARAM} must be an array"), PARAM)),
     };
-    match items.first().map(|item| item.as_str()) {
-        None => Ok(()),
-        Some(Some("item.input_audio_transcription.logprobs")) => Err(Refusal::unsupported(
+    if items.iter().any(|item| item.as_str() == Some("item.input_audio_transcription.logprobs")) {
+        return Err(Refusal::unsupported(
             format!("{PARAM} `item.input_audio_transcription.logprobs` is not served: this server reports no logprobs"),
             PARAM,
-        )),
-        Some(_) => Err(Refusal::invalid(format!("{PARAM} names nothing this server includes"), PARAM)),
+        ));
+    }
+    match items.is_empty() {
+        true => Ok(()),
+        false => Err(Refusal::invalid(format!("{PARAM} names nothing this server includes"), PARAM)),
     }
 }
 
@@ -445,6 +447,8 @@ mod tests {
         }
         let refused = update(&fresh(), json!({ "type": "transcription", "include": ["item.input_audio_transcription.logprobs"] })).unwrap_err();
         assert_eq!((refused.code, refused.param.as_deref()), ("unsupported_value", Some("session.include")));
+        let behind = update(&fresh(), json!({ "include": ["x", "item.input_audio_transcription.logprobs"] })).unwrap_err();
+        assert_eq!(behind.code, "unsupported_value", "the logprobs are refused wherever they are listed");
         assert!(update(&fresh(), json!({ "type": "transcription", "include": [] })).is_ok());
         let refused = update(&fresh(), json!({ "type": "realtime" })).unwrap_err();
         assert_eq!(refused.param.as_deref(), Some("session.type"));

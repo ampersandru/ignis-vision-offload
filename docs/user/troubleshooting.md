@@ -287,6 +287,11 @@ produces) is not decoded yet: send WAV, or convert it. A clip longer than
   the end of speech yet. Send `turn_detection: null` (or nothing) and commit
   with `input_audio_buffer.commit`
   ([Live transcription](api/realtime-transcription.md)).
+- A WARN `ignis.speech.stable_text_revised`: the speech executor's transcript
+  did not begin with the stable text it had already sent as deltas, so that
+  item's deltas do not join to its `completed.transcript` (which is still the
+  model's text). The executor promises never to revise stable text: report it,
+  with the server's version.
 
 ### `vision_disabled`, or `media_budget_exceeded`
 

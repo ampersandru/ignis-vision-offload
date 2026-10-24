@@ -9,8 +9,10 @@
 //!   interactive tasks run, and the front job goes back to the front.
 //! - At most `speech.max_queue` batch jobs wait behind the one running; the
 //!   next is refused with a `Retry-After` that estimates when room frees.
-//! - The same thread is the idle clock: with nothing to do, and the model
-//!   unused for `speech.idle_unload` seconds, it unloads the model.
+//! - The same thread is the idle clock: with nothing to do, no Realtime
+//!   session open, and the model unused for `speech.idle_unload` seconds, it
+//!   unloads the model. An open session is a dictation in progress; its end
+//!   restarts the clock.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -274,6 +276,11 @@ impl Shared {
                 continue;
             }
             let unused = self.last_used.lock().expect("last used lock").elapsed();
+            if unused >= idle && self.gauges.sessions.load(Ordering::SeqCst) > 0 {
+                // A session open holds the model: its end touches the clock.
+                drop(self.wake.wait_timeout(state, idle).expect("speech worker lock"));
+                continue;
+            }
             if unused >= idle {
                 drop(state);
                 self.executor.unload();
@@ -482,6 +489,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(gauges.queue.load(Ordering::SeqCst), 0);
+    }
+
+    /// Spec speech/03: a Realtime session open keeps the model loaded past
+    /// `speech.idle_unload`, however quiet; the clock runs again from its
+    /// end.
+    #[test]
+    fn an_open_session_keeps_the_model_loaded() {
+        let executor = Arc::new(FakeExecutor::saying(&["x"]));
+        let gauges = Arc::new(Gauges::default());
+        let worker = Worker::start(executor.clone(), Arc::clone(&gauges));
+        executor.loaded.store(true, Ordering::SeqCst);
+        gauges.sessions.store(1, Ordering::SeqCst);
+        worker.set_idle_unload(1);
+        worker.touch();
+        std::thread::sleep(Duration::from_millis(1_600));
+        assert!(executor.is_loaded(), "a session is open");
+        gauges.sessions.store(0, Ordering::SeqCst);
+        worker.touch();
+        let until = Instant::now() + Duration::from_secs(10);
+        while executor.is_loaded() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!executor.is_loaded(), "unloaded once the session ended");
     }
 
     /// The idle clock lives on the worker: a loaded model unused for

@@ -162,7 +162,7 @@ pub fn at_16_khz() -> Value {
 }
 
 /// Samples in one 8 s window at 16 kHz.
-pub const WINDOW: usize = 128_000;
+pub const WINDOW: usize = ignis_server::speech::executor::WINDOW_SAMPLES;
 
 /// Wait (bounded) until `check` holds.
 pub async fn until_true(what: &str, check: impl Fn() -> bool) {

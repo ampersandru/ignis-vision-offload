@@ -218,8 +218,9 @@ the spec left open, or differs from it:
 - **Items.** An item gets its `item_id` at its first append, so deltas carry
   it before the commit. An item over `speech.max_clip_seconds` or past its
   deadline stops being transcribed at once (its audio goes nowhere after
-  that), and its `failed` comes after its `committed`, at the commit; an item
-  already committed gets `failed` at once. A model that will not load fails
+  that), an `error` says why at once (no `item` field carries it: the item is
+  not committed yet), and its `failed` comes after its `committed`, at the
+  commit; an item already committed gets `failed` at once. A model that will not load fails
   the item it was opened for, at that item's commit (`speech_unavailable`);
   the next item tries the load again. An empty commit is one with no sample
   since the last (OpenAI asks 100 ms).
@@ -243,12 +244,21 @@ the spec left open, or differs from it:
   a session). The browser's subprotocol `realtime` is selected back, the
   credential never. Frames are capped at 16 MiB (the text body limit); an
   append whose `audio` holds more than 15 MiB of base64 is an `error`.
+- **Loading.** An open session holds the speech model: the worker's idle
+  clock does not unload it while any session is open, and runs again from
+  the end of the last (`speech.idle_unload` counts "no transcription and no
+  session"). Opening a session loads whatever model the text model's idle
+  clock unloaded, the image model too: dictation feeds the image studio as
+  well (spec 04).
 - **Logs and metrics.** Each committed item writes one
   `ignis.speech.transcription` line and counts in the existing families, its
   wait from the commit; an item still being transcribed when the socket closes
   counts as cancelled. No new family, so the Monitor and ADR 0017 are
   unchanged. The idle close logs `ignis.ws.idle_closed`, the Responses
-  sockets' event.
+  sockets' event, now with a `route` field (`responses`, `realtime`). A
+  transcript that does not begin with the stable text sent (an executor
+  breaking spec 01 §4) is still sent, with a WARN
+  `ignis.speech.stable_text_revised`.
 - **Open:** AC 5 on the owner's eleven dictations and AC 13 (commit to
   `completed` in 2 s for 60 s of Italian on the i9, and the 4-core figure)
   need the real executor and its adapter, the integration step after #351.

@@ -593,12 +593,13 @@ pub(crate) fn above_card_class(refusal: &crate::download::ClassRefusal) -> Respo
 /// `404 model_not_found` for `model`, which the server neither serves nor
 /// switched to.
 pub(crate) fn unknown_model(server: &Server, model: &str) -> Response {
-    error_response(
-        StatusCode::NOT_FOUND,
-        "model_not_found",
-        "model_not_found",
-        format!("unknown model: {model} (loaded: {})", server.active().model_id()),
-    )
+    error_response(StatusCode::NOT_FOUND, "model_not_found", "model_not_found", unknown_model_message(server, model))
+}
+
+/// What [`unknown_model`] says, which the Realtime socket sends as an `error`
+/// event (spec speech/03).
+pub(crate) fn unknown_model_message(server: &Server, model: &str) -> String {
+    format!("unknown model: {model} (loaded: {})", server.active().model_id())
 }
 
 /// The answer to a request that needed the unloaded model and was not served
@@ -1835,7 +1836,7 @@ pub(crate) fn now() -> u64 {
 
 The top-level `speech` object, `{\"available\": bool, \"reason\": string}`, is always present, beside `status`: `reason` says why the speech model cannot serve (turned off, its files missing and the command that fetches them, or the CPU lacking AVX2) and is absent while it can, so a page can disable its microphone before it is pressed.
 
-`status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503 -- but `POST /v1/audio/transcriptions`, which serves on the CPU through a switch.
+`status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503 -- but `POST /v1/audio/transcriptions` and `GET /v1/realtime`, which serve on the CPU through a switch.
 
 `unloaded` when nobody used the model for `model.idle_unload` seconds and it was unloaded (`data[0]` still names it, and the API stays up): the next request that needs it loads it again and is served once it is warm. `loading` while that load runs, `switching` naming what loads; requests arriving meanwhile wait for it. A load out of `unloaded` that fails is `failed`, and the next request tries again.",
     responses(

@@ -127,12 +127,14 @@ rest:
   content_index, error}`: the item held more than `speech.max_clip_seconds`
   (1200) of audio, it ran past `server.stream_timeout` from its first append
   (`request_timeout`, [deadlines](deadlines.md)), or the speech model failed on
-  it. It comes at the commit, or at once if the item is already committed. The
-  session goes on with the next item.
+  it. It comes at the commit, or at once if the item is already committed; an
+  item that fails before its commit also gets an `error` at once, with the same
+  reason, so the client can stop sending its audio. The session goes on with the
+  next item.
 
 **The provisional tail** is ignis's. The last few tokens of each refresh
-(`speech.rollback_tokens`, 5) are not stable yet: the next refresh may revise
-them. A session that set `ignis.provisional_tail: true` receives them as
+are not stable yet: the next refresh may revise them (how many is
+`speech.rollback_tokens`, 5, which the speech executor reads). A session that set `ignis.provisional_tail: true` receives them as
 
 ```json
 { "type": "ignis.input_audio_transcription.provisional", "item_id": "item_…", "content_index": 0, "text": " per il" }
@@ -154,7 +156,11 @@ the gaps.
 A session with no committed item still being transcribed and no frame from its
 client for `server.socket_idle_close` seconds (300; 0 never) is closed with a
 normal close frame (1000) whose reason says so, as the
-[Responses socket](responses.md) is. Open a new session to go on.
+[Responses socket](responses.md) is, and the server logs `ignis.ws.idle_closed`
+with `route: "realtime"`. Open a new session to go on.
+
+While a session is open the speech model stays loaded, however quiet the
+session; `speech.idle_unload` counts from the end of the last one.
 
 ## What is logged and counted
 

@@ -1275,7 +1275,7 @@ Pin the speech model's weights in host memory instead of mapping the file. Read 
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-Seconds with no transcription after which the speech model is unloaded, its host memory given back; the next transcription loads it again. 0 never unloads.
+Seconds with no transcription, and no Realtime session open, after which the speech model is unloaded, its host memory given back; the next transcription loads it again. 0 never unloads.
 
 ### `speech.partial_interval_ms`
 
@@ -1303,7 +1303,7 @@ How often a Realtime session's live transcript is refreshed while audio arrives,
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The tokens of a live transcript held back as provisional, the rest being stable. Read by the speech executor (spec speech/01), which this build does not have yet.
+The tokens of a live transcript held back as provisional, the rest being stable: the tail a Realtime session that asks for it gets. Read by the speech executor when it opens a session.
 
 ### `speech.max_sessions`
 

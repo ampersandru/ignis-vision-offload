@@ -420,12 +420,20 @@ pub(super) fn model_named(server: &Server, group: &SpeechGroup, named: Option<&s
         }
     };
     let Some(kind) = kind.filter(|kind| *kind != ModelKind::Speech) else {
-        return Err(ModelRefusal::NotFound(format!("unknown model: {named} (loaded: {})", loaded.model_id())));
+        return Err(ModelRefusal::NotFound(crate::api::unknown_model_message(server, named)));
     };
     Err(ModelRefusal::KindMismatch(format!(
         "{field} names {named}, {}, and this route serves speech models; name the speech model, one of speech.compat_names, or none",
         crate::api::a_kind(kind)
     )))
+}
+
+/// `503 engine_full` with the `Retry-After` `full` estimates: the queue, or
+/// the open Realtime sessions (spec speech/03).
+pub(super) fn engine_full(message: String, full: super::worker::Full) -> Response {
+    let mut response = error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", "engine_full", message);
+    response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
+    response
 }
 
 pub(super) fn unavailable(Unavailable(reason): Unavailable) -> Response {
@@ -650,14 +658,10 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
     let timeout = Timeout::of(&live, asked.stream);
     let deadline = timeout.from_now();
     if let Err(full) = server.speech.submit(Box::new(job), group) {
-        let mut response = error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "server_error",
-            "engine_full",
+        return engine_full(
             format!("the speech model has {} transcriptions waiting (speech.max_queue); retry in {} s", group.max_queue, full.retry_after_secs),
+            full,
         );
-        response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
-        return response;
     }
     let ending = Ending::new(Arc::clone(&server), cancelled, executor_label, variant, audio_seconds, received);
 

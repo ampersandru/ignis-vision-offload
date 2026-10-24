@@ -144,6 +144,20 @@ pub(crate) async fn connect(
         .on_upgrade(move |socket| Connection::new(server, socket).run())
 }
 
+/// Close a socket idle for `after` (`server.socket_idle_close`) with a normal
+/// close frame its client can show; `route` names it in the log line
+/// (`responses`, `realtime`). After the frame, the client's own is awaited
+/// for [`CLOSE_GRACE`] at most: dropping the stream with client bytes still
+/// unread makes the OS reset the connection, which can discard the close
+/// frame in flight (the browser then reports 1006, without the reason),
+/// while a peer gone silent must not hold the connection open.
+pub(crate) async fn close_idle(socket: &mut WebSocket, after: Duration, route: &'static str) {
+    tracing::info!(name: "ignis.ws.idle_closed", after_ms = after.as_millis() as u64, route, "closed a socket idle past server.socket_idle_close");
+    let reason = format!("idle for {after:?} (server.socket_idle_close); open a new socket to continue");
+    let _ = socket.send(Message::Close(Some(CloseFrame { code: close_code::NORMAL, reason: reason.into() }))).await;
+    let _ = tokio::time::timeout(CLOSE_GRACE, async { while let Some(Ok(_)) = socket.recv().await {} }).await;
+}
+
 /// A stream's name: `None` for the default stream.
 type StreamKey = Option<String>;
 
@@ -331,17 +345,8 @@ impl Connection {
         (self.quiet_since + after).min(tick)
     }
 
-    /// Close an idle socket with a normal close frame its client can show.
-    /// After the frame, the client's own is awaited for [`CLOSE_GRACE`] at
-    /// most: dropping the stream with client bytes still unread makes the
-    /// OS reset the connection, which can discard the close frame in
-    /// flight (the browser then reports 1006, without the reason), while a
-    /// peer gone silent must not hold the connection open.
     async fn close_idle(&mut self, after: Duration) {
-        tracing::info!(name: "ignis.ws.idle_closed", after_ms = after.as_millis() as u64, "closed a Responses socket idle past server.socket_idle_close");
-        let reason = format!("idle for {after:?} (server.socket_idle_close); open a new socket to continue");
-        let _ = self.socket.send(Message::Close(Some(CloseFrame { code: close_code::NORMAL, reason: reason.into() }))).await;
-        let _ = tokio::time::timeout(CLOSE_GRACE, async { while let Some(Ok(_)) = self.socket.recv().await {} }).await;
+        close_idle(&mut self.socket, after, "responses").await;
     }
 
     /// Queue a frame for the writer, behind the frames already queued.
