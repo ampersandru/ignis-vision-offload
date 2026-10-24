@@ -38,16 +38,18 @@ one a user would open for it, and every other mention links there.
 | Folder | Holds | A change that goes there |
 |---|---|---|
 | `start/` | what ignis is, install, quick start, connecting a client | a new install route, a changed first-run step, a client's setup |
+| `why-ignis/` | what sets ignis apart, a topic per page: how it works, the measured numbers with their findings, how a user sees and controls it, its limits | a headline feature added or a headline number re-measured (with the README's "What sets it apart") |
 | `guides/` | how-to pages: models, air-gapped, Knative, telemetry, cards | a new task a user performs end to end |
 | `concepts/` | explanations: how a request is served, KV and reuse, the VRAM plan, speculation, reasoning, switching, profiles | a mechanism's behaviour or its reason |
 | `configuration/` | the fields by topic, with the why and the trade-offs | a field added, renamed, re-defaulted, or its trade-off moved |
-| `playground/` | the Playground's views | a view, a control, what a screen shows |
+| `playground/` | the Playground, view by view: chat, settings, tools and agents, sessions, Decide, Image, Monitor, Server; each control with the request it sends | a view, a control, what a screen shows |
 | `api/` | the HTTP surface by route, deadlines, switching, idle unload | a route, a request or response field, a status code, an error |
 | `reference/` | generated pages, plus the glossary | never edited by hand: change the code, run `make docs-reference` |
 | `paths/` | the four reading paths | a page added that a path should walk through |
 | `troubleshooting.md` | symptoms, their causes and fixes | a new refusal, WARN line or failure mode |
 | `contributing/` | building, tests, make, conventions, releases | a contributor-facing workflow |
-| `images/` | screenshots | a Playground change that alters a pictured screen replaces its image |
+| `images/playground/` | screenshots, each a named scene of `docs/site/scripts/scenes.mjs` | a Playground change that alters a pictured screen retakes its scene: `make docs-screenshots SCENES=<name>`, against a running server (`PLAYGROUND_URL`) for real content |
+| `changelog/` | one page per release, written from the GitHub releases by each build; git ignores it | never edited: the release notes on GitHub are its source |
 
 - **A page's file name is its route**: lowercase words joined by dashes,
   `index.md` for a section's landing page. Its front matter carries `title`,
@@ -67,8 +69,9 @@ one a user would open for it, and every other mention links there.
 
 `docs/user/` is the published tree (ADR 0066): `.github/workflows/docs.yml`
 builds the site from it alone on every push that touches it and publishes it
-on a release tag. Specs, ADRs, findings and these agent docs stay in their own
-trees; the guide links to them for the reasons behind a behaviour.
+once a release is published (and again when its notes are edited). Specs,
+ADRs, findings and these agent docs stay in their own trees; the guide links
+to them for the reasons behind a behaviour.
 
 ## How it is written
 

@@ -8,7 +8,8 @@ sidebar:
 For someone writing a client, an agent or a service against ignis. The
 surface is OpenAI-compatible, so an OpenAI SDK works with a base URL; the
 pages below say where ignis adds to it, refuses a field, or behaves its own
-way.
+way. The [Playground](../playground/index.md) names the request each of its
+controls sends, a quick way to see what a field does before you code it.
 
 1. **[Connect a client](../start/connect-a-client.md)** — the base URL, the key,
    the model id, the SDKs.

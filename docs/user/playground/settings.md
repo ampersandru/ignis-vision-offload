@@ -1,0 +1,97 @@
+---
+title: "Settings"
+description: "The chat's settings panel: the system prompt, thinking and its budget, sampling, the lane tag, parallel sessions, the transport and the tools."
+sidebar:
+  order: 3
+---
+
+The right-hand column of the chat holds what the next message is sent with.
+Nothing here is sent until you send, and nothing is stored: a reload puts the
+defaults back, apart from the two switches marked *stored* below. It has two
+tabs, **General** and **Tools**.
+
+![The General tab](../images/playground/settings-general.png) ![The Tools tab](../images/playground/settings-tools.png)
+
+## General
+
+| Control | Default | What the request carries |
+|---|---|---|
+| **System prompt** (`User` tab) | empty | your text, after the ignis prompt |
+| **System prompt** (`ignis` tab) | read-only | what the tools that are on write: the date, how to call agents, the web, and so on |
+| **Thinking**: Off, Low, Medium, Xhigh, Max | Xhigh | `reasoning_effort`: `none`, `low`, `medium`, `xhigh`, `max` |
+| **Thinking budget**: Default, Off, 2K, 4K, 8K, 16K, or a number | Default | `thinking_budget`: nothing for Default, `0` for Off, else the count |
+| **Temperature** | 1.00 | `temperature` |
+| **top_p** | 0.95 | `top_p` |
+| **Max tokens** | 16384 | `max_tokens` (HTTP) or `max_output_tokens` (WebSocket); empty sends none and the server's default applies |
+| **Lane tag**: Interactive, Agent | Interactive | `class` |
+| **Parallel sessions** (*stored*) | off | nothing: page behaviour |
+| **Transport**: WebSocket, HTTP (*stored*) | WebSocket | the route the chat uses |
+| **Markdown in replies** | on | nothing: display only |
+
+The system message the server receives is the ignis prompt (what the enabled
+tools add), a blank line, then yours. It is sent once per session and stays
+the same from turn to turn, so the server can reuse the whole prompt prefix
+([prompt reuse](../concepts/kv-cache-and-prompt-reuse.md)).
+
+### Thinking and its budget
+
+**Thinking** is how hard the model reasons before it answers; **Off** answers
+straight away, **Max** reasons without a budget. The **thinking budget** caps
+how many reasoning tokens a reply may spend: past it, the server closes the
+reasoning with a sentence that tells the model to answer from what it has
+([reasoning](../concepts/reasoning.md)). **Default** is the server's own
+(`model.thinking_budget`, 32,768), **Off** is no budget. With Thinking Off the
+budget is inert and greyed out; with Max it is ignored. A budget larger than
+Max tokens is shortened by the server to leave the answer room, and the panel
+says so. When the budget closes a reply, it carries an orange **Budget
+reached** mark and the session log reads `reached`.
+
+### Sampling
+
+Temperature and top_p go to the server as they are. Temperature 0 needs top_p
+at 1 (greedy decoding), or the server answers 400; the panel warns in red
+before you send.
+
+### Lane tag
+
+**Interactive** marks the conversation; **Agent** marks background work that
+yields first when the engine is short of memory, the class subagents run
+with. What the tag changes on the server:
+[Lanes that know who is asking](../why-ignis/lanes.md).
+
+### Parallel sessions and the transport
+
+Off, the page runs one turn at a time across all sessions. On, you can send
+in one session while another still streams (a session still answers one
+reply at a time). The **WebSocket** carries every stream at once and sends
+only what is new each turn; **HTTP** opens one connection per stream, and the
+browser allows five, so the rest wait. The Decide tab uses HTTP either way.
+
+## Tools
+
+**All tools** turns the tool set on and off as a whole. While it is on, **Tool
+rounds** (16) caps how many replies in a row may call tools, in a turn and
+inside each agent: past it, the calls come back unrun. Then one switch per
+tool, each explained in [Tools and agents](tools-and-agents.md):
+
+| Tool | Default | Extra control |
+|---|---|---|
+| Agents | on | |
+| Web | on | a Tavily API key, kept in this browser |
+| Ask me | on | |
+| Date and time | on | **Update every prompt** |
+| Run JavaScript | on | **Safety check** (on) |
+| Plan | on | |
+| Memory | on | **Open memory** |
+| Create files | on | |
+| Pictures | on | |
+| Attachments | on | |
+
+A tool is declared to the model only while its switch is on, and its
+instructions go into the ignis system prompt; the `ignis` tab of the system
+prompt shows the text.
+
+## Read more
+
+- [Prompting](../configuration/prompting.md): the server-side defaults behind Default.
+- [Chat completions](../api/chat-completions.md): every request field, including the ones the panel does not set (`top_k`, `seed`, `stop`, penalties).

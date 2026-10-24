@@ -12,6 +12,10 @@ which field moves it.
 
 ## Understand the engine
 
+Start with **[Why ignis](../why-ignis/index.mdx)**: each topic there says what
+was measured, on what, and where it stops, and links the page below that
+explains its mechanism.
+
 1. **[How ignis serves a request](../concepts/how-ignis-serves.md)** — lanes,
    prefill and decode, the KV pool, speculation, one model at a time.
 2. **[The VRAM plan](../concepts/vram-plan.md)** — how a load lays out every

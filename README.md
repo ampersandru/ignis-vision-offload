@@ -39,6 +39,15 @@
 
 <p align="center"><sub>Measured on one RTX 5090, 64 GB DDR4-3200 MT/s, PCIe 3.0. How, and against what: <a href="#how-fast">How fast</a>.</sub></p>
 
+<p align="center">
+  <a href="https://gpillon.github.io/ignis/"><b>📖 The documentation: gpillon.github.io/ignis</b></a><br>
+  <a href="https://gpillon.github.io/ignis/start/quick-start/">Quick start</a> &nbsp;·&nbsp;
+  <a href="https://gpillon.github.io/ignis/why-ignis/">Why ignis</a> &nbsp;·&nbsp;
+  <a href="https://gpillon.github.io/ignis/playground/">The Playground, view by view</a> &nbsp;·&nbsp;
+  <a href="https://gpillon.github.io/ignis/reference/configuration/">Every config field</a> &nbsp;·&nbsp;
+  <a href="https://gpillon.github.io/ignis/changelog/">Changelog</a>
+</p>
+
 ---
 
 Ignis is a deliberately specialized engine: **one model family, one class of
@@ -169,7 +178,9 @@ four**, and 3% behind it on inter-token latency p95
 
 ## What sets it apart
 
-Every number below is a measurement on a 5090.
+Every number below is a measurement on a 5090. Each topic is told in full,
+with how it works, how to see it and where its numbers come from, in the
+guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 
 ### The decode round
 
@@ -403,6 +414,9 @@ Every number below is a measurement on a 5090.
   release archives cut from the same build.
 
 ## The Playground
+
+Every view and every control, with what it asks the server:
+[the Playground, view by view](https://gpillon.github.io/ignis/playground/).
 
 Agents running in parallel, each on its own lane, with the engine's own timings
 beside every reply:

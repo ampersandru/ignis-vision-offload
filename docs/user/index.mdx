@@ -11,8 +11,11 @@ hero:
     - text: Get started
       link: start/
       icon: right-arrow
-    - text: API
-      link: api/
+    - text: Why ignis
+      link: why-ignis/
+      variant: secondary
+    - text: The Playground
+      link: playground/
       variant: minimal
     - text: GitHub
       link: https://github.com/gpillon/ignis
@@ -21,6 +24,27 @@ hero:
 ---
 
 import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+## What sets it apart
+
+One model family on one class of card, built for the load an agent makes: a
+main conversation and its subagents on the same GPU at once.
+
+<div class="ignis-stats not-content">
+  <a href="why-ignis/decode-round/"><b>367 tok/s</b>one lane, coding prompts, greedy</a>
+  <a href="why-ignis/decode-round/"><b>1,065 tok/s</b>eight lanes at once, aggregate</a>
+  <a href="why-ignis/decode-round/"><b>9,717 tok/s</b>cold prefill of a 46K prompt</a>
+  <a href="why-ignis/flash-next/"><b>~100 tok/s</b>a 125B MoE on a 32 GB card, one lane</a>
+  <a href="why-ignis/kv-in-bytes/"><b>7.11x</b>the KV capacity of BF16</a>
+  <a href="why-ignis/decisions/"><b>36.5 ms</b>a decision, zero tokens decoded</a>
+  <a href="why-ignis/context-follows-the-card/"><b>896K</b>tokens of context, with vision and DFlash2</a>
+  <a href="why-ignis/image-generation/"><b>7.9 s</b>a 2048×2048 image, end to end</a>
+</div>
+
+<CardGrid>
+  <LinkCard title="Why ignis" description="Sixteen topics, each with how it works, what was measured and where it stops: the decode round, DFlash2, KV at 9 KB a token, retained state, decisions without decoding, reasoning that finishes." href="why-ignis/" />
+  <LinkCard title="The Playground, view by view" description="Chat with subagents on their own lanes, Decide, the image studio, the live Monitor and the Server view, with screenshots." href="playground/" />
+</CardGrid>
 
 ## Pick your path
 
@@ -61,6 +85,6 @@ it in, from the first command to the deepest knob.
   <LinkCard title="Get a model" description="The catalog, model download, and pointing at your own artifact." href="guides/models/" />
   <LinkCard title="Configuration" description="Every setting is one field: flag, env var, config file." href="configuration/" />
   <LinkCard title="Every config field" description="The generated reference, straight from the server's field table." href="reference/configuration/" />
-  <LinkCard title="The Playground" description="Chat, Decide, Image, Monitor and Server, at /ui." href="playground/" />
   <LinkCard title="Troubleshooting" description="A start refused, a slow decode, a busy GPU: what each message means." href="troubleshooting/" />
+  <LinkCard title="Changelog" description="Every release, newest first, with its notes as published." href="changelog/" />
 </CardGrid>

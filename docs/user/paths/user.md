@@ -10,7 +10,8 @@ with its defaults. Nothing on this path asks you to choose a setting: the
 defaults are the ones measured on the owner's own cards.
 
 1. **[What ignis is](../start/index.md)** — the models it serves, the cards and
-   systems it runs on, and what it deliberately does not do.
+   systems it runs on, and what it deliberately does not do; then
+   **[Why ignis](../why-ignis/index.mdx)**, what sets it apart, with its numbers.
 2. **[Install](../start/install.md)** — the container image or a release
    archive, and what each needs from the host: the NVIDIA driver, and for the
    archives the CUDA runtime.
@@ -18,8 +19,11 @@ defaults are the ones measured on the owner's own cards.
    server, the Playground in the browser, one request with curl.
 4. **[Get a model](../guides/models.md)** — the built-in catalog, `ignis-server
    model download`, and pointing at an artifact you already have.
-5. **[The Playground](../playground/index.md)** — chat, Decide, Image, Monitor
-   and Server: what each view shows and does.
+5. **[The Playground](../playground/index.md)** — every view, with screenshots:
+   the [chat](../playground/chat.md) and its [settings](../playground/settings.md),
+   [subagents and tools](../playground/tools-and-agents.md), [Decide](../playground/decide.md),
+   the [image studio](../playground/image-studio.md), the [Monitor](../playground/monitor.md)
+   and the [Server view](../playground/server.md).
 6. **[Connect a client](../start/connect-a-client.md)** — the base URL and the
    key, the OpenAI SDKs, coding agents and chat front ends.
 7. **[Troubleshooting](../troubleshooting.md)** — what a refusal or a WARN line
