@@ -58,8 +58,12 @@ request at a time, and another client's requests would land in them.
   65536)` ([when a profile does not fit](../concepts/profiles.md#when-a-profile-does-not-fit)).
 - **Decode speed**: tokens per second on the coding prompts and on three
   synthetic agent turns (a system prompt, tool calls and their results, a
-  coding request), 256 tokens each, thinking off, and how many draft tokens
-  DFlash2 got accepted meanwhile.
+  coding request), 256 tokens each, and how many draft tokens DFlash2 got
+  accepted meanwhile. The coding prompts run with thinking off; the agent turns
+  think, because a tool call reaches the client whole and only the reasoning
+  before it streams token by token. An agent turn that is still reasoning at
+  256 tokens makes the server log `generation produced reasoning but no
+  content`, which is expected here.
 - **Time to first token** at 8,192 and 65,536 prompt tokens, three cold samples
   each after a warm-up. A cell longer than the context the load runs is not
   measured: the record says so and names the largest cell that fits, which

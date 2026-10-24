@@ -177,8 +177,11 @@ fn the_record_is_assembled_from_what_the_server_exposes() {
     assert_eq!(agent.len(), 3, "three agent turns sent with their tools");
     assert!(agent.iter().all(|b| b["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool")));
     assert!(agent.iter().all(|b| b["max_tokens"] == 16 && b["stream"] == true));
-    // every request has thinking off: no turn ends inside its reasoning
-    assert!(bodies.iter().all(|b| b["enable_thinking"] == false), "{bodies:?}");
+    // the agent turns think, so their reasoning streams (a tool call comes
+    // whole); every other request has thinking off
+    assert!(agent.iter().all(|b| b["enable_thinking"] == true), "{agent:?}");
+    let others: Vec<&Value> = bodies.iter().filter(|b| b.get("tools").is_none()).collect();
+    assert!(others.iter().all(|b| b["enable_thinking"] == false), "{others:?}");
 
     // nothing private reaches the record
     let text = serde_json::to_string(&json).unwrap();

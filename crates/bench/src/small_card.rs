@@ -720,7 +720,15 @@ fn ttft_cell(cell: &ttft::Cell) -> TtftCell {
     }
 }
 
-fn decode_request(id: &str, prompt: String, max_tokens: u32) -> Request {
+/// Thinking off for the coding prompts: a turn that ends inside its reasoning
+/// makes the server log a `generation produced reasoning but no content` WARN
+/// that a reader of the log takes for an error, and the decode work per token
+/// is the same on either channel (#340, live). Thinking on for the agent
+/// turns: without it they answer with a tool call, which the server holds back
+/// until it parses and sends in one chunk, so the stream has no time after its
+/// first token to divide by; their reasoning streams token by token (#340,
+/// live on main).
+fn decode_request(id: &str, prompt: String, max_tokens: u32, thinking: bool) -> Request {
     Request {
         id: id.to_string(),
         class: RequestClass::Main,
@@ -728,21 +736,30 @@ fn decode_request(id: &str, prompt: String, max_tokens: u32) -> Request {
         max_tokens,
         stream: true,
         include_usage: true,
-        // Thinking off: a turn that ends inside its reasoning makes the
-        // server log a `generation produced reasoning but no content` WARN
-        // that a reader of the log takes for an error, and the decode work
-        // per token is the same on either channel (#340, live).
-        enable_thinking: Some(false),
+        enable_thinking: Some(thinking),
         images: Vec::new(),
     }
 }
 
-fn measure_decode(ep: &dyn Endpoint, prompts: Vec<(String, String)>, max_tokens: u32) -> DecodeSet {
+/// The note for a set whose requests produced tokens but no rate: they all
+/// arrived in one chunk, so the stream gave no decode time to measure.
+fn untimed_note(label: &str, set: &DecodeSet) -> Option<String> {
+    let untimed: Vec<&str> =
+        set.samples.iter().filter(|s| s.completion_tokens >= 2 && s.tokens_per_s.is_none()).map(|s| s.prompt.as_str()).collect();
+    (!untimed.is_empty()).then(|| {
+        format!(
+            "decode {label}: {} produced tokens that all arrived in one chunk (a tool call the server sends whole): no rate",
+            untimed.join(", ")
+        )
+    })
+}
+
+fn measure_decode(ep: &dyn Endpoint, prompts: Vec<(String, String)>, max_tokens: u32, thinking: bool) -> DecodeSet {
     let mut samples = Vec::new();
     let mut errors = Vec::new();
     for (id, prompt) in prompts {
         eprintln!("decode: {id}");
-        match ep.complete(&decode_request(&id, prompt, max_tokens)) {
+        match ep.complete(&decode_request(&id, prompt, max_tokens, thinking)) {
             Ok(o) => samples.push(decode_sample(&id, o.prompt_tokens, o.n_tokens, o.ttft_ms, o.total_ms)),
             Err(e) => errors.push(format!("{id}: {e}")),
         }
@@ -838,12 +855,15 @@ pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> R
     let (mut decode, mut ttft_cells) = (Decode { coding: None, agent: None, speculative: None }, Vec::new());
     if model_id.is_some() {
         // One short request first: a cold server's first request pays one-off costs.
-        let _ = ep.complete(&decode_request("warmup", CANARIES[0].prompt.to_string(), 16));
+        let _ = ep.complete(&decode_request("warmup", CANARIES[0].prompt.to_string(), 16, false));
         let coding: Vec<(String, String)> = CANARIES.iter().map(|c| (c.id.to_string(), c.prompt.to_string())).collect();
-        decode.coding = Some(measure_decode(&ep, coding, opts.decode_tokens));
+        let coding = measure_decode(&ep, coding, opts.decode_tokens, false);
         let agent: Vec<(String, String)> =
             AGENT_TURNS.iter().map(|(id, body)| (id.to_string(), body.to_string())).collect();
-        decode.agent = Some(measure_decode(&ep, agent, opts.decode_tokens));
+        let agent = measure_decode(&ep, agent, opts.decode_tokens, true);
+        notes.extend(untimed_note("coding", &coding));
+        notes.extend(untimed_note("agent", &agent));
+        (decode.coding, decode.agent) = (Some(coding), Some(agent));
         let after = metrics_now(&mut notes);
         match (&before, after.as_ref().and_then(Metrics::speculative)) {
             (Some(b), Some(a)) => decode.speculative = Some(speculative_delta(b.speculative(), a)),
@@ -1173,8 +1193,22 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
     }
 
     #[test]
-    fn a_decode_request_has_thinking_off() {
-        assert_eq!(decode_request("p", "hi".into(), 16).enable_thinking, Some(false));
+    fn a_decode_request_says_whether_it_thinks() {
+        assert_eq!(decode_request("p", "hi".into(), 16, false).enable_thinking, Some(false));
+        assert_eq!(decode_request("p", "hi".into(), 16, true).enable_thinking, Some(true));
+    }
+
+    #[test]
+    fn tokens_that_arrived_in_one_chunk_are_named_as_untimed() {
+        // what main's live B3 run recorded for the agent turns with thinking off
+        let whole = decode_sample("agent-refactor", Some(1102), 256, 772.2, 772.2);
+        let one = decode_sample("agent-tiny", Some(1000), 1, 300.0, 300.0);
+        let timed = decode_sample("agent-fix-test", Some(1124), 101, 500.0, 2500.0);
+        let set = summarize_decode(256, vec![whole, one, timed.clone()], Vec::new());
+        let note = untimed_note("agent", &set).unwrap();
+        assert!(note.starts_with("decode agent: agent-refactor produced tokens"), "{note}");
+        assert!(!note.contains("agent-tiny") && !note.contains("agent-fix-test"), "{note}");
+        assert_eq!(untimed_note("agent", &summarize_decode(256, vec![timed], Vec::new())), None);
     }
 
     #[test]
