@@ -1,6 +1,6 @@
 # The 27B on 16 GB cards — the feature, its tickets, and how to run them
 
-GitHub: master #334; 03 #335, 04 #336, 02 #337, 01 #338, 05a #339, 05b #340, 06 #345.
+GitHub: master #334; 03 #335, 04 #336, 02 #337, 01 #338, 05a #339, 05b #340, 06 #345, 07 #346.
 
 The feature-level document the tickets decompose (`docs/agents/issue-tracker.md`). Read this first, then the ticket's
 spec.
@@ -78,6 +78,7 @@ The image model comes after phase 2.
 | [01](01-the-16gb-artifact.md) | the 16 GB artifact: body source, converter, DFlash2 graft, sidecar, catalog entry, HF upload | — (the body source is decided: repack, ADR 0060 §4) | yes: the repack, the copies and the sidecar need no kernel |
 | [05a](05-gates-and-simulation.md) | first light: the 16 GB artifact served end to end in ignis on the 5090 under a 16 GiB budget | 01, 02, 03, 04 | — |
 | [05b](05-gates-and-simulation.md) | the four quality gates on the artifact in ignis; 16 GB capacity simulation on the 5090; speed estimate; user bench | 05a for the final run | yes: the harnesses (M1's is reusable) |
+| [07](07-the-16gb-artifact-shipped.md) | the release with the 16 GB entry, and the HF card's command and ignis's measurements (added 2026-10-24) | 05b | — |
 
 The **order** is the owner's (Q20): 03, then 04, then 02 and 01, then 05a; 05b's harnesses in parallel. 03 and 04 pay off on the 5090
 before any 16 GB artifact exists.
