@@ -125,7 +125,7 @@ fn pushing_in_pieces_gives_the_whole_clip_transcript() {
     assert_eq!((ws.windows, ps.windows), (2, 2));
     assert_eq!((ws.audio_prefilled, ps.audio_prefilled), (208, 208));
     assert_eq!(w.audio_tokens, 260);
-    assert_eq!(w.output_tokens, 1, "the synthetic decoder emits one token");
+    assert_eq!(w.tokens.len(), 1, "the synthetic decoder emits one token");
 }
 
 /// Acceptance 18's mechanics: a partial every `partial_interval_ms` of audio, the cache rolled

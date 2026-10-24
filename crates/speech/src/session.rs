@@ -43,7 +43,8 @@ pub struct Transcript {
     pub language: Option<String>,
     pub audio_seconds: f64,
     pub audio_tokens: usize,
-    pub output_tokens: usize,
+    /// The decoded token ids, the language header included (spec 02's `verbose_json` segment).
+    pub tokens: Vec<u32>,
 }
 
 /// What a session did, for acceptance 17-18.
@@ -354,7 +355,7 @@ impl Session {
             language: p.language,
             audio_seconds: self.seconds(),
             audio_tokens: audio_tokens(total),
-            output_tokens: all.len(),
+            tokens: all,
         })
     }
 }

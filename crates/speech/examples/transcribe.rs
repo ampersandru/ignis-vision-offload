@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let secs = audio.len() as f64 / 16_000.0;
             let total = t.elapsed().as_secs_f64();
             println!("{wav}\t{secs:.2} s\t{total:.3} s\t{:.1}x\tcommit {:.3} s\t{} audio tokens\t{} out\t{partials} partials\t{:?}\t{}",
-                secs / total, tc.elapsed().as_secs_f64(), r.audio_tokens, r.output_tokens, r.language, r.text);
+                secs / total, tc.elapsed().as_secs_f64(), r.audio_tokens, r.tokens.len(), r.language, r.text);
         }
     }
     Ok(())
