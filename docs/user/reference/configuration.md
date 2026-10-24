@@ -1,0 +1,1319 @@
+---
+title: "Every config field"
+description: "Every field ignis-server takes, by group: its flag, env var, default, rule, the models it applies to and whether it changes live."
+sidebar:
+  order: 1
+  badge:
+    text: generated
+    variant: note
+editUrl: false
+---
+
+:::note
+Generated from the code by `make docs-reference` (`crates/server/src/user_docs.rs`); an edit here is overwritten, and `cargo test` fails while this page and the code disagree.
+:::
+
+Every setting is one field with the same name on every surface: the flag `--<group>-<field>`, the env var `IGNIS_<GROUP>_<FIELD>` and the config-file key `<group>.<field>`. Precedence, highest first: the per-model flag, the flag, the per-model env var, the env var, the per-model file key, the file key, the profile, the default. [Configuration](../configuration/index.md) explains the model; `ignis-server help --fields` prints this same table from the binary you run.
+
+## server
+
+### `server.bind`
+
+| | |
+|---|---|
+| Flag | `--server-bind` |
+| Env var | `IGNIS_SERVER_BIND` |
+| Kind | `text` |
+| Default | `127.0.0.1:8000` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+The API's listen address (host:port). Localhost on the OpenAI port by default; never changed at runtime — a rebind is a restart.
+
+### `server.api_key`
+
+| | |
+|---|---|
+| Flag | `--server-api-key` |
+| Env var | `IGNIS_SERVER_API_KEY` |
+| Kind | `key\|auto` |
+| Default | `unset` |
+| Models | all |
+| `/v1/config` | hidden from `GET`, not patchable |
+
+The key every `/v1` request must present as `Authorization: Bearer <key>`; `auto` generates one at start and prints it (the only time a key is printed). Unset keeps the API open, as it has always been on localhost. Never shown by `GET /v1/config`.
+
+### `server.expose`
+
+| | |
+|---|---|
+| Flag | `--server-expose` |
+| Env var | `IGNIS_SERVER_EXPOSE` |
+| Kind | `expose mode` |
+| Default | `unset` |
+| Rule | one of cloudflare-quick |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Expose the server beyond its bind address: `cloudflare-quick` opens a public https://*.trycloudflare.com URL, printed at start. An exposed server always requires an API key — `auto` when none is set.
+
+### `server.metrics`
+
+| | |
+|---|---|
+| Flag | `--server-metrics` (may stand bare: `true`) |
+| Env var | `IGNIS_SERVER_METRICS` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Serve Prometheus metrics on their own listener (`metrics_bind`), and at /ui/metrics unless the Playground is off. On by default; `false` serves neither.
+
+### `server.metrics_bind`
+
+| | |
+|---|---|
+| Flag | `--server-metrics-bind` |
+| Env var | `IGNIS_SERVER_METRICS_BIND` |
+| Kind | `text` |
+| Default | `127.0.0.1:9464` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+The metrics listener's address: loopback by default, no API key, never exposed, never the API's `bind`; refused with `metrics` off. The default address taken (a second server on the host) is a warning, and the server starts without the listener; another address that cannot be bound refuses the start.
+
+### `server.ui`
+
+| | |
+|---|---|
+| Flag | `--server-ui` (may stand bare: `true`) |
+| Env var | `IGNIS_SERVER_UI` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Serve the Playground at /ui/. A binary built without web/dist serves a page saying how to build it.
+
+### `server.request_timeout`
+
+| | |
+|---|---|
+| Flag | `--server-request-timeout` |
+| Env var | `IGNIS_SERVER_REQUEST_TIMEOUT` |
+| Kind | `seconds` |
+| Default | `2400` |
+| Rule | 0..=3600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Seconds a request answered whole may run, from its admission (an image job's from its start), before its deadline ends it as `timeout_reply` says: chat completions, the Responses API over HTTP, each question of a decision, an image job, and a request's media acquisition. 0 is no deadline.
+
+### `server.stream_timeout`
+
+| | |
+|---|---|
+| Flag | `--server-stream-timeout` |
+| Env var | `IGNIS_SERVER_STREAM_TIMEOUT` |
+| Kind | `seconds` |
+| Default | `2400` |
+| Rule | 0..=3600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Seconds a request that streams may run, from its admission (an image job's from its start), before its deadline ends it as `timeout_reply` says: chat completions and the Responses API streamed, a Responses WebSocket's response, a streamed image job. 0 is no deadline.
+
+### `server.timeout_reply`
+
+| | |
+|---|---|
+| Flag | `--server-timeout-reply` |
+| Env var | `IGNIS_SERVER_TIMEOUT_REPLY` |
+| Kind | `reply` |
+| Default | `partial` |
+| Rule | one of partial, error |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+What a request past its deadline is answered: `partial`, what was generated by then as an answer a length limit cut (`finish_reason: "length"`, or a response `incomplete` with `max_output_tokens`); `error`, a 504 `request_timeout` or a stream's error ending. A decision's question and an image job are an error either way.
+
+### `server.socket_idle_close`
+
+| | |
+|---|---|
+| Flag | `--server-socket-idle-close` |
+| Env var | `IGNIS_SERVER_SOCKET_IDLE_CLOSE` |
+| Kind | `seconds` |
+| Default | `300` |
+| Rule | 0..=604800 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Seconds a Responses WebSocket may sit idle — no frame from the client and no response running or queued on it — before the server closes it with a normal close frame saying why; the client's next request opens another. An open socket holds a Knative pod, and its GPU, from scaling down. 0 never closes.
+
+### `server.system_message_policy`
+
+| | |
+|---|---|
+| Flag | `--server-system-message-policy` |
+| Env var | `IGNIS_SERVER_SYSTEM_MESSAGE_POLICY` |
+| Kind | `policy` |
+| Default | `merge` |
+| Rule | one of merge, strict |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Where `system` messages go: `merge` joins a leading run into the system prompt and keeps a later one as its own block in place; `strict` answers 400 for a system message that is not first.
+
+### `server.developer_message_policy`
+
+| | |
+|---|---|
+| Flag | `--server-developer-message-policy` |
+| Env var | `IGNIS_SERVER_DEVELOPER_MESSAGE_POLICY` |
+| Kind | `policy` |
+| Default | `inplace` |
+| Rule | one of inplace, into-system, after-system, one-after-system, reject |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Where `developer` messages go: `inplace`, `into-system`, `after-system`, `one-after-system` or `reject`. A leading developer message is the system prompt except under `reject`.
+
+## model
+
+### `model.id`
+
+| | |
+|---|---|
+| Flag | `--model-id` |
+| Env var | `IGNIS_MODEL_ID` |
+| Kind | `text` |
+| Default | `unset` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+The id the model is served under. Unset, a load is served under its own model's id (qwen3.8-27b or qwen3.8-flash-next); without an artifact, qwen3.8-27b. An id naming the other model than the artifact's is refused.
+
+### `model.artifact`
+
+| | |
+|---|---|
+| Flag | `--model-artifact` |
+| Env var | `IGNIS_MODEL_ARTIFACT` |
+| Kind | `path` |
+| Default | `unset` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+The .ninfer artifact to load. Unset, the model is looked for under `download.path`, and fetched when it is not there.
+
+### `model.max_context`
+
+| | |
+|---|---|
+| Flag | `--model-max-context` |
+| Env var | `IGNIS_MODEL_MAX_CONTEXT` |
+| Kind | `tokens` |
+| Default | `40960` |
+| Rule | >= 1 |
+| Models | all |
+| Per model | `--qwen38-model-max-context`, `--qwen38flashnext-model-max-context` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The largest prompt + generation a single request may reserve, in tokens. On the 27B, bounded by its attention's envelope for the KV format.
+
+### `model.default_max_tokens`
+
+| | |
+|---|---|
+| Flag | `--model-default-max-tokens` |
+| Env var | `IGNIS_MODEL_DEFAULT_MAX_TOKENS` |
+| Kind | `tokens` |
+| Default | `38912` |
+| Models | all |
+| Per model | `--qwen38-model-default-max-tokens`, `--qwen38flashnext-model-default-max-tokens` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The max_tokens of a request that sends none, its reasoning included, never past what its prompt leaves of `max_context`; an explicit cap always wins. 0 = none, up to the context.
+
+### `model.kv_format`
+
+| | |
+|---|---|
+| Flag | `--model-kv-format` |
+| Env var | `IGNIS_MODEL_KV_FORMAT` |
+| Kind | `kv format` |
+| Default | `hq-e8-2b` |
+| Rule | one of bf16, hq-e8-2b, hq_e8_2b, hq |
+| Models | all |
+| Per model | `--qwen38-model-kv-format`, `--qwen38flashnext-model-kv-format` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The KV storage format: `hq-e8-2b` (the serving default) or `bf16` (the retained oracle format).
+
+### `model.prefill_attention`
+
+| | |
+|---|---|
+| Flag | `--model-prefill-attention` |
+| Env var | `IGNIS_MODEL_PREFILL_ATTENTION` |
+| Kind | `prefill attention` |
+| Default | `fp8` |
+| Rule | one of fp8, fp16 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The 27B's prompt attention precision (GitHub #335): `fp8` (the default, the band pass in 8 bits) or `fp16` (the FP16-accumulate fallback). Flash-Next's attention is QSA and has no such pass.
+
+### `model.exception_weights`
+
+| | |
+|---|---|
+| Flag | `--model-exception-weights` |
+| Env var | `IGNIS_MODEL_EXCEPTION_WEIGHTS` |
+| Kind | `exception weights` |
+| Default | `bf16` |
+| Rule | one of bf16, fp8 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+How the 27B holds its nine BF16 exception tensors on the device (GitHub #341): `bf16` (the default, as the artifact stores them) or `fp8`, converted at load to FP8 row-scale for the FP8 tensor cores. Flash-Next has none.
+
+### `model.prefill_chunk`
+
+| | |
+|---|---|
+| Flag | `--model-prefill-chunk` |
+| Env var | `IGNIS_MODEL_PREFILL_CHUNK` |
+| Kind | `tokens` |
+| Default | `1024` |
+| Rule | nonzero multiple of 128 |
+| Models | all |
+| Per model | `--qwen38-model-prefill-chunk`, `--qwen38flashnext-model-prefill-chunk` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The prefill chunk width, in tokens.
+
+### `model.decode_share`
+
+| | |
+|---|---|
+| Flag | `--model-decode-share` |
+| Env var | `IGNIS_MODEL_DECODE_SHARE` |
+| Kind | `percent` |
+| Default | `unset` |
+| Rule | 0..=99 |
+| Models | all |
+| Per model | `--qwen38-model-decode-share`, `--qwen38flashnext-model-decode-share` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The percent of the model's time decoding lanes keep while a prompt prefills. Unset, the model's own: 25 on both. 0 is one decode round per chunk, 50 splits time evenly.
+
+### `model.enable_thinking`
+
+| | |
+|---|---|
+| Flag | `--model-enable-thinking` (may stand bare: `true`) |
+| Env var | `IGNIS_MODEL_ENABLE_THINKING` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Whether a request that says nothing thinks.
+
+### `model.reasoning_effort`
+
+| | |
+|---|---|
+| Flag | `--model-reasoning-effort` |
+| Env var | `IGNIS_MODEL_REASONING_EFFORT` |
+| Kind | `reasoning effort` |
+| Default | `unset` |
+| Rule | one of none, minimal, low, medium, high, xhigh, max |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The reasoning_effort of a request that names none. Unset, the template's own default.
+
+### `model.thinking_budget`
+
+| | |
+|---|---|
+| Flag | `--model-thinking-budget` |
+| Env var | `IGNIS_MODEL_THINKING_BUDGET` |
+| Kind | `tokens\|off` |
+| Default | `32768` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The reasoning tokens a request may spend before the model's close is forced; `off` = no budget. A request's own thinking_budget overrides it.
+
+### `model.loop_guard`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD` |
+| Kind | `loop guard mode` |
+| Default | `rewind` |
+| Rule | one of off, log, rewind |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The loop guard (ADR 0052): `rewind`, a loop in a request's reasoning (chat completions, `/v1/responses`) is taken back and the model nudged, then closed after `loop_guard_retries` nudges; `log`, it is only logged; `off`, no guard, as benches and gates run for reference parity.
+
+### `model.loop_guard_ratio`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-ratio` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_RATIO` |
+| Kind | `permille` |
+| Default | `265` |
+| Rule | 1..=999 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+A window of scored reasoning whose zlib ratio is under this many thousandths is a loop.
+
+### `model.loop_guard_window`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-window` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_WINDOW` |
+| Kind | `chars` |
+| Default | `1000` |
+| Rule | 500..=100000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The loop guard's window, in characters of scored reasoning.
+
+### `model.loop_guard_normalize`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-normalize` (may stand bare: `true`) |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_NORMALIZE` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Whether the loop guard scores the reasoning normalized: fenced and inline code taken out, every run of digits read as one `0`. `off` scores it as written, which at this window and ratio flags far more than the raw prototype did (3,000 and 120).
+
+### `model.loop_guard_raw_gate`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-raw-gate` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_RAW_GATE` |
+| Kind | `permille` |
+| Default | `300` |
+| Rule | 0..=999 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The loop guard's raw gate, in thousandths: a loop's last `loop_guard_window` characters as written must score under it too, which a table of numbers (a template once its digits fold) does not. 0, no gate.
+
+### `model.loop_guard_clean`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-clean` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_CLEAN` |
+| Kind | `permille` |
+| Default | `400` |
+| Rule | 1..=999 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+A window of scored reasoning at or over this many thousandths is clean: a rewind goes back to the start of the last one before the loop (no clean one since the last nudge: to its end).
+
+### `model.loop_guard_margin`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-margin` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_MARGIN` |
+| Kind | `chars` |
+| Default | `0` |
+| Rule | 0..=100000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How many characters before that clean window's start a rewind cuts.
+
+### `model.loop_guard_retries`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-retries` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_RETRIES` |
+| Kind | `retries` |
+| Default | `2` |
+| Rule | 0..=10 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The nudges a looping reasoning gets before the guard closes it.
+
+### `model.loop_guard_persist`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-persist` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_PERSIST` |
+| Kind | `checks` |
+| Default | `4` |
+| Rule | 1..=100 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How many checks in a row must score a loop before the guard acts: a loop persists, a list or a log transcribed into the reasoning ends with its content. 1, at the first.
+
+### `model.loop_guard_min_kept`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-min-kept` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_MIN_KEPT` |
+| Kind | `chars` |
+| Default | `1` |
+| Rule | 0..=100000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+A rewind that would keep fewer characters of reasoning than this is only logged, and that run of loop scores is not acted on: a reasoning that opens in a loop, or in an enumeration scored as one, would otherwise be dropped whole. 0, always rewind.
+
+### `model.loop_guard_holdback`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-holdback` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_HOLDBACK` |
+| Kind | `chars` |
+| Default | `0` |
+| Rule | 0..=100000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+In `rewind` mode, the characters of reasoning held back from the client: a rewind whose cut falls in them reaches it with no tag and none of the loop. 0, none; under ~2,000 it hides almost no rewind.
+
+### `model.loop_guard_check_every`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-check-every` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_CHECK_EVERY` |
+| Kind | `chars` |
+| Default | `250` |
+| Rule | 1..=100000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The loop guard scores the window again after this many characters of new reasoning.
+
+### `model.loop_guard_snap`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-snap` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_SNAP` |
+| Kind | `chars` |
+| Default | `300` |
+| Rule | 0..=100000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+A rewind's cut moves back to the line break before it when one is within this many characters. 0, never.
+
+### `model.loop_guard_min_continuation`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-min-continuation` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_MIN_CONTINUATION` |
+| Kind | `tokens` |
+| Default | `512` |
+| Rule | >= 1 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The least of a request's `max_tokens` a continuation must have left after the cut and the nudge: with less, the loop is only logged.
+
+### `model.loop_guard_submit_wait`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-submit-wait` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_SUBMIT_WAIT` |
+| Kind | `seconds` |
+| Default | `60` |
+| Rule | 0..=3600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How long a continuation the engine refuses as full waits for room, in seconds, before the loop is left as it is; 0 tries once. A WebSocket request's continuation waits in the socket's admission queue instead, as the socket's own requests do.
+
+### `model.loop_guard_nudge`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-nudge` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_NUDGE` |
+| Kind | `text` |
+| Default | `Wait, I'm starting to repeat myself. Let me stop and move on with what I already have.` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The sentence, in the model's own voice, the loop guard's first rewind puts after the kept reasoning, on a paragraph of its own.
+
+### `model.loop_guard_nudge_again`
+
+| | |
+|---|---|
+| Flag | `--model-loop-guard-nudge-again` |
+| Env var | `IGNIS_MODEL_LOOP_GUARD_NUDGE_AGAIN` |
+| Kind | `text` |
+| Default | `I keep repeating myself. I already have enough to write the answer, so I'll wrap up my reasoning now.` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The sentence every later rewind puts there, until `loop_guard_retries` nudges close the reasoning.
+
+### `model.rope_scaling`
+
+| | |
+|---|---|
+| Flag | `--model-rope-scaling` |
+| Env var | `IGNIS_MODEL_ROPE_SCALING` |
+| Kind | `rope scaling` |
+| Default | `auto` |
+| Models | all |
+| Per model | `--qwen38-model-rope-scaling`, `--qwen38flashnext-model-rope-scaling` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The text rotary table: `auto` (the default), `none` (the linear table) or `yarn:F[,t=..][,bf=..][,bs=..]`, which rescales the checkpoint's trained 262,144-position envelope — what a context past it needs. `auto` decides per model from its `model.max_context`: none up to 262,144, else YaRN at `max_context / 262,144`. Both models run the table.
+
+### `model.idle_unload`
+
+| | |
+|---|---|
+| Flag | `--model-idle-unload` |
+| Env var | `IGNIS_MODEL_IDLE_UNLOAD` |
+| Kind | `seconds` |
+| Default | `300` |
+| Rule | 0..=604800 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Seconds with no request using the model after which it is unloaded — VRAM, pinned host memory and KV-RAM given back — while the server stays up; the next request loads it again and waits for it. 0 never unloads.
+
+### `model.host_margin_bytes`
+
+| | |
+|---|---|
+| Flag | `--model-host-margin-bytes` |
+| Env var | `IGNIS_MODEL_HOST_MARGIN_BYTES` |
+| Kind | `bytes` |
+| Default | `4G` |
+| Models | all |
+| Per model | `--qwen38-model-host-margin-bytes`, `--qwen38flashnext-model-host-margin-bytes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+What a text model's host plan must leave of the physical memory available at load (free plus standby): a load whose pinned lines — the 27B's token embedding, Flash-Next's experts and n-gram hot rows, staging, retained host slots, the KV-RAM arena — leave less is refused, naming the line to shrink, so the desktop is never paged out. The image model makes no host plan: its start carries it for a switch to a text model.
+
+### `model.adapt_context_step`
+
+| | |
+|---|---|
+| Flag | `--model-adapt-context-step` |
+| Env var | `IGNIS_MODEL_ADAPT_CONTEXT_STEP` |
+| Kind | `tokens` |
+| Default | `65536` |
+| Rule | nonzero multiple of 64 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The 27B's adaptation (ADR 0063): when its VRAM plan refuses a `max_context` the profile or the default gave, the load lowers it this many tokens at a time, never below this many -- a start whose plan does not hold one step is refused. A whole number of KV pages (64 tokens).
+
+## vram
+
+### `vram.kv_pool_bytes`
+
+| | |
+|---|---|
+| Flag | `--vram-kv-pool-bytes` |
+| Env var | `IGNIS_VRAM_KV_POOL_BYTES` |
+| Kind | `bytes\|tokens` |
+| Default | `unset` |
+| Models | all |
+| Per model | `--qwen38-vram-kv-pool-bytes`, `--qwen38flashnext-vram-kv-pool-bytes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The KV pool: a byte count (K/M/G suffix read) or tokens as `<n>tok`, `<n>Ktok`, `<n>Mtok`. Unset, the KV pool policy's: the rest of the VRAM budget when every weight is on the device (the 27B); 524,288 tokens shared by the lanes when Flash-Next's experts stream, the rest to the expert cache. Refused below one `max_context` sequence and a page per retained slot.
+
+### `vram.headroom_bytes`
+
+| | |
+|---|---|
+| Flag | `--vram-headroom-bytes` |
+| Env var | `IGNIS_VRAM_HEADROOM_BYTES` |
+| Kind | `bytes` |
+| Default | `1536M` |
+| Models | all |
+| Per model | `--qwen38-vram-headroom-bytes`, `--qwen38flashnext-vram-headroom-bytes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+What a derived VRAM budget leaves to the desktop and every other process on the card: the budget is the memory free at start less this. Not with `budget_bytes`.
+
+### `vram.budget_bytes`
+
+| | |
+|---|---|
+| Flag | `--vram-budget-bytes` |
+| Env var | `IGNIS_VRAM_BUDGET_BYTES` |
+| Kind | `bytes` |
+| Default | `unset` |
+| Rule | >= 1 |
+| Models | all |
+| Per model | `--qwen38-vram-budget-bytes`, `--qwen38flashnext-vram-budget-bytes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The device memory the whole process may hold, weights included; refused above free memory. Unset, derived from `headroom_bytes`.
+
+### `vram.allow_oversubscription`
+
+| | |
+|---|---|
+| Flag | `--vram-allow-oversubscription` (may stand bare: `true`) |
+| Env var | `IGNIS_VRAM_ALLOW_OVERSUBSCRIPTION` |
+| Kind | `bool` |
+| Default | `false` |
+| Models | all |
+| Per model | `--qwen38-vram-allow-oversubscription`, `--qwen38flashnext-vram-allow-oversubscription` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Start above free memory, with a warning. Needs `budget_bytes`.
+
+### `vram.allow_expert_cache_below_floor`
+
+| | |
+|---|---|
+| Flag | `--vram-allow-expert-cache-below-floor` (may stand bare: `true`) |
+| Env var | `IGNIS_VRAM_ALLOW_EXPERT_CACHE_BELOW_FLOOR` |
+| Kind | `bool` |
+| Default | `false` |
+| Models | Qwen3.8-Flash-Next |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Start Flash-Next with an expert cache below its 12 GiB floor, with a warning — decode slows sharply below it.
+
+### `vram.pinned_expert_bytes`
+
+| | |
+|---|---|
+| Flag | `--vram-pinned-expert-bytes` |
+| Env var | `IGNIS_VRAM_PINNED_EXPERT_BYTES` |
+| Kind | `bytes` |
+| Default | `0` |
+| Models | Qwen3.8-Flash-Next |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Flash-Next's calibration-hottest experts held in the expert cache for the whole load, outside its LRU, with no copy in the pinned host pool: whole experts, hottest first, until they reach this many bytes. The pool takes that much less RAM; the LRU has those slots fewer (on the 5090: nothing measurable at 1 GiB, ~1% of three-lane decode at 2 GiB). 0 pins none; the `rtx5090` profile pins 2 GiB. A card that holds every expert keeps none in RAM anyway and ignores it.
+
+### `vram.adapt_spare_tokens`
+
+| | |
+|---|---|
+| Flag | `--vram-adapt-spare-tokens` |
+| Env var | `IGNIS_VRAM_ADAPT_SPARE_TOKENS` |
+| Kind | `tokens` |
+| Default | `65536` |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The 27B's adaptation (ADR 0063): at more than one decode lane, a context the load lowers is kept only when the KV pool holds it and a spare reservation of this many tokens, room for a second request; 0, one sequence is enough. At one lane the plan's own floor decides.
+
+## reuse
+
+### `reuse.prompt`
+
+| | |
+|---|---|
+| Flag | `--reuse-prompt` (may stand bare: `true`) |
+| Env var | `IGNIS_REUSE_PROMPT` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| Per model | `--qwen38-reuse-prompt`, `--qwen38flashnext-reuse-prompt` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Cross-request state reuse. Off, no prompt checkpoint is captured or claimed, and no prefix is shared unless `retained_device` or `retained_host` gives slots for it.
+
+### `reuse.retained_device`
+
+| | |
+|---|---|
+| Flag | `--reuse-retained-device` |
+| Env var | `IGNIS_REUSE_RETAINED_DEVICE` |
+| Kind | `slots` |
+| Default | `unset` |
+| Models | all |
+| Per model | `--qwen38-reuse-retained-device`, `--qwen38flashnext-reuse-retained-device` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Retained slots in VRAM, reserved in the VRAM plan and handed out first. Unset, 0. With prompt reuse off, a count shares heads between live siblings only.
+
+### `reuse.retained_host`
+
+| | |
+|---|---|
+| Flag | `--reuse-retained-host` |
+| Env var | `IGNIS_REUSE_RETAINED_HOST` |
+| Kind | `slots` |
+| Default | `unset` |
+| Models | all |
+| Per model | `--qwen38-reuse-retained-host`, `--qwen38flashnext-reuse-retained-host` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Retained slots in one pinned host block reserved at start, ~222 MiB each, a PCIe copy per capture and per claim. Unset, the model's own: two per decode lane on the 27B, 8 on Flash-Next; 0 with prompt reuse off.
+
+### `reuse.retained_interactive_ttl`
+
+| | |
+|---|---|
+| Flag | `--reuse-retained-interactive-ttl` |
+| Env var | `IGNIS_REUSE_RETAINED_INTERACTIVE_TTL` |
+| Kind | `seconds` |
+| Default | `300` |
+| Models | all |
+| Per model | `--qwen38-reuse-retained-interactive-ttl`, `--qwen38flashnext-reuse-retained-interactive-ttl` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Idle seconds after which a main-conversation checkpoint in KV-RAM ranks as a subagent's. Needs prompt reuse on.
+
+### `reuse.kv_host_pool_bytes`
+
+| | |
+|---|---|
+| Flag | `--reuse-kv-host-pool-bytes` |
+| Env var | `IGNIS_REUSE_KV_HOST_POOL_BYTES` |
+| Kind | `bytes` |
+| Default | `2G` |
+| Models | all |
+| Per model | `--qwen38-reuse-kv-host-pool-bytes`, `--qwen38flashnext-reuse-kv-host-pool-bytes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The KV-RAM host tier's budget: page-locked whole at start and held for the life of the load, so it is RAM the process holds even idle (and the figure Windows reports as its shared GPU memory). 0 disables the tier.
+
+## switch
+
+### `switch.drain_timeout`
+
+| | |
+|---|---|
+| Flag | `--switch-drain-timeout` |
+| Env var | `IGNIS_SWITCH_DRAIN_TIMEOUT` |
+| Kind | `seconds` |
+| Default | `30` |
+| Rule | 0..=3600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How long a model switch lets the old model's running requests finish before it cancels them, in seconds; 0 cancels them at once.
+
+### `switch.allow_implicit`
+
+| | |
+|---|---|
+| Flag | `--switch-allow-implicit` (may stand bare: `true`) |
+| Env var | `IGNIS_SWITCH_ALLOW_IMPLICIT` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Whether a request whose model names another model `known_models` lists switches the server to it, then is served on it. Off refuses it as an unknown model is. An explicit switch is not affected.
+
+### `switch.known_models`
+
+| | |
+|---|---|
+| Flag | `--switch-known-models` |
+| Env var | `IGNIS_SWITCH_KNOWN_MODELS` |
+| Kind | `id=path;...`, repeatable |
+| Default | `{}` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The models a request may switch to by naming them, each with the artifact it loads from: `<id>=<path>` (the flag is repeatable, the env var takes `;`-separated pairs, a file a map). The model the server starts on joins them once its load says its id.
+
+## spec
+
+### `spec.backend`
+
+| | |
+|---|---|
+| Flag | `--spec-backend` |
+| Env var | `IGNIS_SPEC_BACKEND` |
+| Kind | `backend` |
+| Default | `unset` |
+| Rule | one of dflash2, mtp, off |
+| Models | all |
+| Per model | `--qwen38-spec-backend`, `--qwen38flashnext-spec-backend` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The speculative backend: `dflash2` (the 27B's drafter), `mtp` (Flash-Next's head, with its companion container beside the artifact), or `off`. Unset, no speculation.
+
+### `spec.draft_tokens`
+
+| | |
+|---|---|
+| Flag | `--spec-draft-tokens` |
+| Env var | `IGNIS_SPEC_DRAFT_TOKENS` |
+| Kind | `tokens` |
+| Default | `unset` |
+| Rule | 1..=7 |
+| Models | all |
+| Per model | `--qwen38-spec-draft-tokens`, `--qwen38flashnext-spec-draft-tokens` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The draft window: required with `dflash2`; with `mtp`, the most drafts a lane verifies (default 2). Needs a backend.
+
+### `spec.draft_rows`
+
+| | |
+|---|---|
+| Flag | `--spec-draft-rows` |
+| Env var | `IGNIS_SPEC_DRAFT_ROWS` |
+| Kind | `rows` |
+| Default | `unset` |
+| Rule | 0..=32 |
+| Models | Qwen3.8-Flash-Next |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Flash-Next's draft row budget: the rows a verify round takes across lanes, 0 (= 8) or 2..=32; past 8, five to eight lanes draft too.
+
+### `spec.decode_lanes`
+
+| | |
+|---|---|
+| Flag | `--spec-decode-lanes` |
+| Env var | `IGNIS_SPEC_DECODE_LANES` |
+| Kind | `lanes` |
+| Default | `unset` |
+| Rule | 1..=8 |
+| Models | all |
+| Per model | `--qwen38-spec-decode-lanes`, `--qwen38flashnext-spec-decode-lanes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The decode lanes: the sequences a model decodes at once. On the 27B each lane reserves its state (~233 MB with `dflash2` under hq-e8-2b) and its share of the round buffers, and takes two of the default host retained slots. On Flash-Next they decode sharing the KV pool — min(524,288 tokens, lanes x `max_context`), never below one `max_context` and a page per retained slot. Unset, the model's own: 8 on the 27B, 3 on Flash-Next.
+
+### `spec.draft_head`
+
+| | |
+|---|---|
+| Flag | `--spec-draft-head` |
+| Env var | `IGNIS_SPEC_DRAFT_HEAD` |
+| Kind | `head` |
+| Default | `unset` |
+| Rule | one of full, shortlist, auto |
+| Models | all |
+| Per model | `--qwen38-spec-draft-head`, `--qwen38flashnext-spec-draft-head` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The drafter's proposal head: `full` (the target's output head), `shortlist` (the artifact's Q4 head over the 131,072 most frequent tokens, ~357 MB more VRAM) or `auto` (`full` on every card class: the shortlist frees no VRAM and measured slower). Needs a backend; `mtp` has only `full`. Unset, `full`.
+
+## vision
+
+### `vision.enabled`
+
+| | |
+|---|---|
+| Flag | `--vision-enabled` (may stand bare: `true`) |
+| Env var | `IGNIS_VISION_ENABLED` |
+| Kind | `bool` |
+| Default | `false` |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Load the vision tower and reserve its workspace.
+
+### `vision.max_tokens`
+
+| | |
+|---|---|
+| Flag | `--vision-max-tokens` |
+| Env var | `IGNIS_VISION_MAX_TOKENS` |
+| Kind | `tokens` |
+| Default | `32768` |
+| Rule | 1..=1048576 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Merged vision tokens per request. An image over it is shrunk to fit, aspect kept; refused only when its aspect ratio cannot fit, or when several images total over it. Needs vision on.
+
+### `vision.embedding_pool_mib`
+
+| | |
+|---|---|
+| Flag | `--vision-embedding-pool-mib` |
+| Env var | `IGNIS_VISION_EMBEDDING_POOL_MIB` |
+| Kind | `MiB` |
+| Default | `unset` |
+| Rule | 1..=65536 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Encoded images kept for reuse, in MiB. Unset, one envelope-wide embedding; a pool below that is raised to it. Needs vision on.
+
+## media
+
+### `media.allow_private_network`
+
+| | |
+|---|---|
+| Flag | `--media-allow-private-network` (may stand bare: `true`) |
+| Env var | `IGNIS_MEDIA_ALLOW_PRIVATE_NETWORK` |
+| Kind | `bool` |
+| Default | `false` |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Fetch image URLs on private, loopback, link-local, multicast and CGNAT addresses. Off, so an exposed server cannot be used to probe the operator's LAN. Needs vision on.
+
+### `media.cache_mib`
+
+| | |
+|---|---|
+| Flag | `--media-cache-mib` |
+| Env var | `IGNIS_MEDIA_CACHE_MIB` |
+| Kind | `MiB` |
+| Default | `1024` |
+| Rule | 0..=65536 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Prepared images kept for reuse, in MiB; 0 keeps none. Needs vision on.
+
+## image
+
+### `image.queue_depth`
+
+| | |
+|---|---|
+| Flag | `--image-queue-depth` |
+| Env var | `IGNIS_IMAGE_QUEUE_DEPTH` |
+| Kind | `jobs` |
+| Default | `4` |
+| Rule | 0..=64 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The image jobs that may wait behind the one running, in order; one more is refused `503 engine_full` with `Retry-After`. 0 runs one at a time with none waiting.
+
+### `image.max_n`
+
+| | |
+|---|---|
+| Flag | `--image-max-n` |
+| Env var | `IGNIS_IMAGE_MAX_N` |
+| Kind | `images` |
+| Default | `10` |
+| Rule | 1..=64 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The most images one request may ask for (`n`), made one after another over the job's one condition prefix.
+
+### `image.max_condition_images`
+
+| | |
+|---|---|
+| Flag | `--image-max-condition-images` |
+| Env var | `IGNIS_IMAGE_MAX_CONDITION_IMAGES` |
+| Kind | `images` |
+| Default | `10` |
+| Rule | 1..=10 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The most condition images one edit may send. At most 10, what the image model's encoder holds.
+
+### `image.max_condition_mipx`
+
+| | |
+|---|---|
+| Flag | `--image-max-condition-mipx` |
+| Env var | `IGNIS_IMAGE_MAX_CONDITION_MIPX` |
+| Kind | `Mipx` |
+| Default | `16` |
+| Rule | 1..=64 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The largest a condition image may decode to, in Mi pixels (1,048,576 pixels, a 1024x1024 image, each); a larger one is refused. A condition image is encoded at 1024x1024 of area at most, so 16 — a 16-megapixel photo, 64 MiB decoded — takes any phone camera's own output and bounds what one condition image decodes to.
+
+### `image.max_condition_decodes`
+
+| | |
+|---|---|
+| Flag | `--image-max-condition-decodes` |
+| Env var | `IGNIS_IMAGE_MAX_CONDITION_DECODES` |
+| Kind | `jobs` |
+| Default | `1` |
+| Rule | 1..=16 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The most edits that decode their condition images at once; the others wait their turn. Each holds up to `max_condition_images` frames of up to `max_condition_mipx` while it decodes, and the queue runs one job at a time, so more side by side buy memory, not throughput.
+
+### `image.sizes`
+
+| | |
+|---|---|
+| Flag | `--image-sizes` |
+| Env var | `IGNIS_IMAGE_SIZES` |
+| Kind | `WxH;...`, repeatable |
+| Default | `["2048x2048","2400x1792","1792x2400","2528x1696","1696x2528","2752x1536","1536x2752","1024x1024"]` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The sizes a request may ask for, `<width>x<height>` with each side a multiple of 32: by default the checkpoint's presets and 1024x1024, the size OpenAI clients often send. `auto` picks among them.
+
+### `image.max_target_cells`
+
+| | |
+|---|---|
+| Flag | `--image-max-target-cells` |
+| Env var | `IGNIS_IMAGE_MAX_TARGET_CELLS` |
+| Kind | `cells` |
+| Default | `16800` |
+| Rule | 1..=1048576 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The largest image the image model's load makes room for, in latent cells of 16x16 pixels: 16,800, 2400x1792, the checkpoint's largest preset. The load sizes its working memory for the largest of `sizes` within it; a size past it is not served, and the load warns. Read by the load, so a change holds from the next one.
+
+### `image.condition_budget_tokens`
+
+| | |
+|---|---|
+| Flag | `--image-condition-budget-tokens` |
+| Env var | `IGNIS_IMAGE_CONDITION_BUDGET_TOKENS` |
+| Kind | `tokens` |
+| Default | `0` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The condition budget, in condition-prefix tokens (~256 KiB each, a 1024x1024 condition image 4,096 of them). 0 is the whole budget the load planned; a value can only lower it.
+
+### `image.min_condition_budget_tokens`
+
+| | |
+|---|---|
+| Flag | `--image-min-condition-budget-tokens` |
+| Env var | `IGNIS_IMAGE_MIN_CONDITION_BUDGET_TOKENS` |
+| Kind | `tokens` |
+| Default | `8191` |
+| Rule | 0..=1048576 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The least condition budget the image model's load accepts, in condition-prefix tokens: a load whose VRAM plan leaves less is refused, naming the shortfall, rather than refuse its requests one by one. 8,191, the longest text-to-image prompt the image model's positions admit; 0 takes any. Read by the load, so a change holds from the next one.
+
+### `image.condition_floor_px`
+
+| | |
+|---|---|
+| Flag | `--image-condition-floor-px` |
+| Env var | `IGNIS_IMAGE_CONDITION_FLOOR_PX` |
+| Kind | `pixels` |
+| Default | `512` |
+| Rule | 32..=1024 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The smallest the budget may scale a condition image down to, as the side of a square of the same area, in pixels; a request whose images would go below it is refused, naming the budget.
+
+### `image.prompt_enhancement`
+
+| | |
+|---|---|
+| Flag | `--image-prompt-enhancement` (may stand bare: `true`) |
+| Env var | `IGNIS_IMAGE_PROMPT_ENHANCEMENT` |
+| Kind | `bool` |
+| Default | `false` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Whether a request that does not say has its prompt rewritten by `prompt_enhancer` before the image model reads it.
+
+### `image.prompt_enhancer`
+
+| | |
+|---|---|
+| Flag | `--image-prompt-enhancer` |
+| Env var | `IGNIS_IMAGE_PROMPT_ENHANCER` |
+| Kind | `text` |
+| Default | `qwen3.8-27b` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The text model that rewrites prompts: the served id of a model an explicit switch may name (`switch.known_models`, the start model, or a downloaded catalog entry), whatever `switch.allow_implicit` says, or the text model loaded. A `PATCH` naming any other is refused, and a start warns of it; a request that meets one anyway skips the rewrite, with a warning.
+
+### `image.prompt_enhancer_max_tokens`
+
+| | |
+|---|---|
+| Flag | `--image-prompt-enhancer-max-tokens` |
+| Env var | `IGNIS_IMAGE_PROMPT_ENHANCER_MAX_TOKENS` |
+| Kind | `tokens` |
+| Default | `1024` |
+| Rule | 16..=8192 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The most tokens one rewrite may take. Qwen's prompts ask for about 200 words; a longer answer is cut here and used as it is.
+
+## download
+
+### `download.enabled`
+
+| | |
+|---|---|
+| Flag | `--download-enabled` (may stand bare: `true`) |
+| Env var | `IGNIS_DOWNLOAD_ENABLED` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Fetch the model when no artifact is on disk — asked first when stdin is a terminal, downloaded straight away when it is not. Off keeps the placeholder template.
+
+### `download.path`
+
+| | |
+|---|---|
+| Flag | `--download-path` |
+| Env var | `IGNIS_DOWNLOAD_PATH` |
+| Kind | `path` |
+| Default | `./models` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Where a fetched model lands, and where one fetched earlier is found.
+
+### `download.endpoint`
+
+| | |
+|---|---|
+| Flag | `--download-endpoint` |
+| Env var | `IGNIS_DOWNLOAD_ENDPOINT` |
+| Kind | `text` |
+| Default | `https://huggingface.co` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Where a fetched model's files come from: Hugging Face, or a mirror answering its {repo}/resolve/{revision}/{file} route (an Artifactory or Nexus proxy, a static server laid out the same way). The pins still say whether the bytes are the published ones.
+
+### `download.token`
+
+| | |
+|---|---|
+| Flag | `--download-token` |
+| Env var | `IGNIS_DOWNLOAD_TOKEN` |
+| Kind | `token` |
+| Default | `unset` |
+| Models | all |
+| `/v1/config` | hidden from `GET`, not patchable |
+
+Sent as `Authorization: Bearer` to the endpoint, never across a redirect to another host. Unset, HF_TOKEN is sent to huggingface.co and nothing to a mirror. Never shown by GET /v1/config or `config print`.
+
+### `download.catalog`
+
+| | |
+|---|---|
+| Flag | `--download-catalog` |
+| Env var | `IGNIS_DOWNLOAD_CATALOG` |
+| Kind | `path` |
+| Default | `unset` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+An operator catalog: a YAML or JSON file of models fetched beside the built-in ones, in the same format; an id the built-in catalog has is refused. A relative path is read from the directory of the config file that names it.
+
+## ngram
+
+### `ngram.persist`
+
+| | |
+|---|---|
+| Flag | `--ngram-persist` (may stand bare: `true`) |
+| Env var | `IGNIS_NGRAM_PERSIST` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Persist Flash-Next's n-gram hot rows between loads.
+
+### `ngram.persist_path`
+
+| | |
+|---|---|
+| Flag | `--ngram-persist-path` |
+| Env var | `IGNIS_NGRAM_PERSIST_PATH` |
+| Kind | `model\|auto\|dir` |
+| Default | `model` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Where the n-gram cache goes: `model` (beside the artifact), `auto` (Windows LOCALAPPDATA/ignis/cache/ngram, Linux XDG_CACHE_HOME/ignis/ngram or HOME/.cache/ignis/ngram), or a directory.
+
+### `ngram.hot_bytes`
+
+| | |
+|---|---|
+| Flag | `--ngram-hot-bytes` |
+| Env var | `IGNIS_NGRAM_HOT_BYTES` |
+| Kind | `bytes\|auto` |
+| Default | `unset` |
+| Models | Qwen3.8-Flash-Next |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+The n-gram rows held in RAM, every other row read from NVMe when a step needs it: a byte count, or `auto` — what the host plan leaves after its other lines and the margin, less 256 MiB for the load, the whole ~29 GB table when that fits, never below the default. Unset, 1 GiB.
+
+## kv_disk
+
+### `kv_disk.bytes`
+
+| | |
+|---|---|
+| Flag | `--kv-disk-bytes` |
+| Env var | `IGNIS_KV_DISK_BYTES` |
+| Kind | `bytes` |
+| Default | `unset` |
+| Models | all |
+| Per model | `--qwen38-kv-disk-bytes`, `--qwen38flashnext-kv-disk-bytes` |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+KV-disk's budget: a ceiling, cut at start to the volume's free space less 10 GiB. Unset, the model's own: 4G on Flash-Next, 0 (off) on the 27B.
+
+### `kv_disk.path`
+
+| | |
+|---|---|
+| Flag | `--kv-disk-path` |
+| Env var | `IGNIS_KV_DISK_PATH` |
+| Kind | `model\|auto\|dir` |
+| Default | `model` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Where KV-disk's files go: `model` (beside the artifact), `auto` (the per-user cache directory under kv-disk), or a directory. They go in an ignis-kv-disk/<pid>-<nonce> directory there, removed at shutdown.

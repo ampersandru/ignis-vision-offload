@@ -1,4 +1,9 @@
-# Why not DGX Spark?
+---
+title: "Why not DGX Spark?"
+description: "Why ignis does not target the DGX Spark (GB10, SM121)."
+sidebar:
+  order: 30
+---
 
 Ignis targets one class of card: an **RTX 5090** or an **RTX PRO 6000**, both
 `SM120a`. The DGX Spark is the obvious question — a Blackwell GPU with native
@@ -25,7 +30,7 @@ short of the target:
 
 Ignis's decode round is weight streaming at the card's bandwidth: on a 5090 it
 is 15.81 ms of device time with the backbone GEMM at roofline (see the
-[root README](../../README.md#the-decode-round)). A round that is bound by
+[root README](../../../README.md#the-decode-round)). A round that is bound by
 bandwidth gets slower in step with the bandwidth, so the same round on a Spark
 would take roughly **6.5× longer, around 100 ms instead of 16**. Prefill leans
 on compute, and with a bit more than a quarter of the SMs it would likely be
@@ -63,21 +68,21 @@ hardware.
 ### What blocks it today
 
 1. **GPU architecture.** The kernel leaf is compiled for `120a` only
-   ([`kernel/CMakeLists.txt`](../../kernel/CMakeLists.txt),
-   [`kernel/build.sh`](../../kernel/build.sh)). GB10 is compute capability
+   ([`kernel/CMakeLists.txt`](../../../kernel/CMakeLists.txt),
+   [`kernel/build.sh`](../../../kernel/build.sh)). GB10 is compute capability
    12.1. Code built for an `a` target, whether machine code or PTX, runs only on
    that exact capability, so on a Spark the binary would fail to load any
    kernel. The fix is to build for `121a`, or for `120a;121a` in one binary.
    The architecture-specific instructions the kernels use are the block-scaled
    FP4 MMA (`mma.sync…kind::mxf4nvf4.block_scale`,
-   [`common/mma.cuh`](../../kernel/vendor/src/ops/common/mma.cuh)), TMA bulk
+   [`common/mma.cuh`](../../../kernel/vendor/src/ops/common/mma.cuh)), TMA bulk
    tensor copies and `setmaxnreg`
-   ([`nvfp4_w4a4_tma.cuh`](../../kernel/vendor/src/ops/linear/nvfp4/nvfp4_w4a4_tma.cuh)).
+   ([`nvfp4_w4a4_tma.cuh`](../../../kernel/vendor/src/ops/linear/nvfp4/nvfp4_w4a4_tma.cuh)).
    All of them are expected to exist on `121a`, but only a compile can confirm
    `setmaxnreg`.
 2. **CPU architecture.** The Spark is ARM (`aarch64`). The release workflow,
-   the [`Containerfile`](../../Containerfile) and
-   [`mk/os/linux.mk`](../../mk/os/linux.mk) all name
+   the [`Containerfile`](../../../Containerfile) and
+   [`mk/os/linux.mk`](../../../mk/os/linux.mk) all name
    `x86_64-unknown-linux-gnu`. In the Makefile the triple can be overridden
    (`TARGET_TRIPLE ?=`). The Rust code uses no x86 intrinsics, and the build
    script links from `$CUDA_HOME/lib64`, which ARM installs of CUDA also
@@ -90,7 +95,7 @@ hardware.
    through `nvmlDeviceGetMemoryInfo` before it creates the CUDA context
    (GitHub #210), and it refuses to start if that call fails
    (`VRAM budget: free memory is unreadable`,
-   [`crates/server/src/runtime.rs`](../../crates/server/src/runtime.rs)). On
+   [`crates/server/src/runtime.rs`](../../../crates/server/src/runtime.rs)). On
    the Spark's unified memory, NVML reportedly does not report memory at all,
    and `nvidia-smi` shows it as "Not Supported". A fallback is needed there.
    `cudaMemGetInfo` is the obvious candidate, but on unified memory it is

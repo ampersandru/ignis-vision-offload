@@ -45,7 +45,11 @@ on:
     # web/ imports none, and scripts/ only drives local runs. tools/ is not
     # here (a test runs tools/flash-next-converter), nor mk/ (the server
     # embeds mk/kv-pool-tokens.sh and this workflow runs mk/version.sh). The
-    # archives' README.md catches up on the next code push.
+    # archives' README.md catches up on the next code push. One test reads
+    # docs/: crates/server/tests/user_docs_reference.rs compares the
+    # generated docs/user/reference/ with the code (ADR 0066), and only a
+    # code change, which runs this workflow, can make it stale. The guide
+    # itself builds in docs.yml.
     paths-ignore:
       - "**/*.md"
       - "docs/**"

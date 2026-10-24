@@ -63,6 +63,7 @@ pub mod template;
 pub mod thinking;
 pub mod tokenize;
 pub mod toolcall;
+pub mod user_docs;
 
 use std::time::Duration;
 
