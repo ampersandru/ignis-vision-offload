@@ -225,7 +225,10 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 
 - **hq-e8-2b** is the serving KV format: a sequence-token costs **9,216 bytes
   against BF16's 65,536 — 7.11x the capacity**, so eight lanes at a 40,960
-  context need ~3.02 GB instead of 20 GiB.
+  context need ~3.02 GB instead of 20 GiB. The capacity has a measured price:
+  against BF16 KV, hq-e8-2b adds 0.018 KLD at 32K and 0.022 at 64K, half as
+  much again as the weights' own, and about a point of top-1
+  ([KLD against BF16](docs/findings/2026-09-24-kld-against-bf16.md)).
 - BF16 is retained, not deprecated: it is the format every correctness oracle
   runs against.
 - The GQA workspace zeroing is **dead work under hq** — every byte the next
@@ -242,8 +245,9 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   full-context snapshot/restore round trip is ~90 ms, about 100x cheaper than
   the re-prefill it replaces.
 - The retained checkpoints and prefixes live in **pinned host memory**, not in
-  VRAM, so the KV pool gets that room: **475K -> ~680K tokens at the default
-  load, at level throughput**
+  VRAM, so the KV pool gets that room: **475K -> ~680K tokens at level
+  throughput**, measured on the 262,144-token default load of 2026-09-29 (the
+  5090 profile's pool is now 944,832 tokens at a 917,504 context)
   ([retained slots on the host](docs/findings/2026-09-28-retained-slots-on-the-host.md)).
 - Below KV-RAM, a **KV-disk** tier takes the state of an evicted sequence and
   gives it back where it stopped: a ~1 GB spill takes ~0.63 s beside two
@@ -337,7 +341,8 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - On 144 authored decisions the declared options hold a median **99.8%** of the
   model's distribution, and the readout costs **~36.5 ms and zero decoded
   tokens** at 0.934 balanced accuracy on the layout first measured; moving the
-  evidence into the system block takes it to **0.963**.
+  evidence into the system block takes it to **0.963**, a difference of 4 of
+  the 144 rows.
 - `point` lands inside the target on four pre-registered sets of screenshots
   through the served endpoint: **236 of 240, 240 of 240, 120 of 120 and 60 of
   60** ([the sub-cell reading](docs/findings/2026-09-23-the-sub-cell-reading-holds-through-decide.md)).
