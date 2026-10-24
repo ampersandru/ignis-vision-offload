@@ -15,7 +15,7 @@
 <p align="center">
   <img alt="license Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-d94b1f?style=flat-square">
   <img alt="target SM120a" src="https://img.shields.io/badge/target-SM120a%20%2F%20RTX%205090%20%7C%20RTX%20PRO%206000%20%7C%2016%20GB%20RTX%2050-d94b1f?style=flat-square">
-  <img alt="models Qwen3.8-27B NVFP4, Qwen3.8-Flash-Next and Qwen-Image-2.1-Turbo" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%7C%20Flash--Next%20125B%20MoE%20%7C%20Qwen--Image--2.1-d94b1f?style=flat-square">
+  <img alt="models Qwen3.8-27B NVFP4 and trellis, Qwen3.8-Flash-Next and Qwen-Image-2.1-Turbo" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%2F%20trellis%20%7C%20Flash--Next%20125B%20MoE%20%7C%20Qwen--Image--2.1-d94b1f?style=flat-square">
   <img alt="API OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-d94b1f?style=flat-square">
   <br>
   <a href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer"><img alt="weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--27B%20NVFP4%20%2B%20DFlash2-ffb000?style=flat-square"></a>
@@ -88,8 +88,9 @@ weight, 12.5 GiB on disk, with the same DFlash2 drafter. On such a card the
 server picks the `rtx50-16gb` profile and that artifact by itself, 262,144
 tokens of context on two lanes, and the artifact passed four pre-registered
 quality gates against the NVFP4 it stands in for: its KL divergence from BF16
-is 0.77x the NVFP4's. It has not run on a 16 GB card yet. On the 5090 held to
-16 GiB it decodes **416 tok/s at one lane**; on a 5080 the estimate is 243-307
+is 0.77-0.82x the NVFP4's. It has not run on a 16 GB card yet. On the 5090 held
+to 16 GiB it decodes **416 tok/s at one lane** on coding prompts at 8K of
+context; on a 5080 the estimate is 243-307
 ([the 27B on a 16 GB card](#the-27b-on-a-16-gb-card)).
 
 The server switches between these models without a restart — a request that
@@ -122,8 +123,8 @@ speculative decoding and image input; the Prometheus
 metrics the Playground's Monitor reads are on by default. A bare `ignis-server`
 already gets DFlash2 and image input from the built-in `rtx5090` profile, with
 an 896K context (YaRN x3.5). On a 16 GB card, run a bare `ignis-server`
-instead: it takes the `rtx50-16gb` profile and fetches the 27B's 16 GB
-artifact, while the flags above ask for a longer context than that card's KV
+instead: it takes the `rtx50-16gb` profile and offers to fetch the 27B's
+16 GB artifact, while the flags above ask for a longer context than that card's KV
 pool holds. Flash-Next is `--model-id
 qwen3.8-flash-next`; the flags `make` serves it with are on its
 [weights card](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis).
@@ -411,17 +412,20 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - **Chosen by the card.** Under `--profile auto` a card under 20 GiB takes
   `rtx50-16gb` (262,144 tokens of context, two lanes, DFlash2 with 7 drafts,
   no image input), and the default id `qwen3.8-27b` resolves to the 16 GB
-  entry. On a 5090 held to 16 GiB the load fits with nothing adapted, and with
-  1 GiB less of it, too. With 3 GiB held by the desktop it lowers its context
-  to 65,536 instead of refusing, and `GET /v1/models` says what it adapted.
-- **Four quality gates, registered before the run, all passed**, each against
-  the NVFP4 the 27B serves on 32 GB: KL divergence from BF16 **0.77x** the
-  NVFP4's; MMLU-Pro 65.84% against BF16's 67.97% (exact McNemar p 0.31, not
+  entry. On a 5090 held to a 16 GiB budget the load fits with nothing
+  adapted, and at 15 GiB too; at 13 GiB it lowers its context to 65,536
+  instead of refusing, and `GET /v1/models` says what it adapted. On a real
+  card the budget is its free memory less the profile's 1,200 MiB headroom.
+- **Four quality gates, registered before the run, all passed**, against the
+  NVFP4 the 27B serves on 32 GB or against BF16: KL divergence from BF16
+  **0.77x** the NVFP4's at the same prefill chunk (0.82x against the NVFP4 at
+  its served chunk); MMLU-Pro 65.84% against BF16's 67.97% (exact McNemar p 0.31, not
   significantly lower); DFlash2 commits **0.996x** the NVFP4's tokens a round;
   reasoning loops on 9 of 32 turns against 14 of 32.
 - **Speed, not yet measured on a 16 GB card.** On the 5090 held to 16 GiB, one
-  lane decodes **416 tok/s at 8K** of context and 216 at 253K, two lanes 684
-  together. Estimated from those for one lane at 8K: 5080 **243-307**, 5070 Ti
+  lane decodes **416 tok/s** on coding prompts at 8K of context and 216 at
+  253K, two lanes 684 together at 8K. Agent turns accept fewer drafts a round, which
+  would scale these by about 0.58. Estimated from those for one lane at 8K: 5080 **243-307**, 5070 Ti
   **204-270**, 5060 Ti 16 GB **103-153 tok/s**. Prefill is the gap: 2.5x
   slower than the NVFP4's at 130K on the 5090.
 - `ignis-bench small-card` writes one record of a 16 GB card's load and speed

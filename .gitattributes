@@ -24,9 +24,10 @@ crates/core/tests/fixtures/flash_next/*.txt text eol=lf
 # tokens are the measured top-1 agreement's positions.
 crates/core/tests/fixtures/trellis_logits/*.txt text eol=lf
 
-# The operator catalog the alias tests split at its `models:` line
-# (download/catalog.rs): a CRLF checkout on a Windows runner leaves the split
-# nothing to find.
+# The operator catalog the alias tests split and edit at line ends
+# (download/catalog.rs: the line `models:`, the line `card_class: 16`): a
+# CRLF checkout on a Windows runner leaves the split nothing to find and the
+# edit nothing to remove, so a test would check a catalog it never built.
 crates/server/tests/fixtures/catalog/*.yaml text eol=lf
 
 # The image converter's committed work tree (crates/artifact/tests/qwen_image.rs): each
