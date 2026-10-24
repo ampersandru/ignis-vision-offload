@@ -107,6 +107,8 @@ fn the_document_lists_exactly_the_v1_surface() {
         "post /v1/images/edits",
         // Spec speech/02: the speech model's transcription.
         "post /v1/audio/transcriptions",
+        // Spec speech/03: its Realtime transcription session, a WebSocket.
+        "get /v1/realtime",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -691,4 +693,45 @@ fn the_document_describes_the_speech_model_and_its_route() {
     assert!(post["requestBody"]["content"]["multipart/form-data"].is_object());
     let models = document["paths"]["/v1/models"]["get"]["description"].as_str().unwrap();
     assert!(models.contains("kind: \"speech\"") && models.contains("top-level `speech` object"), "{models}");
+}
+
+/// Spec speech/03 AC 16: the Realtime transcription session is documented
+/// the way the Responses socket is: the upgrade, the auth, the events, the
+/// refusals and the extension.
+#[test]
+fn the_document_describes_the_realtime_transcription_session() {
+    let document = document();
+    let get = &document["paths"]["/v1/realtime"]["get"];
+    let description = get["description"].as_str().unwrap();
+    for said in [
+        "?intent=transcription",
+        "openai-insecure-api-key.<key>",
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "rate: 24000",
+        "16000",
+        "G.711",
+        "`server_vad` is refused",
+        "`semantic_vad`",
+        "transcription_session.update",
+        "`turn_detection: null`",
+        "session.ignis.provisional_tail",
+        "ignis.input_audio_transcription.provisional",
+        "speech.max_sessions",
+        "speech.max_clip_seconds",
+        "server.socket_idle_close",
+        "input_audio_buffer_commit_empty",
+        "model_kind_mismatch",
+    ] {
+        assert!(description.contains(said), "{said} missing");
+    }
+    for status in ["101", "400", "401", "503"] {
+        assert!(get["responses"][status].is_object(), "{status}");
+    }
+    assert_eq!(get["parameters"][0]["name"], "intent");
 }

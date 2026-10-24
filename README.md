@@ -395,6 +395,16 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   `prompt` and `keywords[]` give the model context, `language` forces the
   language. A field the server does not do (`srt`, word timestamps,
   diarization, `temperature` other than 0) is a `400` naming it.
+- **Live dictation** goes over OpenAI's Realtime transcription session,
+  `GET /v1/realtime?intent=transcription`: PCM16 appends at 24 kHz (16 kHz, the
+  model's own rate, as an extension), a manual commit, and the text as it
+  settles. `delta` events carry stable text only, so they join to the
+  transcript `completed` carries; a session that opts in with
+  `session.ignis.provisional_tail` also gets the tail the model may still
+  revise. The audio is encoded while it arrives, so a commit leaves only the
+  last seconds to decode. Up to four sessions (`speech.max_sessions`), served
+  ahead of the queued clips. See
+  [live transcription](docs/user/api/realtime-transcription.md).
 - **Requirements.** A CPU with AVX2 (Haswell, 2013, or later) and 1.4 to
   3.1 GB of RAM while the model is in use. WAV, FLAC, MP3 and AAC are decoded,
   and the Ogg and Matroska/WebM containers when they carry FLAC; Opus is not

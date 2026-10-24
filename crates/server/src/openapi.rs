@@ -63,7 +63,8 @@ completions and responses, plus `/v1/decide` (ADR 0034), which reads an \
 answer out of the model's own readout instead of generating one; and, with \
 the image model loaded (ADR 0050), OpenAI's image generations and edits; \
 and, with the speech model available (ADR 0066), OpenAI's audio \
-transcriptions, on the CPU beside the model on the card.\n\n\
+transcriptions and its Realtime transcription session, on the CPU beside \
+the model on the card.\n\n\
 Every operation below is served by the listener this page was loaded \
 from. When the server runs with `--server-api-key`, they answer `401` without a \
 bearer token — this page and the document do not, so *Authorize* is how \

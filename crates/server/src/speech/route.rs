@@ -250,7 +250,7 @@ struct Asked {
 }
 
 /// The one-line list of keywords after the prompt (spec speech/02 §`keywords[]`).
-fn context_of(prompt: Option<&str>, keywords: &[String]) -> String {
+pub(super) fn context_of(prompt: Option<&str>, keywords: &[String]) -> String {
     let prompt = prompt.map(str::trim).filter(|prompt| !prompt.is_empty());
     let line = keywords.iter().map(|keyword| keyword.trim()).filter(|keyword| !keyword.is_empty()).collect::<Vec<_>>().join(", ");
     match (prompt, line.is_empty()) {
@@ -310,37 +310,65 @@ fn checked(form: &Form) -> Result<Asked, Response> {
             }
         }
     }
-    for keyword in &form.keywords {
-        if keyword.contains(['<', '>', '\r', '\n']) {
-            return Err(bad_request_param("keywords[] must not contain `<`, `>` or a line break", "keywords[]"));
-        }
+    if let Some(refused) = refused_keyword(&form.keywords, "keywords[]") {
+        return Err(refused.response());
     }
     let language = forced_language(form)?;
     Ok(Asked { format, stream: form.stream, context: context_of(form.prompt.as_deref(), &form.keywords), language })
 }
 
+/// A field outside its rule, in words both surfaces send: the route as a
+/// `400`, the Realtime socket (spec speech/03) as an `error` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FieldRefusal {
+    pub message: String,
+    /// The field at fault, as the surface spells it.
+    pub param: String,
+}
+
+impl FieldRefusal {
+    fn response(&self) -> Response {
+        bad_request_param(&self.message, &self.param)
+    }
+}
+
+/// A keyword the system turn cannot carry (spec speech/02 §`keywords[]`):
+/// one holding `<`, `>` or a line break.
+pub(super) fn refused_keyword(keywords: &[String], param: &str) -> Option<FieldRefusal> {
+    keywords.iter().any(|keyword| keyword.contains(['<', '>', '\r', '\n'])).then(|| FieldRefusal {
+        message: format!("{param} must not contain `<`, `>` or a line break"),
+        param: param.to_owned(),
+    })
+}
+
 /// The language the form forces: `language`, or `languages[]` with one entry;
 /// several entries mean auto-detect, and both fields together are refused.
 fn forced_language(form: &Form) -> Result<Option<String>, Response> {
-    let named = form.language.as_deref().map(str::trim).filter(|language| !language.is_empty());
-    let listed: Vec<&str> = form.languages.iter().map(|language| language.trim()).filter(|language| !language.is_empty()).collect();
+    forced(form.language.as_deref(), &form.languages, "language", "languages[]").map_err(|refused| refused.response())
+}
+
+/// The language `named` (a `language` field) or `listed` (a `languages`
+/// field) force, by the model's English name: one entry of `listed` forces
+/// it, several mean auto-detect, and both fields together are refused. The
+/// refusals name the fields as `language_param` and `languages_param`.
+pub(super) fn forced(named: Option<&str>, listed: &[String], language_param: &str, languages_param: &str) -> Result<Option<String>, FieldRefusal> {
+    let named = named.map(str::trim).filter(|language| !language.is_empty());
+    let listed: Vec<&str> = listed.iter().map(|language| language.trim()).filter(|language| !language.is_empty()).collect();
     if named.is_some() && !listed.is_empty() {
-        return Err(bad_request_param("send `language` or `languages[]`, not both", "languages[]"));
+        return Err(FieldRefusal { message: format!("send `{language_param}` or `{languages_param}`, not both"), param: languages_param.to_owned() });
     }
     let find = |spelling: &str, param: &str| {
-        languages::find(spelling).ok_or_else(|| {
-            bad_request_param(
-                &format!("{param} `{spelling}` is not one of the speech model's 30 languages ({}), or their English names", languages::codes()),
-                param,
-            )
+        languages::find(spelling).ok_or_else(|| FieldRefusal {
+            message: format!("{param} `{spelling}` is not one of the speech model's 30 languages ({}), or their English names", languages::codes()),
+            param: param.to_owned(),
         })
     };
     let mut resolved = Vec::with_capacity(listed.len());
     for spelling in &listed {
-        resolved.push(find(spelling, "languages[]")?);
+        resolved.push(find(spelling, languages_param)?);
     }
     if let Some(spelling) = named {
-        return Ok(Some(find(spelling, "language")?.name.to_owned()));
+        return Ok(Some(find(spelling, language_param)?.name.to_owned()));
     }
     Ok(match resolved.as_slice() {
         [only] => Some(only.name.to_owned()),
@@ -350,11 +378,32 @@ fn forced_language(form: &Form) -> Result<Option<String>, Response> {
 
 // ── the model ───────────────────────────────────────────────────────────────
 
+/// Why a request's `model` is not the speech model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModelRefusal {
+    /// It names a text or image model (`model_kind_mismatch`); the words
+    /// name it, its kind and what the surface serves.
+    KindMismatch(String),
+    /// It names no model this server has (`model_not_found`).
+    NotFound(String),
+}
+
 /// Which model a request names (spec speech/02 §Which model): the speech
 /// model for no `model`, its served id or a compat name; `409
 /// model_kind_mismatch` for a text or image model's id, naming both kinds;
 /// `404 model_not_found` for anything else.
 fn check_model(server: &Server, group: &SpeechGroup, named: Option<&str>) -> Result<(), Response> {
+    model_named(server, group, named, "`model`").map_err(|refusal| match refusal {
+        ModelRefusal::NotFound(_) => unknown_model(server, named.unwrap_or_default().trim()),
+        ModelRefusal::KindMismatch(message) => {
+            error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "model_kind_mismatch", message, Some("model"))
+        }
+    })
+}
+
+/// Whether `named` reaches the speech model: both surfaces' rule. `field` is
+/// how the refusal spells the field (`` `model` ``).
+pub(super) fn model_named(server: &Server, group: &SpeechGroup, named: Option<&str>, field: &str) -> Result<(), ModelRefusal> {
     let Some(named) = named.map(str::trim).filter(|named| !named.is_empty()) else {
         return Ok(());
     };
@@ -371,21 +420,23 @@ fn check_model(server: &Server, group: &SpeechGroup, named: Option<&str>) -> Res
         }
     };
     let Some(kind) = kind.filter(|kind| *kind != ModelKind::Speech) else {
-        return Err(unknown_model(server, named));
+        return Err(ModelRefusal::NotFound(crate::api::unknown_model_message(server, named)));
     };
-    Err(error_response_naming(
-        StatusCode::CONFLICT,
-        "invalid_request_error",
-        "model_kind_mismatch",
-        format!(
-            "`model` names {named}, {}, and this route serves speech models; name the speech model, one of speech.compat_names, or none",
-            crate::api::a_kind(kind)
-        ),
-        Some("model"),
-    ))
+    Err(ModelRefusal::KindMismatch(format!(
+        "{field} names {named}, {}, and this route serves speech models; name the speech model, one of speech.compat_names, or none",
+        crate::api::a_kind(kind)
+    )))
 }
 
-fn unavailable(Unavailable(reason): Unavailable) -> Response {
+/// `503 engine_full` with the `Retry-After` `full` estimates: the queue, or
+/// the open Realtime sessions (spec speech/03).
+pub(super) fn engine_full(message: String, full: super::worker::Full) -> Response {
+    let mut response = error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", "engine_full", message);
+    response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
+    response
+}
+
+pub(super) fn unavailable(Unavailable(reason): Unavailable) -> Response {
     // No `Retry-After`: waiting changes nothing about a model that is off,
     // missing or unrunnable here.
     error_response(StatusCode::SERVICE_UNAVAILABLE, "server_error", "speech_unavailable", format!("the speech model is unavailable: {reason}"))
@@ -564,7 +615,7 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
     // route's own CPU work, and a refused request should not cost it. The
     // submit below checks again, the room being gone by then at times.
     if let Err(full) = server.speech.admit(group) {
-        return engine_full(group.max_queue, full);
+        return queue_full(group.max_queue, full);
     }
     let max_seconds = group.max_clip_seconds;
     // A decoder that panics on a malformed stream answers this request, not
@@ -613,18 +664,9 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
     let timeout = Timeout::of(&live, asked.stream);
     let deadline = timeout.from_now();
     if let Err(full) = server.speech.submit(Box::new(job), group) {
-        return engine_full(group.max_queue, full);
+        return queue_full(group.max_queue, full);
     }
-    let ending = Ending {
-        server: Arc::clone(&server),
-        cancelled,
-        executor: SpeechExecutorLabel::of(executor_label),
-        executor_name: executor_label,
-        variant,
-        audio_seconds,
-        received,
-        ended: false,
-    };
+    let ending = Ending::new(Arc::clone(&server), cancelled, executor_label, variant, audio_seconds, received);
 
     if let Some(deltas) = streamed {
         let (events, stream) = mpsc::unbounded_channel();
@@ -635,20 +677,15 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
 }
 
 /// `503 engine_full` with the `Retry-After` the queue estimated.
-fn engine_full(max_queue: u32, full: super::worker::Full) -> Response {
-    let mut response = error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "server_error",
-        "engine_full",
-        format!("the speech model has {max_queue} transcriptions waiting (speech.max_queue); retry in {} s", full.retry_after_secs),
-    );
-    response.headers_mut().insert(axum::http::header::RETRY_AFTER, HeaderValue::from(full.retry_after_secs));
-    response
+fn queue_full(max_queue: u32, full: super::worker::Full) -> Response {
+    let message = format!("the speech model has {max_queue} transcriptions waiting (speech.max_queue); retry in {} s", full.retry_after_secs);
+    engine_full(message, full)
 }
 
 /// A transcription's end: what is logged and counted once, and the job's
-/// cancel when the request goes away without one.
-struct Ending {
+/// cancel when the request goes away without one. A batch request's, and a
+/// Realtime item's from its commit (spec speech/03).
+pub(super) struct Ending {
     server: Arc<Server>,
     cancelled: Arc<AtomicBool>,
     executor: SpeechExecutorLabel,
@@ -660,7 +697,20 @@ struct Ending {
 }
 
 impl Ending {
-    fn end(&mut self, outcome: SpeechOutcome, transcript: Option<&Transcript>, computed: Option<Duration>) {
+    /// The end of a transcription of `audio_seconds` on `variant`, the wait
+    /// counted from `received` (the last byte, or a Realtime commit).
+    pub(super) fn new(
+        server: Arc<Server>,
+        cancelled: Arc<AtomicBool>,
+        executor_name: &'static str,
+        variant: String,
+        audio_seconds: f64,
+        received: Instant,
+    ) -> Self {
+        Self { server, cancelled, executor: SpeechExecutorLabel::of(executor_name), executor_name, variant, audio_seconds, received, ended: false }
+    }
+
+    pub(super) fn end(&mut self, outcome: SpeechOutcome, transcript: Option<&Transcript>, computed: Option<Duration>) {
         if std::mem::replace(&mut self.ended, true) {
             return;
         }

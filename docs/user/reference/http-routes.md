@@ -20,6 +20,7 @@ The routes as the server's own OpenAPI document lists them: a route cannot exist
 | Method | Path | What it does |
 |---|---|---|
 | POST | `/v1/audio/transcriptions` | A transcript from audio |
+| GET | `/v1/realtime` | A Realtime transcription session |
 
 ## chat
 

@@ -703,22 +703,24 @@ config_group! {
         /// Pin the speech model's weights in host memory instead of mapping
         /// the file. Read by the load, so a change holds from the next one.
         pinned_weights: Bool = false, NO_RULE, ALL, [Visible, Patchable];
-        /// Seconds with no transcription after which the speech model is
-        /// unloaded, its host memory given back; the next transcription loads
-        /// it again. 0 never unloads.
+        /// Seconds with no transcription, and no Realtime session open, after
+        /// which the speech model is unloaded, its host memory given back; the
+        /// next transcription loads it again. 0 never unloads.
         idle_unload: Secs = super::DEFAULT_MODEL_IDLE_UNLOAD_SECS, between(0, super::MAX_MODEL_IDLE_UNLOAD_SECS as i64), ALL,
             [Visible, Patchable];
-        /// How often a Realtime session's live transcript is refreshed while
-        /// audio arrives, in milliseconds. Read by the Realtime route (spec
-        /// speech/03), which is not served yet.
+        /// How often at most a Realtime session's live transcript is
+        /// refreshed while audio arrives, in milliseconds: each refresh sends
+        /// the new stable text, and the provisional tail to a session that
+        /// opted in. Best effort: a refresh is skipped while the session's
+        /// windows are still being computed. Read by every open session at
+        /// its next refresh.
         partial_interval_ms: Millis = 2000, between(100, 60_000), ALL, [Visible, Patchable];
         /// The tokens of a live transcript held back as provisional, the rest
-        /// being stable. Read by the speech executor with the Realtime route
-        /// (spec speech/01, 03), not served yet.
+        /// being stable: the tail a Realtime session that asks for it gets.
+        /// Read by the speech executor when it opens a session.
         rollback_tokens: Tokens = 10, between(0, 64), ALL, [Visible, Patchable];
-        /// The most Realtime sessions open at once; past it a session is
-        /// refused `503` with `Retry-After`. Read with the Realtime route
-        /// (spec speech/03), not served yet.
+        /// The most Realtime transcription sessions open at once; past it
+        /// the next is refused at the upgrade `503` with `Retry-After`.
         max_sessions: Sessions = 4, between(1, 64), ALL, [Visible, Patchable];
         /// The batch transcriptions that may wait behind the one running, in
         /// order; one more is refused `503 engine_full` with `Retry-After`.

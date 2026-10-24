@@ -136,7 +136,8 @@ impl SpeechExecutor for NoExecutor {
 /// session's transcript is the `words` it was scripted with: one more of them
 /// is stable per 8 s window pushed (128,000 samples), the last arriving only
 /// at the commit. It records what it was opened with, the samples it was
-/// pushed and what it was loaded with.
+/// pushed, what it was loaded with, and every call its sessions took, in
+/// order ([`FakeExecutor::calls`]).
 #[derive(Debug)]
 pub struct FakeExecutor {
     pub words: Vec<String>,
@@ -147,14 +148,19 @@ pub struct FakeExecutor {
     pub loads: AtomicUsize,
     pub unloads: AtomicUsize,
     pub fail_load: AtomicBool,
-    pub fail_commit: AtomicBool,
-    /// How long each call to `push` and `commit` takes.
+    /// Read by each session at its commit.
+    pub fail_commit: Arc<AtomicBool>,
+    /// How long each call to `push`, `partial` and `commit` takes.
     pub step_delay: Mutex<Duration>,
     pub opened: Mutex<Vec<SessionOpen>>,
     /// The length of every `push`, in order, over every session.
     pub pushed: Arc<Mutex<Vec<usize>>>,
     pub load_settings: Mutex<Vec<LoadSettings>>,
     pub load_files: Mutex<Vec<SpeechFiles>>,
+    /// Every call, in order, over every session: `open <n> <context>`,
+    /// `push <n> <samples>`, `partial <n>` and `commit <n>`, `n` counting
+    /// the sessions opened from 0.
+    pub calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeExecutor {
@@ -168,12 +174,13 @@ impl FakeExecutor {
             loads: AtomicUsize::new(0),
             unloads: AtomicUsize::new(0),
             fail_load: AtomicBool::new(false),
-            fail_commit: AtomicBool::new(false),
+            fail_commit: Arc::new(AtomicBool::new(false)),
             step_delay: Mutex::new(Duration::ZERO),
             opened: Mutex::new(Vec::new()),
             pushed: Arc::new(Mutex::new(Vec::new())),
             load_settings: Mutex::new(Vec::new()),
             load_files: Mutex::new(Vec::new()),
+            calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -189,6 +196,11 @@ impl FakeExecutor {
     pub fn samples_pushed(&self) -> usize {
         self.pushed.lock().unwrap().iter().sum()
     }
+
+    /// The calls so far ([`FakeExecutor::calls`]).
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
 }
 
 /// Samples in one 8 s window at 16 kHz.
@@ -198,10 +210,13 @@ struct FakeSession {
     words: Vec<String>,
     language: Option<String>,
     delay: Duration,
-    fail_commit: bool,
+    fail_commit: Arc<AtomicBool>,
     pushed: usize,
     stable_words: usize,
     log: Arc<Mutex<Vec<usize>>>,
+    /// Its number among the sessions opened, and the executor's call log.
+    index: usize,
+    calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl SpeechSession for FakeSession {
@@ -209,20 +224,24 @@ impl SpeechSession for FakeSession {
         std::thread::sleep(self.delay);
         self.pushed += samples.len();
         self.log.lock().unwrap().push(samples.len());
+        self.calls.lock().unwrap().push(format!("push {} {}", self.index, samples.len()));
         // One more stable word per window pushed, the last left to the commit.
         self.stable_words = (self.pushed / WINDOW_SAMPLES).min(self.words.len().saturating_sub(1));
         Ok(())
     }
 
     fn partial(&mut self) -> Result<Partial, SpeechError> {
+        self.calls.lock().unwrap().push(format!("partial {}", self.index));
+        std::thread::sleep(self.delay);
         let (stable, tail) = self.words.split_at(self.stable_words);
         let tail = tail.first().map(|word| format!(" {word}")).unwrap_or_default();
         Ok(Partial { stable: stable.join(" "), tail })
     }
 
     fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
+        self.calls.lock().unwrap().push(format!("commit {}", self.index));
         std::thread::sleep(self.delay);
-        if self.fail_commit {
+        if self.fail_commit.load(Ordering::SeqCst) {
             return Err(SpeechError("the fake executor was told to fail".to_owned()));
         }
         Ok(Transcript {
@@ -271,15 +290,20 @@ impl SpeechExecutor for FakeExecutor {
         }
         // A forced language is what the model reports it heard.
         let language = open.language.clone().or_else(|| self.language.clone());
-        self.opened.lock().unwrap().push(open);
+        let mut opened = self.opened.lock().unwrap();
+        let index = opened.len();
+        self.calls.lock().unwrap().push(format!("open {index} {}", open.context));
+        opened.push(open);
         Ok(Box::new(FakeSession {
             words: self.words.clone(),
             language,
             delay: *self.step_delay.lock().unwrap(),
-            fail_commit: self.fail_commit.load(Ordering::SeqCst),
+            fail_commit: Arc::clone(&self.fail_commit),
             pushed: 0,
             stable_words: 0,
             log: Arc::clone(&self.pushed),
+            index,
+            calls: Arc::clone(&self.calls),
         }))
     }
 }

@@ -28,13 +28,18 @@ impl ResponseIds {
     pub(crate) fn next_suffix(&self) -> String {
         match self {
             Self::Counted(next) => format!("{:032x}", next.fetch_add(1, Ordering::Relaxed)),
-            Self::Random => {
-                let mut bytes = [0u8; 16];
-                getrandom::fill(&mut bytes).expect("the OS random source");
-                bytes.iter().map(|b| format!("{b:02x}")).collect()
-            }
+            Self::Random => random_suffix(),
         }
     }
+}
+
+/// 128 bits from the OS random source as 32 lowercase hex digits: a random
+/// response's suffix, and a Realtime session's and its items' (spec
+/// speech/03).
+pub(crate) fn random_suffix() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the OS random source");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Write the `ignis.response.admitted` line: `response_id` is served by the

@@ -14,6 +14,9 @@ served through a [model switch](model-switching.md), with the text model
 [unloaded for being idle](idle-unload.md), and with the image model loaded; it
 does not count as a use of the text model, so it never keeps it loaded.
 
+To transcribe while the person speaks, the faster path on the CPU, open a
+[live transcription](realtime-transcription.md) session instead.
+
 ## Turning it on
 
 The speech model is **on when its files are on disk**, and nothing downloads
@@ -27,7 +30,8 @@ ignis-server model download qwen3-asr-1.7b
 model with a Q4_K_M decoder; a catalog id picks another entry (`qwen3-asr-1.7b-q8`,
 2.3 GiB, or `qwen3-asr-0.6b`, 0.9 GiB); `off` turns it
 off. It is loaded by the first request, about a second or two of delay, and
-unloaded after `speech.idle_unload` seconds (300) without a transcription.
+unloaded after `speech.idle_unload` seconds (300) without a transcription
+or a [live session](realtime-transcription.md) open.
 `GET /v1/models` says whether it can serve:
 
 ```json
@@ -113,8 +117,9 @@ Aider needs only `OPENAI_API_BASE=http://127.0.0.1:8000/v1`: it sends
 
 ## Waiting and refusing
 
-One compute worker serves the speech model. Realtime sessions take precedence;
-transcription requests are served first in, first out. The wait is proportional
+One compute worker serves the speech model. [Live transcription](realtime-transcription.md)
+sessions take precedence; transcription requests are served first in, first out,
+in the gaps. The wait is proportional
 to the audio: on a 10-thread desktop CPU (4.8 times real time) a minute of speech takes some twelve seconds,
 and a 20-minute clip four minutes or so. Up to `speech.max_queue` (4) requests
 wait behind the one running; the next is `503 engine_full` with a `Retry-After`

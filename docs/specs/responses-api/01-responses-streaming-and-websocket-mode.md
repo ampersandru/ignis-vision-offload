@@ -418,7 +418,9 @@ the event module's internals or the cache's layout.
   (`text.format` `json_schema`), reasoning summaries and
   `encrypted_content` (ADR 0052 later serves it: the reasoning the model saw,
   in clear), logprobs.
-- The Realtime API (`/v1/realtime`): a different, audio-first protocol.
+- The Realtime API's conversation sessions (`/v1/realtime`): a different,
+  audio-first protocol. Its transcription subset,
+  `/v1/realtime?intent=transcription`, is served by spec speech/03.
 - The HTTP 426 fallback that makes Codex drop to HTTP: not needed once the
   socket is served.
 - Any WebSocket for chat completions: no standard exists.

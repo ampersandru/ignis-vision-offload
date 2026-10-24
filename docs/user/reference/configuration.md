@@ -1275,7 +1275,7 @@ Pin the speech model's weights in host memory instead of mapping the file. Read 
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-Seconds with no transcription after which the speech model is unloaded, its host memory given back; the next transcription loads it again. 0 never unloads.
+Seconds with no transcription, and no Realtime session open, after which the speech model is unloaded, its host memory given back; the next transcription loads it again. 0 never unloads.
 
 ### `speech.partial_interval_ms`
 
@@ -1289,7 +1289,7 @@ Seconds with no transcription after which the speech model is unloaded, its host
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-How often a Realtime session's live transcript is refreshed while audio arrives, in milliseconds. Read by the Realtime route (spec speech/03), which is not served yet.
+How often at most a Realtime session's live transcript is refreshed while audio arrives, in milliseconds: each refresh sends the new stable text, and the provisional tail to a session that opted in. Best effort: a refresh is skipped while the session's windows are still being computed. Read by every open session at its next refresh.
 
 ### `speech.rollback_tokens`
 
@@ -1303,7 +1303,7 @@ How often a Realtime session's live transcript is refreshed while audio arrives,
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The tokens of a live transcript held back as provisional, the rest being stable. Read by the speech executor with the Realtime route (spec speech/01, 03), not served yet.
+The tokens of a live transcript held back as provisional, the rest being stable: the tail a Realtime session that asks for it gets. Read by the speech executor when it opens a session.
 
 ### `speech.max_sessions`
 
@@ -1317,7 +1317,7 @@ The tokens of a live transcript held back as provisional, the rest being stable.
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The most Realtime sessions open at once; past it a session is refused `503` with `Retry-After`. Read with the Realtime route (spec speech/03), not served yet.
+The most Realtime transcription sessions open at once; past it the next is refused at the upgrade `503` with `Retry-After`.
 
 ### `speech.max_queue`
 

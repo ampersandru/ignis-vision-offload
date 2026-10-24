@@ -60,7 +60,7 @@ decided by the owner on 2026-10-24, cited as `(owner, 2026-10-24)`.
 | `audio.input.transcription.prompt`, `.keywords` | the context, prefilled at once | as spec 02 | Q15, Q23, Q50 |
 | `audio.input.transcription.language`, `.languages` | as spec 02 | as spec 02 | Q6, Q23, Q51 |
 | `audio.input.turn_detection` | `null`: manual commit | in phase 1, `server_vad` (spec 05 serves it from phase 2); `semantic_vad` always | Q20, Q22, Q33, Q54, Q56 |
-| `audio.input.transcription.delay` | inert: the cadence is `speech.partial_interval_ms` | — | owner, 2026-10-24 |
+| `audio.input.transcription.delay` | inert: the cadence is at most every `speech.partial_interval_ms` | — | owner, 2026-10-24 |
 | `audio.input.noise_reduction` | `null` | `near_field`, `far_field` | owner, 2026-10-24 |
 | `include` | — | `item.input_audio_transcription.logprobs` | owner, 2026-10-24 |
 | `session.ignis.provisional_tail` | `true`: the provisional-tail opt-in, below | — | Q43; owner, 2026-10-24 |
@@ -107,8 +107,15 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
 
 - Appended audio is resampled when it is 24 kHz and fed to 01's session:
   - each complete 8 s window is encoded and prefilled at once;
-  - every `speech.partial_interval_ms` a partial decode runs. Its new stable
-    text goes out as `delta`, its tail as the provisional event.
+  - at most every `speech.partial_interval_ms` a partial decode runs. Its new
+    stable text goes out as `delta`, its tail as the provisional event.
+- **Partials are best effort** (Q74; owner, 2026-10-24). On 4 cores a partial
+  every 2 s did not keep up (1.4x real time for every variant): each one
+  re-encodes the incomplete window and re-prefills the whole stable text,
+  while the window prefill itself keeps up. So a partial is skipped, never
+  queued, while the session's previous partial or a pending window is still
+  in the worker, and `speech.partial_interval_ms` is a minimum interval.
+  Windows and the commit are never delayed behind a partial.
 - `commit`: `committed`, then 01's `commit()`. Whatever stable text is left
   goes out as `delta`, then `completed`.
 - The next item reuses the session's prefilled context (01's prefix cache)
@@ -181,6 +188,11 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
 16. Spec responses-api/01 `:421`, the OpenAPI document and the README are
     amended as above (Q20).
 17. `cargo test` passes workspace-wide (AGENTS.md, not a grill decision).
+18. Partials are best effort: at most every `speech.partial_interval_ms`, and
+    skipped, never queued, while the session's previous partial or a pending
+    window is still in the worker. With a worker that is behind, windows and
+    the commit are never delayed by partials, and the deltas joined still
+    equal `completed.transcript` (Q74; owner, 2026-10-24).
 
 ## Out of Scope
 
@@ -188,3 +200,80 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
   (Q22).
 - G.711 (Q21), WebRTC, and Realtime conversation sessions (Q20).
 - The GPU loan: spec 06, phase 3 (Q56).
+
+## As built (GitHub #353)
+
+Built on `speech-353` against the scripted executor (`FakeExecutor`), in
+`crates/server/src/speech/realtime/` (the socket, `config.rs` for
+`session.update`, `pcm.rs` for the audio). Where the build decided something
+the spec left open, or differs from it:
+
+- **The seam is unchanged.** Each item is one executor session (spec 01 §4):
+  opened when the socket opens and again right after each commit, so the
+  next item's context is prefilled before its first append (AC 9), and the
+  commit's own unit pushes the rest and decodes, opening nothing. A
+  `session.update` that changes the context or the forced language reopens
+  the current item's session when it holds no audio; with audio, the change
+  applies from the next item. `speech.rollback_tokens` is a setting the
+  adapter to `ignis-speech` passes, not a §4 operation: not in the trait.
+- **The worker has a lane per session.** Every executor call is one unit
+  queued in the session's lane, in order (an open, a window pushed as soon as
+  one is in, a refresh, the commit). The worker takes the lanes in turn, one
+  unit each, and every queued unit runs before the next batch window, so a
+  session with a backlog is not interleaved with a batch job (AC 14). The
+  executor session lives in a slot the units share; they never run at once.
+- **Resampling** reuses the transcription route's streaming windowed-sinc
+  resampler (`speech/audio.rs`, #352) instead of the `rubato` crate the spec
+  names: it is already tested for pitch, length and aliasing, and a second
+  resampler would be a second dependency doing the same job. Swapping in
+  `rubato` touches `pcm.rs` alone; the owner's call.
+- **Items.** An item gets its `item_id` at its first append, so deltas carry
+  it before the commit. An item over `speech.max_clip_seconds` or past its
+  deadline stops being transcribed at once (its audio goes nowhere after
+  that), an `error` says why at once (no `item` field carries it: the item is
+  not committed yet), and its `failed` comes after its `committed`, at the
+  commit; an item already committed gets `failed` at once. A model that will not load fails
+  the item it was opened for, at that item's commit (`speech_unavailable`);
+  the next item tries the load again. An empty commit is one with no sample
+  since the last (OpenAI asks 100 ms).
+- **`session.update`** merges field by field: a field left out keeps its
+  value, `null` is the field's default (`transcription: null` resets the
+  whole transcription object), and one refused field refuses the update.
+  `transcription.delay` is checked against OpenAI's five values and echoed.
+  Refusals are `error` events with code `unsupported_value` for what OpenAI
+  serves and ignis does not, `invalid_request_error` for a malformed value,
+  `model_kind_mismatch`/`model_not_found` for the model; `param` is the
+  field's full path (`session.audio.input.format.rate`), and `error.event_id`
+  the client event's. Every server event carries an `event_id`.
+- **The provisional tail** is sent after a refresh that changed it, and `""`
+  when the item completes, fails or is cleared, if a tail was shown.
+- **Refreshes (AC 18).** A refresh falls due every
+  `speech.partial_interval_ms`; it is queued only when audio came since the
+  last one and nothing of the session's is in the worker (no window, no
+  refresh, no commit, no open). One that falls due while the worker holds
+  any is skipped, not deferred: the next chance is a whole interval later.
+- **The upgrade**, in order: not a WebSocket upgrade `400`; no
+  `intent=transcription`, or a `model` in the URL, `400` naming `intent`; the
+  speech model unavailable `503 speech_unavailable`; `speech.max_sessions`
+  open `503 engine_full` with `Retry-After: 1` (room frees when a person ends
+  a session). The browser's subprotocol `realtime` is selected back, the
+  credential never. Frames are capped at 16 MiB (the text body limit); an
+  append whose `audio` holds more than 15 MiB of base64 is an `error`.
+- **Loading.** An open session holds the speech model: the worker's idle
+  clock does not unload it while any session is open, and runs again from
+  the end of the last (`speech.idle_unload` counts "no transcription and no
+  session"). Opening a session loads whatever model the text model's idle
+  clock unloaded, the image model too: dictation feeds the image studio as
+  well (spec 04).
+- **Logs and metrics.** Each committed item writes one
+  `ignis.speech.transcription` line and counts in the existing families, its
+  wait from the commit; an item still being transcribed when the socket closes
+  counts as cancelled. No new family, so the Monitor and ADR 0017 are
+  unchanged. The idle close logs `ignis.ws.idle_closed`, the Responses
+  sockets' event, now with a `route` field (`responses`, `realtime`). A
+  transcript that does not begin with the stable text sent (an executor
+  breaking spec 01 §4) is still sent, with a WARN
+  `ignis.speech.stable_text_revised`.
+- **Open:** AC 5 on the owner's eleven dictations and AC 13 (commit to
+  `completed` in 2 s for 60 s of Italian on the i9, and the 4-core figure)
+  need the real executor and its adapter, the integration step after #351.
