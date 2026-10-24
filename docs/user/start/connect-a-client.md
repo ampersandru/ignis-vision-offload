@@ -110,9 +110,27 @@ silent drop; if an SDK sends one, that error says which
 ## Coding agents: opencode and others
 
 Point the agent's OpenAI-compatible provider at the base URL above, give it the
-key if you set one, and name the served id as its model. The repository holds
-no opencode configuration file to copy, so use that tool's own documentation
-for where those three values go.
+key if you set one, and name the served id as its model. For opencode, a
+provider in `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ignis": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ignis (local)",
+      "options": { "baseURL": "http://127.0.0.1:8000/v1" },
+      "models": { "qwen3.8-27b": { "name": "Qwen3.8-27B", "tool_call": true } }
+    }
+  },
+  "model": "ignis/qwen3.8-27b",
+  "small_model": "ignis/qwen3.8-27b"
+}
+```
+
+With a key, add `"apiKey": "{env:IGNIS_SERVER_API_KEY}"` to `options`. Both
+`model` and `small_model` name the same id, for the reason below.
 
 Two things matter for agents:
 
