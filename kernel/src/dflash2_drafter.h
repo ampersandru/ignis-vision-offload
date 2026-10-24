@@ -50,7 +50,22 @@ void ignis_dflash2_append_context(ignis_model *model, ignis_seq_pool *pool,
 // Every address is model- or pool-owned and the attention envelope is the
 // load's whole context, so the same call runs eagerly and records into a
 // verify graph.
-void ignis_dflash2_propose(ignis_model *model, ignis_seq_pool *pool, std::uint32_t width);
+//
+// GitHub #267: with a `readout`, the forward also copies what its selector
+// read -- the candidates, their unary logits, the transition scores and,
+// when asked, the proposal head's logits -- into those host buffers, on the
+// model's stream (the caller synchronizes). Test-only: only
+// `ignis_dflash2_readout` (kernel/include/ignis_dflash2_readout.h) passes
+// one, eagerly; the verify round and its graphs pass none, so what they run
+// and record is unchanged. A null member skips that copy.
+struct Dflash2ProposalReadout {
+  std::int32_t *candidate_ids = nullptr; // I32 [width][k][top_k]
+  float *candidate_logits     = nullptr; // F32 [width][k][top_k]
+  float *scores               = nullptr; // F32 [width][k][top_k (pred)][top_k (succ)]
+  std::uint16_t *head_logits  = nullptr; // BF16 [width * k][head rows]
+};
+void ignis_dflash2_propose(ignis_model *model, ignis_seq_pool *pool, std::uint32_t width,
+                           const Dflash2ProposalReadout *readout = nullptr);
 
 // The verify round's half of the append: the committed columns' feature
 // taps (`model->verify->features`, written by the traversal) at the round's

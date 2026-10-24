@@ -1,0 +1,112 @@
+/* ignis kernel leaf: the DFlash2 proposal readout -- a test-only measurement
+ * seam (GitHub #267, docs/specs/runtime/08-dflash2-sampled-acceptance.md).
+ *
+ * NOT part of the serving path, and no serving code calls it. It exists so a
+ * replay of recorded agent turns can read, at any sequence state, what the
+ * drafter would propose if a verify round started there -- without running
+ * the round, which would commit what the target samples instead of the
+ * recorded text. The precedent is `ignis_prefill_options::out_span_logits`:
+ * a readout beside the program, never a second way to generate.
+ *
+ * `ignis_dflash2_readout` runs the drafter's forward
+ * (`ignis_dflash2_propose`, kernel/src/dflash2_drafter.h) for one sequence,
+ * eagerly, at width 1: the query block is `anchor` and `extent` mask tokens
+ * at the sequence's frontier `position + j`, over the sequence's own window.
+ * That is the forward a verify round runs for this sequence with `anchor` as
+ * its pending token and `extent` as its extent -- the same ops on the same
+ * inputs, so the same drafts a width-1 round would verify. A negative
+ * `anchor` takes the sequence's own pending token: the proposals the next
+ * round will verify. It copies out:
+ *
+ *   out_drafts            I32 [k]         the selector walk's drafts
+ *   out_candidate_ids     I32 [k][16]     each draft column's top-16 token ids
+ *   out_candidate_logits  F32 [k][16]     their proposal-head logits (the
+ *                                         selector's unary term), same order
+ *   out_scores            F32 [k][16][16] the selector's transition scores:
+ *                                         `[s][pred][succ]`, the score of
+ *                                         successor candidate `succ` at column
+ *                                         `s` after predecessor candidate
+ *                                         `pred` of column `s - 1` (every
+ *                                         `pred` row of column 0 follows the
+ *                                         anchor, so they are equal)
+ *   out_drafter_logits    BF16 [k][vocab] the proposal head's logits over the
+ *                                         whole vocabulary, or NULL to skip
+ *
+ * `k` is the load's draft window. Columns past `extent` are still computed
+ * (the forward always runs `k` draft columns; the block's masked tail
+ * repeats its last valid position) and copied out as they are.
+ *
+ * It writes nothing any sequence reads: the round's staging buffers it fills
+ * (anchors, base positions, valid columns, the lane's slot, the drafts) are
+ * restaged by every round before use, and the drafter's scratch holds
+ * nothing across calls. The sequence's window, KV and frontiers are read
+ * only. A sequence carrying an extent-0 round's anchor taps (GitHub #157,
+ * `ignis_seq::dflash2_pending`) is refused: its window is one column behind
+ * what a round would read, and closing that gap would write the window.
+ * Likewise a sequence whose window frontier trails its program frontier.
+ *
+ * Returns 0, or -1 with `ignis_dflash2_readout_last_error()` set: a null
+ * argument, a size this leaf does not recognize, a load without the drafter,
+ * a pool built for another backend, a sequence from another pool, an
+ * `extent` past the window, or a kernel error. Synchronous: the outputs are
+ * filled when it returns. Not thread-safe with any other call on the model.
+ */
+#ifndef IGNIS_DFLASH2_READOUT_H
+#define IGNIS_DFLASH2_READOUT_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct ignis_model;
+struct ignis_seq_pool;
+struct ignis_seq;
+
+/* The selector's candidates per draft column (`kDflash2SelectorTopK`). */
+#define IGNIS_DFLASH2_READOUT_TOP_K 16
+
+struct ignis_dflash2_readout {
+  uint32_t size; /* sizeof(struct ignis_dflash2_readout) */
+  int32_t anchor;
+  uint32_t extent;
+  int32_t *out_drafts;
+  int32_t *out_candidate_ids;
+  float *out_candidate_logits;
+  float *out_scores;
+  uint16_t *out_drafter_logits; /* or NULL */
+};
+
+#ifdef __cplusplus
+/* Beside the `size` check, both sides pin the layout (here, and
+ * crates/core/src/dflash2_readout.rs's mirror test). */
+static_assert(sizeof(struct ignis_dflash2_readout) == 56 &&
+                  offsetof(struct ignis_dflash2_readout, out_drafts) == 16 &&
+                  offsetof(struct ignis_dflash2_readout, out_drafter_logits) == 48,
+              "ignis_dflash2_readout drifted from crates/core/src/dflash2_readout.rs IgnisDflash2Readout");
+#endif
+
+int32_t ignis_dflash2_readout(struct ignis_model *model, struct ignis_seq_pool *pool,
+                              const struct ignis_seq *seq, const struct ignis_dflash2_readout *readout);
+
+/* The most recent verify round's target logits, BF16 `[lanes][k + 1][vocab]`
+ * for its first `lanes` lanes: row `j` of lane `i` is the target's
+ * distribution after that lane's column `j` -- its anchor, then its drafts in
+ * order (columns past the lane's extent repeat the anchor at the last valid
+ * position). What the round's accept read, as it read it; valid until the
+ * next verify round on this model. Any load with a draft window (under the
+ * drafter or verify-only), on either 27B body (GitHub #339: the round's head
+ * is the trellis one on a trellis body); `lanes` at most the load's decode
+ * lanes (GitHub #336), which the round's logits are sized for. Synchronous.
+ * Returns 0, or -1 with `ignis_dflash2_readout_last_error()` set. */
+int32_t ignis_verify_readout_logits(struct ignis_model *model, uint32_t lanes, uint16_t *out_logits);
+
+const char *ignis_dflash2_readout_last_error(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* IGNIS_DFLASH2_READOUT_H */

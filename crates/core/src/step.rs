@@ -107,6 +107,10 @@ pub(crate) mod ffi {
         /// every row its head produced (`[batch][vocab]`, a verify round
         /// `[batch][window + 1][vocab]`); null asks for nothing.
         pub out_logits: *mut u16,
+        /// GitHub #267, test-only: a verify round's teacher forcing, host
+        /// `[batch][window + 1]`, or null -- see
+        /// [`super::decode_program_verify_forced`].
+        pub forced_tokens: *const i32,
     }
 
     /// 1:1 with `struct ignis_prefill_options` (ADR 0016, P2-02, GitHub
@@ -1172,6 +1176,7 @@ fn program_round(
         out_drafts: std::ptr::null_mut(),
         out_reasoning_redirected: redirected.as_mut_ptr(),
         out_logits,
+        forced_tokens: std::ptr::null(),
     };
     let mut tokens = vec![-1; handles.len()];
     let rc = unsafe {
@@ -1441,7 +1446,46 @@ pub fn decode_program_verify_runs(
     lanes: &[VerifyLane<'_>],
     window: u32,
 ) -> Result<Vec<LaneVerifyRun>, String> {
-    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut())
+    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut(), std::ptr::null())
+}
+
+/// [`decode_program_verify_runs`], **teacher-forced** (GitHub #267): the
+/// measurement seam that replays a recorded turn through real verify rounds.
+/// No serving path calls it.
+///
+/// `forced[i]` is lane `i`'s recorded text after its anchor, `window + 1`
+/// tokens (pad past the recording's end with `-1`, which no draft equals).
+/// The round's pass is the ordinary one -- on a DFlash2 load the drafter
+/// proposes from the lane's window -- but the lane accepts the leading drafts
+/// its recorded text agrees with (at most its extent) and takes the recorded
+/// token after them as the correction, so the committed run is the
+/// recording's, and the sequence stands where a round that sampled that text
+/// would have left it. The recorded token after the run becomes the pending
+/// anchor. Every lane must be greedy: the round draws nothing.
+pub fn decode_program_verify_forced(
+    model: &Model,
+    pool: &SeqPool,
+    sequences: &mut [&mut Seq<'_>],
+    lanes: &[VerifyLane<'_>],
+    window: u32,
+    forced: &[&[i32]],
+) -> Result<Vec<LaneVerifyRun>, String> {
+    if forced.len() != sequences.len() {
+        return Err(format!(
+            "decode_program_verify_forced: {} forced runs for {} sequences",
+            forced.len(),
+            sequences.len()
+        ));
+    }
+    let columns = window as usize + 1;
+    if let Some(index) = forced.iter().position(|run| run.len() != columns) {
+        return Err(format!(
+            "decode_program_verify_forced: lane {index} forces {} tokens, not window + 1 = {columns}",
+            forced[index].len()
+        ));
+    }
+    let flat: Vec<i32> = forced.iter().flat_map(|run| run.iter().copied()).collect();
+    verify_round(model, pool, sequences, lanes, window, std::ptr::null(), std::ptr::null_mut(), flat.as_ptr())
 }
 
 /// GitHub #307 (spec flash-next/07): one Flash-Next verify round at the
@@ -1475,7 +1519,7 @@ pub fn decode_flash_next_verify(
     }
     let out_logits =
         out_logits_ptr(out_logits, sequences.len() * columns, flash_next_vocab(), "decode_flash_next_verify")?;
-    verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr(), out_logits)
+    verify_round(model, pool, sequences, lanes, window, ngram_rows.as_ptr(), out_logits, std::ptr::null())
 }
 
 fn verify_round(
@@ -1486,6 +1530,7 @@ fn verify_round(
     window: u32,
     ngram_rows: *const u8,
     out_logits: *mut u16,
+    forced_tokens: *const i32,
 ) -> Result<Vec<LaneVerifyRun>, String> {
     if lanes.len() != sequences.len() {
         return Err(format!(
@@ -1553,6 +1598,7 @@ fn verify_round(
         out_drafts: next_drafts.as_mut_ptr(),
         out_reasoning_redirected: redirected.as_mut_ptr(),
         out_logits,
+        forced_tokens,
     };
     let rc = unsafe {
         ffi::ignis_program_decode(
@@ -1978,6 +2024,17 @@ pub fn program_stats(model: &Model, pool: &SeqPool) -> Result<ProgramStats, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GitHub #267: `ignis_decode_options` with the teacher forcing appended
+    /// last, so every field the serving path sets keeps its offset. uint32
+    /// size and window, then ten pointers; the leaf pins the same numbers
+    /// (kernel/include/ignis_step.h) and refuses any other `size`.
+    #[test]
+    fn the_decode_options_mirror_is_the_leaf_structs_layout() {
+        assert_eq!(std::mem::size_of::<ffi::IgnisDecodeOptions>(), 88);
+        assert_eq!(std::mem::offset_of!(ffi::IgnisDecodeOptions, out_logits), 72);
+        assert_eq!(std::mem::offset_of!(ffi::IgnisDecodeOptions, forced_tokens), 80);
+    }
 
     /// GitHub #329 item 5: the leaf writes exactly `rows` rows of the
     /// vocabulary through `out_logits`, so a slice of any other length is

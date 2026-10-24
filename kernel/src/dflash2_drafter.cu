@@ -115,7 +115,8 @@ void ignis_dflash2_append_context(ignis_model *model, ignis_seq_pool *pool,
   }
 }
 
-void ignis_dflash2_propose(ignis_model *model, ignis_seq_pool *pool, std::uint32_t width) {
+void ignis_dflash2_propose(ignis_model *model, ignis_seq_pool *pool, std::uint32_t width,
+                           const Dflash2ProposalReadout *readout) {
   IgnisVerifyRound &verify    = *model->verify;
   ninfer::DeviceArena &arena  = *verify.drafter_scratch;
   ninfer::DeviceArena::Scope scope = arena.scope();
@@ -300,6 +301,26 @@ void ignis_dflash2_propose(ignis_model *model, ignis_seq_pool *pool, std::uint32
                                        scores, stream);
   ninfer::Tensor drafts(verify.drafts->p, ninfer::DType::I32, {k, batch, 1, 1});
   ninfer::ops::dflash2_selector_walk(scores, candidates, drafts, stream);
+
+  // GitHub #267: the measurement's readout, device to host on this stream.
+  // Every tensor is contiguous with the lane outermost, so each is one copy.
+  if (readout != nullptr) {
+    const auto copy_out = [&](void *host, const ninfer::Tensor &from, const char *what) {
+      if (host == nullptr) {
+        return;
+      }
+      const cudaError_t copied =
+          cudaMemcpyAsync(host, from.data, from.bytes(), cudaMemcpyDeviceToHost, stream);
+      if (copied != cudaSuccess) {
+        throw std::runtime_error(std::string("cudaMemcpyAsync(readout ") + what +
+                                 ") failed: " + cudaGetErrorString(copied));
+      }
+    };
+    copy_out(readout->candidate_ids, candidate_ids, "candidates");
+    copy_out(readout->candidate_logits, unary, "candidate logits");
+    copy_out(readout->scores, scores, "scores");
+    copy_out(readout->head_logits, logits, "head logits");
+  }
 }
 
 void ignis_dflash2_append_round(ignis_model *model, ignis_seq_pool *pool, std::uint32_t width) {

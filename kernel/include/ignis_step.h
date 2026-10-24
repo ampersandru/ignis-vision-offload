@@ -575,7 +575,28 @@ struct ignis_decode_options {
    * permitted set (its mask writes into the rows). No serving path sets it:
    * NULL costs nothing, a set one costs one copy before the round's synchronize. */
   uint16_t *out_logits;
+  /* GitHub #267 -- test-only, the acceptance replay of recorded turns; no
+   * serving caller sets it. Teacher forcing for a verify round: host
+   * `[batch_size][speculative_window + 1]`, lane i's recorded tokens after
+   * its anchor. The round runs its pass unchanged (the drafter's proposals,
+   * every column's K/V, taps and records) and then, instead of the accept
+   * kernel's verdict, lane i accepts the leading drafts equal to its forced
+   * tokens (at most its extent) and takes the forced token after them as the
+   * correction: the committed run is the recorded text, cut and committed as
+   * any run is. Only greedy lanes may be forced (the round draws nothing),
+   * and only a verify round. NULL: the accept kernel decides, as always. */
+  const int32_t *forced_tokens; /* [batch_size][speculative_window + 1], or NULL */
 };
+
+#ifdef __cplusplus
+/* Beside the `size` check, both sides pin the layout (here, and
+ * crates/core/src/step.rs's mirror test): GitHub #267 appended
+ * `forced_tokens` last, after every field the serving path sets. */
+static_assert(sizeof(struct ignis_decode_options) == 88 &&
+                  offsetof(struct ignis_decode_options, out_logits) == 72 &&
+                  offsetof(struct ignis_decode_options, forced_tokens) == 80,
+              "ignis_decode_options drifted from crates/core/src/step.rs IgnisDecodeOptions");
+#endif
 
 /* Complete one decode round for a batch of sequence handles.  Each output is
  * the successor made ready by prefill/the prior round; that token is
