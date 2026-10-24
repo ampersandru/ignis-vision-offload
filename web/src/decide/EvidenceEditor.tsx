@@ -1,10 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { imageFromFile, type PromptImage } from "../conversation/images.ts";
+import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
+import { dictationHint } from "../speech/dictation.ts";
+import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
 import { caption, field } from "../ui/classes.ts";
 import { IconClose, IconImage, IconPaperclip } from "../ui/icons.tsx";
 import { Lightbox } from "../ui/Lightbox.tsx";
 import { type FileSource, formatBytes } from "./evidenceFile.ts";
-import { type Evidence, type EvidenceMode, locateTarget, restore, setAside, type Spare } from "./model.ts";
+import { type Evidence, type EvidenceMode, locateTarget, restore, setAside, type Spare, typedEvidence } from "./model.ts";
 import { stripOf, STRIP_WIDTH } from "./strip.ts";
 import { Strip } from "./Strip.tsx";
 
@@ -22,6 +25,9 @@ import { Strip } from "./Strip.tsx";
 // its errors are, and how it begins and ends. A textarea holding a
 // many-megabyte log would put the whole file between every key and its
 // character, and nobody reads a log by scrolling a textarea anyway.
+//
+// A text evidence typed here takes dictation, its mic on the label row and its
+// strip under the field (spec speech/04); JSON and a file take none.
 
 const MODES: { mode: EvidenceMode; label: string; hint: string }[] = [
   { mode: "text", label: "Text", hint: "Prose: a message, a review, a transcript." },
@@ -43,6 +49,7 @@ export function EvidenceEditor({
   onFiles,
   fileError,
   invalid,
+  dictation,
 }: {
   evidence: Evidence;
   /** What the modes not in use last held; the caller owns it, and clears it with the draft. */
@@ -55,10 +62,19 @@ export function EvidenceEditor({
   fileError: string | null;
   /** The parse error of a JSON evidence, when there is one. */
   invalid?: string;
+  /** Dictation into a text evidence. */
+  dictation: Dictation;
 }) {
   const picker = useRef<HTMLInputElement>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const hint = MODES.find((m) => m.mode === evidence.mode)?.hint;
+  const mic = useDictationState(dictation);
+  const said = dictationHint(mic, "Decide");
+  const prose = typedEvidence(evidence) !== null;
+  // The field going away (another mode, a file) takes its dictation with it.
+  useEffect(() => {
+    if (!prose) dictation.controller.discard();
+  }, [prose, dictation]);
 
   function switchTo(mode: EvidenceMode) {
     if (mode === evidence.mode) return;
@@ -77,9 +93,12 @@ export function EvidenceEditor({
   }
 
   return (
-    <section>
+    <section {...dictationKeys(dictation, prose)}>
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-display text-[15px] font-semibold text-ink">Evidence</h2>
+        <div className="flex items-center gap-1">
+          <h2 className="font-display text-[15px] font-semibold text-ink">Evidence</h2>
+          {prose && <DictationMic dictation={dictation} state={mic} label="Dictate into Evidence" title="Dictate into Evidence" compact />}
+        </div>
         <div role="group" aria-label="Evidence shape" className="flex">
           {MODES.map(({ mode, label }) => (
             <button
@@ -107,15 +126,25 @@ export function EvidenceEditor({
       )}
 
       {evidence.mode === "text" && !evidence.file && (
-        <textarea
-          value={evidence.text}
-          onChange={(e) => onChange({ mode: "text", text: e.target.value })}
-          name="evidence-text"
-          aria-label="The evidence"
-          placeholder="Paste the message, the review, the transcript…"
-          rows={5}
-          className={`${field} mt-2 resize-y`}
-        />
+        <>
+          <textarea
+            ref={dictation.field}
+            value={evidence.text}
+            onChange={(e) => onChange({ mode: "text", text: e.target.value })}
+            name="evidence-text"
+            aria-label="The evidence"
+            placeholder="Paste the message, the review, the transcript…"
+            rows={5}
+            className={`${field} mt-2 resize-y`}
+            // The field being dictated into keeps its ember border.
+            style={mic.phase !== "idle" ? { borderColor: "var(--ember)" } : undefined}
+          />
+          {mic.phase !== "idle" && (
+            <div className="mt-2">
+              <DictationStrip dictation={dictation} state={mic} compact />
+            </div>
+          )}
+        </>
       )}
 
       {evidence.mode === "json" && !evidence.file && (
@@ -148,7 +177,13 @@ export function EvidenceEditor({
       {fileError && evidence.mode !== "image" && <p className="mt-1 text-[12px] leading-snug text-warn">{fileError}</p>}
 
       <div className="mt-1.5 flex items-start justify-between gap-3">
-        <p className="max-w-[68ch] text-[12px] leading-snug text-ash">{hint}</p>
+        {said ? (
+          <p className={`max-w-[68ch] text-[12px] leading-snug ${toneClass(said.tone)}`}>
+            <HintText text={said.text} />
+          </p>
+        ) : (
+          <p className="max-w-[68ch] text-[12px] leading-snug text-ash">{hint}</p>
+        )}
         {/* The image picker has a button of its own, which takes pictures only. */}
         {evidence.mode !== "image" && (
           <>

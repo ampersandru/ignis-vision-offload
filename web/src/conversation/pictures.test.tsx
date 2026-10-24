@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { contextUsage } from "../metrics/context.ts";
 import { ImageStrip } from "../tools/image/ImageStrip.tsx";
 import { Composer } from "./Composer.tsx";
+import { fixedDictation } from "../speech/fixture.ts";
 import { UserTurn } from "./UserTurn.tsx";
 
 // The chat's pictures and what can be done with them: a picture the user sent
@@ -73,6 +74,7 @@ describe("pictures of the conversation", () => {
       onAddImages: none,
       onRemoveImage: none,
       onMarkImage: none,
+      dictation: fixedDictation(),
     };
     const marked = { ...image, markup: { source: new Blob([]), marks: [], keepOutside: true, region: new Blob([]) } };
     const html = renderToStaticMarkup(<Composer {...props} images={[image, marked]} />);

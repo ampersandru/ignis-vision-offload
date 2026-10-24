@@ -105,6 +105,9 @@ export function yamlOf(value: Record<string, unknown>, depth = 0): string {
     .join("");
 }
 
+/** Why the mock's speech model cannot serve, in the server's words (speech/mod.rs): the Playground's mic is struck. */
+export const SPEECH_REASON = "no speech model files for `qwen3-asr-1.7b` under download.path; fetch them with `ignis-server model download qwen3-asr-1.7b`";
+
 export function createServerSim() {
   const state: State = { store: structuredClone(CONFIG) as ConfigDocument, from: structuredClone(PROVENANCE) };
   let loaded = "qwen3.8-27b";
@@ -263,6 +266,8 @@ export function createServerSim() {
         ...(running ? { switching: { from: running.from, to: running.to } } : {}),
         ...(restoring || dead ? { reason: (restoring ?? dead)!.reason } : {}),
         ...(last ? { last_switch: last } : {}),
+        // The mock has no Realtime socket: its speech model is one whose files are not on disk (spec speech/02).
+        speech: { available: false, reason: SPEECH_REASON },
       };
     },
 

@@ -1,9 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { ModelState } from "../api/model.ts";
+import { fixedDictation } from "../speech/fixture.ts";
+import type { DictationState } from "../speech/dictation.ts";
 import { StaticPictures } from "./pictures.tsx";
 import { addMarked, addToPool, endStep, type ImageSession, landOutput, newSession, setDraft, startStep, type StepSettings, storeLine } from "./sessions.ts";
 import { ImageStudio } from "./Studio.tsx";
+import { StudioComposer } from "./StudioComposer.tsx";
 import { DEFAULT_LIMITS } from "./studio.ts";
 import type { ImageSessionsActions, ImageSessionsState, StudioRun } from "./useImageSessions.ts";
 
@@ -166,5 +169,38 @@ describe("ImageStudio", () => {
     s = endStep(s, step, { status: "failed", error: "The queue is full" }, 7);
     expect(render(image, state({ active: s }))).toMatch(/role="alert"[^>]*>The queue is full/);
     expect(render(image, state({ loaded: false }))).toContain("Opening your sessions…");
+  });
+});
+
+describe("dictation in the image studio (spec speech/04)", () => {
+  const composer = (model: ModelState, dictation: Partial<DictationState>) =>
+    renderToStaticMarkup(
+      <StaticPictures urls={urls}>
+        <StudioComposer model={model} state={state({ active: setDraft(newSession("e", 0), { prompt: "Stile acquerello" }, 1) })} actions={actions} dictation={fixedDictation(dictation)} />
+      </StaticPictures>,
+    );
+
+  it("has the mic beside the run button", () => {
+    const html = composer(text, {});
+    expect(html.indexOf('aria-label="Dictate"')).toBeLessThan(html.indexOf("Switch &amp; generate</button>"));
+    expect(html).toMatch(/<button type="submit" class="[^"]*">Switch &amp; generate<\/button>/);
+  });
+
+  it("holds Switch & Generate while listening, beside the Done chip, and says Generate waits", () => {
+    const html = composer(text, { phase: "listening", stable: "Una fornace di notte" });
+    expect(html).toMatch(/<button type="submit" disabled=""[^>]*>Switch &amp; generate<\/button>/);
+    expect(html).toContain(">Done</button>");
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Listening. Done puts the text at the cursor; Esc discards it. Generate waits until you press it.");
+    // The box's underline is the running heat bar, as in the chat: the strip's and the box's.
+    expect(html.match(/dictation-heat/g)).toHaveLength(2);
+    expect(composer(text, {})).not.toContain("dictation-heat");
+    expect(composer(image, { phase: "finishing" })).toMatch(/<button type="submit" disabled=""/);
+  });
+
+  it("says why the mic cannot start where the idle words go", () => {
+    expect(composer(image, { unavailable: { sentence: "Speech is turned off on this server (`speech.model = off`).", blocked: false } })).toContain(
+      'Speech is turned off on this server (<code class="font-mono text-[11px]">speech.model = off</code>).',
+    );
   });
 });

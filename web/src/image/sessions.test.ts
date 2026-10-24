@@ -6,6 +6,7 @@ import {
   endStep,
   fromStore,
   type ImageSession,
+  lastPrompt,
   seedClash,
   seedsBehind,
   imagesOf,
@@ -233,5 +234,18 @@ describe("the list", () => {
     expect(titleOf("  a fox\nin the snow")).toBe("a fox");
     expect(titleOf("x".repeat(60))).toHaveLength(48);
     expect(titleOf("  ")).toBe(UNTITLED);
+  });
+});
+
+describe("lastPrompt", () => {
+  it("is the last step's prompt, as the enhancement rewrote it, and nothing before a step", () => {
+    const settings = { size: "1024x1024", count: 1, seed: null, background: "auto" as const, enhance: true };
+    let s = newSession("s", 0);
+    expect(lastPrompt(s)).toBe("");
+    let step: number;
+    [s, step] = startStep(s, "una fornace", [], settings, 1);
+    expect(lastPrompt(s)).toBe("una fornace");
+    s = endStep(s, step, { status: "done", revised: "A kiln at night, seen from above, orange embers." }, 2);
+    expect(lastPrompt(s)).toBe("A kiln at night, seen from above, orange embers.");
   });
 });

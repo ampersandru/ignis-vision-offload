@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
+import { dictationHint } from "../speech/dictation.ts";
+import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
 import { caption, field, fieldLook } from "../ui/classes.ts";
 import { IconClose, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { asText, jsonString, writeOrdered } from "./json.ts";
@@ -32,6 +35,7 @@ import {
   PRIMITIVES,
   type Primitive,
   type Question,
+  questionProse,
 } from "./model.ts";
 
 // One question in the builder (GitHub #247).
@@ -40,6 +44,9 @@ import {
 // keeps what was already written: the selector is not a destructive control.
 // The order of the options is editable because it is part of the prompt — each
 // one is bound to the answer token at its position — and not a presentation.
+//
+// What the question asks takes dictation while it is prose: a mic on the
+// card's top row, the strip under the field (spec speech/04).
 
 export function QuestionCard({
   question,
@@ -50,6 +57,7 @@ export function QuestionCard({
   onChange,
   onRemove,
   onMove,
+  dictation,
 }: {
   question: Question;
   /** What the question is asked over: a `locate` shows the segments its target cuts into. */
@@ -60,12 +68,20 @@ export function QuestionCard({
   onChange: (next: Question) => void;
   onRemove: () => void;
   onMove: (by: -1 | 1) => void;
+  /** Dictation into what the question asks. */
+  dictation: Dictation;
 }) {
   const set = <K extends keyof Question>(key: K, value: Question[K]) => onChange({ ...question, [key]: value });
   const bad = faults.length > 0;
+  const mic = useDictationState(dictation);
+  const said = dictationHint(mic, "Decide");
+  const prose = questionProse(question) !== null;
 
   return (
-    <li className={`cut border-l-2 bg-surface p-3 ${bad ? "border-l-warn" : "border-l-line"}`}>
+    <li
+      className={`cut border-l-2 bg-surface p-3 ${bad ? "border-l-warn" : "border-l-line"}`}
+      {...dictationKeys(dictation, prose)}
+    >
       {/* The type and the controls; what the question *asks* is the field
           below, because that is what a reader is here to write. */}
       <div className="flex items-center gap-2">
@@ -83,6 +99,9 @@ export function QuestionCard({
           ))}
         </select>
         <span className="min-w-0 flex-1" />
+        {prose && (
+          <DictationMic dictation={dictation} state={mic} label="Dictate into Question" title="Dictate into Question" compact />
+        )}
         <div className="flex shrink-0 items-center">
           <MoveButton label="Move up" disabled={first} onClick={() => onMove(-1)}>
             ↑
@@ -105,15 +124,30 @@ export function QuestionCard({
       <p className="mt-1.5 text-[12px] leading-snug text-ash">{PRIMITIVE_BLURB[question.kind]}</p>
 
       {question.instructions.kind === "string" ? (
-        <textarea
-          value={question.instructions.value}
-          onChange={(e) => set("instructions", jsonString(e.target.value))}
-          name={`${question.uid}-instructions`}
-          aria-label="What the model should decide"
-          placeholder="What should the model decide?"
-          rows={2}
-          className={`${field} mt-2 resize-y text-[15px]`}
-        />
+        <>
+          <textarea
+            ref={dictation.field}
+            value={question.instructions.value}
+            onChange={(e) => set("instructions", jsonString(e.target.value))}
+            name={`${question.uid}-instructions`}
+            aria-label="What the model should decide"
+            placeholder="What should the model decide?"
+            rows={2}
+            className={`${field} mt-2 resize-y text-[15px]`}
+            // The field being dictated into keeps its ember border.
+            style={mic.phase !== "idle" ? { borderColor: "var(--ember)" } : undefined}
+          />
+          {mic.phase !== "idle" && (
+            <div className="mt-2">
+              <DictationStrip dictation={dictation} state={mic} compact />
+            </div>
+          )}
+          {said && (
+            <p className={`mt-1 text-[12px] leading-snug ${toneClass(said.tone)}`}>
+              <HintText text={said.text} />
+            </p>
+          )}
+        </>
       ) : (
         <div className="mt-2">
           <pre className="max-h-24 overflow-auto border border-line bg-ground p-2 font-mono text-[12px] text-ink">

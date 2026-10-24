@@ -159,3 +159,24 @@ export function IconReference() {
     </svg>
   );
 }
+
+/** Dictate (spec speech/04); struck through while the mic cannot start. */
+export function IconMic({ struck = false }: { struck?: boolean }) {
+  return (
+    <svg {...icon} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5.5" y="1.75" width="5" height="8" rx="2.5" />
+      <path d="M3 7.5a5 5 0 0 0 10 0" />
+      <path d="M8 12.5v1.75" />
+      {struck && <path d="M2.5 2.5l11 11" />}
+    </svg>
+  );
+}
+
+/** The square stop glyph of a dictation's Done. */
+export function IconStopSquare() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 16 16" aria-hidden>
+      <rect x="3" y="3" width="10" height="10" fill="currentColor" />
+    </svg>
+  );
+}

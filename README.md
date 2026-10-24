@@ -405,6 +405,10 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - **Forcing `language` Italianises English jargon**: the model hears a
   sentence in Italian with English terms best left to detect the language on its
   own; force it only when it guesses wrong.
+- **Dictation in the Playground.** A mic beside Send, in the Image studio and
+  on Decide's prose fields, or Ctrl+Shift+Space (held, push-to-talk): the
+  words show as they settle, and the text lands at the cursor, never sent by
+  itself ([dictating a prompt](docs/user/playground/chat.md#dictating-a-prompt)).
 
 ### Models that come and go
 
@@ -469,7 +473,7 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 ### Batteries in the binary
 
 - **The Playground** at `/ui/` — chat with tools and subagents, parallel
-  sessions, image input, an Image studio, a Decide tab, a live Monitor and a
+  sessions, image input, dictation, an Image studio, a Decide tab, a live Monitor and a
   Server view that loads models and edits the running configuration. Built
   into the server, not a separate service.
 - **One declaration per setting**: every option is a flag, an `IGNIS_*`

@@ -113,6 +113,11 @@ export function removeAttachment(sessions: Session[], sessionId: number, name: s
 }
 
 /** A session's title from its first prompt: the first non-blank line, shortened. */
+/** The last reply with text, the chat's dictation context before the prompt (spec speech/04); `""` before any. */
+export function lastReply(messages: Message[]): string {
+  return [...messages].reverse().find((m) => m.role === "assistant" && m.content.trim() !== "")?.content ?? "";
+}
+
 export function titleFrom(prompt: string): string {
   const line = prompt.split("\n").find((l) => l.trim() !== "")?.trim().replace(/\s+/g, " ") ?? "";
   if (line === "") return UNTITLED;

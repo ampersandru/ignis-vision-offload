@@ -194,7 +194,28 @@ describe("the model's kind (spec image-model/05)", () => {
   it("keeps the kind through an unloaded read, and ignores one it does not know", async () => {
     saveKey("sk");
     expect(await readModel(answering({ status: "unloaded", data: [{ id: "x", kind: "image" }] }))).toMatchObject({ state: "unloaded", kind: "image" });
+    expect(await readModel(answering({ data: [{ id: "x", kind: "speech" }] }))).toMatchObject({ kind: "speech" });
     expect(await readModel(answering({ data: [{ id: "x", kind: "audio" }] }))).not.toHaveProperty("kind");
+  });
+
+  it("reads the speech model's availability beside the loaded model, which stays the text one (spec speech/02)", async () => {
+    saveKey("sk");
+    const speaking = {
+      data: [
+        { id: "qwen3.8-27b", active: true, kind: "text", max_model_len: 786432 },
+        { id: "qwen3-asr-1.7b", active: true, kind: "speech", available: true },
+      ],
+      status: "serving",
+      speech: { available: true },
+    };
+    expect(await readModel(answering(speaking))).toEqual({ state: "ready", id: "qwen3.8-27b", contextLimit: 786432, kind: "text", speech: { available: true } });
+    const off = { data: [speaking.data[0]], status: "serving", speech: { available: false, reason: "the speech model is turned off (`speech.model` is `off`)" } };
+    expect(await readModel(answering(off))).toMatchObject({ speech: { available: false, reason: "the speech model is turned off (`speech.model` is `off`)" } });
+    // The speech routes serve through a switch, so its availability is read in every status.
+    const switching = { ...off, status: "switching", switching: { from: "a", to: "b" } };
+    expect(await readModel(answering(switching))).toMatchObject({ state: "switching", speech: { available: false } });
+    // An older server has no speech object: nothing is said.
+    expect(await readModel(answering({ data: [speaking.data[0]] }))).not.toHaveProperty("speech");
   });
 
   it("lets the chat use any model but an image one, and the image view use only that", () => {

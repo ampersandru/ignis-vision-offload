@@ -358,6 +358,12 @@ export function coverOf(s: ImageSession): PoolImage | undefined {
   return (made !== undefined ? pictureOf(s, made) : undefined) ?? s.pool[s.pool.length - 1];
 }
 
+/** The last step's prompt, as prompt enhancement rewrote it: the studio's dictation context before the box's. */
+export function lastPrompt(s: ImageSession): string {
+  const last = s.steps[s.steps.length - 1];
+  return last?.revised ?? last?.prompt ?? "";
+}
+
 export function titleOf(prompt: string): string {
   const line = prompt.trim().split("\n")[0] ?? "";
   if (line === "") return UNTITLED;

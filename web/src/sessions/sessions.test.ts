@@ -6,6 +6,7 @@ import {
   addReply,
   createSession,
   editMessage,
+  lastReply,
   forkSession,
   type Message,
   openSession,
@@ -166,5 +167,13 @@ describe("exchanges and log", () => {
     sessions = addLogRow(sessions, 2, row);
     expect(sessions[0].log.map((r) => r.n)).toEqual([1, 2]);
     expect(sessions[1].log.map((r) => r.n)).toEqual([1]);
+  });
+});
+
+describe("lastReply", () => {
+  it("is the last reply that says something: a tool call's empty reply and the tool's result are not", () => {
+    const messages = [message(1, "user", "Da dove parto?"), message(2, "assistant", "Parti da plan_vram."), message(3, "user", "E poi?"), message(4, "assistant", ""), message(5, "tool", "42")];
+    expect(lastReply(messages)).toBe("Parti da plan_vram.");
+    expect(lastReply([message(1, "user", "ciao")])).toBe("");
   });
 });

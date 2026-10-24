@@ -1,4 +1,5 @@
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SpeechStatus } from "../api/model.ts";
 import type { PromptImage } from "../conversation/images.ts";
 import { mergeLoaded } from "../store/docs.ts";
 import { pageStore } from "../store/index.ts";
@@ -46,7 +47,18 @@ import { DECIDE_SESSIONS, restoreDecisions, toStored, worthKeeping } from "./sto
 /** Which side drawer is out, below `lg`. */
 export type Drawer = "sessions" | "settings" | null;
 
-export function DecideView({ ready, drawer, onDrawer }: { ready: boolean; drawer: Drawer; onDrawer: (drawer: Drawer) => void }) {
+export function DecideView({
+  ready,
+  drawer,
+  onDrawer,
+  speech,
+}: {
+  ready: boolean;
+  drawer: Drawer;
+  onDrawer: (drawer: Drawer) => void;
+  /** Whether the speech model can serve, for the prose fields' mics (spec speech/04). */
+  speech?: SpeechStatus;
+}) {
   const [list, setList] = useState(startList);
   const [mode, setMode] = useState<Mode>("build");
   // The JSON view's text is what a reader edits while it is open; the draft
@@ -284,6 +296,7 @@ export function DecideView({ ready, drawer, onDrawer }: { ready: boolean; drawer
         jsonError={jsonError}
         faults={faults}
         ready={ready}
+        speech={speech}
         busy={active.running}
         loading={loading}
         open={drawer === "settings"}

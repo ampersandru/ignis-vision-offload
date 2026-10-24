@@ -197,3 +197,86 @@ it."
 - A personal glossary for the context: later (Q15).
 - A language picker: the Playground never forces a language (Q51).
 - Global hotkeys outside the composer.
+
+## As built (GitHub #354)
+
+Built on `speech-354` in `web/src/speech/`, against a fake socket speaking
+#353's events as `speech-353` sends them (the route itself was not on
+`speech-asr` yet). Where the build decided something the spec left open, or
+differs from it:
+
+- **The modules.** `realtime.ts` is the session (open, configure, append,
+  commit, clear, the refusal); `dictation.ts` the state every surface reads
+  and the hint line's sentences; `capture.ts` the mic; `pcm.ts` the worklet
+  and the PCM16; `availability.ts` the unavailable sentences; `insert.ts` the
+  landing. `Dictation.tsx` holds the mic and the strip, and `useDictation.ts`
+  the hooks: the field's owner makes the dictation, the component that draws
+  the mic subscribes, so a meter moving ten times a second redraws the
+  composer, not the page.
+- **The session.** Opened with the subprotocols `realtime` and
+  `openai-insecure-api-key.<key>`; `session.update` goes out on
+  `session.created`. Audio captured before `session.updated` waits in the
+  page, so none is read at the default 24 kHz; a commit asked for meanwhile
+  follows it. `prompt` is left out when there is no context.
+- **Busy (AC 11).** A browser cannot read a refused upgrade's status or
+  `Retry-After`: it sees a close before the open. The page then reads
+  `GET /v1/models`, as the Responses socket's probe does: a `401` asks for the
+  key; `speech.available: false` is the unavailable sentence; a speech model
+  that can serve was refused for every session being taken. That is a reading
+  by elimination: a proxy that does not carry WebSockets looks the same. The
+  countdown is the page's own, 3 s (`BUSY_RETRY_SECONDS`; #353 answers
+  `Retry-After: 1`), the mic is let go while it runs, and the one retry
+  refused again names both causes: "The dictation still could not open:
+  speech is busy, or this address does not carry WebSockets. Press the mic to
+  try again." (warn). Reading the real cause and wait would take a server
+  change: `speech-353` answers a plain GET with `400` before it checks the
+  model or the sessions, and a page's `fetch` cannot send an upgrade.
+- **The download command (AC 15)** is the server's: `ignis-server model
+  download <id>`, the binary's real name, taken from the reason, where the
+  table says `ignis model download <id>`. A server reason the table has no row
+  for (an id not in the catalog, a build with no executor, a server older than
+  speech) is "Speech is unavailable on this server: <reason>."
+- **A struck mic stays pressable** (`aria-disabled`, not `disabled`). For a
+  blocked mic a press asks the browser again, as its sentence says, and a
+  refusal is said at once as well as struck. For the other causes the
+  composers' hint line already says why; a Decide field, whose hint line shows
+  only a dictation's own words, says it under the field for 6 s on a press.
+- **The keys** go to a dictation only from inside its field's container and
+  only while the field takes dictation: Ctrl+Shift+Space in a JSON question or
+  a JSON or file evidence does nothing, and Esc in the portalled `+` menu is
+  the menu's. The strip's clock is hidden from its live region, which would
+  otherwise announce every second.
+- **Where the text lands.** At the end of the field's selection: with no
+  selection that is the cursor, and a second dictation follows the first one's
+  selected text instead of replacing it. The model's text is trimmed.
+- **Copy beyond the tables**: "Nothing was heard." (a commit with no audio, or
+  an empty transcript); "Dictation could not start: <why>." (the server
+  unreachable, a mic error other than a block); "Dictation stopped: <the
+  server's message>. Insert what was heard, or discard it." (a `failed` item
+  or a refused event, fault, with the strip kept as for a closed connection);
+  "Inserted 1 word"; "Nothing is sent until you press Generate" in the studio
+  and "… Decide" in Decide. The chat page's hint table lists them all.
+- **The hint lines.** The chat's idle sentence now shows beside the model
+  picker (before, the picker hid the idle line). A dictation's words come
+  first, then another session streaming, then an unavailable reason, then the
+  idle sentence. The studio keeps its own idle words and warnings; a reason
+  takes the place of the idle words only.
+- **Context.** The studio's "last reply" is the last step's prompt, as prompt
+  enhancement rewrote it. In Decide, a question's dictation sends the evidence
+  then the question; the evidence's sends the questions then the evidence. An
+  evidence loaded from a file is never context: it can be megabytes, past the
+  socket's frame limit.
+- **One dictation per page.** Starting a mic anywhere ends the one under way:
+  a listening one commits (Done) and lands in its own field when its
+  transcript comes, so for that moment two sessions are open; a stopped one
+  inserts what was heard; a busy wait is dropped. Esc while finishing discards too. An evidence switched away from
+  Text mid-dictation discards it.
+- **Capture.** `getUserMedia` with echo cancellation, noise suppression and
+  gain control; an `AudioContext` at its own rate; the worklet mixes to mono
+  and box-filters down to 16 kHz, 1,600 samples a chunk. Its source is a
+  string loaded from a Blob URL, the same code in the dev server, the build
+  and the tests, which evaluate it with the worklet scope's globals.
+- **`GET /v1/models`.** `ModelState` carries the `speech` object in every
+  status; the speech entry, `active` after `data[0]`, is never read as the
+  loaded model. The dev mock (`npm run dev:mock`) has no socket and reports
+  the speech model's files missing, so its mic shows struck.
