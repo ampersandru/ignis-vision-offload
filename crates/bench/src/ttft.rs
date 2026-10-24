@@ -250,10 +250,49 @@ fn generate_prompt_with_suffix(
              not reachable"
         ));
     }
-    // Grow. Each word is at least one token, so this terminates.
-    while count < target_tokens {
-        words.push(VOCAB[(rng.next() as usize) % VOCAB.len()].to_string());
-        count = template.encode_user_message(&content(&words))?.len();
+    // Grow to the first word count whose count reaches the target. Each word
+    // is at least one token, so this terminates. The word sequence does not
+    // depend on the counts (the PRNG is only drawn here), so the first
+    // crossing is found by doubling and then bisecting the number of words
+    // over full encodes -- O(log n) of them where a per-word walk is O(n),
+    // and an encode of a 131,072-token prompt is ~0.5 s. This relies on the
+    // count being monotone in the word count, which holds for a tokenizer
+    // that splits at the space before each appended word; the drop and land
+    // steps below are the exact per-word walk either way.
+    if count < target_tokens {
+        let word_at = |extra: usize, rng: &mut Lcg, pool: &mut Vec<String>| {
+            while pool.len() < extra {
+                pool.push(VOCAB[(rng.next() as usize) % VOCAB.len()].to_string());
+            }
+        };
+        let mut pool: Vec<String> = Vec::new();
+        let mut measure = |extra: usize, rng: &mut Lcg| -> Result<usize, String> {
+            word_at(extra, rng, &mut pool);
+            let mut candidate = vec![nonce.to_string()];
+            candidate.extend(pool[..extra].iter().cloned());
+            Ok(template.encode_user_message(&content(&candidate))?.len())
+        };
+        // `lo` words are under the target, `hi` reach it.
+        let mut lo = 0usize;
+        let mut hi = 1usize;
+        let mut hi_count = measure(hi, &mut rng)?;
+        while hi_count < target_tokens {
+            lo = hi;
+            hi *= 2;
+            hi_count = measure(hi, &mut rng)?;
+        }
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            let mid_count = measure(mid, &mut rng)?;
+            if mid_count >= target_tokens {
+                hi = mid;
+                hi_count = mid_count;
+            } else {
+                lo = mid;
+            }
+        }
+        words.extend(pool[..hi].iter().cloned());
+        count = hi_count;
     }
     // Drop back under (the last word may have overshot by several tokens).
     while count > target_tokens && words.len() > 1 {
@@ -1357,6 +1396,100 @@ mod tests {
                 "target {target}"
             );
         }
+    }
+
+    /// A template whose words weigh one to three tokens (by length, the
+    /// filler `a` one), so the grow step overshoots and the drop and land
+    /// steps are exercised; it counts its encodes.
+    struct WeighedTemplate {
+        encodes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl WeighedTemplate {
+        fn new() -> Self {
+            Self { encodes: std::sync::atomic::AtomicUsize::new(0) }
+        }
+        fn encodes(&self) -> usize {
+            self.encodes.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl PromptTemplate for WeighedTemplate {
+        fn encode_user_message(&self, content: &str) -> Result<Vec<u32>, String> {
+            self.encodes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut ids: Vec<u32> = vec![1_000; 5];
+            for word in content.split_whitespace() {
+                ids.extend(std::iter::repeat_n(word.len() as u32, word.len().div_ceil(3).min(3)));
+            }
+            ids.extend([2_000; 2]);
+            Ok(ids)
+        }
+        fn decode(&self, _: &[u32]) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    /// Today's generator before the bisection, kept as the reference the
+    /// text must stay byte-identical to: grow one word at a time, drop back
+    /// under, land with filler, re-measuring after every append.
+    fn generate_prompt_per_word(
+        template: &dyn PromptTemplate,
+        target_tokens: usize,
+        nonce: &str,
+        seed: u64,
+    ) -> Result<String, String> {
+        let mut rng = Lcg(seed);
+        let mut words: Vec<String> = vec![nonce.to_string()];
+        let mut count = template.encode_user_message(&words.join(" "))?.len();
+        if count > target_tokens {
+            return Err("overhead".to_string());
+        }
+        while count < target_tokens {
+            words.push(VOCAB[(rng.next() as usize) % VOCAB.len()].to_string());
+            count = template.encode_user_message(&words.join(" "))?.len();
+        }
+        while count > target_tokens && words.len() > 1 {
+            words.pop();
+            count = template.encode_user_message(&words.join(" "))?.len();
+        }
+        while count < target_tokens {
+            words.push(FILLER.to_string());
+            let grown = template.encode_user_message(&words.join(" "))?.len();
+            if grown == count || grown > target_tokens {
+                return Err("cannot land".to_string());
+            }
+            count = grown;
+        }
+        Ok(words.join(" "))
+    }
+
+    #[test]
+    fn the_bisected_generator_writes_the_per_word_generators_text() {
+        for template in [&WeighedTemplate::new() as &dyn PromptTemplate, &MockTemplate::new()] {
+            for target in [9usize, 10, 16, 17, 40, 63, 64, 128, 500, 1_001, 4_096] {
+                for (index, seed) in [(0usize, 1u64), (3, 42), (25, 7), (7, 99)] {
+                    let nonce = nonce(index);
+                    let old = generate_prompt_per_word(template, target, &nonce, seed);
+                    let new = generate_prompt(template, target, &nonce, seed);
+                    // The refusals word themselves differently; the text is what must match.
+                    assert_eq!(new.ok(), old.ok(), "target {target} nonce {nonce} seed {seed}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generation_encodes_a_logarithmic_number_of_times() {
+        let template = WeighedTemplate::new();
+        let target = 131_072usize;
+        let prompt = generate_prompt(&template, target, "a000", 1).expect("generated");
+        assert_eq!(template.encode_user_message(&prompt).unwrap().len(), target);
+        // Doubling (~17) + bisection (~17) + the drop and land steps; the
+        // per-word walk would take ~65,000.
+        let before = template.encodes();
+        let _ = generate_prompt(&template, target, "a000", 1).expect("generated");
+        let encodes = template.encodes() - before;
+        assert!(encodes < 100, "{encodes} encodes for a {target}-token prompt");
     }
 
     #[test]

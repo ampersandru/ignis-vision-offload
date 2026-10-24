@@ -387,6 +387,13 @@ unsafe impl Sync for CudaModel {}
 unsafe impl Send for CudaLeaf {}
 unsafe impl Sync for CudaLeaf {}
 
+/// Whether a load's decode-graph capture reached every width it serves
+/// (GitHub #339): the capture attempts exact widths `1..=lanes` and no
+/// wider (GitHub #336), so a 2-lane load is complete at 2 ready, not 8.
+fn capture_complete(ready: u32, lanes: u32) -> bool {
+    ready >= lanes
+}
+
 /// Log `message` (with `context`) and collapse it to the generic leaf
 /// error code `StepLeaf` expects — `ignis_core`'s step/seq/model_load
 /// wrappers already discarded the raw C return code in favor of a
@@ -596,8 +603,8 @@ impl StepLeaf for CudaLeaf {
         let capture = step::capture_decode_graphs(&model, &pool)
             .map_err(|e| leaf_error("decode graph capture", e))?;
         // Reported unconditionally (GitHub #102's acceptance: "startup cost
-        // of capturing eight graphs is measured and reported, not assumed")
-        // -- not only when a width failed, so the common all-8-ready case
+        // of capturing the graphs is measured and reported, not assumed")
+        // -- not only when a width failed, so the common all-widths-ready case
         // still surfaces the number rather than computing and discarding it.
         // GitHub #80: structured, not a raw `eprintln!` -- this still fires
         // exactly once per model load (never per-token/decode-round), same
@@ -609,7 +616,7 @@ impl StepLeaf for CudaLeaf {
             capture_micros = capture.capture_micros,
             "decode graph capture"
         );
-        if capture.ready_count() < 8 {
+        if !capture_complete(capture.ready_count(), self.config.slot_count) {
             // hotpath-lint-allow: same model-load-time call as above, one line down.
             tracing::warn!(
                 name: "ignis.runtime.decode_graph_capture_incomplete",
@@ -1131,6 +1138,18 @@ mod tests {
         ArtifactHash::from_bytes([7; 32])
     }
     const LAYOUT: u32 = 2;
+
+    #[test]
+    fn the_capture_is_complete_at_the_loads_lanes_not_at_eight() {
+        // GitHub #339: `rtx50-16gb` loads 2 lanes and captures widths 1..=2;
+        // 2 ready of 2 warned "not all widths ready" against a literal 8.
+        assert!(capture_complete(2, 2));
+        assert!(capture_complete(8, 8));
+        assert!(capture_complete(1, 1));
+        assert!(!capture_complete(1, 2));
+        assert!(!capture_complete(7, 8));
+        assert!(!capture_complete(0, 1));
+    }
 
     #[test]
     fn the_load_options_that_do_not_change_state_do_not_change_the_identity() {
