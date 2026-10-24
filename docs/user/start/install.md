@@ -19,6 +19,9 @@ carries a model: the server fetches one on first start, or you point it at a
 `.ninfer` file you already have ([Get a model](../guides/models.md)). To build
 from a checkout instead, see [Building](../contributing/building.md).
 
+A coding agent can do all of this for you, asking you the choices that are
+yours: [Install with a coding agent](install-with-an-agent.md).
+
 **Check the driver first.** `nvidia-smi` prints, in its header, the highest
 CUDA version the driver supports: it must read `CUDA Version: 13.x` or later.
 A driver that reports 12.x cannot run any of the three; update it from NVIDIA.

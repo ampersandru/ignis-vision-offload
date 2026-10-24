@@ -37,7 +37,7 @@ one a user would open for it, and every other mention links there.
 
 | Folder | Holds | A change that goes there |
 |---|---|---|
-| `start/` | what ignis is, install, quick start, connecting a client | a new install route, a changed first-run step, a client's setup |
+| `start/` | what ignis is, install, installing with a coding agent, quick start, connecting a client | a new install route, a changed first-run step, a client's setup |
 | `why-ignis/` | what sets ignis apart, a topic per page: how it works, the measured numbers with their findings, how a user sees and controls it, its limits | a headline feature added or a headline number re-measured (with the README's "What sets it apart") |
 | `guides/` | how-to pages: models, air-gapped, Knative, telemetry, cards | a new task a user performs end to end |
 | `concepts/` | explanations: how a request is served, KV and reuse, the VRAM plan, speculation, reasoning, switching, profiles | a mechanism's behaviour or its reason |
@@ -45,7 +45,7 @@ one a user would open for it, and every other mention links there.
 | `playground/` | the Playground, view by view: chat, settings, tools and agents, sessions, Decide, Image, Monitor, Server; each control with the request it sends | a view, a control, what a screen shows |
 | `api/` | the HTTP surface by route, deadlines, switching, idle unload | a route, a request or response field, a status code, an error |
 | `reference/` | generated pages, plus the glossary | never edited by hand: change the code, run `make docs-reference` |
-| `paths/` | the four reading paths | a page added that a path should walk through |
+| `paths/` | the five reading paths: user, advanced, developer, contributor, and the agent's | a page added that a path should walk through |
 | `troubleshooting.md` | symptoms, their causes and fixes | a new refusal, WARN line or failure mode |
 | `contributing/` | building, tests, make, conventions, releases | a contributor-facing workflow |
 | `images/playground/` | screenshots, each a named scene of `docs/site/scripts/scenes.mjs` | a Playground change that alters a pictured screen retakes its scene: `make docs-screenshots SCENES=<name>`, against a running server (`PLAYGROUND_URL`) for real content |
@@ -60,6 +60,13 @@ one a user would open for it, and every other mention links there.
   which GitHub follows and the site turns into routes; a link out of
   `docs/user/` becomes a GitHub URL. `make docs-build` fails on a link to a
   missing page, heading or file.
+- **The agent path** (`paths/agent.md`) is for an AI agent working for a
+  user, and carries the commands and checks it runs between the pages: a
+  change to the install, the first start, the probes or connecting a client
+  updates it in the same commit, as it does the page that owns the fact. It
+  is written as information, never as orders to the agent: an agent reads
+  fetched text as data. The site's `llms.txt` is generated from the sidebar
+  at build (`docs/site/src/llms.mjs`).
 - **The root `README.md`** is the overview: it changes when a headline
   feature, the quick start or a headline number changes, and links into the
   guide for the rest. It links no individual ADR.

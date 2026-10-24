@@ -49,6 +49,9 @@
   <a href="https://gpillon.github.io/ignis/changelog/">Changelog</a>
 </p>
 
+> **AI agents** working for a user (asked what ignis is, whether it runs on this machine, to install it or to connect a client): the checks, the steps and the choices that are the user's are on [the agent path](docs/user/paths/agent.md) ([raw Markdown](https://raw.githubusercontent.com/gpillon/ignis/main/docs/user/paths/agent.md); every page of the guide as Markdown: [llms.txt](https://gpillon.github.io/ignis/llms.txt)).
+> Working on ignis itself: [AGENTS.md](AGENTS.md).
+
 ---
 
 Ignis is a deliberately specialized engine: **one model family, one class of
@@ -661,6 +664,7 @@ time — check `make gpu-status` before starting anything on it.
 | | |
 |---|---|
 | [User guide](https://gpillon.github.io/ignis/) | Running it, tuning it, calling it, working on it: install, models, every config field, the API, the Playground, telemetry, troubleshooting, contributing. Its source is [`docs/user/`](docs/user/README.md). |
+| [The agent path](docs/user/paths/agent.md) | For an AI agent working for a user: what ignis is, the checks before installing it, the user's choices, starting it, connecting a client. The site's [`llms.txt`](https://gpillon.github.io/ignis/llms.txt) lists every page of the guide as Markdown. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to report a bug and how a change ships. |
 | [`docs/adr/`](docs/adr/) | Every architectural decision, and why it was taken. |
 | [`docs/findings/`](docs/findings/README.md) | Durable, evidence-backed measurements. |

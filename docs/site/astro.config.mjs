@@ -8,6 +8,7 @@ import { defineConfig } from "astro/config";
 import { satteri } from "@astrojs/markdown-satteri";
 import starlight from "@astrojs/starlight";
 import { adrFiles, writeChangelog } from "./src/changelog.mjs";
+import { llmsTxtFile } from "./src/llms.mjs";
 import relativeLinks, { deadLinksFailTheBuild } from "./src/plugins/relative-links.mjs";
 import { sectionItems } from "./src/sidebar.mjs";
 
@@ -32,6 +33,22 @@ await writeChangelog(path.join(guide, "changelog"), {
 });
 
 const section = (label, directory, extra = {}) => ({ label, items: sectionItems(guide, directory), ...extra });
+const description = "A CUDA inference engine for Qwen3.8 on RTX 50-series and RTX PRO 6000 cards: install, configure, call and extend it.";
+const changelog = section("Changelog", "changelog", { collapsed: true });
+const sidebar = [
+  section("Start here", "start"),
+  section("Why ignis", "why-ignis"),
+  section("Playground", "playground"),
+  section("Reading paths", "paths"),
+  section("Guides", "guides"),
+  section("Concepts", "concepts"),
+  section("Configuration", "configuration"),
+  section("API", "api"),
+  section("Reference", "reference"),
+  { label: "Troubleshooting", link: "/troubleshooting/" },
+  changelog,
+  section("Contributing", "contributing", { collapsed: true }),
+];
 
 export default defineConfig({
   site: "https://gpillon.github.io",
@@ -50,9 +67,27 @@ export default defineConfig({
   },
   integrations: [
     deadLinksFailTheBuild(dead),
+    // llms.txt (src/llms.mjs): the sidebar's pages as raw Markdown at the ref,
+    // less the Changelog, which is generated and has no source at the ref.
+    llmsTxtFile({
+      guide,
+      title: "ignis",
+      summary: description,
+      details:
+        `Each link is a page's Markdown source; the rendered guide is https://gpillon.github.io${base}/ and the code ${repo}. ` +
+        "An AI agent working for a user (asked what ignis is, to install it, or to connect a client to it) starts at the agent path, " +
+        "under Reading paths: each task with its checks and the choices that are the user's.",
+      sidebar: sidebar.filter((entry) => entry !== changelog),
+      source: `https://raw.githubusercontent.com${new URL(repo).pathname}/${ref}/docs/user/`,
+      optional: [
+        { label: "Releases", url: `${repo}/releases`, description: "Every release's notes, which the guide's Changelog is written from." },
+        { label: "Architecture decisions", url: `${repo}/tree/${ref}/docs/adr`, description: "Why ignis is built the way it is, one record per decision." },
+        { label: "AGENTS.md", url: `https://raw.githubusercontent.com${new URL(repo).pathname}/${ref}/AGENTS.md`, description: "The rules for agents working on ignis itself, not for using it." },
+      ],
+    }),
     starlight({
       title: "ignis",
-      description: "A CUDA inference engine for Qwen3.8 on RTX 50-series and RTX PRO 6000 cards: install, configure, call and extend it.",
+      description,
       logo: { src: "../../web/src/brand/wordmark-light.webp", alt: "ignis", replacesTitle: true },
       favicon: "/favicon.png",
       social: [{ icon: "github", label: "GitHub", href: repo }],
@@ -61,20 +96,7 @@ export default defineConfig({
       customCss: ["./src/styles/theme.css"],
       markdown: { processedDirs: ["../user"] },
       tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 4 },
-      sidebar: [
-        section("Start here", "start"),
-        section("Why ignis", "why-ignis"),
-        section("Playground", "playground"),
-        section("Reading paths", "paths"),
-        section("Guides", "guides"),
-        section("Concepts", "concepts"),
-        section("Configuration", "configuration"),
-        section("API", "api"),
-        section("Reference", "reference"),
-        { label: "Troubleshooting", link: "/troubleshooting/" },
-        section("Changelog", "changelog", { collapsed: true }),
-        section("Contributing", "contributing", { collapsed: true }),
-      ],
+      sidebar,
     }),
   ],
 });
