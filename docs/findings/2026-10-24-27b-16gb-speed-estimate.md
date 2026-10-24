@@ -67,7 +67,7 @@ Decode SM clock median (`clocks.txt`): 2,734 / 2,842 / 2,850 / 2,872 MHz for non
 W; at most 74 C. The capped decodes ran 4-5% faster than the uncapped, so the rest sped up too and the trellis share below
 is slightly understated, inside its printed spread.
 
-DFlash2's 2,048-token window: tokens per round held 5.8-6.1 from 8K to 253K on these cells, not the long-context drop
+DFlash2's 2,048-token window: tokens per round held 5.8-6.2 from 8K to 253K on these cells, not the long-context drop
 PIANO-VRAM section 10 feared. The soup carries nothing and the ask sits inside the window, so agent traffic at long context
 may differ. Tokens per round varies 5.7-6.3 with the text: the greedy text differs across caps (the cap changes the decode
 split) and between cold and reused prefill (the tail is its own chunk), so rounds are compared, not text. Reuse bias on
@@ -133,7 +133,7 @@ Observed:
    at 55-62% of the DRAM roofline.
 3. **The rest grows with context and is not bandwidth-bound**: 5.1 ms at 8K, +3.0 ms at 64K and +12.9 ms at 253K on one lane,
    about 175 GB/s of KV read.
-4. Tokens per round did not drop with context on these cells (5.8-6.1 from 8K to 253K).
+4. Tokens per round did not drop with context on these cells (5.8-6.2 from 8K to 253K).
 
 Inferred (the estimate):
 

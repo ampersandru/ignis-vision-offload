@@ -30,7 +30,8 @@ Main at 711b1d85 (release build, v0.7.3) for gates 1, 2 and 4, the branch `340-r
 PCIe Gen 3, 2026-10-24, the desktop alone on the card before and after. Every trellis run loads as a 16 GB card would
 (owner, 2026-10-24): budget 17,179,869,184 bytes, profile `rtx50-16gb`, 262,144 context, 2 lanes, chunk 1,024, hq-e8-2b.
 Raw logs, JSON, scripts: `.scratch/340/quality/`, `.scratch/340/loops/`, `.scratch/340/replay-run/` (untracked); the KLD
-dumps were deleted once scored (the per-position results are in `.scratch/340/quality/results/`).
+dumps were deleted once scored (`.scratch/340/watchdog.log`; the per-position results are in
+`.scratch/340/quality/results/`).
 
 **The 16 GiB rule for the KLD dumps.** `span_logits` takes no budget. Against the server's `rtx50-16gb` load (#339's
 `ignis.model.loaded`) it has the same KV (hq-e8-2b), chunk (1,024), rope (none), prompt attention (8-bit) and exceptions
@@ -105,12 +106,12 @@ quality number; the accuracy table above is what the marks measure.
 ### Gate 3 (Acceptance 3): DFlash2 tokens per round on the teacher-forced replay
 
 A free read from #339's logs (1-lane greedy canaries, same build, 256 tokens a side) gave 4.41 against 4.92 tokens per
-round, a ratio of 0.897: too small a sample to decide, so the owner chose the spec's instrument and the #267
+round (52 against 58 rounds for the same 256 tokens), a ratio of 0.897: too small a sample to decide, so the owner chose the spec's instrument and the #267
 teacher-forced replay (branch `dflash2-sampled-acceptance-267`, [its finding](2026-09-24-dflash2-sampled-acceptance.md))
 was ported onto main (branch `340-replay`, `tools/dflash2-replay/`, the examples in `crates/runtime/examples/`).
 
 - **Method.** #267's 200 recorded agent turns (116 token streams, 6.47 M prefilled context tokens, 208,860 replayed output
-  tokens, sampled by ninfer at T = 1.0, top_p 0.95, top_k 20) walked through real verify rounds that commit the recorded
+  tokens, sampled by ninfer at T = 1.0, top_p 0.95, top_k 20: [#267's finding](2026-09-24-dflash2-sampled-acceptance.md)) walked through real verify rounds that commit the recorded
   text: the leading drafts it agrees with, then the recorded token. Tokens per round = output tokens / rounds, pooled and
   with #267's traffic weights; a bootstrap over the 116 streams (10,000 resamples) for the interval.
 - **Loads, one build.** The trellis leg is the 16 GiB load (the plan printed equals #339 A1: 7,956 pages, 17,179,375,716 of
@@ -183,7 +184,7 @@ Observed:
    The trellis and the NVFP4 are indistinguishable on these marks (b 14, c 16, p 0.8555).
 3. **Gate 3 passes with room.** On the same 200 recorded turns DFlash2 commits 3.370 tokens a round on the trellis against
    3.383 on the NVFP4: 0.996 (95% interval [0.993, 0.999]) against a floor of 0.90, the same traffic-weighted, and within
-   0.8% on every source and kind. The 0.897 of #339's canaries was sampling noise, not the body.
+   0.8% on every source and kind.
 4. **Gate 4 passes.** 9 of 32 against 14 of 32; one-sided p = 0.941 for "the trellis is worse".
 5. **The trellis is worse than the NVFP4 only on zh and math on set B** (and python by 1%); on the other domains
    it is lower by 14-30% (mmlu aside). Python's 0.168 is the model's own sensitivity, the same on both bodies and on M1 (0.1667).
@@ -196,6 +197,8 @@ Inferred:
 - The forced closes are mostly a consequence of the indecision loops the guard misses on the trellis's nobel-en (101, 103,
   106, 107, four missed against the NVFP4's one), which burn the thinking budget; they are the class the 0.7.2 notes
   recorded for nobel-en (101, 105), not a new failure. This was read from the tails, not tested.
+- The 0.897 of #339's canaries (256 greedy tokens a side, different texts) was sampling noise rather than the body: the
+  replay's 61,978 rounds on the same texts give 0.996.
 - The trellis's gate-1 and gate-2 numbers are one distribution, not two: KLD below the NVFP4's and an accuracy within noise
   of it and of BF16 agree, and M1's weights-only lead over the NVFP4 survives the engine's kernels and the hq-e8-2b KV.
 

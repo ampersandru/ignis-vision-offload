@@ -341,19 +341,31 @@ builds, on the RTX 5090 (PCIe Gen 3). Every trellis run loads as a 16 GB card wo
    default); one-sided Fisher exact p = 0.941 for "the trellis is worse" ([quality gates](../../findings/2026-10-24-27b-16gb-quality-gates.md),
    gate 4; `.scratch/340/loops/report.md`). Forced closes are
    15/32 against 8/32, reported and not part of the gate.
-5. **Capacity: the three scenarios load and adapt; B0 and B1 serve 128K, B3 does not.** At B3 (16 GiB less 3 GiB) the load
-   adapts the context to 65,536 on two lanes, and 131,072 is 577 pages (36,928 tokens) short once
-   `vram.adapt_spare_tokens` is held back; the leg ran at 65,472 prompt tokens and a 128K request is refused with a 400, per
-   the owner's decision to change no configuration. The plans are within 1% of the corrected estimates on every line (the
+5. **Capacity: met at B0 and B1; at B3 the 128K leg does not fit, by the owner's decision.** The three scenarios load and
+   adapt as spec 04 says, and their plans were measured on this build. B1 (16 GiB less 1 GiB) served the 131,072-token
+   leg cold and decoded both lanes at once; B0's 128K leg is #339 A2's (an earlier build, not redone), with this build's
+   two-lane decode on the speed cells. At B3 (16 GiB less 3 GiB) the load adapts the context to 65,536 on two lanes, and
+   131,072 is 577 pages (36,928 tokens) short once `vram.adapt_spare_tokens` is held back; the leg ran at 65,472 prompt
+   tokens and a 128K request is refused with a 400: the owner chose to run the leg at the adapted context and change no
+   configuration, so AC 5's 128K leg is not met there. The plans are within 1% of the corrected estimates on every line (the
    study's workspace and pool formulas were stale: no hq prompt planes since ADR 0061, no context term)
    ([capacity](../../findings/2026-10-24-27b-16gb-capacity-on-the-5090.md); `.scratch/340/capacity/handoff.md`).
 6. **Speed estimate: published.** The 5090 measured at 1 and 2 lanes, 8K / 64K / 253K, uncapped and under the 84 / 70 / 36
    SM caps, with bytes and achieved bandwidth, and the per-card estimate for the 5060 Ti 16 GB, 5070 Ti and 5080 with its
    rule and assumptions, titled and stated as not measured on a 16 GB card
    ([speed estimate](../../findings/2026-10-24-27b-16gb-speed-estimate.md); `.scratch/340/speed/handoff.md`).
-7. **The `small-card` preset exists** (branch `340-gates`) and wrote its JSON live at B0 and B3: the card, the plan lines,
-   decode tok/s on coding and agent-like turns, TTFT at 8K and 64K, with a 64K cell that does not fit recorded as such
-   (`.scratch/340/small-card/handoff-live.md`).
+7. **The `small-card` preset exists**: `ignis-bench small-card --endpoint <url> [--out <file>]` writes one JSON
+   (`ignis-small-card/1`): the card (name, VRAM, PCIe link current and max, read after the decode), the plan lines and
+   KV pages, the config values that shape the load with their sources, what the load adapted, decode tok/s on the
+   coding prompts (thinking off) and three synthetic agent turns (thinking on: with it off they answer with a tool call,
+   which reaches the client whole, so the first live run on main timed none of them), TTFT at 8K and 64K; never a key,
+   a header or a path. The live runs found two things no route said, so `GET /v1/models` gained them: the running
+   `decode_lanes` and the load's `adapted` steps (`""` when none). On merged main at B3 the record reads
+   `running_decode_lanes` 2, `adapted` `max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens
+   65536)`, decode 476 tok/s median on the coding prompts and 437 on the agent turns, 4.78 accepted drafts a round,
+   and the 64K cell as not fitting (it names `--cells 65528`), with no note
+   (`.scratch/340/final/live-b3-main-2.json`; the B0 run: `.scratch/340/small-card/live-b0.json`). The user guide's
+   page: [measure a 16 GB card](../../user/guides/measure-a-16gb-card.md).
 8. **One finding per gate group: done.** The three findings above, with their rows in
    [`docs/findings/README.md`](../../findings/README.md).
 
