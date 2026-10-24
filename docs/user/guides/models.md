@@ -12,7 +12,7 @@ one container, verified against its provenance sidecar (`.graft.json` or
 ## The catalog
 
 The models the server knows how to fetch are its **catalog**
-([ADR 0047](../../adr/0047-a-catalog-the-operator-can-extend.md)). Five are built
+([ADR 0047](../../adr/0047-a-catalog-the-operator-can-extend.md)). Eight are built
 into the binary, each pinned file by file — byte count and SHA-256 — at a fixed
 revision of its Hugging Face repository:
 
@@ -23,13 +23,22 @@ revision of its Hugging Face repository:
 | `qwen3.8-flash-next` | [`gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis`](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis) | 67.8 GiB (with its MTP companion) |
 | `ignis-image-2.1-turbo` | [`gpillon/ignis-image-2.1-turbo`](https://huggingface.co/gpillon/ignis-image-2.1-turbo) | 15.6 GiB (the [image model](../api/images.md); non-commercial licence) |
 | `qwen3.8-27b-16g` | [`gpillon/Qwen3.8-27B-trellis-3bpw-ignis`](https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis) | 12.5 GiB (the 27B for 16 GB cards) |
+| `qwen3-asr-1.7b` | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 1.5 GiB (the [speech model](../api/transcriptions.md), `speech.model: auto`: a Q4_K_M decoder and a Q8_0 audio encoder) |
+| `qwen3-asr-1.7b-q8` | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 2.3 GiB (the same with a Q8_0 decoder) |
+| `qwen3-asr-0.6b` | [`gpillon/Qwen3-ASR-0.6B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-0.6B-GGUF-ignis) | 0.9 GiB (the smaller speech model, for a weak CPU) |
 
 The id is the **served id**: what `--model-id` names, what `/v1/models`
 reports and what a request puts in `model`.
 
+The three `qwen3-asr-*` entries are the **speech models** (`kind: speech`): two
+GGUF files each, a decoder and its audio encoder, with no sidecar. They run on
+the CPU beside the loaded model, so they state no card class and no card refuses
+them, and a switch never goes to one. `ignis-server model download qwen3-asr-1.7b`
+fetches the default; the two 1.7B entries share one encoder file.
+
 Each entry states the smallest **card class** it loads on
 ([ADR 0064](../../adr/0064-a-catalog-entry-states-its-card-class.md)): every
-built-in one is 32 GB, the RTX 5090's class, except `qwen3.8-27b-16g` (16 GB).
+built-in model is 32 GB, the RTX 5090's class, except `qwen3.8-27b-16g` (16 GB) and the speech models (none).
 On a card of a smaller class (16 GB), the server refuses an entry above it before unloading or fetching
 anything: a switch to it and a request naming it are answered
 `409 model_above_card_class`, naming both classes, while the loaded model

@@ -22,6 +22,9 @@ The models the server knows how to fetch without an operator catalog. Each is pi
 | [`qwen3.8-flash-next`](#qwen38-flash-next) | [`gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis`](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis) | 67.8 GiB | `qwen3_8_flash_next_trellis_a25-v2.ninfer` |
 | [`ignis-image-2.1-turbo`](#ignis-image-21-turbo) | [`gpillon/ignis-image-2.1-turbo`](https://huggingface.co/gpillon/ignis-image-2.1-turbo) | 15.6 GiB | `ignis_image_2_1_turbo-v2.ninfer` |
 | [`qwen3.8-27b-16g`](#qwen38-27b-16g) | [`gpillon/Qwen3.8-27B-trellis-3bpw-ignis`](https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis) | 12.5 GiB | `qwen3_8_27b_trellis_sc30-v2.ninfer` |
+| [`qwen3-asr-1.7b`](#qwen3-asr-17b) | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 1.5 GiB | `Qwen3-ASR-1.7B-Q4_K_M.gguf` |
+| [`qwen3-asr-1.7b-q8`](#qwen3-asr-17b-q8) | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 2.3 GiB | `Qwen3-ASR-1.7B-Q8_0.gguf` |
+| [`qwen3-asr-0.6b`](#qwen3-asr-06b) | [`gpillon/Qwen3-ASR-0.6B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-0.6B-GGUF-ignis) | 0.9 GiB | `Qwen3-ASR-0.6B-Q8_0.gguf` |
 
 ## qwen3.8-27b
 
@@ -69,3 +72,30 @@ The models the server knows how to fetch without an operator catalog. Each is pi
 |---|---|---|
 | `qwen3_8_27b_trellis_sc30-v2.ninfer.conversion.json` | 309,495 | `210ab54bfe8b04e5fc4337ee3755c340ea3f21239aa625c505aa2406645a340d` |
 | `qwen3_8_27b_trellis_sc30-v2.ninfer` | 13,379,877,124 | `2c4c9ee4d6b25c08da6c2d85840126e73d120564e230f926b6230b5b95ee8b3c` |
+
+## qwen3-asr-1.7b
+
+[`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) at revision `f8a5263e398c1b3606abedc6b9c74dcbced9f93f`, 1,638,144,608 bytes in 2 files.
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` | 355,709,472 | `f325a44bdbc23b2df78ed35ad6342da3aabf1e618e1a9ffd1ef8861cb3b1b0f6` |
+| `Qwen3-ASR-1.7B-Q4_K_M.gguf` | 1,282,435,136 | `5c5f878af090a70b25dc7a0f1090620e734654e9eceb6f4ac4656423c243974c` |
+
+## qwen3-asr-1.7b-q8
+
+[`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) at revision `f8a5263e398c1b3606abedc6b9c74dcbced9f93f`, 2,520,744,544 bytes in 2 files.
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` | 355,709,472 | `f325a44bdbc23b2df78ed35ad6342da3aabf1e618e1a9ffd1ef8861cb3b1b0f6` |
+| `Qwen3-ASR-1.7B-Q8_0.gguf` | 2,165,035,072 | `9039c0cbbc13be5c25f2b34fcb70258f68f06b64f67a48831c7e13c72593e1e7` |
+
+## qwen3-asr-0.6b
+
+[`gpillon/Qwen3-ASR-0.6B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-0.6B-GGUF-ignis) at revision `af02916ea7a532a667a907c2a163b16a8c04b433`, 1,019,141,984 bytes in 2 files.
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `mmproj-Qwen3-ASR-0.6B-Q8_0.gguf` | 214,392,608 | `ee5e87436bcf8b1c550edd4300fd0516067d55b547611734d27fbc55ecaec3bc` |
+| `Qwen3-ASR-0.6B-Q8_0.gguf` | 804,749,376 | `027ad3329549cd2c14e4ebd7d104e0390566e06570270c33062529474ec56015` |

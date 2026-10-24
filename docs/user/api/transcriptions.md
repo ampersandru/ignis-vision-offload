@@ -23,8 +23,9 @@ by itself:
 ignis-server model download qwen3-asr-1.7b
 ```
 
-`speech.model` picks it: `auto` (the default) is `qwen3-asr-1.7b`, the 1.7B
-model with a Q4_K_M decoder; a catalog id picks another entry; `off` turns it
+`speech.model` picks it: `auto` (the default) is `qwen3-asr-1.7b` (1.5 GiB), the 1.7B
+model with a Q4_K_M decoder; a catalog id picks another entry (`qwen3-asr-1.7b-q8`,
+2.3 GiB, or `qwen3-asr-0.6b`, 0.9 GiB); `off` turns it
 off. It is loaded by the first request, about a second or two of delay, and
 unloaded after `speech.idle_unload` seconds (300) without a transcription.
 `GET /v1/models` says whether it can serve:

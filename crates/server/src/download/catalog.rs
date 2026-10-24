@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use ignis_core::compute::ModelFamily;
+use ignis_core::compute::{ModelFamily, ModelKind};
 use serde_json::{Map, Value};
 
 use crate::config::file::{Files, Format};
@@ -44,9 +44,13 @@ pub static BUILT_IN_CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     Catalog { entries }
 });
 
-/// The keys an entry takes; every one but `card_class` and `aliases` is
+/// The keys an entry takes; every one but `kind`, `card_class` and `aliases` is
 /// required.
-const ENTRY_KEYS: [&str; 7] = ["id", "repo", "revision", "artifact", "card_class", "aliases", "files"];
+const ENTRY_KEYS: [&str; 8] = ["id", "repo", "revision", "artifact", "kind", "card_class", "aliases", "files"];
+
+/// The name an entry's audio encoder carries beside its decoder (`kind:
+/// speech`): the speech adapter finds the encoder by this prefix.
+pub const SPEECH_ENCODER_PREFIX: &str = "mmproj-";
 
 /// The keys one of an entry's files takes.
 const FILE_KEYS: [&str; 3] = ["name", "bytes", "sha256"];
@@ -100,6 +104,11 @@ pub struct CatalogEntry {
     pub revision: String,
     /// The file the server loads, one of [`CatalogEntry::files`].
     pub artifact: String,
+    /// What the entry is, when the catalog says it: `Some(ModelKind::Speech)`
+    /// for a speech model (`kind: speech`; ADR 0066), never switched to,
+    /// whose files are GGUFs with no sidecar. `None` for the rest: a text or
+    /// image model, told apart by its artifact's header.
+    pub kind: Option<ModelKind>,
     /// The smallest card class it loads on (`card_class`, in GB; ADR 0064
     /// §1), when it states one. Optional in both layers, by one rule: an
     /// entry that states none is never refused by class, and the VRAM plan's
@@ -117,6 +126,11 @@ pub struct CatalogEntry {
 }
 
 impl CatalogEntry {
+    /// Whether the entry is a speech model (`kind: speech`).
+    pub fn is_speech(&self) -> bool {
+        self.kind == Some(ModelKind::Speech)
+    }
+
     /// The model family the entry is of, as far as the catalog tells it:
     /// the family whose own id it is, or whose own id it answers to as an
     /// alias. `None` for any other — the family stays the artifact's header's
@@ -423,6 +437,7 @@ fn read_entry(value: &Value, layer: CatalogLayer) -> Result<CatalogEntry, String
     }
     let revision = text(map, "revision")?;
     let artifact = text(map, "artifact")?;
+    let kind = kind(map)?;
     let card_class = card_class(map)?;
     let aliases = aliases(map, &id)?;
     let Some(Value::Array(listed)) = map.get("files") else {
@@ -443,14 +458,38 @@ fn read_entry(value: &Value, layer: CatalogLayer) -> Result<CatalogEntry, String
     if !files.iter().any(|file| file.name == artifact) {
         return Err(format!("`artifact` `{artifact}` is not among its `files`"));
     }
-    let sidecars: Vec<String> = crate::loader::SIDECAR_SUFFIXES.iter().map(|suffix| format!("{artifact}{suffix}")).collect();
-    if !files.iter().any(|file| sidecars.contains(&file.name)) {
-        return Err(format!(
-            "no file is the artifact's sidecar ({}): the loader refuses a load without one",
-            sidecars.join(" or ")
-        ));
+    if kind == Some(ModelKind::Speech) {
+        // A speech model is two GGUFs and no sidecar: the decoder is the
+        // artifact, the encoder the `mmproj-` file beside it.
+        if !artifact.ends_with(".gguf") {
+            return Err(format!("a speech model's `artifact` is its decoder GGUF, got `{artifact}`"));
+        }
+        if !files.iter().any(|file| file.name != artifact && file.name.starts_with(SPEECH_ENCODER_PREFIX) && file.name.ends_with(".gguf")) {
+            return Err(format!(
+                "a speech model needs its audio encoder among its `files`: a `{SPEECH_ENCODER_PREFIX}*.gguf` file beside `{artifact}`"
+            ));
+        }
+    } else {
+        let sidecars: Vec<String> = crate::loader::SIDECAR_SUFFIXES.iter().map(|suffix| format!("{artifact}{suffix}")).collect();
+        if !files.iter().any(|file| sidecars.contains(&file.name)) {
+            return Err(format!(
+                "no file is the artifact's sidecar ({}): the loader refuses a load without one",
+                sidecars.join(" or ")
+            ));
+        }
     }
-    Ok(CatalogEntry { id, repo, revision, artifact, card_class, aliases, files, layer })
+    Ok(CatalogEntry { id, repo, revision, artifact, kind, card_class, aliases, files, layer })
+}
+
+/// `kind`, when stated: `speech`, the one kind a catalog says. A text or an
+/// image model is told apart by its artifact's header (ADR 0047), so stating
+/// either here would be a second word that could disagree with the file.
+fn kind(map: &Map<String, Value>) -> Result<Option<ModelKind>, String> {
+    match map.get("kind") {
+        None => Ok(None),
+        Some(Value::String(kind)) if kind.trim() == "speech" => Ok(Some(ModelKind::Speech)),
+        Some(other) => Err(format!("`kind` must be `speech` when stated (a text or image model's kind is read from its artifact), got {other}")),
+    }
 }
 
 /// `card_class`, when stated: the GB of the smallest card class the entry
@@ -700,6 +739,56 @@ mod tests {
         ),
     ];
 
+    /// The speech releases (ADR 0066, spec speech/01 AC 22): `(id, repo,
+    /// revision, decoder, [(file, bytes, sha256)])`, written out again from
+    /// the repos' `SHA256SUMS`. A speech entry states no card class: it runs
+    /// on the CPU, so no card refuses it.
+    #[allow(clippy::type_complexity)]
+    const SPEECH_RELEASES: [(&str, &str, &str, &str, &[(&str, u64, &str)]); 3] = [
+        (
+            "qwen3-asr-1.7b",
+            "gpillon/Qwen3-ASR-1.7B-GGUF-ignis",
+            "f8a5263e398c1b3606abedc6b9c74dcbced9f93f",
+            "Qwen3-ASR-1.7B-Q4_K_M.gguf",
+            &[
+                ("mmproj-Qwen3-ASR-1.7B-Q8_0.gguf", 355_709_472, "f325a44bdbc23b2df78ed35ad6342da3aabf1e618e1a9ffd1ef8861cb3b1b0f6"),
+                ("Qwen3-ASR-1.7B-Q4_K_M.gguf", 1_282_435_136, "5c5f878af090a70b25dc7a0f1090620e734654e9eceb6f4ac4656423c243974c"),
+            ],
+        ),
+        (
+            "qwen3-asr-1.7b-q8",
+            "gpillon/Qwen3-ASR-1.7B-GGUF-ignis",
+            "f8a5263e398c1b3606abedc6b9c74dcbced9f93f",
+            "Qwen3-ASR-1.7B-Q8_0.gguf",
+            &[
+                ("mmproj-Qwen3-ASR-1.7B-Q8_0.gguf", 355_709_472, "f325a44bdbc23b2df78ed35ad6342da3aabf1e618e1a9ffd1ef8861cb3b1b0f6"),
+                ("Qwen3-ASR-1.7B-Q8_0.gguf", 2_165_035_072, "9039c0cbbc13be5c25f2b34fcb70258f68f06b64f67a48831c7e13c72593e1e7"),
+            ],
+        ),
+        (
+            "qwen3-asr-0.6b",
+            "gpillon/Qwen3-ASR-0.6B-GGUF-ignis",
+            "af02916ea7a532a667a907c2a163b16a8c04b433",
+            "Qwen3-ASR-0.6B-Q8_0.gguf",
+            &[
+                ("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf", 214_392_608, "ee5e87436bcf8b1c550edd4300fd0516067d55b547611734d27fbc55ecaec3bc"),
+                ("Qwen3-ASR-0.6B-Q8_0.gguf", 804_749_376, "027ad3329549cd2c14e4ebd7d104e0390566e06570270c33062529474ec56015"),
+            ],
+        ),
+    ];
+
+    /// A minimal valid speech entry, YAML, for the refusal table.
+    const SPEECH_OPERATOR: &str = "models:
+  - id: acme-asr
+    repo: acme/asr
+    revision: v1
+    artifact: acme-decoder.gguf
+    kind: speech
+    files:
+      - { name: mmproj-acme.gguf, bytes: 10, sha256: 9c1e000000000000000000000000000000000000000000000000000000000001 }
+      - { name: acme-decoder.gguf, bytes: 20, sha256: abb1000000000000000000000000000000000000000000000000000000000002 }
+";
+
     /// A minimal valid operator entry, YAML, for the refusal table to break
     /// one thing at a time.
     const OPERATOR: &str = "models:
@@ -725,8 +814,9 @@ mod tests {
         let document = Format::Yaml.read(BUILT_IN_TEXT).expect("YAML");
         let parsed = parse(&document, "built into this binary", CatalogLayer::BuiltIn).expect("every invariant holds");
         assert_eq!(parsed, BUILT_IN_CATALOG.entries);
-        assert_eq!(parsed.len(), RELEASES.len());
+        assert_eq!(parsed.len(), RELEASES.len() + SPEECH_RELEASES.len());
         for (entry, (id, repo, revision, artifact, card_class, aliases, files)) in parsed.iter().zip(RELEASES) {
+            assert_eq!(entry.kind, None, "{id}: a text or image model states no kind");
             assert_eq!((entry.id.as_str(), entry.repo.as_str(), entry.revision.as_str(), entry.artifact.as_str()), (id, repo, revision, artifact));
             assert_eq!(entry.card_class.map(CardClass::gb), Some(card_class), "{id}: every built-in entry states its class");
             assert_eq!(entry.aliases, aliases, "{id}");
@@ -739,6 +829,56 @@ mod tests {
         }
     }
 
+    /// Spec speech/01 AC 22: the three speech entries, pin for pin, each a
+    /// `kind: speech` entry of GGUFs with no sidecar and no card class, the
+    /// decoder its artifact and the encoder the `mmproj-` file beside it.
+    #[test]
+    fn the_built_in_catalog_holds_the_three_speech_entries_with_their_pins() {
+        let catalog = Catalog::built_in();
+        for (id, repo, revision, decoder, files) in SPEECH_RELEASES {
+            let entry = catalog.entry(id).unwrap_or_else(|| panic!("{id} is built in"));
+            assert_eq!((entry.repo.as_str(), entry.revision.as_str(), entry.artifact.as_str()), (repo, revision, decoder), "{id}");
+            assert!(entry.is_speech(), "{id}");
+            assert_eq!((entry.card_class, entry.aliases.as_slice(), entry.layer), (None, &[][..], CatalogLayer::BuiltIn), "{id}");
+            let listed: Vec<(&str, u64, &str)> = entry.files.iter().map(|f| (f.name.as_str(), f.bytes, f.sha256.as_str())).collect();
+            assert_eq!(listed, files, "{id}");
+            assert_eq!(entry.files.iter().filter(|f| f.name.starts_with(SPEECH_ENCODER_PREFIX)).count(), 1, "{id}: one encoder");
+        }
+        assert_eq!(crate::config::AUTO_SPEECH_MODEL_ID, "qwen3-asr-1.7b");
+        assert!(catalog.entries().iter().filter(|entry| entry.is_speech()).count() == SPEECH_RELEASES.len());
+        assert!(!catalog.entry("qwen3.8-27b").unwrap().is_speech());
+        // The two 1.7B entries share one encoder file, byte for byte, so a
+        // download of both lands it once.
+        let (a, b) = (catalog.entry("qwen3-asr-1.7b").unwrap(), catalog.entry("qwen3-asr-1.7b-q8").unwrap());
+        assert_eq!(a.files[0], b.files[0]);
+    }
+
+    /// `kind: speech` takes the speech rules in place of the sidecar rule,
+    /// and no other kind is stated in a catalog.
+    #[test]
+    fn a_speech_entry_needs_its_encoder_and_no_sidecar_and_no_other_kind_is_stated() {
+        let catalog = operator(SPEECH_OPERATOR).expect("a speech entry has no sidecar");
+        let acme = catalog.entry("acme-asr").unwrap();
+        assert_eq!(acme.kind, Some(ModelKind::Speech));
+        assert!(acme.is_speech());
+        for (from, to, says) in [
+            ("    kind: speech\n", "    kind: text\n", vec!["acme-asr", "`kind`", "`speech`"]),
+            ("    kind: speech\n", "    kind: 3\n", vec!["acme-asr", "`kind`"]),
+            ("mmproj-acme.gguf", "encoder-acme.gguf", vec!["acme-asr", "audio encoder", "mmproj-"]),
+            ("mmproj-acme.gguf", "mmproj-acme.bin", vec!["acme-asr", "audio encoder"]),
+            ("artifact: acme-decoder.gguf", "artifact: mmproj-acme.gguf", vec!["acme-asr", "audio encoder"]),
+            ("acme-decoder.gguf", "acme-decoder.ninfer", vec!["acme-asr", "decoder GGUF"]),
+        ] {
+            let text = SPEECH_OPERATOR.replace(from, to);
+            let error = operator(&text).expect_err(to).to_string();
+            for want in says {
+                assert!(error.contains(want), "{to}: {error} lacks {want}");
+            }
+        }
+        // A text entry without a kind still needs its sidecar.
+        let text = OPERATOR.replace("acme_ft.ninfer.graft.json", "acme_ft.ninfer.notes.json");
+        assert!(operator(&text).expect_err("sidecar").to_string().contains("sidecar"));
+    }
     /// The invariants the rest of the server leans on, stated once more over
     /// the built-in catalog on their own.
     #[test]
@@ -775,7 +915,7 @@ mod tests {
         let json = serde_json::to_string(&Format::Yaml.read(OPERATOR).unwrap()).unwrap();
         let from_json = parse_operator(&json, Format::Json, "acme.catalog.json").expect("valid");
         assert_eq!(from_yaml, from_json);
-        assert_eq!(from_yaml.ids(), ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3.8-27b-16g", "acme-qwen3.8-27b-ft"]);
+        assert_eq!(from_yaml.ids(), ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3.8-27b-16g", "qwen3-asr-1.7b", "qwen3-asr-1.7b-q8", "qwen3-asr-0.6b", "acme-qwen3.8-27b-ft"]);
         let acme = from_yaml.entry("acme-qwen3.8-27b-ft").unwrap();
         assert_eq!(acme.layer, CatalogLayer::Operator);
         assert_eq!(acme.revision, "v1");

@@ -52,6 +52,15 @@ fn err(e: impl std::fmt::Display) -> SpeechError {
     SpeechError(e.to_string())
 }
 
+/// The encoder is the entry's file under the fixed `mmproj-` name, beside the
+/// decoder (spec speech/01 §6; the catalog holds an entry to having one).
+fn encoder_of(files: &SpeechFiles) -> Option<&std::path::PathBuf> {
+    files.files.iter().find(|f| {
+        *f != &files.decoder
+            && f.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(crate::download::catalog::SPEECH_ENCODER_PREFIX))
+    })
+}
+
 impl SpeechExecutor for CpuExecutor {
     fn name(&self) -> &'static str {
         "cpu"
@@ -73,12 +82,7 @@ impl SpeechExecutor for CpuExecutor {
                 return Ok(());
             }
         }
-        // The encoder is the entry's file under the fixed `mmproj-` name, beside the decoder
-        // (spec speech/01 §6).
-        let encoder = files
-            .files
-            .iter()
-            .find(|f| *f != &files.decoder && f.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("mmproj-")))
+        let encoder = encoder_of(files)
             .ok_or_else(|| SpeechError(format!("{}: no audio encoder (mmproj-*.gguf) beside {}", files.id, files.decoder.display())))?
             .clone();
         let model = ModelFiles { decoder: files.decoder.clone(), encoder };
@@ -136,6 +140,26 @@ mod tests {
             all.push(dir.join("mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"));
         }
         SpeechFiles { id: "qwen3-asr-1.7b".into(), decoder, files: all }
+    }
+
+    /// Spec speech/01 AC 22: each built-in speech entry, as `Speech::resolve`
+    /// hands its files over, has its decoder as the artifact and exactly its
+    /// `mmproj-` file as the encoder this adapter picks.
+    #[test]
+    fn each_built_in_speech_entry_gives_the_adapter_its_decoder_and_encoder() {
+        let dir = std::path::Path::new("models");
+        let catalog = crate::download::Catalog::built_in();
+        for (id, decoder, encoder) in [
+            ("qwen3-asr-1.7b", "Qwen3-ASR-1.7B-Q4_K_M.gguf", "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"),
+            ("qwen3-asr-1.7b-q8", "Qwen3-ASR-1.7B-Q8_0.gguf", "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"),
+            ("qwen3-asr-0.6b", "Qwen3-ASR-0.6B-Q8_0.gguf", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"),
+        ] {
+            let entry = catalog.entry(id).expect(id);
+            let files = SpeechFiles { id: id.into(), decoder: entry.artifact_path(dir), files: entry.files.iter().map(|f| dir.join(&f.name)).collect() };
+            assert_eq!(files.decoder, dir.join(decoder), "{id}");
+            assert!(files.files.contains(&files.decoder), "{id}: the decoder is one of the entry's files");
+            assert_eq!(encoder_of(&files), Some(&dir.join(encoder)), "{id}");
+        }
     }
 
     #[test]
