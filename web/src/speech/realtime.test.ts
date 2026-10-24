@@ -240,13 +240,20 @@ describe("openTranscription", () => {
       expect(await refusedWith(answering(502, { error: { message: "bad gateway" } }))).toMatchObject({ kind: "unreachable" });
     });
 
-    it("says nothing once the page has closed the session", async () => {
-      const { sockets, calls, handlers, deps } = setup();
-      const session = openTranscription("", handlers, deps);
-      session.close();
-      sockets[0].refuse();
+    it("says nothing once the page has closed the session, even while it was asking why", async () => {
+      const before = setup();
+      const first = openTranscription("", before.handlers, before.deps);
+      first.close();
+      before.sockets[0].refuse();
       await settle();
-      expect(calls).toEqual([]);
+      expect(before.calls).toEqual([]);
+
+      const during = setup();
+      const second = openTranscription("", during.handlers, during.deps);
+      during.sockets[0].refuse();
+      second.close();
+      await settle();
+      expect(during.calls).toEqual([]);
     });
   });
 });

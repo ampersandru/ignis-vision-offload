@@ -96,16 +96,17 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     }
     if (!res.ok) throw new Error(`GET /v1/models: ${res.status}`);
     const body = (await res.json()) as ModelList;
-    const last = {
+    // What every state carries beside its own: how the last switch ended, and the speech model's availability.
+    const beside = {
       ...(body.last_switch ? { lastSwitch: body.last_switch } : {}),
       ...(body.speech ? { speech: { available: body.speech.available === true, ...(body.speech.reason ? { reason: body.speech.reason } : {}) } } : {}),
     };
     // The entry is still the old model while switching; the ids are in `switching`.
     if (body.status === "switching" && body.switching) {
-      return { state: "switching", from: body.switching.from, to: body.switching.to, since: now, ...last };
+      return { state: "switching", from: body.switching.from, to: body.switching.to, since: now, ...beside };
     }
     if (body.status === "failed") {
-      return { state: "error", message: `Switch failed: ${body.reason ?? "no reason given"}`, failed: true, ...last };
+      return { state: "error", message: `Switch failed: ${body.reason ?? "no reason given"}`, failed: true, ...beside };
     }
     // The loaded model is the `active` entry; a server without the field lists it alone. The speech model is
     // `active` too, after it: loaded beside the other, never the one this page talks to.
@@ -116,9 +117,9 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     const contextLimit = entry?.max_model_len ?? null;
     const reported = entry?.kind;
     const kind: { kind?: ModelKind } = reported === "image" || reported === "text" || reported === "speech" ? { kind: reported } : {};
-    if (body.status === "unloaded") return { state: "unloaded", id, contextLimit, ...kind, ...last };
-    if (body.status === "loading") return { state: "loading", to: body.switching?.to ?? id, since: now, ...last };
-    return { state: "ready", id, contextLimit, ...kind, ...last };
+    if (body.status === "unloaded") return { state: "unloaded", id, contextLimit, ...kind, ...beside };
+    if (body.status === "loading") return { state: "loading", to: body.switching?.to ?? id, since: now, ...beside };
+    return { state: "ready", id, contextLimit, ...kind, ...beside };
   } catch (err) {
     return { state: "error", message: String(err) };
   }

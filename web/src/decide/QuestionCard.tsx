@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { DictationMic, DictationStrip, HintText } from "../speech/Dictation.tsx";
+import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
 import { dictationHint } from "../speech/dictation.ts";
-import { type Dictation, useDictationState } from "../speech/useDictation.ts";
+import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
 import { caption, field, fieldLook } from "../ui/classes.ts";
 import { IconClose, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { asText, jsonString, writeOrdered } from "./json.ts";
@@ -35,6 +35,7 @@ import {
   PRIMITIVES,
   type Primitive,
   type Question,
+  questionProse,
 } from "./model.ts";
 
 // One question in the builder (GitHub #247).
@@ -72,14 +73,14 @@ export function QuestionCard({
 }) {
   const set = <K extends keyof Question>(key: K, value: Question[K]) => onChange({ ...question, [key]: value });
   const bad = faults.length > 0;
-  const speech = useDictationState(dictation);
-  const said = dictationHint(speech, "Decide", false);
+  const mic = useDictationState(dictation);
+  const said = dictationHint(mic, "Decide");
+  const prose = questionProse(question) !== null;
 
   return (
     <li
       className={`cut border-l-2 bg-surface p-3 ${bad ? "border-l-warn" : "border-l-line"}`}
-      onKeyDown={(e) => dictation.controller.keyDown(e)}
-      onKeyUp={(e) => dictation.controller.keyUp(e)}
+      {...dictationKeys(dictation, prose)}
     >
       {/* The type and the controls; what the question *asks* is the field
           below, because that is what a reader is here to write. */}
@@ -98,8 +99,8 @@ export function QuestionCard({
           ))}
         </select>
         <span className="min-w-0 flex-1" />
-        {question.instructions.kind === "string" && (
-          <DictationMic dictation={dictation} state={speech} label="Dictate into Question" title="Dictate into Question" compact />
+        {prose && (
+          <DictationMic dictation={dictation} state={mic} label="Dictate into Question" title="Dictate into Question" compact />
         )}
         <div className="flex shrink-0 items-center">
           <MoveButton label="Move up" disabled={first} onClick={() => onMove(-1)}>
@@ -134,15 +135,15 @@ export function QuestionCard({
             rows={2}
             className={`${field} mt-2 resize-y text-[15px]`}
             // The field being dictated into keeps its ember border.
-            style={speech.phase !== "idle" ? { borderColor: "var(--ember)" } : undefined}
+            style={mic.phase !== "idle" ? { borderColor: "var(--ember)" } : undefined}
           />
-          {speech.phase !== "idle" && (
+          {mic.phase !== "idle" && (
             <div className="mt-2">
-              <DictationStrip dictation={dictation} state={speech} compact />
+              <DictationStrip dictation={dictation} state={mic} compact />
             </div>
           )}
           {said && (
-            <p className={`mt-1 text-[12px] leading-snug ${said.tone === "fault" ? "text-fault" : said.tone === "warn" ? "text-warn" : "text-ash"}`}>
+            <p className={`mt-1 text-[12px] leading-snug ${toneClass(said.tone)}`}>
               <HintText text={said.text} />
             </p>
           )}

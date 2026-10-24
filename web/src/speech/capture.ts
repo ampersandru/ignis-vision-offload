@@ -37,17 +37,18 @@ export async function startCapture(onChunk: (pcm: Int16Array) => void, deps: Cap
     if (err instanceof Error && (err.name === "NotAllowedError" || err.name === "SecurityError")) throw new MicBlocked(err.message);
     throw err;
   }
-  const context = createContext();
+  let context: AudioContext | null = null;
   let stopped = false;
   let flushed: (() => void) | null = null;
   const stop = () => {
     if (stopped) return;
     stopped = true;
     for (const track of stream.getTracks()) track.stop();
-    void context.close();
+    void context?.close();
     flushed?.();
   };
   try {
+    context = createContext();
     const url = moduleUrl();
     try {
       await context.audioWorklet.addModule(url);

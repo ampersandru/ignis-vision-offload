@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { imageFromFile, type PromptImage } from "../conversation/images.ts";
-import { DictationMic, DictationStrip, HintText } from "../speech/Dictation.tsx";
+import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
 import { dictationHint } from "../speech/dictation.ts";
-import { type Dictation, useDictationState } from "../speech/useDictation.ts";
+import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
 import { caption, field } from "../ui/classes.ts";
 import { IconClose, IconImage, IconPaperclip } from "../ui/icons.tsx";
 import { Lightbox } from "../ui/Lightbox.tsx";
 import { type FileSource, formatBytes } from "./evidenceFile.ts";
-import { type Evidence, type EvidenceMode, locateTarget, restore, setAside, type Spare } from "./model.ts";
+import { type Evidence, type EvidenceMode, locateTarget, restore, setAside, type Spare, typedEvidence } from "./model.ts";
 import { stripOf, STRIP_WIDTH } from "./strip.ts";
 import { Strip } from "./Strip.tsx";
 
@@ -68,9 +68,9 @@ export function EvidenceEditor({
   const picker = useRef<HTMLInputElement>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const hint = MODES.find((m) => m.mode === evidence.mode)?.hint;
-  const speech = useDictationState(dictation);
-  const said = dictationHint(speech, "Decide", false);
-  const prose = evidence.mode === "text" && !evidence.file;
+  const mic = useDictationState(dictation);
+  const said = dictationHint(mic, "Decide");
+  const prose = typedEvidence(evidence) !== null;
   // The field going away (another mode, a file) takes its dictation with it.
   useEffect(() => {
     if (!prose) dictation.controller.discard();
@@ -93,11 +93,11 @@ export function EvidenceEditor({
   }
 
   return (
-    <section onKeyDown={(e) => dictation.controller.keyDown(e)} onKeyUp={(e) => dictation.controller.keyUp(e)}>
+    <section {...dictationKeys(dictation, prose)}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1">
           <h2 className="font-display text-[15px] font-semibold text-ink">Evidence</h2>
-          {prose && <DictationMic dictation={dictation} state={speech} label="Dictate into Evidence" title="Dictate into Evidence" compact />}
+          {prose && <DictationMic dictation={dictation} state={mic} label="Dictate into Evidence" title="Dictate into Evidence" compact />}
         </div>
         <div role="group" aria-label="Evidence shape" className="flex">
           {MODES.map(({ mode, label }) => (
@@ -137,11 +137,11 @@ export function EvidenceEditor({
             rows={5}
             className={`${field} mt-2 resize-y`}
             // The field being dictated into keeps its ember border.
-            style={speech.phase !== "idle" ? { borderColor: "var(--ember)" } : undefined}
+            style={mic.phase !== "idle" ? { borderColor: "var(--ember)" } : undefined}
           />
-          {speech.phase !== "idle" && (
+          {mic.phase !== "idle" && (
             <div className="mt-2">
-              <DictationStrip dictation={dictation} state={speech} compact />
+              <DictationStrip dictation={dictation} state={mic} compact />
             </div>
           )}
         </>
@@ -178,7 +178,7 @@ export function EvidenceEditor({
 
       <div className="mt-1.5 flex items-start justify-between gap-3">
         {said ? (
-          <p className={`max-w-[68ch] text-[12px] leading-snug ${said.tone === "fault" ? "text-fault" : said.tone === "warn" ? "text-warn" : "text-ash"}`}>
+          <p className={`max-w-[68ch] text-[12px] leading-snug ${toneClass(said.tone)}`}>
             <HintText text={said.text} />
           </p>
         ) : (

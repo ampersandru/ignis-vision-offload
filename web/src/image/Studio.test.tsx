@@ -192,6 +192,9 @@ describe("dictation in the image studio (spec speech/04)", () => {
     expect(html).toContain(">Done</button>");
     expect(html).toContain('role="status"');
     expect(html).toContain("Listening. Done puts the text at the cursor; Esc discards it. Generate waits until you press it.");
+    // The box's underline is the running heat bar, as in the chat: the strip's and the box's.
+    expect(html.match(/dictation-heat/g)).toHaveLength(2);
+    expect(composer(text, {})).not.toContain("dictation-heat");
     expect(composer(image, { phase: "finishing" })).toMatch(/<button type="submit" disabled=""/);
   });
 

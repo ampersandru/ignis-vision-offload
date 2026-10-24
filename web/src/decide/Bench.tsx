@@ -1,11 +1,10 @@
 import type { SpeechStatus } from "../api/model.ts";
-import { dictationContext } from "../speech/dictation.ts";
 import { useDictation } from "../speech/useDictation.ts";
 import { caption } from "../ui/classes.ts";
 import { IconPlus } from "../ui/icons.tsx";
 import { EvidenceEditor } from "./EvidenceEditor.tsx";
 import { jsonString } from "./json.ts";
-import { type Draft, type Evidence, type Fault, type Primitive, PRIMITIVES, type Question, type Spare } from "./model.ts";
+import { type Draft, evidenceContext, type Fault, type Primitive, PRIMITIVES, type Question, questionContext, type Spare } from "./model.ts";
 import { QuestionCard } from "./QuestionCard.tsx";
 
 // The bench (GitHub #247): the right-hand column where a decision is written,
@@ -18,14 +17,7 @@ import { QuestionCard } from "./QuestionCard.tsx";
 //
 // The prose fields — each question, and a text evidence — take dictation, a
 // mic each (spec speech/04, Q17); the JSON ones take none: speech is for
-// prose. A dictation's context is the other prose field's text first and its
-// own field's last, never raw JSON, nor an evidence loaded from a file.
-
-/** A question's prose, or nothing when it is JSON. */
-const proseOf = (question: Question) => (question.instructions.kind === "string" ? question.instructions.value : "");
-
-/** The evidence's prose: a text typed here, not JSON and not a file. */
-const evidenceProse = (evidence: Evidence) => (evidence.mode === "text" && !evidence.file ? evidence.text : "");
+// prose.
 
 export type Mode = "build" | "json";
 
@@ -79,7 +71,7 @@ export function Bench({
   const blocked = faults.length > 0 || jsonError !== null;
   const evidenceDictation = useDictation({
     onChange: (text) => onEdit({ ...draft, evidence: { mode: "text", text } }),
-    context: () => dictationContext([...draft.questions.map(proseOf), evidenceProse(draft.evidence)]),
+    context: () => evidenceContext(draft.questions, draft.evidence),
     speech,
   });
 
@@ -283,7 +275,7 @@ function JsonEditor({
 function DictatedQuestion({ speech, ...card }: Omit<Parameters<typeof QuestionCard>[0], "dictation"> & { speech?: SpeechStatus }) {
   const dictation = useDictation({
     onChange: (text) => card.onChange({ ...card.question, instructions: jsonString(text) }),
-    context: () => dictationContext([evidenceProse(card.evidence), proseOf(card.question)]),
+    context: () => questionContext(card.evidence, card.question),
     speech,
   });
   return <QuestionCard {...card} dictation={dictation} />;

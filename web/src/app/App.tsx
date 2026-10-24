@@ -26,6 +26,7 @@ import { DEFAULT_SETTINGS, type PlaygroundSettings } from "../settings/defaults.
 import type { ImageId } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { SettingsPanel } from "../settings/SettingsPanel.tsx";
+import { lastReply } from "../sessions/sessions.ts";
 import { dictationContext } from "../speech/dictation.ts";
 import { useDictation } from "../speech/useDictation.ts";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
@@ -94,7 +95,7 @@ export function App() {
   // Dictation into the prompt (spec speech/04): opened with the last reply and the prompt as it stands, in that order.
   const dictation = useDictation({
     onChange: setInput,
-    context: () => dictationContext([[...active.messages].reverse().find((m) => m.role === "assistant" && m.content.trim() !== "")?.content ?? "", input]),
+    context: () => dictationContext([lastReply(active.messages), input]),
     speech: model.speech,
     onUnavailable: refreshModel,
   });

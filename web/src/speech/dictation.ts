@@ -1,5 +1,5 @@
 import type { SpeechStatus } from "../api/model.ts";
-import { unavailable } from "./availability.ts";
+import { MIC_BLOCKED, unavailable } from "./availability.ts";
 import { type Capture, MicBlocked } from "./capture.ts";
 import { insertAt, wordCount } from "./insert.ts";
 import { levelOf } from "./pcm.ts";
@@ -36,14 +36,15 @@ const DISCARDED_MS = 4_000;
 const NOTICE_MS = 6_000;
 
 // The hint line's sentences (spec speech/04, "The hint line"): the shipped copy.
-export const IDLE = "Enter sends, Shift+Enter adds a line. Dictate with the mic, or hold Ctrl+Shift+Space while you speak.";
 export const LISTENING = "Listening. Done puts the text at the cursor; Esc discards it.";
 export const FINISHING = "Finishing the last words.";
 export const DISCARDED = "Dictation discarded.";
 export const CONNECTION_LOST = "Dictation stopped: the connection to the server closed. Insert what was heard, or discard it.";
 const busy = (seconds: number) => `Speech is busy with another dictation. Trying again in ${seconds} s.`;
 // Beyond the spec's tables: the retry refused too, a commit with no audio, a start that failed, an item that failed.
-export const STILL_BUSY = "Speech is still busy with another dictation. Press the mic to try again.";
+// A refusal is read as busy by elimination (realtime.ts), which a proxy that does not carry WebSockets also looks
+// like: the retry refused says both.
+export const STILL_BUSY = "The dictation still could not open: speech is busy, or this address does not carry WebSockets. Press the mic to try again.";
 export const NOTHING_HEARD = "Nothing was heard.";
 const cannotStart = (why: string) => `Dictation could not start: ${why.replace(/\.$/, "")}.`;
 const stopped = (why: string) => `Dictation stopped: ${why.replace(/\.$/, "")}. Insert what was heard, or discard it.`;
@@ -258,8 +259,8 @@ export class DictationController {
     if (holder === this) holder = null;
   }
 
-  /** Another field's mic was pressed: this dictation ends first, and what it heard lands here. */
-  private yieldTo() {
+  /** Another field's mic was pressed: this dictation ends, and what it heard lands here. */
+  private giveWay() {
     if (this.state.phase === "listening") void this.done();
     else if (this.state.phase === "failed") this.insertHeard();
     else if (this.state.phase === "waiting") {
@@ -269,7 +270,7 @@ export class DictationController {
   }
 
   private start() {
-    if (holder && holder !== this) holder.yieldTo();
+    if (holder && holder !== this) holder.giveWay();
     holder = this;
     const attempt = ++this.attempt;
     this.samples = 0;
@@ -307,8 +308,9 @@ export class DictationController {
         this.session = null;
         this.end();
         if (err instanceof MicBlocked) {
+          // Struck from now on; said at once too, for a Decide field, whose line shows no idle reason.
           this.blocked = true;
-          this.update({ phase: "idle" });
+          this.say(MIC_BLOCKED, "ash", NOTICE_MS, { phase: "idle" });
         } else {
           this.say(cannotStart(err instanceof Error ? err.message : String(err)), "fault", NOTICE_MS, { phase: "idle" });
         }
@@ -428,12 +430,12 @@ export class DictationController {
 export type DictationHandle = Pick<DictationController, "getState" | "subscribe" | "toggle" | "done" | "discard" | "insertHeard" | "keyDown" | "keyUp" | "active">;
 
 /**
- * The hint line's sentence for a dictation, or `null` for the field's own idle words. `action` is what sends the
- * field: Send in the chat, Generate in the image studio, Decide in Decide. `reason`: whether an unavailable mic's
- * sentence shows while nothing is under way — the composers' line always says it; a Decide field says it when its
- * mic is pressed.
+ * The hint line's sentence for what a dictation is doing or has just done, or `null` for the field's own words.
+ * `action` is what sends the field: Send in the chat, Generate in the image studio, Decide in Decide. An
+ * unavailable mic's reason is the field's to place: a composer's line says it in place of its idle words, and a
+ * Decide field says it when its mic is pressed, as a notice.
  */
-export function dictationHint(state: DictationState, action: "Send" | "Generate" | "Decide", reason = true): { text: string; tone: Tone } | null {
+export function dictationHint(state: DictationState, action: "Send" | "Generate" | "Decide"): { text: string; tone: Tone } | null {
   switch (state.phase) {
     case "listening":
       return { text: action === "Generate" ? `${LISTENING} Generate waits until you press it.` : LISTENING, tone: "ash" };
@@ -450,6 +452,5 @@ export function dictationHint(state: DictationState, action: "Send" | "Generate"
     return { text: `Inserted ${words} at the cursor. Nothing is sent until you press ${action}.`, tone: "ash" };
   }
   if (notice) return { text: notice.text, tone: notice.tone };
-  if (reason && state.unavailable) return { text: state.unavailable.sentence, tone: "ash" };
   return null;
 }

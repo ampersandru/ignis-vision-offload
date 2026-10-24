@@ -7,7 +7,7 @@ import { IconBrush, IconDownload, IconExpand, IconReference, IconRegenerate } fr
 import { Frame, RunLine, ShapeGlyph } from "./controls.tsx";
 import { exampleDraft, PICTURE_EXAMPLES } from "./examples.ts";
 import { Picture, usePictureUrl } from "./pictures.tsx";
-import { type ImageSession, inputNumbers, pictureName, type PoolImage, pictureOf, type Step, wireImages } from "./sessions.ts";
+import { type ImageSession, inputNumbers, lastPrompt, pictureName, type PoolImage, pictureOf, type Step, wireImages } from "./sessions.ts";
 import { StudioComposer } from "./StudioComposer.tsx";
 import { StudioSessions, StudioSettings } from "./StudioPanels.tsx";
 import { sidesOf } from "./studio.ts";
@@ -44,10 +44,7 @@ export function ImageStudio({
   // and the prompt as it stands.
   const dictation = useDictation({
     onChange: (prompt) => actions.setDraft({ prompt }),
-    context: () => {
-      const last = state.active.steps.at(-1);
-      return dictationContext([last?.revised ?? last?.prompt ?? "", state.active.draft.prompt]);
-    },
+    context: () => dictationContext([lastPrompt(state.active), state.active.draft.prompt]),
     speech: model.speech,
   });
   return (

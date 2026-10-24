@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelState } from "../api/model.ts";
-import { DictationMic, DictationStrip, HintText } from "../speech/Dictation.tsx";
+import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
 import { dictationHint } from "../speech/dictation.ts";
-import { type Dictation, useDictationState } from "../speech/useDictation.ts";
+import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconBrush, IconClose, IconImage, IconPlus } from "../ui/icons.tsx";
 import { ideasFor } from "./examples.ts";
@@ -39,9 +39,10 @@ export function StudioComposer({
   const plan = runPlan(model, limits, state.imageModel, draft.enhance ?? state.enhanceDefault, edit, busy);
   // Only whether it can be sent: the files are read from the store when it is.
   const sendable = paramsOf(draft, [], limits) !== null;
-  const speech = useDictationState(dictation);
-  const dictating = speech.phase !== "idle";
-  const said = dictationHint(speech, "Generate", false);
+  const mic = useDictationState(dictation);
+  const dictating = mic.phase !== "idle";
+  const live = mic.phase === "listening" || mic.phase === "finishing";
+  const said = dictationHint(mic, "Generate");
   // A dictation is never sent by itself: Generate waits until it ends.
   const canRun = state.loaded && plan.ready && !busy && sendable && !dictating;
   const runningHere = state.run?.sessionId === s.id;
@@ -49,8 +50,7 @@ export function StudioComposer({
   return (
     <div
       className="shrink-0 px-4 pb-4 md:px-8"
-      onKeyDown={(e) => dictation.controller.keyDown(e)}
-      onKeyUp={(e) => dictation.controller.keyUp(e)}
+      {...dictationKeys(dictation)}
       onDragOver={(e) => {
         if (![...e.dataTransfer.types].includes("Files")) return;
         e.preventDefault();
@@ -81,10 +81,11 @@ export function StudioComposer({
             ))}
           </div>
         )}
-        {dictating && <DictationStrip dictation={dictation} state={speech} />}
+        {dictating && <DictationStrip dictation={dictation} state={mic} />}
         <form
           aria-label="Next step"
-          className={`cut flex items-end gap-2 bg-surface p-2 shadow-[inset_0_-2px_0_var(--line)] [--cut-size:14px] focus-within:shadow-[inset_0_-2px_0_var(--ember)] ${over ? "outline-2 outline-ember outline-dashed" : ""}`}
+          // While listening, the box's underline is the running heat bar, as in the chat.
+          className={`cut relative flex items-end gap-2 bg-surface p-2 [--cut-size:14px] ${live ? "" : "shadow-[inset_0_-2px_0_var(--line)] focus-within:shadow-[inset_0_-2px_0_var(--ember)]"} ${over ? "outline-2 outline-ember outline-dashed" : ""}`}
           onSubmit={(e) => {
             e.preventDefault();
             if (canRun) actions.run();
@@ -107,7 +108,7 @@ export function StudioComposer({
             placeholder={edit ? (draft.inputs.length > 1 ? "Put the jacket from image 2 on the person in image 1" : "What should change in image 1") : "Describe the picture"}
             className="max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-normal text-ink [field-sizing:content] placeholder:text-ash focus:outline-none"
           />
-          <DictationMic dictation={dictation} state={speech} />
+          <DictationMic dictation={dictation} state={mic} />
           {/* Two buttons, never one changing type: the run ends while Stop's click is still being dispatched, and a
               button that is a submit by then would send the form again — the step would start over. */}
           {runningHere ? (
@@ -132,10 +133,11 @@ export function StudioComposer({
               {plan.label}
             </button>
           )}
+          {live && <span aria-hidden="true" className="dictation-heat absolute inset-x-0 bottom-0 h-0.5" />}
         </form>
         <p className="min-h-4 px-1 text-xs text-ash [overflow-wrap:anywhere]">
           {said ? (
-            <span className={said.tone === "fault" ? "text-fault" : said.tone === "warn" ? "text-warn" : undefined}>
+            <span className={toneClass(said.tone)}>
               <HintText text={said.text} />
             </span>
           ) : state.notice ? (
@@ -146,8 +148,8 @@ export function StudioComposer({
             <span className="text-fault">The seed in the settings is not a whole number.</span>
           ) : busy && !runningHere ? (
             "Another session is making pictures. Its step ends first."
-          ) : speech.unavailable ? (
-            <HintText text={speech.unavailable.sentence} />
+          ) : mic.unavailable ? (
+            <HintText text={mic.unavailable.sentence} />
           ) : (
             (plan.note ?? "Enter sends. Shift+Enter starts a new line. Drop pictures here to add them.")
           )}

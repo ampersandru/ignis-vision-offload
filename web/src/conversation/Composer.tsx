@@ -2,13 +2,16 @@ import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useRef } from 
 import { createPortal } from "react-dom";
 import type { ContextUsage } from "../metrics/context.ts";
 import { ContextMeter } from "../metrics/ContextMeter.tsx";
-import { DictationMic, DictationStrip, HintText } from "../speech/Dictation.tsx";
-import { dictationHint, IDLE } from "../speech/dictation.ts";
-import { type Dictation, useDictationState } from "../speech/useDictation.ts";
+import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
+import { dictationHint } from "../speech/dictation.ts";
+import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
 import type { Attachment } from "../tools/local/attachments.ts";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconBrush, IconClose, IconImage, IconPaperclip, IconPlus } from "../ui/icons.tsx";
 import { dataUriBytes, type PromptImage } from "./images.ts";
+
+/** The hint line's idle words (spec speech/04, "The hint line"). */
+export const IDLE_HINT = "Enter sends, Shift+Enter adds a line. Dictate with the mic, or hold Ctrl+Shift+Space while you speak.";
 
 /**
  * The prompt box under the conversation: Send, or Stop while this session
@@ -47,14 +50,14 @@ export function Composer(props: {
   dictation: Dictation;
 }) {
   const { busy, streamingHere, dictation } = props;
-  const speech = useDictationState(dictation);
+  const mic = useDictationState(dictation);
   // Send waits until a dictation ends, so a dictation is never sent by itself.
-  const dictating = speech.phase !== "idle";
-  const live = speech.phase === "listening" || speech.phase === "finishing";
-  const hint = dictationHint(speech, "Send", false) ??
+  const dictating = mic.phase !== "idle";
+  const live = mic.phase === "listening" || mic.phase === "finishing";
+  const hint = dictationHint(mic, "Send") ??
     (busy && !streamingHere
       ? { text: "A reply is streaming in another session. Send works again once it ends.", tone: "ash" as const }
-      : { text: speech.unavailable?.sentence ?? IDLE, tone: "ash" as const });
+      : { text: mic.unavailable?.sentence ?? IDLE_HINT, tone: "ash" as const });
   const picker = useRef<HTMLInputElement>(null);
   const imagePicker = useRef<HTMLInputElement>(null);
   /** An empty prompt still goes out when it carries an image: the picture is the question. */
@@ -76,7 +79,7 @@ export function Composer(props: {
   }
 
   return (
-    <div className="shrink-0 px-4 pb-4 md:px-10" onKeyDown={(e) => dictation.controller.keyDown(e)} onKeyUp={(e) => dictation.controller.keyUp(e)}>
+    <div className="shrink-0 px-4 pb-4 md:px-10" {...dictationKeys(dictation)}>
       {props.canAttach && (props.attachments.length > 0 || props.attachError) && (
         <div className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center gap-2">
           {props.attachments.map((a) => (
@@ -128,7 +131,7 @@ export function Composer(props: {
       )}
       {dictating && (
         <div className="mx-auto mb-2 w-full max-w-3xl">
-          <DictationStrip dictation={dictation} state={speech} />
+          <DictationStrip dictation={dictation} state={mic} />
         </div>
       )}
       {/* While listening, the box's underline is the running heat bar. */}
@@ -190,7 +193,7 @@ export function Composer(props: {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />
-        <DictationMic dictation={dictation} state={speech} />
+        <DictationMic dictation={dictation} state={mic} />
         {streamingHere ? (
           <button
             type="button"
@@ -214,7 +217,7 @@ export function Composer(props: {
       <div className="mx-auto mt-2 flex w-full max-w-3xl items-center justify-between gap-4 px-1">
         <div className="flex min-w-0 items-center gap-4">
           {props.modelPicker}
-          <p className={`min-w-0 text-xs ${hint.tone === "fault" ? "text-fault" : hint.tone === "warn" ? "text-warn" : "text-ash"}`}>
+          <p className={`min-w-0 text-xs ${toneClass(hint.tone)}`}>
             <HintText text={hint.text} />
           </p>
         </div>

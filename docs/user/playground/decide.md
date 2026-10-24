@@ -81,7 +81,8 @@ The context a dictation sends is the other prose on the bench first and the
 field's own text last: the questions, then the evidence, for the evidence; the
 evidence, then the question, for a question. JSON never goes in, nor an
 evidence loaded from a file. Pressing another field's mic ends the dictation
-under way, and its text lands in its own field first.
+under way: it is committed, and its text lands in its own field when it
+comes, while the new field listens.
 
 ## The answers
 

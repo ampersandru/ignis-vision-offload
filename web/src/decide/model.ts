@@ -10,6 +10,7 @@
 // written through `writeOrdered` for the same reason.
 
 import type { PromptImage } from "../conversation/images.ts";
+import { dictationContext } from "../speech/dictation.ts";
 import {
   asText,
   type JsonEntry,
@@ -279,6 +280,29 @@ export type Spare = {
 };
 
 export const EMPTY_SPARE: Spare = { text: "", json: "", images: [], words: "" };
+
+/** What a question asks while it is prose, the field its mic dictates into (spec speech/04); `null` while JSON. */
+export function questionProse(question: Question): string | null {
+  return question.instructions.kind === "string" ? question.instructions.value : null;
+}
+
+/** A text evidence typed here, the one that takes dictation; `null` for JSON, an image, or a file loaded as the evidence. */
+export function typedEvidence(evidence: Evidence): string | null {
+  return evidence.mode === "text" && !evidence.file ? evidence.text : null;
+}
+
+/**
+ * A question's dictation context (spec speech/04, AC 7): the evidence typed here, then the question. Never JSON, nor
+ * an evidence loaded from a file, which can be megabytes, past the socket's frame limit.
+ */
+export function questionContext(evidence: Evidence, question: Question): string {
+  return dictationContext([typedEvidence(evidence) ?? "", questionProse(question) ?? ""]);
+}
+
+/** The evidence's dictation context: the questions' prose, then the evidence typed here. */
+export function evidenceContext(questions: Question[], evidence: Evidence): string {
+  return dictationContext([...questions.map((question) => questionProse(question) ?? ""), typedEvidence(evidence) ?? ""]);
+}
 
 /** `evidence` moved aside, so the mode it is leaving can be returned to. */
 export function setAside(spare: Spare, evidence: Evidence): Spare {

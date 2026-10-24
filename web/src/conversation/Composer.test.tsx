@@ -2,9 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { contextUsage } from "../metrics/context.ts";
 import { SECURE_CONTEXT } from "../speech/availability.ts";
-import { type DictationState, IDLE, LISTENING } from "../speech/dictation.ts";
+import { type DictationState, LISTENING } from "../speech/dictation.ts";
 import { fixedDictation } from "../speech/fixture.ts";
-import { Composer } from "./Composer.tsx";
+import { Composer, IDLE_HINT as IDLE } from "./Composer.tsx";
 
 // The chat's prompt box with dictation (spec speech/04): the mic beside Send,
 // the strip above the box, Send waiting while a dictation runs, and the hint

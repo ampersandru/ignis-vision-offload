@@ -53,6 +53,8 @@ describe("DictationStrip", () => {
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain("Listening…");
     expect(html).toContain("1:07");
+    // The clock is out of the live region: a reader would hear it every second.
+    expect(html).toMatch(/<span aria-hidden="true"[^>]*><span class="dictation-dot[^"]*"><\/span>1:07<\/span>/);
     expect(html).toContain("dictation-dot");
     expect(html).toContain("dictation-heat");
     expect(html).toMatch(/Discard <span[^>]*>Esc<\/span>/);

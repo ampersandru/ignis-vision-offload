@@ -6,7 +6,7 @@ import { CHUNK_SAMPLES, PROCESSOR, TARGET_RATE } from "./pcm.ts";
 // for the browser's media and audio objects: what is asked for, what comes
 // out, and that the mic is let go on every way out (Q13).
 
-function fakes(options: { refuse?: Error; failModule?: boolean } = {}) {
+function fakes(options: { refuse?: Error; failModule?: boolean; failContext?: boolean } = {}) {
   const log: string[] = [];
   let port: { onmessage: ((event: { data: unknown }) => void) | null; postMessage: (message: unknown) => void } | undefined;
   let nodeOptions: unknown;
@@ -17,8 +17,9 @@ function fakes(options: { refuse?: Error; failModule?: boolean } = {}) {
       if (options.refuse) throw options.refuse;
       return { getTracks: () => [track] } as unknown as MediaStream;
     },
-    createContext: () =>
-      ({
+    createContext: () => {
+      if (options.failContext) throw new Error("no audio context");
+      return {
         audioWorklet: {
           addModule: async (url: string) => {
             log.push(`addModule ${url}`);
@@ -29,7 +30,8 @@ function fakes(options: { refuse?: Error; failModule?: boolean } = {}) {
         destination: {},
         resume: async () => {},
         close: async () => log.push("context closed"),
-      }) as unknown as AudioContext,
+      } as unknown as AudioContext;
+    },
     createNode: (_context, name, init) => {
       log.push(`node ${name}`);
       nodeOptions = init;
@@ -84,5 +86,8 @@ describe("startCapture", () => {
     await expect(startCapture(() => {}, broken.deps)).rejects.toThrow("no worklet");
     expect(broken.log).toContain("track stopped");
     expect(broken.log).toContain("context closed");
+    const contextless = fakes({ failContext: true });
+    await expect(startCapture(() => {}, contextless.deps)).rejects.toThrow("no audio context");
+    expect(contextless.log).toContain("track stopped");
   });
 });

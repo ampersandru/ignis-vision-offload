@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { IconMic, IconStopSquare } from "../ui/icons.tsx";
-import type { DictationState } from "./dictation.ts";
+import type { DictationState, Tone } from "./dictation.ts";
 import type { Dictation } from "./useDictation.ts";
 
 // The mic and the strip (spec speech/04, "What the user sees"; the Q17
@@ -103,7 +103,7 @@ export function DictationStrip({ dictation, state, compact = false }: { dictatio
     <div
       role="status"
       aria-live="polite"
-      className={`cut relative flex items-center bg-kiln text-[#eae8e4] ${compact ? "gap-3 py-2 pr-2.5 pb-2.5 pl-3 [--cut-size:8px]" : "gap-3.5 py-2.5 pr-3 pb-3 pl-3.5 [--cut-size:10px]"}`}
+      className={`cut relative flex items-center bg-kiln text-[#eae8e4] ${compact ? "gap-3 pt-2 pr-2.5 pb-2.5 pl-3 [--cut-size:8px]" : "gap-3.5 pt-2.5 pr-3 pb-3 pl-3.5 [--cut-size:10px]"}`}
     >
       <div aria-hidden="true" className={`flex shrink-0 items-center gap-0.5 ${compact ? "h-[22px]" : "h-7"}`}>
         {state.levels.map((level, i) => (
@@ -125,8 +125,9 @@ export function DictationStrip({ dictation, state, compact = false }: { dictatio
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2.5">
+        {/* Hidden from the live region: a reader would hear the clock every second. */}
         {phase === "listening" && (
-          <span className="flex items-center gap-1.5 font-display text-[13px] tabular-nums text-[#b9bec4]">
+          <span aria-hidden="true" className="flex items-center gap-1.5 font-display text-[13px] tabular-nums text-[#b9bec4]">
             <span className="dictation-dot inline-block size-[7px] bg-[#ff5a1f]" />
             {clock(state.elapsed)}
           </span>
@@ -144,6 +145,11 @@ export function DictationStrip({ dictation, state, compact = false }: { dictatio
       {live && <span aria-hidden="true" className="dictation-heat absolute inset-x-0 bottom-0 h-0.5" />}
     </div>
   );
+}
+
+/** The colour of a hint-line sentence: ash, warn, fault. */
+export function toneClass(tone: Tone): string {
+  return tone === "fault" ? "text-fault" : tone === "warn" ? "text-warn" : "text-ash";
 }
 
 /** A hint-line sentence, its backticked spans set as code. */

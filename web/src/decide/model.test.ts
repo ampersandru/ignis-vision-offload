@@ -6,10 +6,12 @@ import {
   EMPTY_DRAFT,
   EMPTY_SPARE,
   type Evidence,
+  evidenceContext,
   freeId,
   keepFile,
   loadEvidence,
   locateTarget,
+  questionContext,
   newQuestion,
   type Primitive,
   type Question,
@@ -627,5 +629,24 @@ describe("a locate's route", () => {
       expect(faults[0].message).toContain('kind "records" with compression "template_fold"');
     }
     expect(codes(draft([question("t", "locate", "Which?", { within: "/tickets", textKind: "records" })], records))).toEqual([]);
+  });
+});
+
+describe("the dictation context (spec speech/04, AC 7)", () => {
+  const asks = (text: string) => ({ ...newQuestion("noul", "q"), instructions: jsonString(text) });
+  const json = { ...newQuestion("noul", "j"), instructions: { kind: "object" as const, entries: [{ key: "ask", value: { kind: "string" as const, value: "raw" } }] } };
+
+  it("is the evidence typed here, then the question, for a question", () => {
+    expect(questionContext({ mode: "text", text: "Il profilo GPU è verde." }, asks("È pronto?"))).toBe("Il profilo GPU è verde.\n\nÈ pronto?");
+  });
+
+  it("is the questions' prose, then the evidence, for the evidence", () => {
+    expect(evidenceContext([asks("È pronto?"), json, asks("Chi firma?")], { mode: "text", text: "Il log." })).toBe("È pronto?\n\nChi firma?\n\nIl log.");
+  });
+
+  it("never carries JSON, nor an evidence loaded from a file", () => {
+    expect(questionContext({ mode: "json", text: '{"order": "A-4471"}' }, asks("È pronto?"))).toBe("È pronto?");
+    expect(questionContext({ mode: "text", text: "a huge log", file: { name: "prod.log", size: 6 << 20 } }, asks("Errori?"))).toBe("Errori?");
+    expect(evidenceContext([json], { mode: "text", text: "Il log." })).toBe("Il log.");
   });
 });

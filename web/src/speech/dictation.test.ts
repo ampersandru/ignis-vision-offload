@@ -351,6 +351,8 @@ describe("a mic that cannot start", () => {
     await settle();
     expect(h.session().calls).toEqual(["close"]);
     expect(h.state()).toMatchObject({ phase: "idle", unavailable: { sentence: MIC_BLOCKED, blocked: true } });
+    // Said at once too: a Decide field's line shows no idle reason.
+    expect(dictationHint(h.state(), "Decide")).toEqual({ text: MIC_BLOCKED, tone: "ash" });
     h.controller.toggle();
     expect(h.sessions).toHaveLength(2);
   });

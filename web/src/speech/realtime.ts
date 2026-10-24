@@ -118,8 +118,10 @@ type ServerEvent = {
 export function openTranscription(context: string, handlers: TranscriptionHandlers, deps: RealtimeDeps = {}): Transcription {
   const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
   const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
-  /** The page closed it: nothing more is said. */
-  let closed = false;
+  /** The page closed it: nothing more is said, a refusal still being asked about included. */
+  let closedByPage = false;
+  /** The connection is over, by the page or under it. */
+  let ended = false;
   let opened = false;
   let configured = false;
   let completed = false;
@@ -162,7 +164,8 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
     socket = open(deps.url?.() ?? pageUrl(), protocols());
   } catch {
     // A key that is not a valid subprotocol token throws: a refused upgrade like any other.
-    void probe(doFetch).then((refusal) => closed || handlers.onRefused(refusal));
+    ended = true;
+    void probe(doFetch).then((refusal) => closedByPage || handlers.onRefused(refusal));
   }
   if (socket) {
     socket.onopen = () => {
@@ -170,7 +173,7 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
     };
     socket.onerror = () => {};
     socket.onmessage = (message) => {
-      if (closed) return;
+      if (ended) return;
       try {
         onMessage(JSON.parse(String(message.data)) as ServerEvent);
       } catch {
@@ -178,32 +181,33 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
       }
     };
     socket.onclose = () => {
-      if (closed || completed) return;
-      closed = true;
+      if (ended || completed) return;
+      ended = true;
       if (opened) handlers.onClosed();
-      else void probe(doFetch).then((refusal) => handlers.onRefused(refusal));
+      else void probe(doFetch).then((refusal) => closedByPage || handlers.onRefused(refusal));
     };
   }
 
   const close = () => {
-    closed = true;
+    closedByPage = true;
+    ended = true;
     socket?.close();
   };
 
   return {
     append(pcm) {
-      if (closed) return;
+      if (ended) return;
       const audio = pcmBase64(pcm);
       if (configured) sendAppend(audio);
       else waiting.push(audio);
     },
     commit() {
-      if (closed) return;
+      if (ended) return;
       commitAsked = true;
       if (configured) send({ type: "input_audio_buffer.commit" });
     },
     discard() {
-      if (!closed && configured) send({ type: "input_audio_buffer.clear" });
+      if (!ended && configured) send({ type: "input_audio_buffer.clear" });
       close();
     },
     close,

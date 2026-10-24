@@ -63,13 +63,18 @@ The line under the box follows along:
 | for 6 s after | Inserted N words at the cursor. Nothing is sent until you press Send. |
 | for 4 s after Esc | Dictation discarded. |
 | every session taken | Speech is busy with another dictation. Trying again in N s. |
+| refused again | The dictation still could not open: speech is busy, or this address does not carry WebSockets. Press the mic to try again. |
 | the connection closed | Dictation stopped: the connection to the server closed. Insert what was heard, or discard it. |
+| the server failed it | Dictation stopped: *the server's reason*. Insert what was heard, or discard it. |
+| Done with no audio, or nothing said | Nothing was heard. |
+| the server unreachable, the mic broken | Dictation could not start: *why*. |
 
 **Busy.** The server holds `speech.max_sessions` (4) dictations at once
 ([speech](../configuration/speech.md)). One more is refused; the page counts
-down 3 seconds and tries once more, and says so if the speech model is still
-busy. A browser cannot read a refused socket's `Retry-After`, so the wait is
-the page's own.
+down 3 seconds and tries once more. A browser cannot read why a socket was
+refused, nor its `Retry-After`: the page asks `GET /v1/models`, and a speech
+model that can serve means every session was taken. A proxy that does not
+carry WebSockets looks the same, which is why the second refusal names both.
 
 **A stopped dictation.** If the connection closes, or the server fails the
 dictation, the strip keeps what was heard (the settled words and the last grey

@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { keyRequired } from "../api/auth.ts";
 import type { SpeechStatus } from "../api/model.ts";
 import { startCapture } from "./capture.ts";
@@ -71,4 +71,18 @@ export function useDictationState({ controller, field }: Dictation): DictationSt
     element.setSelectionRange(selection.start, selection.end);
   }, [selection, field]);
   return state;
+}
+
+/**
+ * The key handlers a field's container hands its dictation — Ctrl+Shift+Space and Esc — or none while the field
+ * takes no dictation (a JSON field, a file), so the chord never starts one with nowhere to land. Only keys pressed
+ * in the container's own DOM count: a portalled menu's Esc is the menu's, though React bubbles it here.
+ */
+export function dictationKeys({ controller }: Dictation, on = true): { onKeyDown?: (event: KeyboardEvent) => void; onKeyUp?: (event: KeyboardEvent) => void } {
+  if (!on) return {};
+  const inside = (event: KeyboardEvent) => event.currentTarget.contains(event.target as Node);
+  return {
+    onKeyDown: (event) => inside(event) && controller.keyDown(event),
+    onKeyUp: (event) => inside(event) && controller.keyUp(event),
+  };
 }
