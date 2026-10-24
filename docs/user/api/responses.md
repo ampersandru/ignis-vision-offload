@@ -28,7 +28,7 @@ completions (GitHub #282): the wire Codex CLI, the OpenAI SDKs'
   `background: true`, and an input item of another type. `store`,
   `metadata`, `prompt_cache_key`, `service_tier` and the like are accepted
   and change nothing; `include: ["reasoning.encrypted_content"]` adds the
-  reasoning as the model saw it ([above](chat-completions.md)). ignis stores no response, so `previous_response_id` on
+  reasoning as the model saw it ([Chat completions](chat-completions.md)). ignis stores no response, so `previous_response_id` on
   HTTP is a `400 previous_response_not_found`.
 - A length stop ends `incomplete` (`max_output_tokens`), an engine error
   `failed`; `usage` carries `input_tokens_details.cached_tokens` and

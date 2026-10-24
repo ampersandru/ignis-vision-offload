@@ -64,9 +64,9 @@ built-in defaults. Two are built in:
   ([finding](../../findings/2026-10-18-rtxpro6000-profile-measured.md)). Both
   models get 1,048,576 tokens of context (both with YaRN at 4, which `auto` rope scaling picks for them). Flash-Next gets 8 decode
   lanes, MTP speculation with 3 draft tokens
-  ([below](flash-next-mtp.md)) and `--ngram-hot-bytes auto`: the
+  ([Flash-Next speculation (MTP)](flash-next-mtp.md)) and `--ngram-hot-bytes auto`: the
   whole n-gram table in RAM when the host plan leaves room for it
-  ([below](ngram-cache.md)). Everything else is as on the
+  ([Flash-Next n-gram startup cache](ngram-cache.md)). Everything else is as on the
   5090, except that the 27B's VRAM headroom stays at its default. Start it
   with `--profile rtxpro6000`.
 

@@ -11,20 +11,20 @@ not.
 
 | Endpoint | Method | Notes |
 |---|---|---|
-| `/v1/models` | GET | The servable models: `data[0]` the loaded one (`active: true`), then every model a request naming it would switch to and be served by now — each catalog entry on disk, each known model whose artifact is a file; the loaded one alone with `--switch-allow-implicit false`. And `status`, about `data[0]`: `serving`, `switching`, `failed` ([below](model-switching.md)), `unloaded` or `loading` ([idle unload](idle-unload.md)). |
-| `/v1/models/switch` | POST | Replace the loaded model on the running process ([below](model-switching.md)). |
-| `/v1/models/catalog` | GET | Every model the server can switch to or fetch, with its state on disk ([below](model-switching.md)). |
-| `/v1/images/generations` | POST | Generate images with the image model ([below](images.md)). |
-| `/v1/images/edits` | POST | Edit images from 1 to 10 condition images, multipart ([below](images.md)). |
+| `/v1/models` | GET | The servable models: `data[0]` the loaded one (`active: true`), then every model a request naming it would switch to and be served by now — each catalog entry on disk, each known model whose artifact is a file; the loaded one alone with `--switch-allow-implicit false`. And `status`, about `data[0]`: `serving`, `switching`, `failed` ([Switching models](model-switching.md)), `unloaded` or `loading` ([idle unload](idle-unload.md)). |
+| `/v1/models/switch` | POST | Replace the loaded model on the running process ([Switching models](model-switching.md)). |
+| `/v1/models/catalog` | GET | Every model the server can switch to or fetch, with its state on disk ([Switching models](model-switching.md)). |
+| `/v1/images/generations` | POST | Generate images with the image model ([Image generation](images.md)). |
+| `/v1/images/edits` | POST | Edit images from 1 to 10 condition images, multipart ([Image generation](images.md)). |
 | `/v1/config` | GET, PATCH | The running configuration, and a change to it ([configuration](../configuration/index.md)). |
 | `/v1/config/fields` | GET | What each visible configuration field is: kind, default, rule, families, whether a change reloads. |
 | `/v1/config/origins` | GET | Where each visible value in force comes from, shared and per model family: default, profile, file, env, flag or live. |
 | `/v1/chat/completions` | POST | Chat completions — streaming (`stream: true`, SSE) and non-streaming. |
-| `/v1/responses` | POST | The OpenAI Responses API, streaming (`stream: true`, SSE) and non-streaming ([below](responses.md)). |
-| `/v1/responses` | GET | Its WebSocket mode: the upgrade, then `response.create` events ([below](responses.md)). |
-| `/v1/tokenize` | POST | A body's prompt-token count without serving it ([below](count.md)). |
+| `/v1/responses` | POST | The OpenAI Responses API, streaming (`stream: true`, SSE) and non-streaming ([The Responses API](responses.md)). |
+| `/v1/responses` | GET | Its WebSocket mode: the upgrade, then `response.create` events ([The Responses API](responses.md)). |
+| `/v1/tokenize` | POST | A body's prompt-token count without serving it ([Counting a prompt](count.md)). |
 | `/v1/detokenize` | POST | Token ids back to text, through the same tokenizer. |
-| `/v1/decide` | POST | The decision endpoint ([below](decide.md)). |
+| `/v1/decide` | POST | The decision endpoint ([Decisions](decide.md)). |
 | `/v1/systemone` | POST | The same handler under its Jev name. |
 | `/v1` | GET | The API reference — a 307 to `/v1/docs/` (ADR 0036). |
 | `/v1/docs/` | GET | Swagger UI over the document, from assets compiled into the binary: no CDN, nothing fetched. Open even with an API key set — it publishes the API's shape, not its load — and *Authorize* is how you drive the keyed routes from the page. |

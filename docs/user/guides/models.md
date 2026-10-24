@@ -100,7 +100,7 @@ hand — so any of them satisfies the others.
 |---|---|---|---|
 | `--download-endpoint <url>` | `IGNIS_DOWNLOAD_ENDPOINT` | `https://huggingface.co` | The server a file is fetched from, as `{endpoint}/{repo}/resolve/{revision}/{file}` — Hugging Face, or any mirror answering the same route. |
 | `--download-token <token>` | `IGNIS_DOWNLOAD_TOKEN` | unset | Sent as `Authorization: Bearer …` to the endpoint. Never shown by `GET /v1/config` or `config print`, never logged. |
-| `--download-catalog <path>` | `IGNIS_DOWNLOAD_CATALOG` | unset | An operator catalog ([below](operator-catalog.md)). |
+| `--download-catalog <path>` | `IGNIS_DOWNLOAD_CATALOG` | unset | An operator catalog ([Your own models: an operator catalog](operator-catalog.md)). |
 
 The token is `--download-token` when it is set; otherwise `HF_TOKEN`, but only
 when the endpoint is `huggingface.co` itself — a personal Hugging Face
