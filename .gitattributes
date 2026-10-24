@@ -24,6 +24,11 @@ crates/core/tests/fixtures/flash_next/*.txt text eol=lf
 # tokens are the measured top-1 agreement's positions.
 crates/core/tests/fixtures/trellis_logits/*.txt text eol=lf
 
+# The operator catalog the alias tests split at its `models:` line
+# (download/catalog.rs): a CRLF checkout on a Windows runner leaves the split
+# nothing to find.
+crates/server/tests/fixtures/catalog/*.yaml text eol=lf
+
 # The image converter's committed work tree (crates/artifact/tests/qwen_image.rs): each
 # unit's DONE pins the sha256 of its JSON files, so a CRLF checkout would break the pack.
 crates/artifact/tests/fixtures/qwen_image_work/** -text
