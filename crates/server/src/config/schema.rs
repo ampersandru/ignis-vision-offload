@@ -726,14 +726,17 @@ config_group! {
         /// order; one more is refused `503 engine_full` with `Retry-After`.
         /// 0 runs one at a time with none waiting.
         max_queue: Requests = 4, between(0, 64), ALL, [Visible, Patchable];
-        /// The probability above which `server_vad` hears speech. Read with
-        /// `server_vad` (spec speech/05), not served yet.
+        /// The speech probability at or over which `server_vad` hears speech
+        /// in 32 ms of a Realtime session's audio: the default of its
+        /// `threshold`. Read when a session opens.
         vad_threshold: Fraction = 500, NO_RULE, ALL, [Visible, Patchable];
-        /// The audio kept from before `server_vad` heard speech, in
-        /// milliseconds (spec speech/05), not served yet.
+        /// The audio from before the speech that a `server_vad` item keeps,
+        /// in milliseconds: the default of its `prefix_padding_ms`. Read when
+        /// a session opens.
         vad_prefix_padding_ms: Millis = 300, between(0, 10_000), ALL, [Visible, Patchable];
-        /// The silence after which `server_vad` ends a turn, in milliseconds
-        /// (spec speech/05), not served yet.
+        /// The silence after the speech at which `server_vad` commits the
+        /// item, in milliseconds: the default of its `silence_duration_ms`.
+        /// Read when a session opens.
         vad_silence_duration_ms: Millis = 500, between(0, 60_000), ALL, [Visible, Patchable];
         /// How long a loan of free KV pages to the speech model outlives its
         /// transcription, in seconds (spec speech/06), not served yet.

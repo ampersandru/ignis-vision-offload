@@ -14,6 +14,13 @@
 //!   opened before its first append, so the context is prefilled when the
 //!   socket opens or a `session.update` changes it, never by a commit
 //!   (Q50).
+//! - **Turn detection** (spec speech/05). Under `server_vad`, the default,
+//!   the VAD reads the 16 kHz audio on this socket's task and decides what
+//!   reaches an item: speech starts one (`speech_started`, the prefix padding
+//!   before it), the silence after it commits it (`speech_stopped`), and with
+//!   an idle timeout so much audio without speech is an item of its own. With
+//!   `turn_detection: null` every sample goes to the current item and the
+//!   client commits.
 //! - **Units.** Every call to the executor is one unit on the speech worker,
 //!   in this socket's lane: a window pushed, a partial, a commit, an open.
 //!   The sessions take turns, unit by unit, ahead of the batch windows (Q44).
@@ -49,10 +56,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use ignis_speech::vad::{TurnEvent, Turns, Vad};
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
 
+use super::audio::TARGET_RATE;
 use super::executor::{LoadSettings, Partial, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession, Transcript, WINDOW_SAMPLES};
 use super::route::{self, Ending};
 use super::SessionGuard;
@@ -62,7 +71,7 @@ use crate::metrics::SpeechOutcome;
 use crate::responses::ids::random_suffix;
 use crate::responses::socket::{close_idle, offered, CREDENTIAL_PREFIX};
 use crate::Server;
-use config::{Refusal, SessionConfig};
+use config::{Refusal, SessionConfig, VadDefaults};
 use pcm::Pcm;
 
 /// The most base64 `audio` one append carries: OpenAI's limit, 15 MiB.
@@ -77,16 +86,18 @@ pub(crate) const MAX_APPEND_BYTES: usize = 15 << 20;
     summary = "A Realtime transcription session",
     description = "Upgrades to a WebSocket carrying OpenAI's Realtime GA transcription session (`session.type: \"transcription\"`) on the speech model (Qwen3-ASR, ADR 0066). Open it with `?intent=transcription` and no `model` in the URL; a conversation session (no `intent=transcription`, or a `model` in the URL) is refused `400` naming `intent`. Authenticate with `Authorization: Bearer <key>` on the upgrade or, from a browser, with a `Sec-WebSocket-Protocol` entry `openai-insecure-api-key.<key>`; the server selects the first offered entry that is not a credential (`realtime`, for OpenAI's browser clients). The socket serves through a model switch and with the text model unloaded, and opening it starts loading a text model the idle clock unloaded, while the session is served on the CPU. At most `speech.max_sessions` (4) sessions are open at once.
 
-On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection: null` (manual commit), `noise_reduction: null`, `include: []` and `ignis.provisional_tail: false`. The speech model is loaded if it is not, and the context prefilled.
+On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection` `{type: \"server_vad\", threshold, prefix_padding_ms, silence_duration_ms, idle_timeout_ms: null}` at the server's `speech.vad_threshold`, `speech.vad_prefix_padding_ms` and `speech.vad_silence_duration_ms` (0.5, 300, 500, OpenAI's), `noise_reduction: null`, `include: []` and `ignis.provisional_tail: false`. The speech model is loaded if it is not, and the context prefilled.
+
+Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it; once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened or the last item, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
 
 Client events, each a text frame of one JSON object:
-- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null`; `server_vad` is refused (not served yet) and `semantic_vad` always. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
+- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
 - `input_audio_buffer.append` `{audio}`: base64 16-bit little-endian mono PCM at the session's rate, up to 15 MiB of base64 an event. No reply.
-- `input_audio_buffer.commit`: ends the item. `input_audio_buffer.committed` `{item_id, previous_item_id}`, then the last stable text as a `delta`, then `completed`. An empty buffer is an `error` (`input_audio_buffer_commit_empty`).
-- `input_audio_buffer.clear`: discards the buffer and the item's partial state; answered `input_audio_buffer.cleared`.
+- `input_audio_buffer.commit`: ends the item. `input_audio_buffer.committed` `{item_id, previous_item_id}`, then the last stable text as a `delta`, then `completed`. An empty buffer is an `error` (`input_audio_buffer_commit_empty`); under `server_vad` the buffer holds the speech the VAD has heard since the last item, and a commit during it ends that item at once, with no `speech_stopped`.
+- `input_audio_buffer.clear`: discards the buffer and the item's partial state (under `server_vad`, the speech and the padding the VAD holds); answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
 
-Server events, each with an `event_id`: `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
+Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
 
 A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) -- no item committed and still being transcribed, and no text or binary frame from the client -- is closed with a normal close frame (1000) whose reason says so.",
     params(("intent" = String, Query, description = "`transcription`: the only session this route serves.")),
@@ -261,12 +272,17 @@ struct Connection {
     /// The client's latest text or binary frame, or the end of the latest
     /// item: where the idle time counts from.
     quiet_since: Instant,
+    /// The 16 kHz samples the session has heard: the VAD's clock.
+    heard: u64,
+    /// Under `server_vad`, the turns the VAD finds in the audio; `None` for
+    /// manual commit (spec speech/05).
+    turns: Option<Turns<Vad>>,
 }
 
 impl Connection {
     fn new(server: Arc<Server>, socket: WebSocket, guard: SessionGuard, files: SpeechFiles) -> Self {
         let (results_tx, results) = unbounded_channel();
-        let config = SessionConfig::new(files.id.clone());
+        let config = SessionConfig::new(files.id.clone(), VadDefaults::of(&server.live().speech));
         let suffix = random_suffix();
         Self {
             server,
@@ -289,6 +305,8 @@ impl Connection {
             outbox: Vec::new(),
             next_event: 0,
             quiet_since: Instant::now(),
+            heard: 0,
+            turns: None,
         }
     }
 
@@ -406,6 +424,21 @@ impl Connection {
         self.queue(Unit::Open(open, load));
         self.pending.clear();
         self.next_partial = None;
+        self.sync_turns();
+    }
+
+    /// The turn detection `session.update` set, from now while the current
+    /// item holds no audio; a switch between manual commit and `server_vad`
+    /// otherwise waits for the item to end, as a changed context does.
+    /// `server_vad`'s fields hold from the VAD's next frame either way.
+    fn sync_turns(&mut self) {
+        let holds_audio = self.current().samples_in > 0;
+        match (&self.config.turn_detection, self.turns.as_mut()) {
+            (Some(vad), Some(turns)) => turns.set_settings(vad.settings()),
+            (Some(vad), None) if !holds_audio => self.turns = Some(Turns::new(Vad::new(), vad.settings(), self.heard)),
+            (None, Some(_)) if !holds_audio => self.turns = None,
+            _ => {}
+        }
     }
 
     /// Queue `unit` of the current item on the worker, in this socket's lane.
@@ -483,7 +516,7 @@ impl Connection {
             // What the item holds at the old rate goes in first.
             let mut rest = Vec::new();
             self.pcm.set_rate(next.rate, &mut rest);
-            self.take_audio(rest);
+            self.stream(rest);
         }
         self.config = next;
         // A changed context is prefilled now, while the item holds no audio;
@@ -495,6 +528,7 @@ impl Connection {
             self.items.pop_back();
             self.open_next();
         }
+        self.sync_turns();
         let session = self.config.effective(&self.session_id);
         self.send(json!({ "type": "session.updated", "session": session }));
     }
@@ -511,20 +545,89 @@ impl Connection {
         let Ok(carried) = self.pcm.append(audio, &mut samples) else {
             return self.refuse(Refusal::invalid("`audio` is not base64", "audio"), event_id);
         };
+        if self.turns.is_some() {
+            // Under `server_vad` the VAD decides what reaches an item.
+            return self.stream(samples);
+        }
+        self.begin_item();
+        let limit = self.server.live().speech.max_clip_seconds;
+        let item = self.current();
+        item.samples_in += carried as u64;
+        item.seconds += carried as f64 / f64::from(rate);
+        if item.failure.is_some() {
+            return;
+        }
+        if item.seconds > f64::from(limit) {
+            self.fail_current(Failure::TooLong(limit));
+            return;
+        }
+        self.stream(samples);
+    }
+
+    /// The current item's first audio, at its first append or when the VAD
+    /// heard speech: its id, its deadline (`server.stream_timeout`, per item
+    /// from its first audio, ADR 0058), and when its first refresh falls due.
+    fn begin_item(&mut self) {
         let live = self.server.live();
         let interval = Duration::from_millis(u64::from(live.speech.partial_interval_ms));
-        let limit = live.speech.max_clip_seconds;
         let item = self.current();
         if item.id.is_none() {
             item.id = Some(format!("item_{}", random_suffix()));
-            // `server.stream_timeout`, per item from its first append (ADR 0058).
             item.timeout = Timeout::of(&live, true);
             item.deadline = Some(item.timeout.from_now());
             self.next_partial = Some(Instant::now() + interval);
         }
+    }
+
+    /// The session's next 16 kHz samples: the current item's under manual
+    /// commit, the VAD's under `server_vad`, which gives an item the turns it
+    /// finds (spec speech/05). The VAD reads every sample where it arrives, on
+    /// this socket's task: a 32 ms frame never waits behind a window.
+    fn stream(&mut self, samples: Vec<f32>) {
+        self.heard += samples.len() as u64;
+        let Some(turns) = self.turns.as_mut() else {
+            return self.take_audio(samples);
+        };
+        let mut events = Vec::new();
+        turns.push(&samples, &mut events);
+        for event in events {
+            self.turn(event);
+        }
+    }
+
+    /// What the VAD found, as the Realtime events and the item's audio: an
+    /// item begins at `speech_started`, its padded audio follows, and it is
+    /// committed at `speech_stopped`; an idle timeout commits the silence.
+    fn turn(&mut self, event: TurnEvent) {
+        let ms = |samples: u64| samples * 1000 / u64::from(TARGET_RATE);
+        match event {
+            TurnEvent::Started { start } => {
+                self.begin_item();
+                let id = self.current().id.clone();
+                self.send(json!({ "type": "input_audio_buffer.speech_started", "audio_start_ms": ms(start), "item_id": id }));
+            }
+            TurnEvent::Audio(samples) => self.give(samples),
+            TurnEvent::Stopped { end } => {
+                let id = self.current().id.clone();
+                self.send(json!({ "type": "input_audio_buffer.speech_stopped", "audio_end_ms": ms(end), "item_id": id }));
+                self.end_item();
+            }
+            TurnEvent::TimedOut { start, end, audio } => {
+                self.begin_item();
+                let id = self.current().id.clone();
+                self.send(json!({ "type": "input_audio_buffer.timeout_triggered", "audio_start_ms": ms(start), "audio_end_ms": ms(end), "item_id": id }));
+                self.give(audio);
+                self.end_item();
+            }
+        }
+    }
+
+    /// Samples the VAD gave the current item, counted at 16 kHz.
+    fn give(&mut self, samples: Vec<f32>) {
+        let limit = self.server.live().speech.max_clip_seconds;
         let item = self.current();
-        item.samples_in += carried as u64;
-        item.seconds += carried as f64 / f64::from(rate);
+        item.samples_in += samples.len() as u64;
+        item.seconds += samples.len() as f64 / f64::from(TARGET_RATE);
         if item.failure.is_some() {
             return;
         }
@@ -553,13 +656,30 @@ impl Connection {
     }
 
     fn commit(&mut self, event_id: Option<String>) {
+        if let Some(turns) = self.turns.as_mut() {
+            // Under `server_vad` a commit ends the turn the VAD is in; the
+            // stream goes on, so the resampler keeps its state.
+            if !turns.speaking() {
+                let empty = "the input audio buffer holds no speech: under server_vad it holds what the VAD heard as speech since the last item".to_owned();
+                return self.refuse(Refusal { code: "input_audio_buffer_commit_empty", message: empty, param: None }, event_id);
+            }
+            let rest = turns.end_turn();
+            self.give(rest);
+            return self.end_item();
+        }
         if self.current().samples_in == 0 {
             let empty = "the input audio buffer is empty: append audio before committing".to_owned();
             return self.refuse(Refusal { code: "input_audio_buffer_commit_empty", message: empty, param: None }, event_id);
         }
         let mut rest = Vec::new();
         self.pcm.finish(&mut rest);
-        self.take_audio(rest);
+        self.stream(rest);
+        self.end_item();
+    }
+
+    /// The current item ends: `committed`, its transcription queued (or its
+    /// `failed`), and the next item opened.
+    fn end_item(&mut self) {
         let previous = self.previous_item_id.take();
         let ending = Ending::new(
             Arc::clone(&self.server),
@@ -585,6 +705,10 @@ impl Connection {
     }
 
     fn clear(&mut self) {
+        if let Some(turns) = self.turns.as_mut() {
+            // The padding the VAD keeps, and a turn on, go as well.
+            turns.clear();
+        }
         let current = self.current();
         if current.samples_in > 0 || current.id.is_some() {
             current.cancel.store(true, Ordering::SeqCst);

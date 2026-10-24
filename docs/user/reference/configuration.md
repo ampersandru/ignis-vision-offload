@@ -1344,7 +1344,7 @@ The batch transcriptions that may wait behind the one running, in order; one mor
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The probability above which `server_vad` hears speech. Read with `server_vad` (spec speech/05), not served yet.
+The speech probability at or over which `server_vad` hears speech in 32 ms of a Realtime session's audio: the default of its `threshold`. Read when a session opens.
 
 ### `speech.vad_prefix_padding_ms`
 
@@ -1358,7 +1358,7 @@ The probability above which `server_vad` hears speech. Read with `server_vad` (s
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The audio kept from before `server_vad` heard speech, in milliseconds (spec speech/05), not served yet.
+The audio from before the speech that a `server_vad` item keeps, in milliseconds: the default of its `prefix_padding_ms`. Read when a session opens.
 
 ### `speech.vad_silence_duration_ms`
 
@@ -1372,7 +1372,7 @@ The audio kept from before `server_vad` heard speech, in milliseconds (spec spee
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The silence after which `server_vad` ends a turn, in milliseconds (spec speech/05), not served yet.
+The silence after the speech at which `server_vad` commits the item, in milliseconds: the default of its `silence_duration_ms`. Read when a session opens.
 
 ### `speech.loan_grace_seconds`
 

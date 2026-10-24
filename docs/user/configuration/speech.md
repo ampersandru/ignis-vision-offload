@@ -24,9 +24,9 @@ every default, is [the configuration reference](../reference/configuration.md).
 | `--speech-max-sessions` | `IGNIS_SPEECH_MAX_SESSIONS` | `4` | The most [live transcription](../api/realtime-transcription.md) sessions open at once; one more is refused at the upgrade, `503 engine_full` with `Retry-After`. |
 | `--speech-partial-interval-ms` | `IGNIS_SPEECH_PARTIAL_INTERVAL_MS` | `2000` | How often at most a live session's transcript refreshes while audio arrives: each refresh sends the new stable text, and the provisional tail to a session that asked for it. Best effort: a refresh is skipped while the session's audio is still being computed. Shorter is livelier text and more CPU per session. |
 | `--speech-rollback-tokens` | `IGNIS_SPEECH_ROLLBACK_TOKENS` | `10` | The tokens of a live transcript held back as provisional, the rest being stable: the [provisional tail](../api/realtime-transcription.md#the-text) a session that asks for it gets. Read by the speech executor when it opens a session. |
-| `--speech-vad-threshold`, `--speech-vad-prefix-padding-ms`, `--speech-vad-silence-duration-ms` | `IGNIS_SPEECH_VAD_*` | `0.5`, `300`, `500` | `server_vad`'s threshold, the audio kept from before speech, and the silence that ends a turn. Not served yet. |
+| `--speech-vad-threshold`, `--speech-vad-prefix-padding-ms`, `--speech-vad-silence-duration-ms` | `IGNIS_SPEECH_VAD_*` | `0.5`, `300`, `500` | The defaults of a live session's [`server_vad`](../api/realtime-transcription.md#turn-detection), OpenAI's: the speech probability that counts as speech, the audio an utterance keeps from before it, and the silence after it at which the server commits it. A session reads them when it opens; one that sends its own values uses those. |
 | `--speech-loan-grace-seconds`, `--speech-loan-wait-seconds` | `IGNIS_SPEECH_LOAN_*` | `30`, `5` | The loan of free KV pages to the speech model. Not served yet. |
 
 The fields marked "not served yet" are declared so that a configuration file
-written today keeps its meaning: the routes and the loan that read them come
-with their own tickets ([ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).
+written today keeps its meaning: the loan that reads them comes with its own
+ticket ([ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).

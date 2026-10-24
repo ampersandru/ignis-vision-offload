@@ -156,9 +156,16 @@ pub fn update(mut session: Value) -> Value {
 }
 
 /// `session.update` to 16 kHz, the model's own rate, so a test's samples are
-/// the executor's.
+/// the executor's, and to manual commit (`turn_detection: null`), so the
+/// test's commits end its items, not a VAD (spec speech/05 makes `server_vad`
+/// the default).
 pub fn at_16_khz() -> Value {
-    update(json!({ "audio": { "input": { "format": { "type": "audio/pcm", "rate": 16000 } } } }))
+    update(json!({ "audio": { "input": { "format": { "type": "audio/pcm", "rate": 16000 }, "turn_detection": null } } }))
+}
+
+/// `session.update` to manual commit, at whatever rate the session takes.
+pub fn manual() -> Value {
+    update(json!({ "audio": { "input": { "turn_detection": null } } }))
 }
 
 /// Samples in one 8 s window at 16 kHz.

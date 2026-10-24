@@ -283,10 +283,16 @@ produces) is not decoded yet: send WAV, or convert it. A clip longer than
   session, which the server does not serve.
 - `503 engine_full` with `Retry-After`: `speech.max_sessions` sessions are open;
   close one, or raise the field.
-- An `error` refusing `turn_detection` `server_vad`: the server does not detect
-  the end of speech yet. Send `turn_detection: null` (or nothing) and commit
-  with `input_audio_buffer.commit`
-  ([Live transcription](api/realtime-transcription.md)).
+- A commit answered `input_audio_buffer_commit_empty` although audio was sent:
+  the session runs `server_vad`, the default, and heard no speech since its
+  last item (or already committed it on a silence). Let the server commit, or
+  send `turn_detection: null` to commit yourself
+  ([turn detection](api/realtime-transcription.md#turn-detection)).
+- Items cut at short pauses, or speech never heard: raise
+  `silence_duration_ms`, or lower `threshold` (higher in a noisy room); the
+  server's defaults are `speech.vad_*`.
+- An `error` refusing `turn_detection` `semantic_vad`: it is not served. Send
+  `server_vad`, or `null` and commit with `input_audio_buffer.commit`.
 - A WARN `ignis.speech.stable_text_revised`: the speech executor's transcript
   did not begin with the stable text it had already sent as deltas, so that
   item's deltas do not join to its `completed.transcript` (which is still the
