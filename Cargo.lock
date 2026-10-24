@@ -1141,6 +1141,7 @@ dependencies = [
  "serde_json",
  "tokenizers",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
