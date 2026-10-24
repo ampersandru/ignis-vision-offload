@@ -57,15 +57,6 @@ fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace('\n', " ")
 }
 
-/// The model a family scope names, as the guide spells it.
-fn family_label(scope: &str) -> &'static str {
-    match scope {
-        "qwen38" => "Qwen3.8-27B",
-        "qwen38flashnext" => "Qwen3.8-Flash-Next",
-        _ => "an unnamed family",
-    }
-}
-
 /// A doc comment as Markdown: rustdoc's leading spaces trimmed, its
 /// paragraphs kept.
 fn paragraphs(description: &str) -> String {
@@ -151,7 +142,7 @@ pub fn profiles() -> String {
         let mut rows: Vec<(String, String, String)> = layer
             .entries()
             .map(|(meta, family, candidate)| {
-                let model = family.map_or("every model", |f| family_label(crate::config::field::scope(f)));
+                let model = family.map_or("every model", |f| f.name());
                 (meta.file_key(), model.to_owned(), candidate.raw.clone())
             })
             .collect();
@@ -283,9 +274,11 @@ pub fn metrics() -> String {
         4,
     );
     out.push_str(
-        "The metrics listener (on by default, keyless, on loopback) serves these in the Prometheus          text format, and the Playground's Monitor reads the same set at `/ui/metrics`          ([Telemetry and metrics](../guides/telemetry.md)). A family marked *always* is in every          scrape from the start, zeros included; the others appear once what the last column names          has happened, and then stay.
-
-",
+        "The metrics listener (on by default, keyless, on loopback) serves these in the Prometheus \
+         text format, and the Playground's Monitor reads the same set at `/ui/metrics` \
+         ([Telemetry and metrics](../guides/telemetry.md)). A family marked *always* is in every \
+         scrape from the start, zeros included; the others appear once what the last column names \
+         has happened, and then stay.\n\n",
     );
     let mut rows: BTreeMap<String, (String, String, &'static str)> = BTreeMap::new();
     for (name, (kind, help)) in declared(&Metrics::new().render()) {
@@ -298,8 +291,7 @@ pub fn metrics() -> String {
             rows.entry(name).or_insert((kind, help, activation.when));
         }
     }
-    let _ = writeln!(out, "| Metric | Type | Meaning | Exported |
-|---|---|---|---|");
+    let _ = writeln!(out, "| Metric | Type | Meaning | Exported |\n|---|---|---|---|");
     for (name, (kind, help, when)) in &rows {
         let _ = writeln!(out, "| `{name}` | {kind} | {} | {when} |", cell(help));
     }

@@ -5,30 +5,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { parse } from "yaml";
 
 /** The front matter fields the sidebar reads: title, sidebar.order, .label, .badge. */
 export function sidebarFields(text) {
   const block = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  const lines = block ? block[1].split(/\r?\n/) : [];
-  const unquote = (value) => value.trim().replace(/^"(.*)"$/, "$1").replace(/\\"/g, '"');
-  const fields = { title: undefined, order: undefined, label: undefined, badge: undefined, variant: undefined };
-  let section = "";
-  for (const line of lines) {
-    const top = line.match(/^(\w+):\s*(.*)$/);
-    if (top) {
-      section = top[1];
-      if (section === "title") fields.title = unquote(top[2]);
-      continue;
-    }
-    const nested = line.match(/^(\s+)(\w+):\s*(.*)$/);
-    if (!nested || section !== "sidebar") continue;
-    const [, indent, key, value] = nested;
-    if (indent.length === 2 && key === "order") fields.order = Number(value);
-    else if (indent.length === 2 && key === "label") fields.label = unquote(value);
-    else if (indent.length === 4 && key === "text") fields.badge = unquote(value);
-    else if (indent.length === 4 && key === "variant") fields.variant = unquote(value);
-  }
-  return fields;
+  const data = (block && parse(block[1])) || {};
+  const sidebar = data.sidebar ?? {};
+  const badge = typeof sidebar.badge === "string" ? { text: sidebar.badge } : (sidebar.badge ?? {});
+  return { title: data.title, order: sidebar.order, label: sidebar.label, badge: badge.text, variant: badge.variant };
 }
 
 /** A section's sidebar items: one per page of `docs/user/<directory>/`. */

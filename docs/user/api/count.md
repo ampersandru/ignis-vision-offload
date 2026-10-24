@@ -13,7 +13,9 @@ tokens it prefills, **without submitting it**: no lane, no GPU, no KV page. The
 fits.
 
 ```bash
-curl http://127.0.0.1:8000/v1/tokenize \n  -H 'Content-Type: application/json' \n  -d '{"messages":[{"role":"user","content":"Hello"}],"tools":[...],"return_token_ids":true}'
+curl http://127.0.0.1:8000/v1/tokenize \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"tools":[...],"return_token_ids":true}'
 # {"count":1234,"max_model_len":262144,"token_ids":[...]}
 ```
 

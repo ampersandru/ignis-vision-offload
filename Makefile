@@ -475,6 +475,8 @@ DOCS_DEPS := docs/site/node_modules/.package-lock.json
 .PHONY: docs-install
 docs-install: $(DOCS_DEPS) ## npm ci for the guide's site, only when its package-lock.json changed
 
+# Astro runs as `node astro.mjs`, never through npm, for the reason Vite does
+# (the `vite` helper above): Ctrl+C must stop it, not ask a batch-job question.
 .PHONY: docs-dev
 docs-dev: $(DOCS_DEPS) ## The guide's site with hot reload (http://localhost:4321/ignis/)
 	cd docs/site && exec node node_modules/astro/bin/astro.mjs dev

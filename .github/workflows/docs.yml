@@ -39,8 +39,8 @@ permissions:
 # One deployment at a time, and never one cancelled half-way; builds that
 # publish nothing cancel each other per ref.
 concurrency:
-  group: docs-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && 'deploy' || github.ref }}
-  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) }}
+  group: docs-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && 'deploy' || github.ref }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) }}
 
 env:
   DEPLOY: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}

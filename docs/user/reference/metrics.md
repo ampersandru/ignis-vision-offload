@@ -13,7 +13,7 @@ editUrl: false
 Generated from the code by `make docs-reference` (`crates/server/src/user_docs.rs`); an edit here is overwritten, and `cargo test` fails while this page and the code disagree.
 :::
 
-The metrics listener (on by default, keyless, on loopback) serves these in the Prometheus          text format, and the Playground's Monitor reads the same set at `/ui/metrics`          ([Telemetry and metrics](../guides/telemetry.md)). A family marked *always* is in every          scrape from the start, zeros included; the others appear once what the last column names          has happened, and then stay.
+The metrics listener (on by default, keyless, on loopback) serves these in the Prometheus text format, and the Playground's Monitor reads the same set at `/ui/metrics` ([Telemetry and metrics](../guides/telemetry.md)). A family marked *always* is in every scrape from the start, zeros included; the others appear once what the last column names has happened, and then stay.
 
 | Metric | Type | Meaning | Exported |
 |---|---|---|---|

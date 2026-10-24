@@ -51,7 +51,9 @@ one a user would open for it, and every other mention links there.
 
 - **A page's file name is its route**: lowercase words joined by dashes,
   `index.md` for a section's landing page. Its front matter carries `title`,
-  `description` and `sidebar.order`; the body starts at `##`.
+  `description` and `sidebar.order`, the place in its section's list (the
+  site's front page, `index.mdx`, belongs to no section and has none); the
+  body starts at `##`.
 - **Links are relative paths to Markdown files** (`../api/deadlines.md#…`),
   which GitHub follows and the site turns into routes; a link out of
   `docs/user/` becomes a GitHub URL. `make docs-build` fails on a link to a
