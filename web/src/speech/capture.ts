@@ -30,25 +30,26 @@ export async function startCapture(onChunk: (pcm: Int16Array) => void, deps: Cap
   const createNode = deps.createNode ?? ((context, name, options) => new AudioWorkletNode(context, name, options));
   const moduleUrl = deps.moduleUrl ?? (() => URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "text/javascript" })));
 
-  let stream: MediaStream;
-  try {
-    stream = await getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  } catch (err) {
-    if (err instanceof Error && (err.name === "NotAllowedError" || err.name === "SecurityError")) throw new MicBlocked(err.message);
-    throw err;
-  }
+  let stream: MediaStream | null = null;
   let context: AudioContext | null = null;
   let stopped = false;
   let flushed: (() => void) | null = null;
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    for (const track of stream.getTracks()) track.stop();
+    for (const track of stream?.getTracks() ?? []) track.stop();
     void context?.close();
     flushed?.();
   };
   try {
+    // Made before the first await, inside the press's user activation: a context made later can stay suspended.
     context = createContext();
+    try {
+      stream = await getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (err) {
+      if (err instanceof Error && (err.name === "NotAllowedError" || err.name === "SecurityError")) throw new MicBlocked(err.message);
+      throw err;
+    }
     const url = moduleUrl();
     try {
       await context.audioWorklet.addModule(url);

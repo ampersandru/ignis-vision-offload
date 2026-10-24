@@ -82,12 +82,14 @@ describe("startCapture", () => {
   it("names a mic the browser blocked, and lets a mic go when the worklet fails to load", async () => {
     const denied = fakes({ refuse: Object.assign(new Error("Permission denied"), { name: "NotAllowedError" }) });
     await expect(startCapture(() => {}, denied.deps)).rejects.toBeInstanceOf(MicBlocked);
+    expect(denied.log).toContain("context closed");
     const broken = fakes({ failModule: true });
     await expect(startCapture(() => {}, broken.deps)).rejects.toThrow("no worklet");
     expect(broken.log).toContain("track stopped");
     expect(broken.log).toContain("context closed");
     const contextless = fakes({ failContext: true });
     await expect(startCapture(() => {}, contextless.deps)).rejects.toThrow("no audio context");
-    expect(contextless.log).toContain("track stopped");
+    // The context comes first, inside the press's activation: no mic is asked for without one.
+    expect(contextless.log.some((line) => line.startsWith("getUserMedia"))).toBe(false);
   });
 });
