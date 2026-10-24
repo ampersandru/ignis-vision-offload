@@ -198,6 +198,13 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
             let (schemas, paths, edits) = routes!(crate::images::routes::create_image_edit);
             (schemas, paths, edits.layer(axum::extract::DefaultBodyLimit::max(MEDIA_REQUEST_BODY_LIMIT)))
         })
+        // Spec speech/02: the speech model's transcription. A form carries the
+        // audio itself, up to 20 minutes of it uncompressed, so its body limit
+        // is the media one on every load.
+        .routes({
+            let (schemas, paths, transcribe) = routes!(crate::speech::route::create_transcription);
+            (schemas, paths, transcribe.layer(axum::extract::DefaultBodyLimit::max(MEDIA_REQUEST_BODY_LIMIT)))
+        })
         .route("/v1/models", options(cors_preflight))
         .route("/v1/models/switch", options(cors_preflight))
         .route("/v1/models/catalog", options(cors_preflight))
@@ -211,6 +218,7 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .route("/v1/decide", options(cors_preflight))
         .route("/v1/images/generations", options(cors_preflight))
         .route("/v1/images/edits", options(cors_preflight))
+        .route("/v1/audio/transcriptions", options(cors_preflight))
         .split_for_parts();
     describe_fields(&mut document);
     (router, document)
@@ -227,6 +235,7 @@ fn describe_fields(document: &mut utoipa::openapi::OpenApi) {
         ("/v1/responses", Surface::Responses),
         ("/v1/images/generations", Surface::Images),
         ("/v1/images/edits", Surface::Images),
+        ("/v1/audio/transcriptions", Surface::Transcriptions),
     ] {
         let operation = document.paths.paths.get_mut(path).and_then(|item| item.post.as_mut());
         let operation = operation.expect("the operations with a field table are documented");
@@ -307,7 +316,10 @@ async fn require_serving(State(server): State<Arc<Server>>, req: Request, next: 
     // The field declarations are static (spec playground/05): nothing about
     // the model's state changes them, so no state holds them back.
     let static_route = req.method() == axum::http::Method::GET && req.uri().path() == "/v1/config/fields";
-    if switch_route || static_route || req.method() == axum::http::Method::OPTIONS {
+    // Spec speech/02 (Q40): the speech model is no part of a switch, a load or
+    // a warm-up, and serves on the CPU through all of them.
+    let speech_route = req.method() == axum::http::Method::POST && req.uri().path() == "/v1/audio/transcriptions";
+    if switch_route || static_route || speech_route || req.method() == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
     let message = match &*status {
@@ -510,10 +522,11 @@ pub(crate) fn unswitchable_named<'a>(server: &Server, route: ModelKind, model: O
 }
 
 /// "a text model", "an image model".
-fn a_kind(kind: ModelKind) -> &'static str {
+pub(crate) fn a_kind(kind: ModelKind) -> &'static str {
     match kind {
         ModelKind::Text => "a text model",
         ModelKind::Image => "an image model",
+        ModelKind::Speech => "a speech model",
     }
 }
 
@@ -1815,9 +1828,11 @@ pub(crate) fn now() -> u64 {
     tag = "models",
     operation_id = "list_models",
     summary = "The servable models, the loaded one first",
-    description = "The models a request may name and be served by now, without a download. `data[0]` is always the model this server loaded (`active: true`), with its `kind` (`text` or `image`: the routes it serves) and for a text model the context a single request may spend (`max_model_len`, prompt plus completion), how many requests it decodes at once (`decode_lanes`) and every adaptation its load took to fit the VRAM plan (`adapted`, in the order taken, as the `ignis.runtime.vram_plan` log line spells them; `\"\"` when it took none — the 27B under `rtx50-16gb` in a 13 GiB budget (16 GiB less 3 GiB of desktop) says `max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens 65536)`). `max_model_len` and `decode_lanes` are the values the load runs, after any adaptation; `GET /v1/config` keeps the values configured. The other entries (`active: false`) are the models a request naming them switches to: every catalog entry whose artifact is under `download.path` (catalog order), then every known model (`switch.known_models`, and the model the server started on) whose artifact is a file (id order) — read at each request, so a model downloaded into a running server is listed at once. Their `kind` is given only when the id is a model family's own, and `max_model_len`, `decode_lanes` and `adapted` never: they are known once a model is loaded. No entry carries a path. With `switch.allow_implicit` false only `data[0]` is listed. Among the others, a catalog entry on disk whose `card_class` is above this card's (ADR 0064) is listed with `available: false` and the `reason`, naming its class and the card's: a request naming it is refused `409 model_above_card_class` and never switches to it — or, on a card where another entry answers to its id (on a 16 GB card `qwen3.8-27b-16g` to `qwen3.8-27b`), is served by that one, which the reason names. Every other entry is `available: true`. A server serves one model at a time: a request naming another entry waits while it replaces the loaded one; a text request naming the image model is refused `409 model_kind_mismatch`.
+    description = "The models a request may name and be served by now, without a download. `data[0]` is always the model this server loaded (`active: true`), with its `kind` (`text` or `image`: the routes it serves; the speech model's is `speech`) and for a text model the context a single request may spend (`max_model_len`, prompt plus completion), how many requests it decodes at once (`decode_lanes`) and every adaptation its load took to fit the VRAM plan (`adapted`, in the order taken, as the `ignis.runtime.vram_plan` log line spells them; `\"\"` when it took none — the 27B under `rtx50-16gb` in a 13 GiB budget (16 GiB less 3 GiB of desktop) says `max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens 65536)`). `max_model_len` and `decode_lanes` are the values the load runs, after any adaptation; `GET /v1/config` keeps the values configured. The other entries (`active: false`) are the models a request naming them switches to: every catalog entry whose artifact is under `download.path` (catalog order), then every known model (`switch.known_models`, and the model the server started on) whose artifact is a file (id order) — read at each request, so a model downloaded into a running server is listed at once. Their `kind` is given only when the id is a model family's own, and `max_model_len`, `decode_lanes` and `adapted` never: they are known once a model is loaded. No entry carries a path. With `switch.allow_implicit` false only `data[0]` is listed. Among the others, a catalog entry on disk whose `card_class` is above this card's (ADR 0064) is listed with `available: false` and the `reason`, naming its class and the card's: a request naming it is refused `409 model_above_card_class` and never switches to it — or, on a card where another entry answers to its id (on a 16 GB card `qwen3.8-27b-16g` to `qwen3.8-27b`), is served by that one, which the reason names. Every other entry is `available: true`. A server serves one text or image model at a time: a request naming another entry waits while it replaces the loaded one; a text request naming the image model is refused `409 model_kind_mismatch`. The speech model is loaded beside it, not instead of it (ADR 0066): it is listed right after `data[0]`, with `kind: \"speech\"`, `active: true` and `available: true`, only while it is available -- turned on by `speech.model`, its files on disk and the host able to run it -- whether or not it is loaded right now, and never as a model a switch goes to. Its compat names (`speech.compat_names`) are not listed.
 
-`status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503.
+The top-level `speech` object, `{\"available\": bool, \"reason\": string}`, is always present, beside `status`: `reason` says why the speech model cannot serve (turned off, its files missing and the command that fetches them, or the CPU lacking AVX2) and is absent while it can, so a page can disable its microphone before it is pressed.
+
+`status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503 -- but `POST /v1/audio/transcriptions`, which serves on the CPU through a switch.
 
 `unloaded` when nobody used the model for `model.idle_unload` seconds and it was unloaded (`data[0]` still names it, and the API stays up): the next request that needs it loads it again and is served once it is warm. `loading` while that load runs, `switching` naming what loads; requests arriving meanwhile wait for it. A load out of `unloaded` that fails is `failed`, and the next request tries again.",
     responses(
@@ -1855,6 +1870,25 @@ fn models_now(server: &Server) -> ModelList {
         available: true,
         reason: None,
     }];
+    // The speech model (ADR 0066, spec speech/02): beside the loaded one, not
+    // instead of it, and listed only while it can serve. Right after
+    // `data[0]`, which stays the text or image model.
+    let speech = server.speech.availability(&server.live().speech);
+    let speech_state = SpeechState { available: speech.available(), reason: speech.reason.clone() };
+    if let (true, Some(id)) = (speech.available(), speech.id) {
+        data.push(ModelInfo {
+            id,
+            object: "model",
+            owned_by: "ignis",
+            active: true,
+            kind: Some(ModelKind::Speech.as_str()),
+            max_model_len: None,
+            decode_lanes: None,
+            adapted: None,
+            available: true,
+            reason: None,
+        });
+    }
     // No header read here: a family's own id says its kind, any other none.
     data.extend(rest.into_iter().map(|servable| ModelInfo {
         kind: ModelFamily::of_model_id(&servable.id).map(|family| family.kind().as_str()),
@@ -1872,6 +1906,7 @@ fn models_now(server: &Server) -> ModelList {
         object: "list",
         data,
         status: status.as_str(),
+        speech: speech_state,
         switching: match &*status {
             ModelStatus::Switching { from, to } => Some(SwitchIds { from: from.clone(), to: to.clone() }),
             // The load leaving `unloaded` (spec model-switch/02): what loads.
@@ -1897,6 +1932,9 @@ struct ModelList {
     /// `serving`, `switching` or `failed` (spec model-switch/01); `unloaded`
     /// or `loading` (spec model-switch/02).
     status: &'static str,
+    /// Whether the speech model can serve, and if not why (spec speech/02):
+    /// always present.
+    speech: SpeechState,
     /// The switch under way, while `status` is `switching`; the load under
     /// way, while it is `loading`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1908,6 +1946,16 @@ struct ModelList {
     /// absent before the first.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_switch: Option<LastSwitchInfo>,
+}
+
+/// Whether the speech model can serve.
+#[derive(Serialize, ToSchema)]
+struct SpeechState {
+    available: bool,
+    /// Why it cannot: turned off, its files missing (with the command that
+    /// fetches them), or the host unable to run it. Absent while it can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 /// How a switch or a reload ended.
@@ -2117,6 +2165,15 @@ fn resolve_by_id(server: &Server, model: &str) -> Result<std::path::PathBuf, Res
     switcher.resolve(model).map_err(|why| {
         let message = match why {
             Unswitchable::AboveClass(refusal) => return above_card_class(&refusal),
+            Unswitchable::Speech => {
+                return error_response_naming(
+                    StatusCode::CONFLICT,
+                    "invalid_request_error",
+                    "model_kind_mismatch",
+                    format!("{model} is a speech model: it is loaded beside the active model by a transcription, and a switch never goes to it"),
+                    Some("model"),
+                )
+            }
             Unswitchable::Unknown => format!(
                 "unknown model: {model} is neither in switch.known_models nor a catalog entry; GET /v1/models/catalog lists the models this server can switch to"
             ),
@@ -3588,6 +3645,9 @@ mod tests {
             ("PATCH", "/v1/config"),
             // The Responses socket's upgrade: its jobs count, one by one.
             ("GET", "/v1/responses"),
+            // The speech model runs beside the text model on the CPU, and a
+            // transcription is no use of it (spec speech/02, Q40).
+            ("POST", "/v1/audio/transcriptions"),
         ];
         let (_, document) = v1_parts();
         let document = serde_json::to_value(&document).expect("the document serializes");

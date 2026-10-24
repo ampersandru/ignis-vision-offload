@@ -27,6 +27,9 @@ pub enum Surface {
     /// `POST /v1/images/generations`'s body and `POST /v1/images/edits`'s
     /// form (spec image-model/05), whose text parts are read as JSON values.
     Images,
+    /// `POST /v1/audio/transcriptions`'s form (spec speech/02), whose text
+    /// parts are read as JSON values.
+    Transcriptions,
 }
 
 /// One field's row: when its value is inert, and why any other value is
@@ -106,6 +109,15 @@ fn null_or_disabled(value: &JsonValue) -> bool {
 }
 
 const ALWAYS: &str = "any value";
+
+fn null_or_zero_number(value: &JsonValue) -> bool {
+    value.is_null() || value.as_f64() == Some(0.0)
+}
+
+fn null_or_empty_array(value: &JsonValue) -> bool {
+    value.is_null() || value.as_array().is_some_and(Vec::is_empty)
+}
+
 
 
 /// The Chat Completions body's fields past what the handler reads.
@@ -306,12 +318,52 @@ pub const IMAGES: &[FieldRule] = &[
     FieldRule { name: "user", inert: always, inert_when: ALWAYS, refusal: None },
 ];
 
+/// The transcription form's fields past what the route reads
+/// (`crate::speech::route`): `file`, `model`, `prompt`, `keywords[]`,
+/// `language`, `languages[]`, `response_format`, `timestamp_granularities[]`
+/// and `stream` are honoured or refused where they are read. The form's text
+/// parts arrive as the JSON values a body would carry, the array fields under
+/// their `[]` names.
+pub const TRANSCRIPTIONS: &[FieldRule] = &[
+    FieldRule {
+        name: "temperature",
+        inert: null_or_zero_number,
+        inert_when: "`0`",
+        refusal: Some("this server decodes greedily; send 0 or omit temperature"),
+    },
+    FieldRule {
+        name: "chunking_strategy",
+        inert: null,
+        inert_when: "`null`",
+        refusal: Some("the clip is transcribed as one block, with no automatic split in this version; omit chunking_strategy or send null"),
+    },
+    FieldRule {
+        name: "include[]",
+        inert: null_or_empty_array,
+        inert_when: "empty",
+        refusal: Some("log probabilities are not served (`logprobs`); omit include[]"),
+    },
+    FieldRule {
+        name: "known_speaker_names[]",
+        inert: null_or_empty_array,
+        inert_when: "empty",
+        refusal: Some("this server does not diarize; omit known_speaker_names[]"),
+    },
+    FieldRule {
+        name: "known_speaker_references[]",
+        inert: null_or_empty_array,
+        inert_when: "empty",
+        refusal: Some("this server does not diarize; omit known_speaker_references[]"),
+    },
+];
+
 /// The table for `surface`.
 pub fn table(surface: Surface) -> &'static [FieldRule] {
     match surface {
         Surface::Chat => CHAT,
         Surface::Responses => RESPONSES,
         Surface::Images => IMAGES,
+        Surface::Transcriptions => TRANSCRIPTIONS,
     }
 }
 

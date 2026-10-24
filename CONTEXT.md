@@ -486,7 +486,10 @@ When output names a domain concept, use the term as defined here.
   model whose artifact is there). What `GET /v1/models` lists, the active one
   first (`active: true`), computed at each request; with
   `switch.allow_implicit` off, the active model alone. An alias is not one
-  until the implicit switch resolves aliases.
+  until the implicit switch resolves aliases. The **speech model**
+  is listed too, right after the active one (`kind: "speech"`), without being
+  switched to: it is loaded beside the active model, on the CPU, and only
+  while it is available (ADR 0066).
   _Avoid_: available model, installed model
 - **Last switch** — how the most recent switch or reload ended (`switched`,
   `refused`, `restored`, `failed`, with the reason), kept on `GET /v1/models`
@@ -500,7 +503,10 @@ When output names a domain concept, use the term as defined here.
   (`status: loading`, requests arriving meanwhile wait) and is served. What
   counts as use is a request in flight on a model route, from admission to
   the end of its response — per job on a Responses socket — never a poll of
-  the state routes.
+  the state routes. A transcription is
+  not use of the text model: the speech model is another model, on the CPU, with
+  its own idle clock (`speech.idle_unload`), and it never resets this one (ADR
+  0066).
   _Avoid_: sleep, suspend, eviction (that word is a sequence's, not a model's)
 
 ## Prompt rendering

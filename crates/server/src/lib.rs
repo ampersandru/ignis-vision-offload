@@ -56,6 +56,7 @@ pub mod reuse;
 pub mod runtime;
 pub mod scalar;
 pub mod shutdown;
+pub mod speech;
 pub mod starting;
 pub mod stop;
 pub mod telemetry;
@@ -153,6 +154,11 @@ pub struct Server {
     /// The edits decoding their condition images now, at most
     /// `image.max_condition_decodes` at once ([`images::Decodes`]).
     pub image_decodes: std::sync::Arc<images::Decodes>,
+    /// The speech model beside the active one (ADR 0066, spec speech/02):
+    /// its availability, its executor and the compute worker behind
+    /// `POST /v1/audio/transcriptions`. Shared by every clone, like the active
+    /// model; a model switch does not touch it.
+    pub speech: std::sync::Arc<speech::Speech>,
 }
 
 /// The server-level knobs a live config change may touch (spec config-v2/02
@@ -199,6 +205,10 @@ pub struct Live {
     /// enhancement — each read per request, so a live change needs no
     /// reload.
     pub image: config::schema::ImageGroup,
+    /// The speech model's serving (`speech.*`, spec speech/02): which model,
+    /// its compat names, the clip and queue limits — each read per request,
+    /// so a live change needs no reload.
+    pub speech: config::schema::SpeechGroup,
 }
 
 impl Default for Live {
@@ -222,6 +232,7 @@ impl Default for Live {
             socket_idle_close: Duration::ZERO,
             loop_guard: loop_guard::LoopGuardParams { mode: loop_guard::LoopGuardMode::Off, ..Default::default() },
             image: config::schema::ImageGroup::default(),
+            speech: config::schema::SpeechGroup::default(),
         }
     }
 }
@@ -241,6 +252,7 @@ impl Live {
             socket_idle_close: Duration::from_secs(u64::from(config.socket_idle_close_secs)),
             loop_guard: config.loop_guard.clone(),
             image: config.settings().image.clone(),
+            speech: config.settings().speech.clone(),
         }
     }
 }
@@ -335,6 +347,7 @@ impl Server {
             switcher: None,
             config: None,
             image_decodes: std::sync::Arc::default(),
+            speech: std::sync::Arc::default(),
         }
     }
 
@@ -582,6 +595,21 @@ impl Server {
         self
     }
 
+    /// Serve transcriptions with `speech` (ADR 0066): `main` passes the slot
+    /// over its executor and the catalog; a server built without one has a
+    /// speech model that is unavailable, saying so.
+    pub fn with_speech(mut self, speech: std::sync::Arc<speech::Speech>) -> Self {
+        self.speech = speech;
+        self
+    }
+
+    /// Serve the speech model as `speech` says (`speech.*`, spec speech/02):
+    /// what `main` resolved at start, until a live change applies another.
+    pub fn with_speech_group(self, speech: config::schema::SpeechGroup) -> Self {
+        self.update_live(|live| live.speech = speech);
+        self
+    }
+
     /// Serve images as `image` says (`image.*`, spec image-model/05): what
     /// `main` resolved at start, until a live change or a switch applies
     /// another configuration.
@@ -610,6 +638,7 @@ impl Server {
             engine.install_metrics(std::sync::Arc::clone(&metrics));
         }
         self.responses.install_metrics(std::sync::Arc::clone(&metrics));
+        self.speech.attach_metrics(std::sync::Arc::clone(&metrics));
         self.metrics = Some(metrics);
         self
     }

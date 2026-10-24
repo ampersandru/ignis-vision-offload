@@ -201,6 +201,29 @@ export type ImageJobs = {
   running: number | null;
 };
 
+/** How a transcription ended (spec speech/02, ADR 0017's amendment of 2026-10-24): `ignis_speech_transcriptions_total`'s `outcome` label. */
+export const SPEECH_OUTCOMES = ["completed", "cancelled", "failed", "timed_out"] as const;
+export type SpeechOutcome = (typeof SPEECH_OUTCOMES)[number];
+
+/** Where a transcription ran: `ignis_speech_transcriptions_total`'s `executor` label. */
+export const SPEECH_EXECUTORS = ["cpu", "gpu_loan"] as const;
+export type SpeechExecutor = (typeof SPEECH_EXECUTORS)[number];
+
+/**
+ * The speech model's transcriptions (spec speech/02): by executor and
+ * outcome, the seconds of audio covered, the wait from commit to transcript
+ * of the completed ones, and the sessions and queue as the worker last set
+ * them. Absent until the speech model was first asked, so null on a server
+ * that never transcribed.
+ */
+export type SpeechTranscriptions = {
+  transcriptions: Record<SpeechExecutor, Record<SpeechOutcome, number | null>>;
+  audioSeconds: number | null;
+  wait: Histogram | null;
+  sessionsOpen: number | null;
+  queueLength: number | null;
+};
+
 /** What the loop guard did about a loop (GitHub #330): `ignis_loop_guard_loops_total`'s `outcome` label, in the order the card reads them. */
 export const LOOP_OUTCOMES = ["rewound", "closed", "detected", "too_little_kept", "no_room", "no_tokenizer", "submit_refused"] as const;
 export type LoopOutcome = (typeof LOOP_OUTCOMES)[number];
@@ -253,6 +276,8 @@ export type Snapshot = {
   speculation: Speculation | null;
   /** Null until the image model admitted a job: a text-only server. */
   images: ImageJobs | null;
+  /** Null until the speech model was asked for a transcription. */
+  speech: SpeechTranscriptions | null;
   /** Null until the guard watched a request, or with `loop_guard: off`. */
   loopGuard: LoopGuard | null;
   /** The thinking budget's own closes (GitHub #330); null until the first. Not the guard's `closed`. */
@@ -324,6 +349,15 @@ const IMAGE_FAMILIES = {
   queue: "ignis_image_queue_jobs",
 } as const;
 
+/** The speech families (spec speech/02). */
+const SPEECH_FAMILIES = {
+  transcriptions: "ignis_speech_transcriptions_total",
+  audioSeconds: "ignis_speech_audio_seconds_total",
+  wait: "ignis_speech_commit_wait_seconds",
+  sessions: "ignis_speech_sessions_open",
+  queue: "ignis_speech_queue_length",
+} as const;
+
 /** The loop guard's families (GitHub #330). */
 const LOOP_FAMILIES = {
   watched: "ignis_loop_guard_watched_requests_total",
@@ -363,6 +397,7 @@ const KNOWN = new Set<string>([
   ...Object.values(NGRAM_FAMILIES),
   ...Object.values(SPEC_FAMILIES),
   ...Object.values(IMAGE_FAMILIES),
+  ...Object.values(SPEECH_FAMILIES),
   ...Object.values(LOOP_FAMILIES),
   THINKING_FORCED_CLOSES,
 ]);
@@ -402,6 +437,7 @@ export function emptySnapshot(): Snapshot {
     ngram: null,
     speculation: null,
     images: null,
+    speech: null,
     loopGuard: null,
     thinkingForcedCloses: null,
     ttft: null,
@@ -507,6 +543,22 @@ export function readSnapshot({ families }: Exposition): Snapshot {
     };
   }
 
+  // The speech model, all or nothing: the first transcription renders every series.
+  if (families.has(SPEECH_FAMILIES.transcriptions)) {
+    snap.speech = {
+      transcriptions: Object.fromEntries(
+        SPEECH_EXECUTORS.map((executor) => [
+          executor,
+          Object.fromEntries(SPEECH_OUTCOMES.map((outcome) => [outcome, samples(SPEECH_FAMILIES.transcriptions).find((s) => s.labels.executor === executor && s.labels.outcome === outcome)?.value ?? null])),
+        ]),
+      ) as SpeechTranscriptions["transcriptions"],
+      audioSeconds: valueOf(SPEECH_FAMILIES.audioSeconds),
+      wait: readHistogram(samples(SPEECH_FAMILIES.wait), SPEECH_FAMILIES.wait),
+      sessionsOpen: valueOf(SPEECH_FAMILIES.sessions),
+      queueLength: valueOf(SPEECH_FAMILIES.queue),
+    };
+  }
+
   // The loop guard, all or nothing: the first watched request renders every series.
   if (families.has(LOOP_FAMILIES.watched)) {
     snap.loopGuard = {
@@ -545,6 +597,7 @@ function inContract(family: string, s: Sample): boolean {
     case "ignis_request_duration_seconds":
     case "ignis_decision_answer_mass":
     case IMAGE_FAMILIES.duration:
+    case SPEECH_FAMILIES.wait:
     case LOOP_FAMILIES.minRatio:
       return true;
     case LOOP_FAMILIES.loops:
@@ -553,6 +606,8 @@ function inContract(family: string, s: Sample): boolean {
       return oneOf(IMAGE_OUTCOMES, s.labels.outcome) && Object.keys(s.labels).length === 1;
     case IMAGE_FAMILIES.phaseSeconds:
       return oneOf(IMAGE_PHASES, s.labels.phase) && Object.keys(s.labels).length === 1;
+    case SPEECH_FAMILIES.transcriptions:
+      return oneOf(SPEECH_EXECUTORS, s.labels.executor) && oneOf(SPEECH_OUTCOMES, s.labels.outcome) && Object.keys(s.labels).length === 2;
     case IMAGE_FAMILIES.queue:
       return (s.labels.state === "waiting" || s.labels.state === "running") && Object.keys(s.labels).length === 1;
     case "ignis_decisions_total":
@@ -620,6 +675,9 @@ export function counterValues(s: Snapshot): (number | null)[] {
     s.images?.images ?? null,
     ...IMAGE_PHASES.map((phase) => s.images?.phaseSeconds[phase] ?? null),
     s.images?.duration?.count ?? null,
+    ...SPEECH_EXECUTORS.flatMap((executor) => SPEECH_OUTCOMES.map((outcome) => s.speech?.transcriptions[executor][outcome] ?? null)),
+    s.speech?.audioSeconds ?? null,
+    s.speech?.wait?.count ?? null,
     s.loopGuard?.watched ?? null,
     s.loopGuard?.looped ?? null,
     ...LOOP_OUTCOMES.map((outcome) => s.loopGuard?.loops[outcome] ?? null),

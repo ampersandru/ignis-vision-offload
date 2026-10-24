@@ -254,3 +254,70 @@ stereo 16-bit WAV is ~230 MB. That adds no new threshold (owner,
   it refused).
 - Word timestamps, SRT and VTT, and diarization (Q23).
 - Audio output, and `/v1/audio/translations` (Q24).
+
+## As built (GitHub #352)
+
+Built on `speech-352` against a scripted executor
+(`crates/server/src/speech/executor.rs`, `FakeExecutor`). Where the build
+decided something the spec left open, or differs from it:
+
+- **The seam.** `SpeechExecutor` has exactly spec 01 §4's operations plus
+  `name`, `availability` (a reason a person reads), `load`, `unload` and
+  `is_loaded`. `Transcript` carries the model's label (`None` is `None`) and
+  the decoded token ids, for `verbose_json`'s segment. **The adapter to
+  `ignis-speech` is the one open item**: `main` wires `NoExecutor`, so a real
+  server reports the speech model unavailable ("this build has no speech
+  executor") until #351's crate is adapted.
+- **The context cap lives in the executor** (it owns the tokenizer): the
+  route passes the context and `speech.context_max_tokens` to `open`. AC 9 is
+  tested up to that call.
+- **`GET /v1/models`.** The speech entry is `kind: "speech"`, `active: true`,
+  `available: true`, right after `data[0]`. The `speech` object always exists;
+  `reason` is absent while it can serve (as `reason` is elsewhere in the
+  list). The unavailable reasons are checked in the order a person fixes them:
+  off, an id the catalog lacks, a host that cannot run it, files missing. The
+  download command is spelled `ignis-server model download <id>`, the binary's
+  real name.
+- **A speech entry is no model to switch to.** The catalog has no `kind` key,
+  so `speech::is_speech_id` (`qwen3-asr-` prefix) keeps those entries out of
+  the switch listing, the implicit switch and `POST /v1/models/switch` (`409
+  model_kind_mismatch`). #351's ids follow that prefix; if they change, so does
+  the constant.
+- **The route.** Order of answers: `404`/`409` on `model`, `503
+  speech_unavailable`, the field rules (`400`), the audio (`400`), admission
+  (`503 engine_full`), the deadline (`504`). `speech_unavailable` is also the
+  answer to a model that will not load. The gate lets the route through in
+  every status, a warm-up included, and `MODEL_ROUTES` does not list it.
+- **Deadline.** Counted from admission, the queue's wait included, as this
+  spec says (an image job's runs from its start). The job stops at its next
+  window.
+- **The stream** sends `transcript.text.delta` as the executor's stable text
+  grows after each 8 s window, the rest at the commit; a clip under one window
+  streams its whole text as one delta. Events are bare `data:` lines, as
+  OpenAI's.
+- **`verbose_json`** also carries `task: "transcribe"`, as OpenAI's does.
+  Seconds are rounded to the millisecond. `keywords[]` follow the prompt on a
+  line of their own, joined by `, `.
+- **Languages.** The 30 are the model card's table
+  (`speech/languages.rs`), by ISO code, English name, or `tl` for Filipino.
+- **The worker.** One thread: interactive tasks first, batch jobs a window at
+  a time, and the idle clock (`speech.idle_unload`) in the same loop. The
+  Realtime lane exists (`Speech::submit_interactive`, `open_session`) and is
+  tested, but no route uses it before spec 03. `Retry-After` is the running
+  clip's length over the speed measured so far (3 x real time before any),
+  between 1 and 15 s.
+- **Config.** All 16 fields of the `speech` group are declared, live and
+  patchable; the ones spec 03, 05 and 06 read are documented as not served yet.
+  A compat name equal to a served id (a catalog entry, a family, the start
+  model, the speech model) is refused at start.
+- **Metrics** are recorded by the request, not the log; families are absent
+  until the first transcription. The Monitor reads them (snapshot, derive,
+  view, tests) and ADR 0017 lists them.
+- **Opus.** The libopus verification build failed on the msvc target: the
+  `cmake` crate (`opusic-sys`' build dependency) does not compile in the host
+  graph here (`dlltool.exe` not found, the windows-gnu host toolchain). Opus
+  stays refused with the accepted set named. Symphonia (MPL-2.0, pure Rust)
+  decodes WAV, FLAC, MP3, AAC and demuxes Ogg and Matroska; there is no Vorbis
+  decoder.
+- **Open:** AC 16 (the 5090's decode while a 60 s transcription runs) needs the
+  real executor and the GPU; the executor adapter above; Opus.

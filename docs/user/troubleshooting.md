@@ -260,6 +260,22 @@ model loaded, or the reverse). The message names both kinds and the loaded id. N
 known model of the route's kind and the server switches to it, or switch
 explicitly ([Image generation](api/images.md)).
 
+### `503 speech_unavailable`
+
+The speech model cannot serve, and the message says why, with no `Retry-After`
+(waiting changes nothing): `speech.model` is `off`; its files are not under
+`download.path` (fetch them with `ignis-server model download qwen3-asr-1.7b`;
+nothing downloads by itself); the CPU lacks AVX2; or the model could not be
+loaded (the message carries the reason). `GET /v1/models` carries the same
+reason in its `speech` object ([Speech to text](api/transcriptions.md)).
+
+### `400` on a transcription naming `file`
+
+The format is not one the server decodes: WAV, FLAC, MP3, AAC, and the Ogg and
+Matroska/WebM containers holding FLAC are. Opus (what a browser's recorder
+produces) is not decoded yet: send WAV, or convert it. A clip longer than
+`speech.max_clip_seconds` (1200 s) is refused too, and never split.
+
 ### `vision_disabled`, or `media_budget_exceeded`
 
 `vision is disabled for this server`: an `image_url` part was sent and the

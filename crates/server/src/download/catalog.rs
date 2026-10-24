@@ -165,6 +165,13 @@ impl Catalog {
         &BUILT_IN_CATALOG
     }
 
+    /// A catalog of exactly `entries`: for a server built in process, which
+    /// reads no catalog file (the speech slot's tests, whose models are
+    /// fixtures).
+    pub fn from_entries(entries: Vec<CatalogEntry>) -> Catalog {
+        Catalog { entries }
+    }
+
     /// Every entry, the built-in ones first.
     pub fn entries(&self) -> &[CatalogEntry] {
         &self.entries

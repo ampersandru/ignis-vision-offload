@@ -6,7 +6,7 @@ sidebar:
 ---
 
 Every setting is one **field** in a **group** — `server`, `model`, `vram`,
-`reuse`, `switch`, `spec`, `vision`, `media`, `download`, `ngram`, `kv_disk` —
+`reuse`, `switch`, `spec`, `vision`, `media`, `image`, `speech`, `download`, `ngram`, `kv_disk` —
 and has the same name on every surface
 ([ADR 0046](../../adr/0046-one-declaration-per-config-field.md)):
 

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION, LOOP_GUARD_EXPOSITION, THINKING_FORCED_CLOSES } from "./fixture.ts";
+import { FLASH_NEXT_EXPOSITION, IGNIS_EXPOSITION, IMAGE_EXPOSITION, IMAGE_LOAD_EXPOSITION, KV_DISK_EXPOSITION, LOOP_GUARD_EXPOSITION, SPEECH_EXPOSITION, THINKING_FORCED_CLOSES } from "./fixture.ts";
 import { MonitorView } from "./MonitorView.tsx";
 import { applyScrape, initialMonitor } from "./scrape.ts";
 
@@ -184,6 +184,20 @@ describe("MonitorView", () => {
     expect(html).toContain("Time denoising");
     const text = renderToStaticMarkup(<MonitorView state={applyScrape(initialMonitor(), { kind: "ok", text: IGNIS_EXPOSITION }, now, 2)} />);
     expect(text).not.toContain("Image jobs");
+  });
+
+  // Spec speech/02: the Transcriptions card, only once the speech model was asked.
+  it("draws the Transcriptions card once the speech model transcribed, and not on a server that never did", () => {
+    const now = Date.now();
+    // Ten seconds on: three more completed transcriptions and 60 more seconds of audio.
+    const later = SPEECH_EXPOSITION.replace('executor="cpu",outcome="completed"} 4', 'executor="cpu",outcome="completed"} 7').replace("audio_seconds_total 80", "audio_seconds_total 140");
+    const state = applyScrape(applyScrape(initialMonitor(), { kind: "ok", text: SPEECH_EXPOSITION }, now - 10_000, 2), { kind: "ok", text: later }, now, 2);
+    const html = renderToStaticMarkup(<MonitorView state={state} />);
+    expect(html).toContain("Transcriptions");
+    expect(html).toContain("Median wait");
+    expect(html).toContain("Sessions open");
+    const text = renderToStaticMarkup(<MonitorView state={applyScrape(initialMonitor(), { kind: "ok", text: IGNIS_EXPOSITION }, now, 2)} />);
+    expect(text).not.toContain("Median wait");
   });
 
   // GitHub #330: the Reasoning card, and the rewinds among the Request flow's cancels.

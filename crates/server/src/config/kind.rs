@@ -219,6 +219,103 @@ count_kind!(
     Checks: u32, "checks", "check count"
 );
 
+count_kind!(
+    /// A count of milliseconds.
+    Millis: u32, "ms", "millisecond count"
+);
+count_kind!(
+    /// A count of open Realtime sessions.
+    Sessions: u32, "sessions", "session count"
+);
+count_kind!(
+    /// A count of waiting requests.
+    Requests: u32, "requests", "request count"
+);
+
+/// The speech model's compute threads (spec speech/01): a count, or `auto`,
+/// the physical cores less one. Rendered `auto` when unset, so a file written
+/// from the running config reads back to the same value.
+pub struct Threads;
+
+impl FieldKind for Threads {
+    type Value = Option<u32>;
+    const TAG: &'static str = "count|auto";
+
+    fn parse(raw: &str) -> Result<Self::Value, String> {
+        if raw.eq_ignore_ascii_case("auto") {
+            return Ok(None);
+        }
+        raw.parse::<u32>().ok().filter(|&threads| (1..=1024).contains(&threads)).map(Some).ok_or_else(|| format!("expects `auto` or a thread count in 1..=1024, got `{raw}`"))
+    }
+
+    fn render(value: &Self::Value) -> Value {
+        value.map_or_else(|| Value::String("auto".to_owned()), Value::from)
+    }
+}
+
+/// A fraction of one, `0` to `1` (`0.5`), kept as thousandths so a group of
+/// them stays `Eq`.
+pub struct Fraction;
+
+impl FieldKind for Fraction {
+    type Value = u32;
+    const TAG: &'static str = "0..1";
+
+    fn parse(raw: &str) -> Result<u32, String> {
+        raw.parse::<f64>()
+            .ok()
+            .filter(|fraction| (0.0..=1.0).contains(fraction))
+            .map(|fraction| (fraction * 1000.0).round() as u32)
+            .ok_or_else(|| format!("expects a number from 0 to 1, got `{raw}`"))
+    }
+
+    fn render(value: &u32) -> Value {
+        Value::from(f64::from(*value) / 1000.0)
+    }
+}
+
+/// A list of model names, `;`- or `,`-separated: `speech.compat_names`. An
+/// entry holds no whitespace and no `@` (which starts a request's lane tag, as
+/// in [`KnownModels`]) and is named once.
+pub struct Names;
+
+impl FieldKind for Names {
+    type Value = Vec<String>;
+    const TAG: &'static str = "name;...";
+    const REPEATABLE: bool = true;
+
+    fn parse(raw: &str) -> Result<Self::Value, String> {
+        let mut names: Vec<String> = Vec::new();
+        for name in raw.split([';', ',']).map(str::trim).filter(|name| !name.is_empty()) {
+            if name.contains(char::is_whitespace) || name.contains('@') {
+                return Err(format!("takes names with no whitespace and no `@`, got `{name}`"));
+            }
+            if names.iter().any(|seen| seen == name) {
+                return Err(format!("names `{name}` twice"));
+            }
+            names.push(name.to_owned());
+        }
+        Ok(names)
+    }
+
+    fn render(value: &Self::Value) -> Value {
+        Value::Array(value.iter().cloned().map(Value::String).collect())
+    }
+
+    fn file_text(value: &Value) -> Result<Option<String>, String> {
+        match value {
+            Value::Array(items) => Ok(Some(
+                items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned).ok_or_else(|| "lists something that is not a name".to_owned()))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(";"),
+            )),
+            other => scalar_text(other),
+        }
+    }
+}
+
 /// The loop guard's mode (`crate::loop_guard`): `off`, `log` or `rewind`.
 pub struct LoopGuard;
 

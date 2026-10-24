@@ -37,3 +37,13 @@ crates/artifact/tests/fixtures/qwen_image_work/** -text
 # for byte by front_end.rs and oracle.rs.
 crates/speech/tests/fixtures/oracle/**/*.bin -text
 crates/speech/tests/fixtures/oracle/*.wav -text
+
+# Audio fixtures are binary: no end-of-line conversion.
+crates/server/tests/fixtures/audio/*.wav binary
+crates/server/tests/fixtures/audio/*.flac binary
+crates/server/tests/fixtures/audio/*.mp3 binary
+crates/server/tests/fixtures/audio/*.aac binary
+crates/server/tests/fixtures/audio/*.m4a binary
+crates/server/tests/fixtures/audio/*.ogg binary
+crates/server/tests/fixtures/audio/*.mka binary
+crates/server/tests/fixtures/audio/*.webm binary

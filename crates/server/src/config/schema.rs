@@ -674,6 +674,74 @@ config_group! {
 }
 
 config_group! {
+    /// The speech model (spec speech/02, ADR 0066): Qwen3-ASR, loaded beside
+    /// the active model on the CPU at first use. Read while any model is
+    /// loaded, so every family takes them, and each changes live.
+    SpeechGroup = "speech" {
+        /// The speech model: `auto` (the 1.7B Q4_K_M catalog entry,
+        /// `qwen3-asr-1.7b`), a catalog entry's id, or `off`. It is enabled
+        /// when its files are on disk; nothing is ever downloaded by itself
+        /// (`ignis-server model download <id>`).
+        model: Text = super::DEFAULT_SPEECH_MODEL.to_owned(), NO_RULE, ALL, [Visible, Patchable];
+        /// The model names OpenAI clients send that the speech model answers
+        /// to, so an unmodified client works: Aider hard-codes `whisper-1`.
+        /// Not catalog aliases and not listed by `GET /v1/models`; a name
+        /// equal to a served id is refused at start.
+        compat_names: Names = super::DEFAULT_SPEECH_COMPAT_NAMES.iter().map(|name| (*name).to_owned()).collect(), NO_RULE, ALL,
+            [Visible, Patchable];
+        /// The threads the speech model computes with: `auto` is the physical
+        /// cores less one. Read by the load, so a change holds from the next
+        /// one.
+        threads: Threads = None, NO_RULE, ALL, [Visible, Patchable];
+        /// The longest clip one transcription takes, in seconds; a longer one
+        /// is refused and nothing is split. 1,200, the model's limit.
+        max_clip_seconds: Secs = 1200, between(1, 1200), ALL, [Visible, Patchable];
+        /// The most tokens of context (`prompt` and `keywords[]`) a
+        /// transcription reads; over it the last ones are kept. 0 reads none.
+        context_max_tokens: Tokens = 512, between(0, 4096), ALL, [Visible, Patchable];
+        /// Pin the speech model's weights in host memory instead of mapping
+        /// the file. Read by the load, so a change holds from the next one.
+        pinned_weights: Bool = false, NO_RULE, ALL, [Visible, Patchable];
+        /// Seconds with no transcription after which the speech model is
+        /// unloaded, its host memory given back; the next transcription loads
+        /// it again. 0 never unloads.
+        idle_unload: Secs = super::DEFAULT_MODEL_IDLE_UNLOAD_SECS, between(0, super::MAX_MODEL_IDLE_UNLOAD_SECS as i64), ALL,
+            [Visible, Patchable];
+        /// How often a Realtime session's live transcript is refreshed while
+        /// audio arrives, in milliseconds. Read by the Realtime route (spec
+        /// speech/03), which is not served yet.
+        partial_interval_ms: Millis = 2000, between(100, 60_000), ALL, [Visible, Patchable];
+        /// The tokens of a live transcript held back as provisional, the rest
+        /// being stable. Read by the speech executor with the Realtime route
+        /// (spec speech/01, 03), not served yet.
+        rollback_tokens: Tokens = 5, between(0, 64), ALL, [Visible, Patchable];
+        /// The most Realtime sessions open at once; past it a session is
+        /// refused `503` with `Retry-After`. Read with the Realtime route
+        /// (spec speech/03), not served yet.
+        max_sessions: Sessions = 4, between(1, 64), ALL, [Visible, Patchable];
+        /// The batch transcriptions that may wait behind the one running, in
+        /// order; one more is refused `503 engine_full` with `Retry-After`.
+        /// 0 runs one at a time with none waiting.
+        max_queue: Requests = 4, between(0, 64), ALL, [Visible, Patchable];
+        /// The probability above which `server_vad` hears speech. Read with
+        /// `server_vad` (spec speech/05), not served yet.
+        vad_threshold: Fraction = 500, NO_RULE, ALL, [Visible, Patchable];
+        /// The audio kept from before `server_vad` heard speech, in
+        /// milliseconds (spec speech/05), not served yet.
+        vad_prefix_padding_ms: Millis = 300, between(0, 10_000), ALL, [Visible, Patchable];
+        /// The silence after which `server_vad` ends a turn, in milliseconds
+        /// (spec speech/05), not served yet.
+        vad_silence_duration_ms: Millis = 500, between(0, 60_000), ALL, [Visible, Patchable];
+        /// How long a loan of free KV pages to the speech model outlives its
+        /// transcription, in seconds (spec speech/06), not served yet.
+        loan_grace_seconds: Secs = 30, between(0, 3600), ALL, [Visible, Patchable];
+        /// How long a transcription waits for a loan before it runs on the
+        /// CPU, in seconds (spec speech/06), not served yet.
+        loan_wait_seconds: Secs = 5, between(0, 600), ALL, [Visible, Patchable];
+    }
+}
+
+config_group! {
     /// Fetching a missing model.
     DownloadGroup = "download" {
         /// Fetch the model when no artifact is on disk — asked first when
@@ -755,6 +823,8 @@ settings! {
     media: MediaGroup,
     /// The image model's serving.
     image: ImageGroup,
+    /// The speech model.
+    speech: SpeechGroup,
     /// Model download.
     download: DownloadGroup,
     /// The n-gram table.
@@ -799,6 +869,7 @@ mod tests {
             (VisionGroup::NAME, debug_field_names(&VisionGroup::default())),
             (MediaGroup::NAME, debug_field_names(&MediaGroup::default())),
             (ImageGroup::NAME, debug_field_names(&ImageGroup::default())),
+            (SpeechGroup::NAME, debug_field_names(&SpeechGroup::default())),
             (DownloadGroup::NAME, debug_field_names(&DownloadGroup::default())),
             (NgramGroup::NAME, debug_field_names(&NgramGroup::default())),
             (KvDiskGroup::NAME, debug_field_names(&KvDiskGroup::default())),
@@ -822,7 +893,7 @@ mod tests {
     #[test]
     fn the_groups_are_the_specs() {
         let names: Vec<&str> = GROUPS.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, ["server", "model", "vram", "reuse", "switch", "spec", "vision", "media", "image", "download", "ngram", "kv_disk"]);
+        assert_eq!(names, ["server", "model", "vram", "reuse", "switch", "spec", "vision", "media", "image", "speech", "download", "ngram", "kv_disk"]);
     }
 
     /// No two fields share a spelling on any surface, family-scoped ones
