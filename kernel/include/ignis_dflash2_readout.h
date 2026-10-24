@@ -83,6 +83,7 @@ struct ignis_dflash2_readout {
 /* Beside the `size` check, both sides pin the layout (here, and
  * crates/core/src/dflash2_readout.rs's mirror test). */
 static_assert(sizeof(struct ignis_dflash2_readout) == 56 &&
+                  offsetof(struct ignis_dflash2_readout, window) == 4 &&
                   offsetof(struct ignis_dflash2_readout, out_drafts) == 16 &&
                   offsetof(struct ignis_dflash2_readout, out_drafter_logits) == 48,
               "ignis_dflash2_readout drifted from crates/core/src/dflash2_readout.rs IgnisDflash2Readout");
