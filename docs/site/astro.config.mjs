@@ -1,12 +1,13 @@
 // The user guide's site (ADR 0066): Starlight over the pages in docs/user/,
 // published to GitHub Pages by .github/workflows/docs.yml. Nothing here is
 // content: a page is added by adding a Markdown file to a section's folder,
-// and the sidebar lists it by its `sidebar.order`.
+// and the sidebar lists it by its `sidebar.order` (src/sidebar.mjs).
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
 import { satteri } from "@astrojs/markdown-satteri";
 import starlight from "@astrojs/starlight";
 import relativeLinks, { deadLinksFailTheBuild } from "./src/plugins/relative-links.mjs";
+import { sectionItems } from "./src/sidebar.mjs";
 
 const repo = "https://github.com/gpillon/ignis";
 const base = "/ignis";
@@ -17,7 +18,7 @@ const ref = process.env.DOCS_GITHUB_REF || "main";
 // Every dead link the pages hold; a build that found one fails, naming them all.
 const dead = [];
 
-const section = (label, directory, extra = {}) => ({ label, items: [{ autogenerate: { directory } }], ...extra });
+const section = (label, directory, extra = {}) => ({ label, items: sectionItems(guide, directory), ...extra });
 
 export default defineConfig({
   site: "https://gpillon.github.io",
