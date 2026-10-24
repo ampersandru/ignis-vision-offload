@@ -397,10 +397,13 @@ Where the build decided something the spec left open, or differs from it:
   streaming's `unfixed_chunk_num`): fixing from the first partial decided the
   language on 2 s of audio and labelled an Italian dictation Portuguese (the
   incremental path then lost 1.45 pt on the dictations). The stable text ends
-  on a whole word and a whole character. `unfixed_partials` is a plain
-  executor setting today; it needs a `speech` field when spec 03 wires
-  partials (the owner's rule on thresholds), as do `rollback_tokens` and
-  `partial_interval_ms`, which #352's seam does not carry yet.
+  on a whole word and a whole character. `unfixed_partials` and
+  `rollback_tokens` are `speech` fields (the owner's rule on thresholds), read
+  when a session opens: the server passes them in the session-open settings
+  (`SessionOpen`, which the adapter hands `Executor::open_tuned`), so a live
+  change holds from the next session. §4's operations are unchanged.
+  `partial_interval_ms` stays the server's: it decides when `partial()` is
+  called.
 - **The KV cache** is sized for `speech.max_clip_seconds` (the executor's
   default, 1,200 s: the seam carries no clip length) plus half as many text
   tokens as audio tokens, but grows to it on demand, doubling from the head, two

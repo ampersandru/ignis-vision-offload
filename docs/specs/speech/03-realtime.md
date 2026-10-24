@@ -214,8 +214,12 @@ the spec left open, or differs from it:
   commit's own unit pushes the rest and decodes, opening nothing. A
   `session.update` that changes the context or the forced language reopens
   the current item's session when it holds no audio; with audio, the change
-  applies from the next item. `speech.rollback_tokens` is a setting the
-  adapter to `ignis-speech` passes, not a §4 operation: not in the trait.
+  applies from the next item. `speech.rollback_tokens` and
+  `speech.unfixed_partials` ride in `SessionOpen`, the session-open settings
+  the server fills from the live config at every open (the socket's, and
+  again after each commit and each reopening update); the adapter hands them
+  to `ignis-speech`'s `Executor::open_tuned`. Not a §4 operation: the trait
+  gained no method, so a PATCH holds from the next session or item.
 - **The worker has a lane per session.** Every executor call is one unit
   queued in the session's lane, in order (an open, a window pushed as soon as
   one is in, a refresh, the commit). The worker takes the lanes in turn, one
@@ -252,11 +256,15 @@ the spec left open, or differs from it:
   last one and nothing of the session's is in the worker (no window, no
   refresh, no commit, no open). One that falls due while the worker holds
   any is skipped, not deferred: the next chance is a whole interval later.
-- **The upgrade**, in order: not a WebSocket upgrade `400`; no
-  `intent=transcription`, or a `model` in the URL, `400` naming `intent`; the
-  speech model unavailable `503 speech_unavailable`; `speech.max_sessions`
-  open `503 engine_full` with `Retry-After: 1` (room frees when a person ends
-  a session). The browser's subprotocol `realtime` is selected back, the
+- **The upgrade**, in order: no `intent=transcription`, or a `model` in the
+  URL, `400` naming `intent`; the speech model unavailable `503
+  speech_unavailable`; `speech.max_sessions` open `503 engine_full` with
+  `Retry-After: 1` (room frees when a person ends a session); not a WebSocket
+  upgrade `400 upgrade_required`. The checks come first so a plain `GET`
+  (what a browser's `fetch` sends) is answered what an upgrade would be: the
+  Playground reads busy and unavailable from it instead of inferring them
+  (spec 04, AC 11). A plain `GET` claims no session
+  (`Speech::session_room`). The browser's subprotocol `realtime` is selected back, the
   credential never. Frames are capped at 16 MiB (the text body limit); an
   append whose `audio` holds more than 15 MiB of base64 is an `error`.
 - **Loading.** An open session holds the speech model: the worker's idle

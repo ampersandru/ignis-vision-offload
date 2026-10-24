@@ -649,6 +649,8 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
             context: asked.context,
             context_max_tokens: group.context_max_tokens,
             language: asked.language,
+            rollback_tokens: group.rollback_tokens,
+            unfixed_partials: group.unfixed_partials,
         }),
         samples: clip.samples,
         cursor: 0,

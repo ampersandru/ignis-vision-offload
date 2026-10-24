@@ -2739,6 +2739,7 @@ fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
         ("idle_unload", "0", "60", "120"),
         ("partial_interval_ms", "500", "1000", "3000"),
         ("rollback_tokens", "2", "3", "8"),
+        ("unfixed_partials", "1", "3", "4"),
         ("max_sessions", "1", "2", "8"),
         ("max_queue", "0", "1", "2"),
         ("vad_threshold", "0.25", "0.75", "1"),
@@ -2769,7 +2770,7 @@ fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
 }
 
 /// The defaults are the table's: `auto`, the five compat names, `auto`
-/// threads, 1200 s, 512 tokens, mapped weights, 300 s idle, 2000 ms, 5, 4 and
+/// threads, 1200 s, 512 tokens, mapped weights, 300 s idle, 2000 ms, 10, 2, 4 and
 /// 4, the VAD's 0.5, 300 and 500, the loan's 30 and 5.
 #[test]
 fn the_speech_defaults_are_the_specs() {
@@ -2778,7 +2779,7 @@ fn the_speech_defaults_are_the_specs() {
     assert_eq!(speech.compat_names, ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-live-transcribe"]);
     assert_eq!(speech.threads, None);
     assert_eq!((speech.max_clip_seconds, speech.context_max_tokens, speech.pinned_weights, speech.idle_unload), (1200, 512, false, 300));
-    assert_eq!((speech.partial_interval_ms, speech.rollback_tokens, speech.max_sessions, speech.max_queue), (2000, 10, 4, 4));
+    assert_eq!((speech.partial_interval_ms, speech.rollback_tokens, speech.unfixed_partials, speech.max_sessions, speech.max_queue), (2000, 10, 2, 4, 4));
     assert_eq!((speech.vad_threshold, speech.vad_prefix_padding_ms, speech.vad_silence_duration_ms), (500, 300, 500));
     assert_eq!((speech.loan_grace_seconds, speech.loan_wait_seconds), (30, 5));
     let shown = config(&[]).settings().render();
@@ -2795,6 +2796,7 @@ fn a_speech_field_past_its_bounds_is_refused_naming_it() {
         ("context_max_tokens", 0, 4096),
         ("partial_interval_ms", 100, 60_000),
         ("rollback_tokens", 0, 64),
+        ("unfixed_partials", 0, 16),
         ("max_sessions", 1, 64),
         ("max_queue", 0, 64),
     ] {

@@ -76,6 +76,16 @@ impl Default for Settings {
     }
 }
 
+/// What one session reads of the settings when it opens, so a live change of
+/// the server's config holds from the next session (the server passes the
+/// current values; `Settings` holds the defaults a plain `open` uses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionTuning {
+    pub context_max_tokens: usize,
+    pub rollback_tokens: usize,
+    pub unfixed_partials: usize,
+}
+
 /// The GGUF pair: the decoder, and the audio encoder found beside it.
 #[derive(Clone, Debug)]
 pub struct ModelFiles {
@@ -268,14 +278,31 @@ impl Executor {
     /// Opens a transcription with `context` as the system turn, loading the model if needed.
     /// `language` forces the official prefill (Q6); `None` lets the model detect it.
     pub fn open(&self, context: &str, language: Option<&str>) -> Result<Session, ExecError> {
-        self.open_capped(context, language, self.core.settings.context_max_tokens)
+        let s = &self.core.settings;
+        self.open_tuned(
+            context,
+            language,
+            SessionTuning { context_max_tokens: s.context_max_tokens, rollback_tokens: s.rollback_tokens, unfixed_partials: s.unfixed_partials },
+        )
     }
 
     /// [`open`](Self::open) with the context capped at `context_max_tokens` (the live
     /// `speech.context_max_tokens` the server passes per request) rather than the settings'.
     pub fn open_capped(&self, context: &str, language: Option<&str>, context_max_tokens: usize) -> Result<Session, ExecError> {
+        let s = &self.core.settings;
+        self.open_tuned(
+            context,
+            language,
+            SessionTuning { context_max_tokens, rollback_tokens: s.rollback_tokens, unfixed_partials: s.unfixed_partials },
+        )
+    }
+
+    /// [`open`](Self::open) with the settings a session reads at its opening passed in: the
+    /// server's live `speech.context_max_tokens`, `speech.rollback_tokens` and
+    /// `speech.unfixed_partials`.
+    pub fn open_tuned(&self, context: &str, language: Option<&str>, tuning: SessionTuning) -> Result<Session, ExecError> {
         let (l, _) = self.loaded()?;
-        Ok(Session::open(l, self.core.clone(), context, language, context_max_tokens))
+        Ok(Session::open(l, self.core.clone(), context, language, tuning))
     }
 
     /// The idle unloader: wakes when the idle time may have run out and unloads once

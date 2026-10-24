@@ -47,7 +47,7 @@ use std::time::Duration;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -55,6 +55,7 @@ use tokio::time::Instant;
 
 use super::executor::{LoadSettings, Partial, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession, Transcript, WINDOW_SAMPLES};
 use super::route::{self, Ending};
+use super::worker::Full;
 use super::SessionGuard;
 use crate::api::{self, bad_request_param, ApiError};
 use crate::deadline::Timeout;
@@ -92,9 +93,9 @@ A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) -- n
     params(("intent" = String, Query, description = "`transcription`: the only session this route serves.")),
     responses(
         (status = 101, description = "Switching protocols: the session is open."),
-        (status = 400, description = "Not a WebSocket upgrade, or not a transcription session (`param: \"intent\"`): `intent` is not `transcription`, or the URL names a `model`.", body = ApiError),
+        (status = 400, description = "Not a transcription session (`param: \"intent\"`): `intent` is not `transcription`, or the URL names a `model`; or a plain `GET`, not a WebSocket upgrade, to a route that could open (`upgrade_required`).", body = ApiError),
         (status = 401, description = "The server was started with `--server-api-key` and the upgrade carried no matching bearer token or `openai-insecure-api-key.<key>` subprotocol.", body = ApiError),
-        (status = 503, description = "The speech model is unavailable (`speech_unavailable`, with the reason, and no `Retry-After`), or `speech.max_sessions` sessions are open (`engine_full`, with `Retry-After`).", body = ApiError),
+        (status = 503, description = "The speech model is unavailable (`speech_unavailable`, with the reason, and no `Retry-After`), or `speech.max_sessions` sessions are open (`engine_full`, with `Retry-After`). A plain `GET` without the upgrade is answered the same, so a page can ask why its upgrade was refused.", body = ApiError),
     ),
 )]
 pub(crate) async fn connect(
@@ -103,9 +104,6 @@ pub(crate) async fn connect(
     headers: HeaderMap,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
-    let Ok(upgrade) = upgrade else {
-        return api::bad_request("GET /v1/realtime is the Realtime transcription session and takes a WebSocket upgrade, with ?intent=transcription");
-    };
     if query.get("intent").map(String::as_str) != Some("transcription") || query.contains_key("model") {
         return bad_request_param(
             "this server serves Realtime transcription sessions only: open /v1/realtime?intent=transcription with no model in the URL; conversation sessions are not served",
@@ -118,14 +116,29 @@ pub(crate) async fn connect(
         Ok(files) => files,
         Err(why) => return route::unavailable(why),
     };
+    let full = |full: Full| {
+        route::engine_full(
+            format!("the speech model has {} Realtime sessions open (speech.max_sessions); retry in {} s", group.max_sessions, full.retry_after_secs),
+            full,
+        )
+    };
+    // A plain GET is answered what an upgrade would be, so a page that cannot
+    // read a refused upgrade's status can still ask (spec speech/04, AC 11):
+    // it claims no place.
+    let Ok(upgrade) = upgrade else {
+        return match server.speech.session_room(group) {
+            Err(why) => full(why),
+            Ok(()) => api::error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "upgrade_required",
+                "GET /v1/realtime is the Realtime transcription session and takes a WebSocket upgrade, with ?intent=transcription; the speech model can serve now",
+            ),
+        };
+    };
     let guard = match server.speech.open_session(group) {
         Ok(guard) => guard,
-        Err(full) => {
-            return route::engine_full(
-                format!("the speech model has {} Realtime sessions open (speech.max_sessions); retry in {} s", group.max_sessions, full.retry_after_secs),
-                full,
-            )
-        }
+        Err(why) => return full(why),
     };
     // The client's own names, never the credential.
     let protocols: Vec<String> = offered(&headers).filter(|protocol| !protocol.starts_with(CREDENTIAL_PREFIX)).map(str::to_owned).collect();
@@ -379,7 +392,7 @@ impl Connection {
     fn open_settings(&self) -> (SessionOpen, LoadSettings) {
         let live = self.server.live();
         let group = &live.speech;
-        (self.config.open(group.context_max_tokens), LoadSettings { threads: group.threads, pinned_weights: group.pinned_weights })
+        (self.config.open(group), LoadSettings { threads: group.threads, pinned_weights: group.pinned_weights })
     }
 
     /// Start the next item: its executor session opens now, so its context

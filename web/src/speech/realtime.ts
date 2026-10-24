@@ -14,10 +14,11 @@ import { pcmBase64, TARGET_RATE } from "./pcm.ts";
 //   at the default 24 kHz.
 // - **A refused upgrade** is a close before the open, whatever the server
 //   answered: a page cannot read a failed upgrade's status or `Retry-After`.
-//   GET /v1/models tells the causes apart, as the Responses socket's probe
-//   does (api/socket.ts): a 401 wants the key; a speech model that cannot
-//   serve is `unavailable` with its reason; one that can was refused for
-//   every session being taken (`503 engine_full`): `busy`.
+//   A plain GET of the same route is answered what the upgrade would have been
+//   (spec speech/03), and the page reads that: a 401 wants the key; `503
+//   speech_unavailable` is `unavailable` with its reason; `503 engine_full` is
+//   `busy`; `400 upgrade_required` says the server would have opened it, so the
+//   upgrade was lost on the way (a proxy that does not carry WebSockets).
 // - The socket, its URL and the probe's `fetch` are injectable, so all of it
 //   runs in a test without a server.
 
@@ -28,7 +29,9 @@ export type Refusal =
   | { kind: "busy" }
   | { kind: "unavailable"; reason: string }
   | { kind: "key"; message: string }
-  | { kind: "unreachable"; message: string };
+  | { kind: "unreachable"; message: string }
+  /** The server would have opened it: the upgrade did not get through. */
+  | { kind: "no_websocket" };
 
 /** What the session tells the dictation. Nothing is called once the page has closed it. */
 export type TranscriptionHandlers = {
@@ -92,16 +95,30 @@ function configuration(context: string) {
   };
 }
 
-/** Why the upgrade was refused, asked of GET /v1/models. */
+/** The reason in `the speech model is unavailable: <reason>`, the server's sentence. */
+const UNAVAILABLE_PREFIX = "the speech model is unavailable: ";
+
+/** Why the upgrade was refused, asked of a plain GET of the route. */
 async function probe(doFetch: typeof fetch): Promise<Refusal> {
   try {
-    const res = await doFetch("/v1/models", { headers: authHeaders() });
-    if (res.status === 401) return { kind: "key", message: apiErrorMessage(401, await res.text()) };
-    if (!res.ok) return { kind: "unreachable", message: apiErrorMessage(res.status, await res.text()) };
-    const body = (await res.json()) as { speech?: { available?: boolean; reason?: string } };
-    if (!body.speech) return { kind: "unavailable", reason: "this server has no speech model" };
-    if (body.speech.available !== true) return { kind: "unavailable", reason: body.speech.reason ?? "no reason given" };
-    return { kind: "busy" };
+    const res = await doFetch(REALTIME_PATH, { headers: authHeaders() });
+    const text = await res.text();
+    if (res.status === 401) return { kind: "key", message: apiErrorMessage(401, text) };
+    let error: { code?: string; message?: string } = {};
+    try {
+      error = (JSON.parse(text) as { error?: typeof error }).error ?? {};
+    } catch {
+      // Not JSON: no code to read.
+    }
+    if (res.status === 503 && error.code === "engine_full") return { kind: "busy" };
+    if (res.status === 503 && error.code === "speech_unavailable") {
+      const message = error.message ?? "no reason given";
+      return { kind: "unavailable", reason: message.startsWith(UNAVAILABLE_PREFIX) ? message.slice(UNAVAILABLE_PREFIX.length) : message };
+    }
+    if (res.status === 400 && error.code === "upgrade_required") return { kind: "no_websocket" };
+    // A server older than speech has no such route.
+    if (res.status === 404) return { kind: "unavailable", reason: "this server has no speech model" };
+    return { kind: "unreachable", message: apiErrorMessage(res.status, text) };
   } catch (err) {
     return { kind: "unreachable", message: `Could not reach ignis: ${String(err)}` };
   }

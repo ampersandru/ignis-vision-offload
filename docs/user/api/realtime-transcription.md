@@ -40,6 +40,11 @@ The upgrade is refused before the socket opens:
 | `503 speech_unavailable`, no `Retry-After` | the speech model cannot serve; the message says why, as `GET /v1/models`' `speech` object does |
 | `503 engine_full`, with `Retry-After` | `speech.max_sessions` (4) sessions are open; one more waits for one to close |
 
+A plain `GET` of the route, with no upgrade, is answered what an upgrade would
+be, and claims no session: the same `400` for a wrong `intent`, the same `503`s,
+and, when the socket could open, `400 upgrade_required`. A page that cannot read
+a refused upgrade's status asks this way why it was refused.
+
 On open the server loads the speech model if it is not loaded, prefills the
 context, and, if the text model was [unloaded for being idle](idle-unload.md),
 starts loading it in the background: a person dictating a prompt sends it
@@ -137,7 +142,10 @@ later transcript: the audio and the commit go first.
 
 **The provisional tail** is ignis's. The last few tokens of each refresh
 are not stable yet: the next refresh may revise them (how many is
-`speech.rollback_tokens`, 5, which the speech executor reads). A session that set `ignis.provisional_tail: true` receives them as
+`speech.rollback_tokens`, 10, which the speech executor reads when a session
+opens, so a change holds from the next session; the first `speech.unfixed_partials`
+(2) refreshes fix no text at all, so the language and the opening words are
+decided on more than one interval of audio). A session that set `ignis.provisional_tail: true` receives them as
 
 ```json
 { "type": "ignis.input_audio_transcription.provisional", "item_id": "item_…", "content_index": 0, "text": " per il" }

@@ -228,6 +228,10 @@ count_kind!(
     Sessions: u32, "sessions", "session count"
 );
 count_kind!(
+    /// A count of live-transcript refreshes.
+    Partials: u32, "partials", "partial count"
+);
+count_kind!(
     /// A count of waiting requests.
     Requests: u32, "requests", "request count"
 );

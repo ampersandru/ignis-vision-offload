@@ -398,6 +398,7 @@ async fn the_prompt_and_keywords_reach_the_executor_as_the_capped_context() {
     assert_eq!(opened.len(), 3);
     assert_eq!(opened[0].context, "A talk about GPUs.\nignis, Qwen3");
     assert_eq!(opened[0].context_max_tokens, 64);
+    assert_eq!((opened[0].rollback_tokens, opened[0].unfixed_partials), (10, 2), "the group's defaults reach the executor");
     assert_eq!(opened[0].language.as_deref(), Some("Italian"));
     assert_eq!(opened[1].language, None, "several languages auto-detect");
     assert_eq!(opened[2].context, "");
