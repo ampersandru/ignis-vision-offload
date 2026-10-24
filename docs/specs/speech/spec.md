@@ -139,7 +139,7 @@ default, never a constant (the owner's rule).
 | `speech.pinned_weights` | `false` (memory-mapped file) | Q31 | 01 |
 | `speech.idle_unload` | 300 s without a transcription, `model.idle_unload`'s default | Q53 | 01 |
 | `speech.partial_interval_ms` | 2000 | Q37 | 01, 03 |
-| `speech.rollback_tokens` | 5 (the official package's `unfixed_token_num`) | Q37 | 01 |
+| `speech.rollback_tokens` | 10 (Q75; the official package's `unfixed_token_num` is 5) | Q37 | 01 |
 | `speech.unfixed_partials` | 2 (the official package's `unfixed_chunk_num`): the first partials fix nothing. **Proposed by #351, not yet a field**: the executor takes it as a setting, and the field comes when spec 03 wires partials | #351 | 01, 03 |
 | `speech.max_sessions` | 4 open Realtime sessions | Q44 | 02, 03 |
 | `speech.max_queue` | 4 waiting batch requests | Q44 | 02 |

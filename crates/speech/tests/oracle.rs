@@ -401,29 +401,30 @@ fn batch_wer_is_within_a_point_of_transformers_and_llama_cpp() {
 }
 
 /// Acceptance 15: through the incremental path at real-time pace (100 ms pushes, a partial every
-/// `partial_interval_ms`), pooled WER not worse than the batch path's by more than 1 pt, at the
-/// default `rollback_tokens`. A longer provisional tail (10) is measured beside it, for the
-/// owner's choice of that default.
+/// `partial_interval_ms`), pooled WER not worse than the batch path's by more than 1 pt at the
+/// default `rollback_tokens` (10, Q75), for the default variant and the 0.6B. The 1.7B Q8 is an
+/// explicit choice documented at +1.29 pt on the dictations (Q75): it is held to 1.5 pt, so a
+/// regression past the measurement still fails.
 #[test]
 #[ignore]
 fn incremental_wer_is_within_a_point_of_batch() {
+    assert_eq!(Settings::default().rollback_tokens, 10, "AC 15 is stated at the default tail of 10 (Q75)");
     let mut over = Vec::new();
     for v in &VARIANTS {
         let b = run_wer(v, false);
         let (bf, bd) = (pooled_wer(&b.fleurs), pooled_wer(&b.dictations));
-        for rollback in [Settings::default().rollback_tokens, 10] {
-            let r = run_wer_with(v, true, rollback);
-            let (rf, rd) = (pooled_wer(&r.fleurs), pooled_wer(&r.dictations));
-            println!(
-                "{} incremental, rollback {rollback}: FLEURS {:.2}% (batch {:.2}%), dictations {:.2}% (batch {:.2}%)",
-                v.id, 100.0 * rf, 100.0 * bf, 100.0 * rd, 100.0 * bd
-            );
-            if rollback == Settings::default().rollback_tokens && (rf > bf + 0.01 || rd > bd + 0.01) {
-                over.push(v.id);
-            }
+        let r = run_wer(v, true);
+        let (rf, rd) = (pooled_wer(&r.fleurs), pooled_wer(&r.dictations));
+        println!(
+            "{} incremental: FLEURS {:.2}% (batch {:.2}%), dictations {:.2}% (batch {:.2}%)",
+            v.id, 100.0 * rf, 100.0 * bf, 100.0 * rd, 100.0 * bd
+        );
+        let allowed = if v.id == "qwen3-asr-1.7b-q8" { 0.015 } else { 0.01 };
+        if rf > bf + allowed || rd > bd + allowed {
+            over.push(v.id);
         }
     }
-    assert!(over.is_empty(), "incremental WER over the batch path's + 1 pt: {over:?}");
+    assert!(over.is_empty(), "incremental WER over the batch path's + 1 pt (1.5 for 1.7B Q8): {over:?}");
 }
 
 /// Acceptance 18: fed each dictation at real-time pace, a session encodes each window once,

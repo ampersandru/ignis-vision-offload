@@ -715,7 +715,7 @@ config_group! {
         /// The tokens of a live transcript held back as provisional, the rest
         /// being stable. Read by the speech executor with the Realtime route
         /// (spec speech/01, 03), not served yet.
-        rollback_tokens: Tokens = 5, between(0, 64), ALL, [Visible, Patchable];
+        rollback_tokens: Tokens = 10, between(0, 64), ALL, [Visible, Patchable];
         /// The most Realtime sessions open at once; past it a session is
         /// refused `503` with `Retry-After`. Read with the Realtime route
         /// (spec speech/03), not served yet.

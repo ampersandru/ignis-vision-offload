@@ -1298,7 +1298,7 @@ How often a Realtime session's live transcript is refreshed while audio arrives,
 | Flag | `--speech-rollback-tokens` |
 | Env var | `IGNIS_SPEECH_ROLLBACK_TOKENS` |
 | Kind | `tokens` |
-| Default | `5` |
+| Default | `10` |
 | Rule | 0..=64 |
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |

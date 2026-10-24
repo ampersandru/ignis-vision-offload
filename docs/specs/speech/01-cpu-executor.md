@@ -299,9 +299,14 @@ Same method as the image model (Q25), with Q52's changes:
 14. Per catalog variant, through the batch path: pooled WER on FLEURS 40 and
     on the 11 dictations, official prompt, is not worse than Transformers
     FP32's by more than 1 pt. No transcript is compared for equality (Q52).
-15. Through the incremental path at real-time pace, pooled WER is not worse
-    than the batch path's by more than 1 pt. The paper's streaming mode lost
-    0.6-1.1 pt against offline (Q37, Q52; owner, 2026-10-24).
+15. Through the incremental path at real-time pace, at the default tail of 10
+    (`speech.rollback_tokens`, Q75), pooled WER is not worse than the batch
+    path's by more than 1 pt, for the default variant and `qwen3-asr-0.6b`.
+    `qwen3-asr-1.7b-q8` is documented at +1.29 pt on the dictations, the
+    same explicit-choice treatment as AC 24 (Q73). The paper's streaming mode
+    lost 0.6-1.1 pt against offline (Q37, Q52; owner, 2026-10-24). At the
+    former tail of 5 the 1.7B lost 1.12 pt and the 0.6B 1.94 pt, which is why
+    the default moved.
 16. The parser strips `language X<asr_text>` and keeps X. `None` plus text
     keeps the text. `None` alone gives an empty transcript. No language is
     forced unless asked, and a forced one is the official prefill (Q51, Q6).

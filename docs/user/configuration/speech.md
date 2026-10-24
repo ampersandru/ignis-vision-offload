@@ -23,7 +23,7 @@ every default, is [the configuration reference](../reference/configuration.md).
 | `--speech-max-queue` | `IGNIS_SPEECH_MAX_QUEUE` | `4` | The transcriptions that may wait behind the one running; one more is `503 engine_full` with `Retry-After`. 0 runs one at a time. |
 | `--speech-max-sessions` | `IGNIS_SPEECH_MAX_SESSIONS` | `4` | The most Realtime sessions open at once. Read by the Realtime route, which is not served yet. |
 | `--speech-partial-interval-ms` | `IGNIS_SPEECH_PARTIAL_INTERVAL_MS` | `2000` | How often a Realtime session's live transcript refreshes. Read by the Realtime route, not served yet. |
-| `--speech-rollback-tokens` | `IGNIS_SPEECH_ROLLBACK_TOKENS` | `5` | The tokens of a live transcript held back as provisional. Read by the Realtime route, not served yet. |
+| `--speech-rollback-tokens` | `IGNIS_SPEECH_ROLLBACK_TOKENS` | `10` | The tokens of a live transcript held back as provisional. Read by the Realtime route, not served yet. |
 | `--speech-vad-threshold`, `--speech-vad-prefix-padding-ms`, `--speech-vad-silence-duration-ms` | `IGNIS_SPEECH_VAD_*` | `0.5`, `300`, `500` | `server_vad`'s threshold, the audio kept from before speech, and the silence that ends a turn. Not served yet. |
 | `--speech-loan-grace-seconds`, `--speech-loan-wait-seconds` | `IGNIS_SPEECH_LOAN_*` | `30`, `5` | The loan of free KV pages to the speech model. Not served yet. |
 

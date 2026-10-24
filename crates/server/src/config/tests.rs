@@ -2778,7 +2778,7 @@ fn the_speech_defaults_are_the_specs() {
     assert_eq!(speech.compat_names, ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-live-transcribe"]);
     assert_eq!(speech.threads, None);
     assert_eq!((speech.max_clip_seconds, speech.context_max_tokens, speech.pinned_weights, speech.idle_unload), (1200, 512, false, 300));
-    assert_eq!((speech.partial_interval_ms, speech.rollback_tokens, speech.max_sessions, speech.max_queue), (2000, 5, 4, 4));
+    assert_eq!((speech.partial_interval_ms, speech.rollback_tokens, speech.max_sessions, speech.max_queue), (2000, 10, 4, 4));
     assert_eq!((speech.vad_threshold, speech.vad_prefix_padding_ms, speech.vad_silence_duration_ms), (500, 300, 500));
     assert_eq!((speech.loan_grace_seconds, speech.loan_wait_seconds), (30, 5));
     let shown = config(&[]).settings().render();
