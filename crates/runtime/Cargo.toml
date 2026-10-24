@@ -29,3 +29,15 @@ serde_json = { workspace = true }
 # the production `CudaLeaf` (`src/cuda_leaf.rs`) owns the materialized
 # artifact + device context its model load reads from.
 cuda = ["ignis-core/cuda", "ignis-artifact/cuda"]
+
+# The DFlash2 acceptance replay of recorded agent turns (GitHub #267, #340):
+# teacher-forced verify rounds, with the drafter's proposals and the target's
+# logits read per round, on a 27B load planned as the server plans it.
+[[example]]
+name = "dflash2_replay"
+required-features = ["cuda"]
+# The verify round's width-cost curve (GitHub #267): round time at draft
+# windows 1..7 and at plain decode, at the load's lanes.
+[[example]]
+name = "verify_width_cost"
+required-features = ["cuda"]
