@@ -707,10 +707,12 @@ config_group! {
         /// next transcription loads it again. 0 never unloads.
         idle_unload: Secs = super::DEFAULT_MODEL_IDLE_UNLOAD_SECS, between(0, super::MAX_MODEL_IDLE_UNLOAD_SECS as i64), ALL,
             [Visible, Patchable];
-        /// How often a Realtime session's live transcript is refreshed while
-        /// audio arrives, in milliseconds: each refresh sends the new stable
-        /// text, and the provisional tail to a session that opted in. Read
-        /// by every open session at its next refresh.
+        /// How often at most a Realtime session's live transcript is
+        /// refreshed while audio arrives, in milliseconds: each refresh sends
+        /// the new stable text, and the provisional tail to a session that
+        /// opted in. Best effort: a refresh is skipped while the session's
+        /// windows are still being computed. Read by every open session at
+        /// its next refresh.
         partial_interval_ms: Millis = 2000, between(100, 60_000), ALL, [Visible, Patchable];
         /// The tokens of a live transcript held back as provisional, the rest
         /// being stable: the tail a Realtime session that asks for it gets.

@@ -1289,7 +1289,7 @@ Seconds with no transcription, and no Realtime session open, after which the spe
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-How often a Realtime session's live transcript is refreshed while audio arrives, in milliseconds: each refresh sends the new stable text, and the provisional tail to a session that opted in. Read by every open session at its next refresh.
+How often at most a Realtime session's live transcript is refreshed while audio arrives, in milliseconds: each refresh sends the new stable text, and the provisional tail to a session that opted in. Best effort: a refresh is skipped while the session's windows are still being computed. Read by every open session at its next refresh.
 
 ### `speech.rollback_tokens`
 

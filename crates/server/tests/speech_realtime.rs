@@ -264,6 +264,31 @@ async fn the_provisional_tail_reaches_only_a_session_that_opted_in() {
     assert_eq!(deltas, completed["transcript"].as_str().unwrap(), "the tail is never part of the deltas");
 }
 
+/// AC 18 (Q74): refreshes are best effort. With the worker behind, none is
+/// queued while the socket's windows are in it, so the windows run back to
+/// back; once the worker is free the next refresh runs; the commit is never
+/// held behind one, and the deltas still join to the transcript.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refreshes_are_skipped_while_the_worker_is_behind() {
+    let executor = saying(&["uno", "due", "tre", "quattro"]);
+    executor.set_step_delay(Duration::from_millis(250));
+    let (live, _server, _dir) = served(&executor, |_| {}).await;
+    let mut socket = session_16k(&live).await;
+    for _ in 0..3 {
+        send(&mut socket, append(WINDOW)).await;
+    }
+    // Three windows of 250 ms each: some seven refreshes fall due meanwhile.
+    let refreshed = until(&mut socket, DELTA).await;
+    assert_eq!(of(&refreshed, DELTA)[0]["delta"], "uno due tre", "the one refresh ran after the windows");
+    // No audio since that refresh: none more falls due before the commit.
+    send(&mut socket, commit()).await;
+    let events = until(&mut socket, COMPLETED).await;
+    let calls: Vec<String> = executor.calls().into_iter().filter(|call| !call.starts_with("open")).collect();
+    assert_eq!(calls, ["push 0 128000", "push 0 128000", "push 0 128000", "partial 0", "commit 0"]);
+    let deltas: String = of(&refreshed, DELTA).iter().chain(&of(&events, DELTA)).map(|event| event["delta"].as_str().unwrap()).collect();
+    assert_eq!(deltas, of(&events, COMPLETED)[0]["transcript"].as_str().unwrap());
+}
+
 // ── AC 7: usage and failures ────────────────────────────────────────────────
 
 /// AC 7: an item over `speech.max_clip_seconds` gets an `error` naming the

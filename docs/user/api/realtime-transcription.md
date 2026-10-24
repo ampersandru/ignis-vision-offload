@@ -85,7 +85,7 @@ with an `error`, the session keeping the configuration it had.
 | `audio.input.transcription.model` | Absent, the speech model's id, or one of `speech.compat_names` (`gpt-4o-transcribe`, `whisper-1`, ...): the session reports the speech model's id. A text or image model's id is an `error` with `model_kind_mismatch`; any other name `model_not_found`. |
 | `audio.input.transcription.prompt`, `.keywords` | The context, as for [a transcription](transcriptions.md#the-request): names and terms to spell right. It is **prefilled when the update arrives**, so it costs nothing at the commit. A change while an item holds audio applies from the next item. |
 | `audio.input.transcription.language`, `.languages` | As for a transcription: one language forces it, several detect among them, both together are refused. Leave it off unless the model guesses wrong. |
-| `audio.input.transcription.delay` | Accepted and inert: the live text refreshes every `speech.partial_interval_ms` (2000). |
+| `audio.input.transcription.delay` | Accepted and inert: the live text refreshes at most every `speech.partial_interval_ms` (2000). |
 | `audio.input.turn_detection` | `null`. `server_vad` is refused (not served yet) and `semantic_vad` always: commit with `input_audio_buffer.commit`. |
 | `audio.input.noise_reduction` | `null`. `near_field` and `far_field` are refused. |
 | `include` | Empty. `item.input_audio_transcription.logprobs` is refused. |
@@ -113,9 +113,12 @@ commits is one **item**, which gets its `item_id` with its first append.
 
 ## The text
 
-While audio arrives the server refreshes the item's transcript every
+While audio arrives the server refreshes the item's transcript at most every
 `speech.partial_interval_ms`, and once the item is committed it decodes the
-rest:
+rest. Refreshes are best effort: each one decodes the item so far again, so
+while the session's audio is still being computed a refresh is skipped rather
+than queued behind it. A CPU that cannot keep up sends fewer deltas, never a
+later transcript: the audio and the commit go first.
 
 - `conversation.item.input_audio_transcription.delta` `{item_id,
   content_index: 0, delta}` carries **stable text only**, text the model will not

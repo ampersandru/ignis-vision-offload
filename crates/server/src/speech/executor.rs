@@ -150,7 +150,7 @@ pub struct FakeExecutor {
     pub fail_load: AtomicBool,
     /// Read by each session at its commit.
     pub fail_commit: Arc<AtomicBool>,
-    /// How long each call to `push` and `commit` takes.
+    /// How long each call to `push`, `partial` and `commit` takes.
     pub step_delay: Mutex<Duration>,
     pub opened: Mutex<Vec<SessionOpen>>,
     /// The length of every `push`, in order, over every session.
@@ -232,6 +232,7 @@ impl SpeechSession for FakeSession {
 
     fn partial(&mut self) -> Result<Partial, SpeechError> {
         self.calls.lock().unwrap().push(format!("partial {}", self.index));
+        std::thread::sleep(self.delay);
         let (stable, tail) = self.words.split_at(self.stable_words);
         let tail = tail.first().map(|word| format!(" {word}")).unwrap_or_default();
         Ok(Partial { stable: stable.join(" "), tail })

@@ -60,7 +60,7 @@ decided by the owner on 2026-10-24, cited as `(owner, 2026-10-24)`.
 | `audio.input.transcription.prompt`, `.keywords` | the context, prefilled at once | as spec 02 | Q15, Q23, Q50 |
 | `audio.input.transcription.language`, `.languages` | as spec 02 | as spec 02 | Q6, Q23, Q51 |
 | `audio.input.turn_detection` | `null`: manual commit | in phase 1, `server_vad` (spec 05 serves it from phase 2); `semantic_vad` always | Q20, Q22, Q33, Q54, Q56 |
-| `audio.input.transcription.delay` | inert: the cadence is `speech.partial_interval_ms` | — | owner, 2026-10-24 |
+| `audio.input.transcription.delay` | inert: the cadence is at most every `speech.partial_interval_ms` | — | owner, 2026-10-24 |
 | `audio.input.noise_reduction` | `null` | `near_field`, `far_field` | owner, 2026-10-24 |
 | `include` | — | `item.input_audio_transcription.logprobs` | owner, 2026-10-24 |
 | `session.ignis.provisional_tail` | `true`: the provisional-tail opt-in, below | — | Q43; owner, 2026-10-24 |
@@ -107,8 +107,15 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
 
 - Appended audio is resampled when it is 24 kHz and fed to 01's session:
   - each complete 8 s window is encoded and prefilled at once;
-  - every `speech.partial_interval_ms` a partial decode runs. Its new stable
-    text goes out as `delta`, its tail as the provisional event.
+  - at most every `speech.partial_interval_ms` a partial decode runs. Its new
+    stable text goes out as `delta`, its tail as the provisional event.
+- **Partials are best effort** (Q74; owner, 2026-10-24). On 4 cores a partial
+  every 2 s did not keep up (1.4x real time for every variant): each one
+  re-encodes the incomplete window and re-prefills the whole stable text,
+  while the window prefill itself keeps up. So a partial is skipped, never
+  queued, while the session's previous partial or a pending window is still
+  in the worker, and `speech.partial_interval_ms` is a minimum interval.
+  Windows and the commit are never delayed behind a partial.
 - `commit`: `committed`, then 01's `commit()`. Whatever stable text is left
   goes out as `delta`, then `completed`.
 - The next item reuses the session's prefilled context (01's prefix cache)
@@ -181,6 +188,11 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
 16. Spec responses-api/01 `:421`, the OpenAPI document and the README are
     amended as above (Q20).
 17. `cargo test` passes workspace-wide (AGENTS.md, not a grill decision).
+18. Partials are best effort: at most every `speech.partial_interval_ms`, and
+    skipped, never queued, while the session's previous partial or a pending
+    window is still in the worker. With a worker that is behind, windows and
+    the commit are never delayed by partials, and the deltas joined still
+    equal `completed.transcript` (Q74; owner, 2026-10-24).
 
 ## Out of Scope
 
@@ -234,9 +246,12 @@ the spec left open, or differs from it:
   field's full path (`session.audio.input.format.rate`), and `error.event_id`
   the client event's. Every server event carries an `event_id`.
 - **The provisional tail** is sent after a refresh that changed it, and `""`
-  when the item completes, fails or is cleared, if a tail was shown. A refresh
-  is queued every `speech.partial_interval_ms` only when audio came since the
-  last one and the last one has answered.
+  when the item completes, fails or is cleared, if a tail was shown.
+- **Refreshes (AC 18).** A refresh falls due every
+  `speech.partial_interval_ms`; it is queued only when audio came since the
+  last one and nothing of the session's is in the worker (no window, no
+  refresh, no commit, no open). One that falls due while the worker holds
+  any is skipped, not deferred: the next chance is a whole interval later.
 - **The upgrade**, in order: not a WebSocket upgrade `400`; no
   `intent=transcription`, or a `model` in the URL, `400` naming `intent`; the
   speech model unavailable `503 speech_unavailable`; `speech.max_sessions`

@@ -19,6 +19,10 @@
 //!   The sessions take turns, unit by unit, ahead of the batch windows (Q44).
 //!   The executor's session lives in a slot the units share; they run one at
 //!   a time on the worker's one thread, in the order queued.
+//! - **Refreshes are best effort** (Q74). The live transcript is refreshed
+//!   at most every `speech.partial_interval_ms`, and a refresh is skipped,
+//!   never queued, while any unit of the socket's is still in the worker: a
+//!   CPU that cannot keep up drops refreshes, never windows or the commit.
 //! - **Text.** `delta` carries stable text only, so the deltas joined are the
 //!   transcript `completed` carries (Q43). A session that opted in with
 //!   `session.ignis.provisional_tail` also gets the tail, the text still
@@ -76,13 +80,13 @@ pub(crate) const MAX_APPEND_BYTES: usize = 15 << 20;
 On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection: null` (manual commit), `noise_reduction: null`, `include: []` and `ignis.provisional_tail: false`. The speech model is loaded if it is not, and the context prefilled.
 
 Client events, each a text frame of one JSON object:
-- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes every `speech.partial_interval_ms`. `turn_detection` takes `null`; `server_vad` is refused (not served yet) and `semantic_vad` always. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
+- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null`; `server_vad` is refused (not served yet) and `semantic_vad` always. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
 - `input_audio_buffer.append` `{audio}`: base64 16-bit little-endian mono PCM at the session's rate, up to 15 MiB of base64 an event. No reply.
 - `input_audio_buffer.commit`: ends the item. `input_audio_buffer.committed` `{item_id, previous_item_id}`, then the last stable text as a `delta`, then `completed`. An empty buffer is an `error` (`input_audio_buffer_commit_empty`).
 - `input_audio_buffer.clear`: discards the buffer and the item's partial state; answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
 
-Server events, each with an `event_id`: `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives, so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
+Server events, each with an `event_id`: `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
 
 A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) -- no item committed and still being transcribed, and no text or binary frame from the client -- is closed with a normal close frame (1000) whose reason says so.",
     params(("intent" = String, Query, description = "`transcription`: the only session this route serves.")),
@@ -160,9 +164,10 @@ enum Outcome {
     Failed(Failure),
 }
 
+/// A unit is out of the worker: what it says, if anything.
 struct Done {
     item: u64,
-    outcome: Outcome,
+    outcome: Option<Outcome>,
 }
 
 /// Why an item failed.
@@ -223,8 +228,6 @@ struct Item {
     failure: Option<Failure>,
     /// Set at its commit: the line and the count it ends with.
     ending: Option<Ending>,
-    /// A partial is queued and has not answered.
-    partial_pending: bool,
     /// Audio was queued since the last partial.
     fresh_audio: bool,
 }
@@ -249,8 +252,10 @@ struct Connection {
     /// The current item's 16 kHz samples not yet queued.
     pending: Vec<f32>,
     previous_item_id: Option<String>,
-    /// When the current item's live transcript is next refreshed.
+    /// When the current item's live transcript may next be refreshed.
     next_partial: Option<Instant>,
+    /// This socket's units queued on the worker and not yet out of it.
+    in_worker: usize,
     outbox: Vec<Value>,
     next_event: u64,
     /// The client's latest text or binary frame, or the end of the latest
@@ -280,6 +285,7 @@ impl Connection {
             pending: Vec::new(),
             previous_item_id: None,
             next_partial: None,
+            in_worker: 0,
             outbox: Vec::new(),
             next_event: 0,
             quiet_since: Instant::now(),
@@ -393,38 +399,37 @@ impl Connection {
             tail: String::new(),
             failure: None,
             ending: None,
-            partial_pending: false,
             fresh_audio: false,
         };
         self.next_seq += 1;
-        self.queue(&item, Unit::Open(open, load));
         self.items.push_back(item);
+        self.queue(Unit::Open(open, load));
         self.pending.clear();
         self.next_partial = None;
     }
 
-    /// Queue `unit` of `item` on the worker, in this socket's lane.
-    fn queue(&self, item: &Item, unit: Unit) {
+    /// Queue `unit` of the current item on the worker, in this socket's lane.
+    /// Every unit answers when it is out of the worker, so the socket knows
+    /// what it still has in it.
+    fn queue(&mut self, unit: Unit) {
+        let item = self.items.back().expect("a current item");
+        let (seq, cancel) = (item.seq, Arc::clone(&item.cancel));
         let slot = Arc::clone(&self.slot);
         let executor = Arc::clone(self.server.speech.executor());
         let files = self.files.clone();
-        let cancel = Arc::clone(&item.cancel);
         let results = self.results_tx.clone();
-        let seq = item.seq;
         let task = Box::new(move || {
-            if cancel.load(Ordering::SeqCst) {
-                return;
-            }
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(unit, &slot, executor.as_ref(), &files)))
-                .unwrap_or_else(|_| {
+            let outcome = match cancel.load(Ordering::SeqCst) {
+                true => None,
+                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(unit, &slot, executor.as_ref(), &files))).unwrap_or_else(|_| {
                     // A unit that panicked leaves no session to go on with.
                     slot.lock().unwrap_or_else(PoisonError::into_inner).session = None;
                     Some(Outcome::Failed(Failure::Executor("the speech executor panicked".to_owned())))
-                });
-            if let Some(outcome) = outcome {
-                let _ = results.send(Done { item: seq, outcome });
-            }
+                }),
+            };
+            let _ = results.send(Done { item: seq, outcome });
         });
+        self.in_worker += 1;
         self.server.speech.submit_interactive(&self.guard, task, &self.server.live().speech);
     }
 
@@ -539,8 +544,7 @@ impl Connection {
         self.pending.extend(samples);
         while self.pending.len() >= WINDOW_SAMPLES {
             let window: Vec<f32> = self.pending.drain(..WINDOW_SAMPLES).collect();
-            let item = self.items.back().expect("a current item");
-            self.queue(item, Unit::Push(window));
+            self.queue(Unit::Push(window));
             self.current().fresh_audio = true;
         }
         if !self.pending.is_empty() {
@@ -575,8 +579,7 @@ impl Connection {
             self.end_failed(last);
         } else {
             let rest = std::mem::take(&mut self.pending);
-            let item = self.items.back().expect("a current item");
-            self.queue(item, Unit::Commit(rest));
+            self.queue(Unit::Commit(rest));
         }
         self.open_next();
     }
@@ -643,15 +646,16 @@ impl Connection {
         }
     }
 
-    /// A unit answered.
+    /// A unit is out of the worker.
     fn done(&mut self, done: Done) {
+        self.in_worker -= 1;
+        let Some(outcome) = done.outcome else { return };
         // An item cleared or ended since: nobody is waiting for it.
         let Some(index) = self.items.iter().position(|item| item.seq == done.item) else { return };
-        match done.outcome {
+        match outcome {
             Outcome::Partial(partial) => {
                 let opted_in = self.config.provisional_tail;
                 let item = &mut self.items[index];
-                item.partial_pending = false;
                 if item.failure.is_some() {
                     return;
                 }
@@ -722,13 +726,14 @@ impl Connection {
         if self.next_partial.is_some_and(|at| at <= now) {
             let live = self.server.live();
             self.next_partial = Some(now + Duration::from_millis(u64::from(live.speech.partial_interval_ms)));
+            // Best effort (Q74): with anything of this socket's still in the
+            // worker (a window, the last refresh, a commit) the refresh is
+            // skipped, never queued behind it.
             let item = self.items.back().expect("a current item");
-            if item.failure.is_none() && !item.partial_pending && item.fresh_audio {
+            if self.in_worker == 0 && item.failure.is_none() && item.fresh_audio {
                 let rest = std::mem::take(&mut self.pending);
-                self.queue(item, Unit::Partial(rest));
-                let item = self.current();
-                item.partial_pending = true;
-                item.fresh_audio = false;
+                self.queue(Unit::Partial(rest));
+                self.current().fresh_audio = false;
             }
         }
         let mut index = 0;
