@@ -45,6 +45,10 @@ const PREFILL: Duration = Duration::from_millis(20);
 const TOKEN: Duration = Duration::from_millis(2);
 /// The context the mock reports for its loaded model (`max_model_len`).
 pub const MAX_MODEL_LEN: u32 = 20_000;
+/// The decode lanes the mock reports for its loaded model (`decode_lanes`).
+pub const DECODE_LANES: u32 = 2;
+/// What the mock's load adapted (`adapted`), as the server spells it.
+pub const ADAPTED: &str = "max_context 262144 -> 20000 (adapt_context_step 65536, adapt_spare_tokens 65536)";
 /// Cap on the tokens the mock generates per request (keep the tests fast).
 const MAX_TOKENS: u32 = 32;
 
@@ -309,6 +313,7 @@ async fn list_models(State(state): State<MockState>) -> Json<serde_json::Value> 
         "data": [{
             "id": state.model(), "object": "model", "owned_by": "ignis",
             "active": true, "max_model_len": MAX_MODEL_LEN,
+            "decode_lanes": DECODE_LANES, "adapted": ADAPTED,
         }],
         "status": "serving",
     }))

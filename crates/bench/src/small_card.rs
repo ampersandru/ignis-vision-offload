@@ -3,16 +3,22 @@
 //! into a GitHub issue, so phase 2 can collect real 16 GB numbers.
 //!
 //! It records the card (name, total VRAM, PCIe link), the load's VRAM plan
-//! lines and the shape it ran with, decode tok/s on the coding prompts and on
-//! agent-like turns, and TTFT at 8K and 64K. Everything it reads comes from
-//! what a server already exposes:
+//! lines, the shape it ran with and what its load adapted, decode tok/s on
+//! the coding prompts and on agent-like turns, and TTFT at 8K and 64K.
+//! Everything it reads comes from what a server already exposes:
 //!
-//! - the card: `nvidia-smi` beside the server (no server route reports it);
+//! - the card: `nvidia-smi` beside the server (no server route reports it),
+//!   run right after the decode phase, while the PCIe link still runs at the
+//!   speed it served at (an idle link downshifts), with the link's maximum
+//!   beside it;
 //! - the plan: the metrics listener's `ignis_vram_reserved_bytes` lines and
 //!   `ignis_vram_budget_bytes`, the KV pool gauges, the build version, and
-//!   the speculative counters read before and after the decode phase;
-//! - the shape: `GET /v1/models` (the context the load runs), `GET /v1/config`
-//!   (a whitelist of its values) and `GET /v1/config/origins` (where each came
+//!   the speculative counters read before and after the decode phase; the
+//!   listener is where `GET /v1/config`'s `server.metrics_bind` says;
+//! - the shape: `GET /v1/models` (the context and decode lanes the load runs,
+//!   and every adaptation it took), `GET /v1/models/catalog` (the loaded
+//!   model's family, whose config section applies), `GET /v1/config` (a
+//!   whitelist of its values) and `GET /v1/config/origins` (where each came
 //!   from);
 //! - the prompts' length: `POST /v1/tokenize`, so a user needs no artifact.
 //!
@@ -25,12 +31,15 @@
 //! this preset), the endpoint is written without any userinfo, and the config
 //! is a whitelist of field names, never the whole document (it holds paths).
 //!
+//! Every request goes through [`HttpEndpoint`], so the bench's own deadline
+//! and its `IGNIS_BENCH_REQUEST_TIMEOUT` hold here as for every other
+//! command (GitHub #138).
+//!
 //! Pure assembly (parsers, views, the decode statistics) is unit-tested here;
 //! [`run`] drives the whole thing and is tested against a mock server in
 //! `tests/small_card.rs`.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -51,7 +60,10 @@ pub const DEFAULT_CELLS: [u32; 2] = [8192, 65536];
 pub const DEFAULT_SAMPLES: usize = 3;
 /// The output budget of a decode request.
 pub const DEFAULT_DECODE_TOKENS: u32 = 256;
-/// The metrics listener's default port (`DEFAULT_METRICS_BIND`).
+/// The metrics listener's port when `GET /v1/config` does not say where it
+/// is: the port of the server's `DEFAULT_METRICS_BIND`, which the server
+/// crate's `bench_contract` test holds it to (this crate cannot depend on the
+/// server's).
 pub const DEFAULT_METRICS_PORT: u16 = 9464;
 
 /// The synthetic agent-like turns: system + tool-ish history + a coding ask,
@@ -62,13 +74,25 @@ const AGENT_TURNS: [(&str, &str); 3] = [
     ("agent-add-feature", include_str!("../fixtures/small_card/agent_turn_3.json")),
 ];
 
+/// Where the metrics listener is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetricsAt {
+    /// Where the server says (`server.metrics_bind` in `GET /v1/config`, on
+    /// the endpoint's host): [`metrics_url_from_config`].
+    Server,
+    /// This base URL.
+    Url(String),
+    /// Not read (`--metrics off`).
+    Off,
+}
+
 /// What a run measures and where it reads.
 #[derive(Debug, Clone)]
 pub struct Options {
     /// The server's API base URL.
     pub endpoint: String,
-    /// The metrics listener's base URL, or `None` for "do not read it".
-    pub metrics: Option<String>,
+    /// The metrics listener.
+    pub metrics: MetricsAt,
     /// The TTFT cells, in prompt tokens.
     pub cells: Vec<u32>,
     /// Samples per cell after the warmup.
@@ -85,33 +109,40 @@ pub struct Options {
 pub struct Card {
     pub name: Option<String>,
     pub vram_total_mib: Option<u64>,
+    /// The link's generation and width right after the decode phase: an idle
+    /// card's link downshifts, so a read before any work can say Gen 1.
     pub pcie_gen_current: Option<u32>,
     pub pcie_width_current: Option<u32>,
+    /// The most the card and the slot it sits in allow.
+    pub pcie_gen_max: Option<u32>,
+    pub pcie_width_max: Option<u32>,
 }
 
 /// The query that [`parse_nvidia_smi`] reads the answer of.
 pub const NVIDIA_SMI_ARGS: [&str; 2] = [
-    "--query-gpu=name,memory.total,pcie.link.gen.current,pcie.link.width.current",
+    "--query-gpu=name,memory.total,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max",
     "--format=csv,noheader",
 ];
 
-/// Parse `nvidia-smi --query-gpu=name,memory.total,pcie.link.gen.current,
-/// pcie.link.width.current --format=csv,noheader`: the first card's line
-/// (`NVIDIA GeForce RTX 5090, 32607 MiB, 3, 16`), and how many cards there
-/// were. `Err` when no line carries four fields.
+/// Parse the answer to [`NVIDIA_SMI_ARGS`]: the first card's line
+/// (`NVIDIA GeForce RTX 5090, 32607 MiB, 3, 16, 5, 16`), and how many cards
+/// there were. `Err` when no line carries six fields.
 pub fn parse_nvidia_smi(output: &str) -> Result<(Card, usize), String> {
     let lines: Vec<&str> = output.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     let first = lines.first().ok_or_else(|| "nvidia-smi printed nothing".to_string())?;
     let fields: Vec<&str> = first.split(',').map(str::trim).collect();
-    if fields.len() != 4 {
-        return Err(format!("nvidia-smi line `{first}` has {} fields, expected 4", fields.len()));
+    if fields.len() != 6 {
+        return Err(format!("nvidia-smi line `{first}` has {} fields, expected 6", fields.len()));
     }
     let number = |raw: &str, unit: &str| -> Option<u64> { raw.trim_end_matches(unit).trim().parse().ok() };
+    let link = |raw: &str| number(raw, "").map(|v| v as u32);
     let card = Card {
         name: Some(fields[0].to_string()).filter(|n| !n.is_empty() && !n.starts_with('[')),
         vram_total_mib: number(fields[1], "MiB"),
-        pcie_gen_current: number(fields[2], "").map(|v| v as u32),
-        pcie_width_current: number(fields[3], "").map(|v| v as u32),
+        pcie_gen_current: link(fields[2]),
+        pcie_width_current: link(fields[3]),
+        pcie_gen_max: link(fields[4]),
+        pcie_width_max: link(fields[5]),
     };
     Ok((card, lines.len()))
 }
@@ -298,7 +329,10 @@ pub fn speculative_delta(before: Option<Speculative>, after: Speculative) -> Spe
 
 /// The config fields the record keeps, as `group.field`. A whitelist: the
 /// config document also holds paths, the bind address and the key's presence.
-pub const CONFIG_KEYS: [&str; 22] = [
+/// The server crate's `bench_contract` test holds every key to a field
+/// `GET /v1/config` shows, so a rename fails there instead of the key
+/// silently dropping out of the record.
+pub const CONFIG_KEYS: &[&str] = &[
     "model.max_context",
     "model.prefill_chunk",
     "model.kv_format",
@@ -323,8 +357,24 @@ pub const CONFIG_KEYS: [&str; 22] = [
     "spec.draft_head",
 ];
 
-/// The family section a model id's values live in, beside the group's own.
-fn family_scope(model_id: &str) -> &'static str {
+/// The config section the loaded model's family values live in, as
+/// `GET /v1/models/catalog` names it on the loaded row (`qwen38`,
+/// `qwen38flashnext`): the running family, whatever the id.
+pub fn loaded_family(catalog: &Value) -> Option<String> {
+    catalog["data"]
+        .as_array()?
+        .iter()
+        .find(|row| row["loaded"] == true)
+        .and_then(|row| row["family"].as_str())
+        .map(str::to_string)
+}
+
+/// The family section a model id's values most likely live in, for a server
+/// whose catalog route does not say ([`loaded_family`]): Flash-Next's ids
+/// carry `flash`, every other text model is the 27B's family. A model served
+/// under an id of the operator's own can defeat it, which the record's notes
+/// then say.
+fn family_from_id(model_id: &str) -> &'static str {
     if model_id.contains("flash") {
         "qwen38flashnext"
     } else {
@@ -342,14 +392,14 @@ pub struct ConfigEntry {
     pub spelling: Option<String>,
 }
 
-/// The whitelisted values of `GET /v1/config` for the model `model_id`
-/// (the family's own section beats the group's value), each with its origin
-/// from `GET /v1/config/origins`. A key the document lacks is absent.
-pub fn config_view(config: &Value, origins: Option<&Value>, model_id: &str) -> BTreeMap<String, ConfigEntry> {
-    let scope = family_scope(model_id);
+/// The whitelisted values of `GET /v1/config` for a model of the family
+/// section `scope` (the family's own section beats the group's value), each
+/// with its origin from `GET /v1/config/origins`. A key the document lacks
+/// is absent.
+pub fn config_view(config: &Value, origins: Option<&Value>, scope: &str) -> BTreeMap<String, ConfigEntry> {
     let rows: &[Value] = origins.and_then(|o| o.get("data")).and_then(Value::as_array).map_or(&[], Vec::as_slice);
     let mut out = BTreeMap::new();
-    for key in CONFIG_KEYS {
+    for &key in CONFIG_KEYS {
         let Some((group, field)) = key.split_once('.') else { continue };
         let Some(section) = config.get(group) else { continue };
         let scoped = section.get(scope).and_then(|s| s.get(field));
@@ -383,23 +433,38 @@ fn as_u64(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str().and_then(|s| s.replace(',', "").parse().ok()))
 }
 
-/// What the load did to the context the config asked for. The server logs
-/// each adaptation step at start but exposes none over HTTP: this is what the
-/// two numbers it does expose say. `lowered` is `None` when the config's
-/// value is not a number (an `auto`) or the running context is unknown.
+/// What the load ran with beside what the config asked for, and every
+/// adaptation it took to fit its VRAM plan (ADR 0063 §3), as
+/// `GET /v1/models` reports them on the loaded model.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ContextAdaptation {
+pub struct Adaptation {
     pub configured_max_context: Option<u64>,
     pub running_max_model_len: Option<u64>,
+    /// `0` configured is the family's own count.
+    pub configured_decode_lanes: Option<u64>,
+    pub running_decode_lanes: Option<u64>,
+    /// The steps, in the order taken, as the server's `ignis.runtime.vram_plan`
+    /// spells them; `""` when the load took none, `None` when the server does
+    /// not report them.
+    pub adapted: Option<String>,
+    /// Whether the load lowered anything the config asked for: a step was
+    /// taken. `None` when the server does not report the steps.
     pub lowered: Option<bool>,
 }
 
-pub fn context_adaptation(view: &BTreeMap<String, ConfigEntry>, running: Option<u64>) -> ContextAdaptation {
-    let configured = view.get("model.max_context").and_then(|e| as_u64(&e.value));
-    ContextAdaptation {
-        configured_max_context: configured,
-        running_max_model_len: running,
-        lowered: configured.zip(running).map(|(c, r)| r < c),
+/// The [`Adaptation`] of the loaded model `active` (`GET /v1/models`'
+/// `data[0]`) under the config `view`.
+pub fn adaptation(view: &BTreeMap<String, ConfigEntry>, active: Option<&Value>) -> Adaptation {
+    let configured = |key: &str| view.get(key).and_then(|e| as_u64(&e.value));
+    let running = |field: &str| active.and_then(|m| m[field].as_u64());
+    let adapted = active.and_then(|m| m["adapted"].as_str()).map(str::to_string);
+    Adaptation {
+        configured_max_context: configured("model.max_context"),
+        running_max_model_len: running("max_model_len"),
+        configured_decode_lanes: configured("spec.decode_lanes"),
+        running_decode_lanes: running("decode_lanes"),
+        lowered: adapted.as_ref().map(|steps| !steps.is_empty()),
+        adapted,
     }
 }
 
@@ -476,16 +541,12 @@ pub fn summarize_decode(max_tokens: u32, samples: Vec<DecodeSample>, errors: Vec
 /// then served through, so a cell's claimed length is the length the server
 /// prefills and a user needs no artifact path.
 pub struct ServerTemplate {
-    url: String,
-    client: reqwest::blocking::Client,
+    ep: HttpEndpoint,
 }
 
 impl ServerTemplate {
     pub fn new(base_url: &str) -> Self {
-        Self {
-            url: format!("{}/v1/tokenize", base_url.trim_end_matches('/')),
-            client: http_client(Duration::from_secs(120)),
-        }
+        Self { ep: HttpEndpoint::new(base_url) }
     }
 }
 
@@ -496,41 +557,16 @@ impl PromptTemplate for ServerTemplate {
             "enable_thinking": false,
             "return_token_ids": true,
         });
-        let response = self.client.post(&self.url).json(&body).send().map_err(|e| format!("POST {}: {e}", self.url))?;
-        let status = response.status();
-        let value: Value = response.json().map_err(|e| format!("POST {}: parse: {e}", self.url))?;
-        if !status.is_success() {
-            return Err(format!("POST {} -> {status}: {}", self.url, value["error"]["message"].as_str().unwrap_or("")));
-        }
+        let value = self.ep.post_json("/v1/tokenize", &body)?;
         value["token_ids"]
             .as_array()
             .map(|ids| ids.iter().filter_map(|id| id.as_u64().map(|v| v as u32)).collect())
-            .ok_or_else(|| format!("POST {}: no token_ids in the answer", self.url))
+            .ok_or_else(|| format!("POST {}/v1/tokenize: no token_ids in the answer", self.ep.base_url))
     }
 
     fn decode(&self, _ids: &[u32]) -> Result<String, String> {
         Err("the small-card preset builds its prompts by filler growth, never from a corpus".to_string())
     }
-}
-
-fn http_client(timeout: Duration) -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder().timeout(timeout).build().expect("the preset's HTTP client builds")
-}
-
-fn get_text(client: &reqwest::blocking::Client, url: &str) -> Result<String, String> {
-    client
-        .get(url)
-        .send()
-        .map_err(|e| format!("GET {url} failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("GET {url} -> {e}"))?
-        .text()
-        .map_err(|e| format!("GET {url}: {e}"))
-}
-
-fn get_json(client: &reqwest::blocking::Client, url: &str) -> Result<Value, String> {
-    let text = get_text(client, url)?;
-    serde_json::from_str(&text).map_err(|e| format!("GET {url}: parse: {e}"))
 }
 
 // ── urls ──────────────────────────────────────────────────────────────────
@@ -552,8 +588,9 @@ pub fn redact_url(url: &str) -> String {
     }
 }
 
-/// The metrics listener the server defaults to, on the endpoint's host.
-pub fn default_metrics_url(endpoint: &str) -> String {
+/// The metrics listener on `port` of the endpoint's host: the host the bench
+/// reaches the server by, whatever address the listener is bound to.
+pub fn metrics_url_on(endpoint: &str, port: u16) -> String {
     let redacted = redact_url(endpoint);
     let (scheme, rest) = redacted.split_once("://").unwrap_or(("http", &redacted));
     let authority = rest.split('/').next().unwrap_or(rest);
@@ -562,7 +599,24 @@ pub fn default_metrics_url(endpoint: &str) -> String {
     } else {
         authority.split(':').next().unwrap_or(authority)
     };
-    format!("{scheme}://{host}:{DEFAULT_METRICS_PORT}")
+    format!("{scheme}://{host}:{port}")
+}
+
+/// Where the server's metrics listener is, from its `GET /v1/config`
+/// document: the port of `server.metrics_bind`, on the endpoint's host; the
+/// default port ([`DEFAULT_METRICS_PORT`]) when the document is missing or
+/// does not say. `Err` when it says the server serves no metrics.
+pub fn metrics_url_from_config(endpoint: &str, config: Option<&Value>) -> Result<String, String> {
+    let server = config.and_then(|c| c.get("server"));
+    if server.and_then(|s| s["metrics"].as_bool()) == Some(false) {
+        return Err("the server serves no metrics (server.metrics: false)".to_string());
+    }
+    let port = server
+        .and_then(|s| s["metrics_bind"].as_str())
+        .and_then(|bind| bind.rsplit_once(':'))
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_METRICS_PORT);
+    Ok(metrics_url_on(endpoint, port))
 }
 
 // ── the record ────────────────────────────────────────────────────────────
@@ -572,6 +626,9 @@ pub fn default_metrics_url(endpoint: &str) -> String {
 pub struct ServerFacts {
     pub version: Option<String>,
     pub model_id: Option<String>,
+    /// The config section of the loaded model's family (`qwen38`,
+    /// `qwen38flashnext`).
+    pub family: Option<String>,
     pub profile: Option<String>,
     pub status: Option<String>,
     pub max_model_len: Option<u64>,
@@ -598,6 +655,26 @@ pub struct TtftCell {
     pub error: Option<String>,
 }
 
+impl TtftCell {
+    /// A cell that was not measured, and why.
+    fn unmeasured(prompt_tokens: u32, error: String) -> Self {
+        Self { prompt_tokens, median_ttft_ms: None, samples_ms: Vec::new(), all_cold: false, error: Some(error) }
+    }
+}
+
+/// Why a cell of `prompt_tokens` cannot be measured in the running context
+/// `limit`, naming the largest cell that can; `None` when it fits.
+pub fn cell_does_not_fit(prompt_tokens: u32, limit: u64) -> Option<String> {
+    let output = u64::from(ttft::DEFAULT_MAX_TOKENS);
+    (u64::from(prompt_tokens) + output > limit).then(|| {
+        format!(
+            "does not fit: {prompt_tokens} prompt tokens + {output} output exceed the running context of {limit}; \
+             the largest cell that fits is --cells {}",
+            limit.saturating_sub(output)
+        )
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Decode {
     pub coding: Option<DecodeSet>,
@@ -618,11 +695,17 @@ pub struct Report {
     pub server: ServerFacts,
     pub plan: Plan,
     pub config: Option<BTreeMap<String, ConfigEntry>>,
-    pub context: ContextAdaptation,
+    pub adaptation: Adaptation,
     pub decode: Decode,
     pub ttft: Vec<TtftCell>,
     /// Every piece that could not be read or measured, and why.
     pub notes: Vec<String>,
+}
+
+/// The record as the command prints it and writes it to `--out`: pretty JSON
+/// and one trailing newline.
+pub fn to_json(report: &Report) -> Result<String, String> {
+    serde_json::to_string_pretty(report).map(|json| format!("{json}\n")).map_err(|e| e.to_string())
 }
 
 fn ttft_cell(cell: &ttft::Cell) -> TtftCell {
@@ -645,9 +728,11 @@ fn decode_request(id: &str, prompt: String, max_tokens: u32) -> Request {
         max_tokens,
         stream: true,
         include_usage: true,
-        // The server's configured default: an agent client thinks, and the
-        // rate counts the reasoning channel as decode work like any other.
-        enable_thinking: None,
+        // Thinking off: a turn that ends inside its reasoning makes the
+        // server log a `generation produced reasoning but no content` WARN
+        // that a reader of the log takes for an error, and the decode work
+        // per token is the same on either channel (#340, live).
+        enable_thinking: Some(false),
         images: Vec::new(),
     }
 }
@@ -670,10 +755,103 @@ fn measure_decode(ep: &dyn Endpoint, prompts: Vec<(String, String)>, max_tokens:
 pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> Report {
     let started_at = utc_timestamp(unix_now());
     let mut notes = Vec::new();
-    let client = http_client(Duration::from_secs(30));
     let base = opts.endpoint.trim_end_matches('/').to_string();
+    let api = HttpEndpoint::new(&base);
 
-    // The card.
+    // The shape the server runs with.
+    let models = api.get_json("/v1/models").map_err(|e| notes.push(format!("models: {e}"))).ok();
+    let active = models.as_ref().and_then(|m| m["data"].as_array()).and_then(|d| d.first()).cloned();
+    let model_id = active.as_ref().and_then(|m| m["id"].as_str()).map(str::to_string);
+    let max_model_len = active.as_ref().and_then(|m| m["max_model_len"].as_u64());
+    if model_id.is_some() && max_model_len.is_none() {
+        notes.push("models: the server reports no max_model_len for the loaded model".into());
+    }
+    if model_id.is_some() && active.as_ref().is_some_and(|m| m.get("adapted").is_none()) {
+        notes.push(
+            "adaptation: the server's /v1/models reports no `adapted` or `decode_lanes` (a build before #340): \
+             what the load adapted is unknown"
+                .into(),
+        );
+    }
+    let status = models.as_ref().and_then(|m| m["status"].as_str()).map(str::to_string);
+    let family = match api.get_json("/v1/models/catalog").map(|catalog| loaded_family(&catalog)) {
+        Ok(Some(family)) => Some(family),
+        Ok(None) | Err(_) if model_id.is_none() => None,
+        outcome => {
+            let id = model_id.as_deref().unwrap_or("");
+            let why = outcome.err().unwrap_or_else(|| "it names no family for the loaded model".into());
+            notes.push(format!(
+                "family: /v1/models/catalog could not say ({why}); `{}` is taken from the id `{id}`",
+                family_from_id(id)
+            ));
+            Some(family_from_id(id).to_string())
+        }
+    };
+    let config = api.get_json("/v1/config").map_err(|e| notes.push(format!("config: {e}"))).ok();
+    let origins = api.get_json("/v1/config/origins").map_err(|e| notes.push(format!("config origins: {e}"))).ok();
+    let view = config.as_ref().map(|c| config_view(c, origins.as_ref(), family.as_deref().unwrap_or("")));
+    let profile = origins.as_ref().and_then(profile_name);
+    if origins.is_some() && profile.is_none() {
+        notes.push("profile: no config value comes from a profile (none in use, or all overridden)".into());
+    }
+    let adaptation = adaptation(view.as_ref().unwrap_or(&BTreeMap::new()), active.as_ref());
+
+    // The plan (the metrics listener).
+    let metrics_ep = match &opts.metrics {
+        MetricsAt::Off => {
+            notes.push("metrics: not read (--metrics off): no VRAM plan lines, build version or speculative counters".into());
+            None
+        }
+        MetricsAt::Url(url) => Some(HttpEndpoint::new(url)),
+        MetricsAt::Server => {
+            if config.is_none() {
+                notes.push(format!("metrics: /v1/config unread, so the listener is looked for on the default port {DEFAULT_METRICS_PORT}"));
+            }
+            match metrics_url_from_config(&base, config.as_ref()) {
+                Ok(url) => Some(HttpEndpoint::new(url)),
+                Err(e) => {
+                    notes.push(format!("metrics: {e}: no VRAM plan lines, build version or speculative counters"));
+                    None
+                }
+            }
+        }
+    };
+    let metrics_now = |notes: &mut Vec<String>| -> Option<Metrics> {
+        match metrics_ep.as_ref()?.get_text("/metrics") {
+            Ok(text) => Some(Metrics::parse(&text)),
+            Err(e) => {
+                notes.push(format!("metrics: {e}"));
+                None
+            }
+        }
+    };
+    let before = metrics_now(&mut notes);
+
+    // Decode.
+    let ep = api.clone().as_recorded(true);
+    let (mut decode, mut ttft_cells) = (Decode { coding: None, agent: None, speculative: None }, Vec::new());
+    if model_id.is_some() {
+        // One short request first: a cold server's first request pays one-off costs.
+        let _ = ep.complete(&decode_request("warmup", CANARIES[0].prompt.to_string(), 16));
+        let coding: Vec<(String, String)> = CANARIES.iter().map(|c| (c.id.to_string(), c.prompt.to_string())).collect();
+        decode.coding = Some(measure_decode(&ep, coding, opts.decode_tokens));
+        let agent: Vec<(String, String)> =
+            AGENT_TURNS.iter().map(|(id, body)| (id.to_string(), body.to_string())).collect();
+        decode.agent = Some(measure_decode(&ep, agent, opts.decode_tokens));
+        let after = metrics_now(&mut notes);
+        match (&before, after.as_ref().and_then(Metrics::speculative)) {
+            (Some(b), Some(a)) => decode.speculative = Some(speculative_delta(b.speculative(), a)),
+            (Some(_), None) => notes.push(
+                "speculative: the server exports no speculative counters (no speculation, or no verify round ran)".into(),
+            ),
+            _ => {}
+        }
+    } else {
+        notes.push("no model answered at /v1/models: nothing was measured".into());
+    }
+
+    // The card, right after the decode phase: the link is read at the speed
+    // it served at, before an idle card downshifts it.
     let card = match nvidia_smi().and_then(|out| parse_nvidia_smi(&out)) {
         Ok((card, count)) => {
             if count > 1 {
@@ -687,69 +865,9 @@ pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> R
         }
     };
 
-    // The shape the server runs with.
-    let models = get_json(&client, &format!("{base}/v1/models")).map_err(|e| notes.push(format!("models: {e}"))).ok();
-    let active = models.as_ref().and_then(|m| m["data"].as_array()).and_then(|d| d.first()).cloned();
-    let model_id = active.as_ref().and_then(|m| m["id"].as_str()).map(str::to_string);
-    let max_model_len = active.as_ref().and_then(|m| m["max_model_len"].as_u64());
-    if model_id.is_some() && max_model_len.is_none() {
-        notes.push("models: the server reports no max_model_len for the loaded model".into());
-    }
-    let status = models.as_ref().and_then(|m| m["status"].as_str()).map(str::to_string);
-    let config = get_json(&client, &format!("{base}/v1/config")).map_err(|e| notes.push(format!("config: {e}"))).ok();
-    let origins =
-        get_json(&client, &format!("{base}/v1/config/origins")).map_err(|e| notes.push(format!("config origins: {e}"))).ok();
-    let view = config.as_ref().map(|c| config_view(c, origins.as_ref(), model_id.as_deref().unwrap_or("")));
-    let profile = origins.as_ref().and_then(profile_name);
-    if origins.is_some() && profile.is_none() {
-        notes.push("profile: no config value comes from a profile (none in use, or all overridden)".into());
-    }
-    let context = context_adaptation(view.as_ref().unwrap_or(&BTreeMap::new()), max_model_len);
-    notes.push(
-        "adaptations: the server logs each adaptation step at start and exposes none over HTTP; \
-         `context` compares the configured max_context with the context running"
-            .into(),
-    );
-
-    // The plan (the metrics listener).
-    let metrics_text = |notes: &mut Vec<String>| -> Option<Metrics> {
-        let url = opts.metrics.as_ref()?;
-        match get_text(&client, &format!("{}/metrics", url.trim_end_matches('/'))) {
-            Ok(text) => Some(Metrics::parse(&text)),
-            Err(e) => {
-                notes.push(format!("metrics: {e}"));
-                None
-            }
-        }
-    };
-    if opts.metrics.is_none() {
-        notes.push("metrics: not read (--metrics off): no VRAM plan lines, build version or speculative counters".into());
-    }
-    let before = metrics_text(&mut notes);
-
-    // Decode.
-    let ep = HttpEndpoint::new(&base).as_recorded(true);
-    let (mut decode, mut ttft_cells) = (Decode { coding: None, agent: None, speculative: None }, Vec::new());
+    // TTFT.
     if model_id.is_some() {
-        // One short request first: a cold server's first request pays one-off costs.
-        let _ = ep.complete(&decode_request("warmup", CANARIES[0].prompt.to_string(), 16));
-        let coding: Vec<(String, String)> = CANARIES.iter().map(|c| (c.id.to_string(), c.prompt.to_string())).collect();
-        decode.coding = Some(measure_decode(&ep, coding, opts.decode_tokens));
-        let agent: Vec<(String, String)> =
-            AGENT_TURNS.iter().map(|(id, body)| (id.to_string(), body.to_string())).collect();
-        decode.agent = Some(measure_decode(&ep, agent, opts.decode_tokens));
-        let after = metrics_text(&mut notes);
-        match (&before, after.as_ref().and_then(Metrics::speculative)) {
-            (Some(b), Some(a)) => decode.speculative = Some(speculative_delta(b.speculative(), a)),
-            (Some(_), None) => notes.push(
-                "speculative: the server exports no speculative counters (no speculation, or no verify round ran)".into(),
-            ),
-            _ => {}
-        }
-
-        // TTFT.
         let template = ServerTemplate::new(&base);
-        let ttft_ep = HttpEndpoint::new(&base);
         let tokenizer_ok = match template.encode_user_message("hello") {
             Ok(_) => true,
             Err(e) => {
@@ -758,41 +876,23 @@ pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> R
             }
         };
         for &prompt_tokens in &opts.cells {
-            let reach = u64::from(prompt_tokens) + u64::from(ttft::DEFAULT_MAX_TOKENS);
-            if let Some(limit) = max_model_len.filter(|&l| reach > l) {
-                ttft_cells.push(TtftCell {
-                    prompt_tokens,
-                    median_ttft_ms: None,
-                    samples_ms: Vec::new(),
-                    all_cold: false,
-                    error: Some(format!(
-                        "does not fit: {prompt_tokens} prompt tokens + {} output exceed the running context of {limit}",
-                        ttft::DEFAULT_MAX_TOKENS
-                    )),
-                });
+            if let Some(why) = max_model_len.and_then(|limit| cell_does_not_fit(prompt_tokens, limit)) {
+                ttft_cells.push(TtftCell::unmeasured(prompt_tokens, why));
                 continue;
             }
             if !tokenizer_ok {
-                ttft_cells.push(TtftCell {
-                    prompt_tokens,
-                    median_ttft_ms: None,
-                    samples_ms: Vec::new(),
-                    all_cold: false,
-                    error: Some("no tokenizer: /v1/tokenize is unusable".into()),
-                });
+                ttft_cells.push(TtftCell::unmeasured(prompt_tokens, "no tokenizer: /v1/tokenize is unusable".into()));
                 continue;
             }
             eprintln!("ttft: {prompt_tokens} tokens x {} samples (+1 warmup)", opts.samples);
             let spec = CellSpec { prompt_tokens, samples: opts.samples };
-            let cell = ttft::measure_cell(&ttft_ep, &template, &spec, ttft::DEFAULT_MAX_TOKENS);
+            let cell = ttft::measure_cell(&api, &template, &spec, ttft::DEFAULT_MAX_TOKENS);
             ttft_cells.push(ttft_cell(&cell));
         }
-    } else {
-        notes.push("no model answered at /v1/models: nothing was measured".into());
     }
 
     // The plan, read last: a lazily built pool or a switch has landed by now.
-    let plan_metrics = metrics_text(&mut notes);
+    let plan_metrics = metrics_now(&mut notes);
     let plan = Plan {
         budget_bytes: plan_metrics.as_ref().and_then(Metrics::vram_budget_bytes),
         reserved_bytes_by_line: plan_metrics.as_ref().map(Metrics::vram_plan),
@@ -810,13 +910,14 @@ pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> R
         server: ServerFacts {
             version: plan_metrics.as_ref().and_then(Metrics::build_version),
             model_id,
+            family,
             profile,
             status,
             max_model_len,
         },
         plan,
         config: view,
-        context,
+        adaptation,
         decode,
         ttft: ttft_cells,
         notes,
@@ -829,27 +930,34 @@ mod tests {
 
     #[test]
     fn nvidia_smi_line_parses_into_the_card() {
-        let (card, count) = parse_nvidia_smi("NVIDIA GeForce RTX 5090, 32607 MiB, 3, 16\n").unwrap();
+        let (card, count) = parse_nvidia_smi("NVIDIA GeForce RTX 5090, 32607 MiB, 3, 16, 5, 16\n").unwrap();
         assert_eq!(count, 1);
         assert_eq!(card.name.as_deref(), Some("NVIDIA GeForce RTX 5090"));
         assert_eq!(card.vram_total_mib, Some(32607));
         assert_eq!((card.pcie_gen_current, card.pcie_width_current), (Some(3), Some(16)));
+        assert_eq!((card.pcie_gen_max, card.pcie_width_max), (Some(5), Some(16)));
+        assert!(NVIDIA_SMI_ARGS[0].ends_with("pcie.link.gen.max,pcie.link.width.max"), "the query asks what the parser reads");
     }
 
     #[test]
     fn nvidia_smi_na_fields_are_none_and_extra_cards_are_counted() {
-        let (card, count) =
-            parse_nvidia_smi("NVIDIA GeForce RTX 5070 Ti, 16303 MiB, [N/A], [N/A]\nNVIDIA T400, 4096 MiB, 3, 16\n").unwrap();
+        let (card, count) = parse_nvidia_smi(
+            "NVIDIA GeForce RTX 5070 Ti, 16303 MiB, [N/A], [N/A], [N/A], [N/A]\nNVIDIA T400, 4096 MiB, 3, 16, 3, 16\n",
+        )
+        .unwrap();
         assert_eq!(count, 2);
         assert_eq!(card.name.as_deref(), Some("NVIDIA GeForce RTX 5070 Ti"));
         assert_eq!(card.vram_total_mib, Some(16303));
         assert_eq!((card.pcie_gen_current, card.pcie_width_current), (None, None));
+        assert_eq!((card.pcie_gen_max, card.pcie_width_max), (None, None));
     }
 
     #[test]
     fn nvidia_smi_garbage_is_an_error_not_a_panic() {
         assert!(parse_nvidia_smi("").is_err());
         assert!(parse_nvidia_smi("NVIDIA-SMI has failed because it couldn't communicate").is_err());
+        // the four fields an older query asked for
+        assert!(parse_nvidia_smi("NVIDIA GeForce RTX 5090, 32607 MiB, 3, 16").is_err());
     }
 
     const METRICS: &str = "# HELP ignis_build_info Constant build identity with value 1.\n\
@@ -914,12 +1022,13 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
 
     fn config_doc() -> Value {
         json!({
-            "server": { "bind": "0.0.0.0:8080", "api_key": "sk-secret" },
+            "server": { "bind": "0.0.0.0:8080", "api_key": "sk-secret", "metrics": true, "metrics_bind": "127.0.0.1:9500" },
             "model": {
                 "artifact": "C:/Users/someone/models/x.ninfer",
                 "max_context": 262144,
                 "prefill_chunk": 1024,
                 "qwen38": { "max_context": 262144, "rope_scaling": "none" },
+                "qwen38flashnext": { "max_context": 589824 },
                 "rope_scaling": "auto",
             },
             "vram": { "budget_bytes": 17179869184u64 },
@@ -941,7 +1050,7 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
 
     #[test]
     fn the_config_view_keeps_the_whitelist_the_family_value_and_the_origin() {
-        let view = config_view(&config_doc(), Some(&origins_doc()), "qwen3.8-27b-16g");
+        let view = config_view(&config_doc(), Some(&origins_doc()), "qwen38");
         assert_eq!(view["model.max_context"].value, json!(262144));
         assert_eq!(view["model.max_context"].source.as_deref(), Some("profile"));
         assert_eq!(view["model.max_context"].spelling.as_deref(), Some("rtx50-16gb"));
@@ -951,13 +1060,15 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
         assert_eq!(view["vram.budget_bytes"].spelling.as_deref(), Some("IGNIS_VRAM_BUDGET_BYTES"));
         assert_eq!(view["spec.decode_lanes"].source.as_deref(), Some("default"));
         assert_eq!(view["spec.decode_lanes"].spelling, None);
+        // and the section is the family's, not the id's
+        assert_eq!(config_view(&config_doc(), None, "qwen38flashnext")["model.max_context"].value, json!(589824));
     }
 
     #[test]
     fn the_config_view_never_carries_a_path_a_key_or_the_bind_address() {
-        let view = config_view(&config_doc(), Some(&origins_doc()), "qwen3.8-27b-16g");
+        let view = config_view(&config_doc(), Some(&origins_doc()), "qwen38");
         let text = serde_json::to_string(&view).unwrap();
-        for leak in ["sk-secret", "api_key", "someone", "artifact", "0.0.0.0", "ignis.yaml"] {
+        for leak in ["sk-secret", "api_key", "someone", "artifact", "0.0.0.0", "ignis.yaml", "9500"] {
             assert!(!text.contains(leak), "{leak} leaked into {text}");
         }
         assert_eq!(view["model.prefill_chunk"].source.as_deref(), Some("file"));
@@ -966,7 +1077,7 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
 
     #[test]
     fn the_config_view_without_origins_still_has_values() {
-        let view = config_view(&config_doc(), None, "qwen3.8-27b");
+        let view = config_view(&config_doc(), None, "qwen38");
         assert_eq!(view["model.max_context"].source, None);
         assert_eq!(view["spec.draft_head"].value, json!("auto"));
     }
@@ -978,17 +1089,47 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
     }
 
     #[test]
-    fn a_running_context_below_the_configured_one_says_the_load_lowered_it() {
-        let view = config_view(&config_doc(), None, "qwen3.8-27b");
-        let c = context_adaptation(&view, Some(61_440));
+    fn the_family_is_the_catalogs_loaded_row_and_else_guessed_from_the_id() {
+        let catalog = json!({ "object": "list", "data": [
+            { "id": "qwen3.8-27b", "family": "qwen38", "loaded": false },
+            { "id": "my-own-name", "family": "qwen38flashnext", "loaded": true },
+        ]});
+        assert_eq!(loaded_family(&catalog).as_deref(), Some("qwen38flashnext"));
+        assert_eq!(loaded_family(&json!({ "data": [{ "id": "x", "loaded": true }] })), None);
+        assert_eq!(loaded_family(&json!({})), None);
+        assert_eq!((family_from_id("qwen3.8-flash-next"), family_from_id("qwen3.8-27b-16g")), ("qwen38flashnext", "qwen38"));
+    }
+
+    #[test]
+    fn the_adaptation_is_what_the_server_says_the_load_took() {
+        let view = config_view(&config_doc(), None, "qwen38");
+        // the context adapted: what B3 (16 GiB less 3 GiB) logged
+        let steps = "max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens 65536)";
+        let active = json!({ "id": "qwen3.8-27b", "max_model_len": 65536, "decode_lanes": 2, "adapted": steps });
+        let a = adaptation(&view, Some(&active));
         assert_eq!(
-            c,
-            ContextAdaptation { configured_max_context: Some(262144), running_max_model_len: Some(61_440), lowered: Some(true) }
+            a,
+            Adaptation {
+                configured_max_context: Some(262144),
+                running_max_model_len: Some(65536),
+                configured_decode_lanes: Some(2),
+                running_decode_lanes: Some(2),
+                adapted: Some(steps.into()),
+                lowered: Some(true),
+            }
         );
-        assert_eq!(context_adaptation(&view, Some(262_144)).lowered, Some(false));
-        assert_eq!(context_adaptation(&view, None).lowered, None);
-        let auto = config_view(&json!({ "model": { "max_context": "auto" } }), None, "qwen3.8-27b");
-        assert_eq!(context_adaptation(&auto, Some(1)).lowered, None);
+        // the lanes adapted with the context the same: still lowered
+        let lanes = json!({ "max_model_len": 262144, "decode_lanes": 1, "adapted": "decode_lanes 2 -> 1" });
+        let a = adaptation(&view, Some(&lanes));
+        assert_eq!((a.running_decode_lanes, a.lowered), (Some(1), Some(true)));
+        // nothing adapted
+        let none = json!({ "max_model_len": 262144, "decode_lanes": 2, "adapted": "" });
+        assert_eq!(adaptation(&view, Some(&none)).lowered, Some(false));
+        // a server that does not say: unknown, whatever the contexts are
+        let old = json!({ "max_model_len": 65536 });
+        let a = adaptation(&view, Some(&old));
+        assert_eq!((a.adapted, a.lowered, a.running_decode_lanes), (None, None, None));
+        assert_eq!(adaptation(&BTreeMap::new(), None).lowered, None);
     }
 
     #[test]
@@ -1017,6 +1158,21 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
     }
 
     #[test]
+    fn a_decode_request_has_thinking_off() {
+        assert_eq!(decode_request("p", "hi".into(), 16).enable_thinking, Some(false));
+    }
+
+    #[test]
+    fn a_cell_that_does_not_fit_names_the_largest_that_does() {
+        // B3: the running context is 65,536, the default 64K cell reaches 8 past it
+        let why = cell_does_not_fit(65_536, 65_536).expect("does not fit");
+        assert!(why.contains("exceed the running context of 65536"), "{why}");
+        assert!(why.contains("--cells 65528"), "{why}");
+        assert_eq!(cell_does_not_fit(65_528, 65_536), None);
+        assert_eq!(cell_does_not_fit(8_192, 65_536), None);
+    }
+
+    #[test]
     fn the_endpoint_loses_its_credentials() {
         assert_eq!(redact_url("http://user:pw@127.0.0.1:8080"), "http://127.0.0.1:8080");
         assert_eq!(redact_url("https://tok@host.example/base/"), "https://host.example/base/");
@@ -1024,10 +1180,46 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
     }
 
     #[test]
-    fn the_default_metrics_listener_is_the_endpoints_host_on_9464() {
-        assert_eq!(default_metrics_url("http://127.0.0.1:8080"), "http://127.0.0.1:9464");
-        assert_eq!(default_metrics_url("http://u:p@box.lan:8080/"), "http://box.lan:9464");
-        assert_eq!(default_metrics_url("http://[::1]:8080"), "http://[::1]:9464");
+    fn the_metrics_listener_is_the_configs_port_on_the_endpoints_host() {
+        let config = config_doc();
+        assert_eq!(metrics_url_from_config("http://u:p@box.lan:8080/", Some(&config)).unwrap(), "http://box.lan:9500");
+        assert_eq!(metrics_url_from_config("http://[::1]:8080", Some(&config)).unwrap(), "http://[::1]:9500");
+        let v6 = json!({ "server": { "metrics": true, "metrics_bind": "[::1]:9600" } });
+        assert_eq!(metrics_url_from_config("http://127.0.0.1:8080", Some(&v6)).unwrap(), "http://127.0.0.1:9600");
+        // no config, or one that does not say: the default port
+        assert_eq!(metrics_url_from_config("http://127.0.0.1:8080", None).unwrap(), "http://127.0.0.1:9464");
+        assert_eq!(metrics_url_from_config("http://127.0.0.1:8080", Some(&json!({}))).unwrap(), "http://127.0.0.1:9464");
+        // the listener off
+        let off = json!({ "server": { "metrics": false, "metrics_bind": "127.0.0.1:9464" } });
+        assert!(metrics_url_from_config("http://127.0.0.1:8080", Some(&off)).unwrap_err().contains("server.metrics: false"));
+    }
+
+    fn report() -> Report {
+        Report {
+            schema: SCHEMA,
+            bench_version: "0",
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            endpoint: "http://127.0.0.1:8000".into(),
+            card: None,
+            server: ServerFacts { version: None, model_id: None, family: None, profile: None, status: None, max_model_len: None },
+            plan: Plan { budget_bytes: None, reserved_bytes_by_line: None, kv_pool_pages: None, kv_page_bytes: None },
+            config: None,
+            adaptation: adaptation(&BTreeMap::new(), None),
+            decode: Decode { coding: None, agent: None, speculative: None },
+            ttft: vec![TtftCell::unmeasured(65_536, "does not fit".into())],
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_written_record_is_the_pretty_json_and_one_trailing_newline() {
+        let text = to_json(&report()).unwrap();
+        assert!(text.ends_with("}\n") && !text.ends_with("\n\n"), "{text:?}");
+        let back: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(back["schema"], SCHEMA);
+        assert_eq!(back["ttft"][0]["median_ttft_ms"], Value::Null);
+        assert_eq!(back["ttft"][0]["error"], "does not fit");
     }
 
     #[test]

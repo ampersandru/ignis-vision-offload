@@ -154,7 +154,8 @@ Why each:
 - **Two lanes.** Eight would leave no room for the context.
 - **The 1,024-token chunk.** With vision off the workspace is the text scratch,
   and 2,048 would cost about 0.4 GB of KV pool.
-- **The headroom** is the 5090's 27B value until a real card says otherwise.
+- **The headroom** is the 5090's 27B value until a real card says otherwise
+  ([measure yours](../guides/measure-a-16gb-card.md)).
 
 ## When a profile does not fit
 

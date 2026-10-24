@@ -65,15 +65,17 @@
 //!             [--samples 3] [--decode-tokens 256] [--out <small-card.json>]`
 //!       The small-card preset (spec 27b-16gb/05, #340): one command against a
 //!       running server, a few minutes, ONE JSON to paste into a GitHub
-//!       issue. It records the card (name, VRAM, PCIe link, from
-//!       `nvidia-smi`), the load's VRAM plan lines and shape (the metrics
-//!       listener, `/v1/models`, `/v1/config`), decode tok/s on the coding
-//!       prompts and on synthetic agent-like turns, and TTFT at the cells
-//!       (8K and 64K; the prompts are counted through the server's own
-//!       `/v1/tokenize`, so no artifact is needed). `--metrics` defaults to
-//!       the endpoint's host on the default metrics port 9464; `off` skips it.
-//!       A piece that cannot be read is `null` with a line in `notes`. The
-//!       record carries no credentials and no paths.
+//!       issue. It records the card (name, VRAM, PCIe link and its maximum,
+//!       from `nvidia-smi`), the load's VRAM plan lines and shape (the metrics
+//!       listener, `/v1/models` with the context, lanes and adaptations the
+//!       load runs at, `/v1/models/catalog`, `/v1/config`), decode tok/s on
+//!       the coding prompts and on synthetic agent-like turns, thinking off,
+//!       and TTFT at the cells (8K and 64K; the prompts are counted through
+//!       the server's own `/v1/tokenize`, so no artifact is needed).
+//!       `--metrics` defaults to the endpoint's host on the port of the
+//!       server's `server.metrics_bind` (`/v1/config`; 9464 when it does not
+//!       say); `off` skips it. A piece that cannot be read is `null` with a
+//!       line in `notes`. The record carries no credentials and no paths.
 //!   `record  --listen <proxy> --target <engine-url> --out <load>-trace.jsonl
 //!             [--class <policy>]`
 //!       The capture proxy (spec 03): accepts OpenAI chat-completions from a
@@ -867,9 +869,9 @@ fn cmd_small_card(args: &[String]) -> ExitCode {
         }
     };
     let metrics = match opt(args, "metrics").as_deref() {
-        Some("off") => None,
-        Some(url) => Some(url.to_string()),
-        None => Some(small_card::default_metrics_url(&endpoint)),
+        Some("off") => small_card::MetricsAt::Off,
+        Some(url) => small_card::MetricsAt::Url(url.to_string()),
+        None => small_card::MetricsAt::Server,
     };
     let mut cells = Vec::new();
     match opt(args, "cells") {
@@ -903,17 +905,16 @@ fn cmd_small_card(args: &[String]) -> ExitCode {
     };
     let opts = small_card::Options { endpoint, metrics, cells, samples, decode_tokens };
     let report = small_card::run(&opts, &small_card::run_nvidia_smi);
-    let json = match serde_json::to_string_pretty(&report) {
+    let json = match small_card::to_json(&report) {
         Ok(j) => j,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    println!("{json}");
+    print!("{json}");
     if let Some(path) = opt(args, "out") {
-        if let Err(e) = std::fs::write(&path, format!("{json}
-")) {
+        if let Err(e) = std::fs::write(&path, &json) {
             eprintln!("error: {path}: {e}");
             return ExitCode::FAILURE;
         }
