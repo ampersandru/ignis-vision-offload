@@ -305,9 +305,10 @@ Same method as the image model (Q25), with Q52's changes:
     with the same context prefills no context token; a new context replaces
     the cache's one entry (Q15, Q50).
 18. Fed each dictation at real-time pace, a session encodes each window once
-    and prefills the audio prefix once. It reports a partial every
-    `speech.partial_interval_ms`, and its completed transcript begins with
-    every stable text it reported (Q37, Q43).
+    and prefills the audio prefix once. It reports a partial at most every
+    `speech.partial_interval_ms`, skipping one while the previous partial or a
+    window is still in work (Q74; owner, 2026-10-24), and its completed
+    transcript begins with every stable text it reported (Q37, Q43).
 19. One compute worker does one unit of work, a window or less, at a time
     (Q44).
 20. `speech.threads: auto` resolves to physical cores − 1, an explicit value
@@ -329,8 +330,11 @@ Same method as the image model (Q25), with Q52's changes:
     on the 4-core container, for a 10 s and a 60 s clip per catalog variant,
     and its load at first use, are written in "As built" and update
     `spec.md`'s requirements (Q34, Q53).
-24. With 23's times, every catalog variant is inside Q34's go band (at least
-    2x real time) on the i9 and on the 4-core container, and its pooled WER
+24. With 23's times, the default variant (`auto`) is inside Q34's go band
+    (at least 2x real time) on the i9 and on the 4-core container, and every
+    catalog variant is inside it on the i9; `qwen3-asr-1.7b-q8` is an
+    explicit choice, documented as under 2x on four cores (Q73; owner,
+    2026-10-24). Every variant's pooled WER
     on the finding's FLEURS clips and the 11 dictations is within 1 pt of
     llama.cpp b11840's on the same clips. The spike timed the matmuls alone
     (ADR 0067), so this is the whole executor's gate. The ratio to llama.cpp
