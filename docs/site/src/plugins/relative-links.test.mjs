@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import relativeLinks, { headingAnchors, pageRoute, rewriteLink } from "./relative-links.mjs";
+import relativeLinks, { deadLinksFailTheBuild, headingAnchors, pageRoute, rewriteLink } from "./relative-links.mjs";
 
 // A throwaway repository: docs/user is the guide, docs/adr a tree outside it.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "relative-links-"));
@@ -96,5 +96,26 @@ describe("the Sätteri plugin", () => {
   it("stays out of files outside the guide, and of a compile with no file", () => {
     expect(run(path.join(root, "docs", "site", "page.md"), { type: "link", url: "gone.md" })).toBeNull();
     expect(relativeLinks(options)({ fileURL: undefined })).toBeNull();
+  });
+});
+
+describe("dead links", () => {
+  it("are collected when the caller keeps a list, the link left as written", () => {
+    const dead = [];
+    const plugin = relativeLinks({ ...options, dead })({ fileURL: pathToFileURL(install) });
+    const link = { type: "link", url: "../api/gone.md", children: [] };
+    plugin.link(link, { setProperty: (n, key, value) => (n[key] = value) });
+    expect(link.url).toBe("../api/gone.md");
+    expect(dead).toHaveLength(1);
+    expect(dead[0]).toMatch(/does not exist/);
+  });
+  it("throw when the caller keeps none", () => {
+    const plugin = relativeLinks(options)({ fileURL: pathToFileURL(install) });
+    expect(() => plugin.link({ type: "link", url: "../api/gone.md" }, { setProperty: () => {} })).toThrow(/does not exist/);
+  });
+  it("fail the build once it is done, naming each one once", () => {
+    const done = (dead) => () => deadLinksFailTheBuild(dead).hooks["astro:build:done"]();
+    expect(done([])).not.toThrow();
+    expect(done(["a.md: x", "a.md: x", "b.md: y"])).toThrow("2 dead link(s) in the guide:\n  a.md: x\n  b.md: y");
   });
 });

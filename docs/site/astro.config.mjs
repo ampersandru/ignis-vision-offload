@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
 import { satteri } from "@astrojs/markdown-satteri";
 import starlight from "@astrojs/starlight";
-import relativeLinks from "./src/plugins/relative-links.mjs";
+import relativeLinks, { deadLinksFailTheBuild } from "./src/plugins/relative-links.mjs";
 
 const repo = "https://github.com/gpillon/ignis";
 const base = "/ignis";
@@ -14,6 +14,8 @@ const guide = fileURLToPath(new URL("../user/", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 // The ref a link out of the guide points at: the tag being published, or main.
 const ref = process.env.DOCS_GITHUB_REF || "main";
+// Every dead link the pages hold; a build that found one fails, naming them all.
+const dead = [];
 
 const section = (label, directory, extra = {}) => ({ label, items: [{ autogenerate: { directory } }], ...extra });
 
@@ -22,7 +24,7 @@ export default defineConfig({
   base,
   trailingSlash: "always",
   markdown: {
-    processor: satteri({ mdastPlugins: [relativeLinks({ guide, repoRoot, repo, ref, base })] }),
+    processor: satteri({ mdastPlugins: [relativeLinks({ guide, repoRoot, repo, ref, base, dead })] }),
   },
   vite: {
     server: { fs: { allow: [repoRoot] } },
@@ -33,6 +35,7 @@ export default defineConfig({
     },
   },
   integrations: [
+    deadLinksFailTheBuild(dead),
     starlight({
       title: "ignis",
       description: "A CUDA inference engine for Qwen3.8 on RTX 50-series and RTX PRO 6000 cards: install, configure, call and extend it.",

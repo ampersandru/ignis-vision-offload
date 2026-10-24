@@ -110,6 +110,10 @@ export function rewriteLink(url, from, options) {
 /**
  * The Sätteri mdast plugin (Astro 7's Markdown processor): a factory that
  * runs on the guide's pages only and rewrites every link and link definition.
+ *
+ * Astro's content loader logs an error thrown while it renders a page and
+ * builds on, so a dead link is pushed onto `options.dead` instead, when the
+ * caller passes one, for `deadLinksFailTheBuild` to report all at once.
  */
 export default function relativeLinks(options) {
   return ({ fileURL }) => {
@@ -118,9 +122,29 @@ export default function relativeLinks(options) {
     const inGuide = path.relative(options.guide, from);
     if (inGuide.startsWith("..") || path.isAbsolute(inGuide)) return null;
     const rewrite = (node, ctx) => {
-      const rewritten = rewriteLink(node.url, from, options);
+      let rewritten;
+      try {
+        rewritten = rewriteLink(node.url, from, options);
+      } catch (error) {
+        if (!options.dead) throw error;
+        options.dead.push(error.message);
+        return;
+      }
       if (rewritten !== null) ctx.setProperty(node, "url", rewritten);
     };
     return { name: "ignis-relative-links", link: rewrite, definition: rewrite };
+  };
+}
+
+/** The Astro integration that turns the dead links a build found into its failure. */
+export function deadLinksFailTheBuild(dead) {
+  return {
+    name: "ignis-dead-links",
+    hooks: {
+      "astro:build:done": () => {
+        const unique = [...new Set(dead)];
+        if (unique.length > 0) throw new Error(`${unique.length} dead link(s) in the guide:\n  ${unique.join("\n  ")}`);
+      },
+    },
   };
 }

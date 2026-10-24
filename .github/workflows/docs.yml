@@ -1,0 +1,91 @@
+# Build the user guide -- docs/site over the pages in docs/user (ADR 0066) --
+# and publish it to GitHub Pages at https://gpillon.github.io/ignis/.
+#
+#   push / pull_request   the link plugin's tests and the site build run (a
+#                         dead link fails the build); nothing is published.
+#   v*.*.* tag            the same, then deployed: the published guide
+#                         describes the released binary, and its links out of
+#                         docs/user point at the tag.
+#   workflow_dispatch     the same, then deployed from the chosen ref: the
+#                         first deployment, or a fix between releases.
+#
+# docs/user/reference/ is generated from the code and held equal to it by
+# `cargo test` (crates/server/tests/user_docs_reference.rs), which the release
+# workflow runs on every code push; this workflow builds what is committed.
+# Tags are never path-filtered.
+
+name: docs
+
+on:
+  push:
+    branches: [main, "ci/**"]
+    tags: ["v*.*.*"]
+    paths:
+      - "docs/user/**"
+      - "docs/site/**"
+      - "web/src/brand/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/user/**"
+      - "docs/site/**"
+      - "web/src/brand/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time, and never one cancelled half-way; builds that
+# publish nothing cancel each other per ref.
+concurrency:
+  group: docs-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && 'deploy' || github.ref }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) }}
+
+env:
+  DEPLOY: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Each page's "last updated" date is its file's last commit.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/site/package-lock.json
+      - name: Install
+        working-directory: docs/site
+        run: npm ci
+      - name: Test the link plugin
+        working-directory: docs/site
+        run: npm test
+      - name: Build
+        working-directory: docs/site
+        env:
+          # Links out of the guide point at the tag being published, else main.
+          DOCS_GITHUB_REF: ${{ github.ref_type == 'tag' && github.ref_name || 'main' }}
+        run: npm run build
+      - name: Upload the site
+        if: env.DEPLOY == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site/dist
+
+  deploy:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
