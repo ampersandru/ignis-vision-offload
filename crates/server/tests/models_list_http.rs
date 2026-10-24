@@ -14,12 +14,16 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use http_body_util::BodyExt;
+use ignis_core::mock::MockCompute;
+use ignis_core::{ConcreteScheduler, SchedulerConfig};
 use ignis_server::config::file::{Format, RealFiles};
 use ignis_server::config::{resolve_with, ApiKey, Config, ConfigOutcome};
 use ignis_server::config_http::ConfigState;
 use ignis_server::download::catalog::parse_operator;
+use ignis_server::engine::Engine;
 use ignis_server::model_switch::{CatalogModels, Switcher};
-use ignis_server::{ModelSource, Server};
+use ignis_server::template::SimpleTemplateProvider;
+use ignis_server::{ActiveModel, ModelSource, Server};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -156,8 +160,8 @@ fn started(argv: &[&str]) -> Config {
 /// order, then each known model whose artifact is a file in id order — each
 /// once, the active one not repeated; partial and absent entries, a known
 /// model with no file and unknown ids are not listed; `kind` on another
-/// entry only for a family's own id, `max_model_len` on the first only, no
-/// path anywhere.
+/// entry only for a family's own id, `max_model_len`, `decode_lanes` and
+/// `adapted` on the first only, no path anywhere.
 #[tokio::test]
 async fn the_list_is_the_active_model_then_the_catalog_on_disk_then_the_known_models_with_a_file() {
     let loader = MockLoader::new();
@@ -179,16 +183,55 @@ async fn the_list_is_the_active_model_then_the_catalog_on_disk_then_the_known_mo
     assert_eq!(entries[0]["active"], true);
     assert_eq!(entries[0]["kind"], "text");
     assert!(entries[0]["max_model_len"].is_u64(), "{list}");
+    assert!(entries[0]["decode_lanes"].is_u64() && entries[0]["adapted"].is_string(), "{list}");
     for entry in &entries[1..] {
         assert_eq!(entry["active"], false, "{entry}");
         assert_eq!((entry["object"].as_str(), entry["owned_by"].as_str()), (Some("model"), Some("ignis")), "{entry}");
-        assert!(entry.get("max_model_len").is_none(), "{entry}");
+        for field in ["max_model_len", "decode_lanes", "adapted"] {
+            assert!(entry.get(field).is_none(), "{field}: {entry}");
+        }
         let kind = if entry["id"] == "qwen3.8-flash-next" { Some("text") } else { None };
         assert_eq!(entry.get("kind").and_then(Value::as_str), kind, "{entry}");
     }
     let text = list.to_string();
     assert!(!text.contains(".ninfer") && !text.contains(&*dir.to_string_lossy()), "no entry carries a path: {list}");
     let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(elsewhere));
+}
+
+/// #340 (spec 27b-16gb/05 AC 7): the loaded text model's entry says the
+/// lanes it decodes on -- its engine's admission cap, the load's lanes -- and
+/// every adaptation its load took, `""` when it took none, so a client reads
+/// both without the start log. The image model, which has no engine, has
+/// neither.
+#[tokio::test]
+async fn the_active_entry_says_the_lanes_it_decodes_on_and_what_its_load_adapted() {
+    let loader = MockLoader::new();
+    // Nothing adapted: the mock's lanes, and an empty `adapted`, present.
+    let server = Server::from_active(loader.model("mock-a"));
+    let list = get_models(&server.app()).await;
+    assert_eq!(list["data"][0]["decode_lanes"], SchedulerConfig::default().max_in_flight as u64, "{list}");
+    assert_eq!(list["data"][0]["adapted"], "", "{list}");
+
+    // The context adapted: the steps as the load's plan event spells them.
+    let context = "max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens 65536)";
+    server.update_active(|model| model.adapted = context.to_owned());
+    let list = get_models(&server.app()).await;
+    assert_eq!(list["data"][0]["adapted"], context, "{list}");
+
+    // The lanes adapted: a load whose scheduler admits one request at a time.
+    let lanes = "decode_lanes 2 -> 1, max_context 262144 -> 196608 (adapt_context_step 65536, one lane)";
+    let one_lane = ConcreteScheduler::with_config(
+        SchedulerConfig { model: "mock-a".into(), max_in_flight: 1, max_prefill_batch: 1, ..SchedulerConfig::default() },
+        Arc::new(MockCompute::new()),
+    );
+    let model = ActiveModel::new(Engine::new(Box::new(one_lane)), Arc::new(SimpleTemplateProvider)).with_adapted(lanes.to_owned());
+    let list = get_models(&Server::from_active(model).app()).await;
+    assert_eq!((&list["data"][0]["decode_lanes"], &list["data"][0]["adapted"]), (&json!(1), &json!(lanes)), "{list}");
+
+    // The image model: neither.
+    let list = get_models(&Server::from_active(loader.model(IMAGE)).app()).await;
+    assert_eq!(list["data"][0]["kind"], "image", "{list}");
+    assert!(list["data"][0].get("decode_lanes").is_none() && list["data"][0].get("adapted").is_none(), "{list}");
 }
 
 /// AC 2: with `switch.allow_implicit` off only the active model is listed,

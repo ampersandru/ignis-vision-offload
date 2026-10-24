@@ -163,7 +163,9 @@ what it insists on. When the VRAM plan cannot hold them in the memory the
 start finds free, the load lowers them one at a time and plans again: the
 drafter's head first, then the context in steps, then the lanes. A value you
 name yourself never adapts, and the `ignis.runtime.vram_plan` log event lists
-every step taken ([Configuration](../configuration/index.md)).
+every step taken ([Configuration](../configuration/index.md)); so does
+`GET /v1/models`, in `adapted`, beside the context and the decode lanes the
+load runs ([the API](../api/index.md)).
 
 ## Defining your own
 

@@ -72,6 +72,11 @@ pub struct ActiveModel {
     /// away from one that then fails to load its target has nothing to
     /// reload, and says so instead of serving nothing silently.
     pub source: Option<ModelSource>,
+    /// Every adaptation the load took to fit its VRAM plan (ADR 0063 §3), as
+    /// `ignis.runtime.vram_plan`'s `adapted` spells them: empty when it took
+    /// none, as on every load but the 27B's. `GET /v1/models` reports it
+    /// beside the context the load runs (#340).
+    pub adapted: String,
     /// The model thread's handle (GitHub #71), kept so a switch can join it:
     /// joining is what proves the old scheduler — and with it every GPU
     /// buffer and the process-wide pinned KV-RAM arena its leaf owns — was
@@ -137,6 +142,7 @@ impl ActiveModel {
             family: ModelFamily::Qwen38_27b,
             media: None,
             source: None,
+            adapted: String::new(),
             driver: Arc::default(),
         }
     }
@@ -155,6 +161,7 @@ impl ActiveModel {
             family: ModelFamily::QwenImage21,
             media: None,
             source: None,
+            adapted: String::new(),
             driver: Arc::default(),
         }
     }
@@ -246,6 +253,12 @@ impl ActiveModel {
     /// Record what a switch would name to load this model again.
     pub fn with_source(mut self, source: ModelSource) -> Self {
         self.source = Some(source);
+        self
+    }
+
+    /// Record the adaptations the load took (see [`ActiveModel::adapted`]).
+    pub fn with_adapted(mut self, adapted: String) -> Self {
+        self.adapted = adapted;
         self
     }
 

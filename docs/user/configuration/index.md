@@ -115,8 +115,9 @@ holds, and the log says `one sequence only`. The `ignis.runtime.vram_plan` log
 event lists every step taken in `adapted`, empty when none was -- on the 5090
 under `rtx5090`, a 23.3 GB budget gave `decode_lanes 8 -> 1, max_context
 917504 -> 327680 (adapt_context_step 65536, one lane)`. `GET /v1/models`
-reports the context the load runs (`max_model_len`), while `GET /v1/config`
-keeps the value configured. When not even one step's context on one lane
+reports the same steps in `adapted`, beside the context the load runs
+(`max_model_len`) and its decode lanes (`decode_lanes`), while `GET /v1/config`
+keeps the values configured. When not even one step's context on one lane
 fits, the start is refused with that plan's deficit and every step it tried.
 DFlash2 is never switched off; a budget named with
 `--vram-allow-oversubscription` never adapts, nor does a named

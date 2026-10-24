@@ -394,27 +394,28 @@ pub fn load_model(prepared: PreparedModel) -> Result<LoadedModel, LoadError> {
         return load_image_model(artifact, model, &config);
     };
     #[cfg(feature = "cuda")]
-    let (scheduler, reservations, max_context) = {
+    let (scheduler, reservations, max_context, adapted) = {
         let eos = eos.ok_or(LoadError::EosMissing)?;
-        let (scheduler, reserved, max_context) =
+        let (scheduler, reserved, max_context, adapted) =
             cuda_scheduler_for(&artifact, &model, family, eos, &config, item_bound, thinking_close)?;
-        (scheduler, Some(reserved), max_context)
+        (scheduler, Some(reserved), max_context, adapted)
     };
     #[cfg(not(feature = "cuda"))]
-    let (scheduler, reservations, max_context) = {
+    let (scheduler, reservations, max_context, adapted) = {
         let _ = (item_bound, thinking_close, eos);
         tracing::warn!(
             name: "ignis.model.mock_compute",
             "built without --features cuda — MockCompute despite --model-artifact/IGNIS_MODEL_ARTIFACT (the templated text is real, the completions are not)"
         );
-        (mock_scheduler(&model, config.default_max_tokens), None, config.max_context)
+        (mock_scheduler(&model, config.default_max_tokens), None, config.max_context, String::new())
     };
     let (provider, acquirer) = serve_vision(provider, processor, &config, max_context);
     let (engine, driver) = start_engine(scheduler);
     let mut active = crate::ActiveModel::new(engine, Arc::new(provider))
         .with_driver(driver)
         .with_family(family)
-        .with_source(crate::ModelSource { artifact, model });
+        .with_source(crate::ModelSource { artifact, model })
+        .with_adapted(adapted);
     if let Some(acquirer) = acquirer {
         active = active.with_media(acquirer);
     }
@@ -545,8 +546,9 @@ fn cuda_image_runner(
 
 /// The GPU-backed scheduler for `artifact` (GitHub #61 / P1-25), logged as
 /// `ignis.model.loaded` with the shape it runs: the 27B's at the values its
-/// adaptation kept (ADR 0063 §3). Beside it, what the load reserved and the
-/// context it runs.
+/// adaptation kept (ADR 0063 §3). Beside it, what the load reserved, the
+/// context it runs and the adaptations it took, as `ignis.runtime.vram_plan`
+/// spells them (empty on Flash-Next, which adapts nothing).
 #[cfg(feature = "cuda")]
 fn cuda_scheduler_for(
     artifact: &std::path::Path,
@@ -556,7 +558,7 @@ fn cuda_scheduler_for(
     config: &crate::config::Config,
     vision_item_bound: Option<u64>,
     thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
-) -> Result<(Box<dyn ignis_core::Scheduler>, crate::metrics::LoadReservations, u32), LoadError> {
+) -> Result<(Box<dyn ignis_core::Scheduler>, crate::metrics::LoadReservations, u32, String), LoadError> {
     let shape = load_shape(config, vision_item_bound);
     // GitHub #302: a Flash-Next artifact runs its own program and leaf.
     let loaded = match family {
@@ -569,7 +571,7 @@ fn cuda_scheduler_for(
             config.ngram_cache.clone(),
             &config.kv_disk_location,
         )
-        .map(|(scheduler, reserved)| (scheduler, reserved, shape))
+        .map(|(scheduler, reserved)| (scheduler, reserved, shape, Vec::new()))
         .map_err(|error| LoadError::from_flash_next(error, config)),
         ModelFamily::Qwen38_27b => crate::runtime::qwen27b_load(
             artifact,
@@ -586,7 +588,7 @@ fn cuda_scheduler_for(
     };
     // The 27B's context, lanes and head are the ones its plan kept, and so
     // its rope table: what the scheduler admits and `GET /v1/models` says.
-    let (scheduler, reserved, shape) = loaded?;
+    let (scheduler, reserved, shape, adapted) = loaded?;
     tracing::info!(
         name: "ignis.model.loaded",
         artifact = %artifact.display(),
@@ -615,7 +617,7 @@ fn cuda_scheduler_for(
         rope_scaling_setting = %config.settings().model.rope_scaling,
         "model loaded on the GPU"
     );
-    Ok((Box::new(scheduler), reserved, shape.max_context))
+    Ok((Box::new(scheduler), reserved, shape.max_context, crate::adaptation::steps_text(&adapted)))
 }
 
 #[cfg(all(test, not(feature = "cuda")))]

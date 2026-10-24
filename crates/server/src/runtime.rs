@@ -900,7 +900,7 @@ pub fn cuda_scheduler_with_thinking_close(
     kv_disk_location: &ignis_core::ngram_cache::CacheLocation,
 ) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations), String> {
     qwen27b_load(artifact_path, model_id, eos, shape, thinking_close, kv_disk_location)
-        .map(|(scheduler, reserved, _)| (scheduler, reserved))
+        .map(|(scheduler, reserved, _, _)| (scheduler, reserved))
         .map_err(|e| e.to_string())
 }
 
@@ -958,7 +958,8 @@ fn bound_scope<'a>(
 /// test reads a plan's deficit from the second. Beside the scheduler and its
 /// reservations, the shape the load runs: `shape` at the values its
 /// adaptation kept (ADR 0063 §3) -- `shape` itself when the plan fit as
-/// configured.
+/// configured -- and the adaptations that got there, in order (none when it
+/// fit), which `GET /v1/models` reports (#340).
 #[cfg(feature = "cuda")]
 pub fn qwen27b_load(
     artifact_path: &std::path::Path,
@@ -967,7 +968,7 @@ pub fn qwen27b_load(
     shape: EngineShape,
     thinking_close: Option<Arc<ignis_core::thinking_budget::ThinkingClose>>,
     kv_disk_location: &ignis_core::ngram_cache::CacheLocation,
-) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations, EngineShape), Qwen27bLoadError> {
+) -> Result<(ConcreteScheduler, crate::metrics::LoadReservations, EngineShape, Vec<crate::adaptation::AdaptStep>), Qwen27bLoadError> {
     use crate::adaptation::{AdaptError, Planned};
     use ignis_artifact::{CudaDevice, Reader, materialize};
     use ignis_runtime::{CudaLeaf, KV_PAGE_TOKENS};
@@ -1207,7 +1208,7 @@ pub fn qwen27b_load(
         kv_disk_bytes,
         flash_next: None,
     };
-    Ok((sched, reserved, shape))
+    Ok((sched, reserved, shape, adapted.steps))
 }
 
 /// GitHub #302: the scheduler for a Qwen3.8-Flash-Next artifact, over
