@@ -33,6 +33,8 @@ pub struct Text {
     pub im_end: u32,
     pub audio_start: u32,
     pub audio_end: u32,
+    /// The audio placeholder of the official prompt; the executor puts audio embeddings there.
+    pub audio_pad: u32,
     pub asr_text: u32,
     /// Decoding stops at any of these (151643 and 151645 for Qwen3-ASR).
     pub eos: Vec<u32>,
@@ -96,6 +98,7 @@ impl Text {
             im_end: id("<|im_end|>")?,
             audio_start: id("<|audio_start|>")?,
             audio_end: id("<|audio_end|>")?,
+            audio_pad: id("<|audio_pad|>")?,
             asr_text: id("<asr_text>")?,
             eos,
         })

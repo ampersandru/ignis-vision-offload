@@ -63,6 +63,8 @@ impl Cache {
 pub enum Logits {
     None,
     Last,
+    /// The last n rows.
+    Tail(usize),
     All,
 }
 
@@ -126,6 +128,7 @@ pub fn forward(dec: &Decoder, pool: &Pool, isa: Isa, cache: &mut Cache, mut x: V
     let rows = match want {
         Logits::None => return Vec::new(),
         Logits::Last => n - 1..n,
+        Logits::Tail(t) => n - t.min(n)..n,
         Logits::All => 0..n,
     };
     let hdim = dec.hidden;

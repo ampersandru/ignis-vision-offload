@@ -12,7 +12,8 @@ record     per size: the fixture clip's log-mel, every encoder layer, the projec
 yardstick  per catalog variant: the same teacher-forced pass with the GGUF pair's weights
            dequantized (gguf-py of llama.cpp b11840) and each matmul's input quantized as the
            executor quantizes it (Q8_K for Q4_K/Q6_K weights, Q8_0 for Q8_0), all in fp32. Its
-           error against the record, times --factor, is that variant's bound in
+           error against the record, times --factor and at least --floor (f32 accumulation
+           noise, for the stem, which quantizes nothing), is that variant's bound in
            thresholds.json. Also the log-mel's bound: torch's fp32 front end against fp64.
 
 Pinned: torch 2.14.1+cpu, transformers 5.20.2, numpy 2.5.4 (requirements.txt); checkpoints
@@ -410,12 +411,15 @@ def cmd_yardstick(a):
     th = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {"schema": 1, "variants": {}}
     th["metric"] = "row_rel_l2: each sampled row's relative L2 error against the record, then the RMS over rows"
     th["factor"] = a.factor
+    # A stage with no quantized matmul (the convolutional stem) has a sim error at f32's own
+    # rounding; its bound is the floor, f32 accumulation-order noise, not twice that rounding.
+    th["floor"] = a.floor
     th["variants"][a.variant] = {
         "size": a.size,
         "decoder": {"file": os.path.basename(a.decoder), "sha256": sha256(a.decoder)},
         "encoder": {"file": os.path.basename(a.encoder), "sha256": sha256(a.encoder)},
         "sim": {k: round(v, 7) for k, v in errors.items()},
-        "bound": {k: round(a.factor * v, 7) for k, v in errors.items()},
+        "bound": {k: round(max(a.factor * v, a.floor), 7) for k, v in errors.items()},
         "sim_top1_agreement": round(agree, 4),
     }
     # The log-mel's bound: torch's fp32 front end against fp64, times the factor.
@@ -444,6 +448,7 @@ def main():
     y.add_argument("--encoder", required=True)
     y.add_argument("--gguf-py", required=True, help="llama.cpp b11840's gguf-py directory")
     y.add_argument("--factor", type=float, default=2.0)
+    y.add_argument("--floor", type=float, default=1e-5, help="the smallest bound: f32 accumulation-order noise")
     a = ap.parse_args()
     {"record": cmd_record, "yardstick": cmd_yardstick}[a.cmd](a)
 
