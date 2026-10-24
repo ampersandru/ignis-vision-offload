@@ -26,10 +26,13 @@ pub enum Threads {
 }
 
 impl Threads {
-    /// The workers to run, and whether they were resolved from `auto`.
+    /// The workers to run, and whether they were resolved from `auto`. `auto` counts the
+    /// physical cores within the CPUs this process may run on: on Linux the physical count
+    /// reads `/proc/cpuinfo`, which a container's cpuset or quota does not narrow, so it is
+    /// capped by the CPUs the affinity mask and the cgroup quota allow.
     pub fn resolve(self) -> (usize, &'static str) {
         match self {
-            Threads::Auto => (num_cpus::get_physical().saturating_sub(1).max(1), "auto"),
+            Threads::Auto => (num_cpus::get_physical().min(num_cpus::get()).saturating_sub(1).max(1), "auto"),
             Threads::Count(n) => (n.max(1), "configured"),
         }
     }

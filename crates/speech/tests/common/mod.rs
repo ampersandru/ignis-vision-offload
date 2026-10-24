@@ -192,3 +192,33 @@ mod unicode_normalization_lite {
         table.iter().find(|t| t.0 == c && t.1 == m).map(|t| t.2)
     }
 }
+
+/// The rows of a CSV file with a header, as maps: RFC 4180 quoting (the study's results files).
+pub fn csv_rows(path: &Path) -> Vec<HashMap<String, String>> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut records: Vec<Vec<String>> = Vec::new();
+    let (mut field, mut record, mut quoted) = (String::new(), Vec::new(), false);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, quoted) {
+            ('"', true) if chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            ('"', _) => quoted = !quoted,
+            (',', false) => record.push(std::mem::take(&mut field)),
+            ('\n', false) => {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+            }
+            ('\r', false) => {}
+            _ => field.push(c),
+        }
+    }
+    if !field.is_empty() || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+    let header = records.remove(0);
+    records.into_iter().map(|r| header.iter().cloned().zip(r).collect()).collect()
+}

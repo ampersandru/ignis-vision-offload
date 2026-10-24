@@ -343,17 +343,52 @@ fn reference_wer(size: &str) -> (f64, f64) {
     (pooled_wer(&f), pooled_wer(&d))
 }
 
+/// llama.cpp b11840's pooled WER on the same clips, from the finding's runs on the i9
+/// (`results/llamacpp_win.csv`, 10 threads, first run; the dictations' arm A, the official
+/// empty system turn, in `results/dictation_runs.csv`).
+fn llama_cpp_wer(v: &Variant) -> (f64, f64) {
+    let r = study().join("results");
+    let (model, quant) = match v.id {
+        "qwen3-asr-1.7b" => ("1.7B", "Q4_K_M"),
+        "qwen3-asr-1.7b-q8" => ("1.7B", "Q8_0"),
+        _ => ("0.6B", "Q8_0"),
+    };
+    let clips = fleurs_clips();
+    let f: Vec<_> = csv_rows(&r.join("llamacpp_win.csv"))
+        .into_iter()
+        .filter(|x| x["model"] == model && x["quant"] == quant && x["mmproj_quant"] == "Q8_0" && x["threads"] == "10" && x["run"] == "1")
+        .filter(|x| clips.contains_key(&x["clip_id"]))
+        .map(|x| (norm_fleurs(&clips[&x["clip_id"]].1), norm_fleurs(&x["hypothesis"])))
+        .collect();
+    assert_eq!(f.len(), 40, "{}: llama.cpp FLEURS runs", v.id);
+    let refs: HashMap<String, String> = dictations().into_iter().map(|(id, _, r)| (id, r)).collect();
+    let variant = format!("{model}-{quant}");
+    let d: Vec<_> = csv_rows(&r.join("dictation_runs.csv"))
+        .into_iter()
+        .filter(|x| x["plan"] == "matrix" && x["arm"] == "A" && x["forced_language"].is_empty() && x["variant"] == variant)
+        .map(|x| (norm_dictation(&refs[&x["clip"]]), norm_dictation(&x["hypothesis"])))
+        .collect();
+    assert_eq!(d.len(), 11, "{}: llama.cpp dictation runs", v.id);
+    (pooled_wer(&f), pooled_wer(&d))
+}
+
 /// Acceptance 14: through the batch path, pooled WER on FLEURS 40 and on the 11 dictations not
 /// worse than Transformers FP32's by more than 1 pt, per variant. No transcript is compared.
+/// Acceptance 24's WER half: and within 1 pt of llama.cpp b11840's on the same clips.
 #[test]
 #[ignore]
-fn batch_wer_is_within_a_point_of_transformers() {
+fn batch_wer_is_within_a_point_of_transformers_and_llama_cpp() {
     for v in &VARIANTS {
         let (rf, rd) = reference_wer(v.size);
+        let (lf, ld) = llama_cpp_wer(v);
         let p = run_wer(v, false);
         let (f, d) = (pooled_wer(&p.fleurs), pooled_wer(&p.dictations));
-        println!("{} batch: FLEURS {:.2}% (Transformers {:.2}%), dictations {:.2}% (Transformers {:.2}%)", v.id, 100.0 * f, 100.0 * rf, 100.0 * d, 100.0 * rd);
+        println!(
+            "{} batch: FLEURS {:.2}% (Transformers {:.2}%, llama.cpp {:.2}%), dictations {:.2}% (Transformers {:.2}%, llama.cpp {:.2}%)",
+            v.id, 100.0 * f, 100.0 * rf, 100.0 * lf, 100.0 * d, 100.0 * rd, 100.0 * ld
+        );
         assert!(f <= rf + 0.01 && d <= rd + 0.01, "{}: batch WER over Transformers' + 1 pt", v.id);
+        assert!((f - lf).abs() <= 0.01 && (d - ld).abs() <= 0.01, "{}: batch WER more than 1 pt from llama.cpp's", v.id);
     }
 }
 

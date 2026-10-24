@@ -198,7 +198,8 @@ fn sessions_on_two_threads_never_run_two_units_at_once() {
 /// Acceptance 20: `auto` is the physical cores less one, an explicit count is used as given.
 #[test]
 fn threads_resolve_auto_and_counts() {
-    assert_eq!(Threads::Auto.resolve(), ((num_cpus::get_physical() - 1).max(1), "auto"));
+    let usable = num_cpus::get_physical().min(num_cpus::get());
+    assert_eq!(Threads::Auto.resolve(), ((usable - 1).max(1), "auto"));
     assert_eq!(Threads::Count(3).resolve(), (3, "configured"));
     assert_eq!(Threads::Count(0).resolve(), (1, "configured"));
 }
