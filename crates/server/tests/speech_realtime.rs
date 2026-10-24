@@ -95,21 +95,26 @@ async fn a_conversation_session_is_refused_400_naming_intent() {
     }
 }
 
-// ── AC 2, 3, 15: the session's configuration ────────────────────────────────
+// ── AC 2, 3; spec 05's AC 4: the session's configuration ────────────────────
 
-/// AC 2, 3, 15: `session.created` carries the effective configuration: 24
-/// kHz, the speech model, `turn_detection: null`; `session.update` is
-/// answered `session.updated` with the configuration now in effect.
+/// AC 2, 3; spec 05's AC 4: `session.created` carries the effective
+/// configuration: 24 kHz, the speech model, `server_vad` at the server's
+/// `speech.vad_*`; `session.update` is answered `session.updated` with the
+/// configuration now in effect.
 #[tokio::test]
 async fn the_session_declares_its_configuration_and_an_update_is_answered_with_it() {
     let executor = saying(&["hi"]);
-    let (live, _server, _dir) = served(&executor, |_| {}).await;
+    let (live, _server, _dir) = served(&executor, |group| group.vad_silence_duration_ms = 700).await;
     let (mut socket, created) = session(&live).await;
     let input = &created["session"]["audio"]["input"];
     assert_eq!(created["session"]["type"], "transcription");
     assert_eq!(input["format"], json!({ "type": "audio/pcm", "rate": 24000 }));
     assert_eq!(input["transcription"]["model"], SPEECH_MODEL);
-    assert!(input.as_object().unwrap().contains_key("turn_detection") && input["turn_detection"].is_null());
+    assert_eq!(
+        input["turn_detection"],
+        json!({ "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 700, "idle_timeout_ms": null }),
+        "a session that sends no turn_detection runs server_vad, at the server's settings"
+    );
     assert!(created["event_id"].as_str().unwrap().starts_with("event_"));
 
     send(&mut socket, update(json!({ "audio": { "input": { "format": { "type": "audio/pcm", "rate": 16000 }, "transcription": { "prompt": "GPUs." } } } }))).await;
@@ -118,8 +123,10 @@ async fn the_session_declares_its_configuration_and_an_update_is_answered_with_i
     let input = &updated["session"]["audio"]["input"];
     assert_eq!(input["format"]["rate"], 16000);
     assert_eq!(input["transcription"]["prompt"], "GPUs.");
-    assert!(input["turn_detection"].is_null(), "a session that sends none runs with null");
+    assert_eq!(input["turn_detection"]["type"], "server_vad", "an update that names none keeps it");
     assert_eq!(updated["session"]["id"], created["session"]["id"]);
+    send(&mut socket, realtime::manual()).await;
+    assert!(next_event(&mut socket).await["session"]["audio"]["input"]["turn_detection"].is_null());
 }
 
 /// AC 3: 24 kHz is resampled to 16 kHz before the executor sees it; G.711 is
@@ -129,6 +136,8 @@ async fn twenty_four_khz_reaches_the_executor_at_sixteen_and_g711_is_refused() {
     let executor = saying(&["hi"]);
     let (live, _server, _dir) = served(&executor, |_| {}).await;
     let (mut socket, _) = session(&live).await;
+    send(&mut socket, realtime::manual()).await;
+    assert_eq!(next_event(&mut socket).await["type"], "session.updated");
     send(&mut socket, update(json!({ "audio": { "input": { "format": { "type": "audio/pcmu" } } } }))).await;
     assert_eq!(error_code(&next_event(&mut socket).await), ("unsupported_value", "session.audio.input.format.type"));
     // Three seconds at 24 kHz.
@@ -347,18 +356,16 @@ async fn an_item_past_the_stream_timeout_fails() {
 
 // ── AC 8, 10, 11: every other field and event ───────────────────────────────
 
-/// AC 8: `server_vad` and `semantic_vad` are refused, the retired beta's
+/// AC 8; spec 05's AC 5: `semantic_vad` is refused, the retired beta's
 /// event names `session.update`, conversation events are refused, and none
 /// of it closes the socket.
 #[tokio::test]
-async fn vad_the_beta_and_conversation_events_are_refused() {
+async fn semantic_vad_the_beta_and_conversation_events_are_refused() {
     let executor = saying(&["hi"]);
     let (live, _server, _dir) = served(&executor, |_| {}).await;
     let mut socket = session_16k(&live).await;
-    for kind in ["server_vad", "semantic_vad"] {
-        send(&mut socket, update(json!({ "audio": { "input": { "turn_detection": { "type": kind } } } }))).await;
-        assert_eq!(error_code(&next_event(&mut socket).await), ("unsupported_value", "session.audio.input.turn_detection"));
-    }
+    send(&mut socket, update(json!({ "audio": { "input": { "turn_detection": { "type": "semantic_vad" } } } }))).await;
+    assert_eq!(error_code(&next_event(&mut socket).await), ("unsupported_value", "session.audio.input.turn_detection"));
     send(&mut socket, json!({ "type": "transcription_session.update", "event_id": "evt_7", "session": {} })).await;
     let refused = next_event(&mut socket).await;
     assert!(refused["error"]["message"].as_str().unwrap().contains("session.update"), "{refused}");

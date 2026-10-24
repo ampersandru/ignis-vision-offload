@@ -334,6 +334,32 @@ does). Each tapped tensor's bound is twice the yardstick's error, at least
 1e-5; the log-mel's is twice torch's fp32 front end against fp64. The GGUF
 files themselves come from `tools/speech-gguf/convert.sh`.
 
+## server_vad's VAD oracle (GitHub #355)
+
+`server_vad`'s VAD (`crates/speech/src/vad.rs`) is checked against Silero
+VAD 6.2.3's published model, `silero_vad.jit`, on the CPU. The default suite
+holds the port within `thresholds.json`'s bound of the `.jit`'s per-frame
+probabilities on the FLEURS fixture clip, with a negative control, and the
+turn detector (`Turns`) on scripted probabilities. The `--ignored` legs in
+`crates/speech/tests/vad.rs` read the study directory: every frame of the 40
+FLEURS clips and the 11 dictations within the bound (seconds), and AC 7's
+WER gate, `server_vad`'s items against a manual commit on the dictations with
+the default variant (about 15 minutes): run that alone, as the oracle's WER
+legs.
+
+```sh
+cargo test --release -p ignis-speech --test vad -- --ignored --test-threads=1
+```
+
+`tools/speech-vad/record.py` (its `requirements.txt` pins the venv; the
+silero-vad 6.2.3 wheel is passed as a file, its sha256 checked) has two
+steps: `convert` writes the `.jit`'s 16 kHz weights to
+`crates/speech/vad/silero-vad-16k.safetensors`, the same bytes on every run;
+`record` writes the `.jit`'s probabilities to
+`crates/speech/tests/fixtures/vad/` (the dictations' to the study directory,
+never the repo) and the bound: ten times the `.jit`'s distance from the same
+graph in fp64, at least 1e-5.
+
 ## The entailment fixture
 
 `crates/server/tests/fixtures/entailment/` is a contributed set of 18

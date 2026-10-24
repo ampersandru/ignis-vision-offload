@@ -18,6 +18,9 @@ tokenizers = "0.21"
 # `speech.threads: auto` = physical cores - 1 (Q38). Pulls no `windows-sys`.
 num_cpus = "1"
 tracing = { workspace = true }
+# The VAD's weights file's header (safetensors, spec speech/05). Already a dependency of
+# tokenizers.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # The oracle fixtures' index and thresholds (tools/speech-oracle/).

@@ -7,6 +7,7 @@
 //! value, `null` puts it back to its default. One refused field refuses the
 //! whole update, and the session keeps the configuration it had.
 
+use ignis_speech::vad::TurnSettings;
 use serde_json::{json, Map, Value};
 
 use crate::config::schema::SpeechGroup;
@@ -23,8 +24,54 @@ pub(crate) const MODEL_RATE: u32 = 16_000;
 /// `speech.partial_interval_ms`.
 const DELAYS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
 
+/// `server_vad`'s fields, as a session runs them (spec speech/05).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ServerVad {
+    pub threshold: f64,
+    pub prefix_padding_ms: u32,
+    pub silence_duration_ms: u32,
+    /// No speech for this long is an item of its own; `None` never.
+    pub idle_timeout_ms: Option<u32>,
+    /// Inert, since they belong to conversation sessions: echoed when set.
+    pub create_response: Option<bool>,
+    pub interrupt_response: Option<bool>,
+}
+
+/// The server's `server_vad`, read when a session opens: `speech.vad_*`, and
+/// `speech.max_clip_seconds` in milliseconds, the most any of its lengths
+/// takes, since an item holds no more.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VadDefaults {
+    pub threshold: f64,
+    pub prefix_padding_ms: u32,
+    pub silence_duration_ms: u32,
+    pub max_ms: u32,
+}
+
+impl VadDefaults {
+    pub fn of(group: &SpeechGroup) -> Self {
+        Self {
+            threshold: f64::from(group.vad_threshold) / 1000.0,
+            prefix_padding_ms: group.vad_prefix_padding_ms,
+            silence_duration_ms: group.vad_silence_duration_ms,
+            max_ms: group.max_clip_seconds.saturating_mul(1000),
+        }
+    }
+
+    fn server_vad(&self) -> ServerVad {
+        ServerVad {
+            threshold: self.threshold,
+            prefix_padding_ms: self.prefix_padding_ms,
+            silence_duration_ms: self.silence_duration_ms,
+            idle_timeout_ms: None,
+            create_response: None,
+            interrupt_response: None,
+        }
+    }
+}
+
 /// What a session runs with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SessionConfig {
     /// The rate its PCM16 arrives at: [`OPENAI_RATE`] or [`MODEL_RATE`].
     pub rate: u32,
@@ -40,6 +87,10 @@ pub(crate) struct SessionConfig {
     pub delay: Option<String>,
     /// `session.ignis.provisional_tail`: the provisional tail is sent.
     pub provisional_tail: bool,
+    /// `turn_detection`: `server_vad`, or `None` for manual commit.
+    pub turn_detection: Option<ServerVad>,
+    /// What `server_vad`'s fields take when unset or `null`.
+    pub vad_defaults: VadDefaults,
 }
 
 /// An event or a field refused: what its `error` event carries.
@@ -72,8 +123,9 @@ const TRANSCRIPTION: &str = "session.audio.input.transcription";
 
 impl SessionConfig {
     /// A session as it opens: 24 kHz, the speech model, no context, the
-    /// language detected, no provisional tail.
-    pub fn new(model: String) -> Self {
+    /// language detected, no provisional tail, `server_vad` at the server's
+    /// defaults (spec speech/05, Q22).
+    pub fn new(model: String, vad_defaults: VadDefaults) -> Self {
         Self {
             rate: OPENAI_RATE,
             model,
@@ -84,6 +136,8 @@ impl SessionConfig {
             forced: None,
             delay: None,
             provisional_tail: false,
+            turn_detection: Some(vad_defaults.server_vad()),
+            vad_defaults,
         }
     }
 
@@ -115,7 +169,7 @@ impl SessionConfig {
         if let Some(input) = object(session, "audio", "session.audio")?.map(|audio| object(audio, "input", "session.audio.input")).transpose()?.flatten() {
             next.format(input.get("format"))?;
             next.transcription(input.get("transcription"), &model)?;
-            turn_detection(input.get("turn_detection"))?;
+            next.turn_detection(input.get("turn_detection"))?;
             noise_reduction(input.get("noise_reduction"))?;
         }
         include(session.get("include"))?;
@@ -172,7 +226,12 @@ impl SessionConfig {
             None => return Ok(()),
             Some(Value::Null) => {
                 let model = std::mem::take(&mut self.model);
-                *self = Self { rate: self.rate, provisional_tail: self.provisional_tail, ..Self::new(model) };
+                *self = Self {
+                    rate: self.rate,
+                    provisional_tail: self.provisional_tail,
+                    turn_detection: self.turn_detection.take(),
+                    ..Self::new(model, self.vad_defaults)
+                };
                 return Ok(());
             }
             Some(Value::Object(transcription)) => transcription,
@@ -212,9 +271,64 @@ impl SessionConfig {
         Ok(())
     }
 
+    /// `turn_detection`: `null` is manual commit; `server_vad` takes its
+    /// fields, each left out keeping its value and `null` the server's default
+    /// (a session coming from manual commit starts from the defaults);
+    /// `semantic_vad` is refused (spec speech/05, Q22).
+    fn turn_detection(&mut self, value: Option<&Value>) -> Result<(), Refusal> {
+        const PARAM: &str = "session.audio.input.turn_detection";
+        let detection = match value {
+            None => return Ok(()),
+            Some(Value::Null) => {
+                self.turn_detection = None;
+                return Ok(());
+            }
+            Some(Value::Object(detection)) => detection,
+            Some(_) => return Err(Refusal::invalid(format!("{PARAM} must be null, or an object whose type is server_vad"), PARAM)),
+        };
+        match detection.get("type").and_then(Value::as_str) {
+            Some("server_vad") => {}
+            Some("semantic_vad") => {
+                return Err(Refusal::unsupported(
+                    format!("{PARAM} `semantic_vad` is not served: send server_vad, or null and commit with input_audio_buffer.commit"),
+                    PARAM,
+                ))
+            }
+            _ => return Err(Refusal::invalid(format!("{PARAM}.type must be server_vad or semantic_vad"), &format!("{PARAM}.type"))),
+        }
+        let defaults = self.vad_defaults;
+        let mut vad = self.turn_detection.take().unwrap_or_else(|| defaults.server_vad());
+        let millis = |least: u64| {
+            let what = format!("a whole number of milliseconds from {least} to {} (speech.max_clip_seconds)", defaults.max_ms);
+            move |value: &Value| value.as_u64().filter(|ms| (least..=u64::from(defaults.max_ms)).contains(ms)).map(|ms| ms as u32).ok_or(what.clone())
+        };
+        let number = |value: &Value| value.as_f64().filter(|p| (0.0..=1.0).contains(p)).ok_or("a number from 0 to 1".to_owned());
+        let flag = |value: &Value| value.as_bool().ok_or("true or false".to_owned());
+        if let Some(threshold) = detection_field(detection, "threshold", number)? {
+            vad.threshold = threshold.unwrap_or(defaults.threshold);
+        }
+        if let Some(ms) = detection_field(detection, "prefix_padding_ms", millis(0))? {
+            vad.prefix_padding_ms = ms.unwrap_or(defaults.prefix_padding_ms);
+        }
+        if let Some(ms) = detection_field(detection, "silence_duration_ms", millis(0))? {
+            vad.silence_duration_ms = ms.unwrap_or(defaults.silence_duration_ms);
+        }
+        if let Some(ms) = detection_field(detection, "idle_timeout_ms", millis(1))? {
+            vad.idle_timeout_ms = ms;
+        }
+        if let Some(on) = detection_field(detection, "create_response", flag)? {
+            vad.create_response = on;
+        }
+        if let Some(on) = detection_field(detection, "interrupt_response", flag)? {
+            vad.interrupt_response = on;
+        }
+        self.turn_detection = Some(vad);
+        Ok(())
+    }
+
     /// The `session` object of `session.created` and `session.updated`: the
-    /// configuration in effect, `turn_detection: null` declared (phase 1,
-    /// Q54).
+    /// configuration in effect, `turn_detection` declared, `null` for manual
+    /// commit (Q54).
     pub fn effective(&self, id: &str) -> Value {
         let mut transcription = Map::new();
         transcription.insert("model".to_owned(), json!(self.model));
@@ -237,7 +351,7 @@ impl SessionConfig {
                 "format": { "type": "audio/pcm", "rate": self.rate },
                 "transcription": transcription,
                 "noise_reduction": null,
-                "turn_detection": null,
+                "turn_detection": self.turn_detection.as_ref().map(ServerVad::effective),
             } },
             "include": [],
             "ignis": { "provisional_tail": self.provisional_tail },
@@ -250,6 +364,18 @@ fn model_refusal(refusal: ModelRefusal) -> Refusal {
     match refusal {
         ModelRefusal::KindMismatch(message) => Refusal { code: "model_kind_mismatch", message, param },
         ModelRefusal::NotFound(message) => Refusal { code: "model_not_found", message, param },
+    }
+}
+
+/// A field of `turn_detection`: `None` when absent, `Some(None)` when `null`,
+/// or what `read` makes of it, which names what the field takes when it
+/// refuses the value.
+fn detection_field<T>(detection: &Map<String, Value>, name: &str, read: impl Fn(&Value) -> Result<T, String>) -> Result<Option<Option<T>>, Refusal> {
+    const PARAM: &str = "session.audio.input.turn_detection";
+    match detection.get(name) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(value) => read(value).map(|v| Some(Some(v))).map_err(|what| Refusal::invalid(format!("{PARAM}.{name} must be {what}"), &format!("{PARAM}.{name}"))),
     }
 }
 
@@ -285,26 +411,32 @@ fn optional_list(transcription: &Map<String, Value>, key: &str) -> Result<Option
     }
 }
 
-/// `turn_detection`: `null` (manual commit) is served. In phase 1 `server_vad`
-/// is refused (spec speech/05 serves it from phase 2), and `semantic_vad`
-/// always.
-fn turn_detection(value: Option<&Value>) -> Result<(), Refusal> {
-    const PARAM: &str = "session.audio.input.turn_detection";
-    let kind = match value {
-        None | Some(Value::Null) => return Ok(()),
-        Some(Value::Object(detection)) => detection.get("type").and_then(Value::as_str),
-        Some(_) => None,
-    };
-    match kind {
-        Some("server_vad") => Err(Refusal::unsupported(
-            format!("{PARAM} `server_vad` is not served yet: send null and commit with input_audio_buffer.commit"),
-            PARAM,
-        )),
-        Some("semantic_vad") => Err(Refusal::unsupported(
-            format!("{PARAM} `semantic_vad` is not served: send null and commit with input_audio_buffer.commit"),
-            PARAM,
-        )),
-        _ => Err(Refusal::invalid(format!("{PARAM} must be null, or an object whose type is server_vad or semantic_vad"), PARAM)),
+impl ServerVad {
+    /// Its `turn_detection` object, the inert fields when set.
+    fn effective(&self) -> Value {
+        let mut detection = json!({
+            "type": "server_vad",
+            "threshold": self.threshold,
+            "prefix_padding_ms": self.prefix_padding_ms,
+            "silence_duration_ms": self.silence_duration_ms,
+            "idle_timeout_ms": self.idle_timeout_ms,
+        });
+        for (field, value) in [("create_response", self.create_response), ("interrupt_response", self.interrupt_response)] {
+            if let Some(on) = value {
+                detection[field] = json!(on);
+            }
+        }
+        detection
+    }
+
+    /// What [`ignis_speech::vad::Turns`] finds turns with.
+    pub fn settings(&self) -> TurnSettings {
+        TurnSettings {
+            threshold: self.threshold as f32,
+            prefix_padding_ms: self.prefix_padding_ms,
+            silence_duration_ms: self.silence_duration_ms,
+            idle_timeout_ms: self.idle_timeout_ms,
+        }
     }
 }
 
@@ -365,27 +497,36 @@ mod tests {
         config.updated(&session, model)
     }
 
+    /// The server's `server_vad` defaults: `speech.vad_*`'s, with items held to 1,200 s.
+    const DEFAULTS: VadDefaults = VadDefaults { threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500, max_ms: 1_200_000 };
+
     fn fresh() -> SessionConfig {
-        SessionConfig::new(SERVED.to_owned())
+        SessionConfig::new(SERVED.to_owned(), DEFAULTS)
     }
 
     fn input(input: Value) -> Value {
         json!({ "type": "transcription", "audio": { "input": input } })
     }
 
-    /// AC 2, 15: a session opens at 24 kHz on the speech model, with
-    /// `turn_detection: null` declared and no provisional tail.
+    /// AC 2 (spec 03); spec 05's AC 4: a session opens at 24 kHz on the speech
+    /// model, running `server_vad` at the server's defaults, declared, with no
+    /// provisional tail.
     #[test]
-    fn a_session_opens_at_24_khz_with_manual_commit_declared() {
+    fn a_session_opens_at_24_khz_with_server_vad_declared() {
         let effective = fresh().effective("sess_1");
         assert_eq!(effective["type"], "transcription");
         assert_eq!(effective["id"], "sess_1");
         assert_eq!(effective["audio"]["input"]["format"], json!({ "type": "audio/pcm", "rate": 24000 }));
         assert_eq!(effective["audio"]["input"]["transcription"]["model"], SERVED);
-        assert!(effective["audio"]["input"]["turn_detection"].is_null());
-        assert!(effective["audio"]["input"].as_object().unwrap().contains_key("turn_detection"));
+        assert_eq!(
+            effective["audio"]["input"]["turn_detection"],
+            json!({ "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 500, "idle_timeout_ms": null })
+        );
         assert!(effective["audio"]["input"]["noise_reduction"].is_null());
         assert_eq!(effective["ignis"]["provisional_tail"], false);
+        let other = SessionConfig::new(SERVED.to_owned(), VadDefaults { threshold: 0.25, prefix_padding_ms: 100, silence_duration_ms: 800, ..DEFAULTS });
+        let detection = &other.effective("s")["audio"]["input"]["turn_detection"];
+        assert_eq!((detection["threshold"].as_f64(), detection["prefix_padding_ms"].as_u64(), detection["silence_duration_ms"].as_u64()), (Some(0.25), Some(100), Some(800)));
     }
 
     /// AC 2, 3: an update names what it changes; 16 kHz is the declared
@@ -418,16 +559,78 @@ mod tests {
         assert!(update(&fresh(), input(json!({ "format": { "type": "audio/pcmu" } }))).unwrap_err().message.contains("G.711"));
     }
 
-    /// AC 8, 15: `turn_detection: null` is served; in phase 1 `server_vad` is
-    /// refused, and `semantic_vad` always.
+    /// AC 8 (spec 03); spec 05's AC 5: `turn_detection: null` is manual commit,
+    /// declared null; `semantic_vad` is refused, and an object needs its type.
     #[test]
-    fn manual_commit_is_served_and_vad_is_refused() {
-        assert!(update(&fresh(), input(json!({ "turn_detection": null }))).is_ok());
-        for kind in ["server_vad", "semantic_vad"] {
-            let refused = update(&fresh(), input(json!({ "turn_detection": { "type": kind } }))).unwrap_err();
-            assert_eq!((refused.code, refused.param.as_deref()), ("unsupported_value", Some("session.audio.input.turn_detection")));
-            assert!(refused.message.contains(kind) && refused.message.contains("input_audio_buffer.commit"), "{}", refused.message);
+    fn manual_commit_is_served_and_semantic_vad_is_refused() {
+        let manual = update(&fresh(), input(json!({ "turn_detection": null }))).unwrap();
+        assert_eq!(manual.turn_detection, None);
+        let declared = manual.effective("s")["audio"]["input"].clone();
+        assert!(declared.as_object().unwrap().contains_key("turn_detection") && declared["turn_detection"].is_null());
+        let refused = update(&fresh(), input(json!({ "turn_detection": { "type": "semantic_vad" } }))).unwrap_err();
+        assert_eq!((refused.code, refused.param.as_deref()), ("unsupported_value", Some("session.audio.input.turn_detection")));
+        assert!(refused.message.contains("semantic_vad") && refused.message.contains("server_vad"), "{}", refused.message);
+        let refused = update(&fresh(), input(json!({ "turn_detection": { "threshold": 0.4 } }))).unwrap_err();
+        assert_eq!(refused.param.as_deref(), Some("session.audio.input.turn_detection.type"), "the type is required");
+    }
+
+    fn vad(config: &SessionConfig) -> ServerVad {
+        config.turn_detection.clone().expect("server_vad")
+    }
+
+    /// Spec 05's AC 2: `server_vad` honours `threshold`, `prefix_padding_ms` and
+    /// `silence_duration_ms`; a field left out keeps its value, `null` is the
+    /// server's default, and a session coming back from manual commit starts
+    /// from the defaults. A value outside its range is refused, naming it.
+    #[test]
+    fn server_vad_takes_its_three_fields_each_by_its_own_rule() {
+        let config = update(&fresh(), input(json!({ "turn_detection": { "type": "server_vad", "threshold": 0.7, "silence_duration_ms": 900 } }))).unwrap();
+        assert_eq!((vad(&config).threshold, vad(&config).prefix_padding_ms, vad(&config).silence_duration_ms), (0.7, 300, 900));
+        let config = update(&config, input(json!({ "turn_detection": { "type": "server_vad", "prefix_padding_ms": 0 } }))).unwrap();
+        assert_eq!((vad(&config).threshold, vad(&config).prefix_padding_ms, vad(&config).silence_duration_ms), (0.7, 0, 900), "left out keeps");
+        let config = update(&config, input(json!({ "turn_detection": { "type": "server_vad", "threshold": null } }))).unwrap();
+        assert_eq!(vad(&config).threshold, 0.5, "null is the server's default");
+        let config = update(&config, input(json!({ "transcription": { "prompt": "x" } }))).unwrap();
+        assert_eq!(vad(&config).silence_duration_ms, 900, "an update without turn_detection keeps it");
+        let manual = update(&config, input(json!({ "turn_detection": null }))).unwrap();
+        let back = update(&manual, input(json!({ "turn_detection": { "type": "server_vad", "threshold": 0.6 } }))).unwrap();
+        assert_eq!((vad(&back).threshold, vad(&back).prefix_padding_ms, vad(&back).silence_duration_ms), (0.6, 300, 500));
+        assert_eq!(back.effective("s")["audio"]["input"]["turn_detection"]["threshold"], 0.6);
+        let param = |field: &str| format!("session.audio.input.turn_detection.{field}");
+        for (field, value) in [
+            ("threshold", json!(1.5)),
+            ("threshold", json!(-0.1)),
+            ("threshold", json!("high")),
+            ("prefix_padding_ms", json!(-1)),
+            ("prefix_padding_ms", json!(1_200_001)),
+            ("silence_duration_ms", json!(2.5)),
+            ("idle_timeout_ms", json!(0)),
+            ("idle_timeout_ms", json!(1_200_001)),
+            ("create_response", json!("yes")),
+        ] {
+            let refused = update(&fresh(), input(json!({ "turn_detection": { "type": "server_vad", field: value } }))).unwrap_err();
+            assert_eq!((refused.code, refused.param), ("invalid_request_error", Some(param(field))), "{field}: {value}");
         }
+    }
+
+    /// Spec 05: `idle_timeout_ms` is honoured; `create_response` and
+    /// `interrupt_response` are inert, echoed when set.
+    #[test]
+    fn the_idle_timeout_is_honoured_and_the_response_fields_are_inert() {
+        let config = update(
+            &fresh(),
+            input(json!({ "turn_detection": { "type": "server_vad", "idle_timeout_ms": 6000, "create_response": false, "interrupt_response": true } })),
+        )
+        .unwrap();
+        assert_eq!(vad(&config).idle_timeout_ms, Some(6000));
+        let detection = &config.effective("s")["audio"]["input"]["turn_detection"];
+        assert_eq!(
+            (detection["idle_timeout_ms"].as_u64(), detection["create_response"].as_bool(), detection["interrupt_response"].as_bool()),
+            (Some(6000), Some(false), Some(true))
+        );
+        let config = update(&config, input(json!({ "turn_detection": { "type": "server_vad", "idle_timeout_ms": null } }))).unwrap();
+        assert_eq!(vad(&config).idle_timeout_ms, None);
+        assert!(!fresh().effective("s")["audio"]["input"]["turn_detection"].as_object().unwrap().contains_key("create_response"));
     }
 
     /// AC 8: the rest of the table: `delay` inert, `noise_reduction` null

@@ -397,8 +397,11 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   diarization, `temperature` other than 0) is a `400` naming it.
 - **Live dictation** goes over OpenAI's Realtime transcription session,
   `GET /v1/realtime?intent=transcription`: PCM16 appends at 24 kHz (16 kHz, the
-  model's own rate, as an extension), a manual commit, and the text as it
-  settles. `delta` events carry stable text only, so they join to the
+  model's own rate, as an extension), `server_vad` by default (Silero VAD,
+  ported to Rust, finds each utterance and commits it after its silence, at
+  OpenAI's 0.5 / 300 ms / 500 ms) or a manual commit with
+  `turn_detection: null`, and the text as it settles. `delta` events carry
+  stable text only, so they join to the
   transcript `completed` carries; a session that opts in with
   `session.ignis.provisional_tail` also gets the tail the model may still
   revise. The audio is encoded while it arrives, so a commit leaves only the

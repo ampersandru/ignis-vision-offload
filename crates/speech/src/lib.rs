@@ -19,10 +19,16 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! Beside it, [`vad`]: `server_vad`'s voice activity detection, which finds the
+//! turns in a Realtime session's audio (spec speech/05).
+//!
 //! Provenance: every kernel and op is our own (ADR 0051's first tier). The
 //! GGUF block layouts and their quantization rules are the file format the
 //! kernels read, not copied code; nothing from ggml or llama.cpp is in the
-//! tree or the build.
+//! tree or the build. The one exception is [`vad`], `server_vad`'s voice
+//! activity detection: an adapted port of Silero VAD's graph, with its
+//! weights built in (MIT, spec speech/05), its provenance in its header and
+//! in `NOTICE`.
 
 #[cfg(target_arch = "x86_64")]
 pub mod avx2;
@@ -41,6 +47,7 @@ pub mod pool;
 pub mod quant;
 pub mod session;
 pub mod text;
+pub mod vad;
 
 #[cfg(test)]
 pub(crate) mod testutil;

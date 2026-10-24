@@ -37,6 +37,9 @@ crates/artifact/tests/fixtures/qwen_image_work/** -text
 # for byte by front_end.rs and oracle.rs.
 crates/speech/tests/fixtures/oracle/**/*.bin -text
 crates/speech/tests/fixtures/oracle/*.wav -text
+# server_vad's: the VAD's weights, built into the binary, and its oracle's probabilities (vad.rs).
+crates/speech/vad/*.safetensors -text
+crates/speech/tests/fixtures/vad/*.bin -text
 
 # Audio fixtures are binary: no end-of-line conversion.
 crates/server/tests/fixtures/audio/*.wav binary

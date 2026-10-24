@@ -697,7 +697,8 @@ fn the_document_describes_the_speech_model_and_its_route() {
 
 /// Spec speech/03 AC 16: the Realtime transcription session is documented
 /// the way the Responses socket is: the upgrade, the auth, the events, the
-/// refusals and the extension.
+/// refusals and the extension; and spec speech/05's `server_vad`, its
+/// default, its fields and its events.
 #[test]
 fn the_document_describes_the_realtime_transcription_session() {
     let document = document();
@@ -716,9 +717,16 @@ fn the_document_describes_the_realtime_transcription_session() {
         "rate: 24000",
         "16000",
         "G.711",
-        "`server_vad` is refused",
-        "`semantic_vad`",
+        "`semantic_vad` is refused",
         "transcription_session.update",
+        "Under `server_vad` (the default)",
+        "speech.vad_threshold",
+        "prefix_padding_ms",
+        "silence_duration_ms",
+        "idle_timeout_ms",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.timeout_triggered",
         "`turn_detection: null`",
         "session.ignis.provisional_tail",
         "ignis.input_audio_transcription.provisional",
