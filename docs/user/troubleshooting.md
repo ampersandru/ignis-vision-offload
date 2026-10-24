@@ -276,6 +276,18 @@ Matroska/WebM containers holding FLAC are. Opus (what a browser's recorder
 produces) is not decoded yet: send WAV, or convert it. A clip longer than
 `speech.max_clip_seconds` (1200 s) is refused too, and never split.
 
+### A live transcription session will not open, or will not commit
+
+- `400` naming `intent`: the URL must be `/v1/realtime?intent=transcription`
+  with no `model` in it. A `model` in the URL opens a Realtime conversation
+  session, which the server does not serve.
+- `503 engine_full` with `Retry-After`: `speech.max_sessions` sessions are open;
+  close one, or raise the field.
+- An `error` refusing `turn_detection` `server_vad`: the server does not detect
+  the end of speech yet. Send `turn_detection: null` (or nothing) and commit
+  with `input_audio_buffer.commit`
+  ([Live transcription](api/realtime-transcription.md)).
+
 ### `vision_disabled`, or `media_budget_exceeded`
 
 `vision is disabled for this server`: an `image_url` part was sent and the

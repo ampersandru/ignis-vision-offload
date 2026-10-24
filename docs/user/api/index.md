@@ -17,6 +17,7 @@ not.
 | `/v1/images/generations` | POST | Generate images with the image model ([Image generation](images.md)). |
 | `/v1/images/edits` | POST | Edit images from 1 to 10 condition images, multipart ([Image generation](images.md)). |
 | `/v1/audio/transcriptions` | POST | Transcribe audio with the speech model, multipart ([Speech to text](transcriptions.md)). Served on the CPU through a model switch. |
+| `/v1/realtime?intent=transcription` | GET | A live transcription session over a WebSocket, OpenAI's Realtime transcription subset ([Live transcription](realtime-transcription.md)). Served on the CPU through a model switch. |
 | `/v1/config` | GET, PATCH | The running configuration, and a change to it ([configuration](../configuration/index.md)). |
 | `/v1/config/fields` | GET | What each visible configuration field is: kind, default, rule, families, whether a change reloads. |
 | `/v1/config/origins` | GET | Where each visible value in force comes from, shared and per model family: default, profile, file, env, flag or live. |

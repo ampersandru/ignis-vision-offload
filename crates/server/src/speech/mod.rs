@@ -20,11 +20,12 @@
 pub mod audio;
 pub mod executor;
 pub mod languages;
+pub mod realtime;
 pub mod route;
 pub mod worker;
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::config::schema::SpeechGroup;
@@ -74,6 +75,8 @@ pub struct Speech {
     /// Started by the first request: a server that is never asked for a
     /// transcription never has the thread.
     worker: OnceLock<Worker>,
+    /// The next Realtime session's key: its lane on the worker.
+    next_session: AtomicU64,
 }
 
 impl Default for Speech {
@@ -85,7 +88,7 @@ impl Default for Speech {
 
 impl Speech {
     pub fn new(executor: Arc<dyn SpeechExecutor>, models: Option<SpeechModels>) -> Self {
-        Self { executor, models, gauges: Arc::default(), worker: OnceLock::new() }
+        Self { executor, models, gauges: Arc::default(), worker: OnceLock::new(), next_session: AtomicU64::new(0) }
     }
 
     pub fn executor(&self) -> &Arc<dyn SpeechExecutor> {
@@ -165,7 +168,7 @@ impl Speech {
             }
         }
         self.gauges.publish();
-        Ok(SessionGuard { speech: Arc::clone(self) })
+        Ok(SessionGuard { speech: Arc::clone(self), key: self.next_session.fetch_add(1, Ordering::SeqCst) })
     }
 
     /// The Realtime sessions open now.
@@ -178,15 +181,22 @@ impl Speech {
         self.gauges.queue.load(Ordering::SeqCst)
     }
 
-    /// Queue an interactive task (Realtime, spec speech/03).
-    pub fn submit_interactive(&self, task: worker::Task) {
-        self.worker().submit_interactive(task);
+    /// Queue a unit of an open Realtime session's (spec speech/03): after
+    /// the ones it queued before, ahead of every batch window, in turn with
+    /// the other sessions'. Starts the worker, and hands it the live idle
+    /// time.
+    pub fn submit_interactive(&self, session: &SessionGuard, task: worker::Task, group: &SpeechGroup) {
+        let worker = self.worker();
+        worker.set_idle_unload(group.idle_unload);
+        worker.submit_interactive(session.key, task);
     }
 }
 
-/// An open Realtime session's place among `speech.max_sessions`.
+/// An open Realtime session's place among `speech.max_sessions`, and its
+/// lane on the worker.
 pub struct SessionGuard {
     speech: Arc<Speech>,
+    key: u64,
 }
 
 impl Drop for SessionGuard {

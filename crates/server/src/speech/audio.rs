@@ -143,7 +143,7 @@ pub fn decode(bytes: Vec<u8>, max_seconds: u32) -> Result<Clip, AudioError> {
 /// A streaming windowed-sinc resampler: Hann-windowed, its cutoff just under
 /// the lower of the two Nyquist rates, so a downsample does not alias. The
 /// kernel is tabulated at 1/512 of an input sample.
-struct Resampler {
+pub(crate) struct Resampler {
     /// Input samples per output sample.
     step: f64,
     /// The kernel's half width, in input samples.
@@ -158,7 +158,7 @@ const KERNEL_RESOLUTION: usize = 512;
 const ZERO_CROSSINGS: f64 = 12.0;
 
 impl Resampler {
-    fn new(from: u32, to: u32) -> Self {
+    pub(crate) fn new(from: u32, to: u32) -> Self {
         let step = f64::from(from) / f64::from(to);
         // The cutoff, as a fraction of the input's Nyquist rate.
         let cutoff = (1.0 / step).min(1.0) * 0.97;
@@ -185,7 +185,7 @@ impl Resampler {
         }
     }
 
-    fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
+    pub(crate) fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.buffer.extend_from_slice(input);
         self.emit(out);
     }
@@ -210,7 +210,7 @@ impl Resampler {
     }
 
     /// The tail: silence after the last input, as long as the kernel is wide.
-    fn finish(&mut self, out: &mut Vec<f32>) {
+    pub(crate) fn finish(&mut self, out: &mut Vec<f32>) {
         let silence = vec![0.0; self.half + 2];
         self.process(&silence, out);
     }

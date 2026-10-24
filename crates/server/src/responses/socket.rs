@@ -89,7 +89,7 @@ pub(crate) fn subprotocol_key(headers: &HeaderMap) -> Option<&str> {
 
 /// Every subprotocol the client offered, in order, across however many
 /// `Sec-WebSocket-Protocol` headers it split them over.
-fn offered(headers: &HeaderMap) -> impl Iterator<Item = &str> {
+pub(crate) fn offered(headers: &HeaderMap) -> impl Iterator<Item = &str> {
     headers
         .get_all(SEC_WEBSOCKET_PROTOCOL)
         .iter()

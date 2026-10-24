@@ -205,6 +205,8 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
             let (schemas, paths, transcribe) = routes!(crate::speech::route::create_transcription);
             (schemas, paths, transcribe.layer(axum::extract::DefaultBodyLimit::max(MEDIA_REQUEST_BODY_LIMIT)))
         })
+        // Spec speech/03: the Realtime transcription session, a WebSocket.
+        .routes(routes!(crate::speech::realtime::connect))
         .route("/v1/models", options(cors_preflight))
         .route("/v1/models/switch", options(cors_preflight))
         .route("/v1/models/catalog", options(cors_preflight))
@@ -318,7 +320,8 @@ async fn require_serving(State(server): State<Arc<Server>>, req: Request, next: 
     let static_route = req.method() == axum::http::Method::GET && req.uri().path() == "/v1/config/fields";
     // Spec speech/02 (Q40): the speech model is no part of a switch, a load or
     // a warm-up, and serves on the CPU through all of them.
-    let speech_route = req.method() == axum::http::Method::POST && req.uri().path() == "/v1/audio/transcriptions";
+    let speech_route = (req.method() == axum::http::Method::POST && req.uri().path() == "/v1/audio/transcriptions")
+        || (req.method() == axum::http::Method::GET && req.uri().path() == "/v1/realtime");
     if switch_route || static_route || speech_route || req.method() == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
@@ -3648,6 +3651,7 @@ mod tests {
             // The speech model runs beside the text model on the CPU, and a
             // transcription is no use of it (spec speech/02, Q40).
             ("POST", "/v1/audio/transcriptions"),
+            ("GET", "/v1/realtime"),
         ];
         let (_, document) = v1_parts();
         let document = serde_json::to_value(&document).expect("the document serializes");

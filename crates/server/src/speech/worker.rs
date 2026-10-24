@@ -2,7 +2,8 @@
 //! Q44): a single thread that does one unit of work at a time.
 //!
 //! - **Interactive tasks** (Realtime sessions, spec speech/03) run first,
-//!   each a window or less, and interleave.
+//!   each a window or less. Each session queues its own in order, and the
+//!   sessions take turns, one task each.
 //! - **Batch jobs** (a transcription request) fill the gaps, first in first
 //!   out, a window at a time: between two windows of the job at the front the
 //!   interactive tasks run, and the front job goes back to the front.
@@ -36,6 +37,12 @@ pub enum Step {
 /// An interactive task: a Realtime window, one call to the executor.
 pub type Task = Box<dyn FnOnce() + Send>;
 
+/// One session's interactive tasks, in the order it queued them.
+struct Lane {
+    session: u64,
+    tasks: VecDeque<Task>,
+}
+
 /// The gauges `ignis_speech_sessions_open` and `ignis_speech_queue_length`
 /// read, and where they are published.
 #[derive(Default)]
@@ -67,7 +74,8 @@ struct Entry {
 
 #[derive(Default)]
 struct State {
-    interactive: VecDeque<Task>,
+    /// The sessions with tasks queued, in turn order.
+    interactive: VecDeque<Lane>,
     batch: VecDeque<Entry>,
     /// The audio seconds of the job being stepped now, if one is.
     stepping: Option<f64>,
@@ -158,9 +166,16 @@ impl Worker {
         Ok(())
     }
 
-    /// Queue an interactive task, which runs before any batch window.
-    pub fn submit_interactive(&self, task: Task) {
-        self.shared.lock().interactive.push_back(task);
+    /// Queue an interactive task of `session`'s, which runs after the ones
+    /// it queued before, before any batch window, and in turn with the other
+    /// sessions' tasks.
+    pub fn submit_interactive(&self, session: u64, task: Task) {
+        let mut state = self.shared.lock();
+        match state.interactive.iter_mut().find(|lane| lane.session == session) {
+            Some(lane) => lane.tasks.push_back(task),
+            None => state.interactive.push_back(Lane { session, tasks: VecDeque::from([task]) }),
+        }
+        drop(state);
         self.shared.touch();
         self.shared.wake.notify_all();
     }
@@ -220,7 +235,12 @@ impl Shared {
             if state.stop {
                 return;
             }
-            if let Some(task) = state.interactive.pop_front() {
+            if let Some(mut lane) = state.interactive.pop_front() {
+                let task = lane.tasks.pop_front().expect("a lane holds a task");
+                // Its next task waits its turn behind the other sessions'.
+                if !lane.tasks.is_empty() {
+                    state.interactive.push_back(lane);
+                }
                 drop(state);
                 // A panic in a task is that task's, not the worker's.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
@@ -356,13 +376,39 @@ mod tests {
         }
         worker.submit(job("b", 2, 16.0, &log, &done), 4).unwrap();
         let task_log = Arc::clone(&log);
-        worker.submit_interactive(Box::new(move || task_log.lock().unwrap().push("rt".to_owned())));
+        worker.submit_interactive(0, Box::new(move || task_log.lock().unwrap().push("rt".to_owned())));
         open(&held);
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "a");
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
         // The interactive task, queued while a's first window was held, runs
         // in the gap after it, ahead of a's other windows and all of b's.
         assert_eq!(*log.lock().unwrap(), ["a1", "rt", "a2", "a3", "b1", "b2"]);
+    }
+
+    /// Spec speech/03 AC 14: sessions interleave unit by unit, whatever each
+    /// has queued, and every unit queued runs ahead of the batch job's next
+    /// window.
+    #[test]
+    fn sessions_take_turns_unit_by_unit_ahead_of_batch_windows() {
+        let (worker, _) = worker();
+        let (done, finished) = mpsc::channel();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let held = gate();
+        let mut batch = job("b", 2, 16.0, &log, &done);
+        batch.hold = Some(Arc::clone(&held));
+        worker.submit(batch, 4).unwrap();
+        while worker.shared.lock().stepping.is_none() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Session 1 queues three units, then session 2 two, while the batch
+        // job's first window is held.
+        for (session, unit) in [(1, "x1"), (1, "x2"), (1, "x3"), (2, "y1"), (2, "y2")] {
+            let task_log = Arc::clone(&log);
+            worker.submit_interactive(session, Box::new(move || task_log.lock().unwrap().push(unit.to_owned())));
+        }
+        open(&held);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
+        assert_eq!(*log.lock().unwrap(), ["b1", "x1", "y1", "x2", "y2", "x3", "b2"]);
     }
 
     /// AC 11: past `max_queue` waiting jobs the next is refused, with a

@@ -188,3 +188,67 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
   (Q22).
 - G.711 (Q21), WebRTC, and Realtime conversation sessions (Q20).
 - The GPU loan: spec 06, phase 3 (Q56).
+
+## As built (GitHub #353)
+
+Built on `speech-353` against the scripted executor (`FakeExecutor`), in
+`crates/server/src/speech/realtime/` (the socket, `config.rs` for
+`session.update`, `pcm.rs` for the audio). Where the build decided something
+the spec left open, or differs from it:
+
+- **The seam is unchanged.** Each item is one executor session (spec 01 §4):
+  opened when the socket opens and again right after each commit, so the
+  next item's context is prefilled before its first append (AC 9), and the
+  commit's own unit pushes the rest and decodes, opening nothing. A
+  `session.update` that changes the context or the forced language reopens
+  the current item's session when it holds no audio; with audio, the change
+  applies from the next item. `speech.rollback_tokens` is a setting the
+  adapter to `ignis-speech` passes, not a §4 operation: not in the trait.
+- **The worker has a lane per session.** Every executor call is one unit
+  queued in the session's lane, in order (an open, a window pushed as soon as
+  one is in, a refresh, the commit). The worker takes the lanes in turn, one
+  unit each, and every queued unit runs before the next batch window, so a
+  session with a backlog is not interleaved with a batch job (AC 14). The
+  executor session lives in a slot the units share; they never run at once.
+- **Resampling** reuses the transcription route's streaming windowed-sinc
+  resampler (`speech/audio.rs`, #352) instead of the `rubato` crate the spec
+  names: it is already tested for pitch, length and aliasing, and a second
+  resampler would be a second dependency doing the same job. Swapping in
+  `rubato` touches `pcm.rs` alone; the owner's call.
+- **Items.** An item gets its `item_id` at its first append, so deltas carry
+  it before the commit. An item over `speech.max_clip_seconds` or past its
+  deadline stops being transcribed at once (its audio goes nowhere after
+  that), and its `failed` comes after its `committed`, at the commit; an item
+  already committed gets `failed` at once. A model that will not load fails
+  the item it was opened for, at that item's commit (`speech_unavailable`);
+  the next item tries the load again. An empty commit is one with no sample
+  since the last (OpenAI asks 100 ms).
+- **`session.update`** merges field by field: a field left out keeps its
+  value, `null` is the field's default (`transcription: null` resets the
+  whole transcription object), and one refused field refuses the update.
+  `transcription.delay` is checked against OpenAI's five values and echoed.
+  Refusals are `error` events with code `unsupported_value` for what OpenAI
+  serves and ignis does not, `invalid_request_error` for a malformed value,
+  `model_kind_mismatch`/`model_not_found` for the model; `param` is the
+  field's full path (`session.audio.input.format.rate`), and `error.event_id`
+  the client event's. Every server event carries an `event_id`.
+- **The provisional tail** is sent after a refresh that changed it, and `""`
+  when the item completes, fails or is cleared, if a tail was shown. A refresh
+  is queued every `speech.partial_interval_ms` only when audio came since the
+  last one and the last one has answered.
+- **The upgrade**, in order: not a WebSocket upgrade `400`; no
+  `intent=transcription`, or a `model` in the URL, `400` naming `intent`; the
+  speech model unavailable `503 speech_unavailable`; `speech.max_sessions`
+  open `503 engine_full` with `Retry-After: 1` (room frees when a person ends
+  a session). The browser's subprotocol `realtime` is selected back, the
+  credential never. Frames are capped at 16 MiB (the text body limit); an
+  append whose `audio` holds more than 15 MiB of base64 is an `error`.
+- **Logs and metrics.** Each committed item writes one
+  `ignis.speech.transcription` line and counts in the existing families, its
+  wait from the commit; an item still being transcribed when the socket closes
+  counts as cancelled. No new family, so the Monitor and ADR 0017 are
+  unchanged. The idle close logs `ignis.ws.idle_closed`, the Responses
+  sockets' event.
+- **Open:** AC 5 on the owner's eleven dictations and AC 13 (commit to
+  `completed` in 2 s for 60 s of Italian on the i9, and the 4-core figure)
+  need the real executor and its adapter, the integration step after #351.

@@ -116,3 +116,6 @@ impl TemplateProvider for ReasoningTemplate {
 /// The speech model's fixtures: a server over a scripted executor, the form
 /// builder and the audio samples (spec speech/02, GitHub #352).
 pub mod speech;
+
+/// The Realtime transcription socket's client (spec speech/03, GitHub #353).
+pub mod realtime;
