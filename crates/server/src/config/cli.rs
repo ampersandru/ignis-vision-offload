@@ -233,7 +233,7 @@ fn patch(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, files: &d
 ///
 /// Neither needs a card: the CUDA build fetches and lists on a machine with
 /// no NVIDIA driver too, a Kubernetes CPU node or the machine that carries
-/// the files to an air-gapped one (`docs/user/README.md`). So a total NVML
+/// the files to an air-gapped one (`docs/user/guides/models.md`). So a total NVML
 /// cannot read is no card here, as on a build without CUDA — `auto`
 /// resolves as `none` and no entry is fitted to a class — where a start, and
 /// the `config` verbs, whose values are the card's, refuse it.
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(ids, ["qwen3.8-27b"]);
     }
 
-    /// `docs/user/README.md`: the CUDA build fetches and lists on a machine
+    /// `docs/user/guides/models.md`: the CUDA build fetches and lists on a machine
     /// with no NVIDIA driver. NVML that cannot be read is no card to the
     /// `model` verbs — nothing is fitted to a class, nothing refused — while
     /// a start and the `config` verbs still refuse it under `auto`.

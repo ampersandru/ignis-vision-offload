@@ -470,6 +470,38 @@ else
 endif
 
 # ---------------------------------------------------------------------------
+##@ Docs (the user guide's site, ADR 0066)
+# ---------------------------------------------------------------------------
+
+# docs/site builds the pages under docs/user; it has its own node_modules.
+DOCS_DEPS := docs/site/node_modules/.package-lock.json
+
+.PHONY: docs-install
+docs-install: $(DOCS_DEPS) ## npm ci for the guide's site, only when its package-lock.json changed
+
+# Astro runs as `node astro.mjs`, never through npm, for the reason Vite does
+# (the `vite` helper above): Ctrl+C must stop it, not ask a batch-job question.
+.PHONY: docs-dev
+docs-dev: $(DOCS_DEPS) ## The guide's site with hot reload (http://localhost:4321/ignis/)
+	cd docs/site && exec node node_modules/astro/bin/astro.mjs dev
+
+.PHONY: docs-build
+docs-build: $(DOCS_DEPS) ## Build the guide's site into docs/site/dist; a dead link fails it
+	$(NPM) --prefix docs/site run build
+
+.PHONY: docs-test
+docs-test: $(DOCS_DEPS) ## The site's link-plugin tests (vitest)
+	$(NPM) --prefix docs/site run test
+
+.PHONY: docs-reference
+docs-reference: ## Regenerate docs/user/reference/ from the code: fields, profiles, catalog, metrics, routes, CLI
+	IGNIS_BLESS_USER_DOCS=1 $(CARGO) test -p ignis-server --test user_docs_reference $(CARGO_TARGET)
+
+$(DOCS_DEPS): docs/site/package.json docs/site/package-lock.json
+	$(NPM) --prefix docs/site ci
+	@touch "$@"
+
+# ---------------------------------------------------------------------------
 ##@ Test & quality
 # ---------------------------------------------------------------------------
 
@@ -494,7 +526,7 @@ clippy: ## cargo clippy, every target of every crate
 	$(CARGO) clippy --workspace --all-targets $(CARGO_TARGET) $(WORKSPACE_FEATURES)
 
 .PHONY: test-all
-test-all: test typecheck-web test-web ## Everything CPU-side: cargo test + web typecheck + vitest
+test-all: test typecheck-web test-web docs-test docs-build ## Everything CPU-side: cargo test + web typecheck + vitest + the guide's build
 
 .PHONY: ci
 ci: version-check swagger-ui-check check test-all ## What a CI job would run (no GPU)

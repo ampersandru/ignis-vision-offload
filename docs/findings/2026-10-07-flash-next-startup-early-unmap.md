@@ -89,7 +89,7 @@ worktree, branch and executable remain untouched.
 
 Persistence is on by default; the server exposes `--persist-ngram-cache
 true|false` and `--persist-ngram-cache-path auto|directory`, with the matching
-`IGNIS_` environment variables. See [user reference](../user/README.md#flash-next-n-gram-startup-cache).
+`IGNIS_` environment variables. See [user reference](../user/configuration/ngram-cache.md).
 
 The compact file stores an 80-byte versioned header (magic/version, key,
 payload length and SHA-256) followed by exactly the selected row bytes.

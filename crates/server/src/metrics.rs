@@ -83,7 +83,7 @@ impl LoadReservations {
     /// What no load reserved: every series at its zero, and no disk tier.
     /// What the gauges read while the idle clock has unloaded the model
     /// (spec model-switch/02, [`Metrics::set_unloaded`]).
-    fn none() -> Self {
+    pub(crate) fn none() -> Self {
         Self {
             lines: ignis_core::VramLines::default(),
             budget_bytes: 0,

@@ -1,0 +1,75 @@
+---
+title: "Testing"
+description: "The CPU-only default suite, the explicit GPU profile, the Playground's tests and the guide's build: what each covers and when it is due."
+sidebar:
+  order: 3
+---
+
+Every change ships with a test, and a task is not complete until the test
+suite is green. The full runbook — fixtures, the GPU profile's script, the
+measurement instruments — is [`docs/agents/testing.md`](../../agents/testing.md);
+this page is the map.
+
+## The default suite: `cargo test`
+
+```sh
+cargo test          # workspace-wide; make test is the same
+```
+
+It is CPU-only and never touches the GPU, which is what lets CI run it on
+Linux and on Windows runners with no card; the release builds start only when
+both legs are green ([ADR 0032](../../adr/0032-release-through-the-container-build.md)).
+A machine-local smoke test whose fixture is absent skips, and a skip counts as
+green — except for compute work: a test on the forward pass that skips on a
+busy GPU or a kernel error proves nothing, so those tests live in the GPU
+profile instead.
+
+`cargo test` also holds two things that are not Rust behaviour:
+
+- the vendored kernel subtree's integrity: a vendored file edited without a
+  recorded patch turns the suite red
+  ([ADR 0010](../../adr/0010-vendored-reference-kernels.md));
+- the generated pages of this guide's [reference](../reference/configuration.md):
+  a field, profile value, catalog pin, metric or route changed without
+  `make docs-reference` turns it red, naming the page.
+
+## The GPU profile
+
+Every test that touches the GPU is `#[ignore]`d and runs only when asked for,
+under `IGNIS_GPU_PROFILE=1`. There a busy GPU, a kernel error or a missing
+fixture is a failure, never a skip; outside the profile the same conditions
+print `SKIP:` and return, for a quick local check
+([ADR 0006](../../adr/0006-exclusive-gpu-testing.md)).
+
+```sh
+make gpu-status     # VRAM in use, and every process that may hold the card
+make gpu-profile    # preflight, the kernel leaf's op tests, the ignored Rust GPU tests
+make kernel-test    # the kernel leaf's CTest op tests alone
+```
+
+The card fits one run at a time, in any worktree: check `make gpu-status`
+before every GPU run.
+
+## The Playground
+
+The Playground's logic lives in pure modules with vitest tests. A change under
+`web/` also needs both green:
+
+```sh
+make test-web       # vitest
+make web-build      # the TypeScript check and the production build
+```
+
+## The guide
+
+A change to `docs/user/` or `docs/site/` builds the site; a link to a missing
+page, a missing heading or a missing repository file fails the build.
+
+```sh
+make docs-test      # the link plugin's own tests
+make docs-build     # the site, into docs/site/dist
+make docs-dev       # the site with hot reload, at http://localhost:4321/ignis/
+```
+
+`make test-all` runs all of the above that need no GPU: `cargo test`, the
+Playground's typecheck and tests, and the guide's tests and build.

@@ -44,6 +44,13 @@ that no other test, bench or agent session is already using the card — in
 any worktree. The 5090 fits one run at a time and the loser dies with no
 diagnostic. See `docs/agents/testing.md`.
 
+### User documentation
+
+Every user-visible change ships with its user-guide update in the same
+commit, and the task is not complete until `docs/user/` describes what the
+code now does. What counts as user-visible, where each change goes and how
+the guide is written: `docs/agents/user-docs.md`.
+
 ### Make
 
 `make help` lists the targets; `make config` prints the exact server command
