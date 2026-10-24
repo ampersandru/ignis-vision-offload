@@ -163,6 +163,11 @@ fn by_server_vad(exec: &Executor, audio: &[f32]) -> Vec<String> {
 /// Acceptance 7: on each of the owner's dictations, the items `server_vad` commits, joined, have
 /// a pooled WER at most 1 pt worse than a manual commit of the whole dictation through the same
 /// incremental path (spec 03's), on the default variant (`qwen3-asr-1.7b`).
+///
+/// **It fails as built** (spec 05, As built): 7.58% against 4.03% on the i9, 2026-10-24. The
+/// whole dictation as one item from where `server_vad`'s first item starts, its leading silence
+/// trimmed to the padding, scores the same 7.58%: the cost is where an item begins, not where the
+/// VAD cuts. The leg asserts the criterion as written, for the owner's decision.
 #[test]
 #[ignore]
 fn server_vad_items_joined_are_within_a_point_of_a_manual_commit() {
