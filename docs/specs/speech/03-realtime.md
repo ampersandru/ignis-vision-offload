@@ -1,6 +1,6 @@
 # 03 - Realtime transcription: sessions, manual commit, incremental partials
 
-GitHub: to be filed. Phase 1. Feature: `spec.md`. Needs 02's speech slot;
+GitHub: #353 (master #350). Phase 1. Feature: `spec.md`. Needs 02's speech slot;
 01's incremental API for the real path, a fake executor before it.
 
 ADRs: 0066 (the speech model), 0058 (deadlines), 0049 (idle unload); spec

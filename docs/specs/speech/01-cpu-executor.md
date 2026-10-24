@@ -1,6 +1,6 @@
 # 01 - the CPU executor: our Rust kernels and graphs, the pipeline, the oracle
 
-GitHub: to be filed. Phase 1. Feature: `spec.md`.
+GitHub: #351 (master #350). Phase 1. Feature: `spec.md`.
 
 ADRs: 0067 (the CPU executor is ours, in Rust), 0066 (the speech model), 0051
 (ours / adapted / vendored), 0043 (no reference engine: the checkpoint's own

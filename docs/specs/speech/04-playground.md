@@ -1,6 +1,6 @@
 # 04 - dictation in the Playground
 
-GitHub: to be filed. Phase 1. Feature: `spec.md`. Needs 03 (the Realtime
+GitHub: #354 (master #350). Phase 1. Feature: `spec.md`. Needs 03 (the Realtime
 route); its components can be built against a fake socket first.
 
 ADRs: 0066 (the speech model), 0028 (exposure always keyed). Specs:

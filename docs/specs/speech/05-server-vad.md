@@ -1,6 +1,6 @@
 # 05 - phase 2: `server_vad`
 
-GitHub: to be filed. Phase 2 (Q56). Feature: `spec.md`. Needs 03.
+GitHub: #355 (master #350). Phase 2 (Q56). Feature: `spec.md`. Needs 03.
 
 ADRs: 0051 (adapted code, licences), 0066 (the speech model).
 

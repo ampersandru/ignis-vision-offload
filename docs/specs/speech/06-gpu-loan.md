@@ -1,6 +1,6 @@
 # 06 - phase 3: the GPU loan
 
-GitHub: to be filed. Phase 3 (Q33, Q56). Feature: `spec.md`. Needs 01-03.
+GitHub: #356 (master #350). Phase 3 (Q33, Q56). Feature: `spec.md`. Needs 01-03.
 
 ADRs: 0066 (the loan), 0067 (one pipeline, two compute adapters), 0030
 (nothing allocated on the device while serving), 0045 (KV pool policy,

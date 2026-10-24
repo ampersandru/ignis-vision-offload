@@ -1,6 +1,6 @@
 # 02 - the transcriptions route, and the speech model in the server
 
-GitHub: to be filed. Phase 1. Feature: `spec.md`. Built against a fake
+GitHub: #352 (master #350). Phase 1. Feature: `spec.md`. Built against a fake
 executor first; 01 for the real one.
 
 ADRs: 0066 (the speech model), 0058 (deadlines), 0049 (idle unload), 0047
