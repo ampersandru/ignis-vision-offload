@@ -52,6 +52,12 @@ const ENTRY_KEYS: [&str; 8] = ["id", "repo", "revision", "artifact", "kind", "ca
 /// speech`): the speech adapter finds the encoder by this prefix.
 pub const SPEECH_ENCODER_PREFIX: &str = "mmproj-";
 
+/// Whether a file name is a speech entry's audio encoder: the `mmproj-` prefix
+/// and a `.gguf` extension. The catalog and the adapter share this rule.
+pub fn is_speech_encoder(name: &str) -> bool {
+    name.starts_with(SPEECH_ENCODER_PREFIX) && name.ends_with(".gguf")
+}
+
 /// The keys one of an entry's files takes.
 const FILE_KEYS: [&str; 3] = ["name", "bytes", "sha256"];
 
@@ -464,9 +470,9 @@ fn read_entry(value: &Value, layer: CatalogLayer) -> Result<CatalogEntry, String
         if !artifact.ends_with(".gguf") {
             return Err(format!("a speech model's `artifact` is its decoder GGUF, got `{artifact}`"));
         }
-        if !files.iter().any(|file| file.name != artifact && file.name.starts_with(SPEECH_ENCODER_PREFIX) && file.name.ends_with(".gguf")) {
+        if files.iter().filter(|file| file.name != artifact && is_speech_encoder(&file.name)).count() != 1 {
             return Err(format!(
-                "a speech model needs its audio encoder among its `files`: a `{SPEECH_ENCODER_PREFIX}*.gguf` file beside `{artifact}`"
+                "a speech model needs its audio encoder among its `files`, exactly one `{SPEECH_ENCODER_PREFIX}*.gguf` file beside `{artifact}`"
             ));
         }
     } else {
@@ -845,7 +851,7 @@ mod tests {
             assert_eq!(entry.files.iter().filter(|f| f.name.starts_with(SPEECH_ENCODER_PREFIX)).count(), 1, "{id}: one encoder");
         }
         assert_eq!(crate::config::AUTO_SPEECH_MODEL_ID, "qwen3-asr-1.7b");
-        assert!(catalog.entries().iter().filter(|entry| entry.is_speech()).count() == SPEECH_RELEASES.len());
+        assert_eq!(catalog.entries().iter().filter(|entry| entry.is_speech()).count(), SPEECH_RELEASES.len());
         assert!(!catalog.entry("qwen3.8-27b").unwrap().is_speech());
         // The two 1.7B entries share one encoder file, byte for byte, so a
         // download of both lands it once.
@@ -868,6 +874,8 @@ mod tests {
             ("mmproj-acme.gguf", "mmproj-acme.bin", vec!["acme-asr", "audio encoder"]),
             ("artifact: acme-decoder.gguf", "artifact: mmproj-acme.gguf", vec!["acme-asr", "audio encoder"]),
             ("acme-decoder.gguf", "acme-decoder.ninfer", vec!["acme-asr", "decoder GGUF"]),
+            ("      - { name: acme-decoder.gguf,", "      - { name: mmproj-second.gguf, bytes: 5, sha256: 9c1e000000000000000000000000000000000000000000000000000000000003 }
+      - { name: acme-decoder.gguf,", vec!["acme-asr", "exactly one"]),
         ] {
             let text = SPEECH_OPERATOR.replace(from, to);
             let error = operator(&text).expect_err(to).to_string();

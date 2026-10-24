@@ -119,6 +119,8 @@ to the audio: on a 10-thread desktop CPU (4.8 times real time) a minute of speec
 and a 20-minute clip four minutes or so. Up to `speech.max_queue` (4) requests
 wait behind the one running; the next is `503 engine_full` with a `Retry-After`
 of one to fifteen seconds, an estimate of when room frees.
+It is answered before the audio is decoded, so a body that is not audio gets
+the `503`, not a `400`, while the queue is full.
 
 A request is held to the [deadline](deadlines.md) from its admission, queue
 included: `server.request_timeout`, or `server.stream_timeout` when it

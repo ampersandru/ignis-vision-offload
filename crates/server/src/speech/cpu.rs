@@ -57,7 +57,7 @@ fn err(e: impl std::fmt::Display) -> SpeechError {
 fn encoder_of(files: &SpeechFiles) -> Option<&std::path::PathBuf> {
     files.files.iter().find(|f| {
         *f != &files.decoder
-            && f.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(crate::download::catalog::SPEECH_ENCODER_PREFIX))
+            && f.file_name().and_then(|n| n.to_str()).is_some_and(crate::download::catalog::is_speech_encoder)
     })
 }
 

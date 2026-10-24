@@ -41,6 +41,7 @@ const SIXTEEN_ARTIFACT: &str = "qwen3_8_27b_trellis_sc30-v2.ninfer";
 const DEFAULT_27B: &str = "qwen3.8-27b";
 const FLASH_NEXT: &str = "qwen3.8-flash-next";
 const IMAGE: &str = "ignis-image-2.1-turbo";
+const SPEECH: [&str; 3] = ["qwen3-asr-1.7b", "qwen3-asr-1.7b-q8", "qwen3-asr-0.6b"];
 
 /// A condition image an edit decodes.
 const PNG: &[u8] = include_bytes!("../../artifact/tests/fixtures/vision/images/on_grid.png");
@@ -385,7 +386,8 @@ async fn the_model_lists_mark_entries_above_the_card_class_unavailable_with_the_
     assert_eq!(status, StatusCode::OK);
     for row in catalog["data"].as_array().unwrap() {
         let id = row["id"].as_str().unwrap();
-        let fits = id == SIXTEEN;
+        // A speech model runs on the CPU: no class, so no card refuses it.
+        let fits = id == SIXTEEN || SPEECH.contains(&id);
         assert_eq!(row["available"], fits, "{row}");
         assert_eq!(row.get("reason").is_some(), !fits, "{row}");
         if !fits {
@@ -397,7 +399,7 @@ async fn the_model_lists_mark_entries_above_the_card_class_unavailable_with_the_
     let (_, catalog) = send(&thirty_two, Method::GET, "/v1/models/catalog", None).await;
     for row in catalog["data"].as_array().unwrap() {
         assert_eq!((row["available"].as_bool(), row.get("reason")), (Some(true), None), "{row}");
-        assert_eq!(row["switchable"], row["id"] != SIXTEEN, "{row}");
+        assert_eq!(row["switchable"], row["id"] != SIXTEEN && !SPEECH.contains(&row["id"].as_str().unwrap()), "a speech model is never switched to: {row}");
     }
 }
 

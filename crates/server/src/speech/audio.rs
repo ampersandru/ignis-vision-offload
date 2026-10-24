@@ -69,13 +69,12 @@ pub fn decode(bytes: Vec<u8>, max_seconds: u32) -> Result<Clip, AudioError> {
     let mut format = symphonia::default::get_probe()
         .probe(&Hint::new(), source, FormatOptions::default(), MetadataOptions::default())
         .map_err(|error| AudioError::Unsupported(format!("no container recognised: {error}")))?;
-    let track = format
+    let (track, params) = format
         .tracks()
         .iter()
-        .find(|track| track.codec_params.as_ref().and_then(|params| params.audio()).is_some())
+        .find_map(|track| track.codec_params.as_ref().and_then(|params| params.audio()).map(|params| (track, params.clone())))
         .ok_or_else(|| AudioError::Unsupported("no audio track whose codec this server decodes (Opus is not decoded)".to_owned()))?;
     let track_id = track.id;
-    let params = track.codec_params.as_ref().and_then(|params| params.audio()).expect("found by it").clone();
     // A length the container states is checked before a sample is decoded.
     if let (Some(frames), Some(rate)) = (track.num_frames, params.sample_rate) {
         if rate > 0 && frames / u64::from(rate) > u64::from(max_seconds) {
