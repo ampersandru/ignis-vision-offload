@@ -52,7 +52,8 @@ request at a time, and another client's requests would land in them.
 - **What the load adapted**: the context and the decode lanes it runs at beside
   the ones configured, and every step it took to fit the card
   (`adaptation.adapted`, empty when it took none) — the 27B under `rtx50-16gb`
-  in a 13 GiB budget (16 GiB less 3 GiB of desktop, planned on the 5090) took
+  in a 13 GiB budget (16 GiB less 3 GiB of desktop, set by hand on an RTX 5090
+  to imitate a 16 GB card) took
   `max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens
   65536)` ([when a profile does not fit](../concepts/profiles.md#when-a-profile-does-not-fit)).
 - **Decode speed**: tokens per second on the coding prompts and on three

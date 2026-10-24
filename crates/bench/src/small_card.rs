@@ -750,6 +750,18 @@ fn measure_decode(ep: &dyn Endpoint, prompts: Vec<(String, String)>, max_tokens:
     summarize_decode(max_tokens, samples, errors)
 }
 
+/// The note for a loaded text model whose `/v1/models` row does not say what
+/// its load adapted (a server built before #340). A row without
+/// `max_model_len` -- the image model, or no engine loaded -- has no load to
+/// adapt, so it gets none.
+fn unreported_adaptation_note(active: &Value) -> Option<String> {
+    (active.get("max_model_len").is_some() && active.get("adapted").is_none()).then(|| {
+        "adaptation: the server's /v1/models reports no `adapted` or `decode_lanes` (a build before #340): \
+         what the load adapted is unknown"
+            .into()
+    })
+}
+
 /// Run the preset against `opts.endpoint` and assemble the record.
 /// `nvidia_smi` is the card probe (the real one is [`run_nvidia_smi`]).
 pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> Report {
@@ -766,13 +778,7 @@ pub fn run(opts: &Options, nvidia_smi: &dyn Fn() -> Result<String, String>) -> R
     if model_id.is_some() && max_model_len.is_none() {
         notes.push("models: the server reports no max_model_len for the loaded model".into());
     }
-    if model_id.is_some() && active.as_ref().is_some_and(|m| m.get("adapted").is_none()) {
-        notes.push(
-            "adaptation: the server's /v1/models reports no `adapted` or `decode_lanes` (a build before #340): \
-             what the load adapted is unknown"
-                .into(),
-        );
-    }
+    notes.extend(active.as_ref().and_then(unreported_adaptation_note));
     let status = models.as_ref().and_then(|m| m["status"].as_str()).map(str::to_string);
     let family = match api.get_json("/v1/models/catalog").map(|catalog| loaded_family(&catalog)) {
         Ok(Some(family)) => Some(family),
@@ -1130,6 +1136,15 @@ ignis_speculative_position_accepted_total{position=\"1\"} 90\n";
         let a = adaptation(&view, Some(&old));
         assert_eq!((a.adapted, a.lowered, a.running_decode_lanes), (None, None, None));
         assert_eq!(adaptation(&BTreeMap::new(), None).lowered, None);
+    }
+
+    #[test]
+    fn only_a_loaded_text_model_that_does_not_say_what_it_adapted_gets_the_note() {
+        assert!(unreported_adaptation_note(&json!({ "id": "qwen3.8-27b", "max_model_len": 65536 })).is_some());
+        let says = json!({ "id": "qwen3.8-27b", "max_model_len": 65536, "decode_lanes": 2, "adapted": "" });
+        assert_eq!(unreported_adaptation_note(&says), None);
+        // the image model, or a text model with no engine loaded: no load to adapt
+        assert_eq!(unreported_adaptation_note(&json!({ "id": "ignis-image-2.1-turbo" })), None);
     }
 
     #[test]
