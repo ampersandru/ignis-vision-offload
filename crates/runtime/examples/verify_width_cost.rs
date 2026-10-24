@@ -81,7 +81,7 @@ fn main() {
     let mut out = std::fs::OpenOptions::new().create(true).append(true).open(&args[5]).expect("open out");
 
     let reader = Reader::open(Path::new(&args[1])).unwrap_or_else(|e| panic!("open artifact: {e}"));
-    let base = LoadShape::for_body(body_27b(&reader));
+    let base = LoadShape::from_env(body_27b(&reader)).unwrap_or_else(|e| panic!("load shape: {e}"));
     let lanes = base.lanes as usize;
     let lane_counts: Vec<usize> = LANE_COUNTS.into_iter().filter(|&n| n <= lanes).collect();
     assert!(text.len() >= lanes * stride, "the text holds {} tokens, not {}", text.len(), lanes * stride);

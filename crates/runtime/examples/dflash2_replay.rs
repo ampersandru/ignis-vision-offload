@@ -14,8 +14,9 @@
 //! body (`support/replay_load.rs`): the trellis one in `rtx50-16gb`'s 16 GiB
 //! plan, the NVFP4 one at the same engine shape on the card's derived budget
 //! -- 262,144 context, DFlash2-7 with the full head, hq-e8-2b KV, 1024-token
-//! prefill chunks, rope none, verify graphs captured. For each job, on one
-//! sequence:
+//! prefill chunks, rope none, verify graphs captured. On the NVFP4 body the
+//! server's `IGNIS_MODEL_PREFILL_CHUNK` picks another chunk (its served 2048).
+//! For each job, on one sequence:
 //!
 //! - everything before a turn is prefilled, its last draw forced to the turn's
 //!   first recorded token (a permitted set of one), which becomes the pending
@@ -195,7 +196,7 @@ fn main() {
     let longest = jobs.iter().map(|j| j["tokens"].as_u64().unwrap()).max().unwrap_or(0) as u32;
 
     let reader = Reader::open(Path::new(&args[1])).unwrap_or_else(|e| panic!("open artifact: {e}"));
-    let shape = LoadShape::for_body(body_27b(&reader));
+    let shape = LoadShape::from_env(body_27b(&reader)).unwrap_or_else(|e| panic!("load shape: {e}"));
     assert_eq!(shape.window as usize, WINDOW, "the record's window is the load's");
     // A round at the turn's end still runs its whole window.
     let max_context = shape.max_context;

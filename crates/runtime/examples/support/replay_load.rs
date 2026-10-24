@@ -67,6 +67,26 @@ impl LoadShape {
         }
     }
 
+    /// [`LoadShape::for_body`], at the prefill chunk the server's own
+    /// `IGNIS_MODEL_PREFILL_CHUNK` names, when it names one: on the NVFP4
+    /// body only (its `rtx5090` profile serves 2048 since GitHub #341), since
+    /// the trellis body loads as a 16 GB card does, at 1024, and is refused
+    /// any other.
+    pub fn from_env(body: Body27b) -> Result<Self, String> {
+        let shape = Self::for_body(body);
+        let Ok(raw) = std::env::var("IGNIS_MODEL_PREFILL_CHUNK") else {
+            return Ok(shape);
+        };
+        let chunk: u32 = raw.trim().parse().map_err(|e| format!("IGNIS_MODEL_PREFILL_CHUNK `{raw}`: {e}"))?;
+        if body == Body27b::Trellis && chunk != shape.prefill_chunk {
+            return Err(format!(
+                "IGNIS_MODEL_PREFILL_CHUNK {chunk}: the trellis body loads as a 16 GB card does, at {}",
+                shape.prefill_chunk
+            ));
+        }
+        Ok(Self { prefill_chunk: chunk, ..shape })
+    }
+
     fn speculation(&self) -> Option<Speculation> {
         (self.window > 0).then(|| {
             Speculation::new(SpeculativeBackend::Dflash2, self.window)
