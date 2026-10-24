@@ -529,7 +529,10 @@ async fn past_max_sessions_the_upgrade_is_refused_503_with_retry_after() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sessions_take_turns_window_by_window() {
     let executor = saying(&["a", "b", "c", "d"]);
-    executor.set_step_delay(Duration::from_millis(40));
+    // Long enough that the second session's frames are queued while the
+    // first's opening windows run, on a loaded machine too: the worker's own
+    // test proves the turns deterministically.
+    executor.set_step_delay(Duration::from_millis(150));
     let (live, _server, _dir) = served(&executor, |group| group.partial_interval_ms = 60_000).await;
     let mut first = session_16k(&live).await;
     let mut second = session_16k(&live).await;
