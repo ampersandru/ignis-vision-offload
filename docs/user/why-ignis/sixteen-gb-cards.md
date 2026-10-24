@@ -6,8 +6,8 @@ sidebar:
 ---
 
 The 27B's served NVFP4 artifact is 18 GiB on disk, and its text weights alone
-are 16 GiB: it cannot load on a 16 GB card at any context. ignis ships a second encoding of the same model for
-that class of card, `qwen3.8-27b-16g`: the body re-encoded in a trellis code at
+are 16 GiB: it cannot load on a 16 GB card at any context. Since 0.8.0 ignis ships a second encoding of the same
+model for that class of card, `qwen3.8-27b-16g`: the body re-encoded in a trellis code at
 about 3 bits per weight, **12.5 GiB on disk**, with the same DFlash2 drafter.
 On a 16 GB card the server picks the matching profile and the matching
 catalog entry by itself, and the artifact passed **all four quality gates**

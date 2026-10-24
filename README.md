@@ -14,12 +14,13 @@
 
 <p align="center">
   <img alt="license Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-d94b1f?style=flat-square">
-  <img alt="target SM120a" src="https://img.shields.io/badge/target-SM120a%20%2F%20RTX%205090%20%7C%20RTX%20PRO%206000-d94b1f?style=flat-square">
+  <img alt="target SM120a" src="https://img.shields.io/badge/target-SM120a%20%2F%20RTX%205090%20%7C%20RTX%20PRO%206000%20%7C%2016%20GB%20RTX%2050-d94b1f?style=flat-square">
   <img alt="models Qwen3.8-27B NVFP4, Qwen3.8-Flash-Next and Qwen-Image-2.1-Turbo" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%7C%20Flash--Next%20125B%20MoE%20%7C%20Qwen--Image--2.1-d94b1f?style=flat-square">
   <img alt="API OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-d94b1f?style=flat-square">
   <br>
   <a href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer"><img alt="weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--27B%20NVFP4%20%2B%20DFlash2-ffb000?style=flat-square"></a>
   <a href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer"><img alt="uncensored weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-uncensored%20(abliterated)-ffb000?style=flat-square"></a>
+  <a href="https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis"><img alt="16 GB card weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--27B%2016%20GB%20trellis%203%20bpw-ffb000?style=flat-square"></a>
   <a href="https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis"><img alt="Flash-Next weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--Flash--Next%20trellis%202.5%20bpw-ffb000?style=flat-square"></a>
   <a href="https://huggingface.co/gpillon/ignis-image-2.1-turbo"><img alt="image model weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen--Image--2.1--Turbo%20(non--commercial)-ffb000?style=flat-square"></a>
 </p>
@@ -81,6 +82,16 @@ the prompt optionally rewritten first by the 27B
 ([Images made](#images-made-on-the-same-card)). Its weights are for
 non-commercial use only.
 
+The 27B also fits a **16 GB card** (RTX 5060 Ti 16 GB, 5070 Ti, 5080), from a
+second artifact: its body re-encoded in a trellis code at about 3 bits per
+weight, 12.5 GiB on disk, with the same DFlash2 drafter. On such a card the
+server picks the `rtx50-16gb` profile and that artifact by itself, 262,144
+tokens of context on two lanes, and the artifact passed four pre-registered
+quality gates against the NVFP4 it stands in for: its KL divergence from BF16
+is 0.77x the NVFP4's. It has not run on a 16 GB card yet. On the 5090 held to
+16 GiB it decodes **416 tok/s at one lane**; on a 5080 the estimate is 243-307
+([the 27B on a 16 GB card](#the-27b-on-a-16-gb-card)).
+
 The server switches between these models without a restart — a request that
 names another model is held and answered by it — and unloads an idle one after
 five minutes so the card is free for other work; the next request loads it
@@ -110,7 +121,10 @@ serves (YaRN x2, which the default `auto` rope scaling picks for it), DFlash2
 speculative decoding and image input; the Prometheus
 metrics the Playground's Monitor reads are on by default. A bare `ignis-server`
 already gets DFlash2 and image input from the built-in `rtx5090` profile, with
-an 896K context (YaRN x3.5). Flash-Next is `--model-id
+an 896K context (YaRN x3.5). On a 16 GB card, run a bare `ignis-server`
+instead: it takes the `rtx50-16gb` profile and fetches the 27B's 16 GB
+artifact, while the flags above ask for a longer context than that card's KV
+pool holds. Flash-Next is `--model-id
 qwen3.8-flash-next`; the flags `make` serves it with are on its
 [weights card](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis).
 The image model is `ignis-image-2.1-turbo`: once `ignis-server model download
@@ -119,8 +133,8 @@ naming it switches the running server to it.
 
 Then the OpenAI API is on <http://127.0.0.1:8000/v1>, the Playground and its
 Monitor on <http://127.0.0.1:8000/ui/>, and Prometheus on
-<http://127.0.0.1:9464/metrics>. The weights are on Hugging Face: the 27B in two
-flavours, the standard one and an uncensored one, and Flash-Next:
+<http://127.0.0.1:9464/metrics>. The weights are on Hugging Face: the 27B in three
+flavours, the standard one, an uncensored one and the 16 GB card's, and Flash-Next:
 [The weights](#the-weights). Everything
 else — the container, building from a checkout, every flag — is
 [Quick start](#quick-start) and the [user guide](https://gpillon.github.io/ignis/).
@@ -384,6 +398,34 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   operator catalog file and a mirror endpoint for private or air-gapped
   machines.
 
+### The 27B on a 16 GB card
+
+- **A second body for the same model.** The 16 GB entry, `qwen3.8-27b-16g`,
+  is the 27B with its linear layers in a trellis code at about 3 bits per
+  weight (a repack of a public 3.0 bpw EXL3 quantization), read by dense
+  kernels of ignis's own, beside the NVFP4 artifact's token embedding and
+  DFlash2 drafter: **12.5 GiB on disk** against 18.1 GiB.
+- **Chosen by the card.** Under `--profile auto` a card under 20 GiB takes
+  `rtx50-16gb` (262,144 tokens of context, two lanes, DFlash2 with 7 drafts,
+  no image input), and the default id `qwen3.8-27b` resolves to the 16 GB
+  entry. On a 5090 held to 16 GiB the load fits with nothing adapted, and with
+  1 GiB less of it, too. With 3 GiB held by the desktop it lowers its context
+  to 65,536 instead of refusing, and `GET /v1/models` says what it adapted.
+- **Four quality gates, registered before the run, all passed**, each against
+  the NVFP4 the 27B serves on 32 GB: KL divergence from BF16 **0.77x** the
+  NVFP4's; MMLU-Pro 65.84% against BF16's 67.97% (exact McNemar p 0.31, not
+  significantly lower); DFlash2 commits **0.996x** the NVFP4's tokens a round;
+  reasoning loops on 9 of 32 turns against 14 of 32.
+- **Speed, not yet measured on a 16 GB card.** On the 5090 held to 16 GiB, one
+  lane decodes **416 tok/s at 8K** of context and 216 at 253K, two lanes 684
+  together. Estimated from those for one lane at 8K: 5080 **243-307**, 5070 Ti
+  **204-270**, 5060 Ti 16 GB **103-153 tok/s**. Prefill is the gap: 2.5x
+  slower than the NVFP4's at 130K on the 5090.
+- `ignis-bench small-card` writes one record of a 16 GB card's load and speed
+  to paste into an issue: the guide's
+  [the 27B on a 16 GB card](https://gpillon.github.io/ignis/why-ignis/sixteen-gb-cards/)
+  has the sources.
+
 ### A context you can rescale
 
 - **`auto` by default**: both models are trained to **262,144 positions**, and
@@ -405,7 +447,7 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - **One declaration per setting**: every option is a flag, an `IGNIS_*`
   variable and a key in a YAML or JSON config file, with per-model values and
   a built-in profile chosen by the card's memory by default (`--profile auto`:
-  the measured `rtx5090`, `rtxpro6000` for the 96 GB card and the derived `rtx50-16gb`, which has no model until the 16 GB artifact); `GET`/`PATCH /v1/config`
+  the measured `rtx5090`, `rtxpro6000` for the 96 GB card and the derived `rtx50-16gb` for the 16 GB cards); `GET`/`PATCH /v1/config`
   reads and changes the running server, reloading the model only for a field
   that needs it.
 - **`POST /v1/tokenize`** counts a chat body's prompt exactly as it would be
@@ -472,24 +514,27 @@ box says what sending will do first:
 
 ### The weights
 
-Four artifacts on Hugging Face: two of the 27B, both 18.07 GiB, both carrying
-the DFlash2 drafter, Flash-Next, and the image model:
+Five artifacts on Hugging Face: three of the 27B, all carrying the DFlash2
+drafter (the two NVFP4 ones 18.07 GiB, the 16 GB card's 12.46 GiB), Flash-Next,
+and the image model:
 
 | | Hugging Face | file |
 |---|---|---|
 | **Standard** | [`gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer`](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer) | `qwen3_8_27b_nvfp4full-v2.ninfer` |
 | **Uncensored** | [`gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer`](https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer) | `qwen3_8_27b_nvfp4full-v2-huihui-abliterated.ninfer` |
+| **16 GB card** (trellis body, about 3 bits per weight) | [`gpillon/Qwen3.8-27B-trellis-3bpw-ignis`](https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis) | `qwen3_8_27b_trellis_sc30-v2.ninfer` |
 | **Flash-Next** (125B MoE, 67.8 GiB with its MTP companion) | [`gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis`](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis) | `qwen3_8_flash_next_trellis_a25-v2.ninfer` |
 | **Image** (Qwen-Image-2.1-Turbo, 15.57 GiB, **non-commercial use only**) | [`gpillon/ignis-image-2.1-turbo`](https://huggingface.co/gpillon/ignis-image-2.1-turbo) | `ignis_image_2_1_turbo-v2.ninfer` |
 
 The server fetches the standard one by itself the first time it starts without
-a model, and checks every file's size and SHA-256 before using it. To download
+a model (on a 16 GB card, the 16 GB one), and checks every file's size and SHA-256 before using it. To download
 any of them ahead of time — no GPU needed, `--out <dir>` for a machine with no
 network:
 
 ```
 ignis-server model download qwen3.8-27b
 ignis-server model download qwen3.8-27b-abliterated
+ignis-server model download qwen3.8-27b-16g
 ignis-server model download qwen3.8-flash-next
 ignis-server model download ignis-image-2.1-turbo
 ```
