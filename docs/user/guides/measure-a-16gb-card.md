@@ -29,6 +29,9 @@ output:
 podman exec <container> ignis-bench small-card --endpoint http://127.0.0.1:8000 > small-card.json
 ```
 
+A container the runtime gave no `nvidia-smi` records the card as `null`, with
+a note; the rest is measured as usual.
+
 The record is printed on stdout and, with `--out`, written to that file too;
 the progress goes to stderr. On the project's 5090 inside a 16 GB budget it
 took two minutes, most of it the 64K time-to-first-token cell, which a 16 GB
@@ -48,9 +51,10 @@ request at a time, and another client's requests would land in them.
   from (default, profile, file, env or flag).
 - **What the load adapted**: the context and the decode lanes it runs at beside
   the ones configured, and every step it took to fit the card
-  (`adaptation.adapted`, empty when it took none) — on a card whose desktop
-  takes 3 GiB, `max_context 262144 -> 65536 (adapt_context_step 65536,
-  adapt_spare_tokens 65536)` ([when a profile does not fit](../concepts/profiles.md#when-a-profile-does-not-fit)).
+  (`adaptation.adapted`, empty when it took none) — the 27B under `rtx50-16gb`
+  in a 13 GiB budget (16 GiB less 3 GiB of desktop, planned on the 5090) took
+  `max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens
+  65536)` ([when a profile does not fit](../concepts/profiles.md#when-a-profile-does-not-fit)).
 - **Decode speed**: tokens per second on the coding prompts and on three
   synthetic agent turns (a system prompt, tool calls and their results, a
   coding request), 256 tokens each, thinking off, and how many draft tokens

@@ -8,7 +8,7 @@ reading paths. Every page is plain Markdown and reads here as well.
 |---|---|
 | Start here | [Install](start/install.md) |
 | Reading paths | [User](paths/user.md), [advanced](paths/advanced.md), [developer](paths/developer.md), [contributor](paths/contributor.md) |
-| Guides | [Get a model](guides/models.md), [air-gapped machines](guides/air-gapped.md), [Knative](guides/knative.md), [telemetry](guides/telemetry.md) |
+| Guides | [Get a model](guides/models.md), [air-gapped machines](guides/air-gapped.md), [Knative](guides/knative.md), [telemetry](guides/telemetry.md), [measure a 16 GB card](guides/measure-a-16gb-card.md) |
 | Concepts | [How ignis serves a request](concepts/how-ignis-serves.md) |
 | Configuration | [Fields, precedence, profiles](configuration/index.md) |
 | Playground | [The Playground](playground/index.md) |
