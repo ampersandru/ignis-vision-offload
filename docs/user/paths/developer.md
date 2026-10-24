@@ -29,6 +29,8 @@ controls sends, a quick way to see what a field does before you code it.
    server changes or reloads its model.
 9. **[Image generation](../api/images.md)** — generating and editing images
    with the image model.
+   **[Speech to text](../api/transcriptions.md)** — transcribing audio with
+   the speech model, which runs on the CPU beside it.
 10. **[Decisions](../api/decide.md)** — `POST /v1/decide`: an answer read from
     the model's distribution instead of generated, and locating a line or an
     item.

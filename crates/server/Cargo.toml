@@ -49,6 +49,12 @@ miniz_oxide = "0.9"
 # The image routes' output (spec image-model/05): RGBA 8-bit PNG, the
 # version `ignis-artifact` decodes with.
 png = "0.18"
+# The transcription route's decoder (spec speech/02, GitHub #352): WAV, FLAC,
+# MP3 and AAC, the Ogg and Matroska/WebM containers demuxed. Pure Rust, no
+# native code, no codec beyond these (no Vorbis, no Opus: libopus is a
+# separate decision, spec speech/spec.md "Native code outside `cuda`").
+# MPL-2.0, a dependency and not copied code (ADR 0051).
+symphonia = { version = "0.5.4", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aac", "isomp4", "ogg", "mkv"] }
 
 # `_exit` (GitHub #329, `shutdown::exit_now`): a stop before serving ends the
 # process without running its exit handlers. Already in the tree.

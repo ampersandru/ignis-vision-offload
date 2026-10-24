@@ -105,6 +105,8 @@ fn the_document_lists_exactly_the_v1_surface() {
         // Spec image-model/05: the image model's routes.
         "post /v1/images/generations",
         "post /v1/images/edits",
+        // Spec speech/02: the speech model's transcription.
+        "post /v1/audio/transcriptions",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -264,6 +266,7 @@ fn every_refused_field_is_named_in_its_operation_description() {
         ("/v1/responses", Surface::Responses),
         ("/v1/images/generations", Surface::Images),
         ("/v1/images/edits", Surface::Images),
+        ("/v1/audio/transcriptions", Surface::Transcriptions),
     ] {
         let description = document["paths"][path]["post"]["description"].as_str().unwrap_or_default();
         for rule in table(surface) {
@@ -283,7 +286,7 @@ fn every_refused_field_is_named_in_its_operation_description() {
 #[test]
 fn the_document_names_what_the_server_does_not_serve() {
     let description = document()["info"]["description"].as_str().unwrap_or_default().to_owned();
-    for choice in ["embeddings", "`/v1/completions`", "`/v1/batches`", "audio", "LoRA", "more than one loaded model"] {
+    for choice in ["embeddings", "`/v1/completions`", "`/v1/batches`", "audio out", "`/v1/audio/translations`", "LoRA", "a second model on the card"] {
         assert!(description.contains(choice), "`{choice}` missing: {description}");
     }
 }
@@ -666,4 +669,26 @@ fn the_field_declaration_schema_names_exactly_the_keys_a_declaration_has() {
         document["components"]["schemas"]["FieldDeclaration"]["properties"].as_object().expect("properties").keys().cloned().collect();
     let declared: BTreeSet<String> = ignis_server::config::schema::all_fields().next().expect("a field").declaration().keys().cloned().collect();
     assert_eq!(schema, declared);
+}
+
+/// Spec speech/02 AC 17: the document no longer says more than one model is
+/// never loaded, documents the transcription route with its answers, and
+/// names the speech model beside the text one.
+#[test]
+fn the_document_describes_the_speech_model_and_its_route() {
+    let document = document();
+    let info = document["info"]["description"].as_str().unwrap();
+    assert!(!info.contains("more than one loaded model"), "{info}");
+    assert!(info.contains("speech model") && info.contains("ADR 0066"), "{info}");
+    let post = &document["paths"]["/v1/audio/transcriptions"]["post"];
+    let description = post["description"].as_str().unwrap();
+    for said in ["speech.compat_names", "whisper-1", "verbose_json", "transcript.text.delta", "speech.max_clip_seconds", "speech.max_queue", "`504 request_timeout`"] {
+        assert!(description.contains(said), "{said}");
+    }
+    for status in ["400", "404", "409", "503", "504"] {
+        assert!(post["responses"][status].is_object(), "{status}");
+    }
+    assert!(post["requestBody"]["content"]["multipart/form-data"].is_object());
+    let models = document["paths"]["/v1/models"]["get"]["description"].as_str().unwrap();
+    assert!(models.contains("kind: \"speech\"") && models.contains("top-level `speech` object"), "{models}");
 }

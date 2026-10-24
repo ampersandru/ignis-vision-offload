@@ -222,6 +222,71 @@ pub struct ImageJobEnd {
     pub ran: std::time::Duration,
 }
 
+/// How a transcription ended: `ignis_speech_transcriptions_total`'s fixed
+/// `outcome` label (spec speech/02, ADR 0017's amendment of 2026-10-24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeechOutcome {
+    /// The transcript was made and sent.
+    Completed,
+    /// Its request went away while it waited or ran.
+    Cancelled,
+    /// The executor failed a call, or its model would not load.
+    Failed,
+    /// Its deadline passed (ADR 0058).
+    TimedOut,
+}
+
+impl SpeechOutcome {
+    const ALL: [SpeechOutcome; 4] = [Self::Completed, Self::Cancelled, Self::Failed, Self::TimedOut];
+
+    /// As the series and the log line spell it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+        }
+    }
+}
+
+/// Where a transcription ran: `ignis_speech_transcriptions_total`'s fixed
+/// `executor` label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeechExecutorLabel {
+    Cpu,
+    GpuLoan,
+}
+
+impl SpeechExecutorLabel {
+    const ALL: [SpeechExecutorLabel; 2] = [Self::Cpu, Self::GpuLoan];
+
+    /// As the series and the log line spell it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::GpuLoan => "gpu_loan",
+        }
+    }
+
+    /// The label of an executor's `name()`; anything but the loan is the CPU.
+    pub fn of(name: &str) -> Self {
+        if name == "gpu_loan" { Self::GpuLoan } else { Self::Cpu }
+    }
+}
+
+/// What a finished transcription tells the projection.
+#[derive(Debug, Clone, Copy)]
+pub struct SpeechEnd {
+    pub executor: SpeechExecutorLabel,
+    pub outcome: SpeechOutcome,
+    /// The clip's length, in seconds of audio.
+    pub audio_seconds: f64,
+    /// From its commit (for a batch request, its last byte received) to its
+    /// transcript.
+    pub wait: std::time::Duration,
+}
+
 /// Which of the two counting routes a call reached:
 /// `ignis_tokenize_requests_total`'s fixed `route` label (GitHub #285).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -653,6 +718,16 @@ pub struct Metrics {
     image_waiting: AtomicU64,
     image_running: AtomicU64,
     image_seen: AtomicU64,
+    /// Transcriptions (spec speech/02): by executor and outcome, the audio
+    /// seconds in thousandths, the wait from commit to transcript, and the
+    /// two gauges the speech worker last set. Absent from the exposition
+    /// until `speech_seen`, like the image families.
+    speech_total: [AtomicU64; SpeechExecutorLabel::ALL.len() * SpeechOutcome::ALL.len()],
+    speech_audio_ms: AtomicU64,
+    speech_wait: Histogram,
+    speech_sessions: AtomicU64,
+    speech_queue: AtomicU64,
+    speech_seen: AtomicU64,
     /// Open Responses API WebSockets, and their requests waiting in the
     /// server-wide admission queue (GitHub #282).
     responses_sockets: AtomicU64,
@@ -819,6 +894,12 @@ impl Metrics {
             image_waiting: AtomicU64::new(0),
             image_running: AtomicU64::new(0),
             image_seen: AtomicU64::new(0),
+            speech_total: Default::default(),
+            speech_audio_ms: AtomicU64::new(0),
+            speech_wait: Histogram::new(&DURATION_BOUNDS_MS),
+            speech_sessions: AtomicU64::new(0),
+            speech_queue: AtomicU64::new(0),
+            speech_seen: AtomicU64::new(0),
             responses_sockets: AtomicU64::new(0),
             responses_queued: AtomicU64::new(0),
             flash_next: FlashNextSeries::default(),
@@ -971,6 +1052,27 @@ impl Metrics {
         self.image_seen.store(1, Ordering::Relaxed);
         self.image_waiting.store(u64::from(waiting), Ordering::Relaxed);
         self.image_running.store(u64::from(running), Ordering::Relaxed);
+    }
+
+    /// A transcription ended (spec speech/02). Recorded by the speech
+    /// worker's request, like an image job: the speech model has no engine,
+    /// so no fact of it reaches the telemetry consumer.
+    pub fn record_speech(&self, ended: &SpeechEnd) {
+        self.speech_seen.store(1, Ordering::Relaxed);
+        let series = ended.executor as usize * SpeechOutcome::ALL.len() + ended.outcome as usize;
+        self.speech_total[series].fetch_add(1, Ordering::Relaxed);
+        if ended.outcome == SpeechOutcome::Completed {
+            self.speech_audio_ms.fetch_add((ended.audio_seconds * 1000.0).round() as u64, Ordering::Relaxed);
+            self.speech_wait.observe(ended.wait.as_millis() as u64);
+        }
+    }
+
+    /// The speech model's open Realtime sessions and its waiting batch
+    /// requests, as the worker last set them.
+    pub fn set_speech_gauges(&self, sessions: u32, queue: u32) {
+        self.speech_seen.store(1, Ordering::Relaxed);
+        self.speech_sessions.store(u64::from(sessions), Ordering::Relaxed);
+        self.speech_queue.store(u64::from(queue), Ordering::Relaxed);
     }
 
     /// The bytes of the condition prefixes the image model holds now
@@ -1596,6 +1698,30 @@ impl Metrics {
             declare(&mut out, "ignis_image_queue_jobs", "gauge", "Image jobs waiting for their turn and running (at most one).");
             let _ = writeln!(out, "ignis_image_queue_jobs{{state=\"waiting\"}} {}", read(&self.image_waiting));
             let _ = writeln!(out, "ignis_image_queue_jobs{{state=\"running\"}} {}", read(&self.image_running));
+        }
+        // Spec speech/02: absent until the speech model was asked for a
+        // transcription or set its gauges, as the image families are.
+        if read(&self.speech_seen) > 0 {
+            declare(&mut out, "ignis_speech_transcriptions_total", "counter", "Transcriptions ended, by executor and outcome.");
+            for executor in SpeechExecutorLabel::ALL {
+                for outcome in SpeechOutcome::ALL {
+                    let series = executor as usize * SpeechOutcome::ALL.len() + outcome as usize;
+                    let _ = writeln!(
+                        out,
+                        "ignis_speech_transcriptions_total{{executor=\"{}\",outcome=\"{}\"}} {}",
+                        executor.label(),
+                        outcome.label(),
+                        read(&self.speech_total[series])
+                    );
+                }
+            }
+            declare(&mut out, "ignis_speech_audio_seconds_total", "counter", "Seconds of audio the completed transcriptions covered.");
+            let _ = writeln!(out, "ignis_speech_audio_seconds_total {}", decimal(read(&self.speech_audio_ms), THOUSANDTHS));
+            self.speech_wait.render(&mut out, "ignis_speech_commit_wait_seconds", "Wait from a transcription's commit (a batch request's last byte received) to its transcript, completed ones only.");
+            declare(&mut out, "ignis_speech_sessions_open", "gauge", "Realtime transcription sessions open.");
+            let _ = writeln!(out, "ignis_speech_sessions_open {}", read(&self.speech_sessions));
+            declare(&mut out, "ignis_speech_queue_length", "gauge", "Batch transcriptions waiting behind the one running.");
+            let _ = writeln!(out, "ignis_speech_queue_length {}", read(&self.speech_queue));
         }
         // GitHub #301, #302: last, so a 27B load's exposition is the same
         // bytes it was before Flash-Next.

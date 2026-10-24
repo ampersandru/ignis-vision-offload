@@ -2722,6 +2722,115 @@ fn an_image_field_past_its_bounds_is_refused_naming_it() {
     assert_eq!(config(&[]).settings().image.max_target_cells, 16_800, "2400x1792, the largest preset");
 }
 
+// ── the speech model's group (spec speech/02, spec.md's configuration table) ──
+
+/// Every `speech.*` field resolves from its flag, its env var and the config
+/// file with config v2's precedence, and the server's live knobs carry it.
+#[test]
+fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
+    // Per field: the file's value, the env var's, the flag's.
+    let cases = [
+        ("model", "qwen3-asr-0.6b", "qwen3-asr-1.7b-q8", "off"),
+        ("compat_names", "whisper-1", "whisper-1;scribe", "scribe;my-asr"),
+        ("threads", "2", "3", "auto"),
+        ("max_clip_seconds", "300", "600", "900"),
+        ("context_max_tokens", "64", "128", "256"),
+        ("pinned_weights", "true", "false", "true"),
+        ("idle_unload", "0", "60", "120"),
+        ("partial_interval_ms", "500", "1000", "3000"),
+        ("rollback_tokens", "2", "3", "8"),
+        ("max_sessions", "1", "2", "8"),
+        ("max_queue", "0", "1", "2"),
+        ("vad_threshold", "0.25", "0.75", "1"),
+        ("vad_prefix_padding_ms", "100", "200", "400"),
+        ("vad_silence_duration_ms", "100", "200", "800"),
+        ("loan_grace_seconds", "10", "20", "40"),
+        ("loan_wait_seconds", "1", "2", "9"),
+    ];
+    assert_eq!(cases.len(), schema::SpeechGroup::FIELDS.len(), "every speech field has a case");
+    for (name, file, env, flag) in cases {
+        let meta = schema::field("speech", name).unwrap();
+        let canonical = |raw: &str| (meta.canonical)(raw).unwrap();
+        let resolved = |config: &Config| config.settings().render()["speech"][name].clone();
+        let files = MemFiles::with(&[("c.yaml", &format!("speech:\n  {name}: \"{file}\"\n"))]);
+        let env_var = |key: &str| (key == meta.env()).then(|| env.to_owned());
+
+        assert_eq!(resolved(&config(&[])), (meta.default)(), "{name}: the default");
+        let from_file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap();
+        assert_eq!(resolved(&from_file), canonical(file), "{name}: the file over the default");
+        let from_env = with_files(&["--config", "c.yaml"], env_var, &files).unwrap();
+        assert_eq!(resolved(&from_env), canonical(env), "{name}: the env var over the file");
+        let from_flag = with_files(&["--config", "c.yaml", &meta.flag(), flag], env_var, &files).unwrap();
+        assert_eq!(resolved(&from_flag), canonical(flag), "{name}: the flag over the env var");
+        assert!(meta.visible && meta.patchable && !meta.reload_required, "{name}: shown and changed live");
+    }
+    let speech = crate::Live::of(&config(&["--speech-max-queue", "2", "--speech-model", "off"])).speech;
+    assert_eq!((speech.max_queue, speech.model.as_str()), (2, "off"));
+}
+
+/// The defaults are the table's: `auto`, the five compat names, `auto`
+/// threads, 1200 s, 512 tokens, mapped weights, 300 s idle, 2000 ms, 5, 4 and
+/// 4, the VAD's 0.5, 300 and 500, the loan's 30 and 5.
+#[test]
+fn the_speech_defaults_are_the_specs() {
+    let speech = config(&[]).settings().speech.clone();
+    assert_eq!(speech.model, "auto");
+    assert_eq!(speech.compat_names, ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-live-transcribe"]);
+    assert_eq!(speech.threads, None);
+    assert_eq!((speech.max_clip_seconds, speech.context_max_tokens, speech.pinned_weights, speech.idle_unload), (1200, 512, false, 300));
+    assert_eq!((speech.partial_interval_ms, speech.rollback_tokens, speech.max_sessions, speech.max_queue), (2000, 5, 4, 4));
+    assert_eq!((speech.vad_threshold, speech.vad_prefix_padding_ms, speech.vad_silence_duration_ms), (500, 300, 500));
+    assert_eq!((speech.loan_grace_seconds, speech.loan_wait_seconds), (30, 5));
+    let shown = config(&[]).settings().render();
+    assert_eq!(shown["speech"]["threads"], "auto");
+    assert_eq!(shown["speech"]["vad_threshold"], 0.5);
+}
+
+/// A value past a `speech.*` field's bounds is refused naming the spelling
+/// it came under and the bound; at the bound it is taken.
+#[test]
+fn a_speech_field_past_its_bounds_is_refused_naming_it() {
+    for (name, low, high) in [
+        ("max_clip_seconds", 1, 1200),
+        ("context_max_tokens", 0, 4096),
+        ("partial_interval_ms", 100, 60_000),
+        ("rollback_tokens", 0, 64),
+        ("max_sessions", 1, 64),
+        ("max_queue", 0, 64),
+    ] {
+        let flag = schema::field("speech", name).unwrap().flag();
+        for taken in [low, high] {
+            assert!(resolve(&args(&[&flag, &taken.to_string()]), no_env).is_ok(), "{flag} {taken}");
+        }
+        let err = refused(&[&flag, &(high + 1).to_string()]);
+        assert!(err.contains(&flag) && err.contains(&format!("{low}..={high}")), "{err}");
+    }
+    let err = refused(&["--speech-vad-threshold", "1.5"]);
+    assert!(err.contains("--speech-vad-threshold") && err.contains("0 to 1"), "{err}");
+    let err = refused(&["--speech-threads", "0"]);
+    assert!(err.contains("--speech-threads") && err.contains("auto"), "{err}");
+    let err = refused(&["--speech-compat-names", "a;a"]);
+    assert!(err.contains("--speech-compat-names") && err.contains("twice"), "{err}");
+    let err = refused(&["--speech-compat-names", "my model"]);
+    assert!(err.contains("--speech-compat-names") && err.contains("whitespace"), "{err}");
+}
+
+/// A compat name equal to a served id is refused at start (spec speech/02):
+/// a catalog entry's, a model family's, the start model's or the speech
+/// model's own.
+#[test]
+fn a_compat_name_equal_to_a_served_id_is_refused_at_start() {
+    for served in ["qwen3.8-27b", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3-asr-1.7b"] {
+        let err = refused(&["--speech-compat-names", &format!("whisper-1;{served}")]);
+        assert!(err.contains("--speech-compat-names") && err.contains(served) && err.contains("served model id"), "{served}: {err}");
+    }
+    let err = refused(&["--speech-model", "my-asr", "--speech-compat-names", "my-asr"]);
+    assert!(err.contains("my-asr") && err.contains("served model id"), "{err}");
+    let err = refused(&["--model-id", "my-text", "--speech-compat-names", "my-text"]);
+    assert!(err.contains("my-text") && err.contains("served model id"), "{err}");
+    assert!(resolve(&args(&["--speech-compat-names", "whisper-1;scribe"]), no_env).is_ok());
+}
+
 // ── `--profile auto` (ADR 0063, spec 27b-16gb/04) ────────────────────────
 
 const GIB_F: f64 = (1u64 << 30) as f64;

@@ -32,7 +32,10 @@ API key is refused `401` as always and loads nothing.
 Only use counts: a request is in use from its admission to the end of its
 response (a long stream keeps the model loaded); polling `GET /v1/models`, the
 config and catalog reads or `/metrics` does not, so a Playground left open
-neither keeps the model loaded nor loads it again. An unload and the load a
+neither keeps the model loaded nor loads it again. A transcription does not
+count either: the [speech model](transcriptions.md) is another model, on the CPU,
+with its own idle time (`speech.idle_unload`), and it is served with the text
+model unloaded without loading it. An unload and the load a
 request begins after it are logged (`ignis.model.unloaded`,
 `ignis.model.reloaded`) and are not a switch: `last_switch` is left as it was.
 A `POST /v1/models/switch` or a reloading `PATCH /v1/config` while unloaded is

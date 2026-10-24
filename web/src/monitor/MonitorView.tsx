@@ -16,6 +16,7 @@ import {
   type Meter,
   type Ngram,
   type Images,
+  type Speech,
   type Reasoning,
   type Speculation,
   RATE_SPAN_MS,
@@ -27,6 +28,7 @@ import { bucketCounts } from "./quantile.ts";
 import type { MonitorState } from "./scrape.ts";
 import {
   IMAGE_OUTCOMES,
+  SPEECH_OUTCOMES,
   LOOP_OUTCOMES,
   type LoopOutcome,
   REJECT_REASONS,
@@ -273,6 +275,9 @@ function Board({ dash, state }: { dash: Dashboard; state: MonitorState }) {
 
       {/* GitHub #324: only once the image model admitted a job -- a text-only server shows nothing of it. */}
       {dash.images && <ImagesCard images={dash.images} win={win} />}
+
+      {/* Spec speech/02: only once the speech model was asked for a transcription -- a server that never transcribed shows nothing of it. */}
+      {dash.speech && <SpeechCard speech={dash.speech} win={win} />}
 
       {/* GitHub #301, #302: only a Flash-Next load has an expert cache and an n-gram table. */}
       {(dash.experts || dash.ngram) && (
@@ -1236,6 +1241,28 @@ function ImagesCard({ images, win }: { images: Images; win: string }) {
       />
       {notCompleted.length > 0 && <p className="mt-2 text-[11px] text-ash">Not completed: {notCompleted.join(" · ")}</p>}
       {phases.length > 0 && <Figures items={phases.map((p) => [`Time ${p.phase}`, asShare(p.share)] as [string, string])} />}
+    </Card>
+  );
+}
+
+/** The speech model (spec speech/02): transcriptions that ended and how, the audio they covered, how long they waited, and the queue. */
+function SpeechCard({ speech, win }: { speech: Speech; win: string }) {
+  const notCompleted = SPEECH_OUTCOMES.filter((outcome) => outcome !== "completed" && speech.transcriptions.byOutcome[outcome].window).map(
+    (outcome) => `${formatCount(speech.transcriptions.byOutcome[outcome].window)} ${outcome}`,
+  );
+  return (
+    <Card title="Transcriptions" subtitle={`Audio the speech model transcribed on the CPU · last ${win}`}>
+      <Figures
+        items={[
+          ["Transcriptions", formatCount(speech.transcriptions.window)],
+          ["Audio, seconds", formatCount(speech.audioSeconds.window)],
+          ["Median wait", speech.wait.p50 === null ? "-" : formatSeconds(speech.wait.p50)],
+          ["Sessions open", formatCount(speech.sessionsOpen)],
+          ["Queued", formatCount(speech.queueLength)],
+          ["Since start", formatCount(speech.transcriptions.total)],
+        ]}
+      />
+      {notCompleted.length > 0 && <p className="mt-2 text-[11px] text-ash">Not completed: {notCompleted.join(" · ")}</p>}
     </Card>
   );
 }

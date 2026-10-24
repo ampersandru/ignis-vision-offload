@@ -1181,6 +1181,227 @@ The text model that rewrites prompts: the served id of a model an explicit switc
 
 The most tokens one rewrite may take. Qwen's prompts ask for about 200 words; a longer answer is cut here and used as it is.
 
+## speech
+
+### `speech.model`
+
+| | |
+|---|---|
+| Flag | `--speech-model` |
+| Env var | `IGNIS_SPEECH_MODEL` |
+| Kind | `text` |
+| Default | `auto` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The speech model: `auto` (the 1.7B Q4_K_M catalog entry, `qwen3-asr-1.7b`), a catalog entry's id, or `off`. It is enabled when its files are on disk; nothing is ever downloaded by itself (`ignis-server model download <id>`).
+
+### `speech.compat_names`
+
+| | |
+|---|---|
+| Flag | `--speech-compat-names` |
+| Env var | `IGNIS_SPEECH_COMPAT_NAMES` |
+| Kind | `name;...`, repeatable |
+| Default | `["whisper-1","gpt-4o-transcribe","gpt-4o-mini-transcribe","gpt-transcribe","gpt-live-transcribe"]` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The model names OpenAI clients send that the speech model answers to, so an unmodified client works: Aider hard-codes `whisper-1`. Not catalog aliases and not listed by `GET /v1/models`; a name equal to a served id is refused at start.
+
+### `speech.threads`
+
+| | |
+|---|---|
+| Flag | `--speech-threads` |
+| Env var | `IGNIS_SPEECH_THREADS` |
+| Kind | `count\|auto` |
+| Default | `auto` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The threads the speech model computes with: `auto` is the physical cores less one. Read by the load, so a change holds from the next one.
+
+### `speech.max_clip_seconds`
+
+| | |
+|---|---|
+| Flag | `--speech-max-clip-seconds` |
+| Env var | `IGNIS_SPEECH_MAX_CLIP_SECONDS` |
+| Kind | `seconds` |
+| Default | `1200` |
+| Rule | 1..=1200 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The longest clip one transcription takes, in seconds; a longer one is refused and nothing is split. 1,200, the model's limit.
+
+### `speech.context_max_tokens`
+
+| | |
+|---|---|
+| Flag | `--speech-context-max-tokens` |
+| Env var | `IGNIS_SPEECH_CONTEXT_MAX_TOKENS` |
+| Kind | `tokens` |
+| Default | `512` |
+| Rule | 0..=4096 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The most tokens of context (`prompt` and `keywords[]`) a transcription reads; over it the last ones are kept. 0 reads none.
+
+### `speech.pinned_weights`
+
+| | |
+|---|---|
+| Flag | `--speech-pinned-weights` (may stand bare: `true`) |
+| Env var | `IGNIS_SPEECH_PINNED_WEIGHTS` |
+| Kind | `bool` |
+| Default | `false` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Pin the speech model's weights in host memory instead of mapping the file. Read by the load, so a change holds from the next one.
+
+### `speech.idle_unload`
+
+| | |
+|---|---|
+| Flag | `--speech-idle-unload` |
+| Env var | `IGNIS_SPEECH_IDLE_UNLOAD` |
+| Kind | `seconds` |
+| Default | `300` |
+| Rule | 0..=604800 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+Seconds with no transcription after which the speech model is unloaded, its host memory given back; the next transcription loads it again. 0 never unloads.
+
+### `speech.partial_interval_ms`
+
+| | |
+|---|---|
+| Flag | `--speech-partial-interval-ms` |
+| Env var | `IGNIS_SPEECH_PARTIAL_INTERVAL_MS` |
+| Kind | `ms` |
+| Default | `2000` |
+| Rule | 100..=60000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How often a Realtime session's live transcript is refreshed while audio arrives, in milliseconds. Read by the Realtime route (spec speech/03), which is not served yet.
+
+### `speech.rollback_tokens`
+
+| | |
+|---|---|
+| Flag | `--speech-rollback-tokens` |
+| Env var | `IGNIS_SPEECH_ROLLBACK_TOKENS` |
+| Kind | `tokens` |
+| Default | `5` |
+| Rule | 0..=64 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The tokens of a live transcript held back as provisional, the rest being stable. Read by the speech executor with the Realtime route (spec speech/01, 03), not served yet.
+
+### `speech.max_sessions`
+
+| | |
+|---|---|
+| Flag | `--speech-max-sessions` |
+| Env var | `IGNIS_SPEECH_MAX_SESSIONS` |
+| Kind | `sessions` |
+| Default | `4` |
+| Rule | 1..=64 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The most Realtime sessions open at once; past it a session is refused `503` with `Retry-After`. Read with the Realtime route (spec speech/03), not served yet.
+
+### `speech.max_queue`
+
+| | |
+|---|---|
+| Flag | `--speech-max-queue` |
+| Env var | `IGNIS_SPEECH_MAX_QUEUE` |
+| Kind | `requests` |
+| Default | `4` |
+| Rule | 0..=64 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The batch transcriptions that may wait behind the one running, in order; one more is refused `503 engine_full` with `Retry-After`. 0 runs one at a time with none waiting.
+
+### `speech.vad_threshold`
+
+| | |
+|---|---|
+| Flag | `--speech-vad-threshold` |
+| Env var | `IGNIS_SPEECH_VAD_THRESHOLD` |
+| Kind | `0..1` |
+| Default | `0.5` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The probability above which `server_vad` hears speech. Read with `server_vad` (spec speech/05), not served yet.
+
+### `speech.vad_prefix_padding_ms`
+
+| | |
+|---|---|
+| Flag | `--speech-vad-prefix-padding-ms` |
+| Env var | `IGNIS_SPEECH_VAD_PREFIX_PADDING_MS` |
+| Kind | `ms` |
+| Default | `300` |
+| Rule | 0..=10000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The audio kept from before `server_vad` heard speech, in milliseconds (spec speech/05), not served yet.
+
+### `speech.vad_silence_duration_ms`
+
+| | |
+|---|---|
+| Flag | `--speech-vad-silence-duration-ms` |
+| Env var | `IGNIS_SPEECH_VAD_SILENCE_DURATION_MS` |
+| Kind | `ms` |
+| Default | `500` |
+| Rule | 0..=60000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The silence after which `server_vad` ends a turn, in milliseconds (spec speech/05), not served yet.
+
+### `speech.loan_grace_seconds`
+
+| | |
+|---|---|
+| Flag | `--speech-loan-grace-seconds` |
+| Env var | `IGNIS_SPEECH_LOAN_GRACE_SECONDS` |
+| Kind | `seconds` |
+| Default | `30` |
+| Rule | 0..=3600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How long a loan of free KV pages to the speech model outlives its transcription, in seconds (spec speech/06), not served yet.
+
+### `speech.loan_wait_seconds`
+
+| | |
+|---|---|
+| Flag | `--speech-loan-wait-seconds` |
+| Env var | `IGNIS_SPEECH_LOAN_WAIT_SECONDS` |
+| Kind | `seconds` |
+| Default | `5` |
+| Rule | 0..=600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How long a transcription waits for a loan before it runs on the CPU, in seconds (spec speech/06), not served yet.
+
 ## download
 
 ### `download.enabled`

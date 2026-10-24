@@ -13,7 +13,8 @@ once; a second switch while one runs is a `409 switch_in_progress`.
 
 A switch is a full reload: the old model is unloaded before the new one loads,
 so the two are never on the card together. While it runs, every other `/v1`
-route answers `503 model_switching` with `Retry-After: 5`, and `GET /v1/models`
+route answers `503 model_switching` with `Retry-After: 5` (but
+`POST /v1/audio/transcriptions`, which the [speech model](transcriptions.md) serves on the CPU through a switch), and `GET /v1/models`
 reports `status: "switching"` with `switching: {from, to}`. Requests already
 running on the old model get `--switch-drain-timeout` (30 s) to finish; one
 still running then ends with an `engine_error`. The new model loads on the

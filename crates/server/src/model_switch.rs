@@ -396,6 +396,9 @@ pub enum Unswitchable {
     /// that fits (ADR 0064 §3): `409 model_above_card_class`, before anything
     /// is prepared or torn down.
     AboveClass(ClassRefusal),
+    /// A speech model's catalog entry (ADR 0066): loaded beside the active
+    /// model by the first transcription, never switched to.
+    Speech,
 }
 
 /// A model `GET /v1/models` lists besides the loaded one
@@ -608,6 +611,9 @@ impl Switcher {
         if let Some(refusal) = self.above_class(model) {
             return Err(Unswitchable::AboveClass(refusal));
         }
+        if crate::speech::is_speech_id(model) {
+            return Err(Unswitchable::Speech);
+        }
         if let Some(listed) = self.listed_models().remove(model) {
             return if listed.is_file() { Ok(listed) } else { Err(Unswitchable::KnownMissing { artifact: listed }) };
         }
@@ -758,6 +764,7 @@ impl Switcher {
         };
         catalog
             .chain(known.keys().cloned())
+            .filter(|id| !crate::speech::is_speech_id(id))
             .filter(|id| seen.insert(id.clone()))
             .filter_map(|id| match self.known(&id) {
                 Some(_) => Some(Servable { id, unavailable: None }),
@@ -776,6 +783,10 @@ impl Switcher {
     /// entry's. A catalog id above the card's class is not one, listed or
     /// not (ADR 0064 §3): a request naming it never switches.
     pub fn known(&self, model: &str) -> Option<PathBuf> {
+        // A speech model is no model to switch to (ADR 0066).
+        if crate::speech::is_speech_id(model) {
+            return None;
+        }
         if self.above_class(model).is_some() {
             return None;
         }

@@ -60,14 +60,18 @@ pub enum ModelKind {
     Text,
     /// The image model: an image runner and its job queue.
     Image,
+    /// The speech model (ADR 0066, spec speech/02): audio in, its transcript
+    /// out, on the CPU, loaded beside the active model and never switched to.
+    Speech,
 }
 
 impl ModelKind {
-    /// The kind as the API names it: `text` or `image`.
+    /// The kind as the API names it: `text`, `image` or `speech`.
     pub fn as_str(self) -> &'static str {
         match self {
             ModelKind::Text => "text",
             ModelKind::Image => "image",
+            ModelKind::Speech => "speech",
         }
     }
 }
@@ -1098,7 +1102,10 @@ mod tests {
         assert_eq!(ModelFamily::Qwen38_27b.kind(), ModelKind::Text);
         assert_eq!(ModelFamily::FlashNext.kind(), ModelKind::Text);
         assert_eq!(ModelFamily::QwenImage21.kind(), ModelKind::Image);
-        assert_eq!((ModelKind::Text.as_str(), ModelKind::Image.as_str()), ("text", "image"));
+        assert_eq!(
+            (ModelKind::Text.as_str(), ModelKind::Image.as_str(), ModelKind::Speech.as_str()),
+            ("text", "image", "speech")
+        );
     }
 
     /// The layer pattern of `fn_config.json` (the checkpoint's text config):

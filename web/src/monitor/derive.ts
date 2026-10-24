@@ -10,6 +10,9 @@ import {
   emptySnapshot,
   type Histogram,
   IMAGE_OUTCOMES,
+  SPEECH_EXECUTORS,
+  SPEECH_OUTCOMES,
+  type SpeechOutcome,
   IMAGE_PHASES,
   type ImageOutcome,
   type ImagePhase,
@@ -209,6 +212,21 @@ export type Images = {
 };
 
 /**
+ * The speech model's transcriptions over the window (spec speech/02): how
+ * many ended and how (both executors together), the seconds of audio they
+ * covered, how long the completed ones waited from commit to transcript, and
+ * the sessions and queue now.
+ */
+export type Speech = {
+  /** Transcriptions ended, all outcomes; `byOutcome` splits them. */
+  transcriptions: Counter & { byOutcome: Record<SpeechOutcome, Tally> };
+  audioSeconds: Counter;
+  wait: Latency;
+  sessionsOpen: number | null;
+  queueLength: number | null;
+};
+
+/**
  * The reasoning's two ways of being cut short over the window (GitHub #330):
  * the loop guard's rewinds and the thinking budget's forced closes. Shares are
  * computed here from the counters, since the server exports none. The guard's
@@ -279,6 +297,8 @@ export type Dashboard = {
   speculation: Speculation | null;
   /** Null until the image model admitted a job: a text-only server. */
   images: Images | null;
+  /** Null until the speech model was asked for a transcription. */
+  speech: Speech | null;
   /** Null until the loop guard watched a request or the thinking budget closed one. */
   reasoning: Reasoning | null;
   health: Health;
@@ -489,6 +509,23 @@ export function deriveDashboard(points: Point[], windowMs: number): Dashboard | 
           waiting: last.images.waiting,
           running: last.images.running,
           phases: deriveImagePhases(points, from),
+        }
+      : null,
+    speech: last.speech
+      ? {
+          transcriptions: {
+            ...counter((s) => sumKnown(SPEECH_EXECUTORS.flatMap((executor) => SPEECH_OUTCOMES.map((outcome) => s.speech?.transcriptions[executor][outcome] ?? null)))),
+            byOutcome: Object.fromEntries(
+              SPEECH_OUTCOMES.map((outcome) => {
+                const pick = (s: Snapshot) => sumKnown(SPEECH_EXECUTORS.map((executor) => s.speech?.transcriptions[executor][outcome] ?? null));
+                return [outcome, { total: pick(last), window: increaseOver(points, pick, from) }];
+              }),
+            ) as Record<SpeechOutcome, Tally>,
+          },
+          audioSeconds: counter((s) => s.speech?.audioSeconds ?? null),
+          wait: latency((s) => s.speech?.wait ?? null),
+          sessionsOpen: last.speech.sessionsOpen,
+          queueLength: last.speech.queueLength,
         }
       : null,
     reasoning: last.loopGuard || last.thinkingForcedCloses !== null ? deriveReasoning(points, from) : null,

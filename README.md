@@ -378,6 +378,34 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - **The weights are under the Qwen Research License, non-commercial use
   only**: do not serve the image model in a commercial product.
 
+### Speech to text, on the CPU, beside the card
+
+- **Qwen3-ASR** is served on OpenAI's route, `POST /v1/audio/transcriptions`,
+  on the CPU: it never takes VRAM from the model on the card, and runs while
+  that model switches or is unloaded. It is loaded by the first request and
+  unloaded after `speech.idle_unload` seconds without one. It is **off until
+  its files are on disk** (`ignis-server model download qwen3-asr-1.7b`);
+  nothing downloads by itself, and `GET /v1/models` carries a `speech` object
+  saying whether it can serve and, if not, why.
+- **OpenAI's clients work unchanged.** `model` may be absent, the speech
+  model's id, or one of `speech.compat_names` (`whisper-1`,
+  `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, ...): Aider works with
+  `OPENAI_API_BASE` pointed here and its hard-coded `whisper-1`. The answers
+  are `json`, `text` and `verbose_json`, or Server-Sent Events with `stream`;
+  `prompt` and `keywords[]` give the model context, `language` forces the
+  language. A field the server does not do (`srt`, word timestamps,
+  diarization, `temperature` other than 0) is a `400` naming it.
+- **Requirements.** A CPU with AVX2 (Haswell, 2013, or later) and 1.4 to
+  3.1 GB of RAM while the model is in use. WAV, FLAC, MP3 and AAC are decoded,
+  and the Ogg and Matroska/WebM containers when they carry FLAC; Opus is not
+  decoded yet. A clip may be 20 minutes long, and is never split: the wait is
+  proportional to the audio, a few times faster than real time on a desktop CPU
+  and slower on a 4-core one; one clip runs at a time, and up to four wait
+  (`speech.max_queue`), then `503` with `Retry-After`.
+- **Forcing `language` Italianises English jargon**: the model hears a
+  sentence in Italian with English terms best left to detect the language on its
+  own; force it only when it guesses wrong.
+
 ### Models that come and go
 
 - **One card, one model at a time, no restart.** `POST /v1/models/switch`
@@ -604,12 +632,14 @@ Choices, not gaps — so nobody goes looking for them:
 - **`/v1/batches`.** An offline queue is a storage service, and this server
   holds no request past its connection: send the requests at once, and the
   scheduler batches them.
-- **Audio, in or out.** The model has no audio tower and no audio head.
+- **Audio out, and `/v1/audio/translations`.** Nothing here speaks, and the
+  speech model transcribes the language it hears; it does not translate.
 - **LoRA adapters.** They are trained against BF16 weights, and the checkpoint
   is NVFP4: merge the adapter and re-export the checkpoint instead.
-- **More than one model loaded at once.** The VRAM plan is decided at load,
-  for one: the server [switches](#models-that-come-and-go) between models by
-  a full reload instead.
+- **A second model on the card.** The VRAM plan is decided at load, for one:
+  the server [switches](#models-that-come-and-go) between models by a full
+  reload instead. The one exception is the [speech model](#speech-to-text-on-the-cpu-beside-the-card),
+  which runs on the CPU and never holds VRAM.
 
 ## Building it
 

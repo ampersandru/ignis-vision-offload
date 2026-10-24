@@ -112,3 +112,7 @@ impl TemplateProvider for ReasoningTemplate {
     // `decoder_starts_in_reasoning` left at the trait default
     // (`thinking.enable_thinking`), which is the point of this type.
 }
+
+/// The speech model's fixtures: a server over a scripted executor, the form
+/// builder and the audio samples (spec speech/02, GitHub #352).
+pub mod speech;
