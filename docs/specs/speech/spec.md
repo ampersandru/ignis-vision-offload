@@ -251,9 +251,11 @@ Read at `711b1d85`; every line checked in this worktree.
 - **Privacy** (Q13): audio is never written to disk or to a log. A
   transcript follows the rule for prompt text (`docs/specs/logging/spec.md`
   §29: not logged by default).
-- **Merging:** a ticket's branch merges into local `main` only when every
-  criterion holds. Never push, never file or close an issue without the
-  owner's word.
+- **Merging:** a ticket's branch merges into the integration branch
+  `speech-asr`, and that branch into local `main` once its criteria hold. A
+  ticket is closed, with a closing comment, when its code is in `main` and
+  every criterion holds (owner, 2026-10-25). Never push without the owner's
+  word.
 
 ## Nothing left undecided
 
