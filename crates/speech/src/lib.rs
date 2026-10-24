@@ -46,6 +46,6 @@ pub mod text;
 pub(crate) mod testutil;
 
 pub use cpu::{avx2_dispatches, Features, Isa, NO_AVX2};
-pub use executor::{Availability, ExecError, Executor, Loaded, ModelFiles, Settings, Threads};
+pub use executor::{Availability, ExecError, Executor, Loaded, ModelFiles, SessionTuning, Settings, Threads};
 pub use model::{LoadError, LoadReport, Model};
 pub use session::{Partial, Session, SessionError, Stats, Transcript};

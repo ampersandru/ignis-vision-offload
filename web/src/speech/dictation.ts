@@ -42,9 +42,8 @@ export const DISCARDED = "Dictation discarded.";
 export const CONNECTION_LOST = "Dictation stopped: the connection to the server closed. Insert what was heard, or discard it.";
 const busy = (seconds: number) => `Speech is busy with another dictation. Trying again in ${seconds} s.`;
 // Beyond the spec's tables: the retry refused too, a commit with no audio, a start that failed, an item that failed.
-// A refusal is read as busy by elimination (realtime.ts), which a proxy that does not carry WebSockets also looks
-// like: the retry refused says both.
-export const STILL_BUSY = "The dictation still could not open: speech is busy, or this address does not carry WebSockets. Press the mic to try again.";
+export const STILL_BUSY = "The dictation still could not open: speech is busy. Press the mic to try again.";
+export const NO_WEBSOCKET = "Dictation could not start: the server is up, but this address does not carry WebSockets.";
 export const NOTHING_HEARD = "Nothing was heard.";
 const cannotStart = (why: string) => `Dictation could not start: ${why.replace(/\.$/, "")}.`;
 const stopped = (why: string) => `Dictation stopped: ${why.replace(/\.$/, "")}. Insert what was heard, or discard it.`;
@@ -335,6 +334,8 @@ export class DictationController {
         return this.deps.onKeyRequired?.();
       case "unreachable":
         return this.say(cannotStart(refusal.message), "fault", NOTICE_MS, { phase: "idle" });
+      case "no_websocket":
+        return this.say(NO_WEBSOCKET, "fault", NOTICE_MS, { phase: "idle" });
     }
   }
 

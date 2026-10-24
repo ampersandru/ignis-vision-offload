@@ -717,8 +717,16 @@ config_group! {
         partial_interval_ms: Millis = 2000, between(100, 60_000), ALL, [Visible, Patchable];
         /// The tokens of a live transcript held back as provisional, the rest
         /// being stable: the tail a Realtime session that asks for it gets.
-        /// Read by the speech executor when it opens a session.
+        /// Read by the speech executor when a session opens, so a change holds
+        /// from the next session.
         rollback_tokens: Tokens = 10, between(0, 64), ALL, [Visible, Patchable];
+        /// The first refreshes of a Realtime session's live transcript that
+        /// make no text stable, whatever `speech.rollback_tokens` says: the
+        /// language and the opening words are decided on more than one
+        /// interval of audio (the official streaming's `unfixed_chunk_num`).
+        /// 0 fixes text from the first refresh. Read by the speech executor
+        /// when a session opens, so a change holds from the next session.
+        unfixed_partials: Partials = 2, between(0, 16), ALL, [Visible, Patchable];
         /// The most Realtime transcription sessions open at once; past it
         /// the next is refused at the upgrade `503` with `Retry-After`.
         max_sessions: Sessions = 4, between(1, 64), ALL, [Visible, Patchable];

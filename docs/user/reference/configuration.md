@@ -1303,7 +1303,21 @@ How often at most a Realtime session's live transcript is refreshed while audio 
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The tokens of a live transcript held back as provisional, the rest being stable: the tail a Realtime session that asks for it gets. Read by the speech executor when it opens a session.
+The tokens of a live transcript held back as provisional, the rest being stable: the tail a Realtime session that asks for it gets. Read by the speech executor when a session opens, so a change holds from the next session.
+
+### `speech.unfixed_partials`
+
+| | |
+|---|---|
+| Flag | `--speech-unfixed-partials` |
+| Env var | `IGNIS_SPEECH_UNFIXED_PARTIALS` |
+| Kind | `partials` |
+| Default | `2` |
+| Rule | 0..=16 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The first refreshes of a Realtime session's live transcript that make no text stable, whatever `speech.rollback_tokens` says: the language and the opening words are decided on more than one interval of audio (the official streaming's `unfixed_chunk_num`). 0 fixes text from the first refresh. Read by the speech executor when a session opens, so a change holds from the next session.
 
 ### `speech.max_sessions`
 

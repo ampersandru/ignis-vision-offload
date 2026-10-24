@@ -32,7 +32,8 @@ pub struct LoadSettings {
     pub pinned_weights: bool,
 }
 
-/// What a session opens with.
+/// What a session opens with: the request's context and language, and the
+/// `speech` settings a session reads once, when it opens (spec speech/01 §4).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionOpen {
     /// The system turn: the request's `prompt`, then its `keywords[]` as one
@@ -45,6 +46,26 @@ pub struct SessionOpen {
     /// official assistant prefill `language <Name><asr_text>`. `None`
     /// auto-detects.
     pub language: Option<String>,
+    /// `speech.rollback_tokens`: the tokens of a live transcript kept
+    /// provisional. Read at the opening, so a live change holds from the next
+    /// session.
+    pub rollback_tokens: u32,
+    /// `speech.unfixed_partials`: the first live refreshes that fix no text.
+    pub unfixed_partials: u32,
+}
+
+impl SessionOpen {
+    /// A session's opening: its `context` and `language`, and the `speech`
+    /// settings in force now.
+    pub fn of(group: &crate::config::schema::SpeechGroup, context: String, language: Option<String>) -> Self {
+        Self {
+            context,
+            context_max_tokens: group.context_max_tokens,
+            language,
+            rollback_tokens: group.rollback_tokens,
+            unfixed_partials: group.unfixed_partials,
+        }
+    }
 }
 
 /// A live transcript so far (spec speech/01 §4, `partial()`).

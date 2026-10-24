@@ -149,6 +149,16 @@ impl Speech {
         worker.submit(job, group.max_queue)
     }
 
+    /// Whether a Realtime session would open now, or when room frees: the
+    /// look a plain `GET /v1/realtime` takes without claiming a place.
+    /// [`Speech::open_session`] checks again.
+    pub fn session_room(&self, group: &SpeechGroup) -> Result<(), Full> {
+        if self.gauges.sessions.load(Ordering::SeqCst) >= group.max_sessions as usize {
+            return Err(Full { retry_after_secs: 1 });
+        }
+        Ok(())
+    }
+
     /// Open a Realtime session, unless `max_sessions` are open (spec
     /// speech/02 §Admission, 03). The guard closes it when dropped.
     pub fn open_session(self: &Arc<Self>, group: &SpeechGroup) -> Result<SessionGuard, Full> {

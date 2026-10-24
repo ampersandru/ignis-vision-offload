@@ -14,6 +14,7 @@ import {
   LISTENING,
   METER_BARS,
   NOTHING_HEARD,
+  NO_WEBSOCKET,
   STILL_BUSY,
 } from "./dictation.ts";
 import type { Refusal, Transcription, TranscriptionHandlers } from "./realtime.ts";
@@ -260,6 +261,17 @@ describe("when the session is refused", () => {
     expect(h.state().phase).toBe("idle");
     expect(dictationHint(h.state(), "Send")).toEqual({ text: STILL_BUSY, tone: "warn" });
     expect(h.sessions).toHaveLength(2);
+  });
+
+  it("no_websocket: the server would have opened it, so it is not busy and is not retried", async () => {
+    const h = harness();
+    h.controller.toggle();
+    await settle();
+    refuse(h, { kind: "no_websocket" });
+    expect(h.state().phase).toBe("idle");
+    expect(dictationHint(h.state(), "Send")).toEqual({ text: NO_WEBSOCKET, tone: "fault" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.sessions).toHaveLength(1);
   });
 
   it("busy, then free on the retry: the dictation goes on", async () => {

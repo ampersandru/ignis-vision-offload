@@ -8,7 +8,7 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use ignis_speech::{Features, ModelFiles, Settings, Threads};
+use ignis_speech::{Features, ModelFiles, SessionTuning, Settings, Threads};
 
 use super::executor::{LoadSettings, Partial, SessionOpen, SpeechError, SpeechExecutor, SpeechFiles, SpeechSession, Transcript};
 
@@ -106,7 +106,12 @@ impl SpeechExecutor for CpuExecutor {
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {
         let slot = self.slot();
         let l = slot.as_ref().ok_or_else(|| SpeechError("the speech model is not loaded".into()))?;
-        let s = l.exec.open_capped(&open.context, open.language.as_deref(), open.context_max_tokens as usize).map_err(err)?;
+        let tuning = SessionTuning {
+            context_max_tokens: open.context_max_tokens as usize,
+            rollback_tokens: open.rollback_tokens as usize,
+            unfixed_partials: open.unfixed_partials as usize,
+        };
+        let s = l.exec.open_tuned(&open.context, open.language.as_deref(), tuning).map_err(err)?;
         Ok(Box::new(CpuSession(s)))
     }
 }

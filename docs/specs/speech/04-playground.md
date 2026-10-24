@@ -219,18 +219,21 @@ differs from it:
   page, so none is read at the default 24 kHz; a commit asked for meanwhile
   follows it. `prompt` is left out when there is no context.
 - **Busy (AC 11).** A browser cannot read a refused upgrade's status or
-  `Retry-After`: it sees a close before the open. The page then reads
-  `GET /v1/models`, as the Responses socket's probe does: a `401` asks for the
-  key; `speech.available: false` is the unavailable sentence; a speech model
-  that can serve was refused for every session being taken. That is a reading
-  by elimination: a proxy that does not carry WebSockets looks the same. The
-  countdown is the page's own, 3 s (`BUSY_RETRY_SECONDS`; #353 answers
+  `Retry-After`: it sees a close before the open. The page then asks the
+  server why (below). The countdown is the page's own, 3 s (`BUSY_RETRY_SECONDS`; #353 answers
   `Retry-After: 1`), the mic is let go while it runs, and the one retry
-  refused again names both causes: "The dictation still could not open:
-  speech is busy, or this address does not carry WebSockets. Press the mic to
-  try again." (warn). Reading the real cause and wait would take a server
-  change: `speech-353` answers a plain GET with `400` before it checks the
-  model or the sessions, and a page's `fetch` cannot send an upgrade.
+  refused again says "The dictation still could not open: speech is busy.
+  Press the mic to try again." (warn).
+  **Read, no longer inferred** (integration fixes): the server answers a
+  plain `GET /v1/realtime?intent=transcription` what an upgrade would get
+  (spec 03, The upgrade), and the page reads that after a refused upgrade, in
+  place of `GET /v1/models`: `503 engine_full` is busy, `503
+  speech_unavailable` is the unavailable reason, `401` the key, and `400
+  upgrade_required` means the server would have opened the socket, so
+  something between the page and the server lost the upgrade: "Dictation
+  could not start: the server is up, but this address does not carry
+  WebSockets." (fault, no retry). The countdown stays the page's 3 s; the
+  `Retry-After` is not read.
 - **The download command (AC 15)** is the server's: `ignis-server model
   download <id>`, the binary's real name, taken from the reason, where the
   table says `ignis model download <id>`. A server reason the table has no row

@@ -63,7 +63,8 @@ The line under the box follows along:
 | for 6 s after | Inserted N words at the cursor. Nothing is sent until you press Send. |
 | for 4 s after Esc | Dictation discarded. |
 | every session taken | Speech is busy with another dictation. Trying again in N s. |
-| refused again | The dictation still could not open: speech is busy, or this address does not carry WebSockets. Press the mic to try again. |
+| refused again | The dictation still could not open: speech is busy. Press the mic to try again. |
+| the server is up but the socket never opened | Dictation could not start: the server is up, but this address does not carry WebSockets. |
 | the connection closed | Dictation stopped: the connection to the server closed. Insert what was heard, or discard it. |
 | the server failed it | Dictation stopped: *the server's reason*. Insert what was heard, or discard it. |
 | Done with no audio, or nothing said | Nothing was heard. |
@@ -72,9 +73,11 @@ The line under the box follows along:
 **Busy.** The server holds `speech.max_sessions` (4) dictations at once
 ([speech](../configuration/speech.md)). One more is refused; the page counts
 down 3 seconds and tries once more. A browser cannot read why a socket was
-refused, nor its `Retry-After`: the page asks `GET /v1/models`, and a speech
-model that can serve means every session was taken. A proxy that does not
-carry WebSockets looks the same, which is why the second refusal names both.
+refused, nor its `Retry-After`, so the page asks the same route with a plain
+`GET`, which the server answers as it would the upgrade: `503 engine_full` is
+busy, `503 speech_unavailable` is the unavailable reason, and a server that
+would have opened the socket says so, which means something between the page
+and the server (a proxy that does not carry WebSockets) lost the upgrade.
 
 **A stopped dictation.** If the connection closes, or the server fails the
 dictation, the strip keeps what was heard (the settled words and the last grey

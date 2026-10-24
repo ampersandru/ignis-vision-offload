@@ -645,11 +645,7 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
         executor,
         files,
         load: LoadSettings { threads: group.threads, pinned_weights: group.pinned_weights },
-        open: Some(SessionOpen {
-            context: asked.context,
-            context_max_tokens: group.context_max_tokens,
-            language: asked.language,
-        }),
+        open: Some(SessionOpen::of(group, asked.context, asked.language)),
         samples: clip.samples,
         cursor: 0,
         session: None,

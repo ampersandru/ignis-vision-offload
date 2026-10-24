@@ -40,6 +40,11 @@ The upgrade is refused before the socket opens:
 | `503 speech_unavailable`, no `Retry-After` | the speech model cannot serve; the message says why, as `GET /v1/models`' `speech` object does |
 | `503 engine_full`, with `Retry-After` | `speech.max_sessions` (4) sessions are open; one more waits for one to close |
 
+A plain `GET` of the route, with no upgrade, is answered what an upgrade would
+be, and claims no session: the same `400` for a wrong `intent`, the same `503`s,
+and, when the socket could open, `400 upgrade_required`. A page that cannot read
+a refused upgrade's status asks this way why it was refused.
+
 On open the server loads the speech model if it is not loaded, prefills the
 context, and, if the text model was [unloaded for being idle](idle-unload.md),
 starts loading it in the background: a person dictating a prompt sends it
@@ -118,7 +123,11 @@ While audio arrives the server refreshes the item's transcript at most every
 rest. Refreshes are best effort: each one decodes the item so far again, so
 while the session's audio is still being computed a refresh is skipped rather
 than queued behind it. A CPU that cannot keep up sends fewer deltas, never a
-later transcript: the audio and the commit go first.
+later transcript: the audio and the commit go first. The text after the last
+refresh is decoded at the commit, so on a CPU with no spare time the commit
+takes longer: measured on a 67 s dictation with the default model, about 7 s
+from the commit to `completed` on a 10-core desktop CPU and about 12 s on 4
+cores. A longer `speech.partial_interval_ms` (4000) cut the desktop's to about 3 s.
 
 - `conversation.item.input_audio_transcription.delta` `{item_id,
   content_index: 0, delta}` carries **stable text only**, text the model will not
@@ -137,7 +146,10 @@ later transcript: the audio and the commit go first.
 
 **The provisional tail** is ignis's. The last few tokens of each refresh
 are not stable yet: the next refresh may revise them (how many is
-`speech.rollback_tokens`, 5, which the speech executor reads). A session that set `ignis.provisional_tail: true` receives them as
+`speech.rollback_tokens`, 10, which the speech executor reads when a session
+opens, so a change holds from the next session; the first `speech.unfixed_partials`
+(2) refreshes fix no text at all, so the language and the opening words are
+decided on more than one interval of audio). A session that set `ignis.provisional_tail: true` receives them as
 
 ```json
 { "type": "ignis.input_audio_transcription.provisional", "item_id": "item_…", "content_index": 0, "text": " per il" }

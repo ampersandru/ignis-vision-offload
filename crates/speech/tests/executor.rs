@@ -8,7 +8,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::synthetic;
-use ignis_speech::{Availability, Executor, Features, ModelFiles, Settings, Threads};
+use ignis_speech::{Availability, Executor, Features, ModelFiles, SessionTuning, Settings, Threads};
 
 fn settings() -> Settings {
     Settings { threads: Threads::Count(2), idle_unload: Duration::ZERO, max_clip_seconds: 60, ..Settings::default() }
@@ -169,6 +169,22 @@ fn partials_roll_back_and_the_transcript_keeps_the_stable_text() {
             assert_eq!(t, w, "partials changed the transcript: the cache was not rolled back");
         }
     }
+}
+
+/// The server passes `speech.context_max_tokens`, `speech.rollback_tokens` and
+/// `speech.unfixed_partials` per session: a session holds the tuning it opened with, not the
+/// executor's settings, so a live change of the config holds from the next session. (The
+/// synthetic decoder's one token decodes to no text, so the tuning is read back rather than seen
+/// in the stable text; `partials_roll_back_and_the_transcript_keeps_the_stable_text` shows the
+/// rollback itself.)
+#[test]
+fn a_session_holds_the_tuning_it_opened_with() {
+    let files = synthetic::pair("tuning");
+    let e = exec(&files, Settings { rollback_tokens: 10, unfixed_partials: 2, context_max_tokens: 512, ..settings() });
+    let tuned = SessionTuning { context_max_tokens: 64, rollback_tokens: 3, unfixed_partials: 0 };
+    assert_eq!(e.open_tuned("", None, tuned).unwrap().tuning(), tuned);
+    assert_eq!(e.open("", None).unwrap().tuning(), SessionTuning { context_max_tokens: 512, rollback_tokens: 10, unfixed_partials: 2 });
+    assert_eq!(e.open_capped("", None, 7).unwrap().tuning(), SessionTuning { context_max_tokens: 7, rollback_tokens: 10, unfixed_partials: 2 });
 }
 
 /// Acceptance 19: one unit of compute at a time, whatever the number of sessions driving it.

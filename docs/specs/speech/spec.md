@@ -140,7 +140,7 @@ default, never a constant (the owner's rule).
 | `speech.idle_unload` | 300 s without a transcription, `model.idle_unload`'s default | Q53 | 01 |
 | `speech.partial_interval_ms` | 2000 | Q37 | 01, 03 |
 | `speech.rollback_tokens` | 10 (Q75; the official package's `unfixed_token_num` is 5) | Q37 | 01 |
-| `speech.unfixed_partials` | 2 (the official package's `unfixed_chunk_num`): the first partials fix nothing. **Proposed by #351, not yet a field**: the executor takes it as a setting, and the field comes when spec 03 wires partials | #351 | 01, 03 |
+| `speech.unfixed_partials` | 2 (the official package's `unfixed_chunk_num`): the first partials fix nothing. A field since the integration fixes, read with `rollback_tokens` when a session opens | #351 | 01, 03 |
 | `speech.max_sessions` | 4 open Realtime sessions | Q44 | 02, 03 |
 | `speech.max_queue` | 4 waiting batch requests | Q44 | 02 |
 | `speech.vad_threshold`, `speech.vad_prefix_padding_ms`, `speech.vad_silence_duration_ms` | 0.5, 300, 500 | Q22 | 05 |
@@ -169,6 +169,13 @@ Every field name above, and every default no Q gave, is the owner's
   and stayed under it on the 10 s clip. Live partials every 2 s
   cost more than real time on four cores with every variant (spec 01, As
   built; spec 03's concern).
+- **Live dictation's commit is slower than the 2 s target** (spec 03, AC 13,
+  measured through the real Realtime route on a 67 s Italian dictation at
+  `speech.threads: auto`, the default 2000 ms refresh): 6.7 s from the commit
+  to `completed` on the i9 and 11.8 s on the 4-core container. The partials
+  leave the worker no slack, so the stable text lags and the commit decodes the
+  lag; the executor alone commits in 1.6 s. Not met; the levers are in spec 03,
+  As built.
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
   model is in use, KV at a 4,096-token context included. Nothing once
   `speech.idle_unload` has unloaded it (Q53).

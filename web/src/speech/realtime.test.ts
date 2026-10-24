@@ -63,7 +63,9 @@ function recorder() {
 
 const answering = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
 
-function setup(fetcher: typeof fetch = answering(200, { data: [], speech: { available: true } })) {
+const upgradeRequired = answering(400, { error: { code: "upgrade_required", message: "GET /v1/realtime takes a WebSocket upgrade" } });
+
+function setup(fetcher: typeof fetch = upgradeRequired) {
   const sockets: FakeSocket[] = [];
   const { calls, handlers } = recorder();
   const deps = {
@@ -220,15 +222,31 @@ describe("openTranscription", () => {
       return calls[0][1] as Refusal;
     };
 
-    it("is busy when GET /v1/models says the speech model can serve: every session is taken (503 engine_full)", async () => {
-      expect(await refusedWith(answering(200, { data: [], speech: { available: true } }))).toEqual({ kind: "busy" });
+    it("asks the route itself, a plain GET with the key, not the model list", async () => {
+      const asked: { url: string; headers: unknown }[] = [];
+      saveKey("sk-test");
+      const fetcher = (async (url: string, init?: RequestInit) => {
+        asked.push({ url, headers: init?.headers });
+        return upgradeRequired(url, init);
+      }) as typeof fetch;
+      await refusedWith(fetcher);
+      expect(asked).toEqual([{ url: "/v1/realtime?intent=transcription", headers: { Authorization: "Bearer sk-test" } }]);
     });
 
-    it("is unavailable, with the server's reason, when it cannot serve", async () => {
+    it("is busy on 503 engine_full: every session is taken", async () => {
+      expect(await refusedWith(answering(503, { error: { code: "engine_full", message: "the speech model has 4 Realtime sessions open" } }))).toEqual({ kind: "busy" });
+    });
+
+    it("is unavailable, with the server's reason, on 503 speech_unavailable", async () => {
       const reason = "the speech model is turned off (`speech.model` is `off`)";
-      expect(await refusedWith(answering(200, { data: [], speech: { available: false, reason } }))).toEqual({ kind: "unavailable", reason });
-      // A server older than speech has neither the object nor the route.
-      expect(await refusedWith(answering(200, { data: [] }))).toEqual({ kind: "unavailable", reason: "this server has no speech model" });
+      const body = { error: { code: "speech_unavailable", message: `the speech model is unavailable: ${reason}` } };
+      expect(await refusedWith(answering(503, body))).toEqual({ kind: "unavailable", reason });
+      // A server older than speech has no such route.
+      expect(await refusedWith(answering(404, { error: { message: "not found" } }))).toEqual({ kind: "unavailable", reason: "this server has no speech model" });
+    });
+
+    it("is not busy when the server would have opened it: the upgrade was lost on the way", async () => {
+      expect(await refusedWith(upgradeRequired)).toEqual({ kind: "no_websocket" });
     });
 
     it("wants the key on a 401, and says the server is unreachable when nothing answers", async () => {

@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::decoder::{self, argmax, Cache, Logits};
 use crate::encoder::encode_window;
-use crate::executor::{Core, Loaded};
+use crate::executor::{Core, Loaded, SessionTuning};
 use crate::mel::{self, audio_tokens, frames_of, normalise, CHUNK_FRAMES, HOP, MIN_SAMPLES, N_FFT, N_MELS, WINDOW_CHUNKS};
 use crate::text::{parse, Prompt};
 
@@ -104,15 +104,17 @@ pub struct Session {
     stable: Vec<u32>,
     since_partial: usize,
     stats: Stats,
+    /// `speech.rollback_tokens` and `speech.unfixed_partials` as they were when this session opened.
+    tuning: SessionTuning,
 }
 
 impl Session {
-    pub(crate) fn open(loaded: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>, context_max_tokens: usize) -> Session {
+    pub(crate) fn open(loaded: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>, tuning: SessionTuning) -> Session {
         let guard = core.clone();
         let _unit = guard.unit();
         let s = &core.settings;
         let text = &loaded.model.text;
-        let prompt = Prompt::new(text, context, context_max_tokens, language);
+        let prompt = Prompt::new(text, context, tuning.context_max_tokens, language);
         let dec = &loaded.model.decoder;
         let audio_cap = audio_tokens(frames_of(s.max_clip_seconds as usize * mel::SAMPLE_RATE));
         // Sized for the context cap, the longest clip's audio tokens and the decode (§2): room
@@ -155,7 +157,13 @@ impl Session {
             stable: Vec::new(),
             since_partial: 0,
             stats,
+            tuning,
         }
+    }
+
+    /// The tuning this session opened with.
+    pub fn tuning(&self) -> SessionTuning {
+        self.tuning
     }
 
     pub fn stats(&self) -> &Stats {
@@ -325,8 +333,8 @@ impl Session {
         let decoded = self.decode_after_audio();
         self.cache.truncate(self.audio_prefix);
         let decoded = decoded?;
-        let r = self.core.settings.rollback_tokens;
-        let mut cut = if self.stats.partials <= self.core.settings.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
+        let r = self.tuning.rollback_tokens;
+        let mut cut = if self.stats.partials <= self.tuning.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
         // The stable text ends on a whole word: the provisional tail starts where a word does
         // (a token that decodes with a leading space), so an identifier the audio has not
         // finished (`model_switch.rs`) stays provisional whole. A whole word also ends on a

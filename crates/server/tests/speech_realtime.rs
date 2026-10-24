@@ -401,6 +401,33 @@ async fn the_model_and_the_language_follow_spec_02() {
     assert_eq!(opened[1].language.as_deref(), Some("Italian"));
 }
 
+/// `speech.rollback_tokens` and `speech.unfixed_partials` reach the executor
+/// when a session opens: a session opened after a live change of the config
+/// opens with the new values, and the one open before keeps its own.
+#[tokio::test]
+async fn a_session_opened_after_a_live_change_opens_with_the_new_rollback_and_unfixed_partials() {
+    let executor = saying(&["hi"]);
+    let (live, server, _dir) = served(&executor, |_| {}).await;
+    let _first = session_16k(&live).await;
+    until_true("the first session opened", || executor.opened.lock().unwrap().len() == 1).await;
+    server.update_live(|live| {
+        live.speech.rollback_tokens = 3;
+        live.speech.unfixed_partials = 0;
+    });
+    let mut second = session_16k(&live).await;
+    until_true("the second session opened", || executor.opened.lock().unwrap().len() == 2).await;
+    // An update reopens the item's session, which reads the config again.
+    server.update_live(|live| live.speech.rollback_tokens = 7);
+    send(&mut second, update(json!({ "audio": { "input": { "transcription": { "prompt": "GPUs." } } } }))).await;
+    assert_eq!(next_event(&mut second).await["type"], "session.updated");
+    until_true("the update reopened the item's session", || executor.opened.lock().unwrap().len() == 3).await;
+    let opened = executor.opened.lock().unwrap().clone();
+    let tuning = |i: usize| (opened[i].rollback_tokens, opened[i].unfixed_partials);
+    assert_eq!(tuning(0), (10, 2), "the defaults, before the change");
+    assert_eq!(tuning(1), (3, 0), "the values in force when the session opened");
+    assert_eq!(tuning(2), (7, 0), "an update reopens with the values in force then");
+}
+
 // ── AC 9: the context, prefilled when the session opens ─────────────────────
 
 /// AC 9: the context is prefilled when the session opens and when an update
@@ -632,4 +659,44 @@ async fn an_unavailable_speech_model_refuses_the_upgrade() {
     assert_eq!(body["error"]["code"], "speech_unavailable");
     assert!(body["error"]["message"].as_str().unwrap().contains("turned off"), "{body}");
     assert!(!headers.contains_key("retry-after"));
+}
+
+/// A plain `GET /v1/realtime{query}`, no upgrade: the status, headers and JSON of the answer.
+async fn plain_get(server: &Server, query: &str) -> (u16, axum::http::HeaderMap, Value) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder().uri(format!("/v1/realtime{query}")).body(axum::body::Body::empty()).unwrap();
+    let response = server.app().oneshot(request).await.unwrap();
+    let (status, headers) = (response.status().as_u16(), response.headers().clone());
+    let bytes = speech::bytes(response).await;
+    (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// Spec speech/04 AC 11: a plain `GET` is answered what an upgrade would be, so a
+/// page that cannot read a refused upgrade's status can ask why: `503
+/// speech_unavailable` with the reason and no `Retry-After`; `503 engine_full`
+/// with `Retry-After` past `speech.max_sessions`, claiming no place; and, when
+/// the route could open, `400 upgrade_required`. A wrong `intent` is still
+/// `400` naming it.
+#[tokio::test]
+async fn a_plain_get_is_answered_what_an_upgrade_would_be() {
+    let executor = saying(&["hi"]);
+    let (live, server, _dir) = served(&executor, |group| group.max_sessions = 1).await;
+    let (status, headers, body) = plain_get(&server, "?intent=transcription").await;
+    assert_eq!((status, body["error"]["code"].as_str()), (400, Some("upgrade_required")), "{body}");
+    assert!(!headers.contains_key("retry-after"));
+    assert_eq!(plain_get(&server, "").await.2["error"]["param"], "intent");
+    assert_eq!(server.speech.sessions_open(), 0, "asking claims no place");
+
+    let (_first, _) = session(&live).await;
+    let (status, headers, body) = plain_get(&server, "?intent=transcription").await;
+    assert_eq!((status, body["error"]["code"].as_str()), (503, Some("engine_full")), "{body}");
+    let retry: u64 = headers["retry-after"].to_str().unwrap().parse().unwrap();
+    assert!((1..=15).contains(&retry), "{retry}");
+    assert_eq!(server.speech.sessions_open(), 1, "asking claims no place");
+
+    server.update_live(|live| live.speech.model = "off".to_owned());
+    let (status, headers, body) = plain_get(&server, "?intent=transcription").await;
+    assert_eq!((status, body["error"]["code"].as_str()), (503, Some("speech_unavailable")), "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("turned off"), "{body}");
+    assert!(!headers.contains_key("retry-after"), "the model's absence is checked before the sessions");
 }

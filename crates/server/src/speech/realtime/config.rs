@@ -9,6 +9,8 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::config::schema::SpeechGroup;
+
 use super::super::executor::SessionOpen;
 use super::super::route::{self, FieldRefusal, ModelRefusal};
 
@@ -87,12 +89,8 @@ impl SessionConfig {
 
     /// What the executor's session opens with: the context, prefilled when
     /// it opens (Q50), and the language forced.
-    pub fn open(&self, context_max_tokens: u32) -> SessionOpen {
-        SessionOpen {
-            context: route::context_of(self.prompt.as_deref(), &self.keywords),
-            context_max_tokens,
-            language: self.forced.clone(),
-        }
+    pub fn open(&self, group: &SpeechGroup) -> SessionOpen {
+        SessionOpen::of(group, route::context_of(self.prompt.as_deref(), &self.keywords), self.forced.clone())
     }
 
     /// This configuration with `session.update`'s `session` applied, or the
@@ -439,7 +437,7 @@ mod tests {
     fn every_other_field_is_honoured_inert_or_refused_as_the_table_says() {
         let config = update(&fresh(), input(json!({ "transcription": { "delay": "low" }, "noise_reduction": null }))).unwrap();
         assert_eq!(config.delay.as_deref(), Some("low"));
-        assert_eq!(config.open(512), fresh().open(512), "delay changes nothing the executor sees");
+        assert_eq!(config.open(&SpeechGroup::default()), fresh().open(&SpeechGroup::default()), "delay changes nothing the executor sees");
         assert_eq!(update(&fresh(), input(json!({ "transcription": { "delay": "soon" } }))).unwrap_err().code, "invalid_request_error");
         for kind in ["near_field", "far_field"] {
             let refused = update(&fresh(), input(json!({ "noise_reduction": { "type": kind } }))).unwrap_err();
@@ -472,11 +470,11 @@ mod tests {
     #[test]
     fn the_context_and_the_language_follow_spec_02() {
         let config = update(&fresh(), input(json!({ "transcription": { "prompt": "A talk.", "keywords": ["ignis", "Qwen3"], "language": "it" } }))).unwrap();
-        let open = config.open(512);
+        let open = config.open(&SpeechGroup::default());
         assert_eq!(open.context, "A talk.\nignis, Qwen3");
         assert_eq!(open.context_max_tokens, 512);
         assert_eq!(open.language.as_deref(), Some("Italian"));
-        assert_eq!(fresh().open(512).language, None, "nothing is forced unless asked");
+        assert_eq!(fresh().open(&SpeechGroup::default()).language, None, "nothing is forced unless asked");
         let detect = update(&fresh(), input(json!({ "transcription": { "languages": ["it", "en"] } }))).unwrap();
         assert_eq!(detect.forced, None);
         let one = update(&fresh(), input(json!({ "transcription": { "languages": ["de"] } }))).unwrap();
