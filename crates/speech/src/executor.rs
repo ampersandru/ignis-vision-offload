@@ -86,6 +86,13 @@ pub struct SessionTuning {
     pub unfixed_partials: usize,
 }
 
+impl Settings {
+    /// What a session reads of these settings at its opening.
+    pub fn tuning(&self) -> SessionTuning {
+        SessionTuning { context_max_tokens: self.context_max_tokens, rollback_tokens: self.rollback_tokens, unfixed_partials: self.unfixed_partials }
+    }
+}
+
 /// The GGUF pair: the decoder, and the audio encoder found beside it.
 #[derive(Clone, Debug)]
 pub struct ModelFiles {
@@ -278,23 +285,13 @@ impl Executor {
     /// Opens a transcription with `context` as the system turn, loading the model if needed.
     /// `language` forces the official prefill (Q6); `None` lets the model detect it.
     pub fn open(&self, context: &str, language: Option<&str>) -> Result<Session, ExecError> {
-        let s = &self.core.settings;
-        self.open_tuned(
-            context,
-            language,
-            SessionTuning { context_max_tokens: s.context_max_tokens, rollback_tokens: s.rollback_tokens, unfixed_partials: s.unfixed_partials },
-        )
+        self.open_tuned(context, language, self.core.settings.tuning())
     }
 
     /// [`open`](Self::open) with the context capped at `context_max_tokens` (the live
     /// `speech.context_max_tokens` the server passes per request) rather than the settings'.
     pub fn open_capped(&self, context: &str, language: Option<&str>, context_max_tokens: usize) -> Result<Session, ExecError> {
-        let s = &self.core.settings;
-        self.open_tuned(
-            context,
-            language,
-            SessionTuning { context_max_tokens, rollback_tokens: s.rollback_tokens, unfixed_partials: s.unfixed_partials },
-        )
+        self.open_tuned(context, language, SessionTuning { context_max_tokens, ..self.core.settings.tuning() })
     }
 
     /// [`open`](Self::open) with the settings a session reads at its opening passed in: the

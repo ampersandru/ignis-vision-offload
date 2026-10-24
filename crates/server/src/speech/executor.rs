@@ -54,6 +54,20 @@ pub struct SessionOpen {
     pub unfixed_partials: u32,
 }
 
+impl SessionOpen {
+    /// A session's opening: its `context` and `language`, and the `speech`
+    /// settings in force now.
+    pub fn of(group: &crate::config::schema::SpeechGroup, context: String, language: Option<String>) -> Self {
+        Self {
+            context,
+            context_max_tokens: group.context_max_tokens,
+            language,
+            rollback_tokens: group.rollback_tokens,
+            unfixed_partials: group.unfixed_partials,
+        }
+    }
+}
+
 /// A live transcript so far (spec speech/01 §4, `partial()`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Partial {

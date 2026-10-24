@@ -146,7 +146,9 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
 
 1. `GET /v1/realtime?intent=transcription` upgrades with a bearer token or
    the `openai-insecure-api-key.<key>` subprotocol. A conversation session's
-   upgrade is refused `400`, naming `intent` (Q20; owner, 2026-10-24).
+   upgrade is refused `400`, naming `intent` (Q20; owner, 2026-10-24). A
+   plain `GET` without the upgrade is answered what the upgrade would be
+   (`503`s), or `400 upgrade_required` when it could open, claiming no place.
 2. `session.update` with `session.type: "transcription"` is answered with
    `session.updated`, which carries the effective configuration (Q20).
 3. 24 kHz PCM16 is resampled to 16 kHz. `rate: 16000` is accepted as a
@@ -282,6 +284,36 @@ the spec left open, or differs from it:
   transcript that does not begin with the stable text sent (an executor
   breaking spec 01 §4) is still sent, with a WARN
   `ignis.speech.stable_text_revised`.
-- **Open:** AC 5 on the owner's eleven dictations and AC 13 (commit to
-  `completed` in 2 s for 60 s of Italian on the i9, and the 4-core figure)
-  need the real executor and its adapter, the integration step after #351.
+- **AC 5, on the real executor** (`crates/server/tests/speech_realtime_study.rs`,
+  `--ignored`, `IGNIS_SPEECH_STUDY`): the 11 dictations (364 s of audio) go
+  through a live `/v1/realtime` at 16 kHz, 100 ms of PCM every 100 ms, on
+  `qwen3-asr-1.7b` at `speech.threads: auto` (9 threads on the i9). For every
+  dictation the deltas joined equal `completed.transcript`. Pooled WER 4.03%
+  through the route against 3.23% on the batch path (+0.81 pt, inside AC 15 of
+  spec 01); a later run of d10 alone gave 3.36% against 4.20%, so the two paths
+  trade a few words on a single clip and the pooled figure is the one to read.
+- **AC 13 is not met** (same test, d10, the one dictation over 60 s: 67.0 s,
+  114 words, from the commit sent when the last audio was spoken to
+  `completed`; a run with a compile overlapping it is discarded, as in #351).
+  At the default `speech.partial_interval_ms` (2000):
+
+  | where | commit to `completed` | in the executor |
+  |---|---|---|
+  | i9, 9 threads | 6.7 s (a first clean run of the whole set: 7.1 s) | 16 pushes 11.3 s, 15 partials 46.9 s, the commit 3.9 s |
+  | 4-core container (`--cpuset-cpus=0-3`, 3 threads) | 11.8 s | 13 pushes 20.6 s, 8 partials 37.4 s, the commit 9.5 s |
+
+  The cause is in the executor column: a partial costs 3 s on the i9 (it
+  decodes everything past the stable text), so the worker spends 62 s of
+  compute on 67 s of audio and has no slack; refreshes are skipped (15 of 33
+  fell due and ran), the stable text lags, and the commit decodes the lag
+  after waiting for the partial in flight (6.7 s against 3.9 s of its own
+  work). The executor alone with every partial run (`transcribe --realtime`,
+  spec 01) commits in 1.6 s: the 2 s target holds when the CPU keeps up and
+  not when sessions are fed at real time on a busy worker. Measured and not
+  changed, since the fix is a design choice: with `speech.partial_interval_ms`
+  4000 the i9 commits in 2.8 s (2.3 s in the executor, 16 partials of 1.8 s);
+  with 8000 only one partial runs and the commit decodes the rest, 11.3 s. A
+  shorter tail (`speech.rollback_tokens`) or cheaper partials are the other
+  levers; each trades live latency or accuracy for the commit, the owner's
+  call. The figures, logs and the driver scripts are in
+  `H:/speech-study/results/fixes-realtime/`.

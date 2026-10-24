@@ -116,7 +116,7 @@ pub(crate) async fn connect(
         Ok(files) => files,
         Err(why) => return route::unavailable(why),
     };
-    let full = |full: Full| {
+    let refused = |full: Full| {
         route::engine_full(
             format!("the speech model has {} Realtime sessions open (speech.max_sessions); retry in {} s", group.max_sessions, full.retry_after_secs),
             full,
@@ -127,7 +127,7 @@ pub(crate) async fn connect(
     // it claims no place.
     let Ok(upgrade) = upgrade else {
         return match server.speech.session_room(group) {
-            Err(why) => full(why),
+            Err(why) => refused(why),
             Ok(()) => api::error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
@@ -138,7 +138,7 @@ pub(crate) async fn connect(
     };
     let guard = match server.speech.open_session(group) {
         Ok(guard) => guard,
-        Err(why) => return full(why),
+        Err(why) => return refused(why),
     };
     // The client's own names, never the credential.
     let protocols: Vec<String> = offered(&headers).filter(|protocol| !protocol.starts_with(CREDENTIAL_PREFIX)).map(str::to_owned).collect();

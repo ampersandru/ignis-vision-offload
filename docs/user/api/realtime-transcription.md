@@ -123,7 +123,11 @@ While audio arrives the server refreshes the item's transcript at most every
 rest. Refreshes are best effort: each one decodes the item so far again, so
 while the session's audio is still being computed a refresh is skipped rather
 than queued behind it. A CPU that cannot keep up sends fewer deltas, never a
-later transcript: the audio and the commit go first.
+later transcript: the audio and the commit go first. The text after the last
+refresh is decoded at the commit, so on a CPU with no spare time the commit
+takes longer: measured on a 67 s dictation with the default model, about 7 s
+from the commit to `completed` on a 10-core desktop CPU and about 12 s on 4
+cores. A longer `speech.partial_interval_ms` (4000) cut the desktop's to about 3 s.
 
 - `conversation.item.input_audio_transcription.delta` `{item_id,
   content_index: 0, delta}` carries **stable text only**, text the model will not

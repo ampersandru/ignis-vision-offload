@@ -283,6 +283,11 @@ produces) is not decoded yet: send WAV, or convert it. A clip longer than
   session, which the server does not serve.
 - `503 engine_full` with `Retry-After`: `speech.max_sessions` sessions are open;
   close one, or raise the field.
+- `503 speech_unavailable`: the speech model is off, missing or cannot run
+  here; the message says why. A browser cannot read a refused upgrade's
+  status, so ask the route with a plain `GET` (no upgrade): it is answered what
+  the upgrade would be, or `400 upgrade_required` when the socket could open,
+  which then points at a proxy that does not carry WebSockets.
 - An `error` refusing `turn_detection` `server_vad`: the server does not detect
   the end of speech yet. Send `turn_detection: null` (or nothing) and commit
   with `input_audio_buffer.commit`

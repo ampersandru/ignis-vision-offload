@@ -169,6 +169,13 @@ Every field name above, and every default no Q gave, is the owner's
   and stayed under it on the 10 s clip. Live partials every 2 s
   cost more than real time on four cores with every variant (spec 01, As
   built; spec 03's concern).
+- **Live dictation's commit is slower than the 2 s target** (spec 03, AC 13,
+  measured through the real Realtime route on a 67 s Italian dictation at
+  `speech.threads: auto`, the default 2000 ms refresh): 6.7 s from the commit
+  to `completed` on the i9 and 11.8 s on the 4-core container. The partials
+  leave the worker no slack, so the stable text lags and the commit decodes the
+  lag; the executor alone commits in 1.6 s. Not met; the levers are in spec 03,
+  As built.
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
   model is in use, KV at a 4,096-token context included. Nothing once
   `speech.idle_unload` has unloaded it (Q53).

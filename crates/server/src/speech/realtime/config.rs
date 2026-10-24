@@ -90,13 +90,7 @@ impl SessionConfig {
     /// What the executor's session opens with: the context, prefilled when
     /// it opens (Q50), and the language forced.
     pub fn open(&self, group: &SpeechGroup) -> SessionOpen {
-        SessionOpen {
-            context: route::context_of(self.prompt.as_deref(), &self.keywords),
-            context_max_tokens: group.context_max_tokens,
-            language: self.forced.clone(),
-            rollback_tokens: group.rollback_tokens,
-            unfixed_partials: group.unfixed_partials,
-        }
+        SessionOpen::of(group, route::context_of(self.prompt.as_deref(), &self.keywords), self.forced.clone())
     }
 
     /// This configuration with `session.update`'s `session` applied, or the
