@@ -6,6 +6,11 @@ Accepted (2026-10-12, owner). GitHub #317, spec `docs/specs/model-switch/02-idle
 Builds on the runtime model switch (spec model-switch/01, #305) and on
 config v2 (ADR 0046) for the knob.
 
+**Amended by ADR 0066** (2026-10-24): a transcription is not use of the text
+model and does not reset its idle clock. Opening a Realtime transcription
+session loads an unloaded text model in the background, since the dictation
+will land in its prompt.
+
 ## Context
 
 A loaded model holds the 5090 whether anyone uses it or not: tens of GB of

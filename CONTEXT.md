@@ -6,12 +6,15 @@ When output names a domain concept, use the term as defined here.
 ## Engine & process
 
 - **ignis** — the Rust inference engine for Qwen models on a single RTX 5090
-  (SM120a): text models and an image model, one loaded at a time.
+  (SM120a): text models and an image model, one loaded at a time, and a
+  speech model loaded beside whichever it is.
   Deliberately specialized: few model families, one GPU class. ADR 0043 added
-  a second text model, **Flash-Next**; ADR 0050 adds the image model.
+  a second text model, **Flash-Next**; ADR 0050 adds the image model; ADR
+  0066 the **speech model**.
 - **Kernel leaf** — the C++/CUDA compute library linked into ignis behind a C ABI.
-  The forward pass and all GPU compute live here; Rust owns everything above the
-  **step** — scheduling, KV accounting, serving (ADR 0009).
+  The forward pass of the text and image models and all GPU compute live here;
+  Rust owns everything above the **step** — scheduling, KV accounting, serving
+  (ADR 0009). The speech model's CPU executor is Rust (ADR 0067).
 - **Step ABI** — the C ABI between Rust and the leaf, named after its
   granularity: one call per *step* (model load, sequence lifecycle, a prefill
   span, a decode round), not one per operator. Device-resident — no host
@@ -340,6 +343,22 @@ When output names a domain concept, use the term as defined here.
   **Last switch**.
   _Avoid_: borrow.
 
+## Speech model (specs `speech/01-06`, ADRs 0066-0067)
+
+- **Speech model** — a model that takes audio in and gives back its
+  transcript; it never converses. The third **model kind**, beside the text
+  model and the image model: Qwen3-ASR. Loaded beside the text or image model
+  rather than reached by a switch, and never resident in VRAM: it runs on the
+  CPU, or on free KV pages lent to it for one **transcription** (ADR 0066).
+  _Avoid_: voice model, ASR model, audio model
+- **Transcription** — one server job turning audio into text, from admission
+  to the delivery of its last text: a whole clip, or live from a stream of
+  audio.
+  _Avoid_: recognition (bare)
+- **Dictation** — the Playground act: the user speaks into a composer and the
+  transcript lands at the cursor, editable, never sent by itself.
+  _Avoid_: voice input
+
 ## Weights & artifact
 
 - **Artifact** — the `.ninfer` container a model is served from: its weights
@@ -414,10 +433,13 @@ When output names a domain concept, use the term as defined here.
   drafter and the family scope. Several artifacts share one family: the 27B and its abliterated
   variant are two artifacts of the same family.
   _Avoid_: model (for the architecture)
-- **Model kind** — what a model produces: a **text model** produces tokens
-  (the 27B, Flash-Next), an **image model** produces pixels (the image model,
-  ADR 0050). Above the model family: every family is of one kind. Engine,
-  lane, sequence, KV and generation cap are text-model terms.
+- **Model kind** — what a model takes in and gives back: a **text model**
+  takes text and images and gives back tokens, and converses (the 27B,
+  Flash-Next); an **image model** takes a prompt and gives back pixels (the
+  image model, ADR 0050); a **speech model** takes audio and gives back its
+  transcript, and never converses (ADR 0066). Above the model family: every
+  family is of one kind. Engine, lane, sequence, KV and generation cap are
+  text-model terms.
   _Avoid_: modality (the 27B already takes images in), pipeline
 - **Served id** — the name a client puts in a request's `model` and
   `GET /v1/models` reports: the operator's `model.id`, or the family's default
@@ -432,7 +454,10 @@ When output names a domain concept, use the term as defined here.
   an artifact whose header names that family — and only to an entry the card
   can load. Listed in the entry's `aliases`; the catalog refuses an alias that
   is no family's default id, the entry's own id, of another family than the
-  entry's own id, or claimed by two entries.
+  entry's own id, or claimed by two entries. The OpenAI model names a config
+  field lists for the **speech model** (`whisper-1`, `gpt-4o-transcribe` and
+  the others) are aliases of its served id too, on every card and outside the
+  catalog: a request naming one is served by the speech model (ADR 0066).
 - **Catalog** — the models the server knows how to fetch: the **built-in
   catalog**, shipped inside the binary, plus the **operator catalog**, a
   separate file the config names.
