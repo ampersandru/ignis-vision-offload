@@ -1,6 +1,6 @@
 ---
 title: "Chat"
-description: "The Playground's chat: a reply with its reasoning and figures, the prompt box, the model picker, the context meter and the session log."
+description: "The Playground's chat: a reply with its reasoning and figures, the prompt box and its dictation, the model picker, the context meter and the session log."
 sidebar:
   order: 2
 ---
@@ -29,6 +29,92 @@ agents included. The **+** button adds to the prompt:
   ([Tools and agents](tools-and-agents.md#attachments)).
 
 An image alone is a prompt. Nothing is sent until you press Send.
+
+## Dictating a prompt
+
+The **mic** beside Send dictates into the box, with the
+[speech model](../api/transcriptions.md) on the server. Click it, or press
+**Ctrl+Shift+Space** with the focus in the box: held for longer than 400 ms it
+is push-to-talk, and letting go ends the dictation; tapped, it starts one, and
+the next tap ends it.
+
+While you speak:
+
+- the mic becomes **Done**, and **Send** waits: a dictation is never sent by
+  itself;
+- a strip above the box shows a level meter, the words as they settle (light),
+  the last few words the model may still change (grey), and a timer;
+  **Listening…** before the first word;
+- the box's underline runs.
+
+**Done** ends it. The strip reads **Finishing** while the server decodes the
+last words; then the text lands at the cursor, selected, with a space added
+where it would touch a word. Edit it as you like, and press Send when it is
+ready. **Esc**, or **Discard** on the strip, throws the dictation away and
+leaves the box as it was.
+
+The line under the box follows along:
+
+| When | It says |
+|---|---|
+| idle | Enter sends, Shift+Enter adds a line. Dictate with the mic, or hold Ctrl+Shift+Space while you speak. |
+| listening | Listening. Done puts the text at the cursor; Esc discards it. |
+| finishing | Finishing the last words. |
+| for 6 s after | Inserted N words at the cursor. Nothing is sent until you press Send. |
+| for 4 s after Esc | Dictation discarded. |
+| every session taken | Speech is busy with another dictation. Trying again in N s. |
+| the connection closed | Dictation stopped: the connection to the server closed. Insert what was heard, or discard it. |
+
+**Busy.** The server holds `speech.max_sessions` (4) dictations at once
+([speech](../configuration/speech.md)). One more is refused; the page counts
+down 3 seconds and tries once more, and says so if the speech model is still
+busy. A browser cannot read a refused socket's `Retry-After`, so the wait is
+the page's own.
+
+**A stopped dictation.** If the connection closes, or the server fails the
+dictation, the strip keeps what was heard (the settled words and the last grey
+ones): **Insert what was heard** puts them at the cursor, **Discard** drops
+them.
+
+**One at a time.** The page dictates into one field at once. Pressing another
+mic, in the [Image studio](image-studio.md) or [Decide](decide.md), ends the
+dictation under way, and its text still lands in its own field.
+
+### What a dictation sends
+
+Each dictation is one session on the server's Realtime transcription route,
+`GET /v1/realtime?intent=transcription`, opened at the press and closed when
+the text lands. Pressing the mic is also what loads the speech model, if it is
+not loaded. The session asks for:
+
+- **manual commit** (`turn_detection: null`): **Done** commits;
+- **16-bit PCM at 16 kHz**, the model's own rate: the browser downsamples the
+  mic and sends 100 ms of audio at a time;
+- **the provisional tail** (`session.ignis.provisional_tail: true`): the grey
+  words;
+- **a context**, as the transcription's `prompt`: the last reply, then what is
+  already in the box, so names and terms are spelled the way the conversation
+  spells them. The server reads its last `speech.context_max_tokens` (512)
+  tokens.
+
+No language is sent: the model detects it. The audio is never written to disk
+or to a log.
+
+### When the mic is struck through
+
+A struck-through mic cannot start, and the line under the box says why:
+
+| It says | Why | What to do |
+|---|---|---|
+| The microphone needs https or localhost. … | The browser gives a page a microphone only over https or on localhost. | Open the Playground through an https proxy, or start the server with `--server-expose cloudflare-quick` ([access](../configuration/access.md)). |
+| No speech model on this server. Download one with `ignis-server model download <id>`. | The speech model's files are not on disk. | Run that command ([fetching a model](../guides/models.md#fetching-one-ignis-server-model-download)). |
+| Speech is turned off on this server (`speech.model = off`). | The server was started with the speech model off. | Set `--speech-model auto` ([speech](../configuration/speech.md)). |
+| Microphone access is blocked for this site. … | You, or the browser, refused the microphone. | Allow it in the browser's site settings, then press the mic again: this one stays pressable. |
+| Speech is unavailable on this machine: the CPU lacks AVX2 … | The speech model runs on a CPU with AVX2. | — |
+
+The server's reasons come from `GET /v1/models`' `speech` object, read when
+the page opens and with each message; a reason the table has no row for is
+shown in the server's own words.
 
 ## What a request carries
 
@@ -144,3 +230,4 @@ Send is off.
 - [Settings](settings.md): thinking, the budget, sampling, the lane tag, the transport.
 - [Reasoning that finishes](../why-ignis/reasoning-that-finishes.md): the loop guard and the budget behind the marks above.
 - [Chat completions](../api/chat-completions.md) and [Responses](../api/responses.md): the same requests from your own code.
+- [Speech to text](../api/transcriptions.md) and [the speech settings](../configuration/speech.md): the model behind the mic.

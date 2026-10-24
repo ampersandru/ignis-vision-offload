@@ -8,6 +8,7 @@ import { EMPTY_DRAFT, EMPTY_SPARE, type Evidence, newQuestion, type Primitive, t
 import { isClipped, QuestionCard } from "./QuestionCard.tsx";
 import { createDecision } from "./sessions.ts";
 import { Sessions } from "./Sessions.tsx";
+import { fixedDictation } from "../speech/fixture.ts";
 
 // The bench (GitHub #247): the opening screen, and one card per primitive.
 
@@ -17,7 +18,7 @@ const card = (
   faults = validate({ evidence, questions: [question], extras: [] }),
 ) =>
   renderToStaticMarkup(
-    <QuestionCard question={question} evidence={evidence} faults={faults} first last onChange={() => {}} onRemove={() => {}} onMove={() => {}} />,
+    <QuestionCard dictation={fixedDictation()} question={question} evidence={evidence} faults={faults} first last onChange={() => {}} onRemove={() => {}} onMove={() => {}} />,
   );
 
 const ask = (kind: Primitive, extra: Partial<Question> = {}): Question => ({
@@ -88,9 +89,9 @@ describe("DecideView", () => {
       card(ask("number")) +
       card(ask("scalar")) +
       card(ask("locate")) +
-      renderToStaticMarkup(<EvidenceEditor evidence={{ mode: "text", text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />) +
-      renderToStaticMarkup(<EvidenceEditor evidence={{ mode: "json", text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />) +
-      renderToStaticMarkup(<EvidenceEditor evidence={{ mode: "image", images: [], text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
+      renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation()} evidence={{ mode: "text", text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />) +
+      renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation()} evidence={{ mode: "json", text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />) +
+      renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation()} evidence={{ mode: "image", images: [], text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
     const fields = html.match(/<(input|textarea|select)\b[^>]*>/g) ?? [];
     expect(fields.length).toBeGreaterThan(10);
     for (const field of fields) expect(field).toMatch(/\s(id|name)="[^"]+"/);
@@ -279,14 +280,14 @@ describe("QuestionCard", () => {
 
 describe("EvidenceEditor", () => {
   it("offers the three shapes state accepts and says what each is for", () => {
-    const html = renderToStaticMarkup(<EvidenceEditor evidence={{ mode: "json", text: "{}" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
+    const html = renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation()} evidence={{ mode: "json", text: "{}" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
     for (const label of ["Text", "JSON", "Image"]) expect(html, label).toContain(`>${label}</button>`);
     expect(html).toContain("not as a quoted string");
   });
 
   it("offers a file beside a text or a JSON evidence, and leaves pictures to the image picker", () => {
     const editor = (evidence: Evidence) =>
-      renderToStaticMarkup(<EvidenceEditor evidence={evidence} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
+      renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation()} evidence={evidence} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
     expect(editor({ mode: "text", text: "" })).toContain(">Open a file</button>");
     expect(editor({ mode: "json", text: "" })).toContain(">Open a file</button>");
     expect(editor({ mode: "image", images: [], text: "" })).not.toContain("Open a file");
@@ -296,7 +297,7 @@ describe("EvidenceEditor", () => {
     const lines = Array.from({ length: 300 }, (_, i) => (i === 120 ? "09:15:40 ERROR orders pg: FATAL too many clients" : `09:14:${i} INFO gateway GET /v1/orders 200`));
     const evidence: Evidence = { mode: "text", text: lines.join("\n"), file: { name: "prod-api.log", size: 6 * 1024 * 1024 } };
     const html = renderToStaticMarkup(
-      <EvidenceEditor evidence={evidence} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />,
+      <EvidenceEditor dictation={fixedDictation()} evidence={evidence} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />,
     );
     expect(html).toContain("prod-api.log");
     expect(html).toContain('<span class="text-ink">300</span> lines');
@@ -316,13 +317,13 @@ describe("EvidenceEditor", () => {
 
   it("says why a file did not load", () => {
     const html = renderToStaticMarkup(
-      <EvidenceEditor evidence={{ mode: "text", text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError="core.dump is not a text file." />,
+      <EvidenceEditor dictation={fixedDictation()} evidence={{ mode: "text", text: "" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError="core.dump is not a text file." />,
     );
     expect(html).toContain("core.dump is not a text file.");
   });
 
   it("shows the parse error it was handed", () => {
-    const html = renderToStaticMarkup(<EvidenceEditor evidence={{ mode: "json", text: "{" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} invalid="not JSON (line 1, column 2)" />);
+    const html = renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation()} evidence={{ mode: "json", text: "{" }} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} invalid="not JSON (line 1, column 2)" />);
     expect(html).toContain("not JSON (line 1, column 2)");
     expect(html).toContain("border-warn");
   });
@@ -350,5 +351,46 @@ describe("Sessions", () => {
     const html = renderToStaticMarkup(<Sessions list={list} open onNew={() => {}} onSelect={() => {}} onRemove={() => {}} />);
     expect(html).toContain('aria-current="true"');
     expect(html).toContain("New decision");
+  });
+});
+
+describe("dictation in Decide (spec speech/04)", () => {
+  const evidenceEditor = (evidence: Evidence, state: Parameters<typeof fixedDictation>[0] = {}) =>
+    renderToStaticMarkup(<EvidenceEditor dictation={fixedDictation(state)} evidence={evidence} spare={EMPTY_SPARE} onChange={() => {}} onSpare={() => {}} onFiles={() => {}} fileError={null} />);
+  const questionCard = (question: Question, state: Parameters<typeof fixedDictation>[0] = {}) =>
+    renderToStaticMarkup(
+      <QuestionCard dictation={fixedDictation(state)} question={question} evidence={{ mode: "text", text: "e" }} faults={[]} first last onChange={() => {}} onRemove={() => {}} onMove={() => {}} />,
+    );
+
+  it("gives each prose field a mic of its own, and the JSON ones none", () => {
+    expect(questionCard(ask("noul"))).toContain('aria-label="Dictate into Question"');
+    expect(evidenceEditor({ mode: "text", text: "" })).toContain('aria-label="Dictate into Evidence"');
+    expect(evidenceEditor({ mode: "json", text: "{}" })).not.toContain("Dictate");
+    expect(evidenceEditor({ mode: "image", images: [], text: "" })).not.toContain("Dictate");
+    expect(evidenceEditor({ mode: "text", text: "log", file: { name: "a.log", size: 3 } })).not.toContain("Dictate");
+    expect(questionCard(ask("noul", { instructions: { kind: "object", entries: [] } }))).not.toContain("Dictate");
+    // The opening bench: a text evidence, no question yet, one mic.
+    expect(renderToStaticMarkup(<DecideView ready drawer={null} onDrawer={() => {}} />).match(/aria-label="Dictate into [A-Za-z]+"/g)).toEqual(['aria-label="Dictate into Evidence"']);
+  });
+
+  it("keeps the dictated field's ember border, with its strip under it and its hint line", () => {
+    const question = questionCard(ask("noul"), { phase: "listening", stable: "Il merge è pronto" });
+    expect(question).toMatch(/aria-label="What the model should decide"[^>]*style="border-color:var\(--ember\)"/);
+    expect(question.indexOf('role="status"')).toBeGreaterThan(question.indexOf('aria-label="What the model should decide"'));
+    expect(question).toContain(">Done</button>");
+    expect(question).toContain("Listening. Done puts the text at the cursor; Esc discards it.");
+    expect(questionCard(ask("noul"))).not.toContain("border-color:var(--ember)");
+
+    const evidence = evidenceEditor({ mode: "text", text: "" }, { phase: "listening" });
+    expect(evidence).toMatch(/aria-label="The evidence"[^>]*style="border-color:var\(--ember\)"/);
+    expect(evidence.indexOf('role="status"')).toBeGreaterThan(evidence.indexOf('aria-label="The evidence"'));
+    expect(evidence).toContain("Listening. Done puts the text at the cursor; Esc discards it.");
+    expect(evidence).not.toContain("Prose: a message, a review, a transcript.");
+  });
+
+  it("says Decide is what sends, once the text is in", () => {
+    expect(evidenceEditor({ mode: "text", text: "x" }, { notice: { kind: "inserted", words: 1 } })).toContain(
+      "Inserted 1 word at the cursor. Nothing is sent until you press Decide.",
+    );
   });
 });

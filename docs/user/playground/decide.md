@@ -66,6 +66,23 @@ The order of a choice's options is part of the prompt, and kept as written.
 **JSON** switches the bench to the request body itself, for anything the
 builder does not cover; it is exactly what **Decide** sends.
 
+## Dictating a question or the evidence
+
+Each prose field has a mic of its own: a question's card on its top row
+(**Dictate into Question**), a **Text** evidence beside its heading
+(**Dictate into Evidence**). It works as the
+[chat's mic](chat.md#dictating-a-prompt) does, Ctrl+Shift+Space included, in
+the field it belongs to: the field keeps an ember border while you speak, the
+strip sits under it, the text lands at its cursor, and nothing is sent until
+you press **Decide**. A JSON evidence, a file loaded as the evidence and the
+**JSON** request body have no mic: speech is for prose.
+
+The context a dictation sends is the other prose on the bench first and the
+field's own text last: the questions, then the evidence, for the evidence; the
+evidence, then the question, for a question. JSON never goes in, nor an
+evidence loaded from a file. Pressing another field's mic ends the dictation
+under way, and its text lands in its own field first.
+
 ## The answers
 
 **Decide** sends one request; the footer says `N questions, one request`.

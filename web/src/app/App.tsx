@@ -26,6 +26,8 @@ import { DEFAULT_SETTINGS, type PlaygroundSettings } from "../settings/defaults.
 import type { ImageId } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { SettingsPanel } from "../settings/SettingsPanel.tsx";
+import { dictationContext } from "../speech/dictation.ts";
+import { useDictation } from "../speech/useDictation.ts";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
 import { AGENT_SYSTEM_PROMPT, type AgentRun } from "../tools/agents/agents.ts";
@@ -89,6 +91,13 @@ export function App() {
   const studioPictures = useRef<() => Iterable<ImageId> | null>(() => null);
   const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel, live: () => studioPictures.current() });
   const { active } = chat;
+  // Dictation into the prompt (spec speech/04): opened with the last reply and the prompt as it stands, in that order.
+  const dictation = useDictation({
+    onChange: setInput,
+    context: () => dictationContext([[...active.messages].reverse().find((m) => m.role === "assistant" && m.content.trim() !== "")?.content ?? "", input]),
+    speech: model.speech,
+    onUnavailable: refreshModel,
+  });
   const monitoring = view === "monitor" && monitorVisible;
   const deciding = view === "decide";
   const serving = view === "server";
@@ -138,7 +147,8 @@ export function App() {
 
   function send() {
     const text = input.trim();
-    if ((!text && images.length === 0) || !chat.canRun) return;
+    // A dictation under way is never sent: Send waits until it ends (Q4).
+    if ((!text && images.length === 0) || !chat.canRun || dictation.controller.active) return;
     setInput("");
     setImages([]);
     setImageError(null);
@@ -265,7 +275,7 @@ export function App() {
           holds a whole typed request, and a glance at the Monitor is not a
           reason to lose it. Nothing here fetches on mount. */}
       <div className={deciding ? "contents" : "hidden"}>
-        <DecideView ready={canChat(model)} drawer={decideDrawer} onDrawer={setDecideDrawer} />
+        <DecideView ready={canChat(model)} drawer={decideDrawer} onDrawer={setDecideDrawer} speech={model.speech} />
       </div>
 
       {serverOpened && (
@@ -332,6 +342,7 @@ export function App() {
               onAddImages={(files) => void addImages(files)}
               onRemoveImage={(index) => setImages((current) => current.filter((_, i) => i !== index))}
               onMarkImage={markBoxImage}
+              dictation={dictation}
             />
           </main>
 

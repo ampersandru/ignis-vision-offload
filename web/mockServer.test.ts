@@ -24,6 +24,8 @@ describe("createServerSim", () => {
     expect(rows.find((row) => row.id === "qwen3.8-27b-abliterated")).not.toHaveProperty("family");
     expect(head(sim.models(T))).toMatchObject({ data: [{ id: "qwen3.8-27b", max_model_len: 786432 }], status: "serving" });
     expect(sim.models(T)).not.toHaveProperty("last_switch");
+    // No Realtime socket here: the speech model is unavailable, so the Playground strikes its mic.
+    expect(sim.models(T)).toMatchObject({ speech: { available: false, reason: expect.stringContaining("ignis-server model download qwen3-asr-1.7b") } });
   });
 
   it("lists the servable models as the server does: the loaded one first and active, then every row on disk (spec model-switch/03)", () => {

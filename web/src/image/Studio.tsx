@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { ModelState } from "../api/model.ts";
 import { MarkupEditor } from "../markup/MarkupEditor.tsx";
+import { dictationContext } from "../speech/dictation.ts";
+import { useDictation } from "../speech/useDictation.ts";
 import { IconBrush, IconDownload, IconExpand, IconReference, IconRegenerate } from "../ui/icons.tsx";
 import { Frame, RunLine, ShapeGlyph } from "./controls.tsx";
 import { exampleDraft, PICTURE_EXAMPLES } from "./examples.ts";
@@ -38,6 +40,16 @@ export function ImageStudio({
   /** A pool picture into the chat's prompt box; absent, the viewer offers no way there. */
   onSendToChat?: (picture: PoolImage) => void;
 }) {
+  // Dictation into the prompt (spec speech/04): opened with the last step's prompt, as the enhancement rewrote it,
+  // and the prompt as it stands.
+  const dictation = useDictation({
+    onChange: (prompt) => actions.setDraft({ prompt }),
+    context: () => {
+      const last = state.active.steps.at(-1);
+      return dictationContext([last?.revised ?? last?.prompt ?? "", state.active.draft.prompt]);
+    },
+    speech: model.speech,
+  });
   return (
     <div className="relative flex min-h-0 flex-1">
       {drawer && <div className="fixed inset-0 z-30 bg-[#1c2026]/60 lg:hidden" onClick={() => onDrawer(null)} aria-hidden />}
@@ -54,7 +66,7 @@ export function ImageStudio({
       />
       <main aria-label="Image" className="flex min-w-0 flex-1 flex-col">
         <Timeline state={state} actions={actions} />
-        <StudioComposer model={model} state={state} actions={actions} />
+        <StudioComposer model={model} state={state} actions={actions} dictation={dictation} />
       </main>
       <StudioSettings open={drawer === "settings"} state={state} actions={actions} />
       {state.viewing !== null && <Viewer session={state.active} n={state.viewing} actions={actions} onSendToChat={onSendToChat} />}

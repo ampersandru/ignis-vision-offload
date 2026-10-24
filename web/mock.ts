@@ -45,6 +45,8 @@ import { createServerSim, type MockAnswer } from "./mockServer.ts";
 // first, then every catalog row on disk (spec model-switch/03), and a switch or a reload reads `switching` for three seconds. A config
 // value "/error" is a 400 naming its key; a switch to an id containing
 // "fail", or a reload patch holding "/fail", ends `restored` with a reason.
+// The speech model is unavailable (its files missing): the mock has no
+// Realtime socket, so the Playground's mic shows struck with that reason.
 
 function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {

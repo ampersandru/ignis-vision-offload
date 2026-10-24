@@ -1,7 +1,11 @@
+import type { SpeechStatus } from "../api/model.ts";
+import { dictationContext } from "../speech/dictation.ts";
+import { useDictation } from "../speech/useDictation.ts";
 import { caption } from "../ui/classes.ts";
 import { IconPlus } from "../ui/icons.tsx";
 import { EvidenceEditor } from "./EvidenceEditor.tsx";
-import { type Draft, type Fault, type Primitive, PRIMITIVES, type Question, type Spare } from "./model.ts";
+import { jsonString } from "./json.ts";
+import { type Draft, type Evidence, type Fault, type Primitive, PRIMITIVES, type Question, type Spare } from "./model.ts";
 import { QuestionCard } from "./QuestionCard.tsx";
 
 // The bench (GitHub #247): the right-hand column where a decision is written,
@@ -11,6 +15,17 @@ import { QuestionCard } from "./QuestionCard.tsx";
 //
 // Wider than the chat's panel, because a question is a paragraph and a list of
 // options rather than a row of switches.
+//
+// The prose fields — each question, and a text evidence — take dictation, a
+// mic each (spec speech/04, Q17); the JSON ones take none: speech is for
+// prose. A dictation's context is the other prose field's text first and its
+// own field's last, never raw JSON, nor an evidence loaded from a file.
+
+/** A question's prose, or nothing when it is JSON. */
+const proseOf = (question: Question) => (question.instructions.kind === "string" ? question.instructions.value : "");
+
+/** The evidence's prose: a text typed here, not JSON and not a file. */
+const evidenceProse = (evidence: Evidence) => (evidence.mode === "text" && !evidence.file ? evidence.text : "");
 
 export type Mode = "build" | "json";
 
@@ -22,6 +37,7 @@ export function Bench({
   jsonError,
   faults,
   ready,
+  speech,
   busy,
   loading,
   open,
@@ -42,6 +58,7 @@ export function Bench({
   jsonError: string | null;
   faults: Fault[];
   ready: boolean;
+  speech?: SpeechStatus;
   busy: boolean;
   loading: boolean;
   open: boolean;
@@ -60,6 +77,11 @@ export function Bench({
   // who has not written anything yet is scolding, not helping.
   const loose = faults.filter((f) => f.uid === undefined && f.code !== "invalid_state_json" && f.code !== "no_questions");
   const blocked = faults.length > 0 || jsonError !== null;
+  const evidenceDictation = useDictation({
+    onChange: (text) => onEdit({ ...draft, evidence: { mode: "text", text } }),
+    context: () => dictationContext([...draft.questions.map(proseOf), evidenceProse(draft.evidence)]),
+    speech,
+  });
 
   return (
     <aside
@@ -75,6 +97,7 @@ export function Bench({
           onFiles={onFiles}
           fileError={fileError}
           invalid={jsonFault?.message}
+          dictation={evidenceDictation}
         />
 
         <section>
@@ -101,7 +124,7 @@ export function Bench({
           </div>
 
           {mode === "build" ? (
-            <Builder draft={draft} faults={faults} onEdit={onEdit} onAdd={onAdd} />
+            <Builder draft={draft} faults={faults} speech={speech} onEdit={onEdit} onAdd={onAdd} />
           ) : (
             <JsonEditor text={json} error={jsonError} faults={faults} onChange={onJson} />
           )}
@@ -154,11 +177,13 @@ export function Bench({
 function Builder({
   draft,
   faults,
+  speech,
   onEdit,
   onAdd,
 }: {
   draft: Draft;
   faults: Fault[];
+  speech?: SpeechStatus;
   onEdit: (draft: Draft) => void;
   onAdd: (kind: Primitive) => void;
 }) {
@@ -174,8 +199,9 @@ function Builder({
     <>
       <ol className="mt-2 flex flex-col gap-2">
         {draft.questions.map((question, index) => (
-          <QuestionCard
+          <DictatedQuestion
             key={question.uid}
+            speech={speech}
             question={question}
             evidence={draft.evidence}
             faults={faults.filter((f) => f.uid === question.uid)}
@@ -251,4 +277,14 @@ function JsonEditor({
       )}
     </div>
   );
+}
+
+/** A question card with its own dictation, into its own field. */
+function DictatedQuestion({ speech, ...card }: Omit<Parameters<typeof QuestionCard>[0], "dictation"> & { speech?: SpeechStatus }) {
+  const dictation = useDictation({
+    onChange: (text) => card.onChange({ ...card.question, instructions: jsonString(text) }),
+    context: () => dictationContext([evidenceProse(card.evidence), proseOf(card.question)]),
+    speech,
+  });
+  return <QuestionCard {...card} dictation={dictation} />;
 }

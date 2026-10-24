@@ -39,6 +39,12 @@ sign, an infographic, a sticker with a transparent background…), and with an
 input but no prompt, **Ideas** suggests edits: watercolour, golden hour, cut
 out, winter, a 3D clay figure, a new angle.
 
+The **mic** beside Generate dictates the prompt, as the
+[chat's mic](chat.md#dictating-a-prompt) does: **Done** puts the text at the
+cursor, and Generate (or **Switch & generate**) waits until the dictation
+ends; nothing runs until you press it. The context it sends is the last
+step's prompt, as prompt enhancement rewrote it, then what is in the box.
+
 ## The switch happens for you
 
 The image model and a text model are never loaded together: a switch is a

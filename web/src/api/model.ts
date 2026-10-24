@@ -48,10 +48,20 @@ export type HostPlan = {
   lines: { name: string; bytes: number }[];
 };
 
-/** What a model makes (`kind` of `GET /v1/models`, spec image-model/05): text answers chat, image answers the image routes. */
-export type ModelKind = "text" | "image";
+/**
+ * What a model makes (`kind` of `GET /v1/models`, spec image-model/05): text answers chat, image answers the image
+ * routes, speech transcribes (spec speech/02), loaded beside the other and never the one a chat goes to.
+ */
+export type ModelKind = "text" | "image" | "speech";
 
-export type ModelState =
+/**
+ * Whether the speech model can serve (`GET /v1/models`' top-level `speech`, spec speech/02): read in every status,
+ * since the speech routes serve through a switch, so the Playground can disable its microphone before the press.
+ * `reason`, for a person, while it cannot.
+ */
+export type SpeechStatus = { available: boolean; reason?: string };
+
+export type ModelState = (
   /** The page's own first read of the model, under way. */
   | { state: "reading" }
   | { state: "ready"; id: string; contextLimit: number | null; kind?: ModelKind; lastSwitch?: LastSwitch }
@@ -62,7 +72,8 @@ export type ModelState =
   /** A model loads while none is loaded (`status: loading`): `to` is the one loading, `since` as for a switch. */
   | { state: "loading"; to: string; since: number; lastSwitch?: LastSwitch }
   /** `failed`: the server reports a switch that failed (`status: failed`), not a read that did. */
-  | { state: "error"; message: string; failed?: true; lastSwitch?: LastSwitch };
+  | { state: "error"; message: string; failed?: true; lastSwitch?: LastSwitch }
+) & { speech?: SpeechStatus };
 
 type ModelList = {
   /** The servable models (spec model-switch/03): the loaded one `active`, and first; an older server lists it alone, with no `active`. */
@@ -71,6 +82,8 @@ type ModelList = {
   switching?: { from: string; to: string };
   reason?: string;
   last_switch?: LastSwitch;
+  /** Absent from a server older than speech. */
+  speech?: SpeechStatus;
 };
 
 /** The model loaded now, or why it could not be read. `now` stamps a switch first seen by this read. */
@@ -83,7 +96,10 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     }
     if (!res.ok) throw new Error(`GET /v1/models: ${res.status}`);
     const body = (await res.json()) as ModelList;
-    const last = body.last_switch ? { lastSwitch: body.last_switch } : {};
+    const last = {
+      ...(body.last_switch ? { lastSwitch: body.last_switch } : {}),
+      ...(body.speech ? { speech: { available: body.speech.available === true, ...(body.speech.reason ? { reason: body.speech.reason } : {}) } } : {}),
+    };
     // The entry is still the old model while switching; the ids are in `switching`.
     if (body.status === "switching" && body.switching) {
       return { state: "switching", from: body.switching.from, to: body.switching.to, since: now, ...last };
@@ -91,14 +107,15 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     if (body.status === "failed") {
       return { state: "error", message: `Switch failed: ${body.reason ?? "no reason given"}`, failed: true, ...last };
     }
-    // The loaded model is the `active` entry; a server without the field lists it alone.
-    const entry = body.data?.find((listed) => listed.active === true) ?? body.data?.[0];
+    // The loaded model is the `active` entry; a server without the field lists it alone. The speech model is
+    // `active` too, after it: loaded beside the other, never the one this page talks to.
+    const entry = body.data?.find((listed) => listed.active === true && listed.kind !== "speech") ?? body.data?.[0];
     const id = entry?.id;
     if (!id) throw new Error("GET /v1/models: no model listed");
     // The image model reports no context at all; an older server no kind (a text model).
     const contextLimit = entry?.max_model_len ?? null;
     const reported = entry?.kind;
-    const kind: { kind?: ModelKind } = reported === "image" || reported === "text" ? { kind: reported } : {};
+    const kind: { kind?: ModelKind } = reported === "image" || reported === "text" || reported === "speech" ? { kind: reported } : {};
     if (body.status === "unloaded") return { state: "unloaded", id, contextLimit, ...kind, ...last };
     if (body.status === "loading") return { state: "loading", to: body.switching?.to ?? id, since: now, ...last };
     return { state: "ready", id, contextLimit, ...kind, ...last };
