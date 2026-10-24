@@ -42,6 +42,7 @@ arrow keys once focused.
 | **Speculation** | Acceptance, tokens per verify round, how often each draft position is kept | `ignis_speculative_*` |
 | **Reasoning** | Turns the loop guard saw loop, tokens taken back, closes the thinking budget forced | `ignis_loop_guard_*`, `ignis_thinking_forced_closes_total` |
 | **Image jobs** | Jobs, pictures made, their duration and the time in each phase | `ignis_image_*` |
+| **Transcriptions** | Transcriptions that ended and how, the audio they covered, the median wait from commit, sessions open and the queue | `ignis_speech_*` |
 | **Expert residency** | Flash-Next's expert cache: hit rates, copies from host RAM, stalls | `ignis_expert_*` |
 | **Prefix reuse** | Prompt tokens skipped through a sibling's prefix | `ignis_prefix_reused_tokens_total` |
 | **Evictions** | What left each tier, VRAM, RAM and disk, and whether the work survived | eviction and spill counters |
@@ -50,7 +51,7 @@ arrow keys once focused.
 
 Panels appear when their series do: Speculation after the first verify round,
 Reasoning once the loop guard has watched a request, Image jobs after the
-image model ran one, Expert residency on a Flash-Next load. Every metric, with
+image model ran one, Transcriptions after the speech model was first asked, Expert residency on a Flash-Next load. Every metric, with
 when it appears: [metrics](../reference/metrics.md).
 
 ## The VRAM plan

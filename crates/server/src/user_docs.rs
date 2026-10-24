@@ -245,6 +245,7 @@ const ACTIVATIONS: &[Activation] = &[
     },
     Activation { when: "after the first call to a counting route", activate: |m| m.record_tokenize(TokenizeRoute::Tokenize) },
     Activation { when: "on a server that has seen an image job", activate: |m| m.set_image_queue(0, 0) },
+    Activation { when: "on a server that has been asked for a transcription", activate: |m| m.set_speech_gauges(0, 0) },
     Activation {
         when: "on a load with the KV-disk tier",
         activate: |m| m.set_load_reservations(LoadReservations { kv_disk_bytes: Some(1), ..LoadReservations::none() }),

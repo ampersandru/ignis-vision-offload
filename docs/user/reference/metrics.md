@@ -78,6 +78,11 @@ The metrics listener (on by default, keyless, on loopback) serves these in the P
 | `ignis_speculative_position_accepted_total` | counter | Verify rounds that committed the draft at the position. | after the first request that ran speculative verify rounds |
 | `ignis_speculative_position_drafted_total` | counter | Verify rounds that proposed a draft at the position. | after the first request that ran speculative verify rounds |
 | `ignis_speculative_rounds_total` | counter | Verify rounds run. | after the first request that ran speculative verify rounds |
+| `ignis_speech_audio_seconds_total` | counter | Seconds of audio the completed transcriptions covered. | on a server that has been asked for a transcription |
+| `ignis_speech_commit_wait_seconds` | histogram | Wait from a transcription's commit (a batch request's last byte received) to its transcript, completed ones only. | on a server that has been asked for a transcription |
+| `ignis_speech_queue_length` | gauge | Batch transcriptions waiting behind the one running. | on a server that has been asked for a transcription |
+| `ignis_speech_sessions_open` | gauge | Realtime transcription sessions open. | on a server that has been asked for a transcription |
+| `ignis_speech_transcriptions_total` | counter | Transcriptions ended, by executor and outcome. | on a server that has been asked for a transcription |
 | `ignis_thinking_forced_closes_total` | counter | Completed requests whose reasoning block the thinking budget closed. | once the thinking budget has closed a reasoning block |
 | `ignis_tokenize_requests_total` | counter | Calls to the counting routes, which never enter the scheduler, by route. | after the first call to a counting route |
 | `ignis_vram_budget_bytes` | gauge | The device budget the plan was laid out inside. | always |

@@ -15,6 +15,12 @@ Generated from the code by `make docs-reference` (`crates/server/src/user_docs.r
 
 The routes as the server's own OpenAPI document lists them: a route cannot exist without its entry ([ADR 0036](../../adr/0036-the-v1-surface-documents-itself.md)). A running server serves the full document, schemas included, at `/v1/openapi.json` and a browsable page at `/v1/docs/`, both without a key. [The API](../api/index.md) explains each route.
 
+## audio
+
+| Method | Path | What it does |
+|---|---|---|
+| POST | `/v1/audio/transcriptions` | A transcript from audio |
+
 ## chat
 
 | Method | Path | What it does |

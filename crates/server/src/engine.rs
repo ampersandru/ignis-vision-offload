@@ -200,7 +200,7 @@ const RETRY_AFTER_MAX_SECS: u64 = 59;
 /// The longest wait, before the margin, once the oldest request is overdue:
 /// the average hold has already proved wrong for it, so a client polls
 /// sooner rather than leave a freed lane idle for up to a whole hold.
-const RETRY_AFTER_OVERDUE_MAX_SECS: u64 = 15;
+pub(crate) const RETRY_AFTER_OVERDUE_MAX_SECS: u64 = 15;
 
 /// What an estimate's `Retry-After` adds past its clamp, so the retry lands
 /// just after the lane frees rather than just before.

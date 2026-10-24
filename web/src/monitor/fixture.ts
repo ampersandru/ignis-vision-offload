@@ -389,3 +389,49 @@ ignis_thinking_forced_closes_total 3
 `;
 
 export const LOOP_GUARD_EXPOSITION = `${IGNIS_EXPOSITION}${LOOP_GUARD_FAMILIES}${THINKING_FORCED_CLOSES}`;
+
+// The speech families (spec speech/02, ADR 0017's amendment of 2026-10-24),
+// which the server renders from the first transcription (zeros included) and
+// only then. Five transcriptions on the CPU ended: four completed (80 s of
+// audio, a median wait of 2.5 s or so), one failed; one waits behind the one
+// running.
+const SPEECH_FAMILIES = `# HELP ignis_speech_transcriptions_total Transcriptions ended, by executor and outcome.
+# TYPE ignis_speech_transcriptions_total counter
+ignis_speech_transcriptions_total{executor="cpu",outcome="completed"} 4
+ignis_speech_transcriptions_total{executor="cpu",outcome="cancelled"} 0
+ignis_speech_transcriptions_total{executor="cpu",outcome="failed"} 1
+ignis_speech_transcriptions_total{executor="cpu",outcome="timed_out"} 0
+ignis_speech_transcriptions_total{executor="gpu_loan",outcome="completed"} 0
+ignis_speech_transcriptions_total{executor="gpu_loan",outcome="cancelled"} 0
+ignis_speech_transcriptions_total{executor="gpu_loan",outcome="failed"} 0
+ignis_speech_transcriptions_total{executor="gpu_loan",outcome="timed_out"} 0
+# HELP ignis_speech_audio_seconds_total Seconds of audio the completed transcriptions covered.
+# TYPE ignis_speech_audio_seconds_total counter
+ignis_speech_audio_seconds_total 80
+# HELP ignis_speech_commit_wait_seconds Wait from a transcription's commit (a batch request's last byte received) to its transcript, completed ones only.
+# TYPE ignis_speech_commit_wait_seconds histogram
+ignis_speech_commit_wait_seconds_bucket{le="0.1"} 0
+ignis_speech_commit_wait_seconds_bucket{le="0.25"} 0
+ignis_speech_commit_wait_seconds_bucket{le="0.5"} 0
+ignis_speech_commit_wait_seconds_bucket{le="1"} 0
+ignis_speech_commit_wait_seconds_bucket{le="2.5"} 2
+ignis_speech_commit_wait_seconds_bucket{le="5"} 4
+ignis_speech_commit_wait_seconds_bucket{le="10"} 4
+ignis_speech_commit_wait_seconds_bucket{le="30"} 4
+ignis_speech_commit_wait_seconds_bucket{le="60"} 4
+ignis_speech_commit_wait_seconds_bucket{le="120"} 4
+ignis_speech_commit_wait_seconds_bucket{le="300"} 4
+ignis_speech_commit_wait_seconds_bucket{le="600"} 4
+ignis_speech_commit_wait_seconds_bucket{le="+Inf"} 4
+ignis_speech_commit_wait_seconds_sum 11
+ignis_speech_commit_wait_seconds_count 4
+# HELP ignis_speech_sessions_open Realtime transcription sessions open.
+# TYPE ignis_speech_sessions_open gauge
+ignis_speech_sessions_open 0
+# HELP ignis_speech_queue_length Batch transcriptions waiting behind the one running.
+# TYPE ignis_speech_queue_length gauge
+ignis_speech_queue_length 1
+`;
+
+// A server that transcribed: the 27B-shaped exposition plus the speech families.
+export const SPEECH_EXPOSITION = `${IGNIS_EXPOSITION}${SPEECH_FAMILIES}`;

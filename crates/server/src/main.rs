@@ -442,7 +442,8 @@ async fn main() {
         .with_instruction_policy(instruction_policy)
         .with_idle_unload(std::time::Duration::from_secs(u64::from(idle_unload_secs)))
         .with_socket_idle_close(std::time::Duration::from_secs(u64::from(socket_idle_close_secs)))
-        .with_image(running.settings().image.clone());
+        .with_image(running.settings().image.clone())
+        .with_speech_group(running.settings().speech.clone());
     // Spec config-v2/02: the running configuration, shown and changed over
     // `GET`/`PATCH /v1/config` and written back to the config file in use;
     // the model loader shares it, so a later switch loads with a live change
@@ -469,6 +470,14 @@ async fn main() {
         known_models = %tables.known.keys().cloned().collect::<Vec<_>>().join(","),
         "a request naming one of these models, other than the loaded one, switches the server to it"
     );
+    // ADR 0066, spec speech/02: the speech model beside the active one. Its
+    // files are looked for in the same catalog and directory; its executor is
+    // `ignis-speech`'s once that crate is adapted (GitHub 351), until then none,
+    // and the model is unavailable, saying so.
+    let speech = ignis_server::speech::Speech::new(
+        Arc::new(ignis_server::speech::executor::NoExecutor),
+        Some(ignis_server::speech::SpeechModels { catalog: Arc::clone(&catalog), dir: model_download_path.clone() }),
+    );
     // Spec model-download/02 §Known models: a catalog entry whose artifact is
     // under `--download-path` when a request names it is switchable too, so
     // a `model download` into this directory needs no restart.
@@ -481,7 +490,8 @@ async fn main() {
                 .with_catalog(catalog_models, allow_model_switch)
                 .with_card_class(card_class),
         )
-        .with_config(config_state);
+        .with_config(config_state)
+        .with_speech(Arc::new(speech));
 
     // Spec image-model/05 §Prompt enhancement: an enhancer no switch reaches
     // leaves every enhanced request on its prompt as sent. A `PATCH` naming

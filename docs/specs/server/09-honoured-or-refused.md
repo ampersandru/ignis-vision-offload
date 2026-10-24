@@ -127,6 +127,24 @@ the operation lists the inert set, and a machine-readable copy of the three
 columns lives in one Rust table that both the validator and the document
 read, so they cannot drift.
 
+### The transcription form (`POST /v1/audio/transcriptions`, GitHub #352)
+
+The form's fields, classified by `speech/02`; the shared table is
+`openai_fields::TRANSCRIPTIONS`, the rest are read by the route.
+
+| Field | Inert | Honoured | Refused |
+|---|---|---|---|
+| `file` | — | WAV, FLAC, MP3, AAC; Ogg and Matroska/WebM holding FLAC | any other format, naming the accepted set; a clip over `speech.max_clip_seconds` |
+| `model` | — | absent, the speech model's id, `speech.compat_names` | a text or image id (`409`); any other (`404`) |
+| `prompt`, `keywords[]` | — | the context, capped at `speech.context_max_tokens` | a keyword holding `<`, `>`, CR or LF |
+| `language`, `languages[]` | — | one forces, several detect | outside the model's 30 languages; both together |
+| `response_format` | — | `json`, `text`, `verbose_json` | `srt`, `vtt`, `diarized_json`, any other |
+| `timestamp_granularities[]` | — | `segment` with `verbose_json` | `word`; `segment` with another format |
+| `stream` | — | `true` | not a boolean |
+| `temperature` | absent, `null` or `0` | — | anything else (greedy decoding) |
+| `chunking_strategy` | absent or `null` | — | `"auto"`, a `server_vad` object |
+| `include[]`, `known_speaker_names[]`, `known_speaker_references[]` | absent or empty | — | any value (no logprobs, no diarization) |
+
 ### `max_completion_tokens`
 
 - An alias of `max_tokens`, resolved before `SamplingRequestFields::resolve`,
@@ -178,8 +196,10 @@ read, so they cannot drift.
 A short section in `README.md` and in the OpenAPI document's top-level
 description names the things this engine does not serve **as choices**, so a
 reader stops looking: embeddings and a generic reranker over a second model,
-`/v1/completions`, `/v1/batches`, audio in or out, LoRA adapters on an NVFP4
-checkpoint, and more than one loaded model. Each with its one-line reason.
+`/v1/completions`, `/v1/batches`, audio out and `/v1/audio/translations`, LoRA
+adapters on an NVFP4 checkpoint, and a second model on the card (the speech
+model, which runs on the CPU, is the exception: ADR 0066). Each with its
+one-line reason.
 This is documentation, not a refusal path — those routes simply 404 as they
 do today.
 

@@ -127,6 +127,18 @@ pub const MAX_SWITCH_DRAIN_TIMEOUT_SECS: u32 = 3600;
 /// between the turns of one conversation. 0 never unloads.
 pub const DEFAULT_MODEL_IDLE_UNLOAD_SECS: u32 = 300;
 
+/// `speech.model`'s default (spec speech/02, Q49): the 1.7B Q4_K_M catalog
+/// entry, the recommended artifact of its size.
+pub const DEFAULT_SPEECH_MODEL: &str = "auto";
+
+/// The catalog id `speech.model: auto` resolves to (spec speech/02, Q49).
+pub const AUTO_SPEECH_MODEL_ID: &str = "qwen3-asr-1.7b";
+
+/// `speech.compat_names`' default (Q24): the names OpenAI clients send for
+/// a transcription, which the speech model answers to.
+pub const DEFAULT_SPEECH_COMPAT_NAMES: [&str; 5] =
+    ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-live-transcribe"];
+
 /// The upper bound `--model-idle-unload` accepts: a week, a ceiling against a
 /// fat-fingered value as [`MAX_SWITCH_DRAIN_TIMEOUT_SECS`] is for its flag —
 /// whoever wants the model never unloaded says 0.
@@ -1152,6 +1164,7 @@ fn derive(
     };
 
     let download_catalog = derive_download(sources, &resolution, &spelled)?;
+    derive_speech(&resolution, &spelled)?;
 
     let mut model = s.model.id.clone().unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     let mut speculation = speculation;
@@ -1363,6 +1376,33 @@ fn derive_download(
         Some(dir) if from_file && path.is_relative() => dir.join(path),
         _ => path.clone(),
     }))
+}
+
+/// `speech.compat_names` against the ids the server serves (spec speech/02):
+/// a compat name equal to one is refused at start, since a request naming it
+/// would be two models' at once. The ids it knows here are the built-in
+/// catalog's, the model families' own, the start model's and the speech
+/// model's; an operator catalog's are checked where it is read.
+fn derive_speech(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> String) -> Result<(), ConfigError> {
+    let s = &resolution.settings;
+    let speech_id = match s.speech.model.as_str() {
+        "auto" => Some(AUTO_SPEECH_MODEL_ID),
+        "off" => None,
+        id => Some(id),
+    };
+    for name in &s.speech.compat_names {
+        let served = crate::download::Catalog::built_in().ids().contains(&name.as_str())
+            || ModelFamily::of_model_id(name).is_some()
+            || s.model.id.as_deref() == Some(name.as_str())
+            || speech_id == Some(name.as_str());
+        if served {
+            return Err(ConfigError(format!(
+                "`{}` names `{name}`, which is a served model id: a compat name is for a name no served model has",
+                spelled("speech", "compat_names")
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `--spec-backend`, `--spec-draft-tokens` and `--spec-draft-head` (P5-02,

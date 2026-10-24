@@ -501,3 +501,30 @@ describe("deriveDashboard images", () => {
     expect(deriveDashboard([at(0, {})], 60_000)!.images).toBeNull();
   });
 });
+
+// Spec speech/02: the speech model's transcriptions are read over the window.
+describe("deriveDashboard speech", () => {
+  const speech = (completed: number, failed: number, audio: number) => ({
+    transcriptions: {
+      cpu: { completed, cancelled: 0, failed, timed_out: 0 },
+      gpu_loan: { completed: 0, cancelled: 0, failed: 0, timed_out: 0 },
+    },
+    audioSeconds: audio,
+    wait: null,
+    sessionsOpen: 0,
+    queueLength: 1,
+  });
+
+  it("gains the transcriptions by outcome, the audio they covered and the queue", () => {
+    const points = [at(0, { speech: speech(4, 0, 80) }), at(60_000, { speech: speech(7, 1, 140) })];
+    const dash = deriveDashboard(points, 60_000)!;
+    expect(dash.speech?.transcriptions).toMatchObject({ total: 8, window: 4 });
+    expect(dash.speech?.transcriptions.byOutcome.failed).toEqual({ total: 1, window: 1 });
+    expect(dash.speech?.audioSeconds).toMatchObject({ total: 140, window: 60 });
+    expect([dash.speech?.sessionsOpen, dash.speech?.queueLength]).toEqual([0, 1]);
+  });
+
+  it("is absent from the dashboard on a server that never transcribed", () => {
+    expect(deriveDashboard([at(0, {})], 60_000)!.speech).toBeNull();
+  });
+});
