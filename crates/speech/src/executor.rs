@@ -6,6 +6,7 @@
 //! executor takes its settings as plain values.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -117,6 +118,9 @@ pub(crate) struct Core {
     /// The prefix cache's one entry: the last prompt head and its K/V (Q50).
     pub prefix: Mutex<Option<PrefixEntry>>,
     compute: Mutex<()>,
+    /// Units running now, and the most ever at once (acceptance 19's witness: never above 1).
+    in_unit: AtomicUsize,
+    max_in_unit: AtomicUsize,
     last_use: Mutex<Instant>,
     loaded: Mutex<Option<Arc<Loaded>>>,
     /// Bumped by every load and unload, so a stale idle watcher stands down.
@@ -125,8 +129,11 @@ pub(crate) struct Core {
 
 impl Core {
     /// One unit of compute at a time (Q44): a window, a partial or a commit's decode.
-    pub fn unit(&self) -> MutexGuard<'_, ()> {
-        self.compute.lock().unwrap_or_else(|e| e.into_inner())
+    pub fn unit(&self) -> Unit<'_> {
+        let guard = self.compute.lock().unwrap_or_else(|e| e.into_inner());
+        let now = self.in_unit.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_unit.fetch_max(now, Ordering::SeqCst);
+        Unit { core: self, _guard: guard }
     }
 
     pub fn touch(&self) {
@@ -145,6 +152,18 @@ impl Core {
     }
 }
 
+/// A unit of compute in progress: holds the compute lock.
+pub(crate) struct Unit<'a> {
+    core: &'a Core,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl Drop for Unit<'_> {
+    fn drop(&mut self) {
+        self.core.in_unit.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub struct Executor {
     core: Arc<Core>,
     files: ModelFiles,
@@ -159,6 +178,8 @@ impl Executor {
             settings,
             prefix: Mutex::new(None),
             compute: Mutex::new(()),
+            in_unit: AtomicUsize::new(0),
+            max_in_unit: AtomicUsize::new(0),
             last_use: Mutex::new(Instant::now()),
             loaded: Mutex::new(None),
             generation: Mutex::new(0),
@@ -175,6 +196,11 @@ impl Executor {
             Ok(_) => Availability::Available,
             Err(r) => Availability::Unavailable(r.to_string()),
         }
+    }
+
+    /// The most units of compute that ever ran at once: 1 once anything ran (Q44).
+    pub fn max_concurrent_units(&self) -> usize {
+        self.core.max_in_unit.load(Ordering::SeqCst)
     }
 
     pub fn is_loaded(&self) -> bool {

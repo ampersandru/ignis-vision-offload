@@ -22,3 +22,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 # The oracle fixtures' index and thresholds (tools/speech-oracle/).
 serde_json = { workspace = true }
+# The threads test counts the physical cores itself; the log test captures `ignis.speech.threads`.
+num_cpus = "1"
+tracing-subscriber = { workspace = true }

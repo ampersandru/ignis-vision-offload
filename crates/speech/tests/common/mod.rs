@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+pub mod synthetic;
+
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("oracle")
 }
