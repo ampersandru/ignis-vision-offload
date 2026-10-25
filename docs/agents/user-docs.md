@@ -98,7 +98,7 @@ to them for the reasons behind a behaviour.
 
 ## Specs and review
 
-- A spec whose work is user-visible names the guide sections it changes in its
-  last acceptance criterion.
+- A ticket whose work is user-visible names the guide sections it changes in
+  its last acceptance criterion.
 - `/code-review`'s Standards axis applies this document: a user-visible change
   with no matching `docs/user/` hunk is a violation.

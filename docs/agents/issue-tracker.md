@@ -50,7 +50,7 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 Until 2026-10-25 a spec lived as a file under `docs/specs/<feature>/`, and its
 issue carried only a short body linking it (`**Spec:** [docs/specs/...](...)`).
 For those issues the linked file is the spec and the ticket's brief: read it
-after the issue body. `docs/specs/` is frozen: no new spec goes there, and a
+after the issue body. `docs/specs/` is frozen: a new spec is an issue, and a
 spec still in flight (speech/07 and speech/08, #362 and #361) stays a file
 until its ticket closes.
 
@@ -65,7 +65,6 @@ until the owner says so.
 
 ## Auth
 
-Repo-local git credential helper (see `.git/config`:
-`credential.https://github.com.helper = store --file ...`). The token lives in
-the user's credential file, never in URLs or committed files. Push over HTTPS
-with `gh` as `gpillon`.
+Before pushing: push over HTTPS with `gh` as `gpillon`. The token comes from
+the repo-local credential helper `.git/config` names and stays in its file,
+never in a URL or a committed file.

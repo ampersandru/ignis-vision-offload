@@ -28,7 +28,7 @@ them.
   [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md).
 - **A decision that is hard to reverse gets an ADR**, a measured result that
   future work will reuse gets a finding, and the acceptance criteria of a piece
-  of work live in its spec ([How work is tracked](conventions.md)).
+  of work live in its spec's tickets ([How work is tracked](conventions.md)).
 
 ## The repository
 

@@ -24,9 +24,10 @@ Single-context: root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
 
 ### Scratch
 
-`.scratch/` is **not tracked by git**: it is the scratchpad for temporary
-artifacts, experiments, raw logs and workflow output, local to each clone.
-Nothing durable lives there, and it is never an issue tracker.
+`.scratch/` is the untracked scratchpad, local to each clone, for temporary
+artifacts, experiments, raw logs and workflow output. When something there
+must outlive the task: its home is under Artifact boundaries in
+`docs/agents/findings.md`.
 
 ### Coding standards
 
@@ -43,41 +44,39 @@ When recording a decision in `docs/adr/`, write it in the `/domain-modeling`
 skill's short format, with the bare title as its heading: the release notes
 take the number from the file name. An ADR takes the next free number when it
 merges into `main`; if `main` took that number first, the ADR is renumbered
-with every line that cites it (b61a224f). Where the repo differs from the
-skills: ADR 0070.
+with every line that cites it (b61a224f). When a skill's convention and the
+repo's disagree: ADR 0070 lists where the repo differs.
 
 ### Testing
 
-Every code change ships with a test, and the task is not complete until
-`cargo test` passes workspace-wide. Before launching **anything** on the GPU
-(the profile, a bench run, a gate leg, one `--ignored` test), always check
-that no other test, bench or agent session is already using the card — in
-any worktree. The 5090 fits one run at a time and the loser dies with no
-diagnostic. See `docs/agents/testing.md`.
+Every code change ships with a test, and the task is done only when
+`cargo test` passes workspace-wide. Before writing a test or reporting a code
+change done: `docs/agents/testing.md`.
+
+Before launching **anything** on the GPU (the profile, a bench run, a gate
+leg, one `--ignored` test): check with `make gpu-status` that nothing else
+holds the card, from any worktree or agent session. The 5090 fits one run at
+a time, and the loser dies with no diagnostic.
 
 ### User documentation
 
-Every user-visible change ships with its user-guide update in the same
-commit, and the task is not complete until `docs/user/` describes what the
-code now does. What counts as user-visible, where each change goes and how
-the guide is written: `docs/agents/user-docs.md`.
+Every user-visible change ships with its `docs/user/` update in the same
+commit. Before reporting a change done: `docs/agents/user-docs.md` says
+whether it is user-visible, where its guide update goes and how it is written.
 
 ### Make
 
-`make help` lists the targets; `make config` prints the exact server command
-a run will use. An agent runs the server as a daemon — `make start`, then
-`make stop` — since `run`, `dev`, `dev-ui` and `watch` hold the terminal
-until Ctrl+C. `run` and `start` only ever launch the last build: a stale
-binary fails naming the changed files, and `make build` is the fix.
-`make gpu-status` is the one-command check before GPU work. Why it is
-shaped this way: ADR 0027.
+An agent runs the server as a daemon, `make start` then `make stop`: a
+foreground target holds the shell until Ctrl+C. `start` and `run` launch only
+the last build and refuse a stale one, naming the changed files; `make build`
+is the fix. Before changing the Makefile: ADR 0027.
 
 ### Worktrees
 
-All git worktrees for this repo live under `../.inference-qwen-worktrees/`
-(sibling of the repo root), one subdirectory per issue/feature. Do not create
-worktrees anywhere else (e.g. no separate `.inference-claude-worktrees/`) —
-one shared location for every agent.
+Creating a git worktree: put it under `../.inference-qwen-worktrees/`, beside
+the repo root, one subdirectory per issue or feature. Every agent shares it
+whatever its tool, Claude Code included, whose own default is
+`.claude/worktrees/`.
 
 ### Orchestrated builds
 
