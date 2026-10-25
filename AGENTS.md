@@ -28,10 +28,23 @@ Single-context: root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
 artifacts, experiments, raw logs and workflow output, local to each clone.
 Nothing durable lives there, and it is never an issue tracker.
 
+### Coding standards
+
+Writing, reviewing or merging a change, or running a skill that writes files: `CODING_STANDARDS.md`.
+
 ### Findings
 
 When recording or consulting durable findings from discovery, research, or
 experiments, start from `docs/findings/README.md`.
+
+### ADRs
+
+When recording a decision in `docs/adr/`, write it in the `/domain-modeling`
+skill's short format, with the bare title as its heading: the release notes
+take the number from the file name. An ADR takes the next free number when it
+merges into `main`; if `main` took that number first, the ADR is renumbered
+with every line that cites it (b61a224f). Where the repo differs from the
+skills: ADR 0070.
 
 ### Testing
 
@@ -65,3 +78,7 @@ All git worktrees for this repo live under `../.inference-qwen-worktrees/`
 (sibling of the repo root), one subdirectory per issue/feature. Do not create
 worktrees anywhere else (e.g. no separate `.inference-claude-worktrees/`) —
 one shared location for every agent.
+
+### Orchestrated builds
+
+Coordinating implementer agents on a spec's tickets: `docs/agents/orchestrated-builds.md`.
