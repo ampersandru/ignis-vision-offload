@@ -55,10 +55,11 @@ behaviour.
 
 ## After a merge or a rebase
 
-The checks are `make ci`, plus `make check CUDA=1` when the change touches
-code behind the `cuda` feature, which `make ci` does not compile. A kernel
-change also needs the GPU legs of `docs/agents/testing.md` ("Done means"),
-run one at a time on a free card. Resolving a conflict reformats nothing.
+The checks are `make ci`, whose `check` step compiles the code behind the
+`cuda` feature unless it runs with `CUDA=0`; `cargo test` never does. The rest
+of what a change needs, a kernel change's GPU legs among it, is
+`docs/agents/testing.md`'s "Done means". Resolving a conflict reformats
+nothing.
 
 ## Skill output and prototypes
 
