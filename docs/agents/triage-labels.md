@@ -21,6 +21,10 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 | `bug`         | `bug`                |
 | `enhancement` | `enhancement`        |
 
+A new spec issue and each of its tickets carry one category beside
+`ready-for-agent`, `enhancement` for new work or `bug` for a defect, since
+`/to-spec` and `/to-tickets` apply only the state role.
+
 ## Repo-only labels
 
 Two labels this repo adds to the five roles above. Each is added beside the

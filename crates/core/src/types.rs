@@ -469,8 +469,8 @@ impl Default for DecodeParams {
     }
 }
 
-/// The lifecycle of a request inside the engine (`GLOSSARY.md`: "request state
-/// machine (admit → prefill → decode → done / evict)").
+/// The lifecycle of a request inside the engine: admit → prefill → decode →
+/// done / evict (`GLOSSARY.md`: "Prefill progress", "Lane", "KV-RAM").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestState {
     /// Accepted, queued, no lane yet.

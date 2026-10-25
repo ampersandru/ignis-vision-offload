@@ -18,10 +18,10 @@ undoing it.
 ## Consequences
 
 - `docs/specs/` is frozen and not migrated: an issue opened before 2026-10-25
-  links its spec there, and speech/07 and 08 stay files until #362 and #361
-  close. Migration was rejected because GitHub cannot backdate an issue, four
-  of the 158 files exceed the 65,536-character body limit, about 275 citations
-  would move, and about half the specs were edited after their tickets closed.
+  links its spec there. Migration was rejected because GitHub cannot backdate
+  an issue, four of the 158 files exceed the 65,536-character body limit, about
+  275 citations would move, and about half the specs were edited after their
+  tickets closed.
 - A byte-level, ABI or wire-format contract that code cites as normative lives
   in `docs/formats/`, a home the skills' taxonomy does not have (#369).
 - Durable findings live in `docs/findings/` under `docs/agents/findings.md`,
@@ -32,8 +32,7 @@ undoing it.
   sit beside the five triage roles and the two categories
   (`docs/agents/triage-labels.md`).
 - ADRs 0001-0069 keep their long form and the number in their heading; a new
-  ADR is in the short format, its heading the bare title, and the release
-  notes name both as "ADR NNNN — title" (`mk/changelog.sh`).
+  ADR is in the short format, its heading the bare title.
 - qwen-code orchestrates a campaign of issues with the `issue-orchestrator`
   skill, which reads the same issues and sub-issues and leaves the specialist
   work to the skills; Claude Code runs `/implement-spec`.

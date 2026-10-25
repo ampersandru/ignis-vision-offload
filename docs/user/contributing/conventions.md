@@ -50,20 +50,20 @@ file of a server `make start` launched is under `.scratch/serve/`.
   title as its heading and one to three sentences of context, decision and
   reason, with a status, the options it rejected or its consequences only when
   they add something. ADRs 0001 to 0069 keep their longer form with the number
-  in the heading; the release notes name both kinds "ADR NNNN — title",
-  taking a short one's number from its file name. An ADR takes the next free number when it
-  merges into `main`, and is renumbered, with every line that cites it, when
-  another ADR took that number first. It is written when the decision is
+  in the heading; the release notes name both kinds "ADR NNNN — title", taking
+  a short one's number from its file name. An ADR takes the next free number
+  when it merges into `main`, and is renumbered, with every line that cites it,
+  when another ADR took that number first. It is written when the decision is
   taken, and amended rather than rewritten when it changes. The
   [list](../../adr/) is the project's memory of why; ADR 0070 lists the places
   where the repo differs from the agent skills it follows.
 - **A contract** is the description of bytes, an ABI or a wire format that
   two sides must match, which the code on both sides cites as normative: the
-  Flash-Next converter's output, for one. It lives in [`docs/formats/`](../../formats/),
-  and its header names the ADR that says why the format is what it is. Code
-  cites a contract by section number, so a section keeps its number. A
-  contract that began inside a spec under `docs/specs/` left a one-line
-  pointer there.
+  Flash-Next converter's output, for one. It lives in
+  [`docs/formats/`](../../formats/), and its header names the ADR that says why
+  the format is what it is. Code cites a contract by section number, so a
+  section keeps its number. A contract that began inside a spec under
+  `docs/specs/` left a one-line pointer there.
 - **A finding** preserves evidence another reader can inspect or reproduce:
   a discovery, a research result or an experiment, with its question, its
   evidence, its limits ([`docs/agents/findings.md`](../../agents/findings.md)).

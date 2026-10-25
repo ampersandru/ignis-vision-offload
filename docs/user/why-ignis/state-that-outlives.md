@@ -20,10 +20,11 @@ conversation provably shares; a conversation keeps at most two. A *retained
 prefix* is the shared head, the system and tools block rounded down to whole
 pages, published for the next subagent in a burst. Both are found by content:
 the longest retained state whose tokens, images included, are a prefix of the
-request. The key is a hash chain over those tokens rather than a digest of the
-whole, because a claimant asks about every prefix length of its prompt at once,
-and because it lets a blob name its content in sixteen bytes instead of carrying
-sixty thousand token ids to another tier. No session id is sent or needed, and a wrong id cannot hand over
+request. The key is a hash chain over those tokens rather than a digest
+of the whole, because a claimant asks about every prefix length of its
+prompt at once, and because it lets a blob name its content in sixteen
+bytes instead of carrying sixty thousand token ids to another tier. No
+session id is sent or needed, and a wrong id cannot hand over
 another conversation's state. Reuse copies and never consumes, so a retry, a
 regenerate or two forks all hit.
 
