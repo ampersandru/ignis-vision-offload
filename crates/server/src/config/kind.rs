@@ -232,6 +232,10 @@ count_kind!(
     Partials: u32, "partials", "partial count"
 );
 count_kind!(
+    /// A whole multiple of something.
+    Times: u32, "times", "whole multiple"
+);
+count_kind!(
     /// A count of waiting requests.
     Requests: u32, "requests", "request count"
 );

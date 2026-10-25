@@ -7,9 +7,11 @@
 //! of 16 kHz PCM every 100 ms), the way the Playground feeds it, then committed. Per dictation the
 //! deltas joined must equal `completed.transcript` (AC 5); the pooled WER of the transcripts is
 //! only reported against the batch path (the same executor, 8 s pushes, as the transcriptions route
-//! drives it); and the time from the commit to `completed` is printed (AC 13: at most 2 s for a
-//! dictation of at least 60 s, `IGNIS_SPEECH_COMMIT_MS` to override the bound where the figure is
-//! only measured, as in the 4-core container).
+//! drives it); and the time from the commit to `completed` is printed, per dictation and as the
+//! median and the slowest of the set (AC 13: at most 2 s for a dictation of at least 60 s,
+//! `IGNIS_SPEECH_COMMIT_MS` to override the bound where the figure is only measured, as in the
+//! 4-core container). `IGNIS_SPEECH_PARTIAL_MS` and `IGNIS_SPEECH_PARTIAL_FACTOR` set
+//! `speech.partial_interval_ms` and `speech.partial_cost_factor` for the run (Q76).
 //!
 //! It is a timing run: nothing else may be using the CPU. Run it alone:
 //!
@@ -131,6 +133,11 @@ fn interval_ms() -> u32 {
     std::env::var("IGNIS_SPEECH_PARTIAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(SpeechGroup::default().partial_interval_ms)
 }
 
+/// `speech.partial_cost_factor` for the run: its default, or `IGNIS_SPEECH_PARTIAL_FACTOR`.
+fn cost_factor() -> u32 {
+    std::env::var("IGNIS_SPEECH_PARTIAL_FACTOR").ok().and_then(|v| v.parse().ok()).unwrap_or(SpeechGroup::default().partial_cost_factor)
+}
+
 /// A server over the real CPU executor and the built-in catalog, the files under the study disk's
 /// converted models.
 fn real_server(executor: Arc<dyn SpeechExecutor>) -> (Server, PathBuf) {
@@ -139,7 +146,7 @@ fn real_server(executor: Arc<dyn SpeechExecutor>) -> (Server, PathBuf) {
     let models = SpeechModels { catalog: Arc::new(Catalog::built_in().clone()), dir: dir.clone() };
     let server = Server::new(Engine::new(Box::new(scheduler)), Box::new(SimpleTemplateProvider))
         .with_speech(Arc::new(Speech::new(executor, Some(models))))
-        .with_speech_group(SpeechGroup { partial_interval_ms: interval_ms(), ..SpeechGroup::default() });
+        .with_speech_group(SpeechGroup { partial_interval_ms: interval_ms(), partial_cost_factor: cost_factor(), ..SpeechGroup::default() });
     (server, dir)
 }
 
@@ -213,6 +220,7 @@ async fn the_eleven_dictations_through_the_real_route_at_real_time_pace() {
     assert_eq!(files.id, MODEL);
     let live = live(server).await;
     let dictations = dictations();
+    println!("speech.partial_interval_ms {}, speech.partial_cost_factor {}", interval_ms(), cost_factor());
 
     // The batch reference first, on the same loaded model, and a warm one for the route.
     executor.load(&files, LoadSettings::default()).unwrap();
@@ -220,6 +228,7 @@ async fn the_eleven_dictations_through_the_real_route_at_real_time_pace() {
 
     let mut pairs = Vec::new();
     let mut slowest = (Duration::ZERO, String::new());
+    let mut commits = Vec::new();
     for d in &dictations {
         calls.lock().unwrap().clear();
         let heard = dictate(&live, &d.audio).await;
@@ -232,6 +241,7 @@ async fn the_eleven_dictations_through_the_real_route_at_real_time_pace() {
             format!("{} {kind}s {} ms", of.len(), of.iter().sum::<u128>())
         };
         println!("      in the executor: {}, {}, {}", summary("push"), summary("partial"), summary("commit"));
+        commits.push(heard.commit_to_completed);
         if seconds >= 60.0 && heard.commit_to_completed > slowest.0 {
             slowest = (heard.commit_to_completed, d.id.clone());
         }
@@ -239,6 +249,13 @@ async fn the_eleven_dictations_through_the_real_route_at_real_time_pace() {
     }
     let (route, batch) = (pooled_wer(&pairs), pooled_wer(&batch_pairs));
     println!("pooled WER on the 11 dictations: route {:.2}%, batch {:.2}% ({:+.2} pt)", 100.0 * route, 100.0 * batch, 100.0 * (route - batch));
+    commits.sort();
+    println!(
+        "commit to completed over the {} dictations: median {} ms, slowest {} ms",
+        commits.len(),
+        commits[commits.len() / 2].as_millis(),
+        commits[commits.len() - 1].as_millis()
+    );
     println!("slowest commit to completed on a dictation of at least 60 s: {} ms ({})", slowest.0.as_millis(), slowest.1);
     assert!(slowest.0 <= bound, "{} took {} ms from the commit to completed, over {} ms", slowest.1, slowest.0.as_millis(), bound.as_millis());
 }

@@ -298,6 +298,38 @@ async fn refreshes_are_skipped_while_the_worker_is_behind() {
     assert_eq!(deltas, of(&events, COMPLETED)[0]["transcript"].as_str().unwrap());
 }
 
+/// Q76: after a refresh the next waits `speech.partial_cost_factor` times its
+/// compute time, from when it was queued, beyond `speech.partial_interval_ms`.
+/// Audio arrives all along and never fills a window, so every unit is a
+/// refresh, and each takes at least 200 ms on the worker (a 100 ms push of
+/// the audio so far, a 100 ms partial). At factor 3 every refresh begins at
+/// least 600 ms after the one before, though the 100 ms interval and the free
+/// worker would allow one as soon as the last ends; at factor 1, today's
+/// rule, one follows as soon as the last ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_waits_the_factor_times_the_last_ones_compute_time() {
+    let mut gaps = Vec::new();
+    for factor in [3, 1] {
+        let executor = saying(&["uno", "due"]);
+        executor.set_step_delay(Duration::from_millis(100));
+        let (live, _server, _dir) = served(&executor, |group| group.partial_cost_factor = factor).await;
+        let mut socket = session_16k(&live).await;
+        // Three seconds, 100 ms at a time.
+        for _ in 0..30 {
+            send(&mut socket, append(1_600)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let began = executor.partials_at();
+        assert!(began.len() >= 3, "factor {factor}: {} refreshes", began.len());
+        gaps.push(began.windows(2).map(|pair| pair[1] - pair[0]).collect::<Vec<_>>());
+    }
+    let (held, today) = (&gaps[0], &gaps[1]);
+    // 3 × 200 ms, less the scheduling slack between two partials' starts.
+    let bound = Duration::from_millis(550);
+    assert!(held.iter().all(|gap| *gap >= bound), "a refresh began sooner than 3 times the last one's compute time: {held:?}");
+    assert!(today.iter().any(|gap| *gap < bound), "at factor 1 a refresh follows the last at once: {today:?}");
+}
+
 // ── AC 7: usage and failures ────────────────────────────────────────────────
 
 /// AC 7: an item over `speech.max_clip_seconds` gets an `error` naming the

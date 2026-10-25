@@ -728,6 +728,7 @@ fn the_document_describes_the_realtime_transcription_session() {
         "input_audio_buffer.speech_stopped",
         "input_audio_buffer.timeout_triggered",
         "speech.vad_leading_silence_ms",
+        "speech.partial_cost_factor",
         "`turn_detection: null`",
         "session.ignis.provisional_tail",
         "ignis.input_audio_transcription.provisional",

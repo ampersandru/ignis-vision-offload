@@ -116,6 +116,16 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
   queued, while the session's previous partial or a pending window is still
   in the worker, and `speech.partial_interval_ms` is a minimum interval.
   Windows and the commit are never delayed behind a partial.
+- **Partials keep to a share of the worker** (Q76; owner, 2026-10-25). A
+  partial decodes everything past the stable text, so it costs more as the
+  item grows (about 3 s on the i9 by the end of a 67 s dictation). The next
+  partial waits at least `speech.partial_cost_factor` times the compute time
+  of the session's last one, and never less than
+  `speech.partial_interval_ms`: partials then take at most about one part in
+  the factor of the worker, and the stable text keeps advancing on any CPU,
+  leaving the commit less to decode. The factor is a config field with a
+  default chosen from AC 13's measurement: 1, the rule before, since no factor
+  measured better (As built). Making a partial cheaper is not this change.
 - `commit`: `committed`, then 01's `commit()`. Whatever stable text is left
   goes out as `delta`, then `completed`.
 - The next item reuses the session's prefilled context (01's prefix cache)
@@ -258,6 +268,14 @@ the spec left open, or differs from it:
   last one and nothing of the session's is in the worker (no window, no
   refresh, no commit, no open). One that falls due while the worker holds
   any is skipped, not deferred: the next chance is a whole interval later.
+  Since Q76 each refresh's compute time, the whole unit's (the push of the
+  audio not yet in a window, then the partial), sets a hold on the session:
+  the next refresh is not queued before the moment the last was queued plus
+  `speech.partial_cost_factor` times that time, read live at each refresh.
+  The hold is the session's, not the item's: under `server_vad` the next
+  item's first refresh waits for it too. At factor 1 the hold never binds,
+  since the skip already waits for the refresh to leave the worker: the rule
+  before Q76.
 - **The upgrade**, in order: no `intent=transcription`, or a `model` in the
   URL, `400` naming `intent`; the speech model unavailable `503
   speech_unavailable`; `speech.max_sessions` open `503 engine_full` with
@@ -292,7 +310,7 @@ the spec left open, or differs from it:
   through the route against 3.23% on the batch path (+0.81 pt, inside AC 15 of
   spec 01); a later run of d10 alone gave 3.36% against 4.20%, so the two paths
   trade a few words on a single clip and the pooled figure is the one to read.
-- **AC 13 is not met** (same test, d10, the one dictation over 60 s: 67.0 s,
+- **AC 13, first measured: not met** (same test, d10, the one dictation over 60 s: 67.0 s,
   114 words, from the commit sent when the last audio was spoken to
   `completed`; a run with a compile overlapping it is discarded, as in #351).
   At the default `speech.partial_interval_ms` (2000):
@@ -317,3 +335,70 @@ the spec left open, or differs from it:
   levers; each trades live latency or accuracy for the commit, the owner's
   call. The figures, logs and the driver scripts are in
   `H:/speech-study/results/fixes-realtime/`.
+- **AC 13 with Q76's adaptive refreshes: still not met.** The owner chose the
+  refresh that waits `speech.partial_cost_factor` times the last one's compute
+  time (Q76, 2026-10-25). The same test takes `IGNIS_SPEECH_PARTIAL_FACTOR`
+  (and `IGNIS_SPEECH_PARTIAL_MS`) and prints each dictation's commit and the
+  set's median and slowest. Every run was gated (20 s with no build or other
+  heavy process before it, the processes sampled during it; none overlapped).
+  The rule for the default was written before the first arm and amended, before
+  any container run was read, once the i9 proved unable to tell the factors
+  apart (`H:/speech-study/results/tuning/RULES.txt`, with the logs and the
+  drivers). The pushes, the same eight windows' work in every run, are the
+  machine's speed in each run.
+
+  On the i9 (9 threads), the 11 dictations, two runs per factor:
+
+  | factor | d10: commit to `completed` | d10: the executor's commit | the 11: median / slowest | d10: pushes | d10: partials | pooled WER (batch 3.23%) |
+  |---|---|---|---|---|---|---|
+  | 1 (the rule before) | 4.4 s; 2.4 s | 2.8 s; 2.0 s | 3.2 / 4.8 s; 1.7 / 2.9 s | 9.8 s; 6.9 s | 17; 24 | 3.71%; 3.55% |
+  | 2 | 3.0 s; 4.4 s | 2.0 s; 1.9 s | 1.7 / 3.3 s; 1.7 / 4.4 s | 7.1 s; 6.8 s | 17; 17 | 3.87%; 3.71% |
+  | 3 | 2.5 s; 4.1 s | 2.5 s; 1.9 s | 2.2 / 3.8 s; 1.9 / 4.1 s | 7.4 s; 6.8 s | 9; 10 | 3.87%; 3.55% |
+
+  On the 4-core container (`--cpuset-cpus=0-3`, 3 threads), d10, two runs per
+  factor:
+
+  | factor | d10: commit to `completed` | d10: the executor's commit | d10: pushes | d10: partials |
+  |---|---|---|---|---|
+  | 1 | 5.8 s; 5.8 s | 4.0 s; 4.0 s | 13.2 s; 13.1 s | 15; 15 |
+  | 2 | 5.9 s; 8.0 s | 4.0 s; 3.9 s | 13.1 s; 13.4 s | 9; 9 |
+  | 3 | 6.1 s; 7.1 s | 4.2 s; 4.0 s | 13.1 s; 13.1 s | 7; 7 |
+
+  The container's 11 dictations, one run per factor (batch path 3.23%):
+
+  | factor | median / slowest commit | pooled WER |
+  |---|---|---|
+  | 1 | 3.8 / 6.1 s | 4.52% (+1.29 pt) |
+  | 2 | 3.8 / 9.7 s | 4.19% (+0.97 pt) |
+  | 3 | 4.3 / 6.9 s | 4.19% (+0.97 pt) |
+
+  - **The default is 1**, the rule before Q76: no factor reaches 2 s on the
+    i9, and none beats factor 1 on the container (the amended rule: both of a
+    factor's runs under factor 1's better one by more than factor 1's own
+    spread, 15 ms). Nothing measured better, so nothing changes by default;
+    the field is there for a CPU where it helps. On the i9 every arm's WER is
+    within 1 pt of the batch path's (+0.65 pt at most). On the container
+    factor 1 is over that line by two words in 620 (+1.29 pt, one run), 2 and
+    3 under it (+0.97 pt): two words is inside the spread of one factor's two
+    runs on the i9 (0.16-0.32 pt), so it does not separate the factors, and
+    AC 5's 1 pt is the i9's. Weighed otherwise, factor 2 would be the choice
+    at the same median, though its slowest commit there was 9.7 s, 6 s of it
+    waiting for a refresh in flight.
+  - **What the 2 s is made of.** The executor's own commit is 1.9-2.0 s on a
+    quiet i9 and 4.0 s on the container at every factor: at factor 1 the
+    stable text already keeps up, and fewer refreshes do not shorten the
+    commit's decode. The rest is the wait for a refresh in flight when the
+    commit arrives, which a commit cannot overtake: 0 to 2.6 s on the i9, a
+    lottery on where the last refresh falls (a refresh costs up to 3 s there by
+    the end of d10, about 5 s on the container); 1.8 s at factor 1 on the
+    container, 1.8 to 4.1 s at 2 and 3, whose rarer refreshes each run longer.
+    A larger factor makes a refresh in flight less likely and a longer one when
+    there is.
+  - **Machine speed moves d10 more than any factor.** The first measurement's
+    6.7 s and 11.8 s are the same rule on a slower machine: their pushes took
+    11.3 s and 20.6 s against 6.8-7.4 s and 13.1-13.4 s here, and the one i9 run
+    whose pushes took 9.8 s committed in 4.4 s.
+  - **The levers left** are the owner's: a commit that does not wait for the
+    refresh in flight (no refresh started near the end of an item, or one the
+    commit can stop), or a cheaper refresh (option C, not chosen). Neither is
+    built.

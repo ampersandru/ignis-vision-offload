@@ -32,6 +32,9 @@
 //!   at most every `speech.partial_interval_ms`, and a refresh is skipped,
 //!   never queued, while any unit of the socket's is still in the worker: a
 //!   CPU that cannot keep up drops refreshes, never windows or the commit.
+//!   The next refresh also waits `speech.partial_cost_factor` times the last
+//!   one's compute time (Q76), so the refreshes keep to about that share of
+//!   the worker as the item grows and each costs more.
 //! - **Text.** `delta` carries stable text only, so the deltas joined are the
 //!   transcript `completed` carries (Q43). A session that opted in with
 //!   `session.ignis.provisional_tail` also gets the tail, the text still
@@ -100,7 +103,7 @@ Client events, each a text frame of one JSON object:
 - `input_audio_buffer.clear`: discards the buffer and the item's partial state (under `server_vad`, the speech and the padding the VAD holds); answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
 
-Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
+Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed, and the next waits at least `speech.partial_cost_factor` times the last one's compute time), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
 
 A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) -- no item committed and still being transcribed, and no text or binary frame from the client -- is closed with a normal close frame (1000) whose reason says so.",
     params(("intent" = String, Query, description = "`transcription`: the only session this route serves.")),
@@ -185,7 +188,8 @@ enum Unit {
 
 /// What a unit tells the socket.
 enum Outcome {
-    Partial(Partial),
+    /// A refresh, and its compute time on the worker.
+    Partial(Partial, Duration),
     Transcript(Transcript, Duration),
     Failed(Failure),
 }
@@ -284,6 +288,10 @@ struct Connection {
     previous_item_id: Option<String>,
     /// When the current item's live transcript may next be refreshed.
     next_partial: Option<Instant>,
+    /// When the session's last refresh was queued, and the earliest the next
+    /// may be: `speech.partial_cost_factor` times its compute time later.
+    refresh_queued: Instant,
+    refresh_hold: Instant,
     /// This socket's units queued on the worker and not yet out of it.
     in_worker: usize,
     outbox: Vec<Value>,
@@ -320,6 +328,8 @@ impl Connection {
             pending: Vec::new(),
             previous_item_id: None,
             next_partial: None,
+            refresh_queued: Instant::now(),
+            refresh_hold: Instant::now(),
             in_worker: 0,
             outbox: Vec::new(),
             next_event: 0,
@@ -595,16 +605,18 @@ impl Connection {
 
     /// The current item's first audio, at its first append or when the VAD
     /// heard speech: its id, its deadline (`server.stream_timeout`, per item
-    /// from its first audio, ADR 0058), and when its first refresh falls due.
+    /// from its first audio, ADR 0058), and when its first refresh falls due:
+    /// an interval on, and not before the session's last refresh allows.
     fn begin_item(&mut self) {
         let live = self.server.live();
         let interval = Duration::from_millis(u64::from(live.speech.partial_interval_ms));
+        let hold = self.refresh_hold;
         let item = self.current();
         if item.id.is_none() {
             item.id = Some(format!("item_{}", random_suffix()));
             item.timeout = Timeout::of(&live, true);
             item.deadline = Some(item.timeout.from_now());
-            self.next_partial = Some(Instant::now() + interval);
+            self.next_partial = Some((Instant::now() + interval).max(hold));
         }
     }
 
@@ -816,10 +828,13 @@ impl Connection {
     fn done(&mut self, done: Done) {
         self.in_worker -= 1;
         let Some(outcome) = done.outcome else { return };
+        if let Outcome::Partial(_, cost) = &outcome {
+            self.hold_refreshes(*cost);
+        }
         // An item cleared or ended since: nobody is waiting for it.
         let Some(index) = self.items.iter().position(|item| item.seq == done.item) else { return };
         match outcome {
-            Outcome::Partial(partial) => {
+            Outcome::Partial(partial, _) => {
                 let opted_in = self.config.provisional_tail;
                 let item = &mut self.items[index];
                 if item.failure.is_some() {
@@ -886,6 +901,18 @@ impl Connection {
         }
     }
 
+    /// A refresh of the session's took `cost` on the worker: the next waits
+    /// at least `speech.partial_cost_factor` times that from when this one was
+    /// queued, never less than `speech.partial_interval_ms` (Q76), so the
+    /// refreshes take at most about one part in that many of the worker
+    /// however much each costs. Read live, at each refresh.
+    fn hold_refreshes(&mut self, cost: Duration) {
+        self.refresh_hold = self.refresh_queued + cost * self.server.live().speech.partial_cost_factor;
+        if let Some(at) = self.next_partial.as_mut() {
+            *at = (*at).max(self.refresh_hold);
+        }
+    }
+
     /// The timers: the live transcript's refresh, and the items' deadlines.
     fn tick(&mut self) {
         let now = Instant::now();
@@ -899,6 +926,7 @@ impl Connection {
             if self.in_worker == 0 && item.failure.is_none() && item.fresh_audio {
                 let rest = std::mem::take(&mut self.pending);
                 self.queue(Unit::Partial(rest));
+                self.refresh_queued = now;
                 self.current().fresh_audio = false;
             }
         }
@@ -990,9 +1018,10 @@ fn run(unit: Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &Sp
             let began = std::time::Instant::now();
             let session = slot.session.as_mut()?;
             let partial = push(session.as_mut(), &samples).and_then(|()| session.partial());
-            slot.computed += began.elapsed();
+            let cost = began.elapsed();
+            slot.computed += cost;
             match partial {
-                Ok(partial) => Some(Outcome::Partial(partial)),
+                Ok(partial) => Some(Outcome::Partial(partial, cost)),
                 Err(error) => failed(&mut *slot, error.0),
             }
         }

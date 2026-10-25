@@ -190,10 +190,17 @@ rest. Refreshes are best effort: each one decodes the item so far again, so
 while the session's audio is still being computed a refresh is skipped rather
 than queued behind it. A CPU that cannot keep up sends fewer deltas, never a
 later transcript: the audio and the commit go first. The text after the last
-refresh is decoded at the commit, so on a CPU with no spare time the commit
-takes longer: measured on a 67 s dictation with the default model, about 7 s
-from the commit to `completed` on a 10-core desktop CPU and about 12 s on 4
-cores. A longer `speech.partial_interval_ms` (4000) cut the desktop's to about 3 s.
+refresh is decoded at the commit, and a commit that arrives while a refresh
+is running waits for it. Measured on a 67 s dictation with the default model,
+the commit takes 2.4 to 4.4 s to `completed` on a 10-core desktop CPU (about 2 s
+of its own, the rest the refresh it waited for; 1.7 to 2.2 s for the median of
+eleven dictations) and about 6 s on 4 cores.
+
+After each refresh the next waits at least `speech.partial_cost_factor` times
+that refresh's compute time, so refreshes take at most about one part in that
+many of the speech model's CPU. The default, 1, only waits for the last
+refresh to finish: 2 and 3 measured no faster on either CPU. A higher factor
+sends fewer deltas; it may help a CPU that is busy with more than one session.
 
 - `conversation.item.input_audio_transcription.delta` `{item_id,
   content_index: 0, delta}` carries **stable text only**, text the model will not

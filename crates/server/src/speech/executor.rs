@@ -158,7 +158,8 @@ impl SpeechExecutor for NoExecutor {
 /// is stable per 8 s window pushed (128,000 samples), the last arriving only
 /// at the commit. It records what it was opened with, the samples it was
 /// pushed, what it was loaded with, every call its sessions took, in order
-/// ([`FakeExecutor::calls`]), and the silence each session was fed first.
+/// ([`FakeExecutor::calls`]), when each refresh began, and the silence each
+/// session was fed first.
 #[derive(Debug)]
 pub struct FakeExecutor {
     pub words: Vec<String>,
@@ -182,6 +183,8 @@ pub struct FakeExecutor {
     /// `push <n> <samples>`, `partial <n>` and `commit <n>`, `n` counting
     /// the sessions opened from 0.
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// When each `partial` began, over every session, in order.
+    pub partials_at: Arc<Mutex<Vec<std::time::Instant>>>,
     /// Per session, in the order opened, the samples it was pushed before
     /// its first that is not zero: the digital silence it was fed first.
     pub silent_lead: Arc<Mutex<Vec<usize>>>,
@@ -205,6 +208,7 @@ impl FakeExecutor {
             load_settings: Mutex::new(Vec::new()),
             load_files: Mutex::new(Vec::new()),
             calls: Arc::new(Mutex::new(Vec::new())),
+            partials_at: Arc::new(Mutex::new(Vec::new())),
             silent_lead: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -225,6 +229,11 @@ impl FakeExecutor {
     /// The calls so far ([`FakeExecutor::calls`]).
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// When each refresh so far began ([`FakeExecutor::partials_at`]).
+    pub fn partials_at(&self) -> Vec<std::time::Instant> {
+        self.partials_at.lock().unwrap().clone()
     }
 
     /// Each session's leading digital silence so far
@@ -248,6 +257,7 @@ struct FakeSession {
     /// Its number among the sessions opened, and the executor's call log.
     index: usize,
     calls: Arc<Mutex<Vec<String>>>,
+    partials_at: Arc<Mutex<Vec<std::time::Instant>>>,
     /// The executor's record of leading silence, and whether this session
     /// has been pushed a sample that is not zero.
     silent_lead: Arc<Mutex<Vec<usize>>>,
@@ -272,6 +282,7 @@ impl SpeechSession for FakeSession {
 
     fn partial(&mut self) -> Result<Partial, SpeechError> {
         self.calls.lock().unwrap().push(format!("partial {}", self.index));
+        self.partials_at.lock().unwrap().push(std::time::Instant::now());
         std::thread::sleep(self.delay);
         let (stable, tail) = self.words.split_at(self.stable_words);
         let tail = tail.first().map(|word| format!(" {word}")).unwrap_or_default();
@@ -345,6 +356,7 @@ impl SpeechExecutor for FakeExecutor {
             log: Arc::clone(&self.pushed),
             index,
             calls: Arc::clone(&self.calls),
+            partials_at: Arc::clone(&self.partials_at),
             silent_lead: Arc::clone(&self.silent_lead),
             sounded: false,
         }))
