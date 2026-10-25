@@ -97,12 +97,6 @@ used under the MIT-CMU License:
     OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
     PERFORMANCE OF THIS SOFTWARE.
 
-The transcription route's audio decoding (crates/server/src/speech/audio.rs)
-uses the symphonia crates (pdeljanov/Symphonia, 0.6), unmodified, as a
-dependency, under the Mozilla Public License, Version 2.0
-(https://mozilla.org/MPL/2.0/); their source is at crates.io and in that
-repository.
-
 Prompt enhancement's system prompts (crates/server/src/images/prompts.rs) are
 Qwen's, from QwenLM/Qwen-Image (src/examples/tools/prompt_utils_2512.py and
 prompt_utils.py, commit 6b5e1f5), Copyright 2024 Alibaba Cloud, licensed
