@@ -1,4 +1,4 @@
-"""FP8 row-scale payloads: the container's FP8_E4M3FN_ROW_BF16S / row-scale-v1 (layout.md §6.1)."""
+"""FP8 row-scale payloads: the container's FP8_E4M3FN_ROW_BF16S / row-scale-v1 (flash-next-layout.md §6.1)."""
 import numpy as np
 import torch
 

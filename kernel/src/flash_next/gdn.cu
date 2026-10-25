@@ -11,7 +11,7 @@
 //
 // The convolution is ours rather than the vendored causal_conv1d_silu: that op reads its weight
 // tap-major ([4][channels], the 27B artifact's gdn/convolution), while Flash-Next's artifact keeps
-// the checkpoint's conv1d.weight [channels][1][4] channel-major (layout.md 6.2, the contract's
+// the checkpoint's conv1d.weight [channels][1][4] channel-major (flash-next-layout.md 6.2, the contract's
 // GdnWeights::conv). Reading the taps in place costs nothing; a transposed copy would be a plan
 // line of its own.
 //

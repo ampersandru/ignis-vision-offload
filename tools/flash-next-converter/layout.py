@@ -1,6 +1,6 @@
 """The converter's output bytes: expert records, the per-layer index, the DONE protocol.
 
-The contract is `docs/specs/flash-next/layout.md`; section numbers below refer to it.
+The contract is `docs/formats/flash-next-layout.md`; section numbers below refer to it.
 Everything here is pure CPU and NumPy, so the packer's expectations are unit-tested
 without a GPU or the checkpoint.
 """

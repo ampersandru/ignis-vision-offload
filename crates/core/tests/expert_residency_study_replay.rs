@@ -2,7 +2,7 @@
 //! GitHub #301, acceptance 5 and 6 on the CPU side).
 //!
 //! **Machine-local.** It reads a trace directory in the artifact's layout
-//! (`docs/specs/flash-next/layout.md` §9 and §12: `work/converter.json` with
+//! (`docs/formats/flash-next-layout.md` §9 and §12: `work/converter.json` with
 //! the K map, the class record bytes and the calibration traffic, and
 //! `traces/<domain>/` as the converter writes them), from
 //! `IGNIS_FLASH_NEXT_TRACES` or, by default, the study proxy
@@ -33,7 +33,7 @@ use ignis_core::residency::{
 };
 
 /// The router's selection and the lookahead's ranking per token and layer
-/// (layout.md §12).
+/// (flash-next-layout.md §12).
 const TOP_K: usize = 10;
 const LOOKAHEAD: usize = 20;
 /// The simulation's assumptions (`PLACEMENT.md`): 12 GB/s, 20 us per fetch.
@@ -566,7 +566,7 @@ fn plain_lru_admission_of_a_prefill_would_cost_decode_what_scan_resistance_saves
     assert!(scan_moved < lru_moved);
 }
 
-/// The replay reads the converter's trace layout (layout.md §9 and §12, as
+/// The replay reads the converter's trace layout (flash-next-layout.md §9 and §12, as
 /// `tools/flash-next-converter/finish.py` writes it): a two-layer,
 /// four-expert tree written here in that shape, with a `long` set beside
 /// the test one that the replay leaves out.

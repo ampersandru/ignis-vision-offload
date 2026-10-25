@@ -12,7 +12,7 @@
 //!
 //! The synthetic tests run everywhere. The study is `#[ignore]` and
 //! machine-local: it reads the converter's traces from
-//! `IGNIS_FLASH_NEXT_TRACES` (the artifact directory; layout.md §9, §12),
+//! `IGNIS_FLASH_NEXT_TRACES` (the artifact directory; flash-next-layout.md §9, §12),
 //! as `expert_residency_study_replay.rs` does, whose loader it copies.
 
 use std::collections::BTreeSet;

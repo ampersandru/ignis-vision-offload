@@ -1425,7 +1425,7 @@ mod tests {
 
     /// An artifact's identity names its model: the 27B container's
     /// `model_id` is `qwen3.8-27b` (crates/artifact/tests/real_artifact.rs),
-    /// Flash-Next's `qwen3.8-flash-next` (docs/specs/flash-next/layout.md);
+    /// Flash-Next's `qwen3.8-flash-next` (docs/formats/flash-next-layout.md);
     /// each is also the id the model is served under by default.
     #[test]
     fn a_model_id_names_its_family() {

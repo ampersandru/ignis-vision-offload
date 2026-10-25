@@ -1,5 +1,5 @@
 //! The KLD of spec flash-next/04 acceptance 5 and 6: the converter's top-64
-//! scorer (`tools/flash-next-converter/scoring.py` `kl_top64`, layout.md
+//! scorer (`tools/flash-next-converter/scoring.py` `kl_top64`, flash-next-layout.md
 //! §10) ported line for line, pooled per domain, so an engine's figure and
 //! the converter's quantization-only figure are the same measurement.
 //!

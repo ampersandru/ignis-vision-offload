@@ -931,7 +931,7 @@ pub fn prefill_program_span_logits(
 }
 
 /// GitHub #302: one token's n-gram table rows on Flash-Next, as the leaf
-/// reads them: 16 heads of 90-byte INT4 rows (layout.md 7.1), 1,440 bytes.
+/// reads them: 16 heads of 90-byte INT4 rows (flash-next-layout.md 7.1), 1,440 bytes.
 pub fn flash_next_ngram_token_bytes() -> usize {
     let ngram = crate::compute::ModelConfig::qwen38_flash_next().ngram.expect("Flash-Next has the n-gram embedding");
     let head_dim = ngram.head_dim() as usize;

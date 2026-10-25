@@ -1,5 +1,5 @@
 //! The FP8 row-scale encoding (`FP8_E4M3FN_ROW_BF16S` / `row-scale-v1`,
-//! docs/specs/flash-next/layout.md §6.1) written from a BF16 weight: the 27B's
+//! docs/formats/flash-next-layout.md §6.1) written from a BF16 weight: the 27B's
 //! BF16 exception tensors converted at load (GitHub #341).
 //!
 //! The same contract as the leaf's `ignis_fp8_quantize_rows`

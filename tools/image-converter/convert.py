@@ -6,7 +6,7 @@
 `run` checks the checkpoint against pin.json (revision, every file's sha256, the tensor list) and
 refuses any difference by name. It then streams the tensors one at a time (safetensors mmap) into
 the work tree DIR/work: one unit per part (frontend, text_encoder, vision, transformer, vae), each
-a tensors.json, one payload file per tensor and a DONE marker (docs/specs/flash-next/layout.md §2,
+a tensors.json, one payload file per tensor and a DONE marker (docs/formats/flash-next-layout.md §2,
 §6.3), the encodings of recipe.py. DIR/work/converter.json records every tensor (source name,
 encoding, bytes, sha256, max |value|, round-trip relative error), the VAE's convolution shapes,
 the revision and this tool's commit. Last, the packer (`ignis-artifact-pack --family qwen-image`,

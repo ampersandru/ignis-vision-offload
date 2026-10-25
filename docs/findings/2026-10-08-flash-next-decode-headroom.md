@@ -93,7 +93,7 @@ lanes run consecutive chunks together. The prefetch budget is today's
 (1,172,500 B at one row, +726,250 B per further row). Predictors, each a
 different lookahead list handed to the same model:
 
-- **router W**: today's — layer L's MoE input through router L+1 (layout.md
+- **router W**: today's — layer L's MoE input through router L+1 (flash-next-layout.md
   §12), its top W;
 - **filtered W**: the router's top W, keeping only experts layer L+1
   actually selects (today's ranking with a perfect confidence filter);
@@ -145,7 +145,7 @@ with plain file reads into heap memory. The host expert pool is
 not write-combined, so a CPU reads it as it reads the heap: the same DRAM
 path. One expert is the whole SwiGLU: `y = had128(had128(x o suh) . W_rot) o
 svh` for gate/up (2560 -> 1280), SwiGLU, then down (640 -> 2560), weights
-decoded from the trellis in registers (layout.md §3, `trellis_decode.cuh`),
+decoded from the trellis in registers (flash-next-layout.md §3, `trellis_decode.cuh`),
 fp32 accumulation, the decoded value kept as `bsum * kinv + (1024 kinv +
 kbias)` without the fp16 rounding. A spinning thread pool (workers never
 sleep), one 128-column block per work item; timed at layer 24 over 48

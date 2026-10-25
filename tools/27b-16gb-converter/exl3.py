@@ -2,7 +2,7 @@
 
 An EXL3 linear `key` is four tensors: `key.trellis` (int16, `(in/16, out/16, 16·K)`), `key.suh`
 (fp16, `(in,)`), `key.svh` (fp16, `(out,)`) and `key.mul1` (int32 scalar, the codebook flag). Its
-container record (`trellis-tile16-v1`, docs/specs/flash-next/layout.md §3) is the trellis bytes,
+container record (`trellis-tile16-v1`, docs/formats/flash-next-layout.md §3) is the trellis bytes,
 then suh, then svh, as stored, zero-padded to the next multiple of 4096: the repack copies bytes
 and never decodes a weight. K is part of the format (`TRELLIS_MUL1_K{2,2P5,3,4,5,6}`): `2·K` is
 the trellis's last dimension over 8.

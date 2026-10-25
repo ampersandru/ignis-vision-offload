@@ -1,4 +1,4 @@
-"""CPU tests of the MTP head converter's pure parts (layout.md §13)."""
+"""CPU tests of the MTP head converter's pure parts (flash-next-layout.md §13)."""
 import json
 import os
 

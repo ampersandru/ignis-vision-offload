@@ -57,7 +57,7 @@ class Head:
 
 
 class RefWriter:
-    """layout.md §10: one reference set's files."""
+    """flash-next-layout.md §10: one reference set's files."""
 
     def __init__(self, root, name):
         self.dir = os.path.join(root, name)

@@ -9,7 +9,7 @@ it. Python never writes the container.
 
 - **The body and the output head** are the quant's trellis records, bit for bit: a record is the
   `trellis`, `suh` and `svh` tensors as stored, zero-padded to 4096 (`trellis-tile16-v1`,
-  `docs/specs/flash-next/layout.md` §3). Nothing is decoded or re-encoded.
+  `docs/formats/flash-next-layout.md` §3). Nothing is decoded or re-encoded.
 - **Everything else** is the served artifact's object, byte for byte: the token embedding (W8), the
   norms and the GDN small set, the draft head, the MTP layer, the vision tower, the 66 DFlash2 objects,
   the frontend resources. The NVFP4 planes' `*_input_scale_divisor` scalars go with the planes.

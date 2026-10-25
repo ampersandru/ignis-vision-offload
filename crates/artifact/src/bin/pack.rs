@@ -1,6 +1,6 @@
 //! ignis-artifact-pack: assemble the Flash-Next `.ninfer` v2 container from
 //! the converter's work tree (spec flash-next/01; the work-file contract is
-//! `docs/specs/flash-next/layout.md`, the mechanics `ignis_artifact::packer`).
+//! `docs/formats/flash-next-layout.md`, the mechanics `ignis_artifact::packer`).
 //!
 //! Usage:
 //!   ignis-artifact-pack --work <work dir> [--out <artifact.ninfer>]
@@ -27,7 +27,7 @@
 //! two copies). Exit status: 0 when the container is finished, 3 when it
 //! waits, 1 on error.
 //!
-//! `--family mtp` packs the MTP head's companion container (layout.md §13)
+//! `--family mtp` packs the MTP head's companion container (flash-next-layout.md §13)
 //! from the head converter's work tree (its one unit `mtp/`), pinned to the
 //! main container `--pair-main`; `--out` then defaults to
 //! `<work>/../qwen3_8_flash_next_mtp_3p0-v2.ninfer`, the identity and the

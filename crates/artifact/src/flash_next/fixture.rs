@@ -3,13 +3,13 @@
 //! 1,000-row n-gram table.
 //!
 //! It is made the way the real one is: a [`WorkTree`] writes what the
-//! converter writes (layout.md: one directory per unit, `tensors.json`,
+//! converter writes (flash-next-layout.md: one directory per unit, `tensors.json`,
 //! `experts.bin` + `experts.idx`, table shards, `DONE` files with SHA-256s)
 //! and the packer assembles the container through the crate's writer. The
 //! payload bytes are a pattern of the object's name ([`pattern`]), so a test
 //! can tell every object's bytes apart; nothing in them decodes.
 //!
-//! The same tree can hold the MTP head's work unit (`mtp/`, layout.md §13),
+//! The same tree can hold the MTP head's work unit (`mtp/`, flash-next-layout.md §13),
 //! packed into a companion container of its own.
 
 use std::path::{Path, PathBuf};
@@ -81,7 +81,7 @@ impl WorkTree {
         options
     }
 
-    /// The MTP head converter's work tree (layout.md §13.1).
+    /// The MTP head converter's work tree (flash-next-layout.md §13.1).
     pub fn mtp_work_dir(&self) -> PathBuf {
         self.root.join("work-mtp")
     }
@@ -271,7 +271,7 @@ pub fn build_from(tree: WorkTree) -> Result<FixtureArtifact> {
     Ok(FixtureArtifact { tree, path })
 }
 
-/// A layer's `experts.bin` and `experts.idx` (layout.md §4): every
+/// A layer's `experts.bin` and `experts.idx` (flash-next-layout.md §4): every
 /// record in index order (K from [`fixture_k`] at `layer`), each the
 /// pattern of its object name.
 fn experts_files(

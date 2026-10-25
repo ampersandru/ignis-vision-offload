@@ -1,5 +1,5 @@
 //! The G1 run of spec flash-next/04 acceptance 4: every canary of the
-//! Flash-Next fixture (`references/g1_flash_next.json`, layout.md §11) fed
+//! Flash-Next fixture (`references/g1_flash_next.json`, flash-next-layout.md §11) fed
 //! once, teacher-forced, through [`SpanLogits`], and its argmax rows scored
 //! against the expected-argmax column by [`crate::oracle::score_canary`].
 //!

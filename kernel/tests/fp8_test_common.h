@@ -1,4 +1,4 @@
-// FP8 row-scale weights (FP8_E4M3FN_ROW_BF16S / row-scale-v1, layout.md §6.1) for the Flash-Next
+// FP8 row-scale weights (FP8_E4M3FN_ROW_BF16S / row-scale-v1, flash-next-layout.md §6.1) for the Flash-Next
 // op tests -- OURS (spec flash-next/02, GitHub #300): a payload builder and the fp64 product.
 #ifndef IGNIS_FP8_TEST_COMMON_H
 #define IGNIS_FP8_TEST_COMMON_H

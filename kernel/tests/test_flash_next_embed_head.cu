@@ -3,7 +3,7 @@
 //
 // - The embedding, FP8 row-scale and BF16, bit for bit: each element is
 //   bf16(e4m3(code) * scale) (the converter's quantized-reference decode,
-//   layout.md 6.1) or the stored BF16, the same in every stream.
+//   flash-next-layout.md 6.1) or the stored BF16, the same in every stream.
 // - The head is the final mixer then lm_head: bit for bit the two steps run
 //   apart (fn_hc_mix, fn_linear), so its wiring of rows and buffers is right;
 //   both steps have their own numeric tests.

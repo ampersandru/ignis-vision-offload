@@ -918,7 +918,7 @@ fn bound_tensors(
     Ok((names, tensors))
 }
 
-/// The MTP head's 29 non-expert descriptors (layout.md §13.3), each placed
+/// The MTP head's 29 non-expert descriptors (flash-next-layout.md §13.3), each placed
 /// through `placement`: what an MTP load hands the leaf beside the trunk's.
 pub fn mtp_bound_tensors(
     plan: &ignis_artifact::flash_next::mtp::MtpPlan,

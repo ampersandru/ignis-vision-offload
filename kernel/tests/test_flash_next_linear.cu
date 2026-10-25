@@ -6,7 +6,7 @@
 // fp64 reference of the same stored values:
 // - BF16 [rows][cols]: the route every linear has, because a part whose FP8
 //   cost the conversion flags is re-converted to BF16;
-// - FP8 row-scale (layout.md 6.1): routed to kern's ignis_fp8_linear, checked
+// - FP8 row-scale (flash-next-layout.md 6.1): routed to kern's ignis_fp8_linear, checked
 //   here only for the routing and its refusals, its numerics being kern's own
 //   test's.
 // The tolerance is the rigorous one for fp32 accumulation of `cols` exact

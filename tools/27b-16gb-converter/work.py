@@ -1,4 +1,4 @@
-"""The work tree's DONE protocol (docs/specs/flash-next/layout.md §2), which the packer checks.
+"""The work tree's DONE protocol (docs/formats/flash-next-layout.md §2), which the packer checks.
 
 Copied from tools/image-converter/work.py (itself tools/flash-next-converter/layout.py's `file_digest`,
 `write_json_atomic`, `_fsync`, `mark_done`), unchanged: a unit directory is complete only when
