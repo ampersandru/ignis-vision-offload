@@ -22,8 +22,10 @@
 # judgement: a commit in the range puts its issue under Changes, the same
 # issue mentioned before the range makes it a follow-up reported by its
 # commit, an issue closed in the window that nothing mentions is held back,
-# a NOT_PLANNED issue is not a release note at all, and a commit naming no
-# issue is listed rather than dropped.
+# a NOT_PLANNED issue is not a release note at all, a commit naming no issue
+# is listed rather than dropped, and every ADR is named "ADR NNNN — title"
+# whether its heading carries the number or is the bare title of the short
+# format.
 
 set -uo pipefail
 
@@ -104,6 +106,9 @@ GitHub #20."
 commit "Housekeeping with no issue behind it"
 printf '# ADR 0002 — a decision taken inside the range\n' > docs/adr/0002-inside.md
 commit "The decision, recorded (#10)"
+# The short format's heading is the title alone; the number is the file's.
+printf '# A decision in the short format\n\nIts context, the decision and why.\n' > docs/adr/0003-short.md
+commit "A decision in the short format, recorded (#10)"
 printf '# ADR 0001 — a decision taken before the range\n\nAmended.\n' > docs/adr/0001-early.md
 commit "The earlier decision, amended (#10)"
 commit "The duplicate, mentioned anyway (#40)"
@@ -163,6 +168,13 @@ has "ADR 0002 — a decision taken inside the range" "$decisions" \
 has "ADR 0001 — a decision taken before the range (amended)" "$decisions" \
     && note "an ADR modified in the range is marked amended" \
     || fail "the amended ADR is not marked: $decisions"
+
+has "ADR 0003 — A decision in the short format" "$decisions" \
+    && note "an ADR whose heading is a bare title is named by its file's number" \
+    || fail "the bare-title ADR is not named by its number: $decisions"
+
+has "ADR 0002 — ADR 0002" "$decisions" \
+    && fail "an ADR whose heading carries its number got it twice: $decisions"
 
 has "Housekeeping with no issue behind it" "$loose" \
     && note "a commit naming no issue is listed, not dropped" \
