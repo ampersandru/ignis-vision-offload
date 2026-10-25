@@ -180,8 +180,10 @@ and `server_vad` while an item holds audio holds from the next item, as a
 changed context does.
 
 `turn_detection: null` is **manual commit**: every sample goes to the current
-item and the client commits it. The Playground's dictation works this way,
-committing at **Done** ([dictation](../playground/chat.md#dictating-a-prompt)).
+item and the client commits it. The Playground's dictation commits this way, at
+**Done**, when its silence setting is Off or the shortcut is held; by default it
+asks for `server_vad` with a 3 s `silence_duration_ms` and treats the first
+commit as Done ([dictation](../playground/chat.md#dictating-a-prompt)).
 
 ## The text
 
@@ -204,10 +206,10 @@ machine adds to it: an earlier run on the same desktop, its windows computing
 60% slower, gave 6.7 s. A longer `speech.partial_interval_ms` (4000) gave
 2.8 s.
 
-After each refresh the next waits at least `speech.partial_cost_factor` times
-that refresh's compute time, so refreshes take at most about one part in that
-many of the speech model's CPU. The default, 1, only waits for the last
-refresh to finish: 2 and 3 measured no faster on either CPU, and send fewer
+A refresh is not queued before `speech.partial_cost_factor` times the last
+refresh's compute time has passed since that one was queued, so refreshes take
+at most about one part in that many of the speech model's CPU. The default, 1,
+only waits for the last refresh to finish: 2 and 3 measured no faster on either CPU, and send fewer
 deltas.
 
 - `conversation.item.input_audio_transcription.delta` `{item_id,

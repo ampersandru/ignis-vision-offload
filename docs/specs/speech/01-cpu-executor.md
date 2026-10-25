@@ -161,8 +161,12 @@ One session per transcription, for 03 to drive, and used whole by 02:
    `<|audio_start|>`. That is the prefix cache's entry.
 2. `push(samples)`: encodes each 8 s window as soon as it is complete and
    prefills its 104 audio tokens. That is the **audio-prefix prefill**. Each
-   window is encoded once; the encoder attends only inside a window, so the
-   result is the whole-clip encode's.
+   window is encoded once; the encoder attends only inside a window, so each
+   window's encode is the whole-clip encode's. **As built**, the log-mel
+   floor (max − 8) is taken over the frames computed so far, not the clip's
+   maximum, which a stream cannot know: the result matches the whole-clip
+   encode where the loudest sound has been heard, and differs in the bins
+   80 dB under it that the floor moves (As built, "The mel floor").
 3. `partial()`, every `speech.partial_interval_ms` while audio arrives:
    - encodes the incomplete window;
    - appends its tokens, the template's tail and the **stable text** so far;
@@ -228,7 +232,8 @@ Same method as the image model (Q25), with Q52's changes:
   - The family is read from the GGUF pair's metadata (a `qwen3vl` decoder
     with no deepstack layers, a `qwen3a` projector), never from a file name
     (ADR 0047; owner, 2026-10-24).
-- The HF upload waits for the owner's OK and a privacy scan (Q47).
+- The HF upload waited for the owner's OK and a privacy scan (Q47); it is done
+  (As built, "The files").
 
 ## Testing Decisions
 
@@ -441,8 +446,11 @@ Where the build decided something the spec left open, or differs from it:
   9.4e-7. Our Q4_K_M is the study's self-quantized file byte for byte, so the
   finding's llama.cpp runs read the same weights. llama-quantize also made an
   mmproj Q4_K_M (rehost only). sha256 in `SHA256SUMS` beside the files.
-  **Open:** the HF upload (the owner's OK and a privacy scan) and the three
-  catalog entries, which need its revision.
+  **Done since** (#351's catalog follow-up): the files are in the two public
+  repos, and the three catalog entries are pinned to them
+  (`gpillon/Qwen3-ASR-1.7B-GGUF-ignis` at `f8a5263e`,
+  `gpillon/Qwen3-ASR-0.6B-GGUF-ignis` at `af02916e`). The encoder Q4_K_M
+  (the mmproj) was not uploaded: no entry uses it.
 - **The oracle** (ACs 11-13). `tools/speech-oracle/record.py` records
   Transformers FP32 on FLEURS `it_it` 1703 (9.06 s: two windows, 104 + 14
   tokens, and a partial last chunk): the log-mel and six rows of every tapped
@@ -470,7 +478,8 @@ Where the build decided something the spec left open, or differs from it:
 
   (%, the incremental path with a provisional tail of 5 tokens, the default,
   and of 10.) Pushing the batch path 8 s at a time or whole gives the same
-  WER. **AC 15 is not met at the default tail of 5:** the
+  WER. **AC 15 was not met at a tail of 5**, the default when this was
+  measured (Q75 has since made it 10): the
   incremental path loses 1.12 pt (1.7B) and 1.94 pt (0.6B) on the dictations,
   0.0-0.7 pt on FLEURS. A tail of 10 brings the 1.7B and the 0.6B inside the
   point and moves the 1.7B Q8 out (1.29 pt): the eleven dictations are 620

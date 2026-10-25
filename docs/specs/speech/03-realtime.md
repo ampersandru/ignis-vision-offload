@@ -75,7 +75,11 @@ default, and Q56 builds it in phase 2. In phase 1 only, a session that sends
 no `turn_detection` runs with `null`, declared in `session.created` and
 `session.updated`, and an explicit `server_vad` is refused (honoured or
 refused). A client expecting server VAD then sees that it must commit. From
-phase 2, a missing `turn_detection` means `server_vad` (spec 05).
+phase 2, a missing `turn_detection` means `server_vad` (spec 05). The
+Playground asks for `server_vad` with the viewer's silence from Q80 on (spec
+04, AC 19): its first `committed` ends a dictation, and a commit of its own
+that crosses the server's gets `input_audio_buffer_commit_empty`, which the
+page ignores once an item is committed.
 
 ### Server events
 
@@ -139,8 +143,10 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
   goes out as `delta`, then `completed`.
 - The next item reuses the session's prefilled context (01's prefix cache)
   and starts a new audio prefix.
-- **Resampling:** the `rubato` crate (MIT/Apache-2.0), 24 kHz to 16 kHz
-  (owner, 2026-10-24).
+- **Resampling:** 24 kHz to 16 kHz with the transcription route's windowed-sinc
+  resampler (#352), in place of the `rubato` crate (MIT/Apache-2.0) the owner
+  first named (2026-10-24); the owner was told of the swap on 2026-10-25
+  (As built).
 
 ### Limits
 
@@ -211,9 +217,11 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
 17. `cargo test` passes workspace-wide (AGENTS.md, not a grill decision).
 18. Partials are best effort: at most every `speech.partial_interval_ms`, and
     skipped, never queued, while the session's previous partial or a pending
-    window is still in the worker. With a worker that is behind, windows and
-    the commit are never delayed by partials, and the deltas joined still
-    equal `completed.transcript` (Q74; owner, 2026-10-24).
+    window is still in the worker. With a worker that is behind, a partial
+    never queues, so a window or the commit waits at most for the refresh
+    already in flight: the commit stops that refresh at its next check
+    (Q79), a window waits for it to end. The deltas joined still equal
+    `completed.transcript` (Q74, Q79; owner, 2026-10-24 and 2026-10-25).
 
 ## Out of Scope
 
@@ -251,7 +259,8 @@ the spec left open, or differs from it:
   resampler (`speech/audio.rs`, #352) instead of the `rubato` crate the spec
   names: it is already tested for pitch, length and aliasing, and a second
   resampler would be a second dependency doing the same job. Swapping in
-  `rubato` touches `pcm.rs` alone; the owner's call.
+  `rubato` touches `pcm.rs` alone. The owner was informed on 2026-10-25 and
+  the swap stands.
 - **Items.** An item gets its `item_id` at its first append, so deltas carry
   it before the commit. An item over `speech.max_clip_seconds` or past its
   deadline stops being transcribed at once (its audio goes nowhere after

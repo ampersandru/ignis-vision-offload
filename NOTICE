@@ -132,3 +132,10 @@ unchanged (crates/speech/vad/README.md). Both are used under the MIT License:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+The speech model's audio decoding (crates/server/src/speech/audio.rs) uses the
+symphonia crates (0.6.1, pdeljanov/Symphonia), unmodified, as a dependency,
+for WAV, FLAC, MP3, AAC and the Ogg, MP4 and Matroska containers. They are
+licensed under the Mozilla Public License, Version 2.0, whose copyleft binds
+only the files of those crates, which ignis does not change; their source is
+available from crates.io.

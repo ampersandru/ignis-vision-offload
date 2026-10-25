@@ -309,7 +309,8 @@ decided something the spec left open, or differs from it:
   tested, but no route uses it before spec 03. `Retry-After` is the running
   clip's length over the speed measured so far (3 x real time before any),
   between 1 and 15 s.
-- **Config.** All 16 fields of the `speech` group are declared, live and
+- **Config.** All 19 fields of the `speech` group (16 when #352 built them; specs 03, 05
+  and 06 added the rest) are declared, live and
   patchable; the ones spec 03, 05 and 06 read are documented as not served yet.
   A compat name equal to a served id (a catalog entry, a family, the start
   model, the speech model) is refused at start.

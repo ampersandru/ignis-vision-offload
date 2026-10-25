@@ -128,7 +128,11 @@ over ggml b11840's:
 9. **Provenance: ours** (ADR 0051's first tier). The GGUF block layouts and
    the Q8_K/Q8_0 quantization rules are the file format, data the kernels
    read, not copied code. Code copied later from anywhere follows ADR 0051's
-   adapted-op rules.
+   adapted-op rules. **Amended** (final fixes): that later code came with
+   phase 2. `crates/speech/src/vad.rs` ports Silero VAD's graph (MIT) and
+   ships its weights, an adapted op under ADR 0051 with provenance in its
+   header and `NOTICE`. The executor itself, its kernels and graphs, stays
+   ours.
 10. **The oracle is the checkpoint's own modelling code**, teacher-forced, as
     in ADR 0043 (Q52). llama.cpp b11840 is an out-of-tree comparison and
     benchmark baseline only, on `H:\speech-study\`, and the offline tool that
@@ -143,9 +147,11 @@ One pipeline drives two compute adapters (Q41): this executor, and the CUDA
 loan of phase 3 (ADR 0067), which builds on our kernel leaf alone, with no
 ggml-cuda base (Q62). Both read the same GGUF files (Q46).
 
-**Licences.** No code is copied, so ADR 0051's list does not come into play
-for the executor. Two dependencies are not copied code, and `NOTICE` records
-them (Q42):
+**Licences.** No code is copied into the executor, so ADR 0051's list does
+not come into play for it; the VAD of decision 9's amendment is the one
+adapted op, and `NOTICE` records it. Two dependencies are not copied code, and
+`NOTICE` records the first of them, `symphonia` (the second was not added)
+(Q42):
 - `symphonia` (MPL-2.0) is an unmodified crate dependency for MP3, AAC and
   the Ogg and WebM containers. MPL-2.0's copyleft is per file and binds only
   its own files, which we do not change.
@@ -160,9 +166,10 @@ them (Q42):
 
 ## Consequences
 
-- No foreign code in the tree for the speech model: no manifest entry, no
+- No foreign code in the tree for the executor: no manifest entry, no
   `NOTICE` line for ggml, no re-vendor to upgrade. ADR 0010 and ADR 0051 are
-  unchanged.
+  unchanged. The one exception is the VAD's Silero port and weights
+  (decision 9, amended), under ADR 0051 and in `NOTICE`.
 - CI's CPU test leg runs the executor's tests in the default build. The
   executor adds no toolchain to it: no CMake and no native build step of its
   own, unless libopus joins under Q63.

@@ -37,3 +37,10 @@ audio while the person speaks, over OpenAI's Realtime transcription session on
 `/v1/realtime?intent=transcription`, and get the text as it settles. See
 [speech to text](api/transcriptions.md), [live transcription](api/realtime-transcription.md),
 its [configuration](configuration/speech.md) and its [metrics](reference/metrics.md).
+The file may be WAV, FLAC, MP3 or AAC, or an Ogg or Matroska/WebM container
+holding FLAC; Opus is not decoded yet. A transcription waits for the one
+compute worker, first in, first out, behind live sessions, and takes about a
+fifth to a quarter of the audio's length on a 10-thread desktop CPU; with
+`speech.max_queue` (4) waiting, the next is `503 engine_full` with a
+`Retry-After`. Leave `language` off unless the model guesses wrong: forcing a
+language on speech with another language's jargon in it distorts the jargon.

@@ -88,7 +88,11 @@ needs the owner's OK and a privacy scan at upload time (Q47).
   (`gpillon/Qwen3.8-27B-trellis-3bpw-ignis`), one per size, as Qwen and
   ggml-org publish them.
 - Each repo holds its size's decoder and encoder files in bf16, Q8_0 and
-  Q4_K_M: the catalog's entries and the rehosted rest.
+  Q4_K_M: the catalog's entries and the rehosted rest. **As uploaded** the
+  encoder's Q4_K_M (the converter's mmproj Q4_K_M, rehost only) was not
+  uploaded: the catalog's entries use the encoders in Q8_0, and the encoder
+  Q4_K_M the converter's quantizer also made is not in the repos (01, As
+  built, "The files").
 
 ## Phases (Q33, Q37, Q56)
 

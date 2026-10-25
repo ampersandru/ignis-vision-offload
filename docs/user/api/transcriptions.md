@@ -120,8 +120,9 @@ Aider needs only `OPENAI_API_BASE=http://127.0.0.1:8000/v1`: it sends
 One compute worker serves the speech model. [Live transcription](realtime-transcription.md)
 sessions take precedence; transcription requests are served first in, first out,
 in the gaps. The wait is proportional
-to the audio: on a 10-thread desktop CPU (4.8 times real time) a minute of speech takes some twelve seconds,
-and a 20-minute clip four minutes or so. Up to `speech.max_queue` (4) requests
+to the audio: on a 10-thread desktop CPU (4.1 to 4.7 times real time with the default model, the
+longer the clip the nearer 4.7) a minute of speech takes some thirteen to fifteen seconds,
+and a 20-minute clip four to five minutes. Up to `speech.max_queue` (4) requests
 wait behind the one running; the next is `503 engine_full` with a `Retry-After`
 of one to fifteen seconds, an estimate of when room frees.
 It is answered before the audio is decoded, so a body that is not audio gets
