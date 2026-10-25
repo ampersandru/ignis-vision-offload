@@ -23,7 +23,9 @@ them.
   holds it: `make gpu-status`. Two runs on one 32 GB card means one of them
   dies with no diagnostic.
 - **Diffs are semantic only.** The repository is not `rustfmt`-clean and is
-  never reformatted wholesale; there is deliberately no `fmt` target.
+  never reformatted wholesale; there is deliberately no `fmt` target. This rule
+  and the others a review applies are in
+  [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md).
 - **A decision that is hard to reverse gets an ADR**, a measured result that
   future work will reuse gets a finding, and the acceptance criteria of a piece
   of work live in its spec ([How work is tracked](conventions.md)).
@@ -45,6 +47,7 @@ them.
 | `docs/user/` | This guide; `docs/site/` builds it |
 | `docs/adr/`, `docs/specs/`, `docs/findings/` | Decisions, the specs written before 2026-10-25 (later ones are GitHub issues), measured results |
 | `docs/agents/` | The conventions agents (and humans) follow |
+| `CODING_STANDARDS.md` | The rules a review holds a diff to, and what the review leaves out |
 | `tools/`, `scripts/`, `bench/` | Converters and fixtures, local run helpers, bench traces |
 | `mk/`, `Makefile` | The make targets and their per-OS hooks |
 

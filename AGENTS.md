@@ -28,6 +28,10 @@ Single-context: root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
 artifacts, experiments, raw logs and workflow output, local to each clone.
 Nothing durable lives there, and it is never an issue tracker.
 
+### Coding standards
+
+Writing, reviewing or merging a change, or running a skill that writes files: `CODING_STANDARDS.md`.
+
 ### Findings
 
 When recording or consulting durable findings from discovery, research, or
@@ -65,3 +69,7 @@ All git worktrees for this repo live under `../.inference-qwen-worktrees/`
 (sibling of the repo root), one subdirectory per issue/feature. Do not create
 worktrees anywhere else (e.g. no separate `.inference-claude-worktrees/`) —
 one shared location for every agent.
+
+### Orchestrated builds
+
+Coordinating implementer agents on a spec's tickets: `docs/agents/orchestrated-builds.md`.
