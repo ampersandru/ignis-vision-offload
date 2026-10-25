@@ -36,8 +36,9 @@ and include the other evidence in the document.
 | Content | Authoritative location |
 |---|---|
 | Work status and work to be done | GitHub issue |
-| Acceptance criteria and implementation spec | `docs/specs/<feature>/` |
+| Spec, and its tickets' acceptance criteria | the spec's GitHub issue and its sub-issues (before 2026-10-25, a file under `docs/specs/`) |
 | Architectural decision | `docs/adr/` |
+| Byte-level, ABI or wire-format contract that code cites as normative | `docs/formats/` |
 | Domain term or concept | root `GLOSSARY.md` |
 | Temporary material, raw logs, and experiment output | `.scratch/` |
 | Reusable finding that is not yet a decision | `docs/findings/` |
@@ -122,13 +123,13 @@ invalidates or replaces the conclusion does.
 
 ## Promotion
 
-A finding may lead to an ADR, an implementation spec, a GitHub issue, an update
+A finding may lead to an ADR, a spec, a GitHub issue, an update
 to `GLOSSARY.md`, or a subsequent finding. Link the finding and promoted artifact
 in both directions when possible.
 
 The finding remains the evidence and historical context. The promoted artifact
-becomes authoritative for its own concern: an ADR for a decision, a spec for an
-implementation contract, a GitHub issue for work status, and `GLOSSARY.md` for
+becomes authoritative for its own concern: an ADR for a decision, a spec for
+what to build, a GitHub issue for work status, and `GLOSSARY.md` for
 domain terminology.
 
 ## Authoring procedure
