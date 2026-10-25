@@ -189,7 +189,7 @@ same pair.
 
 The runbook, with the matched-capacity rule and the two pitfalls that cost this
 session a run each, is
-[`docs/agents/testing.md`](../agents/testing.md) — "The KV-format A/B". Reduce a
+[`docs/agents/testing/bench.md`](../agents/testing/bench.md) — "The KV-format A/B". Reduce a
 telemetry capture with `scripts/gpu-telemetry-summary.py`.
 
 ## Follow-ups
