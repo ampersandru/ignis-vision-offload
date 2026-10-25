@@ -16,5 +16,6 @@ In short:
 - Every user-visible change updates the user guide, `docs/user/`, in the same
   commit ([`docs/agents/user-docs.md`](docs/agents/user-docs.md)).
 - One run at a time on the GPU: `make gpu-status` before any of them.
+- The rules a review holds a diff to are in [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 - The conventions agents follow — and humans too — are in
   [`AGENTS.md`](AGENTS.md) and [`docs/agents/`](docs/agents/).

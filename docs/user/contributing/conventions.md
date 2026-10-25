@@ -13,6 +13,7 @@ Each kind of record has one home, and nothing is said twice.
 | A feature's spec, and the tickets that build it | the spec's GitHub issue and its sub-issues |
 | A decision hard to reverse, and its reasons | an ADR, `docs/adr/NNNN-title.md` |
 | The bytes, ABI or wire format two sides must match, as code cites it | a contract, `docs/formats/` |
+| The rules a review holds a diff to | [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md) |
 | A measured or researched result worth reusing | a finding, `docs/findings/` |
 | What a user can see and do | this guide, `docs/user/` |
 | Temporary logs, experiments, raw output | `.scratch/`, untracked |
@@ -82,6 +83,10 @@ pages under `docs/user/reference/` are generated: change the code, then run
   that names the issue.
 - Agents keep every git worktree under `../.inference-qwen-worktrees/`, one
   directory per issue, beside the repository.
+- A spec whose tickets agents build in parallel goes through an integration
+  branch the owner merges into `main` locally, with no pull request; the
+  coordinating session runs the GPU legs one at a time
+  ([`docs/agents/orchestrated-builds.md`](../../agents/orchestrated-builds.md)).
 - A commit message says what the change does and why, in full sentences, and
   ends with the issue it belongs to, `(#347)`.
 - Diffs stay semantic: no reformatting of lines a change does not touch.
