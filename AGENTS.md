@@ -34,6 +34,8 @@ See `docs/agents/triage-labels.md`.
 Single-context — root `CONTEXT.md` for the glossary, `docs/adr/` for ADRs.
 See `docs/agents/domain.md`.
 
+## Repo conventions
+
 ### Findings
 
 When recording or consulting durable findings from discovery, research, or
