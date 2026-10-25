@@ -399,7 +399,8 @@ the spec left open, or differs from it:
   - **Machine speed moves d10 more than any factor.** The first measurement's
     6.7 s and 11.8 s are the same rule on a slower machine: their pushes took
     11.3 s and 20.6 s against 6.8-7.4 s and 13.1-13.4 s here, and the one i9 run
-    whose pushes took 9.8 s committed in 4.4 s.
+    whose pushes took 9.8 s committed in 4.4 s. The 4000 ms run's pushes took
+    7.1 s, this machine's speed: its 2.8 s compares with the 2.4-4.4 s here.
   - **The levers left** are the owner's: a commit that does not wait for the
     refresh in flight (no refresh started near the end of an item, or one the
     commit can stop), or a cheaper refresh (option C, not chosen). Neither is
