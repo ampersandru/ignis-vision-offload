@@ -5,7 +5,7 @@
 - Observed: 2026-09-16
 - Last verified: 2026-09-16
 - Scope: serving / multimodal TTFT, text TTFT with `--vision` loaded, VRAM headroom
-- Related: https://github.com/gpillon/ignis/issues/181, [ADR 0015](../adr/0015-g2-live-live-cold-prefix-gate.md), [ADR 0021](../adr/0021-live-live-launch-pooling.md), [testing.md](../agents/testing.md#the-multimodal-ttft-cell-github-181)
+- Related: https://github.com/gpillon/ignis/issues/181, [ADR 0015](../adr/0015-g2-live-live-cold-prefix-gate.md), [ADR 0021](../adr/0021-live-live-launch-pooling.md), [testing/bench.md](../agents/testing/bench.md#the-multimodal-ttft-cell-github-181)
 - Superseded by: none
 
 ## Question

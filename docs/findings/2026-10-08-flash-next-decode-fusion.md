@@ -209,7 +209,7 @@ B2 A3 B3; A = three launches, B = fused.
 - **One lane: -0.47 ms per token, +4.5%.** B1 and B2 10.35-10.38 ms against A2
   and A3 10.81-10.85; per text +3.9 to +4.9% (B1/B2 against A2/A3). A1, the
   session's first leg, ran 0.84 ms slower than A2/A3 on the same traffic, 0.18
-  ms of it a higher stall and the rest unexplained (the testing runbook's cold
+  ms of it a higher stall and the rest unexplained (`docs/agents/testing/bench.md`'s cold
   first leg); it is left out. B3 loaded with 0.22 GB less expert cache (the
   desktop held more VRAM at its load): 1.6 more misses and +0.14 ms of stall per
   token, about half of its smaller gain (-0.22 ms).
