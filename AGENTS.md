@@ -71,6 +71,15 @@ foreground target holds the shell until Ctrl+C. `start` and `run` launch only
 the last build and refuse a stale one, naming the changed files; `make build`
 is the fix. Before changing the Makefile: ADR 0027.
 
+Rebuilding a running server on Windows: `make stop`, then `make build`, then
+`make start`, each only once the last succeeded, since Windows locks a running
+exe and `make build` fails on it, as `make redeploy` does. Scripting
+`make start`: never pipe it (`| Tee-Object`, `| tail`), since the server holds
+the pipe open and the pipe never ends; from bash, redirect it to a file
+(`> file 2>&1`). Restarting a server whose log holds an incident: copy
+`ignis-server.log` and its `.err` out of `.scratch/serve/` first, since
+`make start` rewrites both.
+
 ### Worktrees
 
 Creating a git worktree: put it under `../.inference-qwen-worktrees/`, beside
