@@ -1,6 +1,6 @@
 # 07 - the Transcribe view: a conversation transcribed in the Playground
 
-GitHub: (ticket under master #350). Track: Transcribe (spec 08 is the diarizer). Feature: `spec.md`. Needs 05
+GitHub: #362 (master #350). Track: Transcribe (spec 08 is the diarizer). Feature: `spec.md`. Needs 05
 (`server_vad`); the speakers and every server change it relies on are spec 08's. Web only.
 
 ADRs: 0067 (the speech model), 0069 (the speakers).

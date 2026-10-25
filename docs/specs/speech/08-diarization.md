@@ -1,6 +1,6 @@
 # 08 - the diarizer: speakers beside the speech model
 
-GitHub: (ticket under master #350). Track: Transcribe (spec 07 is the Playground view). Feature: `spec.md`. Needs 05
+GitHub: #361 (master #350). Track: Transcribe (spec 07 is the Playground view). Feature: `spec.md`. Needs 05
 (`server_vad`).
 
 ADRs: 0051 (adapted code, licences), 0067 (the speech model), 0068 (the CPU executor), 0069 (this diarizer).

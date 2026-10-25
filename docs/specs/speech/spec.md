@@ -1,7 +1,7 @@
 # Speech recognition in ignis — the feature, its tickets, and how to run them
 
-GitHub: master #350; one ticket per spec, 01-06 = #351-#356; 07 and 08, the
-Transcribe track, have a ticket each under #350.
+GitHub: master #350; one ticket per spec, 01-06 = #351-#356; the
+Transcribe track's 07 = #362 and 08 = #361.
 
 The feature-level document the speech tickets decompose
 (`docs/agents/issue-tracker.md`). Read this first, then the ticket's spec.
