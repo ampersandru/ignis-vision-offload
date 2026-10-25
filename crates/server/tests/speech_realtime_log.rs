@@ -63,10 +63,18 @@ async fn each_committed_item_writes_one_line_of_numbers_and_no_text_or_audio() {
     send(&mut socket, append(WINDOW * 3)).await;
     send(&mut socket, commit()).await;
     until(&mut socket, "conversation.item.input_audio_transcription.failed").await;
+    // One the speech model fails: its line, at WARN, carries the executor's words.
+    executor.fail_commit.store(true, std::sync::atomic::Ordering::SeqCst);
+    send(&mut socket, append(WINDOW / 2)).await;
+    send(&mut socket, commit()).await;
+    until(&mut socket, "conversation.item.input_audio_transcription.failed").await;
     drop(socket);
 
     let lines = events(&sink, "ignis.speech.transcription");
-    assert_eq!(lines.len(), 2, "one line per committed item: {lines:?}");
+    assert_eq!(lines.len(), 3, "one line per committed item: {lines:?}");
+    assert_eq!((lines[2]["outcome"].as_str(), lines[2]["reason"].as_str()), (Some("failed"), Some("the fake executor was told to fail")), "{}", lines[2]);
+    assert!(lines[1]["reason"].is_null(), "an item over the limit is the client's, with no executor reason: {}", lines[1]);
+    assert!(events(&sink, "ignis.speech.failed").is_empty(), "a second line for a failure");
     let done = &lines[0];
     assert!((done["audio_seconds"].as_f64().unwrap() - 12.0).abs() < 0.01, "{done}");
     assert_eq!(done["executor"], "cpu");

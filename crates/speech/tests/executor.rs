@@ -308,6 +308,39 @@ fn a_commit_is_a_unit_of_work_a_step() {
     assert!(matches!(commit.step(), Err(ignis_speech::SessionError::Committed)));
 }
 
+/// Acceptance 19: the decode's prefill (the prompt's tail and the stable text, which grows with
+/// a long dictation's refreshes) is a window's worth of tokens a step, not the whole text at
+/// once. A refresh with no rollback on the pair whose head has no EOS fixes the whole text room
+/// as stable; the commit then prefills it over several steps and gives the transcript a whole
+/// commit does.
+#[test]
+fn a_commits_prefill_is_a_window_of_tokens_a_step() {
+    let files = synthetic::endless_pair("prefill");
+    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, max_clip_seconds: 20, ..settings() });
+    let session = || {
+        let mut s = e.open("", None).unwrap();
+        s.push(&synthetic::audio(9.3)).unwrap();
+        s.partial().unwrap();
+        s
+    };
+    let stable = session().stats().stable_tokens;
+    assert!(stable > 104, "the refresh fixed {stable} tokens");
+    let whole = session().commit().unwrap();
+    let mut commit = session().into_commit();
+    let mut steps = 0;
+    let stepped = loop {
+        steps += 1;
+        if let Some(t) = commit.step().unwrap() {
+            break t;
+        }
+    };
+    assert_eq!(stepped, whole);
+    let tail = Prompt::new(&Model::load(&files.decoder, &files.encoder, false).unwrap().text, "", 512, None).tail.len();
+    let decoded = whole.tokens.len() - stable;
+    // The last window, the prefill 104 tokens a step, then the decode 16 forward passes a step.
+    assert_eq!(steps, 1 + (tail + stable).div_ceil(104) + (decoded - 1) / DECODE_UNIT + 1);
+}
+
 /// The KV cache keeps a text room after the longest clip's audio and the stable text never
 /// outgrows it, so no clip within `max_clip_seconds` fails for want of cache: on the pair whose
 /// head has no EOS a partial halfway through a 20 s clip decodes to the cache's end, and with no

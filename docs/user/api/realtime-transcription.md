@@ -248,8 +248,8 @@ a client that rejects unknown events is safe.
 
 One compute worker serves the speech model. Up to `speech.max_sessions` (4)
 sessions are open at once; they take turns a unit of work at a time (a window
-of audio, a refresh, or a step of a commit: a window, the decode's prefill or
-16 tokens decoded) and every unit goes ahead of the
+of audio, a refresh, or a step of a commit: a window, 104 tokens of the
+decode's prefill or 16 tokens decoded) and every unit goes ahead of the
 [transcription requests](transcriptions.md#waiting-and-refusing), which run in
 the gaps.
 

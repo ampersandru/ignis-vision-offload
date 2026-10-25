@@ -227,7 +227,8 @@ fn batch(executor: &CpuExecutor, audio: &[f32]) -> String {
 #[test]
 fn the_gpu_profile_skips_this_leg() {
     let script = include_str!("../../../scripts/gpu-profile.ps1");
-    assert!(script.contains("\"the_eleven_dictations_through_the_real_route_at_real_time_pace\""), "gpu-profile.ps1's $NotGpuLegs");
+    let listed = script.split("$NotGpuLegs = @(").nth(1).and_then(|rest| rest.split(')').next()).expect("gpu-profile.ps1 lists $NotGpuLegs");
+    assert!(listed.contains("\"the_eleven_dictations_through_the_real_route_at_real_time_pace\""), "{listed}");
 }
 
 /// AC 5 and 13 on the real executor: the 11 dictations through the route at real-time pace.

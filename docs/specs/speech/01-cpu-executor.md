@@ -394,12 +394,18 @@ Where the build decided something the spec left open, or differs from it:
   pool has its own dispatch lock, and a `Session` is driven one call at a
   time. A commit is a unit of work a step (`Session::into_commit`,
   `Commit::step`): the audio's last frames with a window, each window, the
-  decode's prefill, then 16 decode steps a step; `commit()` steps one to its
-  end. The seam's `commit_step` hands the steps to the worker, so a batch
+  decode's prefill (the prompt's tail and the stable text, which a long
+  dictation's refreshes grow) 104 tokens a step, then 16 decode steps a step,
+  each about a window's prefill (a derivation, not an operator threshold);
+  `commit()` steps one to its end. A refresh stays one unit (Q74): it
+  prefills the stable text again each time, so on a long item it grows past a
+  window, which the cost factor (Q76) bounds as a share of the worker. The seam's `commit_step` hands the steps to the worker, so a batch
   transcription's decode, minutes for a 1,200 s clip, never holds the
   Realtime sessions. AC 19's witness is the step count on the pair whose
-  head has no EOS (`a_commit_is_a_unit_of_work_a_step`) and the worker's
-  order tests; AC 21's idle unload is the worker's (spec 02), the crate's
+  head has no EOS (`a_commit_is_a_unit_of_work_a_step`,
+  `a_commits_prefill_is_a_window_of_tokens_a_step`; after its first token
+  that pair's tokens are spaces, so a refresh can fix all the text room) and
+  the worker's order tests; AC 21's idle unload is the worker's (spec 02), the crate's
   unload test shows the memory given back.
 - **`speech.threads: auto`** is the physical cores less one *counted within
   the CPUs the process may run on*: on Linux `num_cpus::get_physical` reads

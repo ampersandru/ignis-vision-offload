@@ -40,7 +40,7 @@ use super::audio;
 use super::executor::{LoadSettings, SessionOpen, SpeechExecutor, SpeechFiles, Transcript, WINDOW_SAMPLES};
 use super::languages;
 use super::worker::{Job, Step};
-use super::{extension, open_loaded, Fault, Unavailable};
+use super::{engine_failed, extension, open_loaded, Fault, Unavailable};
 use crate::api::{bad_request_param, error_response, error_response_naming, refused_field, unknown_model, ApiError};
 use crate::config::schema::SpeechGroup;
 use crate::deadline::Timeout;
@@ -772,19 +772,28 @@ impl Drop for Ending {
     }
 }
 
-/// What a failed job is answered with: a fault's code and message, or the
-/// executor's when the worker dropped the job (`None`).
-fn failure_error(failure: Option<&Failure>) -> (&'static str, String) {
+/// What a failed job is answered with: its status, code and message. A job
+/// the worker dropped (`None`) failed as a call to the executor does.
+fn failure_error(failure: Option<&Failure>) -> (StatusCode, &'static str, String) {
     match failure {
-        Some(Failure::Fault(fault)) => fault.error(THIS_TRANSCRIPTION),
-        Some(Failure::Cancelled) | None => Fault::Executor(String::new()).error(THIS_TRANSCRIPTION),
+        Some(Failure::Fault(fault @ Fault::Load(_))) => {
+            let (code, message) = fault.error(THIS_TRANSCRIPTION);
+            (StatusCode::SERVICE_UNAVAILABLE, code, message)
+        }
+        Some(Failure::Fault(fault)) => {
+            let (code, message) = fault.error(THIS_TRANSCRIPTION);
+            (StatusCode::INTERNAL_SERVER_ERROR, code, message)
+        }
+        Some(Failure::Cancelled) | None => {
+            let (code, message) = engine_failed(THIS_TRANSCRIPTION);
+            (StatusCode::INTERNAL_SERVER_ERROR, code, message)
+        }
     }
 }
 
 /// How a failed job is answered.
 fn failure_response(failure: Option<&Failure>) -> Response {
-    let (code, message) = failure_error(failure);
-    let status = if code == "speech_unavailable" { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::INTERNAL_SERVER_ERROR };
+    let (status, code, message) = failure_error(failure);
     error_response(status, "server_error", code, message)
 }
 
@@ -934,7 +943,7 @@ fn body_of(error: &ApiError) -> Value {
 
 /// The body of an `error` event: what the answer would have been.
 fn error_event(failure: Option<&Failure>) -> Value {
-    let (code, message) = failure_error(failure);
+    let (_, code, message) = failure_error(failure);
     body_of(&ApiError::new("server_error", code, &message))
 }
 

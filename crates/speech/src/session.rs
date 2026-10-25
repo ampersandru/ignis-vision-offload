@@ -15,9 +15,10 @@
 //!    a partial stopped leaves the session as it was.
 //! 4. `commit` encodes the last window and decodes from the stable text to EOS, so the
 //!    transcript begins with every stable text reported (Q43). [`Commit`] is the same work a
-//!    unit at a time (Q44): a window, the decode's prefill, or 16 decode steps per
-//!    [`Commit::step`], so the server's worker runs other sessions' units between two and a
-//!    long clip's decode never holds it for its whole length.
+//!    unit at a time (Q44): a window, a window's worth of the decode's prefill (the prompt's
+//!    tail and the stable text), or 16 decode steps per [`Commit::step`], so the server's
+//!    worker runs other sessions' units between two and a long clip's decode never holds it
+//!    for its whole length.
 //!
 //! The KV cache holds the head, the longest clip's audio and the tail, then a text room of
 //! half as many tokens as the audio's (speech gives about a third) and 64 more. The stable
@@ -73,6 +74,8 @@ pub struct Stats {
     /// Audio tokens prefilled into the audio prefix: each once.
     pub audio_prefilled: usize,
     pub partials: usize,
+    /// The stable text's tokens: what a commit's prefill carries after the prompt's tail.
+    pub stable_tokens: usize,
 }
 
 #[derive(Debug)]
@@ -274,18 +277,28 @@ impl Session {
         (out, total)
     }
 
-    /// The decode's prefill after the audio: the prompt's tail and the stable text. The text
-    /// room holds them (the stable text never outgrows it), so a clip within
-    /// `max_clip_seconds` always has the positions.
-    fn begin_decode(&mut self) -> Decode {
+    /// The decode's prefill after the audio: the prompt's tail and the stable text.
+    fn decode_prompt(&self) -> Vec<u32> {
+        [&self.prompt.tail[..], &self.stable[..]].concat()
+    }
+
+    /// Prefills `ids`, a piece of the decode's prompt, and answers the next token's logits
+    /// when it is the last piece. The text room holds the whole prompt (the stable text never
+    /// outgrows it), so a clip within `max_clip_seconds` always has the positions.
+    fn prefill_text(&mut self, ids: &[u32], last: bool) -> Option<Vec<f32>> {
         let loaded = self.loaded.clone();
         let dec = &loaded.model.decoder;
-        let mut ids = self.prompt.tail.clone();
-        ids.extend(&self.stable);
         let fits = self.cache.reserve(self.cache.len + ids.len() + 1);
         debug_assert!(fits, "the stable text outgrew the text room");
-        let logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &ids), Logits::Last, None);
-        Decode { out: Vec::new(), logits }
+        let want = if last { Logits::Last } else { Logits::None };
+        let logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, ids), want, None);
+        last.then_some(logits)
+    }
+
+    /// The whole decode's prefill in one call: a partial's.
+    fn begin_decode(&mut self) -> Decode {
+        let ids = self.decode_prompt();
+        Decode { out: Vec::new(), logits: self.prefill_text(&ids, true).expect("the last piece answers logits") }
     }
 
     /// Up to `steps` greedy steps of `d`: `Some(true)` once it ended, at EOS or at the cache's
@@ -397,6 +410,7 @@ impl Session {
             cut -= 1;
         }
         self.stable.extend_from_slice(&decoded[..cut]);
+        self.stats.stable_tokens = self.stable.len();
         let (stable, language) = self.body(&self.stable);
         let all: Vec<u32> = [&self.stable[..], &decoded[cut..]].concat();
         let (full, _) = self.body(&all);
@@ -417,7 +431,7 @@ impl Session {
 
     /// The commit, to be taken a unit at a time ([`Commit::step`]). Nothing is computed here.
     pub fn into_commit(self) -> Commit {
-        Commit { session: self, total: None, decode: None, done: false }
+        Commit { session: self, total: None, prompt: None, decode: None, done: false }
     }
 }
 
@@ -433,14 +447,17 @@ pub struct Commit {
     session: Session,
     /// The clip's frames, once the first step folded in the last ones.
     total: Option<usize>,
+    /// The decode's prompt, and how much of it is prefilled.
+    prompt: Option<(Vec<u32>, usize)>,
     decode: Option<Decode>,
     done: bool,
 }
 
 impl Commit {
-    /// One unit of the commit: the audio's last frames and a window of it, a window, the
-    /// decode's prefill, or [`DECODE_UNIT`] decode steps. `Some` with the transcript once the
-    /// decode ends; a step after that is [`SessionError::Committed`].
+    /// One unit of the commit: the audio's last frames and a window of it, a window, a
+    /// window's worth of tokens (104) of the decode's prefill, or [`DECODE_UNIT`] decode
+    /// steps. `Some` with the transcript once the decode ends; a step after that is
+    /// [`SessionError::Committed`].
     pub fn step(&mut self) -> Result<Option<Transcript>, SessionError> {
         if self.done {
             return Err(SessionError::Committed);
@@ -463,8 +480,15 @@ impl Commit {
                 let n = (total - first).min(WINDOW_FRAMES);
                 let mel = s.window_mel(first, n, &[]);
                 s.prefill_window(&mel, n);
-            } else {
-                self.decode = Some(s.begin_decode());
+                return Ok(None);
+            }
+            let (ids, done) = self.prompt.get_or_insert_with(|| (s.decode_prompt(), 0));
+            let to = (*done + WINDOW_TOKENS).min(ids.len());
+            let piece = ids[*done..to].to_vec();
+            let last = to == ids.len();
+            *done = to;
+            if let Some(logits) = s.prefill_text(&piece, last) {
+                self.decode = Some(Decode { out: Vec::new(), logits });
             }
             return Ok(None);
         };

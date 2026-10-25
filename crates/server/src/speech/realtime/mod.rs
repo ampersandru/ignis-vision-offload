@@ -330,12 +330,54 @@ struct Connection {
     /// Under `server_vad`, the turns the VAD finds in the audio; `None` for
     /// manual commit (spec speech/05).
     turns: Option<Turns<Vad>>,
-    /// Under `server_vad`, the audio heard since the last item ended, from
-    /// sample `since_item_from` of the VAD's clock: what a commit with no
-    /// speech heard makes an item of, as OpenAI's buffer holds everything
-    /// appended since the last commit. At most `speech.max_clip_seconds`.
-    since_item: VecDeque<f32>,
-    since_item_from: u64,
+    /// Under `server_vad`, the audio heard since the last item ended.
+    since_item: SinceItem,
+}
+
+/// Under `server_vad`, the 16 kHz audio heard since the last item ended: what
+/// a commit with no speech heard makes an item of, as OpenAI's buffer holds
+/// everything appended since the last commit. It always ends at the VAD's
+/// clock (the samples the session heard), so an item's end, a sample of that
+/// clock, drops what came before it. At most `speech.max_clip_seconds` of it
+/// is kept: 77 MB at the default 1,200 s, for a session that long silent.
+#[derive(Default)]
+struct SinceItem {
+    samples: VecDeque<f32>,
+    /// The clock at its first sample.
+    from: u64,
+}
+
+impl SinceItem {
+    /// Nothing heard since sample `at`: the VAD starts there, or a clear.
+    fn reset(&mut self, at: u64) {
+        self.samples.clear();
+        self.from = at;
+    }
+
+    /// `samples` heard, at most the last `keep` kept.
+    fn heard(&mut self, samples: &[f32], keep: usize) {
+        self.samples.extend(samples);
+        let over = self.samples.len().saturating_sub(keep);
+        self.samples.drain(..over);
+        self.from += over as u64;
+    }
+
+    /// An item ended at sample `end` of the clock.
+    fn ended_at(&mut self, end: u64) {
+        let gone = end.saturating_sub(self.from).min(self.samples.len() as u64);
+        self.samples.drain(..gone as usize);
+        self.from += gone;
+    }
+
+    /// The last `room` samples, for the item a commit makes of them; nothing
+    /// is left.
+    fn take(&mut self, room: usize) -> Vec<f32> {
+        let end = self.from + self.samples.len() as u64;
+        let skip = self.samples.len().saturating_sub(room);
+        let audio = self.samples.iter().skip(skip).copied().collect();
+        self.reset(end);
+        audio
+    }
 }
 
 impl Connection {
@@ -368,8 +410,7 @@ impl Connection {
             quiet_since: Instant::now(),
             heard: 0,
             turns: None,
-            since_item: VecDeque::new(),
-            since_item_from: 0,
+            since_item: SinceItem::default(),
         }
     }
 
@@ -503,7 +544,7 @@ impl Connection {
             (Some(vad), Some(turns)) => turns.set_settings(vad.settings()),
             (Some(vad), None) if !holds_audio => {
                 self.turns = Some(Turns::new(Vad::new(), vad.settings(), self.heard));
-                self.item_ended_at(self.heard);
+                self.since_item.reset(self.heard);
             }
             (None, Some(_)) if !holds_audio => self.turns = None,
             _ => {}
@@ -687,22 +728,10 @@ impl Connection {
         };
         let mut events = Vec::new();
         turns.push(&samples, &mut events);
-        self.since_item.extend(&samples);
-        let keep = self.server.live().speech.max_clip_seconds as usize * TARGET_RATE as usize;
-        let over = self.since_item.len().saturating_sub(keep);
-        self.since_item.drain(..over);
-        self.since_item_from += over as u64;
+        self.since_item.heard(&samples, self.server.live().speech.max_clip_seconds as usize * TARGET_RATE as usize);
         for event in events {
             self.turn(event);
         }
-    }
-
-    /// An item ended at sample `end` of the VAD's clock: the audio heard
-    /// since the last item starts there.
-    fn item_ended_at(&mut self, end: u64) {
-        let gone = end.saturating_sub(self.since_item_from).min(self.since_item.len() as u64);
-        self.since_item.drain(..gone as usize);
-        self.since_item_from += gone;
     }
 
     /// What the VAD found, as the Realtime events and the item's audio: an
@@ -722,7 +751,7 @@ impl Connection {
                 let id = self.current().id.clone();
                 self.send(json!({ "type": "input_audio_buffer.speech_stopped", "audio_end_ms": millis(end), "item_id": id }));
                 self.end_item();
-                self.item_ended_at(end);
+                self.since_item.ended_at(end);
             }
             TurnEvent::TimedOut { start, end, audio } => {
                 self.begin_item();
@@ -736,7 +765,7 @@ impl Connection {
                 self.lead_in();
                 self.give(audio);
                 self.end_item();
-                self.item_ended_at(end);
+                self.since_item.ended_at(end);
             }
         }
     }
@@ -773,24 +802,26 @@ impl Connection {
                 let rest = turns.end_turn();
                 self.give(rest);
                 self.end_item();
-                return self.item_ended_at(self.heard);
+                return self.since_item.reset(self.heard);
             }
             // No speech heard: as OpenAI's, the buffer is the audio appended
             // since the last item, and the commit makes it one, after the
-            // leading silence, as long as the limit allows with it.
-            if self.since_item.is_empty() {
+            // leading silence, as long as the limit allows with it. The VAD
+            // starts again where the commit left the stream, as after a
+            // commit during speech: no padding and no idle time reach back
+            // into this item.
+            if self.since_item.samples.is_empty() {
                 let empty = "the input audio buffer is empty: append audio before committing".to_owned();
                 return self.refuse(Refusal { code: "input_audio_buffer_commit_empty", message: empty, param: None }, event_id);
             }
+            turns.clear();
             let live = self.server.live();
-            let room = (live.speech.max_clip_seconds as usize * TARGET_RATE as usize).saturating_sub(live.speech.vad_leading_silence_ms as usize * 16);
-            let skip = self.since_item.len().saturating_sub(room);
-            let audio: Vec<f32> = self.since_item.iter().skip(skip).copied().collect();
+            let limit = live.speech.max_clip_seconds as usize * TARGET_RATE as usize;
+            let audio = self.since_item.take(limit.saturating_sub(ignis_speech::vad::ms_samples(live.speech.vad_leading_silence_ms) as usize));
             self.begin_item();
             self.lead_in();
             self.give(audio);
-            self.end_item();
-            return self.item_ended_at(self.heard);
+            return self.end_item();
         }
         if self.current().samples_in == 0 {
             let empty = "the input audio buffer is empty: append audio before committing".to_owned();
@@ -837,7 +868,7 @@ impl Connection {
             // The padding the VAD keeps, and a turn on, go as well, and the
             // audio heard since the last item: the buffer.
             turns.clear();
-            self.item_ended_at(self.heard);
+            self.since_item.reset(self.heard);
         }
         let current = self.current();
         if current.samples_in > 0 || current.id.is_some() {
@@ -1127,4 +1158,31 @@ fn push(session: &mut dyn SpeechSession, samples: &[f32]) -> Result<(), super::e
         return Ok(());
     }
     session.push(samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SinceItem;
+
+    /// The audio heard since the last item stays on the VAD's clock: one
+    /// started at a later sample (`server_vad` switched on mid-session), an
+    /// item's end, the cap and a commit's take all keep it there.
+    #[test]
+    fn the_audio_since_the_last_item_stays_on_the_vads_clock() {
+        let mut since = SinceItem::default();
+        since.reset(1_000);
+        since.heard(&[1.0; 300], 10_000);
+        // An item ended at sample 1,200: the 100 samples after it are what is left.
+        since.ended_at(1_200);
+        assert_eq!((since.from, since.samples.len()), (1_200, 100));
+        since.heard(&[2.0; 50], 120);
+        assert_eq!((since.from, since.samples.len()), (1_230, 120), "at most the cap, the oldest dropped");
+        let taken = since.take(100);
+        assert_eq!(taken.len(), 100);
+        assert_eq!(taken.iter().filter(|&&sample| sample == 2.0).count(), 50, "the last of it");
+        assert!(since.samples.is_empty());
+        assert_eq!(since.from, 1_350, "empty from the end of what was heard");
+        since.ended_at(1_300);
+        assert_eq!(since.from, 1_350, "an end before it drops nothing");
+    }
 }

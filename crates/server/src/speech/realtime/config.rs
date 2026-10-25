@@ -8,6 +8,7 @@
 //! whole update, and the session keeps the configuration it had.
 
 use ignis_speech::vad::TurnSettings;
+use super::super::audio::TARGET_RATE;
 use serde_json::{json, Map, Value};
 
 use crate::config::schema::SpeechGroup;
@@ -17,9 +18,8 @@ use super::super::route::{self, FieldRefusal, ModelRefusal};
 
 /// OpenAI's PCM16 rate, the default.
 pub(crate) const OPENAI_RATE: u32 = 24_000;
-/// The model's own rate ([`TARGET_RATE`]) is accepted as a declared
-/// extension, and not resampled.
-use super::super::audio::TARGET_RATE;
+// The model's own rate, `TARGET_RATE`, is accepted as a declared extension,
+// and not resampled.
 
 /// `transcription.delay`'s values. Inert: the cadence is
 /// `speech.partial_interval_ms`.

@@ -268,7 +268,7 @@ impl Fault {
     pub(crate) fn error(&self, what: &str) -> (&'static str, String) {
         match self {
             Fault::Load(why) => ("speech_unavailable", format!("the speech model could not be loaded: {why}")),
-            Fault::Executor(_) => ("engine_error", format!("the speech model failed {what}")),
+            Fault::Executor(_) => engine_failed(what),
         }
     }
 
@@ -278,6 +278,12 @@ impl Fault {
             Fault::Load(why) | Fault::Executor(why) => why,
         }
     }
+}
+
+/// The code and message of a transcription the speech model failed, or
+/// whose job the worker dropped.
+pub(crate) fn engine_failed(what: &str) -> (&'static str, String) {
+    ("engine_error", format!("the speech model failed {what}"))
 }
 
 /// Load the model if it is not, then open a session on it: a batch job's

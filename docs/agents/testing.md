@@ -106,14 +106,16 @@ run says where the time went without anyone adding up per-test output
 |-------|--------------|-------------|
 | `kernel/build.ps1 -Test` | the leaf's own op tests (CTest) | CTest's own |
 | `cpu f64 layer oracle` | `layer_reference_real`, `--ignored` | libtest default |
-| `gpu tests (serialized)` | everything else `--ignored` | `--test-threads=1` |
+| `gpu tests (serialized)` | everything else `--ignored`, but `ignis-speech` and the server's two speech legs that touch no GPU (`$NotGpuLegs`) | `--test-threads=1` |
 
 The middle stage exists because the f64 layer oracle touches no GPU: it
 reads the stored weights through a memory map and evaluates them on the CPU.
 It was paying for ADR 0006's exclusivity that it never needed, so it now
 runs at full parallelism and the serialized stage skips it by name. It still
 runs under `IGNIS_GPU_PROFILE=1`, so a missing artifact is a hard failure
-there too.
+there too. The server's two speech legs (the dictations through the route on
+the CPU, which need the study disk, and the speech catalog's download) are
+skipped by name as well; each binary tests that its leg is listed.
 
 **The test profile is optimized** (`[profile.dev]` and `[profile.test]`,
 `opt-level = 2`). The f64 oracles are CPU-bound on scalar `f64` with
