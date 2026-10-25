@@ -16,7 +16,7 @@ Git for Windows' `usr\bin` on `PATH`). `make` alone lists every target.
 | `make run` | Run the last build; fails, naming the changed files, if it is stale. |
 | `make mock` | `make dev` on the CPU mock: no GPU, no kernel leaf, no artifact. |
 | `make start` / `stop` / `restart` / `status` / `logs` | The background server; it outlives the terminal. Log and pid under `.scratch/serve/`. |
-| `make redeploy` | Build, and only if it succeeds: stop + start. |
+| `make redeploy` | Build, and only if it succeeds: stop + start. On Windows the build fails while the server runs, since Windows locks a running exe: `stop`, `build`, `start` instead. |
 | `make dev-ui` / `run-ui` | Server plus Playground hot reload as one session; Ctrl+C stops both. |
 | `make web-dev` / `web-mock` | Vite alone, against a running engine or an in-process fake one. |
 | `make smoke` / `canary` | One `/v1/models` + a short completion / the canary suite. |

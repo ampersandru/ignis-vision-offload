@@ -8,7 +8,7 @@
  *
  * The block, per token: a router picks 10 of 512 experts from the BF16 router weight; each
  * selected expert is a SwiGLU MLP 2560 -> 640 -> 2560 stored as two trellis-coded *expert
- * projections* (ADR 0044, docs/specs/flash-next/layout.md §3) at its own bit width K; a shared
+ * projections* (ADR 0044, docs/formats/flash-next-layout.md §3) at its own bit width K; a shared
  * expert (FP8 row-scale, gated by a sigmoid of a BF16 2560 -> 1 projection) runs on every token;
  * the combine sums them.
  *
@@ -46,13 +46,13 @@ extern "C" {
 /* The decode route serves 1..IGNIS_MOE_DECODE_MAX_TOKENS tokens in one launch. */
 #define IGNIS_MOE_DECODE_MAX_TOKENS 8
 
-/* Expert projections (layout.md §3): the fused gate/up plane, (in, out) = (2560, 1280) with
+/* Expert projections (flash-next-layout.md §3): the fused gate/up plane, (in, out) = (2560, 1280) with
  * output columns [0, 640) gate and [640, 1280) up; and down, (640, 2560). */
 #define IGNIS_MOE_PROJ_GATE_UP 0
 #define IGNIS_MOE_PROJ_DOWN 1
 
 /* One slot-table entry: where an expert projection's record lives on the device and its bit
- * width as k2 = 2 K (4, 5, 6 or 8). A record is layout.md §3's: the trellis tensor at offset 0,
+ * width as k2 = 2 K (4, 5, 6 or 8). A record is flash-next-layout.md §3's: the trellis tensor at offset 0,
  * then suh (fp16, `in`), then svh (fp16, `out`), each 16-byte aligned; the record itself must
  * be 16-byte aligned.
  *
@@ -69,7 +69,7 @@ struct ignis_moe_slot {
 };
 
 /* The bytes of one expert-projection record of `projection` at `k2`, padding included
- * (layout.md's class table), into `*bytes`. */
+ * (flash-next-layout.md's class table), into `*bytes`. */
 int32_t ignis_moe_record_bytes(uint32_t projection, uint32_t k2, uint64_t *bytes);
 
 /* ---- trellis decode ------------------------------------------------------------------------

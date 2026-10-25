@@ -1,4 +1,4 @@
-"""Spec flash-next/07 phase B: the MTP head's companion container (layout.md §13).
+"""Spec flash-next/07 phase B: the MTP head's companion container (flash-next-layout.md §13).
 
     python convert_head.py chunks --ood-dir <real/ood> --windows-dir <kld windows> --out <calib>
     flash_next_mtp_calibration <calib>              (the engine example: the tapped stacks)
@@ -18,7 +18,7 @@ tokens) and keeps the MoE sublayer's inputs and routing. Then it runs the trunk 
 expert step on them, unchanged (`pipeline.Conversion._convert_experts`: g^2-weighted Hessians,
 shrink, the zero-token fallback, the four-K sweep, the allocation at --budget, the records), writes
 the non-experts in the trunk's encodings, decodes the written records (the sha256 of every decoded
-projection and the MoE error on the test chunks) and writes converter.json (layout.md §13.5). Only
+projection and the MoE error on the test chunks) and writes converter.json (flash-next-layout.md §13.5). Only
 the head is fetched: the token embedding is the main container's. The packer then assembles the
 companion and pins it to the main container.
 
@@ -54,7 +54,7 @@ SCHEMA = "flash-next-mtp-converter-v1"
 PREFIX = "mtp."
 LAYER_PREFIX = "mtp.layers.0."
 # The trunk's seed rule (L * 10000 + proj * 1000 + expert) at layer index 48: no MTP seed equals a
-# trunk layer's (layout.md §13.4).
+# trunk layer's (flash-next-layout.md §13.4).
 MTP_LAYER = 48
 WIDTH = 4 * 2560
 HEAD = {"comb": "a", "norm": "a", "chain": "a", "idx": "own"}
@@ -200,7 +200,7 @@ def check_inputs(calib, chunks, main):
 
 def container_tensor(c, name, device="cpu"):
     """A non-expert tensor of a packed container as the bf16 weight it stands for: FP8 decoded
-    (code * scale, rounded to bf16, layout.md §6.1), BF16 copied."""
+    (code * scale, rounded to bf16, flash-next-layout.md §6.1), BF16 copied."""
     import torch
     import fp8
     o = c.objects[name]
@@ -213,7 +213,7 @@ def container_tensor(c, name, device="cpu"):
 
 
 def decode_hashes(gq, dq, k2):
-    """sha256 of every decoded projection's bf16 (out, in) bytes, as layout.md §9's samples are."""
+    """sha256 of every decoded projection's bf16 (out, in) bytes, as flash-next-layout.md §9's samples are."""
     import torch
     out = []
     for e in range(gq.shape[0]):
@@ -384,7 +384,7 @@ def expert_record(c, expert, proj):
 
 def quantized_head_weights(path, dev, decode=None):
     """The head's weights as the companion stores them, without the `mtp.` prefix: experts
-    decoded by `decode(record, k2, proj, dev)` (the trellis oracle, layout.md §3) into the
+    decoded by `decode(record, k2, proj, dev)` (the trellis oracle, flash-next-layout.md §3) into the
     checkpoint's fused [experts, out, in] tensors, the non-experts by `container_tensor`."""
     import torch
     import container

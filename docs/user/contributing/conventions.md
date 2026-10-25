@@ -1,6 +1,6 @@
 ---
 title: "How work is tracked"
-description: "GitHub issues and their triage labels, specs, ADRs, findings, the guide, worktrees and commit messages."
+description: "GitHub issues and their triage labels, specs, ADRs, contracts, findings, the guide, worktrees and commit messages."
 sidebar:
   order: 5
 ---
@@ -12,6 +12,8 @@ Each kind of record has one home, and nothing is said twice.
 | Status, blocking, labels, closure | the [GitHub issue](https://github.com/gpillon/ignis/issues) |
 | A feature's spec, and the tickets that build it | the spec's GitHub issue and its sub-issues |
 | A decision hard to reverse, and its reasons | an ADR, `docs/adr/NNNN-title.md` |
+| The bytes, ABI or wire format two sides must match, as code cites it | a contract, `docs/formats/` |
+| The rules a review holds a diff to | [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md) |
 | A measured or researched result worth reusing | a finding, `docs/findings/` |
 | What a user can see and do | this guide, `docs/user/` |
 | Temporary logs, experiments, raw output | `.scratch/`, untracked |
@@ -38,15 +40,30 @@ A bug report says what you ran (the command, or `make config`'s output), what
 you expected, what happened, and the server's log lines around it. The log
 file of a server `make start` launched is under `.scratch/serve/`.
 
-## Specs, ADRs and findings
+## Specs, ADRs, contracts and findings
 
 - **A spec** is a GitHub issue: the problem, the solution, the user stories
   and the implementation and testing decisions. Its tickets, the sub-issues,
   carry the acceptance criteria
   ([`docs/agents/issue-tracker.md`](../../agents/issue-tracker.md)).
-- **An ADR** records a decision, the options it rejected and its consequences.
-  It is written when the decision is taken, and amended rather than rewritten
-  when it changes. The [list](../../adr/) is the project's memory of why.
+- **An ADR** records a decision and why it was taken, in the short format: a
+  title as its heading and one to three sentences of context, decision and
+  reason, with a status, the options it rejected or its consequences only when
+  they add something. ADRs 0001 to 0069 keep their longer form with the number
+  in the heading; the release notes name both kinds "ADR NNNN — title", taking
+  a short one's number from its file name. An ADR takes the next free number
+  when it merges into `main`, and is renumbered, with every line that cites it,
+  when another ADR took that number first. It is written when the decision is
+  taken, and amended rather than rewritten when it changes. The
+  [list](../../adr/) is the project's memory of why; ADR 0070 lists the places
+  where the repo differs from the agent skills it follows.
+- **A contract** is the description of bytes, an ABI or a wire format that
+  two sides must match, which the code on both sides cites as normative: the
+  Flash-Next converter's output, for one. It lives in
+  [`docs/formats/`](../../formats/), and its header names the ADR that says why
+  the format is what it is. Code cites a contract by section number, so a
+  section keeps its number. A contract that began inside a spec under
+  `docs/specs/` left a one-line pointer there.
 - **A finding** preserves evidence another reader can inspect or reproduce:
   a discovery, a research result or an experiment, with its question, its
   evidence, its limits ([`docs/agents/findings.md`](../../agents/findings.md)).
@@ -66,6 +83,10 @@ pages under `docs/user/reference/` are generated: change the code, then run
   that names the issue.
 - Agents keep every git worktree under `../.inference-qwen-worktrees/`, one
   directory per issue, beside the repository.
+- A spec whose tickets agents build in parallel goes through an integration
+  branch the owner merges into `main` locally, with no pull request; the
+  coordinating session runs the GPU legs one at a time
+  ([`docs/agents/orchestrated-builds.md`](../../agents/orchestrated-builds.md)).
 - A commit message says what the change does and why, in full sentences, and
   ends with the issue it belongs to, `(#347)`.
 - Diffs stay semantic: no reformatting of lines a change does not touch.

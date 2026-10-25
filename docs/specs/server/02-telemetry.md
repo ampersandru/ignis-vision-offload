@@ -57,4 +57,4 @@ ships a `Scheduler::stats()` accessor (`waiting` / `prefilling` /
 `kv_used_pages / capacity * 100`, `kv_evictions` = a cumulative counter
 at the evict/restore paths), the server wires a provider returning the
 live counters and the interval line becomes authoritative (a core
-follow-up — see PENDING.md).
+follow-up — see PENDING.md, deleted by #368).

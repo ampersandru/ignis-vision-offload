@@ -104,7 +104,7 @@ as oracles), 0002 (the artifact format).
 
 - **Who writes the container.** `tools/27b-16gb-converter/convert.py run` writes the packer's work tree (units
   `frontend`, `text`, `mtp`, `vision`, `dflash2`: a `tensors.json`, one payload file per tensor, `DONE`, as
-  `docs/specs/flash-next/layout.md` §2) and `converter.json`; `ignis-artifact-pack --family qwen3.8-27b-trellis`
+  `docs/formats/flash-next-layout.md` §2) and `converter.json`; `ignis-artifact-pack --family qwen3.8-27b-trellis`
   (`Family::Qwen27bTrellis`) assembles the container and merges `converter.json` into the sidecar. Python never writes
   the container, as for Flash-Next and the image model. The step that needs the GPU is the reconstruction errors only.
 - **The artifact.** `qwen3_8_27b_trellis_sc30-v2.ninfer`, identity `qwen3.8-27b` / `trellis-sc30`, 13,379,877,124
@@ -132,7 +132,7 @@ as oracles), 0002 (the artifact format).
   - `gdn/in_proj_qkv` is [q 2,048 | k 2,048 | v 6,144], split by key and value width as transformers'
     `Qwen3_5GatedDeltaNet` does; `gdn/in_proj_z` is the 6,144-row output gate.
   - Each split matrix has its own `suh`/`svh` and its own K; a record's tile order and scales are exllamav3's
-    (`docs/specs/flash-next/layout.md` §3), the records spec 02's `ignis_trellis_linear` decodes.
+    (`docs/formats/flash-next-layout.md` §3), the records spec 02's `ignis_trellis_linear` decodes.
 - **The token embedding stays W8G32** (ADR 0060 left W8 or BF16 open): copied byte for byte, it lives in mapped host
   memory (ADR 0062), so its format costs no VRAM, and the loader reads it already.
 - **K per matrix** (the quant's): K2 34, K3 297, K4 66, K5 4; trellis bytes 9,772,122,112. **Reconstruction error**

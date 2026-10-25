@@ -176,251 +176,47 @@ switches (`make gpu-profile GPU_PROFILE_ARGS=-SkipKernelBuild`).
 (`scripts/gpu-profile.ps1` calls it) for a quick "is the GPU free" query
 that doesn't run anything.
 
-## The canary oracle fixture (P1-05, GitHub #41)
+## Testing one area
 
-`crates/bench/tests/fixtures/oracle_canary.json` is the committed fixture
-G1 is measured against: the reference engine's (`ninfer-serve`, greedy,
-the `qwen3_8_27b_nvfp4full-v2.ninfer` artifact) completions on the canary
-suite (`crates/bench/src/canary.rs::CANARIES`), 32 greedy tokens per
-prompt. `ignis-bench oracle compare` diffs a candidate engine's tokens
-against it (§"Oracle (two levels)", spec `01-device-resident-forward`).
+- Recording the canary oracle fixture or comparing an engine against it (G1),
+  or reading the canary suite's thinking-only verdicts:
+  [testing/canary-oracle.md](testing/canary-oracle.md).
+- Recording or scoring the vision canary fixture (multimodal prompts against
+  the reference's answers): [testing/vision-canary.md](testing/vision-canary.md).
+- Testing `/v1/decide` (`locate` over a text state, the shortlist, the
+  entailment fixture): [testing/decide.md](testing/decide.md).
+- Testing the image model's media against Pillow (the resize fixtures, the
+  WebP condition image): [testing/image-model.md](testing/image-model.md).
+- Testing the speech model (the speech oracle, `server_vad`'s VAD oracle, their
+  legs on the study disk): [testing/speech.md](testing/speech.md).
+- Running a bench or a gate leg (TTFT and G2, the multimodal TTFT cell, the
+  KV-format A/B, the harness's request deadline):
+  [testing/bench.md](testing/bench.md).
 
-Re-record it (needs the GPU and the reference stack, ADR 0006 — stop
-`ignis-server` first):
+## Where tests live
 
-```powershell
-# 1. Start the reference engine on the same artifact, greedy, thinking off
-#    (thinking on burns the whole token budget on the reasoning channel,
-#    leaving no content tokens to compare). This is specific to the oracle,
-#    which diffs answer tokens; `canary`, `ttft`, `g3` and `g4` read both
-#    channels and need no such flag (GitHub #137).
-F:\ai\q38\ninfer\build-ninja\apps\ninfer-serve.exe `
-  F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer `
-  --model-id qwen3.8-27b-nvfp4full-v2 --host 127.0.0.1 --port 8080 `
-  --greedy --no-thinking --max-context 8192 --max-concurrency 1 --kv-capacity auto
+- Unit tests: `#[cfg(test)]` modules, in the file they test.
+- Integration tests: `crates/<crate>/tests/`, one file per behavior,
+  named for what it verifies (cf. `real_artifact.rs`).
 
-# 2. Record the fixture.
-cargo run -p ignis-bench -- oracle record `
-  --endpoint http://127.0.0.1:8080 `
-  --artifact F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer `
-  --out crates/bench/tests/fixtures/oracle_canary.json --max-tokens 32
+## Writing the tests
 
-# 3. Self-check: compare the fixture against a fresh live recording (must be
-#    100% — greedy + fixed seed on the same artifact is deterministic).
-cargo run -p ignis-bench -- oracle compare `
-  --fixture crates/bench/tests/fixtures/oracle_canary.json `
-  --endpoint http://127.0.0.1:8080 `
-  --artifact F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer
+- New behavior: its test lands with the change, before the task is
+  reported done — and it exercises the new path, not the old world
+  (a test that already passed before the change proves nothing about
+  it).
+- Bug fix: the regression test goes first — reproduce the bug, watch
+  the test go red, then fix.
+- The standard loop is red-green, driven by the `/tdd` skill.
+- Logging on the prefill/decode path: the hotpath lint
+  (`crates/logging/src/hotpath_lint.rs`) fails `cargo test` on an
+  INFO-or-above `tracing` call or a raw `println!`/`eprintln!`/`print!` in
+  its hand-maintained list of hot-path files. It makes the hot-path logging
+  constraint checkable in review, not only provable later at the G4 gate; a
+  `hotpath-lint-allow:` comment marks a reviewed, intentional exception, never
+  a silent one.
 
-# 4. Stop ninfer-serve (frees the GPU) and commit the updated fixture.
-```
-
-## The vision canary fixture (GitHub #178)
-
-`crates/server/tests/fixtures/vision_canary/` is ADR 0014's floor applied to
-multimodal prompts: four generated images (a rendered number, a coloured
-square, three circles, a line of screenshot text), one unambiguous question
-each, and the reference's greedy answers.
-`crates/server/tests/vision_canary_gpu.rs` scores ignis against them by
-teacher-forced agreement over the first 32 answer positions, each prompt
-prefilled twice — whole, and in 48-token spans so the placeholder run crosses
-span boundaries — and **each way clears the 95% floor on its own**, pooled
-over the four canaries the way ADR 0014 pools its own suite.
-
-The questions ask for a sentence, not a word, so the score has resolution:
-the four answers are ~50 scored positions per prefill mode, and one near-tie
-flip is two percent. At one token per answer it was a seventh of the suite,
-which is noise rather than a floor. Measured 2026-09-16: whole 48/50 = 96.0%,
-spanning 49/50 = 98.0%, and decode continuing the prefill path's own greedy
-chain 46/46.
-
-Re-record it (needs the GPU and the reference, ADR 0006 — stop
-`ignis-server` first; the images are regenerated deterministically, so a
-re-record with the same PIL/font is a no-op on them):
-
-```powershell
-F:\ai\q38\ninfer\build-ninja\apps\ninfer-serve.exe `
-  F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer `
-  --host 127.0.0.1 --port 8080 --vision --greedy --no-thinking `
-  --max-context 8192 --max-concurrency 1 --kv-capacity auto
-python tools/vision-canary/record.py crates/server/tests/fixtures/vision_canary
-# then stop ninfer-serve and commit the fixture
-```
-
-`crates/runtime/tests/cuda_leaf_vision_gpu.rs` is the same load's serving-shape
-check: an image prompt chunked at 64 tokens while three text lanes decode, each
-lane still answering its own question, and 100 image requests leaving no media
-embedding live and the leaf's footprint where it was. Its second test evicts an
-image request to KV-RAM mid-decode and checks the restored one continues with
-the never-evicted tokens (GitHub #194).
-
-## `locate` over a text state (GitHub #275, ADR 0041)
-
-`crates/server/tests/attention_readout_text_gpu.rs` (`cuda`, `attn-tap`)
-holds the leaf's rows of the served vote's 32 heads to the attention tap over
-text spans of up to 4,526 keys, under BF16 and hq-e8-2b, for a question and
-for its content-free twin claiming the question's retained state.
-`kernel/tests/test_attention_readout.cu` has the rows arm,
-`test_model_load_vision_options.cpp` the text room, and
-`crates/runtime/tests/vram_plan_gpu.rs` states the room in the plan
-(26,409,216 B since GitHub #278: 32 rows over the shortlist's 200,000-key
-window). CPU-side: `crates/core/tests/locate_reading.rs` holds the vote to
-`score.py`'s golden cases, `locate_segments.rs` the segmentation,
-`decide_http.rs` the endpoint over the mock, and `decide_locate_prompt.rs`
-(artifact present, else a skip) the served prompt to set D's recorded
-renders. The acceptance runs through a live server:
-`tools/locate-sets/served.py`.
-
-The shortlist (GitHub #278, spec 22, ADR 0042): `tools/locate-sets/golden22.py`
-writes the golden cases the host functions are held to — the template fold
-(`crates/core/tests/locate_fold.rs`), the end and sum readings, windows, merges
-and shortlists (`locate_readings.rs`), the labelled renders and the `found`
-rules (`locate_renders.rs`), `auto` and spaced JSON
-(`crates/server/tests/locate_auto.rs`) — from the Python the research measured
-with. `decide_http.rs` holds the route over the mock (defaults, every
-combination, refusals, windows with a `window_keys` set small on the load's
-calibration, a fold's order of steps, the last request, sharing, fan-out,
-metrics), `locate_request_log.rs` its log line, and the vote's tests ask for
-`method: "vote"`, `compression: "none"` by name.
-`crates/server/tests/locate_shortlist_gpu.rs` answers the synthetic fixtures'
-questions on the card through `/v1/decide`, one of them past a window.
-
-## The image model's Pillow fixtures (#322)
-
-`crates/server/tests/fixtures/pillow_resize/` holds Pillow 12.3.0's Lanczos
-resizes that `media::resize_rgba` must equal byte for byte, and
-`crates/server/tests/fixtures/images/alpha_96x64.webp` an RGBA WebP condition
-image. Each is Pillow's output for a vision fixture in
-`crates/artifact/tests/fixtures/vision/images/` (recipe checked against the
-committed pixels on 2026-10-14):
-
-```python
-from PIL import Image  # pillow==12.3.0
-src = "crates/artifact/tests/fixtures/vision/images/"
-out = "crates/server/tests/fixtures/"
-alpha = Image.open(src + "alpha.png").convert("RGBA")
-alpha.resize((160, 96), Image.LANCZOS).save(out + "pillow_resize/alpha_160x96.png")
-alpha.crop((100, 70, 200, 130)).resize((160, 96), Image.LANCZOS).save(out + "pillow_resize/alpha_crop_160x96.png")
-Image.open(src + "on_grid.png").convert("RGBA").resize((224, 160), Image.LANCZOS).save(out + "pillow_resize/on_grid_224x160.png")
-alpha.resize((96, 64), Image.LANCZOS).save(out + "images/alpha_96x64.webp", lossless=True)
-```
-
-## The speech oracle (GitHub #351)
-
-The speech executor (`crates/speech`) is checked against Transformers FP32
-on the CPU, never against llama.cpp (spec speech/01 §5, ADR 0043). The
-default suite holds the kernels and ops against fp64, the log-mel against
-the recorded fixture, and the executor on a synthetic GGUF pair. The checks
-on the real catalog files are `--ignored` CPU legs in
-`crates/speech/tests/oracle.rs`: every layer within `thresholds.json`, the
-teacher-forced top-1, the token counts, the context's tokens, the batch and
-incremental WER gates, the real-time session, the reader and the Q8_0 check,
-the kernels on the files' own tensors. They read the study directory
-(`IGNIS_SPEECH_STUDY`, `H:/speech-study` on the owner's machine: the GGUF
-files in `models/ignis-conv/`, the FLEURS clips, the private dictations and
-their records in `results/oracle/`) and fail without it. They are CPU-heavy
-(the WER legs take about 15 minutes per variant): run them alone, as a GPU
-run, and never inside the GPU profile, whose stage 3 excludes the crate.
-
-```sh
-cargo test --release -p ignis-speech --test oracle -- --ignored --test-threads=1
-```
-
-The fixtures under `crates/speech/tests/fixtures/oracle/` come from
-`tools/speech-oracle/record.py` (its `requirements.txt` pins the venv), in
-two steps per size and variant: `record` (Transformers on the FLEURS fixture
-clip and every clip; the dictations' records go to the study directory, never
-the repo) and `yardstick` (the GGUF pair's weights dequantized with
-llama.cpp b11840's `gguf-py`, each matmul's input quantized as the executor
-does). Each tapped tensor's bound is twice the yardstick's error, at least
-1e-5; the log-mel's is twice torch's fp32 front end against fp64. The GGUF
-files themselves come from `tools/speech-gguf/convert.sh`.
-
-## server_vad's VAD oracle (GitHub #355)
-
-`server_vad`'s VAD (`crates/speech/src/vad.rs`) is checked against Silero
-VAD 6.2.3's published model, `silero_vad.jit`, on the CPU. The default suite
-holds the port within `thresholds.json`'s bound of the `.jit`'s per-frame
-probabilities on the FLEURS fixture clip, with a negative control, and the
-turn detector (`Turns`) on scripted probabilities. The `--ignored` legs in
-`crates/speech/tests/vad.rs` read the study directory: every frame of the 40
-FLEURS clips and the 11 dictations within the bound (seconds), and AC 7's
-WER gate, `server_vad`'s items against a manual commit on the dictations with
-the default variant, each item fed after the server's leading silence (about
-15 minutes): run that alone, as the oracle's WER legs. `IGNIS_SPEECH_LEAD_MS`
-(`0,500,1000,1500`) adds arms of other leading silences, each reported and each
-some 5 minutes more; the default is the one asserted.
-
-```sh
-cargo test --release -p ignis-speech --test vad -- --ignored --test-threads=1
-```
-
-`tools/speech-vad/record.py` (its `requirements.txt` pins the venv; the
-silero-vad 6.2.3 wheel is passed as a file, its sha256 checked) has two
-steps: `convert` writes the `.jit`'s 16 kHz weights to
-`crates/speech/vad/silero-vad-16k.safetensors`, the same bytes on every run;
-`record` writes the `.jit`'s probabilities to
-`crates/speech/tests/fixtures/vad/` (the dictations' to the study directory,
-never the repo) and the bound: ten times the `.jit`'s distance from the same
-graph in fp64, at least 1e-5.
-
-## The entailment fixture
-
-`crates/server/tests/fixtures/entailment/` is a contributed set of 18
-synthetic "does the cited evidence support the claim?" cases for `noul`
-(provenance, ignis's corrections and the tiers in its `NOTICE.md`).
-`decide_entailment_gpu.rs` asserts the label of the `gate` cases only and
-prints every case's p(yes) and logit; `watch` and `known_failure` cases are
-printed, never asserted. `decide_entailment_fixture.rs` checks the set's
-shape on CPU, including that every cited name is a public one.
-
-## The G2 measurement instrument (P2-05, GitHub #87)
-
-`ignis-bench ttft` measures time to first token at an **exact** prompt
-length against any OpenAI-compatible endpoint, and `ignis-bench g2` turns
-two such records into the G2 verdict (ADR 0015). Both engines are measured
-by this one instrument; only the runs themselves need the GPU.
-
-Every sample — the warmup included — gets its own deterministically
-generated prompt, distinct from the first content token, and reads the
-engine's own computed-prefill-token count back to prove the prefix was
-cold. A sample whose computed prefill is not the prompt's own length is
-**void** and fails its cell, and `g2` refuses a verdict over a record with
-a void sample, a missing cell, or a session that does not match its
-counterpart's.
-
-The gate run (GitHub #88) needs the GPU exclusively and the reference
-stopped and restarted around it (ADR 0006). One session, one shared
-`--session` value:
-
-```powershell
-$Session = "g2-$(Get-Date -Format yyyyMMddTHHmmssZ)"
-$Artifact = "F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer"
-
-# 1. The reference, in the owner's production profile (hq-e8-2b KV, 1024
-#    prefill chunk, CUDA graphs) -- the bar actually experienced, measured
-#    as it is actually run (ADR 0015).
-cargo run -p ignis-bench -- ttft `
-  --endpoint http://127.0.0.1:8080 --artifact $Artifact `
-  --cells 8192,32768 --label reference --profile "hq-e8-2b KV, 1024 chunk, graphs" `
-  --session $Session --out .scratch/g2-reference.json
-
-# 2. Stop the reference (it owns the GPU), start ignis-server on the same
-#    artifact, then measure it on the same cells in the same session.
-cargo run -p ignis-bench -- ttft `
-  --endpoint http://127.0.0.1:8000 --artifact $Artifact `
-  --cells 8192,32768 --label ignis --profile "BF16 KV, 1024 chunk, eager" `
-  --session $Session --out .scratch/g2-ignis.json
-
-# 3. The verdict. `--note` records what is *not* equal between the two
-#    engines, rather than correcting for it.
-cargo run -p ignis-bench -- g2 `
-  --ours .scratch/g2-ignis.json --ref .scratch/g2-reference.json `
-  --note "KV format differs: ignis BF16, reference hq-e8-2b" `
-  --out .scratch/g2-verdict.json
-
-# 4. Restart the reference.
-```
+## GPU tests that compare output or load an option
 
 Every ignis leg of a bench or a gate runs with the loop guard off:
 `--model-loop-guard off`, or `LOOP_GUARD=off` on `make start` (`make config`
@@ -482,6 +278,12 @@ checkpoint is retired (blob format 5): `dflash2_window_gpu.rs` asserts a
 snapshot no longer lists it. `crates/runtime/tests/cuda_leaf_dflash2_gpu.rs` drives the same
 drafter end to end through `RuntimeCompute`: the leaf passes no drafts, and
 every round's speculative counters match the lane's extent and committed run.
+The acceptance replay of recorded agent turns (GitHub #267,
+`crates/core/tests/dflash2_replay_seams_gpu.rs`) walks a turn in
+teacher-forced rounds. The recorded token after a lane's run is its pending
+token, so it must be a vocabulary id; the pad past a recording's end is taken
+only after a stop id, and leaves no pending token until a prefill gives one.
+Only greedy lanes may be forced, and only on 27B loads.
 
 Vision is a load option too (GitHub #177): `--vision-enabled` (with
 `--vision-max-tokens N`, default 32,768 merged tokens) binds the 333 `vision/*`
@@ -556,178 +358,6 @@ in a test that drives the leaf directly. A test that inherits the default
 runs hq, which is right for the serving-shape checks (the HTTP surface, the
 TTFT instrument, the `CudaLeaf` smoke test) and wrong for anything carrying
 a derived tolerance.
-
-## The multimodal TTFT cell (GitHub #181)
-
-`ignis-bench ttft --image <png>` adds one cell to a TTFT record: a fixed image
-plus a short question (`--image-question`, default "Describe what this
-screenshot shows in one sentence."), sent as content parts — the text first,
-then the image as a `data:` URI. An error detector for the whole vision path,
-not a gate. With `--image`, `--cells` may be omitted.
-
-The committed image is `crates/bench/tests/fixtures/vision_ttft/screenshot.png`,
-a 1280x800 editor screenshot drawn by `tools/vision-ttft/screenshot.py`
-(deterministic; re-running it is a no-op). It sits on the 32-pixel grid, so it
-expands to 1,000 vision tokens and the cell is 1,027 tokens with the default
-question — `crates/bench/tests/ttft_image_real_frontend.rs` pins that against
-the real frontend, and the reference counts it the same.
-
-Cold in everything, like a text cell: each prompt (the warmup's too) starts
-with its own nonce, and its image is the fixture with the top-left pixel
-changed, so neither a prefix cache nor either engine's digest-keyed
-preprocessing cache can serve it; the size, and so the length, is unchanged.
-The record names the image (SHA-256, size, question), and `g2` refuses to pair
-cells of one length over different images, or an image cell with a text cell.
-
-A record carrying the image cell cannot be compared with one that has none, so
-the image cell is measured as its own record. The session is
-`scripts/vision-ttft-session.sh <out-dir>`, run from the repository root on a
-free card after a release build: the reference with `--vision` (the owner's
-hq-e8-2b-262k preset), ignis with `--vision-enabled`, and ignis without it, **each
-launched twice** (ADR 0021). Every launch writes a text record (1024, 8192 and
-32768 tokens, cut from the ninfer corpus) and, with vision, an image record;
-`scripts/ttft-pool.py` pools each engine's two launches into one record, and
-`g2` compares the pooled records: image against image, text against text, and
-ignis's text with `--vision-enabled` against without. The 1.5 threshold `g2` prints is
-G2's own; for this cell the ratios are error detectors.
-
-**Measure a launch once.** The prompts are fixed — the same nonces, the same
-changed pixels — so a second `ttft` run against a live engine is served from
-its prefix and media caches, and ignis reports no cached tokens for the void
-rule to catch it. Restart the engine instead.
-
-**Watch the card's headroom.** Both ignis loads at 262,144 context with
-DFlash2 took ~29.8 GiB of their own when measured, before #215 (retained
-state was then sized from what was free after load), so the desktop's own VRAM decides whether the card
-oversubscribes; when it does, every cell comes back slower and erratic rather
-than failing. The script samples `nvidia-smi` beside every launch — distrust
-one whose peak reaches the total
-([finding](../findings/2026-09-16-vision-ttft-live-live.md)).
-
-## The KV-format A/B: 2x2 over engine and format (GitHub #139)
-
-What it answers: how much the hq-e8-2b KV format costs against BF16, whether
-that cost is ours or the format's, and what the card is actually doing while it
-is paid. The result of the 2026-09-13 run is
-[`docs/findings/2026-09-13-hq-vs-bf16-decode-cost.md`](../findings/2026-09-13-hq-vs-bf16-decode-cost.md);
-this is how to redo it.
-
-**The one rule that makes it a comparison.** Give every leg the *same KV token
-capacity*. A BF16 token costs 65,536 bytes against hq-e8-2b's 9,216 (7.11x, see
-[hq-e8-2b KV capacity](../findings/2026-09-11-hq-e8-2b-kv-capacity.md)), so the
-same byte budget buys 7.11x more pages under hq and a "just change the format"
-run confounds the format with its page count. 65,536 tokens is the value to
-pick: it is 1,024 pages, the geometry spec 03's ITL table and #114's cap
-arithmetic assume, and the ITL fixture's peak of 65,344 tokens fits it with 192
-to spare. Under hq that means asking for the smaller pool explicitly
-(`--vram-kv-pool-bytes 576M`), because its default 4 GiB buys 465,984 tokens.
-
-For the record: shrinking the hq pool from 7,281 pages to 1,024 moved ITL p50 by
-0.04% and p95 by 0.05%, so the page count is not itself a performance term —
-but that is a measured result, not an assumption to skip the matching on.
-
-Needs the GPU exclusively (ADR 0006) and `ninfer-serve` stopped for the ignis
-legs. Four runs, ~4 minutes each. Launch the legs with the explicit commands
-below: `make start` brings up the G5 configuration (262144 context, DFlash2),
-a different engine from these legs.
-
-```powershell
-$Artifact = "F:\ai\q38\ninfer-models\qwen3_8_27b_nvfp4full-v2.ninfer"
-$Corpus   = "F:\ai\q38\ninfer\bench\fixtures\bench_corpus.ids"
-cargo build --release -p ignis-server -p ignis-bench --features cuda
-
-# Per leg: start the telemetry sampler, start the engine, run the cell, stop both.
-# Stop the sampler as soon as ignis-bench exits -- see the pitfall below.
-nvidia-smi --format=csv,noheader -l 1 `
-  --query-gpu=timestamp,utilization.gpu,utilization.memory,power.draw,clocks.sm,clocks.mem,temperature.gpu `
-  > .scratch/gpu-<leg>.csv
-
-# ignis, hq-e8-2b / BF16 (--model-kv-format bf16 --vram-kv-pool-bytes 4G: 65,536 BF16
-# tokens; with no --vram-kv-pool-bytes the pool is the rest of the VRAM budget)
-.\target\x86_64-pc-windows-msvc\release\ignis-server.exe --model-artifact $Artifact `
-  --server-bind 127.0.0.1:8000 --model-kv-format hq-e8-2b --model-max-context 40960 `
-  --vram-kv-pool-bytes 576M --model-prefill-chunk 1024 --server-request-timeout 900 `
-  --model-idle-unload 0 --model-loop-guard off
-
-# the reference, same two formats
-F:\ai\q38\ninfer\build-ninja\apps\ninfer-serve.exe $Artifact `
-  --host 127.0.0.1 --port 8080 --kv-dtype hq-e8-2b --max-context 40960 `
-  --kv-capacity 65536 --max-concurrency 8 --prefill-chunk 1024
-
-# the cell, once per leg (port 8000 for ignis, 8080 for the reference)
-.\target\x86_64-pc-windows-msvc\release\ignis-bench.exe g3 `
-  --endpoint http://127.0.0.1:8000 --artifact $Artifact --corpus $Corpus `
-  --label ignis --profile "hq-e8-2b KV, 1024 chunk, max-context 40960, 65536-token pool" `
-  --session "kvab-<leg>-$(Get-Date -Format yyyyMMddTHHmmssZ)" `
-  --out .scratch/g3-<leg>.json
-```
-
-Each engine logs the capacity it resolved — `ignis.runtime.kv_pool`'s
-`page_count`, and ninfer's `KV capacity explicit resolved=... tokens pages=...`.
-Check both say 1,024 pages / 65,536 tokens before believing the leg.
-
-Then reduce each capture over the ITL cell, which is the last cell a `g3` run
-measures and whose length the record itself states
-(`window_end_ms - window_start_ms`):
-
-```powershell
-python scripts/gpu-telemetry-summary.py .scratch/gpu-<leg>.csv --label "<leg> ITL" --last 90
-```
-
-**Pitfall: a sampler left running past the cell dilutes the window.** Idle
-samples pull the means down hard — the same hq leg reads 96% util / 306 W over
-its ITL cell and 83% / 274 W if eleven seconds of idle tail are included. Stop
-the sampler when the bench exits, or pass `--from`/`--to` instead of `--last`.
-
-**Pitfall: a cold machine is not a measurement.** The first `g3` run of a
-session came in 14% under the records committed the day before and converged on
-them over four runs (C=1 46.6 -> 51.3 -> 51.0 -> 54.2 against 55.6). Discard the
-first leg, or run one throwaway before the matrix.
-
-**This is not live/live and cannot decide a gate.** Each leg is its own session,
-so `g3-gate` will refuse to build a verdict from these records, by design (ADR
-0015, ADR 0021). The A/B answers a question about *where time goes*; a verdict
-needs both engines measured back to back under one `--session`.
-
-## The harness's own request deadline (GitHub #138)
-
-Every `ignis-bench` subcommand drives its endpoint through one
-`HttpEndpoint`, which sets an **explicit** per-request deadline: 1800 s by
-default, and `IGNIS_BENCH_REQUEST_TIMEOUT=<seconds>` overrides it (`0`
-removes it entirely). Each run prints the deadline it is using on stderr
-before its first request.
-
-This is not a knob a normal run needs — it exists because the *implicit*
-one cost a gate session. `reqwest::blocking::Client::new()` carries an
-undeclared 30-second total timeout that covers reading the response body,
-so a streamed measurement request lives entirely inside it. The G4 needle
-cell at 131,072 tokens (~30 s of prefill on this hardware) died on it
-against **both** engines, every attempt, reporting `read SSE: error
-decoding response body` — which reads like an engine fault and was chased
-as one across four launches. The 65,536-token cell, at ~15 s, passed every
-time.
-
-Two consequences for anyone measuring here: the deadline is now the
-harness's own declared number rather than a library default, and a request
-that does hit it says so by name instead of surfacing as a decode error.
-Raise it (or set `0`) for a cell whose legitimate wall time could approach
-half an hour; never lower it to "make a run finish".
-
-## Where tests live
-
-- Unit tests: `#[cfg(test)]` modules, in the file they test.
-- Integration tests: `crates/<crate>/tests/`, one file per behavior,
-  named for what it verifies (cf. `real_artifact.rs`).
-
-## Writing the tests
-
-- New behavior: its test lands with the change, before the task is
-  reported done — and it exercises the new path, not the old world
-  (a test that already passed before the change proves nothing about
-  it).
-- Bug fix: the regression test goes first — reproduce the bug, watch
-  the test go red, then fix.
-- The standard loop is red-green, driven by the `/tdd` skill.
 
 ## Done means
 

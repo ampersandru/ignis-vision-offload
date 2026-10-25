@@ -7,8 +7,8 @@ sidebar:
 
 Every change ships with a test, and a task is not complete until the test
 suite is green. The full runbook — fixtures, the GPU profile's script, the
-measurement instruments — is [`docs/agents/testing.md`](../../agents/testing.md);
-this page is the map.
+measurement instruments — is [`docs/agents/testing.md`](../../agents/testing.md)
+and the per-area files it links; this page is the map.
 
 ## The default suite: `cargo test`
 

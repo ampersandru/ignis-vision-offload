@@ -1,7 +1,7 @@
 // ignis kernel leaf -- the Flash-Next program's linear (spec flash-next/04,
 // GitHub #302; OURS, ADR 0043).
 //
-// fn_linear routes a Linear by its stored format (layout.md section 6.1):
+// fn_linear routes a Linear by its stored format (flash-next-layout.md section 6.1):
 // - FP8 row-scale: kern's ignis_fp8_linear (GEMV up to 8 tokens, tensor cores
 //   beyond).
 // - BF16: the route below. The vendored BF16 linear only admits its own

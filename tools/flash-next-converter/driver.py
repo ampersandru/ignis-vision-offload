@@ -1,6 +1,6 @@
 """The layer loop: one decoder layer at a time, resumable, stoppable, crash-safe.
 
-A layer is *finished* when its work directory holds DONE (layout.md §2) and its files still
+A layer is *finished* when its work directory holds DONE (flash-next-layout.md §2) and its files still
 match it (a torn directory is wiped). On launch the loop loads the state checkpoint if it
 is complete, of this configuration and not past an unfinished layer, then
 walks the layers: a finished layer is **replayed** (the streams run forward from the

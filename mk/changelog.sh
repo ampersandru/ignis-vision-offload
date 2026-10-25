@@ -17,8 +17,8 @@
 # range mixes what an operator reads a release for ("The Playground is served
 # unless you say otherwise") with what only the next contributor cares about
 # ("The GPU harnesses catch up with two signatures they never recompiled").
-# A closed issue is already the user-facing half, written as one line by the
-# convention in docs/agents/issue-tracker.md. GitHub's own
+# A closed issue is already the user-facing half, written as one line: its
+# title. GitHub's own
 # `generate_release_notes` cannot do this: it lists merged PRs and this repo
 # merges locally, so it produces exactly one line, the compare link.
 #
@@ -234,6 +234,9 @@ fi
 
 # Decisions. A file added in the range is a new ADR, a file modified is one
 # amended -- ADR 0026 was amended in v0.1.2 and that is the shape it takes.
+# Every line is "ADR NNNN — title": the older ADRs carry the number in their
+# heading, the short format's heading is the bare title and the number is in
+# the file name only, and the site's changelog links the literal "ADR NNNN".
 adrs="$(git diff --name-status "$from..$to" -- docs/adr/ 2>/dev/null | grep -E '^[AM]')"
 if [ -n "$adrs" ]; then
     echo
@@ -243,6 +246,13 @@ if [ -n "$adrs" ]; then
         [ -n "$path" ] || continue
         heading="$(git show "$to:$path" 2>/dev/null | sed -n 's/^# *//p' | head -1)"
         [ -n "$heading" ] || heading="$path"
+        file="${path##*/}"
+        case "$heading" in
+            "ADR "[0-9][0-9][0-9][0-9]*) ;;
+            *) case "$file" in
+                   [0-9][0-9][0-9][0-9]-*) heading="ADR ${file%%-*} — $heading" ;;
+               esac ;;
+        esac
         case "$status" in
             A*) echo "- $heading" ;;
             M*) echo "- $heading (amended)" ;;

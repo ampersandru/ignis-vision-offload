@@ -1,4 +1,4 @@
-"""The expert records and the per-layer index (docs/specs/flash-next/layout.md §3-§4)."""
+"""The expert records and the per-layer index (docs/formats/flash-next-layout.md §3-§4)."""
 import numpy as np
 import pytest
 
@@ -6,7 +6,7 @@ import layout
 
 
 def test_record_bytes_are_the_contract_table():
-    # layout.md §3, worked by hand: trellis in*out*K/8 + 2*(in+out), rounded up to 4096
+    # flash-next-layout.md §3, worked by hand: trellis in*out*K/8 + 2*(in+out), rounded up to 4096
     assert [layout.record_bytes("gu", k2) for k2 in (4, 5, 6, 8)] == [827392, 1032192, 1236992, 1646592]
     assert [layout.record_bytes("dn", k2) for k2 in (4, 5, 6, 8)] == [417792, 520192, 622592, 827392]
 
@@ -58,14 +58,14 @@ def test_a_record_with_the_wrong_word_count_is_refused(tmp_path):
 
 
 def test_rate_counts_scales_but_not_padding():
-    # layout.md §5: K + 16(in+out)/(in*out); gate/up 0.01875, down 0.03125
+    # flash-next-layout.md §5: K + 16(in+out)/(in*out); gate/up 0.01875, down 0.03125
     assert layout.rate("gu", 5) == pytest.approx(2.5 + 0.01875)
     assert layout.rate("dn", 4) == pytest.approx(2.0 + 0.03125)
     assert layout.stored_rate("dn", 4) == pytest.approx(417792 * 8 / (640 * 2560))
 
 
 def test_encodings_follow_the_contract_table():
-    # layout.md §6.2, from the checkpoint's own names and shapes
+    # flash-next-layout.md §6.2, from the checkpoint's own names and shapes
     cases = {
         ("linear_attn.in_proj_qkv.weight", (10240, 2560)): "fp8",
         ("linear_attn.in_proj_a.weight", (48, 2560)): "fp8",

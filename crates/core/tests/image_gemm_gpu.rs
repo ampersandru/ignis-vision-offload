@@ -102,7 +102,7 @@ fn e4m3(c: u8) -> f64 {
 fn quantized_gemm_through_the_bindings_matches_fp64_of_its_dequantized_operands() {
     let Some(mut dev) = device() else { return };
     let (tokens, rows, cols) = (37u32, 96u32, 128u32);
-    // The weight: row-scale-v1 (layout.md §6.1), codes then BF16 row scales at 256 bytes.
+    // The weight: row-scale-v1 (flash-next-layout.md §6.1), codes then BF16 row scales at 256 bytes.
     let codes_len = (rows * cols) as usize;
     let scale_at = codes_len.div_ceil(256) * 256;
     let mut weight = vec![0u8; scale_at + rows as usize * 2];

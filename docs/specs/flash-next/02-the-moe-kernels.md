@@ -295,7 +295,7 @@ accepted each.
   decode regions are sized from the load's lane count.
 - **The FP8 row-scale linear** (spec 04's op) is hosted in the MoE leaf
   (`kernel/include/ignis_fp8_linear.h`) because the shared expert needed it first; it takes the
-  container's BF16 row scales (`FP8_E4M3FN_ROW_BF16S`, layout.md §6.1), not fp32 ones.
+  container's BF16 row scales (`FP8_E4M3FN_ROW_BF16S`, flash-next-layout.md §6.1), not fp32 ones.
 - **Small prefill groups** take a narrow tile layout (one m16 block, all eight warps along the
   columns) inside the same launch rather than a separate kernel.
 - **The decode floor** (Acceptance 6, 50% of the DRAM roofline) is not met: 33.5% at one token

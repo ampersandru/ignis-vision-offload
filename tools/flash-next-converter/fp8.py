@@ -1,5 +1,5 @@
 """FP8 E4M3FN weights with one bf16 scale per output row: the container's
-`FP8_E4M3FN_ROW_BF16S` / `row-scale-v1` payload (layout.md §6.1).
+`FP8_E4M3FN_ROW_BF16S` / `row-scale-v1` payload (flash-next-layout.md §6.1).
 
 The payload is the u8 code plane `rows x cols`, zero padding to the next multiple of
 256, then the bf16 scale plane `rows`. A row's scale is amax/448 rounded up to the next

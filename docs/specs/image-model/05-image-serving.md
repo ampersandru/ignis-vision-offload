@@ -518,7 +518,7 @@ The workspace on 08c23b3, which 322c never recorded, was 2896/0/6.
     above 0 refused, the rest inert), the validator and the OpenAPI alike.
     `server.request_timeout`'s doc says it bounds text requests. `wait()` is
     `admit` without its bound. A mid-run stop's released prefix is unit
-    tested. A stream short of its images sends `error`. `testing.md` records
+    tested. A stream short of its images sends `error`. `docs/agents/testing/image-model.md` records
     the Pillow fixtures' recipe, checked against their pixels. The floor
     holds before the sides are rounded.
 - **What a request waits on, streamed.** `serve` refuses the kind

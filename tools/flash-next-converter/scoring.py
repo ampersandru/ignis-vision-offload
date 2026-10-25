@@ -1,6 +1,6 @@
 """Readouts and scorers: top-64 with deterministic ties, exact and top-64 KLD, McNemar.
 
-The top-64 scorer is the one spec 04 runs on the engine (layout.md §10): the
+The top-64 scorer is the one spec 04 runs on the engine (flash-next-layout.md §10): the
 reference's 64 entries plus its tail mass, against the candidate's full distribution.
 """
 import math
@@ -36,7 +36,7 @@ def kl_exact(lr, lc):
 
 
 def kl_top64(ref_ids, ref_lp, lc, eps=1e-12):
-    """KL(ref || cand) from the reference's top-k log-probs and tail mass (layout.md §10)."""
+    """KL(ref || cand) from the reference's top-k log-probs and tail mass (flash-next-layout.md §10)."""
     p = ref_lp.exp()
     c = lc.gather(-1, ref_ids)
     head = (p * (ref_lp - c)).sum(-1)

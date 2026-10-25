@@ -469,8 +469,8 @@ impl Default for DecodeParams {
     }
 }
 
-/// The lifecycle of a request inside the engine (`GLOSSARY.md`: "request state
-/// machine (admit → prefill → decode → done / evict)").
+/// The lifecycle of a request inside the engine: admit → prefill → decode →
+/// done / evict (`GLOSSARY.md`: "Prefill progress", "Lane", "KV-RAM").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestState {
     /// Accepted, queued, no lane yet.
@@ -530,7 +530,7 @@ impl RequestClass {
     /// when it stated none — where every other route defaults to
     /// [`RequestClass::Interactive`].
     ///
-    /// `GLOSSARY.md`'s **Lane tag** entry carries why, and carries it once:
+    /// ADR 0034 carries why, and carries it once:
     /// the short of it is that a decision has no residency an **eviction
     /// priority** could take and no decode lane to protect, so
     /// `Interactive` would spend a protection it cannot use on behalf of a

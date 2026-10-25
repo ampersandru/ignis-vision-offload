@@ -4,7 +4,7 @@ The framing is the reader's (`crates/artifact/src/lib.rs`): an 8-byte magic, the
 JSON length as a little-endian u64, the JSON directory, then the payload from the next
 4096-byte boundary; object offsets are payload-relative. Expert projections are one tensor
 each, named `layers.{L}.mlp.experts.{E}.gate_up_proj` / `.down_proj`, with the K in the
-format code (layout.md §4).
+format code (flash-next-layout.md §4).
 """
 import json
 import struct

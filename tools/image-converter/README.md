@@ -5,7 +5,7 @@ turns `Qwen/Qwen-Image-2.1-Turbo` at revision `fc13ba1986fcb905854dc8de2f52eee39
 ignis image artifact, a `.ninfer` v2 container of family `Qwen-Image-2.1` (`model_id`
 `ignis-image-2.1-turbo`). CPU only. Python writes **work files**; the Rust packer
 (`ignis-artifact-pack --family qwen-image`, `crates/artifact`) assembles the container from them,
-as for Flash-Next (`docs/specs/flash-next/layout.md` §2 and §6 are the byte contract). The binder
+as for Flash-Next (`docs/formats/flash-next-layout.md` §2 and §6 are the byte contract). The binder
 is `crates/artifact/src/qwen_image.rs`.
 
 ## Files

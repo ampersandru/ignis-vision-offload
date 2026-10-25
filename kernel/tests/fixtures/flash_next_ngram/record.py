@@ -9,7 +9,7 @@ Run from the repository root with the study's venv (no GPU is touched):
 It writes, next to itself:
 
   ngram_ref.bin (IGNFX001, kernel/tests/moe_fixture.h reads it)
-      rows     u8   [T][16][90]   each token's gathered INT4 table rows (layout.md 7.1), from the
+      rows     u8   [T][16][90]   each token's gathered INT4 table rows (flash-next-layout.md 7.1), from the
                                   counter hash
       ple_out  bf16 [T][10240]    the PLE layer's output for those rows and the hidden input below,
                                   one sequence from an empty conv state -- what the decoder adds to

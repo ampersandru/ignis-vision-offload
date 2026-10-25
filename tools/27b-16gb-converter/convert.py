@@ -1,6 +1,6 @@
 """The 16 GB artifact's converter (spec docs/specs/27b-16gb/01-the-16gb-artifact.md, GitHub #338).
 
-`run` writes the packer's work tree (docs/specs/flash-next/layout.md §2: per unit a
+`run` writes the packer's work tree (docs/formats/flash-next-layout.md §2: per unit a
 `tensors.json`, one payload file per tensor and a `DONE` written last; `frontend/` holds the
 resources) and `converter.json`, the converter's half of the sidecar. The packer
 (`ignis-artifact-pack --family qwen3.8-27b-trellis`) assembles the container from it; Python never

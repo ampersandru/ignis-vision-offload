@@ -4,7 +4,7 @@
 //!
 //! The container is an ordinary `.ninfer` v2 file; what makes it Flash-Next
 //! is its identity (`model_id` [`MODEL_ID`], never a 27B one) and its
-//! inventory, which `docs/specs/flash-next/layout.md` fixes:
+//! inventory, which `docs/formats/flash-next-layout.md` fixes:
 //! - every non-expert tensor under its checkpoint name (without the
 //!   `model.language_model.` prefix): linears FP8 with a per-row scale, the
 //!   router, norms and small vectors BF16;
@@ -35,15 +35,15 @@ pub mod mtp;
 /// The container identity's `model_id` for every Flash-Next artifact.
 pub const MODEL_ID: &str = "qwen3.8-flash-next";
 
-/// The MTP companion container's `model_id` (layout.md §13.2): never the
+/// The MTP companion container's `model_id` (flash-next-layout.md §13.2): never the
 /// main container's, so neither binds as the other.
 pub const MTP_MODEL_ID: &str = "qwen3.8-flash-next-mtp";
 
-/// The MTP head's names keep the checkpoint's own prefix (layout.md §13.3).
+/// The MTP head's names keep the checkpoint's own prefix (flash-next-layout.md §13.3).
 pub const MTP_PREFIX: &str = "mtp.";
 
 /// The frontend resources the converter copies from the checkpoint
-/// (layout.md §8): the 27B's six plus the model config.
+/// (flash-next-layout.md §8): the 27B's six plus the model config.
 pub const FRONTEND_FILES: [&str; 7] = [
     "chat_template.jinja",
     "config.json",
@@ -197,7 +197,7 @@ impl FlashNextGeometry {
             ngram_size: 3,
             heads_per_ngram: 8,
             ngram_head_dim: 160,
-            // 128 checkpoint shards of 2,500,012 rows (layout.md §7.1).
+            // 128 checkpoint shards of 2,500,012 rows (flash-next-layout.md §7.1).
             ngram_rows: 320_001_536,
         }
     }
@@ -269,7 +269,7 @@ pub fn expert_name(layer: usize, expert: u64, projection: Projection) -> String 
     format!("layers.{layer}.mlp.experts.{expert}.{}", projection.suffix())
 }
 
-/// An MTP expert projection's object name (layout.md §13.3).
+/// An MTP expert projection's object name (flash-next-layout.md §13.3).
 pub fn mtp_expert_name(expert: u64, projection: Projection) -> String {
     format!("{MTP_PREFIX}layers.0.mlp.experts.{expert}.{}", projection.suffix())
 }
@@ -326,12 +326,12 @@ pub struct Entry {
     pub role: Role,
 }
 
-/// Linears narrower than this stay BF16 (layout.md 6.2, the converter's
+/// Linears narrower than this stay BF16 (flash-next-layout.md 6.2, the converter's
 /// `FP8_MIN_ROWS`).
 const FP8_MIN_DIM: u64 = 16;
 
 /// A linear weight `[rows, columns]`: FP8 with a per-row scale when both
-/// dimensions reach [`FP8_MIN_DIM`], BF16 otherwise (layout.md 6.2: the
+/// dimensions reach [`FP8_MIN_DIM`], BF16 otherwise (flash-next-layout.md 6.2: the
 /// converter's own rule, so a reduced geometry picks the same formats).
 fn linear(name: String, rows: u64, columns: u64) -> Entry {
     if rows.min(columns) < FP8_MIN_DIM {
@@ -401,7 +401,7 @@ pub fn ngram_entries(g: &FlashNextGeometry) -> Vec<Entry> {
     ]
 }
 
-/// The MTP head's non-expert tensors (layout.md §13.3): the combine, the
+/// The MTP head's non-expert tensors (flash-next-layout.md §13.3): the combine, the
 /// head's own mixer, and its one layer under `mtp.layers.0.`, which is a
 /// trunk attention layer without the n-gram block. Each is the trunk's
 /// entry for the same tensor, so the formats are the trunk's rule.
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn the_full_models_eight_classes_are_the_converters() {
-        // layout.md §3's class table.
+        // flash-next-layout.md §3's class table.
         let classes: Vec<u64> = k_classes(&FlashNextGeometry::qwen38_flash_next())
             .into_iter()
             .map(|(_, _, bytes)| bytes)
@@ -883,7 +883,7 @@ mod tests {
 
     /// The MTP head's 29 non-expert tensors are the checkpoint's own `mtp.*`
     /// names (its 31 tensors less the two fused expert tensors), 16 FP8 and
-    /// 13 BF16 by the trunk's rule (layout.md §13.3).
+    /// 13 BF16 by the trunk's rule (flash-next-layout.md §13.3).
     #[test]
     fn the_mtp_inventory_is_the_checkpoints_head_in_the_trunks_formats() {
         let g = FlashNextGeometry::qwen38_flash_next();

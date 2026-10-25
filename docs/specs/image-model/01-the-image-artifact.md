@@ -25,7 +25,7 @@ The artifact is published on Hugging Face as `gpillon/ignis-image-2.1-turbo`.
 
 ## Seams
 
-- **The container.** `.ninfer` v2 as `docs/specs/flash-next/layout.md`
+- **The container.** `.ninfer` v2 as `docs/formats/flash-next-layout.md`
   defines it. The header names the family `Qwen-Image-2.1` through its
   `model_id` (`ignis-image-2.1-turbo`; the header has no family field), and
   `crates/artifact` reads it as a new `ModelFamily` variant (`QwenImage21`,
@@ -211,7 +211,7 @@ last one.
 - **Who writes the container.** `tools/image-converter/convert.py run`
   writes work units (`frontend`, `text_encoder`, `vision`, `transformer`,
   `vae`: `tensors.json`, one payload file per tensor, `DONE`, as
-  `docs/specs/flash-next/layout.md` §2 and §6), then runs the packer
+  `docs/formats/flash-next-layout.md` §2 and §6), then runs the packer
   (`ignis-artifact-pack --family qwen-image`, `Family::QwenImage21`), which
   assembles the container through the crate's writer and merges
   `converter.json` into `<artifact>.conversion.json`. Python never writes

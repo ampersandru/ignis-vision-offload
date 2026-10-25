@@ -9,7 +9,7 @@ The converter's functions are imported from `tools/flash-next-converter/scoring.
 restated. Each case is one position, built the way `finish.py` `_score_window` builds it:
 
 - the reference's BF16 logits (V columns) upcast to fp32, `lse = logsumexp`, `lr = raw - lse`,
-  then `scoring.top_k(lr, 64)`: the stored `ref_ids` / `ref_lp` (layout.md §10);
+  then `scoring.top_k(lr, 64)`: the stored `ref_ids` / `ref_lp` (flash-next-layout.md §10);
 - the candidate's BF16 logits (the engine's row), `lc = raw - logsumexp(raw)` in fp32;
 - `kl_f32 = scoring.kl_top64(ref_ids, ref_lp, lc)`: the converter's figure, in its fp32;
 - `kl_f64`: the same function on the same stored inputs with `lc` in float64 (the Rust port

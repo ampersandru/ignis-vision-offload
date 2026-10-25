@@ -58,7 +58,7 @@ capture tool** that records a live agent session as a bench trace
      performance is within the gate (v1 is the dogfood target for the
      developer's own coding agent, design §3/§4).
   7. **Artifacts + bookkeeping**: commit the full `<load>-*` artifact
-     set under `bench/traces/`; update `docs/PENDING.md`
+     set under `bench/traces/`; update `docs/PENDING.md` (deleted by #368)
      (bench-02 → Resolved); close GitHub #20 and this issue.
 
 ## Acceptance
@@ -79,8 +79,8 @@ capture tool** that records a live agent session as a bench trace
   real "1 main + 10 subagents" session against `ignis-server`
   completes with sane output, performance within the gate.
 - **The artifacts are committed**: the full `<load>-*` set (including
-  the divergence report) under `bench/traces/`; `docs/PENDING.md`
-  updated; **GitHub #20 closed**.
+  the divergence report) under `bench/traces/`;
+  `docs/PENDING.md` (deleted by #368) updated; **GitHub #20 closed**.
 
 References: ADR 0005 (the reference is a *speed reference* only —
 apples-to-apples load, no token parity), ADR 0006 (exclusive GPU —

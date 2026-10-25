@@ -1,4 +1,4 @@
-//! The MTP head's companion container (spec flash-next/07, layout.md §13):
+//! The MTP head's companion container (spec flash-next/07, flash-next-layout.md §13):
 //! its pair pin against the main container, and its bind.
 //!
 //! A load with the head opens the companion beside the main container and,

@@ -1,4 +1,4 @@
-"""The K allocation (spec 01 "Allocation", layout.md §5)."""
+"""The K allocation (spec 01 "Allocation", flash-next-layout.md §5)."""
 import torch
 
 import allocate

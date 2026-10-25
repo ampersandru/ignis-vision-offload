@@ -1,7 +1,7 @@
 // Real-geometry expert sets and their fp64 reference, shared by the Flash-Next routed-expert
 // tests -- OURS (spec flash-next/02, GitHub #300).
 //
-// A set holds a handful of physical expert-projection records (layout.md §3: trellis, suh, svh,
+// A set holds a handful of physical expert-projection records (flash-next-layout.md §3: trellis, suh, svh,
 // 4 KiB padding) at every K class, built from counter-hash trellis words (any bit pattern is a
 // valid encoding) and fp16 channel scales, placed in one device buffer in a chosen order. The
 // 512 expert ids map onto them many-to-one through the slot table, so routing can use every id

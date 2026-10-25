@@ -295,7 +295,7 @@ struct ignis_prefill_options {
   float *out_attention_set_rows;
   /* GitHub #302: a Flash-Next span's n-gram table rows, host
    * `[num_tokens][16][90]` as ignis_core::ngram_table stages them (each
-   * token's 16 heads' INT4 rows, layout.md section 7.1) -- required on a
+   * token's 16 heads' INT4 rows, flash-next-layout.md section 7.1) -- required on a
    * Flash-Next load, NULL on the 27B. */
   const uint8_t *ngram_rows;
   /* GitHub #315 (ADR 0048): set to 1 when the span's draw was redirected --

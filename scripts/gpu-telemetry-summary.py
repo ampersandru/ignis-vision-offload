@@ -1,6 +1,6 @@
 """Summarize an `nvidia-smi --query-gpu ... -l 1` capture over a time window.
 
-The KV-format A/B (docs/agents/testing.md) samples GPU telemetry for a whole
+The KV-format A/B (docs/agents/testing/bench.md) samples GPU telemetry for a whole
 `ignis-bench g3` run and then asks what the card was doing during one cell of
 it. This reduces such a capture to one line.
 

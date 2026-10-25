@@ -1,7 +1,7 @@
 // ignis kernel leaf: the FP8 row-scale linear (spec flash-next/04's, written for spec 02's shared
 // expert) -- OURS (kernel/include/ignis_moe.h, ADR 0043; no port claim).
 //
-// The weight is the container's FP8_E4M3FN_ROW_BF16S / row-scale-v1 payload (layout.md §6.1):
+// The weight is the container's FP8_E4M3FN_ROW_BF16S / row-scale-v1 payload (flash-next-layout.md §6.1):
 // E4M3FN codes [rows][cols], then BF16 scales [rows] at the next multiple of 256 bytes. Every
 // product of an E4M3 code (4 significant bits) and a BF16 activation (8) is exact in fp32, so the
 // only rounding is fp32 accumulation and the output's own; the row scale is applied once to the

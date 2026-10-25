@@ -76,7 +76,7 @@ void *random_bf16(std::size_t n, float scale, uint32_t seed) {
   return upload_bytes(v.data(), n * 2);
 }
 
-// FP8 row-scale (layout.md 6.1): finite codes, BF16 scales at the next multiple of 256 bytes.
+// FP8 row-scale (flash-next-layout.md 6.1): finite codes, BF16 scales at the next multiple of 256 bytes.
 void *random_fp8(int32_t rows, int32_t cols, uint32_t seed) {
   const std::size_t codes = static_cast<std::size_t>(rows) * cols;
   const std::size_t scales_at = (codes + 255) / 256 * 256;

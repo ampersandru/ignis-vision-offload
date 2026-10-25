@@ -21,10 +21,14 @@ Edit the "Label in our tracker" column to match whatever vocabulary you actually
 | `bug`         | `bug`                |
 | `enhancement` | `enhancement`        |
 
+A new spec issue and each of its tickets carry one category beside
+`ready-for-agent`, `enhancement` for new work or `bug` for a defect, since
+`/to-spec` and `/to-tickets` apply only the state role.
+
 ## Repo-only labels
 
-Two labels this repo adds to the five roles above. Both are added beside the
-issue's other labels: neither replaces its state role or category.
+Two labels this repo adds to the five roles above. Each is added beside the
+issue's other labels, and its state role and category stay as they are.
 
 | Label   | Kind     | Meaning |
 | ------- | -------- | ------- |

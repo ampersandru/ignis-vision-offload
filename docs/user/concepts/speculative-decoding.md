@@ -44,7 +44,11 @@ difference in shape.
 DFlash2 is a small drafter grafted into the 27B's artifact: five layers that
 read the target's own hidden states over a sliding window of the last 2,048
 positions. It is loaded when `--spec-backend dflash2` is set, together with
-`--spec-draft-tokens` (1 to 7), and costs no VRAM when speculation is off.
+`--spec-draft-tokens` (1 to 7), and costs no VRAM when speculation is off. The
+reference also keeps a rewrite checkpoint of the drafter's window, restored
+when a turn rewrites text past its chat template's rewrite boundary; ignis
+never read one and retired it (snapshot format 5), because a prompt checkpoint
+taken at the opener already carries the window as it stood there.
 
 - **Acceptance.** On a replay of 200 real agent turns it averaged 3.46 tokens a
   round (one is the anchor), at 7 draft tokens

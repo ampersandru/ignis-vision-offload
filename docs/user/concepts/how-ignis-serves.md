@@ -73,7 +73,11 @@ Before the scheduler sees it, the server checks the API key and the body
 limits, renders the messages through the model's chat template (tools,
 thinking switches and the system message policies included), and tokenizes the
 result. A request with images has them acquired, decoded and prepared first; a
-refused image refuses the request before it reaches the scheduler. The same
+refused image refuses the request before it reaches the scheduler. From there a
+multimodal request is an ordinary request, chunked and interleaved with decode
+lanes, speculated by DFlash2, sharing prefixes by content with its images in
+the key, evicted to and restored from host RAM, whose prefill also encodes each
+image once and whose rounds rotate at its rope delta. The same
 rendering is what `POST /v1/tokenize` counts, without serving it
 ([counting tokens](../api/count.md)).
 

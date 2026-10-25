@@ -49,7 +49,8 @@ its family's default id as an **alias**: the 16 GB 27B answers to
 `qwen3.8-27b` on a 16 GB card, so a client configured with
 `qwen3.8-27b` is served by it, and the answer names it — only an entry whose
 artifact is of the 27B's family, by the artifact's header, answers to it; one
-of another family is refused, naming both. A model loaded from a path named
+of another family is refused, naming both. `GET /v1/models` lists the entry
+under its own id, never under an alias. A model loaded from a path named
 for the load itself — `--model-artifact`, a switch naming its `artifact` — is
 your word and is not fitted to the card: only the VRAM plan refuses it. A
 catalog id you also list in `--switch-known-models` is fitted all the same:

@@ -1,1500 +1,1511 @@
-# CONTEXT
+# ignis
 
-Glossary for the `ignis` project. Vocabulary only — not a spec, not implementation notes.
-When output names a domain concept, use the term as defined here.
+ignis is the Rust inference engine for Qwen models on a single SM120a card:
+text models and an image model, one loaded at a time, and a speech model
+loaded beside whichever it is. It is deliberately specialized, to few model
+families and one GPU class.
 
-## Engine & process
+## Language
 
-- **ignis** — the Rust inference engine for Qwen models on a single RTX 5090
-  (SM120a): text models and an image model, one loaded at a time, and a
-  speech model loaded beside whichever it is.
-  Deliberately specialized: few model families, one GPU class. ADR 0043 added
-  a second text model, **Flash-Next**; ADR 0050 adds the image model; ADR
-  0067 the **speech model**.
-- **Kernel leaf** — the C++/CUDA compute library linked into ignis behind a C ABI.
-  The forward pass of the text and image models and all GPU compute live here;
-  Rust owns everything above the **step** — scheduling, KV accounting, serving
-  (ADR 0009). The speech model's CPU executor is Rust (ADR 0068).
-- **Step ABI** — the C ABI between Rust and the leaf, named after its
-  granularity: one call per *step* (model load, sequence lifecycle, a prefill
-  span, a decode round), not one per operator. Device-resident — no host
-  activation pointer crosses it (ADR 0009).
-- **Program** — the leaf-side layer that owns the forward pass and the
-  sequence state, on top of the vendored ops. Ours, not vendored (ADR 0009).
-- **Vendored op** — an operator copied *verbatim* from a named upstream (the
-  reference, or a third party under MIT, BSD or Apache-2.0: ADR 0051) and
-  tracked by a manifest (pinned commit, content hashes, recorded patches).
-  Anything hand-written is not one, and carries no port claim (ADR 0010).
-  A vendored op that a measurement identifies as the bottleneck may carry a
-  recorded patch, or be replaced by our own implementation — which is then not
-  a vendored op and makes no port claim (ADR 0031). One with a demonstrated
-  correctness bug may carry a recorded patch too, with a test that fails
-  without it (ADR 0037).
-- **Adapted op** — our own operator that contains parts copied from a named
-  upstream under MIT, BSD or Apache-2.0, with its repo, commit, path and
-  licence in the file header and in `kernel/NOTICE`. Ours to change; no parity
-  claim (ADR 0051).
-  _Avoid_: port, vendored (for an adapted op).
-- **Reference parity** — a behaviour ignis computes exactly as the
-  **reference** does. The default for every vendored op, and not a claim of
-  correctness: the reference can be wrong (ADR 0037).
-  _Avoid_: faithful, reference behaviour (for a behaviour ignis has changed).
-- **Ignis patched** — a behaviour ignis deliberately computes differently from
-  the **reference**, because the reference is wrong there; each is a recorded
-  patch with a test that tells the two apart. A difference from the reference
-  it causes is a declared departure, not a regression (ADR 0037).
-  _Avoid_: fork, divergence.
-- **Lane** — a concurrent decode slot. Requests hold a lane while decoding.
-- **Lane tag** — the request's own statement of its class, carried as an ignis
-  extension field on the request and echoed in the request log. Two classes,
-  `Interactive` and `Agent`; absent or unrecognized means `Interactive`, except
-  on a **decision** request, where it means `Agent`. It is what makes a
-  per-class gate cell and the **eviction priority** mean anything.
+### Engine & process
 
-  The exception is not a preference about importance. A decision holds no
-  residency for an eviction to take — it prefills, reads and ends — so
-  `Interactive` would buy it a protection it cannot use and spend one a
-  conversation would. And a decision never takes a decode lane, only the
-  single global **prefill lane**, so a fan-out of twenty questions is twenty
-  prefills queued on it; under `Interactive` they would cut ahead of every
-  waiting conversation. A caller whose single decision really is interactive
-  says so with the tag.
-- **Prefill lane** — the single global prefill slot: exactly one request at a
-  time holds device-resident **prefill progress** and consumes chunks, and
-  every other prefill queues behind it. It is a slot, not a promise about
-  decode: whether decoding continues while it runs is decided by
-  **prefill/decode interleaving**, not by this term (ADR 0018).
-- **Admission state machine** — the fairness machinery (protection, backfill class,
-  temporal credit, frontier distance) deciding which request gets which lane.
-  Pages are a dimension of their own: see **KV reservation**.
-- **Generation cap** — the most a request may generate, reasoning included:
-  its `max_tokens` (`max_completion_tokens`, `max_output_tokens`), or else the
-  server's `--model-default-max-tokens` (on both models; its own default is 38,912,
-  Qwen's output length for complex tasks, and the flag changes it), clamped to
-  what the prompt leaves of `--model-max-context`.
-  `0` lifts the default to the context. Reaching it ends the request with
-  `finish_reason: "length"`. An explicit cap past the context is refused, never
-  clamped (ADR 0045).
-- **Deadline** — how long a request may run before the server cuts it (ADR
-  0058): `server.request_timeout` for one answered whole, `server.stream_timeout`
-  for one that streams, from its admission (an **image job**'s from its start,
-  never its queue); `0` is none. A passed deadline cancels the request and frees
-  its **lane**.
-- **Partial reply** — what a request past its **deadline** is answered under
-  `server.timeout_reply: partial`, the default: what it generated, ended as the
-  **generation cap** ends one (`finish_reason: "length"`, a response
-  `incomplete` with `max_output_tokens`). Not a cap: the header
-  `ignis-stopped-by` and the request log's `cause: timeout` say which it was.
-  A decision and an image job have none; they answer an error.
-- **Reasoning redirect** — an EOS a request draws while its reasoning block is
-  still open becomes the block's `</think>`, and the model goes on to answer
-  (ADR 0048, GitHub #315). The leaf decides it on the host, before the token is
-  fed, wherever it assigns a successor: the prefill's draw, a plain round, and
-  a verify round, which cuts its run before an accepted EOS. It applies to a
-  request that starts inside its reasoning (chat completions and
-  `/v1/responses` with thinking on) on a server with a thinking close, never
-  under `ignore_eos`, and it is **Ignis patched**: output differs
-  from the reference only on a turn that would have ended in its reasoning.
-  The request log's `reasoning_redirected_at` is that `</think>`'s output
-  index. It also closes the thinking budget's one-round hole, where the token
-  drawn freely before the forced close could be the EOS.
-- **Loop guard** — the server task between a reasoning request's engine event
-  stream and its consumer that watches the reasoning for a loop (ADR 0052,
-  config `model.loop_guard*`, `rewind` by default). A check, every
-  `loop_guard_check_every` raw characters (250 by default), fires when the
-  reasoning's last window compresses too well once
-  code is removed and digit runs are folded, and its raw text compresses well
-  too; the guard acts once `loop_guard_persist` checks in a row have fired
-  (ADR 0053: a loop persists, a list ends). In `log` mode it only logs; in
-  `rewind` mode it **rewinds**, unless the rewind would keep less than
-  `loop_guard_min_kept` characters of reasoning, which is only logged.
-  `/metrics` counts what it does (GitHub #330): each loop by its outcome
-  (`ignis_loop_guard_loops_total`), the requests watched and looped
-  (`_watched_requests_total`, `_looped_requests_total`), the tokens rewinds
-  took back (`_rewound_tokens_total`) and each request's lowest score
-  (`_min_ratio`).
-- **Rewind** — the loop guard's action: the engine request is cancelled and a
-  **continuation** submitted. The client keeps what it received and gets the
-  tag `[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]` in the reasoning,
-  `h` a short hash of the struck text; the Playground strikes the `m`
-  characters before it through. The rewound tokens
-  stay in `usage.completion_tokens` and are reported again as
-  `completion_tokens_details.rewound_tokens`.
-- **Continuation** — the request a rewind submits: the same input, its prompt
-  extended by the tokens kept before the cut and a **nudge**, with what is left
-  of the generation cap and of the thinking budget.
-- **Nudge** — the sentence, in the model's own voice, a continuation ends its
-  prompt with ("Wait, I'm starting to repeat myself. …"): `loop_guard_nudge` for the
-  first rewind, `loop_guard_nudge_again` for every later one. After
-  `loop_guard_retries` nudges, the thinking close takes its place and the
-  reasoning ends.
-- **History repair** — on every incoming request, guard on or off, the `m`
-  characters before each rewind tag and the tag itself are removed from
-  assistant reasoning when they hash to the tag's `h`, so the model is given
-  back the text it actually saw (ADR 0052). Never applied to any other text.
-- **Holdback** — `loop_guard_holdback` characters of reasoning held back from
-  the client (0, off, by default), so a rewind whose cut falls in the unsent
-  part reaches the client with no tag at all.
-- **KV reservation** — the KV pages the pool has given a request. Its *bound*
-  is prompt plus **generation cap**, never past `--model-max-context`. A submission
-  is checked against the bound, so a request alone always fits the pool.
-  Which reservation rule applies is decided by a measurement, ADR 0045's P0
-  gate.
-  - If growing a sequence costs decode nothing beyond noise (growth branch),
-    the reservation at admission is its prompt (the tail past a claimed
-    **shared prefix**) plus one *growth step* of 32 pages, 2,048 tokens. From
-    its first round a lane keeps at least a step of room ahead, and takes the
-    next step as it generates, up to its bound.
-  - Otherwise (fixed branch), the reservation is the bound, from admission.
+**Kernel leaf**:
+The C++/CUDA compute library linked into ignis behind a C ABI. The forward
+pass of the text and image models and all GPU compute live here; Rust owns
+everything above the **step** — scheduling, KV accounting, serving (ADR 0009).
 
-  When the pool runs out, the **eviction priority** moves something below
-  the requester down a tier. Before ADR 0045, a reservation was the bound with
-  the whole context as the cap, and never grew (core-05).
-  _Avoid_: allocation (the leaf's word for the mapped pages).
-- **Parked lane** — on the growth branch, a decode lane held out of rounds
-  because its room ahead is below one round's largest append and no page can
-  be had yet. It keeps its pages and resumes at the first advance with room.
-  It is not decoding, so a higher-ranked need takes it first.
-- **VRAM budget** — the device memory the whole ignis process may hold,
-  weights included: the number Task Manager shows. Either explicit (the
-  operator names it) or derived (the memory free at start minus the **VRAM
-  headroom**). Every device reservation is carved from it at load, and serving
-  allocates nothing on the device beyond it. A budget that cannot hold the
-  minimum — weights, workspaces, every lane, every device **retained slot**,
-  and one sequence at the maximum context with a KV page per retained slot of
-  either kind beside it — refuses the start.
-- **VRAM headroom** — the device memory a derived **VRAM budget** leaves to
-  everything else on the card: the desktop and other processes.
-- **VRAM oversubscription** — holding more device memory than the card has
-  free. Windows serves it by paging device allocations to system RAM (Task
-  Manager's "Shared GPU memory") instead of failing, which slows every step;
-  other systems fail the allocation. ignis refuses it unless the operator
-  explicitly accepts it for an explicit budget.
-  _Avoid_: shared memory, spill (a spill is KV-RAM's).
-- **KV pool policy** — how a load sizes its KV pool, chosen by whether every
-  weight is on the device (ADR 0045). **Resident** — the 27B, and Flash-Next on
-  a card that holds every expert — the pool takes the rest of the **VRAM
-  budget**. **Offloaded** — Flash-Next with its experts streaming, as on the
-  5090 — the pool is reserved first and the **expert cache** takes the rest.
-  That reserved pool is 524,288 tokens, at most every lane's whole context, and
-  never less than one `--model-max-context` sequence plus a page per retained slot.
-  Either way the lanes share the pool: a lane costs its state, not a context,
-  and a request the pages it has used (**KV reservation**).
-  `--vram-kv-pool-bytes` names the pool on both models, in bytes or in tokens.
-- **Trained position envelope** — the 262,144 rotary positions the checkpoint
-  was trained over. Not a limit the engine enforces: a sequence past it is
-  served (the attention envelope reaches 1,048,576 keys under hq-e8-2b), it is
-  simply rotated at angles the model never saw.
-- **RoPE scaling** — the text rotary frequency table a load runs on, chosen at
-  load and frozen for its life. Either *none* — the linear table, correct
-  through the **trained position envelope** — or **YaRN** at a factor, which
-  rescales that envelope: the high-frequency pairs keep extrapolating, the low
-  ones interpolate at `1/factor`, a ramp blends the band between, and an
-  attention factor `m` rides along. Where it rides differs by model: on
-  Flash-Next `m` multiplies cos and sin on q and k alike (ADR 0059); on the
-  27B the vendored op puts `m²` on q alone and keeps cached K factor-free.
-  The setting has a third value, *auto*, the default (ADR 0057): resolved at
-  load from the model's context, *none* within the envelope and YaRN at
-  `max_context / 262,144` past it. Both models run it. Text only:
-  the DFlash2 drafter keeps its own unscaled table at window-local positions,
-  and vision its 2-D one.
-- **Hot reload** — in-place model reload without restarting the server; the model
-  lifecycle is decoupled from the server lifecycle.
-- **Performance-first** — the organizing principle: correctness (a self-check
-  of *sane* output) is a non-negotiable floor; above it, performance is the #1
-  objective and tie-breaker for every scope, feature, and kernel decision.
-- **North-star** — the holistic objective: "the best local coding engine" — max
-  performance **and** agent parallelism that saturates the GPU in prefill *and*
-  decode.
-- **Self-bootstrapping** — the dev/test loop where the very runner used to build
-  ignis (ninfer, running Qwen 3.8-27B) is running while we test; two engines
-  share the 5090, so GPU testing is exclusive (ADR 0006).
-- **Reference** — the ninfer stack: the source of the artifact, the vendored
-  ops, the oracle recordings and the speed numbers. A reference, not a target
-  to match token-for-token (ADR 0005 / 0007).
+**Step ABI**:
+The C ABI between Rust and the leaf, named after its granularity: one call per
+*step* (model load, sequence lifecycle, a prefill span, a decode round), not
+one per operator. Device-resident — no host activation pointer crosses it (ADR
+0009).
 
-## Model
+**Program**:
+The leaf-side layer that owns the forward pass and the sequence state, on top
+of the vendored ops. Ours, not vendored (ADR 0009).
 
-- **Layer kinds** — the model is 64 layers: **16 GQA** (full attention) and
-  **48 GDN** (linear attention), hidden 5120, intermediate 17408, vocab 248320.
-- **GQA layer** — a grouped-query attention layer: 24 query heads / 4 KV heads
-  of 256, over paged KV, rotated by RoPE at the *token's* position.
-- **GDN layer** — a gated-delta-net (linear attention) layer: **16 key heads
-  and 48 value heads of 128**, whose recurrence carries the sequence's GDN
-  slot instead of a KV cache.
-- **Fused plane** — a single stored tensor holding several projections stacked
-  by row (e.g. `attention/query_key_gate_value`, `mlp/gate_up`). Its row order
-  is part of the artifact contract, not a guess.
+**Vendored op**:
+An operator copied *verbatim* from a named upstream (the reference, or a third
+party under MIT, BSD or Apache-2.0: ADR 0051) and tracked by a manifest (pinned
+commit, content hashes, recorded patches). Anything hand-written is not one,
+and carries no port claim (ADR 0010).
 
-## Flash-Next (specs `flash-next/01-06`, ADRs 0043-0044)
+**Adapted op**:
+Our own operator that contains parts copied from a named upstream under MIT,
+BSD or Apache-2.0, with its repo, commit, path and licence in the file header
+and in `kernel/NOTICE`. Ours to change; no parity claim (ADR 0051).
+_Avoid_: port, vendored (for an adapted op).
 
-- **Flash-Next** — Qwen3.8-Flash-Next, the second model: 125B mixture of
-  experts, 6B active, 48 layers in 12 blocks of 3 GDN + 1 QSA, hidden 2560.
-  Served from its own artifact, selected at start; never loaded beside the 27B.
-- **Expert** — one of a layer's 512 routed SwiGLU MLPs (2560 → 640 → 2560);
-  the **router** picks 10 per token. The **shared expert** runs for every
-  token, gated by a sigmoid.
-- **Expert projection** — an expert's fused gate/up plane or its down plane:
-  the unit the artifact stores contiguously and residency moves.
-- **K** — a matrix's bit width in the **trellis** format, chosen by
-  **allocation** on calibration distortion: per expert projection on
-  Flash-Next (one of 2, 2.5, 3, 4; mean 2.5 bits per weight), per projection
-  on a 27B artifact whose **body format** is trellis (2 to 6).
-- **K class** — expert projections of one shape and one K, hence one byte
-  size: eight classes, each with its own slot pool in the expert cache.
-- **Expert pool** — every expert projection, in pinned host RAM for the life of
-  the load. Only an offloaded load has one; a **device-only** load has none.
-- **Device-only residency** — a resident load's expert residency (ADR 0054):
-  the expert cache holds every projection, so there is no expert pool. At
-  load each record is **admitted** from the artifact straight to its slot, a
-  layer at a time, and no step misses. The layer buffers it reads through are
-  the host plan's one transient line (`load_staging`), charged only while the
-  experts load.
-- **Expert cache** — the fixed-size VRAM slot pools that hold the projections
-  in use, replaced least-recently-used; a plan line at load. It takes what the
-  **KV pool policy** leaves. Below its 12 GiB floor the start is refused,
-  unless the operator accepts it with `--vram-allow-expert-cache-below-floor`
-  (ADR 0045).
-- **Pinned hot set** — the calibration-hottest experts an offloaded load
-  keeps in its **expert cache** for its whole life
-  (`--vram-pinned-expert-bytes`: 0 by default, 2 GiB under the `rtx5090`
-  profile; ADR 0055). Each projection is a **pinned expert**: a slot past its K class's LRU slots, a hit whenever
-  selected, never evicted or copied, and no copy in the **expert pool**, which
-  is smaller by their bytes.
-  _Avoid_: "pinned" alone for it: the expert pool is pinned (page-locked) host
-  memory. Nor "pinned" for the slots a step selects: a step **holds** them
-  only until it ends (the kernel's `s_held`, the policy model's `held`), held
-  in the sense a request holds a **media embedding** — in use until
-  released — where a pinned expert is never released.
-- **Router lookahead** — the next layer's router applied to this layer's MoE
-  input to prefetch its likely experts into the cache.
-- **Demand copy** — a step's copy of the projections it selected that the
-  expert cache did not hold (its misses), on the layer's stream: the expert
-  op waits for it. A **prefetch** copy runs beside the op instead, for the
-  next layer.
-- **Stall** — the device time the expert ops waited on their steps' demand
-  copies, per phase (ADR 0017). The wait for a previous step's unfinished
-  prefetch is not in it.
-  _Avoid_: residency wait (for the stall alone).
-- **QSA layer** — Flash-Next's attention layer: GQA 24 query / 2 KV heads of
-  256 with an **indexer** that, above 2051 tokens, selects the key blocks the
-  attention reads (sparse); dense below.
-- **Hyper-connection streams** — Flash-Next's residual: four streams per token,
-  each sublayer reading a learned mix and writing back through a gated residual.
-- **N-gram table** — Flash-Next's hashed n-gram embedding table (320M rows,
-  INT4), a **host-streamed** object: read row by row from NVMe through a RAM
-  hot-row cache (or held whole in RAM when the hot-row budget covers it),
-  never materialized on the device.
-- **MTP head** — the checkpoint's own one-layer draft head (spec
-  `flash-next/07`): it combines the trunk's pre-mixer streams with the next
-  token's embedding and drafts the token after it.
-- **Companion container** — a small `.ninfer` beside the main one that holds
-  only the MTP head (layout.md §13), with its own identity; bound only when
-  MTP is on.
-- **Pair pin** — the companion's record of the one main container it belongs
-  to (`model_id`, `weights_id`, content hash), checked at load; a mismatched
-  pair is refused by name.
+**Port claim**:
+The claim that a kernel file is its named upstream's code, which must be
+diffable: only a **vendored op**, verbatim or under a recorded patch, makes one
+(ADR 0010, ADR 0031), and our own ops and **adapted ops** make none (ADR 0051).
+It says where kernel code came from, not what a seam is: `codebase-design`'s
+**port** is the interface at a seam and its **Adapter** the thing that fills
+one.
+_Avoid_: port, adapter (for kernel provenance: say port claim, vendored op,
+adapted op); port claim, adapted op (for a seam role: say port, Adapter).
 
-## Image model (specs `image-model/01-05`, ADRs 0050-0051)
+**Reference parity**:
+A behaviour ignis computes exactly as the **reference** does. The default for
+every vendored op, and not a claim of correctness: the reference can be wrong
+(ADR 0037).
+_Avoid_: faithful, reference behaviour (for a behaviour ignis has changed).
 
-- **Image model** — Qwen-Image-2.1-Turbo, served from its own artifact: a
-  Qwen3-VL text encoder, a 7B diffusion transformer (the **DiT**) and a VAE.
-  Reached by a switch, never loaded beside a text model.
-- **Image job** — one image request from admission to the delivery of its
-  last image.
-- **Target image** — the image an image job is generating.
-- **Condition image** — an input image an image job is conditioned on (an
-  edit's source or one of its references).
-  _Avoid_: reference image (**Reference** is the ninfer stack).
-- **Image session** — the Playground's line of work on pictures (spec
-  playground/06): an **image pool** and its steps, each step a prompt, the
-  **image inputs** it was sent with and the pictures it made. Kept in the
-  page's image store.
-- **Image pool** — every picture of an image session — uploaded, made by a
-  step, marked, or brought from the chat — each named `#N` for good.
-- **Image input** — a picture of the image pool chosen for the next step;
-  the prompt calls the inputs image 1, image 2… in order. One input is one
-  condition image, or two when it is marked as a mask (the picture, then its
-  mask). The Image view labels them "Inputs".
-  _Avoid_: reference, reference image.
-- **Condition prefix** — the prompt and the condition images as the DiT sees
-  them before the target image; computed once per image job and reused by
-  every denoising step of every image the job makes.
-  _Avoid_: prefix, shared prefix (those are a text model's).
-- **K/V run** — a span of keys and values stored in 8 bits for the DiT's
-  attention and quantized as one unit: keys smoothed by one mean, values
-  scaled per channel over the whole span. The condition prefix is one run,
-  the target image another.
-- **Condition budget** — how many condition-prefix tokens the image model can
-  hold, set at load from the VRAM the rest of the plan leaves. Condition
-  images beyond it are scaled down, never refused.
-- **Denoising step** — one evaluation of the DiT over the target image at one
-  noise level, and the sampler update after it. Always qualified.
-  _Avoid_: step (bare: that is the Step ABI's unit).
-- **Prompt enhancement** — an image job's optional rewrite of its prompt by a
-  text model before the image model sees it.
-  _Avoid_: polish, rewrite.
-- **Revised prompt** — the prompt that prompt enhancement produced, returned to
-  the client beside the image.
-- **Enhancer model** — the text model that performs prompt enhancement, named
-  by its served id in the config.
-- **Enhancement visit** — a switch to the enhancer model and back inside an
-  image job, made when the image model is loaded. It is not a switch for
-  **Last switch**.
-  _Avoid_: borrow.
+**Ignis patched**:
+A behaviour ignis deliberately computes differently from the **reference**,
+because the reference is wrong there; each is a recorded patch with a test that
+tells the two apart. A difference from the reference it causes is a declared
+departure, not a regression (ADR 0037).
+_Avoid_: fork, divergence.
 
-## Speech model (specs `speech/01-08`, ADRs 0067-0069)
+**Lane**:
+A concurrent decode slot. Requests hold a lane while decoding.
 
-- **Speech model** — a model that takes audio in and gives back its
-  transcript; it never converses. The third **model kind**, beside the text
-  model and the image model: Qwen3-ASR. Loaded beside the text or image model
-  rather than reached by a switch, and never resident in VRAM: it runs on the
-  CPU, or on free KV pages lent to it for one **transcription** (ADR 0067).
-  _Avoid_: voice model, ASR model, audio model
-- **Transcription** — one server job turning audio into text, from admission
-  to the delivery of its last text: a whole clip, or live from a stream of
-  audio.
-  _Avoid_: recognition (bare)
-- **Dictation** — the Playground act: the user speaks into a composer and the
-  transcript lands at the cursor, editable, never sent by itself.
-  _Avoid_: voice input
-- **Diarizer** — a model that tells the voices in audio apart and gives back
-  who spoke when; it never transcribes. The fourth **model kind**: Nemotron 3
-  Diarization, loaded beside the **speech model** and never resident in VRAM
-  (ADR 0069). No request names it.
-  _Avoid_: speaker model, voice model, diarization model
-- **Transcript** — the Playground's record of one conversation heard in its
-  Transcribe view: its **utterances** in order, each with its times, its
-  **speaker** and its text, and never its audio. Not a **dictation**: nothing
-  lands in a composer.
-  _Avoid_: conversation (the chat's), recording, meeting
-- **Utterance** — one stretch of a **transcript** spoken by one **speaker**,
-  from where speech is heard to the silence, the speaker change or the length
-  limit that ends it. A pause can split one speaker's turn into two.
-  _Avoid_: turn, segment (a **locate**'s), item (the Realtime protocol's)
-- **Speaker** — one voice the **diarizer** told apart in a **transcript**,
-  numbered in the order voices first spoke, and renamed by the user; on a call,
-  the microphone's voice is "Me".
-  _Avoid_: channel (the model's output slot), participant
+**Lane tag**:
+The request's own statement of its class, carried as an ignis extension field
+on the request and echoed in the request log. Two classes, `Interactive` and
+`Agent`; absent or unrecognized means `Interactive`, except on a **decision**
+request, where it means `Agent`.
 
-## Weights & artifact
+**Prefill lane**:
+The single global prefill slot: exactly one request at a time holds
+device-resident **prefill progress** and consumes chunks, and every other
+prefill queues behind it. It is a slot, not a promise about decode: whether
+decoding continues while it runs is decided by **prefill/decode
+interleaving**, not by this term (ADR 0018).
 
-- **Artifact** — the `.ninfer` container a model is served from: its weights
-  in the artifact's **body format**, its endpoints (token embedding, output
-  head), an optional grafted DFlash2 module, and frontend objects (tokenizer /
-  chat template). The 27B's 32 GB artifact carries NVFP4 tensors, BF16
-  exception tensors (held as stored, or in FP8 converted at load under
-  `model.exception_weights: fp8`, ADR 0065) and W8G32 endpoints. Several artifacts share one **model
-  family**.
-- **Body format** — the weight format of an artifact's transformer layers:
-  **NVFP4**, or **trellis**. Read from the artifact, never configured.
-  _Avoid_: "3-bit model", "small model" (the family is the same).
-- **Trellis** — the EXL3 weight code (16×16 tiles, the `mul1` codebook,
-  Hadamard rotation with per-channel scales on both sides), bit-compatible with
-  exllamav3's records, at a **K** per matrix.
-- **Object** — the unit inside an artifact. The binder must consume every object
-  at bind time; an unconsumed object is a load failure.
-- **Device view** — the artifact crate's export for a bound tensor: device
-  pointer, storage layout, format and shape, so the program binds planes
-  directly with no host dequant.
-- **NVFP4** — the weight quantization format of most of the model: E2M1 values,
-  an E4M3 group scale per 16 stored in a separate **scale plane**
-  (`blockscale-k16-m128x4-v1` layout), and a per-tensor **weight divisor**.
-- **hq-e8-2b** — the reference's HyperQuant KV cache format, and the profile the
-  owner actually runs: a randomized Hadamard rotation, E8-lattice quantization
-  and Rice coding packed into a fixed per-row budget of 64 code bytes plus 8
-  metadata bytes per (token, KV head). Fixed bytes per token, so page
-  addressing and CUDA-graph address stability are unchanged. 9,216 bytes per
-  sequence-token against BF16's 65,536 — a factor of 7.11.
-- **Prompt planes** — the BF16 copies of a GQA layer's visible keys and values
-  that the vendored hq-e8-2b prompt route decodes the cache into before a
-  prefill chunk attends: prefill-only scratch, 4,096 bytes per context token up
-  to 262,144 keys (one band). Not used by a decode or verify round, which read
-  the codec. Gone from serving since #335 (ADR 0061): every hq prefill chunk
-  takes the **prompt attention** instead, and the vendored route survives only
-  as the oracle the route agreement test holds it against.
-- **Prompt attention** — ignis's own hq-e8-2b prefill attention (an adapted op,
-  ADR 0051/0061): two passes sharing one online softmax, the **residual window**
-  in BF16 and every other key through the **band** in 8 bits (or FP16 with FP16
-  accumulate, the fallback; the load option `--model-prefill-attention` picks
-  one, `fp8` naming the 8-bit band). Its workspace stops growing with the
-  context at one band.
-- **Band** — the fixed buffer the prompt attention decodes the codec's keys
-  into, once per chunk and layer: 32,768 keys of INT8 K and E4M3 V^T (64 MiB)
-  with a scale per 32-key tile, walked band after band over a longer
-  history. Not the prompt planes' "band", which was their 262,144-key ceiling.
-- **Residual window** — the keys hq-e8-2b attention reads exact instead of
-  decoding: a sequence's first 32 keys (the **sinks**), a 512-slot **ring** of
-  recent keys, and the prefill chunk being attended. Per slot, not per page,
-  so it is a **state section** a clone or a restore carries; a ring bit names
-  no position, so appended columns a sequence does not keep (a verify round's
-  rejected drafts) must have theirs cleared. A prefill chunk reads the ring
-  before its own append writes it, so every key before the chunk is served its
-  own row — **Ignis patched** (ADR 0037, spec runtime/07, GitHub #258). The
-  reference appends first and so serves **clobbered** ring rows: the keys
-  before the chunk whose ring slots the chunk's own append rewrote, read as
-  those later keys' rows, a read of the future.
-- **KV format** — which of the two KV cache formats a load runs: **hq-e8-2b**,
-  the serving default from G4, or **BF16**, retained as the format every
-  correctness oracle runs against. A model-load option, fixed for the life of
-  the load. The pool is sized by the **KV pool policy**, or named in bytes or
-  in tokens, and its pages are *derived* from the format either way (ADR 0022,
-  ADR 0045). The CLI default
-  is `hq-e8-2b` since #123 wired its prefill and decode attention routes and
-  captured its decode graphs; a correctness oracle asks for `bf16` by name.
+**Admission state machine**:
+The fairness machinery (protection, backfill class, temporal credit, frontier
+distance) deciding which request gets which lane. Pages are a dimension of
+their own: see **KV reservation**.
 
-## Models, catalog & download (ADR 0033, ADR 0047)
+**Generation cap**:
+The most a request may generate, reasoning included: its `max_tokens`
+(`max_completion_tokens`, `max_output_tokens`), or else the server's
+`--model-default-max-tokens`, clamped to what the prompt leaves of
+`--model-max-context`. Reaching it ends the request with `finish_reason:
+"length"`.
 
-- **Model family** — the architecture an artifact runs as (`Qwen3.8-27B`,
-  `Qwen3.8-Flash-Next`, `Qwen-Image-2.1`), read from the artifact's own
-  header, never declared beside it. It decides the forward program, the
-  drafter and the family scope. Several artifacts share one family: the 27B and its abliterated
-  variant are two artifacts of the same family.
-  _Avoid_: model (for the architecture)
-- **Model kind** — what a model takes in and gives back: a **text model**
-  takes text and images and gives back tokens, and converses (the 27B,
-  Flash-Next); an **image model** takes a prompt and gives back pixels (the
-  image model, ADR 0050); a **speech model** takes audio and gives back its
-  transcript, and never converses (ADR 0067); a **diarizer** takes audio and
-  gives back who spoke when, and never transcribes (ADR 0069). Above the model family: every
-  family is of one kind. Engine, lane, sequence, KV and generation cap are
-  text-model terms.
-  _Avoid_: modality (the 27B already takes images in), pipeline
-- **Served id** — the name a client puts in a request's `model` and
-  `GET /v1/models` reports: the operator's `model.id`, or the family's default
-  id when none is named. It tells artifacts of one family apart; the family
-  never does. A catalog entry's served id is its own; on a smaller card a
-  request naming an **alias** is served under the id of the entry that
-  answers to it, and the answer names that id (ADR 0064).
-  _Avoid_: model name
-- **Alias** — a served id one catalog entry also answers to: its family's
-  default id, on a **card class** below the default entry's (ADR 0064). It
-  resolves only within one model family — the entry that answers to it holds
-  an artifact whose header names that family — and only to an entry the card
-  can load. Listed in the entry's `aliases`; the catalog refuses an alias that
-  is no family's default id, the entry's own id, of another family than the
-  entry's own id, or claimed by two entries. The OpenAI model names a config
-  field lists for the **speech model** (`whisper-1`, `gpt-4o-transcribe` and
-  the others) are aliases of its served id too, on every card and outside the
-  catalog: a request naming one is served by the speech model (ADR 0067).
-- **Catalog** — the models the server knows how to fetch: the **built-in
-  catalog**, shipped inside the binary, plus the **operator catalog**, a
-  separate file the config names.
-  _Avoid_: registry (that word is the remote server, as in "a private
-  registry"), model list
-- **Catalog entry** — one published model: its served id, repo, revision, the
-  artifact to load, every file it needs with its byte count and SHA-256
-  pinned, the smallest **card class** it loads on (`card_class`, optional: an
-  entry stating none is never refused by class; every built-in one states
-  it), and the **aliases** it may answer to (ADR 0064). An operator
-  entry never reuses a built-in id. A switch, a request, a start or a download
-  naming an entry above the card's class is refused before anything is torn
-  down or fetched, and the model lists show it as unavailable.
-- **Endpoint** — the server a catalog entry's files are fetched from: Hugging
-  Face by default, or a mirror answering the same repo/revision/file paths.
-  Chosen per machine, not per entry.
-  _Avoid_: registry, hub
-- **Switch by id** — an explicit `POST /v1/models/switch` naming only the
-  served id: resolved as a known model (`switch.known_models`, the start
-  model), then a catalog entry on disk. `switch.allow_implicit` does not gate
-  it; it gates only the **implicit switch** a request triggers by naming a
-  model. Never starts a download.
-- **Servable model** — a model a request may name and be served by now,
-  with no download: the active model, plus every id the **implicit switch**
-  resolves to an artifact that is a file (a catalog entry on disk, a known
-  model whose artifact is there). What `GET /v1/models` lists, the active one
-  first (`active: true`), computed at each request; with
-  `switch.allow_implicit` off, the active model alone. An alias is not one
-  until the implicit switch resolves aliases. The **speech model**
-  is listed too, right after the active one (`kind: "speech"`), without being
-  switched to: it is loaded beside the active model, on the CPU, and only
-  while it is available (ADR 0067).
-  _Avoid_: available model, installed model
-- **Last switch** — how the most recent switch or reload ended (`switched`,
-  `refused`, `restored`, `failed`, with the reason), kept on `GET /v1/models`
-  after the status itself has moved on. An **idle unload** and the load after
-  it are not switches and leave it as it was.
-- **Idle unload** — tearing the loaded model down after `model.idle_unload`
-  seconds (default 300, 0 = never) with no request using it and the engine
-  empty, the way a switch tears one down, while the process and the API stay
-  up (ADR 0049). `GET /v1/models` then reports `status: unloaded` under the
-  same id; the next authenticated request that needs the model loads it again
-  (`status: loading`, requests arriving meanwhile wait) and is served. What
-  counts as use is a request in flight on a model route, from admission to
-  the end of its response — per job on a Responses socket — never a poll of
-  the state routes. A transcription is
-  not use of the text model: the speech model is another model, on the CPU, with
-  its own idle clock (`speech.idle_unload`), and it never resets this one (ADR
-  0067).
-  _Avoid_: sleep, suspend, eviction (that word is a sequence's, not a model's)
+**Deadline**:
+How long a request may run before the server cuts it (ADR 0058):
+`server.request_timeout` for one answered whole, `server.stream_timeout` for
+one that streams, from its admission (an **image job**'s from its start, never
+its queue); `0` is none. A passed deadline cancels the request and frees its
+**lane**.
 
-## Prompt rendering
+**Partial reply**:
+What a request past its **deadline** is answered under `server.timeout_reply:
+partial`, the default: what it generated, ended as the **generation cap** ends
+one (`finish_reason: "length"`, a response `incomplete` with
+`max_output_tokens`). Not a cap: the header `ignis-stopped-by` and the request
+log's `cause: timeout` say which it was.
 
-- **Instruction message** — a chat message addressed to the model rather than
-  said in the conversation: role `system`, or role `developer`. The model was
-  trained on neither more than one of them nor on `developer` at all, so every
-  instruction message the engine accepts reaches the model as a system block.
-- **System prompt** — the instruction the rendered prompt opens with, where
-  the tools block and the reasoning instructions attach and a **retained
-  prefix** is cut: the leading run of `system` messages joined into one, or a
-  leading `developer` message when no `system` precedes it.
-- **System message policy** — what the engine does with a `system` message
-  that is not the first message. By default a run of them at the start joins
-  the **system prompt** and a later one is rendered in place as a block of its
-  own; strict refuses the request instead, as the model's template would.
-- **Developer message policy** — what the engine does with a `developer`
-  message: render it in place (the default), join it into the **system
-  prompt**, gather every one into a single block after it, accept only one
-  right after it, or refuse it. Joining and gathering re-render earlier
-  history when a new one arrives mid-conversation, so they trade **prefix
-  reuse** for fewer system blocks; the others never move a message.
-- **Render refusal** — a request whose messages cannot be rendered into a
-  prompt. It is refused before admission, never served as an empty prompt.
+**Reasoning redirect**:
+An EOS a request draws while its reasoning block is still open becomes the
+block's `</think>`, and the model goes on to answer (ADR 0048, GitHub #315).
 
-## Sequence state
+**Loop guard**:
+The server task between a reasoning request's engine event stream and its
+consumer that watches the reasoning for a loop (ADR 0052, config
+`model.loop_guard*`, `rewind` by default).
 
-- **Sequence handle** — the leaf-owned, opaque per-sequence object created by
-  the step ABI: its KV pages, its GDN slot, its conv taps, its position, its
-  last token, and (P3-03) its penalty-count row. It is what a snapshot
-  captures and a restore rebuilds. No RNG state is one of its sections: the
-  device-side sampler's RNG is counter-based (keyed by seed, position and
-  purpose), so nothing but the handle's own position needs to be carried for
-  it.
-- **KV page** — a fixed-size device page of the paged KV cache, addressed
-  through a per-sequence block table. Page geometry is reported by the runtime
-  and is what the scheduler's KV pool counts.
-- **GDN slot** — one sequence's linear-attention state: per GDN layer, **48
-  value heads × 128 × 128 fp32** (all 48 GDN layers ≈ 144 MiB per sequence),
-  drawn from a slot pool sized by the concurrency.
-- **Conv taps** — the per-sequence causal-conv1d history of a GDN layer.
-- **Penalty-count row** — a sequence's per-vocab-entry occurrence count
-  (one int32 per vocab entry), drawn from a slot-indexed device buffer the
-  same shape as the KV/GDN pools (one row per slot). Device-side sampling's
-  presence/frequency penalties read and atomically update it; zeroed at
-  `ignis_seq_alloc` like every other slot section.
-- **State section** — one part of what a sequence is made of: its KV pages, its
-  GDN slot, its conv taps, its position and last token, its penalty-count row,
-  on a pool built with DFlash2 its **drafter window**, and on an hq-e8-2b pool
-  its **residual window**.
-  Each is either shareable read-only (KV pages) or must be cloned per sequence
-  (everything mutable). The table of them lives inside the leaf, and adding one
-  is the act that re-earns the **snapshot point** permission rather than
-  inheriting it (ADR 0024).
-- **Snapshot blob** — the opaque, versioned byte image of a whole sequence that
-  crosses the ABI. Callers ask the leaf for its size and a format version and
-  never see the section layout; a restore validates the header and refuses a
-  stale or foreign one. Whole-sequence only: GDN state cannot be recomputed
-  without re-running the prefix a restore exists to avoid (ADR 0024).
-- **Blob identity** — what state was produced under, carried in the **snapshot
-  blob**'s header and in the retained entry alike: the artifact's content hash,
-  the **KV format**, the blob layout version the leaf writes, and the drafter's
-  presence and draft window. It answers whether these bytes may be written into
-  a sequence at all, and a mismatch is refused before one of them moves. Never a
-  request id, and never an operator knob that does not change state — the bind
-  address, the prefill chunk, the concurrency and every byte budget are outside
-  it, because a budget derived from free VRAM differs from one start to the next
-  (ADR 0029). Its artifact hash is **structural**: a digest of what the container
-  declares — its identity, its size, and every object's name, kind, numeric
-  format, storage layout, shape, offset and length — not of the weight bytes,
-  which the v2 container carries no digest of. So it catches another model, a
-  re-export, a re-layout, a renamed object or a format change, and it does *not*
-  catch an in-place re-quantization that left the whole directory untouched
-  (ADR 0029, §Consequences: departure).
-- **Residency tier** — where sequence state lives, in three levels: **Tier 0 —
-  device** (VRAM), **Tier 1 — KV-RAM**, **Tier 2 — KV-disk**. State moves down a
-  tier when the one above needs the room, and back up to be served. Each tier
-  below the first carries a **restore floor**: the prompt tokens a match there
-  must reuse beyond the best match above it before it is worth the crossing, so
-  a tie always goes to the tier above. "Host tier" is not a synonym: say KV-RAM.
-- **KV-RAM** — Tier 1: the host-RAM tier that holds **snapshot blobs** of
-  evicted live sequences (so they resume instead of re-prefilling) and of
-  retained state (**prompt checkpoints**, **retained prefixes**) that left the
-  device. Bounded by a byte budget held whole from the start rather than grown
-  blob by blob — one page-locked arena, blobs placed first-fit inside it, so
-  room for a blob is a free *span* and not a count of free bytes — two-tier
-  (probation → protected), and
-  written only at a **chunk boundary**. State reaches it lazily — only when the
-  device is about to discard it, never as a copy of what is still resident. A
-  **live move** into it and back goes a window at a time on the leaf's
-  transfer stream, so no decode round waits on the copy (GitHub #309).
-- **KV-disk** — Tier 2: the disk tier below KV-RAM (ADR 0045). It takes what
-  KV-RAM gives up, instead of discarding it, and a device victim KV-RAM cannot
-  take. A blob comes back from it straight to the device, never through
-  KV-RAM. It holds one file per blob in a directory the process owns, under a
-  byte budget that is a ceiling, not a reservation. Files are written only from
-  a **snapshot point**, a window at a time, and the model thread never waits on
-  the disk. With it on, an evicted live sequence is never discarded to make
-  room. Nothing on it outlives the process: v1 wipes it. Each file's header
-  still names the model, layout and RoPE scaling it was taken under, so that a
-  later version could keep it. On by default for Flash-Next; off for the 27B.
-- **Live move** — a sequence still being served, moved down a **residency
-  tier** for the room an admission ranked above it needs, and brought back
-  later to resume bit-exact where it stopped (ADR 0045). It is a transfer, not
-  a call: the sequence is in no round from its start until its last window
-  lands, keeping its pages until it has left. Flash-Next paces it — one window
-  in flight each way, a new one at most once an advance — so that it shares
-  the link with the expert stream rather than taking it (GitHub #309).
-- **Prompt checkpoint** — the whole-sequence state of a request at its
-  generation opener, the point where the rendered prompt hands over to the
-  model, retained after the request ends so a later request whose prompt
-  extends it (the next turn of a chat or of an agent loop) resumes there
-  instead of re-prefilling. Matched by prompt content, never by a session
-  identifier. Reusing one copies it and does not consume it: a retry, a
-  regenerate or two forks from the same point all hit. A conversation keeps
-  at most two: its latest, and its **turn-opening checkpoint** — the one right
-  after its last real user message, the only one a new user message can
-  still match once history drops the earlier thinking. The point after generation is not one: the next turn re-renders
-  the assistant message differently from how it was generated.
-- **Retained prefix** — a **shared prefix** kept alive with no claimant, so a
-  later, non-concurrent request (the next subagent of a burst) claims it as if
-  it were a sibling. It ends at a **reuse boundary** — for a chat, the end of
-  the system and tools block, floored to whole KV pages — never at the
-  publishing request's whole prompt head.
-- **Reuse boundary** — a prompt position where a request's state is kept for
-  a later request to resume from, predicted before prefill because a hybrid
-  can only resume where it captured (ADR 0029). A request carries an ordered
-  list of them, each a whole number of KV pages, never inside a **media
-  item**, each costing a **retained slot**. Sources: the end of the system
-  block, a **fan-out head**, an **observed fork**, a **reuse marker**.
-  _Avoid_: breakpoint, cache point (a **prompt checkpoint** is something
-  else).
-- **Fan-out head** — the **reuse boundary** at the longest common prefix of a
-  decision fan-out's rendered questions, computed before the first is
-  submitted. Kept only until that fan-out ends. Questions of different kinds
-  do not share their system text, so they have none.
-- **Observed fork** — a **reuse boundary** at the end of the longest run of
-  leading content parts that a recent decision `state` also began with, keyed
-  by the **match key** there. The second request that repeats a run keeps
-  it; the third and later resume from it.
-- **Reuse marker** — `cache_control: {"type": "ephemeral"}` on a decision
-  `state`'s content part: the caller's **reuse boundary** at the end of that
-  part. It chooses where state is kept, never what a request may claim —
-  matching stays by content. A request carrying one gets no **observed
-  fork**.
-  _Avoid_: cache breakpoint.
-- **Lineage** — one conversation's chain of **prompt checkpoints**, and the
-  only name a conversation has. The clients send no session id, so what ties
-  turn N+1's checkpoint to turn N's is the link that does exist: turn N+1
-  claimed turn N's entry. Every capture joins the lineage of the entry its
-  request resumed from, or opens one of its own — and it is per lineage, not
-  per pool, that at most two checkpoints are kept.
-- **Chained prefix** — a **shared prefix** published on top of another. A
-  request that resumed from retained state and prefilled past it has no head
-  of its own to publish: the pages below its generation opener are partly the
-  entry it claimed. It publishes the pages it warmed itself *over* that entry,
-  taking over the reference it was holding rather than adding one, so every
-  page is still charged to the pool exactly once and a claimant of the chain
-  shares all of it. This is what lets every iteration of a tool loop leave a
-  **prompt checkpoint** instead of only the first — for as long as
-  **retained slots** can hold the chain, since every link with an image takes
-  one.
-- **Pages-only link** — a **chained prefix** with no image of mutable state:
-  the whole pages between what a request shares and its generation opener's
-  page floor, handed over by the **prompt checkpoint**'s capture so that
-  something outlives the request to hold them. No request stands at its end, so
-  it is never claimed on its own; it takes no **retained slot**, and it goes
-  when nothing stands on it any more. Flash-Next publishes the opener's page
-  this way; the 27B publishes it as an ordinary chained prefix (ADR 0029,
-  amended 2026-10-07).
-  _Avoid_: imageless prefix.
-- **Retained state** — prompt checkpoints and retained prefixes: state no live
-  request needs. It never costs a live request anything — on the device it is
-  always the first thing to go — and in KV-RAM it is discarded before any
-  evicted live sequence. On the device its mutable state lives only in
-  **retained slots**, never beside them.
-- **Retained slot** — a place reserved at load for one mutable-state image of
-  a **shared prefix** (retained, chained or still claimed) or of a **prompt
-  checkpoint**, the same size as a **lane**'s own state (under hq-e8-2b that
-  includes its **residual window**, which the VRAM plan counts on a line of its
-  own). Two kinds: a **device** retained slot sits in the device state arenas
-  beside the lanes and is copied device to device; a **host** retained slot
-  sits in one pinned host block reserved at load and costs a PCIe copy per
-  capture and per claim, but no VRAM. By default there is none of the first
-  and two per lane of the second; a free device slot is always taken before a
-  host one. The KV pages of what a slot holds stay in the device pool either
-  way. When none is free, the lowest-ranked
-  **retained state** gives its slot up; when nothing can, the publish or
-  capture is skipped and the request runs without leaving reuse behind.
-  _Avoid_: retained pool (a ledger of bytes, not a place).
-- **Match key** — what a piece of **retained state**, and every **shared
-  prefix**, is addressed by: a hash
-  chain over the prompt tokens it covers, with each media item's identity (its
-  content digest and grid) mixed in at that item's **first** placeholder, so a
-  prefix covering one placeholder has committed to the whole image. Token ids
-  alone are not enough: two same-size images expand to identical placeholder
-  ids. A chain
-  rather than a digest of the whole, because a claimant asks about every prefix
-  length of its prompt at once, and because it lets a blob name its content in
-  sixteen bytes instead of carrying sixty thousand token ids to another tier.
-  Never contains a request id: a wrong session identifier could hand one
-  conversation another's state, a content match can only hand over identical
-  history (ADR 0029).
-- **Prefix reuse** — requests sharing a prefix skip the redundant prefill —
-  concurrent siblings through a **shared prefix**, later requests through
-  **retained state**: the shared **KV pages** are refcounted and shared in place on the
-  device, and the mutable **state sections** are cloned device-to-device. It
-  never round-trips through host RAM, and sharing pages alone would save
-  nothing, since prefill must traverse every layer to produce the mutable
-  state (ADR 0024). Real since G4.
-- **Shared prefix** — the leaf-owned object prefix reuse is built on: the
-  physical KV pages of a prompt head plus a device image of the mutable state
-  at its end, held by a refcount. Every holder's block-table row addresses the
-  same pages, the pool is charged for them once, and they return when the last
-  holder releases, unless it becomes a **retained prefix**. A snapshot of a
-  sequence holding one materializes the shared pages into the blob, so the
-  blob owns every byte of its history and outlives the prefix.
-- **Publish point** — the chunk boundary a prefix is published at, and 0 for a
-  request that publishes nothing. A shared or retained prefix's is always a
-  whole number of KV pages in — a **chained prefix**'s is measured from the
-  start of the prompt, not from what the publisher already shares; a **prompt
-  checkpoint**'s is the generation
-  opener wherever it falls, and whoever reuses it copies the partial page
-  rather than sharing it. A prefix's never ends inside a **media item**'s
-  placeholders: it walks back to the page holding the item's first one. It
-  is a scheduling decision, not a detail of the publish call: what a claimant
-  clones is the mutable state at the prefix's *end*, so the publishing
-  request's prefill is cut there, and a prompt whose length is not a whole
-  page pays one extra chunk for it. A request publishes **one** head, so its
-  two boundaries share a prefix when they fall in the same KV page and
-  compete for it when they do not: a short first turn leaves both a
-  **retained prefix** and a **prompt checkpoint**, while a prompt with tools
-  — a block several pages long — leaves the block alone. That competition is
-  a limit of today's leaf rather than a rule of the domain: a sequence may
-  hold one prefix, and a capture demands the opener's whole pages be it.
-  GitHub #187 lifts the first and satisfies the second rather than waiving
-  it — a request may publish a second prefix over the head it warmed itself,
-  so the pages below its opener become its own chained prefix and it keeps
-  both the block and its checkpoint. A **pages-only link** has no publish point
-  of its own: it rides the capture at the generation opener, so a request
-  publishing one is cut once there instead of twice.
-- **Eviction priority** — the one ordering that decides what loses residency,
-  expressed at two levels: leaving the GPU is eligibility and protection, then
-  request class, then least-recently-used; leaving KV-RAM is **retained
-  state** before evicted live sequences, then request class, then probation
-  before protected, then least-recently-used — a main-conversation entry idle
-  past its TTL ranking as a subagent's probation entry, and a spill displacing
-  only what ranks below it. On the device, retained state
-  goes before any of it. Protection
-  outranks class only where something is actively being served (ADR 0023).
-  On a load with **KV-disk**, leaving KV-RAM is a move to the disk, and leaving
-  the disk follows the KV-RAM order again. An evicted live sequence is then
-  never discarded to make room: when no tier has room, the request that needed
-  it waits (ADR 0045).
+**Rewind**:
+The loop guard's action: the engine request is cancelled and a
+**continuation** submitted. The client keeps what it received and gets the tag
+`[LOOP DETECTED, REWINDING n TOKENS / m CHARS · h]` in the reasoning, `h` a
+short hash of the struck text; the Playground strikes the `m` characters before
+it through.
 
-  A shortage of *pages* (an admission -- resident slots count with them --
-  and on ADR 0045's growth branch a
-  lane's growth) moves only what ranks below the requester. *Rank* is class, then submission order, and
-  a moved sequence keeps its rank. Retained state goes first; then `Agent`
-  before `Interactive`; then sequences not in the decode round (waiting for a
-  lane, at a chunk boundary, a **parked lane**) before lane holders; then the
-  latest-submitted. A need never takes its requester or anything ranked above
-  it: it waits, or its lane parks. Entries onto the device, restores and
-  admissions alike, are taken in rank order (the *entry rule*): a newcomer
-  waits for any moved sequence that outranks it, a moved sequence takes only
-  the room beyond what the waiting entries above it need, and a restore never
-  moves anything. A shortage of *lanes* keeps the lane holder first.
-- **Chunked prefill** — prefilling a prompt span through the span+position
-  prefill call in **prefill chunks** rather than one token at a time. The
-  leaf knows how to loop over a span of any length; it is no longer the only
-  one that does — under interleaving the scheduler hands it one chunk per
-  call and keeps the loop itself.
-- **Prefill chunk** — the number of tokens one traversal of the model
-  processes during chunked prefill: a model-load option, default 1024, a
-  multiple of 128. The unit the prefill scratch is sized for; with vision,
-  that scratch is also the vision encoder's workspace and is sized for the
-  larger of the two (the VRAM plan's `workspace` line).
-- **Per-token prefill route** — the G1 prefill path that runs the program one
-  token at a time (recurrent GDN, small-T attention). Retained after G2 as a
-  test-only, per-call route: the self-oracle chunked prefill is checked
-  against. Never the default.
-- **Compute policy** — the per-call activation-precision policy handed to
-  every NVFP4 projection (`A16Only` or `AllowA4`). The engine's policy is the
-  reference's: `AllowA4` on every NVFP4 text projection, prefill and decode
-  alike, with the vendored per-projection token thresholds deciding the
-  actual route. Tests may force `A16Only`.
-- **Decode round** — one traversal of the model for *all* decode-ready
-  sequences in a batch; the unit a decode CUDA graph is captured over, per
-  batch width.
-- **Prefill batch** — the group of queued requests handed to the backend in
-  one prefill call. A call shape, not a traversal: the runtime walks the group
-  and runs one model traversal per request. Naming a group does not make it
-  one forward pass.
-- **Packed prefill** — several requests' prefill tokens in *one* traversal of
-  the model (varlen attention, per-sequence GDN state side by side). The thing
-  **prefill batch** is often mistaken for. Not built; its phase is decided
-  after the per-chunk synchronization investigation reports.
-- **Prefill/decode interleaving** — running a decode round between two prefill
-  chunks of the same sequence of work, on the one model stream. Nothing is
-  concurrent on the GPU: the two take turns, so a long prefill costs the
-  decode lanes one chunk of latency instead of the whole span. The scheduler
-  drives it by passing one chunk per prefill call.
-- **Decode share** — the part of the model's time decoding lanes keep while a
-  prompt prefills (`--model-decode-share`, in percent). After a chunk that took `t`,
-  the next chunk of the same prompt waits until `t * s / (1 - s)` of wall time
-  has passed with the lanes decoding; with no lane decoding it runs at once, and
-  after a prompt's last chunk nothing waits, so a newcomer queued behind it
-  starts at once. 0 is one decode round per chunk (ADR 0018); both models
-  default to 25 (GitHub #306 for Flash-Next, whose chunk runs for seconds;
-  GitHub #92 for the 27B; why 25: ADR 0018's amendment). It bounds the
-  lanes' rate during a prefill, not the gap a single chunk leaves: only the
-  chunk width moves that.
-- **True prefill/decode overlap** — prefill and decode resident on the GPU at
-  the same time, on separate streams, contending for SMs. Distinct from
-  **prefill/decode interleaving** and deliberately not built: the north-star
-  item (roadmap phase 6), excluded from G3 by ADR 0018.
-- **Chunk boundary** — the position between two prefill chunks: the sequence's
-  KV pages, GDN recurrent slot, conv taps and position have all advanced past
-  the same token, and the chunk's synchronization has returned. A property of
-  the serving loop, and what **prefill progress** resumes from — resuming is
-  nothing more than scheduling the next chunk.
-- **Snapshot point** — a position from which the *whole* sequence state may be
-  captured to the host tier and later restored. A permission, not a
-  consistency claim, and granted to a tier that does not exist before G4.
-  Every **chunk boundary** is one for the state that exists today; the two
-  terms coincide without being the same property, and a new state section
-  (G4's exact-key side store) must earn the permission again.
-- **Prefill progress** — how far into its prompt a request has been prefilled.
-  It makes `Prefilling` a state a request *lives in* for tens of rounds rather
-  than a moment between two, so the admission machinery can see a
-  half-prefilled request. Resuming needs no mechanism: it is just the next
-  chunk being scheduled. **Cancel is abort, not suspend** — the in-flight
-  chunk finishes, then the sequence is released with its KV pages, GDN slot
-  and conv taps. Until the KV-RAM tier exists, a half-prefilled request can be
-  paused but not evicted without losing the work — a limit of the tier, not of
-  what a **chunk boundary** can capture (ADR 0018).
-- **Decode round** — one step for every decode-ready lane, run as a single
-  batch-wide traversal of the model: the lanes are the batch's rows at one
-  token each, so eight lanes stream the weights once rather than eight times.
-  Every per-sequence input — token id, absolute position, physical pool slot
-  — is read from device staging indexed by row, and that row indirection is
-  what keeps the lanes' KV pages, GDN slots and conv taps isolated inside the
-  one call (ADR 0020, which amends ADR 0019's per-lane round).
-- **Decode graph** — the CUDA graph replayed for a decode round, captured per
-  **exact** batch width 1..8. Widths are never padded up to a captured one:
-  the GDN slot traffic is per sequence (144 MiB each), so padding a width-1
-  round to width 8 moves 1.15 GB instead of 144 MB and spends several times
-  the C=1 gate's whole margin. Its staging buffers are a reservation separate
-  from the prefill scratch, shared across the widths and sized for the widest.
-- **Per-lane sampling** — sampling parameters and RNG state carried per
-  sequence, not per decode round: lanes in one round hold different
-  temperatures, seeds and penalty histories. Sampling happens device-side in
-  the leaf, which returns token ids: the **decode** path never ships logits to
-  the host. What a request generates therefore depends on its own seed alone,
-  never on which lanes happened to share its round. A **readout** is the one
-  path that does receive logits, and it draws no sample — it has no seed, no
-  RNG and no penalty history to disturb, so the independence above is a
-  property of decode that the readout cannot violate.
-- **N-lane concurrency** — the resident decode lanes a load runs at once: 8
-  (N=8) on a 32 GB **card class**, fewer on a smaller one, with overflow to the
-  host KV-RAM tier; sized for a ~10-subagent concurrent coding workload. Real
-  at long context only under hq-e8-2b: eight lanes at a 40,960-token context
-  are ~20 GiB of BF16 KV against ~3.02 GB of hq (**KV format**).
-- **DFlash2** — the 5-layer sliding-window (2048) speculative-decoding drafter
-  (hidden 5120, draft tokens 1..7, native acceptance 3.4–3.7 tokens/round).
-  Selected at load (`--spec-backend dflash2 --spec-draft-tokens N`); without it none of the
-  66 `dflash2/*` objects is bound.
-- **Draft window** — the number of tokens the drafter proposes per round
-  (`--spec-draft-tokens`, 1..7), fixed for the life of a load. Not to be confused
-  with the drafter's own 2048-token sliding **drafter window**.
-- **Drafter window** — a sequence's DFlash2 context: every drafter layer's
-  BF16 K and V for the last 2048 positions (40 MiB). Per-sequence state in the
-  sequence pool, one lane per slot, and one **state section** of a pool built
-  with the drafter. A prefill fills it from the **feature taps** of its span's
-  last 2048 positions, and each **verify round** appends its **committed
-  run**'s taps; a lane at **extent** 0 leaves it untouched. The reference also
-  keeps a rewrite checkpoint of it, restored when a turn rewrites text past its
-  chat template's rewrite boundary; ignis never read one and retired it
-  (snapshot format 5), because a **prompt checkpoint** taken at the opener
-  already carries the window as it stood there.
-- **Feature taps** — the target's hidden states at layers 5, 19, 33, 47 and 61,
-  concatenated and projected into the drafter's context. Taken by a prefill
-  chunk and by the verify traversal; scoped to that chunk or round: never
-  persisted, never a state section.
-- **Verify round** — the speculative form of the **decode round** (P5-04): each
-  lane contributes `k+1` columns — its anchor (the pending successor) followed
-  by the drafts, the tail padded with the anchor — and the 64 layers traverse
-  the batch's columns once, the GQA layers appending every valid column and
-  the GDN layers recording instead of advancing. Selected per call through
-  the decode options at the load's draft window, never padded to it; window 0
-  is today's round. Widths stay exact: one **verify graph** per batch width
-  1..8 at the window.
-- **Extent** — the draft columns a lane actually verifies in a round:
-  `min(k, proposed, remaining budget − 1, remaining context − 1)`, where under
-  DFlash2 the drafter always proposes `k`. Extent 0 is a fallback step inside
-  the same round, one committed token.
-- **Committed run** — the tokens a verify round emits for a lane: the anchor
-  plus the accepted drafts, cut at the first stop id inclusive (1..k+1). The
-  KV frontier, the GDN slot and the pending token move by exactly the run, so
-  a sequence never stands past the text it emitted. It crosses the compute
-  seam whole (`DecodeOutcome`, P5-06), and the server streams it one token at
-  a time; today's round is a run of one.
-- **Prefill outcome** — what one prefill chunk cost beyond warming its KV
-  (`PrefillOutcome`, GitHub #192): today the microseconds the leaf spent
-  encoding a media item, which is 0 on a text chunk and on one that reuses
-  an embedding an earlier chunk of the same item encoded. One per job, in
-  order, the way a committed run crosses the seam per lane; the request log
-  sums them into `media.encode_seconds`.
-- **ReplaySSM record and fold** — how the GDN layers speculate without
-  advancing: the verify traversal records each column's conv input, key,
-  value and gates (the **records**), and after accept the **fold** replays
-  the committed prefix of each lane's records into its recurrent slot and
-  conv taps in one vendored call. A rejected draft's transition is recorded
-  and never folded — that is the whole rollback.
-- **Drafter** — whatever fills a verify round's proposal seam: **DFlash2**
-  inside the leaf (P5-05), proposing each lane's drafts from its **drafter
-  window** in the same pass that verifies them, or a fake drafter in the
-  substrate's own tests (`verify-only` load: the verify substrate with nothing
-  bound, the drafts passed per call).
-- **Teacher-forced round** — a **verify round** whose accept verdict is a
-  recorded text's instead of the target's draw (GitHub #267; test-only, the
-  decode options' `forced_tokens`, which no serving path sets). The pass is
-  any round's — under **DFlash2** the drafter proposes from the lane's
-  **drafter window** — but the lane accepts the leading drafts the recording
-  agrees with, at most its **extent**, and takes the recorded token after them
-  as its correction, so the **committed run** is the recording's. A live round
-  under sampling accepts a one-hot draft exactly when its sample equals it, so
-  these are the rounds a live run that sampled the recording would have made:
-  the acceptance replay of recorded agent turns walks a turn in them. The
-  recorded token after the run is the lane's pending token, so it must be a
-  vocabulary id; the pad past a recording's end is taken only after a stop id,
-  and leaves no pending token until a prefill gives one. Greedy lanes, 27B
-  loads only.
-- **Proposal readout** — the drafter's proposals at a sequence's frontier,
-  read without running a round (GitHub #267, test-only): the drafts, each draft
-  column's 16 candidates, their proposal-head logits and the selector's
-  transition scores, the lattice the replay walks other selection rules over.
-  Named after the **readout**'s precedent — a measurement beside the program,
-  never a second way to generate — but not one: a **readout** reads named
-  tokens' target logits at one position and costs a prefill; this reads the
-  drafter's lattice and costs one eager drafter forward. The name is #267's
-  (`dflash2_readout`).
-- **MTP** — the model's native multi-token-prediction head, the alternative
-  drafter (draft window 1..7 chosen at load, verification width chosen per
-  round). Deferred behind **DFlash2** at G5.
-- **Vision** — multimodal input: images today, video refused until its own
-  spec. A load option (`--vision-enabled`): without it nothing of the tower is bound
-  or reserved and text serving is unchanged. With it, a chat message's
-  content parts may carry images by `data:` URI or HTTP(S) URL; the server
-  **acquires** and prepares each one before admission, the template expands
-  its placeholder into its **vision tokens**, and from there a multimodal
-  request is an ordinary request — chunked and interleaved with decode lanes,
-  speculated by **DFlash2**, sharing prefixes under its **match key**, evicted to and
-  restored from **KV-RAM** — whose prefill additionally runs a **media
-  encode** per item and whose rounds rotate at its **rope delta**.
-- **Media acquisition** — turning a request's image parts into prepared
-  **media items** before it is admitted: decoding a `data:` URI or fetching a
-  URL under the media policy (private addresses refused unless
-  `--media-allow-private-network`, byte cap, deadline), then preprocessing,
-  memoized by content digest. A refused image refuses its request before
-  admission; nothing reaches the scheduler.
-- **Media encode** — the prefill step that runs the **vision encoder** over
-  one **media item** and leaves its **media embedding** in the **embedding
-  pool**, in the first chunk that reaches the item — unless the pool already
-  holds that item's, in which case the chunk does no encoding at all. Its
-  wall time is reported on the request, apart from the prefill's.
-- **Media item** — one image in a prompt: its patch grid, the run of
-  placeholder tokens it expands to, its BF16 patch rows and the digest of the
-  bytes it came from. The unit the processor prepares, the encoder encodes and
-  a prefill chunk carries at most one of.
-- **Vision tokens** — a media item's *merged* tokens, one per 2x2 block of
-  patches: the placeholder run's length, and what the per-request envelope
-  (`--vision-max-tokens`) is counted in. The envelope also bounds each image: one over it is downscaled onto a smaller grid, not refused (#248).
-- **Media embedding** — a media item's encoder output, `[hidden, vision
-  tokens]`, device-resident and leaf-owned. **Held** by a request from its
-  encode until the item's last placeholder is prefilled, and **resident** in
-  the **embedding pool** past that, until something needs its room: a fan-out
-  of N questions over one image encodes it once (ADR 0035). Identified by the
-  item's content digest and grid — not by the request, and not by where the
-  placeholders landed.
-- **Embedding pool** — the load's one device reservation for **media
-  embeddings** (`--vision-embedding-pool-mib`, defaulting to one
-  envelope-wide item), carved into fixed-width **column pages** so an item
-  takes the pages its own columns need rather than a slot sized for the
-  envelope. An embedding is contiguous in column space and not in memory:
-  the encoder writes it a page at a time and a prefill chunk scatters it back
-  a page run at a time, with the same ops either did over one flat buffer.
-  The leaf owns the bytes and refuses when they are gone; the runtime owns
-  which resident embedding is given up (least recently unheld).
-- **Vision encoder** — the 27-block tower plus the 2x2 merger that turns patch
-  rows into a media embedding. Run once per item by the **media encode** step,
-  never per chunk.
-- **Rope delta** — `max_position + 1 - prompt_length` for a multimodal prompt,
-  whose three-axis positions advance more slowly than its tokens. Every decode
-  round after such a prompt rotates at `position + rope_delta`; the position
-  itself stays the KV index and the sampler's key. Part of a sequence's
-  progress, so a snapshot blob carries it — but a clone does not: a
-  **shared prefix** or **prompt checkpoint** captures it as zero, since a
-  text claimant may stand on a multimodal publisher's head. A claimant learns
-  its own delta only from a prefill span, which is why a multimodal claim
-  always leaves at least one prompt token to prefill (ADR 0029).
+**Continuation**:
+The request a rewind submits: the same input, its prompt extended by the tokens
+kept before the cut and a **nudge**, with what is left of the generation cap
+and of the thinking budget.
 
-## Decisions
+**Nudge**:
+The sentence, in the model's own voice, a continuation ends its prompt with
+("Wait, I'm starting to repeat myself. …"): `loop_guard_nudge` for the first
+rewind, `loop_guard_nudge_again` for every later one. After
+`loop_guard_retries` nudges, the thinking close takes its place and the
+reasoning ends.
 
-- **Decision** — one question put to the model about supplied evidence, whose
-  answer is a distribution over a declared set of options rather than
-  generated text. It is the unit a decision request is made of: one evidence,
-  many decisions.
-- **Readout** — reading the logits of named tokens at one position instead of
-  sampling a token there. The **decode** path samples and never ships logits
-  to the host (**per-lane sampling**); a readout is the opposite of that in
-  both halves — it receives logits and draws no sample. A readout costs one
-  prefill and generates nothing. Not the DFlash2 replay's **proposal
-  readout**, which reads the drafter, not the target.
-- **Answer token** — the single token that stands for one option of a
-  **decision**, and whose logit the **readout** reads. Nothing to do with a
-  decode **lane**, a **GDN slot** or a **retained slot**, which are all
-  per-sequence device resources; an answer token is a vocabulary entry.
-- **Answer alphabet** — the ordered pool answer tokens are drawn from: single
-  characters first (`A`-`Z`, `a`-`z`, `0`-`9`), then uppercase bigrams. It is
-  **computed from the loaded tokenizer, never compiled in**: a label is
-  admitted only if it encodes to exactly one token that decodes back to
-  itself, which rejects 114 of the 676 uppercase bigrams in the 27B's
-  tokenizer. A label that is two tokens would have its first token's logit
-  read, and that token belongs to another label.
-- **Constrained decode** — a decode whose sampling is restricted, per lane, to
-  a declared set of tokens. What a **readout** is to one position, this is to
-  a run of them: the answer's shape is the caller's, so no parser has to
-  survive a shape the model chose. Where the shape has a choice in it —
-  `scalar`'s optional decimal point — the *reader* refuses what the schedule
-  could not forbid, which is a parse of a known alphabet and not of free
-  text. These are the decision primitives that generate tokens.
-  The wire exposes it as `number`, `point` and `box` (GitHub #242) — a number
-  read digit by digit into a field of fixed width, and two or four of those;
-  since GitHub #260 a `point` is a chain only when asked for by
-  `"method": "chain"` or on a load with no **pointing head**, and since
-  GitHub #263 a `box` may be asked for `"method": "head"` instead —
-  and as `scalar` (GitHub #255), which adds the closing brace to the alphabet
-  so the number chooses its own width and may carry a decimal point.
-- **Permitted set** — the vocabulary entries one step of a **constrained
-  decode** may draw from, at most 32 of them. The leaf drives every other
-  column of the logits row to `-1e30` before the vendored sampler runs, so
-  the constraint composes with temperature, top-k, seeds and penalties
-  instead of replacing them, and what comes back is a token id like any
-  other. A set the leaf cannot honour is **refused, never truncated**: a
-  constraint silently narrowed is a wrong answer that looks like a right one.
-- **Schedule** — one **permitted set** per token a **constrained decode**
-  may emit, in order. It is that request's whole generation budget, and its
-  whole stopping condition **unless it names a terminator**: the run ends
-  when the schedule is spent, with `stop`, and never on EOS, because a token
-  drawn from a set of digits cannot be one. Not the request **scheduler's**
-  anything — it schedules alphabets, not requests. A set of cardinality one
-  is how a literal is forced mid-generation.
-- **Terminator** — a token a **schedule** names, permitted by its steps like
-  any other, that ends the run when it is drawn. Not EOS by another name,
-  and the difference is whose decision it is: EOS is the model saying it has
-  nothing more to say, while a terminator closes the *shape the caller
-  asked for*. `scalar` puts `}` there, so a number that is complete closes
-  its own object instead of filling a field, and its `digits` is a maximum.
-  A short run is then not automatically a fault, which is the one thing a
-  reader must get right: ended on the terminator (complete), stopped without
-  one with steps left (the engine cut it off), or spent the whole schedule
-  without one — which, when the schedule has room for every structural
-  token, means the run wrote past its own ceiling. Told apart by the **last
-  token** and never by the length. A schedule bounds **tokens** and not digits, since
-  a step cannot tell a digit from a decimal point, so what the schedule
-  cannot forbid the reader refuses.
-- **Draw** — one token a **constrained decode** emitted, and its probability
-  *within that step's **permitted set*** — a restricted softmax over at most
-  32 logits, computed on the device and temperature-free on purpose: it is
-  the model's confidence in the token, not the chance the sampler happened to
-  pick it. A run's draws, in order, are its **trace**. The first token of a
-  run is drawn by its **prefill**, not by its first decode round, because a
-  round returns the token the previous call made ready.
-- **Forced literal** — tokens a request is made to generate, one **permitted
-  set** of one per round, after which it is **released** and generates
-  freely: not a **schedule**, which ends its run when spent. `tool_choice:
-  "required"` or a named function forces the opening of a tool call this way
-  (GitHub #286), from the first token with thinking off and right after the
-  reasoning block with it on; the thinking budget's forced close is the same
-  shape. After a `</think>` the model wrote itself, the first forced token is
-  the literal's second, its **joiner** (the `\n` after `<tool_call>`): the
-  token before it was drawn unseen, and may itself have opened the call.
-- **Answer mass** — how much of the whole next-token distribution the answer
-  tokens hold, `exp(logsumexp(answer logits) - logsumexp(all logits))`. It is
-  what says whether a restricted softmax is reading the model or renormalizing
-  noise: a **decision** whose answer mass is near zero has an argmax that
-  means nothing.
-- **Attention readout** — reading attention heads' pre-softmax scores
-  (`q · k / sqrt(head_dim)`) at a prefill's last position over one span of
-  its keys — an image's placeholders, or a text state's tokens — instead of
-  the logits of answer tokens (GitHub #260, #263, #264 and #275; ADR 0038,
-  ADR 0039, ADR 0040 and ADR 0041). The third thing the `Compute` seam
-  carries, beside the **readout** and the **permitted set**: the job names
-  the span, the **pointing head** and optionally a **head set**, and what
-  comes back is one score per key for the pointing head and, per head of the
-  set, either its key index with its own score there and the four around it
-  in the image grid (the **sub-cell peak**'s evidence) or, over a text span,
-  its whole row — the **head vote**'s evidence. The keys
-  are the ones each armed layer's attention read, as it read them — the hq
-  prompt route's codec-decoded and window-exact rows, or the BF16 pages, also
-  when an earlier request wrote them — so a leaf that cannot read them on any
-  armed layer fails the question rather than scoring some other copy or
-  answering with part of the set. A `point`, a head `box` or a **locate**
-  answered this way is a **decision**: one prefill, no decode round, no lane.
-- **Pointing head** — the attention head that names *which* object a `point`
-  or a head `box` is about: L39.h10 (GQA ordinal 9, query head 10) on the
-  served 27B, read at the position after the forced `{"x":`. It reads a fixed
-  **part** of the object it names — where a button's label begins, a large
-  object's bottom-right corner — so read alone it is spec 13's `point`, and
-  beside a **head set** it is the anchor the set's cells are kept around. A
-  **calibrated constant keyed to the artifact's content hash**: chosen on
-  labelled scenes by cross-validation, never computed at load, and never
-  read on an artifact nobody calibrated it for — such a load answers `point`
-  with the digit chain. Its map is read by TAG's region rule (min-max over
-  `exp(s - max s)`, cells at or above 0.5, the 4-connected region with the
-  highest mean, its weighted centre), and the region's share of the head's
-  attention over the image is the answer's confidence — one that separates
-  hits from misses on the measured scenes, not a calibrated probability.
-- **Head set** — the attention heads read together beside the **pointing
-  head**, one image cell each: where that head looks hardest, the **fallback
-  cells** skipped (GitHub #263, ADR 0039). Each reads a different part of the
-  object the question asked for — its boundary, mostly — so the cells near
-  the pointing head's point outline the object. 96 heads of GQA layers 31 to
-  63 on the served 27B, chosen by a written rule (at least 0.3 of the softmax
-  mass over the boxes of distractor scenes, 0.8 of it on the asked box) and
-  calibrated beside the pointing head, keyed to the same content hash. Read
-  alone, without the anchor, a fifth of it follows colour to a distractor.
-- **Fallback cells** — the image cells attention heads peak on when nothing
-  in the image matches the question: the first and the last image cell on
-  every grid, and on a grid the calibration measured, the cells it found
-  there (on 32x32 also (0,1) and (6,31)). The **head set**'s argmax skips
-  them; the **pointing head**'s map keeps them, and a map flat enough to fall
-  back to one (`region.share` about 0.03) is nothing found.
-- **Sub-cell peak** — where a **head set**'s head looks hardest *inside* its
-  image cell, not just which cell (GitHub #264, ADR 0040): parabolic
-  interpolation over its score at its peak and the two in-line neighbours on
-  each axis, in cells, zero when a neighbour is off the grid or the triple is
-  not a strict peak. It is what lets a box frame an object smaller than the
-  cell grid can express — a 1024 px button is 1.44 cells tall, and a box on
-  cell geometry cannot clear the digit chain at that size.
-- **Allowance** — what the **extent** grows the kept heads' span by on each
-  side: `0.05 + 4.5 / n` cells, `n` the distinct cells they peak on (never
-  under three, the fewest measured). The span is a *lower bound* on the
-  object — it reaches only the parts the heads hit — and what one part leaves
-  unobserved falls as more parts are seen: on synthetic scenes the set tiles
-  the object (17-56 distinct cells), on a photograph it piles onto one
-  distinctive part (6-13).
-- **Locate** — the `/v1/decide` primitive that names the **segment** of a text
-  `state` an instruction asks for (GitHub #275, #278; specs 18 and 22; ADR 0041,
-  ADR 0042), with nothing written into the state and nothing generated. Two
-  methods: the **shortlist** (the default) and the **head vote**. It has a
-  `kind` (`auto`, `log`, `prose`, `records`) and a `compression`
-  (`template_fold`, `none`), and its answer names the resolved three, the
-  segment's index and value as the caller sent it, a ranking, **pointers**
-  and — on the measured routes — **found**. Its reading prompt is layout L1 —
-  the evidence alone in the system message — at the copy scaffold
-  `{"quote":"`. Refused on a load nobody calibrated it for; the vote also past
-  the span it was measured on (`LOCATE_MAX_KEYS`, 4,554 keys on the served
-  27B).
-- **Shortlist** — a **locate**'s default method (GitHub #278, ADR 0042): the
-  calibrated heads narrow the text to a few candidates — 5 templates at a
-  fold's **level 1**, 16 rows at its **level 2**, 16 lines, sentences or
-  records otherwise — and a labelled `choice` over them decides, with no
-  token generated. The heads narrow a very long text; the `choice` resolves
-  near-duplicates, which it does well among a handful and badly among
-  hundreds.
-- **End reading** — a **shortlist**'s reading of logs and records: a
-  segment scored by where it closes — its last key, its separator and the
-  next segment's first key — each head's lift over the **content-free
-  baseline** standardized over the window's segments and summed over the
-  **end heads**. At length a line is marked at its end, not its start.
-- **Sum reading** — a **shortlist**'s reading of prose: a segment scored by
-  all its keys, as the **head vote** does, standardized and summed over the
-  **sum heads** rather than voted.
-- **End heads** / **sum heads** — the two head sets of a `locate`
-  calibration (spec 22): the end heads, 32 heads of GQA layers 35 to 55 with
-  the best single-head top-1 at a line's closing keys on development sets
-  (spec 23); the sum heads, the **head vote**'s 32. Keyed to the artifact's
-  content hash with `LOCATE_WINDOW_KEYS`.
-- **Template fold** — a `locate`'s `template_fold` compression (spec 22):
-  a log's lines grouped Drain-style into templates — same source label, same
-  token count, tokens agreeing on half the positions, times removed and
-  obvious variables masked — so a long log is read as a short text first.
-  Reversible: every **level-2** row maps back to the lines it stands for.
-  Removes the lines' order and neighbours, and every time from level 1.
-- **Level 1** — a **template fold**'s first text: one line per template, its
-  variable slots showing their distinct values while they fit 600 characters,
-  and `(xN)`.
-- **Level 2** — one template's lines as their values only, values first and
-  the line's time last, exact repeats one row with `(xN)`. The **shortlist**
-  ranks rows by their values and shows the last `choice` each row's first
-  original line, because whether a line answers cannot be read from its
-  values alone.
-- **Window** — a stretch of at most `LOCATE_WINDOW_KEYS` (200,000 on the
-  served 27B) keys of a text the heads read, cut at segment boundaries — at an
-  empty segment where one is in reach (a paragraph break), else before the
-  segment that would not fit — and read as its own prefill with its own
-  **content-free baseline**; windows' scores are standardized and merged. A
-  text's length is then bounded by the request, not the context.
-- **Pointer** — every candidate of a `locate`'s last `choice` at a share of
-  0.05 or more, the pick always first: one answer, or the several segments a
-  two-part answer needs.
-- **Records array** — a JSON array of two or more elements, every one an
-  object, and not the content-parts shape (every element with a string
-  `type`): what `auto` reads as `records`, without a statistic.
-- **Found** — whether a `locate`'s text answers at all (spec 22 § Not found):
-  the last `choice` asked again with a "none" option, and for a folded log a
-  yes/no; `1 - p(none)`, averaged with `p(yes)` for a log. Below 0.5 the
-  answer names no segment and keeps its ranking. Carried only by the measured
-  routes (`log` + `template_fold`, `prose` + `none`, `records` + `none`), and
-  never a calibrated probability.
-- **Segment** — one place a **locate** can answer with: a line of a string
-  state, split on `\n` exactly (a `\r` stays part of its line), or an element
-  of an array, `within` an optional JSON Pointer. Numbered the way the caller
-  would number them — the 0-based index of `split("\n")`, the array index.
-  Its keys are the prompt tokens holding most of its bytes, found from the
-  byte range recorded as the state was written, never by searching the text:
-  two identical lines are two segments. An empty or all-whitespace one keeps
-  its index and owns no key.
-- **Head vote** — how a **locate** is read (spec 19's track L, GitHub #276):
-  each of 32 heads of GQA layers 35 to 63 names the **segment** whose share
-  of its softmax over the span the question raised most above the
-  **content-free baseline**'s, and the most-voted segment wins, a tie to the
-  segment the best-ranked head named. A **calibrated constant keyed to the
-  artifact's content hash**, like the **pointing head**: the heads with the
-  most training hits on development sets, never computed at load. The vote's
-  **confidence** is how much the heads agree, not a calibrated probability.
-- **Content-free baseline** — the same prompt with the instruction replaced
-  by `N/A` (ICR's, QRHead's and contextual calibration's "N/A"): what the
-  heads do with the state and the scaffold when nothing is asked — sinks,
-  first lines, position — which the **head vote** subtracts before a head
-  votes. One per **locate** target in a request, shared by every `locate`
-  over it; it claims the state's prefix like any sibling, and costs input
-  tokens but is no **decision** of its own.
-- **Extent** — the box the kept heads of a **head set** span: the heads
-  within three times the median distance of the **pointing head**'s point, at
-  their **sub-cell peaks**, their 15%-85% quantiles on each axis grown by the
-  **allowance**, clamped to the image. A head `point` is its centre and
-  carries it as `extent`; a head `box` is it.
+**History repair**:
+On every incoming request, guard on or off, the `m` characters before each
+rewind tag and the tag itself are removed from assistant reasoning when they
+hash to the tag's `h`, so the model is given back the text it actually saw (ADR
+0052). Never applied to any other text.
 
-## The Responses API
+**Holdback**:
+`loop_guard_holdback` characters of reasoning held back from the client (0,
+off, by default), so a rewind whose cut falls in the unsent part reaches the
+client with no tag at all.
 
-- **Stream** — one of the independent request sequences a Responses
-  WebSocket multiplexes (OpenAI's `stream_id`; the connection's **default
-  stream** when it names none). Its requests run in order and never overlap;
-  different streams run side by side. It is the standard's word and nothing
-  in the engine: never call it a **lane**, which is a decode slot.
-- **Continuation cache** — what one Responses WebSocket remembers so a request
-  can name `previous_response_id` and send only new items: per **stream**, its
-  latest finished response and the whole conversation that response saw.
-  It chooses nothing about retained state: a continuation re-renders that
-  conversation, and reuse stays a content match on the **prompt checkpoint**
-  and **retained prefix** (ADR 0029). It dies with the connection.
-- **Warm-up request** — a request that ends where its prefill ends and
-  generates nothing, like a **decision**, but reads nothing out and keeps what
-  an ordinary request of the same prompt keeps: the **retained prefix** at its
-  system block and the **prompt checkpoint** at its generation opener, for the
-  turn that follows. The Responses WebSocket's `generate: false`.
-  _Avoid_: prewarm (for the request kind; it is the client's word for the act).
-- **Socket admission queue** — the one server-wide first-in, first-out queue a
-  Responses WebSocket request waits in when the engine is full, told so with
-  `response.queued`, instead of being refused with a 503 as an HTTP request
-  is. Only its head retries, each time a request leaves the scheduler.
-- **Idle socket** — a Responses WebSocket with nothing running, queued or
-  waiting on it and no text or binary frame from its client since its last
-  response ended; a ping does not make it busy. One idle for
-  `server.socket_idle_close` is closed by the server (GitHub #329), since an
-  open socket holds a Knative pod. Not **idle unload**, which counts use of
-  the model, never of a connection.
+**KV reservation**:
+The KV pages the pool has given a request. Its *bound* is prompt plus
+**generation cap**, never past `--model-max-context`.
+_Avoid_: allocation (the leaf's word for the mapped pages).
 
-## Configuration (ADR 0046, specs `config-v2/01-02`)
+**Parked lane**:
+On the growth branch, a decode lane held out of rounds because its room ahead
+is below one round's largest append and no page can be had yet. It keeps its
+pages and resumes at the first advance with room.
 
-- **Field** — one configurable setting, declared once (`config::schema`): its
-  flag `--<group>-<field>`, env var `IGNIS_<GROUP>_<FIELD>`, config-file key
-  `<group>.<field>`, default, rule and help text all come from that one
-  declaration. Fields are grouped by concern (`server`, `model`, `vram`,
-  `reuse`, `switch`, `spec`, `vision`, `media`, `download`, `ngram`,
-  `kv_disk`). `ignis-server help --fields` lists every one.
-- **Family scope** — a field both model families take but want sized
-  differently has a variant per family (`qwen38`, `qwen38flashnext`, from
-  `ModelFamily`, never a served id): `--qwen38flashnext-reuse-kv-host-pool-bytes`.
-  A tiebreaker *within* each source, not a source of its own: the command line
-  wins whatever its scope.
-- **Applicability** — the families a field means anything for (`Only(Flash-Next)`
-  for the expert cache's floor, `Only(27B)` for vision). An explicit value for a family
-  that cannot take it is refused at start and dropped, with a log line, on a
-  switch; a value equal to the field's default is neither.
-- **Card class** — the device memory a profile is shaped for: 32 GB (RTX
-  5090), 96 GB (RTX PRO 6000), 16 GB (RTX 5060 Ti / 5070 Ti / 5080). It decides
-  which artifact, how many lanes and what context the profile defaults to.
-  _Avoid_: GPU tier.
-- **Profile** — a named bundle of hardware-shaped field defaults (`--profile`,
-  built-in `rtx50-16gb`, `rtx5090` or `rtxpro6000`, or a config file's
-  `profiles:`): below the config file, above the hardcoded defaults — a
-  default, never an override. `auto`, the default, picks the built-in profile
-  of the card's **card class** from NVML's total memory (ADR 0063); a named
-  profile always wins.
-- **Adaptation** — a 27B load lowering the values its profile or the
-  hardcoded defaults gave, in a fixed order, until its VRAM plan fits (ADR
-  0063): the drafter's `shortlist` head to `full`, then the context down its
-  **ladder**, then one decode lane. Only a plan refused below its minimum
-  adapts; one that fits as configured changes nothing. An explicit value never
-  adapts.
-- **Ladder** — the contexts an adaptation plans, from the configured one down
-  every multiple of the context step (`model.adapt_context_step`, 65,536) to
-  one step, keeping the largest whose KV pool holds one full sequence and a
-  spare reservation (`vram.adapt_spare_tokens`, 65,536) at more than one lane.
-  _Avoid_: step (bare) for one of its rungs: an adaptation taken is an
-  adaptation step.
-- **Live change** / **reload** — the two ways `PATCH /v1/config` applies a
-  change, never both in one patch: a live change touches only server-level
-  values (timeouts, message policies, thinking defaults, switch knobs) and no
-  model; a reload runs the whole patch through the model switch, reloading the
-  same model with the patched configuration.
+**VRAM budget**:
+The device memory the whole ignis process may hold, weights included: the
+number Task Manager shows. Either explicit (the operator names it) or derived
+(the memory free at start minus the **VRAM headroom**).
 
-## Observability
+**VRAM headroom**:
+The device memory a derived **VRAM budget** leaves to everything else on the
+card: the desktop and other processes.
 
-- **Canonical event** — the one structured representation of a log occurrence
-  (severity, event name, body, attributes, trace context). Not a Rust struct
-  every call site builds by hand: it's `tracing::Event` + active span
-  context, observed by the JSON/pretty `Layer`s. Formatters are presentation,
-  never the source of truth (ADR 0011).
-- **Event name** — a stable, class-level identifier (`ignis.<subsystem>.<event>`,
-  e.g. `ignis.model.loaded`), never occurrence-specific data.
-- **`logging` crate** — owns `tracing_subscriber` setup, the JSON/pretty
-  `Layer`s, and log-format/log-level config resolution; every other crate
-  depends on it only for macros/init, never the reverse. Distinct from the
-  **server telemetry** (`crates/server/src/telemetry.rs`, design §5): the
-  asynchronous consumer that tracks per-request state and the scheduler
-  interval counters. It owns no output of its own: the request lifecycle is
-  the `ignis.request.*` events (GitHub #79), and the interval counters are the
-  DEBUG event `ignis.scheduler.interval`, emitted when they change (ADR 0025).
-  Metrics are a separate projection of the same consumer's state (ADR 0017),
-  never parsed back out of the log.
-- **Logging queue** — the handoff decoupling event *creation* (a `tracing`
-  call site, potentially on the prefill/decode path) from physical I/O
-  (potentially slow: a full disk, a stalled pipe). Two channels, two
-  deliberately different backpressure policies: the priority channel
-  (INFO/WARN/ERROR) is bounded and blocks briefly rather than drop — an
-  ERROR must never silently vanish; the debug/trace channel (DEBUG/TRACE) is
-  a bounded ring buffer that drops its oldest entry on overflow rather than
-  ever blocking. A background thread is the only thing that ever performs
-  the real write. Flushing at shutdown waits, up to a fixed budget, only on
-  the priority channel — a pending DEBUG/TRACE line is exactly what that
-  channel already permits losing.
-- **Sensitive attribute redaction** — an attribute whose key contains a
-  sensitive whole word (`password`, `secret`, `token`, `authorization`,
-  `bearer`, `cookie`, `credential`) or word pair (`api_key`, `private_key`)
-  is redacted by construction, not by call-site discretion — a call site
-  naming a field carelessly is caught before it ships rather than relying on
-  every call site remembering to redact by hand.
-- **`request.id`** — reused as the OTel `trace_id` for the request's span
-  tree (root span at HTTP ingress, children per admission/prefill/**decode
-  round**/MTP verify/completion); one identifier for the same causal unit
-  across fairness, logs, and spans (ADR 0012). One count for the process's
-  life, across every load. Spans stop at decode-round
-  granularity, never per-token — a per-token span is hot-path logging by
-  another name.
-- **Hot-path logging constraint** — normal INFO operation must not emit one
-  record per token/layer/kernel/allocation on the prefill/decode path; any
-  logging or tracing change touching that path must pass the G4 performance
-  gate (ADR 0007) before merge, not just design review.
-- **Hotpath lint** — the grep-based, hand-maintained scan over a fixed list
-  of prefill/decode/CUDA-graph-adjacent files that fails `cargo test` on any
-  INFO-or-above `tracing` call or raw `println!`/`eprintln!`/`print!` found
-  there. What makes the **hot-path logging constraint** checkable in review,
-  not only provable later at the G4 gate. A `hotpath-lint-allow:` comment
-  marks a reviewed, intentional exception, never a silent one.
-- **Playground** — the opt-in browser page ignis serves for trying the engine
-  by hand: a chat against its own OpenAI surface, with per-request figures the
-  browser measures itself, and the **Monitor**. A debugging aid for the owner
-  — not a product UI, not an operator surface (that is Prometheus), and never
-  a source of facts the engine does not already expose.
-- **Monitor** — the Playground's live dashboard over the Prometheus
-  exposition (GitHub #165): the browser scrapes `/ui/metrics`, keeps a rolling
-  in-memory history, and derives rates, latency quantiles and a plain-words
-  verdict from ADR 0017's contract metrics only. Offered only when metrics are
-  on; not a replacement for Prometheus, and gone on reload.
+**VRAM oversubscription**:
+Holding more device memory than the card has free. Windows serves it by paging
+device allocations to system RAM (Task Manager's "Shared GPU memory") instead
+of failing, which slows every step; other systems fail the allocation.
+_Avoid_: shared memory, spill (a spill is KV-RAM's).
 
-## Acceptance
+**KV pool policy**:
+How a load sizes its KV pool, chosen by whether every weight is on the device
+(ADR 0045). A **resident** load (the 27B, and Flash-Next on a card that holds
+every expert) gives the pool the rest of the **VRAM budget**; an **offloaded**
+one (Flash-Next with its experts streaming, as on the 5090) reserves the pool
+first and gives the **expert cache** the rest.
 
-- **Gate** — a milestone acceptance measured **on the GPU**, never on CPU
-  tests. G1 correctness floor, G2 prefill, G3 decode + serving loop, G4 the
-  reference feature floor, G5 speculative decoding (`docs/ROADMAP.md`).
-- **GPU profile** — the explicit test profile for GPU work: it requires the
-  5090 free and **fails**, never skips, when the GPU is busy or a kernel
-  errors. A skip is not green for compute work. *Free* means **one process on
-  the card**: no ninfer, and no other test run, bench leg or agent session
-  already using it — in any worktree, since the worktrees are separate and the
-  card is not. A single run peaks near 26 of the card's 32 GiB, so a second
-  one does not fit; the loser dies with no diagnostic (GitHub #145).
-- **Generated token** — a token the engine decoded, on **either** channel: the
-  answer (`delta.content`) or the thinking trace
-  (`delta.reasoning_content`, on by default). Every throughput and latency
-  cell counts generated tokens, because both channels are the same decode
-  work; a correctness check reads the answer channel alone, because scratch
-  work is not an answer. Reading only the answer channel scored a
-  thinking-heavy agentic turn as a request that produced nothing (GitHub
-  #137).
-- **Canary suite** — the fixed set of short, high-signal prompts used to detect
-  divergences. Sanity is judged on everything the turn generated: a turn whose
-  budget ran out mid-thought produced sane tokens, not empty output. The
-  64-token budget stays that way under the serving default, so most canaries
-  are read on the thinking channel and the report says so
-  (`answer=thinking-only`). Checking the *answer* is the **canary oracle**'s
-  job, token by token with thinking off — the suite's own job is catching a
-  degenerate engine, which shows on either channel (GitHub #144).
-- **Canary oracle** — the recorded fixture the canary suite is checked against:
-  the reference engine's greedy (exact-argmax) completions on those prompts for
-  the same artifact, tokenized with the artifact's tokenizer.
-- **Teacher-forced agreement** — how the canary oracle is scored, and the G1
-  correctness floor: at each of the first 32 positions the engine is fed the
-  *oracle's own* token prefix, and its greedy next-token argmax is compared
-  with the oracle's recorded token. Positions are scored independently, so one
-  divergence cannot cascade. The floor is ≥ 95% overall (ADR 0014). It is a
-  sanity floor for gross implementation errors — wrong layouts, missing ops,
-  broken state wiring, wrong positions, corrupted activations — **not** a
-  parity requirement: ignis may differ numerically and linguistically from the
-  reference (ADR 0007).
-- **Free-running agreement** — the older scoring, where the engine generates
-  its own continuation and the two token streams are diffed. **Diagnostic
-  only** (ADR 0014): after the first divergence the engines no longer share a
-  prefix, so it measures continuation similarity, not forward-pass health.
-- **TTFT cell** — one fixed prompt length (8K, 32K) at which time to first
-  token is measured through the bench, the same way against either engine:
-  streaming, greedy, thinking off, a small output budget, deterministic
-  synthetic prompts of exactly that many tokens. Every sample is a **cold
-  prefix**: each sample (the warmup included) gets its own prompt, distinct
-  from the first content token, so no prefix cache or host KV tier on
-  either engine can serve it; the engine's own computed-prefill-token count
-  must equal the prompt length or the sample is void.
-- **ITL measurement window** — the stretch of a G3 ITL cell in which *every*
-  decode lane was alive: it opens at the last lane's first token and closes at
-  the first lane's end, and only the prefill windows closing inside it are
-  pooled against. A lane the harness cancelled ends at the cancellation, since
-  it was generating until then; a lane the engine ended — its own EOS, the
-  safety cap — ends at its last token. The window is what keeps a pooled
-  interval honest (all four lanes decoding beside it) without making the leg
-  hostage to which of the three terminators fired first
-  ([ITL lane terminator race](docs/findings/2026-09-13-itl-lane-terminator-race.md)).
-- **Live/live gate** — how G2 is judged: ignis and the reference measured on
-  the same TTFT cells in the same session on the same machine, and the
-  ratio ignis/reference must be ≤ 1.5. A committed reference record exists
-  for regression and sanity only; it never decides the gate.
-- **Measurement session** — the identifier both engines' TTFT records carry
-  when they were measured back to back in one sitting. It is what makes
-  live/live checkable rather than asserted: `ignis-bench g2` refuses a
-  verdict when the two records do not share one, which is also what stops a
-  committed fixture from ever being the live side.
-- **TTFT record** — one engine's measured cells plus the identity a later
-  reader needs to audit them: every sample and its computed-prefill count,
-  the median, the endpoint, the engine, the artifact, the profile, the date
-  and the measurement session (`ignis-bench ttft --out`).
-- **f64 layer reference** — a CPU fp64 computation of one GQA layer and one
-  GDN layer on the real weights, the tolerance target for the leaf's per-layer
-  output at G1.
-- **Performance gate (99%)** — the acceptance criterion at G4: ≥ 99% of the
-  reference's performance (throughput / latency) on the trace-replay load,
-  **not** token-agreement;
-  correctness is self-checked (sane output, same model, greedy, fixed seed).
-  It is the first of a ladder of performance gates (later gates TBD).
-- **Trace replay** — re-sending a recorded "1 main agent + N subagents" load
-  trace against both engines to compare scheduler behavior, scored per **lane
-  tag**. The trace is the load, not the baseline: the reference's own run is
-  measured live in the same session (**live/live gate**), over at least two
-  launches per engine (ADR 0021), and the verdict is the pooled cell statistic.
-- **Load trace** — the recorded agent session a **trace replay** sends. It holds
-  real working content, so it is never committed: its SHA-256 and its shape
-  (request count, class split, arrival span, prompt-length distribution) ship
-  with the gate artifacts, and both run records carry the hash so a reader can
-  prove the two engines replayed the same load.
+**Trained position envelope**:
+The 262,144 rotary positions the checkpoint was trained over. Not a limit the
+engine enforces: a sequence past it is served (the attention envelope reaches
+1,048,576 keys under hq-e8-2b), it is simply rotated at angles the model never
+saw.
+
+**RoPE scaling**:
+The text rotary frequency table a load runs on, chosen at load and frozen for
+its life. Either *none* — the linear table, correct through the **trained
+position envelope** — or **YaRN** at a factor, which rescales that envelope:
+the high-frequency pairs keep extrapolating, the low ones interpolate at
+`1/factor`, a ramp blends the band between, and an attention factor `m` rides
+along.
+
+**Performance-first**:
+The organizing principle: correctness (a self-check of *sane* output) is a
+non-negotiable floor; above it, performance is the #1 objective and
+tie-breaker for every scope, feature, and kernel decision.
+
+**North-star**:
+The holistic objective: "the best local coding engine" — max performance
+**and** agent parallelism that saturates the GPU in prefill *and* decode.
+
+**Self-bootstrapping**:
+The dev/test loop where the very runner used to build ignis (ninfer, running
+Qwen 3.8-27B) is running while we test; two engines share the 5090, so GPU
+testing is exclusive (ADR 0006).
+
+**Reference**:
+The ninfer stack: the source of the artifact, the vendored ops, the oracle
+recordings and the speed numbers. A reference, not a target to match
+token-for-token (ADR 0005 / 0007).
+
+### Model
+
+**Layer kinds**:
+The model is 64 layers: **16 GQA** (full attention) and **48 GDN** (linear
+attention), hidden 5120, intermediate 17408, vocab 248320.
+
+**GQA layer**:
+A grouped-query attention layer: 24 query heads / 4 KV heads of 256, over
+paged KV, rotated by RoPE at the *token's* position.
+
+**GDN layer**:
+A gated-delta-net (linear attention) layer: **16 key heads and 48 value heads
+of 128**, whose recurrence carries the sequence's GDN slot instead of a KV
+cache.
+
+**Fused plane**:
+A single stored tensor holding several projections stacked by row (e.g.
+`attention/query_key_gate_value`, `mlp/gate_up`). Its row order is part of the
+artifact contract, not a guess.
+
+### Flash-Next
+
+**Flash-Next**:
+Qwen3.8-Flash-Next, the second model: 125B mixture of experts, 6B active, 48
+layers in 12 blocks of 3 GDN + 1 QSA, hidden 2560. Served from its own
+artifact, loaded at start or by a switch, and never beside the 27B.
+
+**Expert**:
+One of a layer's 512 routed SwiGLU MLPs (2560 → 640 → 2560); the **router**
+picks 10 per token. The **shared expert** runs for every token, gated by a
+sigmoid.
+
+**Expert projection**:
+An expert's fused gate/up plane or its down plane: the unit the artifact stores
+contiguously and residency moves.
+
+**K**:
+A matrix's bit width in the **trellis** format, chosen by **allocation** on
+calibration distortion: per expert projection on Flash-Next (one of 2, 2.5, 3,
+4; mean 2.5 bits per weight), per projection on a 27B artifact whose **body
+format** is trellis (2 to 6).
+
+**K class**:
+Expert projections of one shape and one K, hence one byte size: eight classes,
+each with its own slot pool in the expert cache.
+
+**Expert pool**:
+Every expert projection, in pinned host RAM for the life of the load. Only an
+offloaded load has one; a **device-only** load has none.
+
+**Device-only residency**:
+A resident load's expert residency (ADR 0054): the expert cache holds every
+projection, so there is no expert pool. At load each record is **admitted**
+from the artifact straight to its slot, a layer at a time, and no step misses.
+
+**Expert cache**:
+The fixed-size VRAM slot pools that hold the projections in use, replaced
+least-recently-used; a plan line at load. It takes what the **KV pool policy**
+leaves.
+
+**Pinned hot set**:
+The calibration-hottest experts an offloaded load keeps in its **expert cache**
+for its whole life (`--vram-pinned-expert-bytes`: 0 by default, 2 GiB under
+the `rtx5090` profile; ADR 0055). Each projection is a **pinned expert**: a
+slot past its K class's LRU slots, a hit whenever selected, never evicted or
+copied, and no copy in the **expert pool**, which is smaller by their bytes.
+_Avoid_: "pinned" alone for it: the expert pool is pinned (page-locked) host
+memory. Nor "pinned" for the slots a step selects: a step **holds** them only
+until it ends (the kernel's `s_held`, the policy model's `held`), held in the
+sense a request holds a **media embedding** — in use until released — where a
+pinned expert is never released.
+
+**Router lookahead**:
+The next layer's router applied to this layer's MoE input to prefetch its
+likely experts into the cache.
+
+**Demand copy**:
+A step's copy of the projections it selected that the expert cache did not
+hold (its misses), on the layer's stream: the expert op waits for it. A
+**prefetch** copy runs beside the op instead, for the next layer.
+
+**Stall**:
+The device time the expert ops waited on their steps' demand copies, per phase
+(ADR 0017). The wait for a previous step's unfinished prefetch is not in it.
+_Avoid_: residency wait (for the stall alone).
+
+**QSA layer**:
+Flash-Next's attention layer: GQA 24 query / 2 KV heads of 256 with an
+**indexer** that, above 2051 tokens, selects the key blocks the attention reads
+(sparse); dense below.
+
+**Hyper-connection streams**:
+Flash-Next's residual: four streams per token, each sublayer reading a learned
+mix and writing back through a gated residual.
+
+**N-gram table**:
+Flash-Next's hashed n-gram embedding table (320M rows, INT4), a
+**host-streamed** object: read row by row from NVMe through a RAM hot-row cache
+(or held whole in RAM when the hot-row budget covers it), never materialized on
+the device.
+
+**MTP head**:
+The checkpoint's own one-layer draft head (spec `flash-next/07`): it combines
+the trunk's pre-mixer streams with the next token's embedding and drafts the
+token after it.
+
+**Companion container**:
+A small `.ninfer` beside the main one that holds only the MTP head
+(flash-next-layout.md §13), with its own identity; bound only when MTP is on.
+
+**Pair pin**:
+The companion's record of the one main container it belongs to (`model_id`,
+`weights_id`, content hash), checked at load; a mismatched pair is refused by
+name.
+
+### Image model
+
+**Image model**:
+Qwen-Image-2.1-Turbo, served from its own artifact: a Qwen3-VL text encoder, a
+7B diffusion transformer (the **DiT**) and a VAE. Reached by a switch, never
+loaded beside a text model.
+
+**Image job**:
+One image request from admission to the delivery of its last image.
+
+**Target image**:
+The image an image job is generating.
+
+**Condition image**:
+An input image an image job is conditioned on (an edit's source or one of its
+references).
+_Avoid_: reference image (**Reference** is the ninfer stack).
+
+**Image session**:
+The Playground's line of work on pictures (spec playground/06): an **image
+pool** and its steps, each step a prompt, the **image inputs** it was sent with
+and the pictures it made. Kept in the page's image store.
+
+**Image pool**:
+Every picture of an image session — uploaded, made by a step, marked, or
+brought from the chat — each named `#N` for good.
+
+**Image input**:
+A picture of the image pool chosen for the next step; the prompt calls the
+inputs image 1, image 2… in order. One input is one condition image, or two
+when it is marked as a mask (the picture, then its mask).
+_Avoid_: reference, reference image.
+
+**Condition prefix**:
+The prompt and the condition images as the DiT sees them before the target
+image; computed once per image job and reused by every denoising step of every
+image the job makes.
+_Avoid_: prefix, shared prefix (those are a text model's).
+
+**K/V run**:
+A span of keys and values stored in 8 bits for the DiT's attention and
+quantized as one unit: keys smoothed by one mean, values scaled per channel
+over the whole span. The condition prefix is one run, the target image another.
+
+**Condition budget**:
+How many condition-prefix tokens the image model can hold, set at load from
+the VRAM the rest of the plan leaves. Condition images beyond it are scaled
+down, never refused.
+
+**Denoising step**:
+One evaluation of the DiT over the target image at one noise level, and the
+sampler update after it. Always qualified.
+_Avoid_: step (bare: that is the Step ABI's unit).
+
+**Prompt enhancement**:
+An image job's optional rewrite of its prompt by a text model before the image
+model sees it.
+_Avoid_: polish, rewrite.
+
+**Revised prompt**:
+The prompt that prompt enhancement produced, returned to the client beside the
+image.
+
+**Enhancer model**:
+The text model that performs prompt enhancement, named by its served id in the
+config.
+
+**Enhancement visit**:
+A switch to the enhancer model and back inside an image job, made when the
+image model is loaded. It is not a switch for **Last switch**.
+_Avoid_: borrow.
+
+### Speech model
+
+**Speech model**:
+A model that takes audio in and gives back its transcript; it never converses.
+The third **model kind**, beside the text model and the image model:
+Qwen3-ASR.
+_Avoid_: voice model, ASR model, audio model
+
+**Transcription**:
+One server job turning audio into text, from admission to the delivery of its
+last text: a whole clip, or live from a stream of audio.
+_Avoid_: recognition (bare)
+
+**Dictation**:
+The Playground act: the user speaks into a composer and the transcript lands at
+the cursor, editable, never sent by itself.
+_Avoid_: voice input
+
+**Diarizer**:
+A model that tells the voices in audio apart and gives back who spoke when; it
+never transcribes. The fourth **model kind**: Nemotron 3 Diarization, loaded
+beside the **speech model** and never resident in VRAM (ADR 0069).
+_Avoid_: speaker model, voice model, diarization model
+
+**Transcript**:
+The Playground's record of one conversation heard in its Transcribe view: its
+**utterances** in order, each with its times, its **speaker** and its text, and
+never its audio. Not a **dictation**: nothing lands in a composer.
+_Avoid_: conversation (the chat's), recording, meeting
+
+**Utterance**:
+One stretch of a **transcript** spoken by one **speaker**, from where speech is
+heard to the silence, the speaker change or the length limit that ends it. A
+pause can split one speaker's turn into two.
+_Avoid_: turn, segment (a **locate**'s), item (the Realtime protocol's)
+
+**Speaker**:
+One voice the **diarizer** told apart in a **transcript**, numbered in the
+order voices first spoke, and renamed by the user; on a call, the microphone's
+voice is "Me".
+_Avoid_: channel (the model's output slot), participant
+
+### Weights & artifact
+
+**Artifact**:
+The `.ninfer` container a model is served from: its weights in the artifact's
+**body format**, its endpoints (token embedding, output head), an optional
+grafted DFlash2 module, and frontend objects (tokenizer / chat template).
+Several artifacts share one **model family**.
+
+**Body format**:
+The weight format of an artifact's transformer layers: **NVFP4**, or
+**trellis**. Read from the artifact, never configured.
+_Avoid_: "3-bit model", "small model" (the family is the same).
+
+**Trellis**:
+The EXL3 weight code (16×16 tiles, the `mul1` codebook, Hadamard rotation with
+per-channel scales on both sides), bit-compatible with exllamav3's records, at
+a **K** per matrix.
+
+**Object**:
+The unit inside an artifact. The binder must consume every object at bind time;
+an unconsumed object is a load failure.
+
+**Device view**:
+The artifact crate's export for a bound tensor: device pointer, storage layout,
+format and shape, so the program binds planes directly with no host dequant.
+
+**NVFP4**:
+The weight quantization format of most of the model: E2M1 values, an E4M3
+group scale per 16 stored in a separate **scale plane**
+(`blockscale-k16-m128x4-v1` layout), and a per-tensor **weight divisor**.
+
+**hq-e8-2b**:
+The reference's HyperQuant KV cache format, and the profile the owner actually
+runs: a randomized Hadamard rotation, E8-lattice quantization and Rice coding
+packed into a fixed per-row budget of 64 code bytes plus 8 metadata bytes per
+(token, KV head). Fixed bytes per token, so page addressing and CUDA-graph
+address stability are unchanged.
+
+**Prompt planes**:
+The BF16 copies of a GQA layer's visible keys and values that the vendored
+hq-e8-2b prompt route decodes the cache into before a prefill chunk attends:
+prefill-only scratch, 4,096 bytes per context token up to 262,144 keys (one
+band). Gone from serving since #335 (ADR 0061): every hq prefill chunk takes
+the **prompt attention** instead, and the vendored route survives only as the
+oracle the route agreement test holds it against.
+
+**Prompt attention**:
+ignis's own hq-e8-2b prefill attention (an adapted op, ADR 0051/0061): two
+passes sharing one online softmax, the **residual window** in BF16 and every
+other key through the **band** in 8 bits (or FP16 with FP16 accumulate, the
+fallback; the load option `--model-prefill-attention` picks one, `fp8` naming
+the 8-bit band). Its workspace stops growing with the context at one band.
+
+**Band**:
+The fixed buffer the prompt attention decodes the codec's keys into, once per
+chunk and layer: 32,768 keys of INT8 K and E4M3 V^T (64 MiB) with a scale per
+32-key tile, walked band after band over a longer history. Not the prompt
+planes' "band", which was their 262,144-key ceiling.
+
+**Residual window**:
+The keys hq-e8-2b attention reads exact instead of decoding: a sequence's first
+32 keys (the **sinks**), a 512-slot **ring** of recent keys, and the prefill
+chunk being attended. Per slot, not per page, so it is a **state section** a
+clone or a restore carries; a ring bit names no position, so appended columns a
+sequence does not keep (a verify round's rejected drafts) must have theirs
+cleared.
+
+**KV format**:
+Which of the two KV cache formats a load runs: **hq-e8-2b**, the serving
+default from G4, or **BF16**, retained as the format every correctness oracle
+runs against. A model-load option, fixed for the life of the load.
+
+### Models, catalog & download
+
+**Model family**:
+The architecture an artifact runs as (`Qwen3.8-27B`, `Qwen3.8-Flash-Next`,
+`Qwen-Image-2.1`), read from the artifact's own header, never declared beside
+it. It decides the forward program, the drafter and the family scope.
+_Avoid_: model (for the architecture)
+
+**Model kind**:
+What a model takes in and gives back: a **text model** takes text and images
+and gives back tokens, and converses (the 27B, Flash-Next); an **image model**
+takes a prompt and gives back pixels (the image model, ADR 0050); a **speech
+model** takes audio and gives back its transcript, and never converses (ADR
+0067); a **diarizer** takes audio and gives back who spoke when, and never
+transcribes (ADR 0069). Above the model family: every family is of one kind.
+_Avoid_: modality (the 27B already takes images in), pipeline
+
+**Served id**:
+The name a client puts in a request's `model` and `GET /v1/models` reports:
+the operator's `model.id`, or the family's default id when none is named. It
+tells artifacts of one family apart; the family never does.
+_Avoid_: model name
+
+**Alias**:
+A served id one catalog entry also answers to: its family's default id, on a
+**card class** below the default entry's (ADR 0064). It resolves only within
+one model family — the entry that answers to it holds an artifact whose header
+names that family — and only to an entry the card can load.
+
+**Catalog**:
+The models the server knows how to fetch: the **built-in catalog**, shipped
+inside the binary, plus the **operator catalog**, a separate file the config
+names.
+_Avoid_: registry (that word is the remote server, as in "a private
+registry"), model list
+
+**Catalog entry**:
+One published model: its served id, repo, revision, the artifact to load, every
+file it needs with its byte count and SHA-256 pinned, the smallest **card
+class** it loads on (`card_class`, optional: an entry stating none is never
+refused by class; every built-in one states it), and the **aliases** it may
+answer to (ADR 0064). An operator entry never reuses a built-in id.
+
+**Endpoint**:
+The server a catalog entry's files are fetched from: Hugging Face by default,
+or a mirror answering the same repo/revision/file paths. Chosen per machine,
+not per entry.
+_Avoid_: registry, hub
+
+**Switch by id**:
+An explicit `POST /v1/models/switch` naming only the served id: resolved as a
+known model (`switch.known_models`, the start model), then a catalog entry on
+disk. `switch.allow_implicit` does not gate it; it gates only the **implicit
+switch** a request triggers by naming a model.
+
+**Servable model**:
+A model a request may name and be served by now, with no download: the active
+model, plus every id the **implicit switch** resolves to an artifact that is a
+file (a catalog entry on disk, a known model whose artifact is there). What
+`GET /v1/models` lists, the active one first (`active: true`), computed at each
+request; with `switch.allow_implicit` off, the active model alone.
+_Avoid_: available model, installed model
+
+**Last switch**:
+How the most recent switch or reload ended (`switched`, `refused`, `restored`,
+`failed`, with the reason), kept on `GET /v1/models` after the status itself
+has moved on. An **idle unload** and the load after it are not switches and
+leave it as it was.
+
+**Idle unload**:
+Tearing the loaded model down after `model.idle_unload` seconds (default 300, 0
+= never) with no request using it and the engine empty, the way a switch tears
+one down, while the process and the API stay up (ADR 0049). `GET /v1/models`
+then reports `status: unloaded` under the same id; the next authenticated
+request that needs the model loads it again (`status: loading`, requests
+arriving meanwhile wait) and is served.
+_Avoid_: sleep, suspend, eviction (that word is a sequence's, not a model's)
+
+### Prompt rendering
+
+**Instruction message**:
+A chat message addressed to the model rather than said in the conversation:
+role `system`, or role `developer`. The model was trained on neither more than
+one of them nor on `developer` at all, so every instruction message the engine
+accepts reaches the model as a system block.
+
+**System prompt**:
+The instruction the rendered prompt opens with, where the tools block and the
+reasoning instructions attach and a **retained prefix** is cut: the leading run
+of `system` messages joined into one, or a leading `developer` message when no
+`system` precedes it.
+
+**System message policy**:
+What the engine does with a `system` message that is not the first message. By
+default a run of them at the start joins the **system prompt** and a later one
+is rendered in place as a block of its own; strict refuses the request instead,
+as the model's template would.
+
+**Developer message policy**:
+What the engine does with a `developer` message: render it in place (the
+default), join it into the **system prompt**, gather every one into a single
+block after it, accept only one right after it, or refuse it. Joining and
+gathering re-render earlier history when a new one arrives mid-conversation, so
+they trade **prefix reuse** for fewer system blocks; the others never move a
+message.
+
+**Render refusal**:
+A request whose messages cannot be rendered into a prompt. It is refused before
+admission, never served as an empty prompt.
+
+### Sequence state
+
+**Sequence handle**:
+The leaf-owned, opaque per-sequence object created by the step ABI: its KV
+pages, its GDN slot, its conv taps, its position, its last token, and (P3-03)
+its penalty-count row. It is what a snapshot captures and a restore rebuilds.
+
+**KV page**:
+A fixed-size device page of the paged KV cache, addressed through a
+per-sequence block table. Page geometry is reported by the runtime and is what
+the scheduler's KV pool counts.
+
+**GDN slot**:
+One sequence's linear-attention state: per GDN layer, **48 value heads × 128 ×
+128 fp32** (all 48 GDN layers ≈ 144 MiB per sequence), drawn from a slot pool
+sized by the concurrency.
+
+**Conv taps**:
+The per-sequence causal-conv1d history of a GDN layer.
+
+**Penalty-count row**:
+A sequence's per-vocab-entry occurrence count (one int32 per vocab entry),
+drawn from a slot-indexed device buffer the same shape as the KV/GDN pools (one
+row per slot). Device-side sampling's presence/frequency penalties read and
+atomically update it; zeroed at `ignis_seq_alloc` like every other slot
+section.
+
+**State section**:
+One part of what a sequence is made of: its KV pages, its GDN slot, its conv
+taps, its position and last token, its penalty-count row, on a pool built with
+DFlash2 its **drafter window**, and on an hq-e8-2b pool its **residual
+window**. Each is either shareable read-only (KV pages) or must be cloned per
+sequence (everything mutable).
+
+**Snapshot blob**:
+The opaque, versioned byte image of a whole sequence that crosses the ABI.
+Callers ask the leaf for its size and a format version and never see the
+section layout; a restore validates the header and refuses a stale or foreign
+one.
+
+**Blob identity**:
+What state was produced under, carried in the **snapshot blob**'s header and in
+the retained entry alike: the artifact's content hash, the **KV format**, the
+blob layout version the leaf writes, and the drafter's presence and draft
+window. It answers whether these bytes may be written into a sequence at all,
+and a mismatch is refused before one of them moves.
+
+**Residency tier**:
+Where sequence state lives, in three levels: **Tier 0 — device** (VRAM), **Tier
+1 — KV-RAM**, **Tier 2 — KV-disk**. State moves down a tier when the one above
+needs the room, and back up to be served.
+_Avoid_: host tier (say KV-RAM).
+
+**KV-RAM**:
+Tier 1: the host-RAM tier that holds **snapshot blobs** of evicted live
+sequences (so they resume instead of re-prefilling) and of retained state
+(**prompt checkpoints**, **retained prefixes**) that left the device. Bounded
+by a byte budget held whole from the start rather than grown blob by blob — one
+page-locked arena, blobs placed first-fit inside it, so room for a blob is a
+free *span* and not a count of free bytes — two-tier (probation → protected),
+and written only at a **chunk boundary**.
+
+**KV-disk**:
+Tier 2: the disk tier below KV-RAM (ADR 0045). It takes what KV-RAM gives up,
+instead of discarding it, and a device victim KV-RAM cannot take.
+
+**Live move**:
+A sequence still being served, moved down a **residency tier** for the room an
+admission ranked above it needs, and brought back later to resume bit-exact
+where it stopped (ADR 0045). It is a transfer, not a call: the sequence is in
+no round from its start until its last window lands, keeping its pages until it
+has left.
+
+**Prompt checkpoint**:
+The whole-sequence state of a request at its generation opener, the point
+where the rendered prompt hands over to the model, retained after the request
+ends so a later request whose prompt extends it (the next turn of a chat or of
+an agent loop) resumes there instead of re-prefilling. Matched by prompt
+content, never by a session identifier.
+
+**Retained prefix**:
+A **shared prefix** kept alive with no claimant, so a later, non-concurrent
+request (the next subagent of a burst) claims it as if it were a sibling. It
+ends at a **reuse boundary** — for a chat, the end of the system and tools
+block, floored to whole KV pages — never at the publishing request's whole
+prompt head.
+
+**Reuse boundary**:
+A prompt position where a request's state is kept for a later request to
+resume from, predicted before prefill because a hybrid can only resume where it
+captured (ADR 0029). Sources: the end of the system block, a **fan-out head**,
+an **observed fork**, a **reuse marker**.
+_Avoid_: breakpoint, cache point (a **prompt checkpoint** is something
+else).
+
+**Fan-out head**:
+The **reuse boundary** at the longest common prefix of a decision fan-out's
+rendered questions, computed before the first is submitted. Kept only until
+that fan-out ends.
+
+**Observed fork**:
+A **reuse boundary** at the end of the longest run of leading content parts
+that a recent decision `state` also began with, keyed by the **match key**
+there. The second request that repeats a run keeps it; the third and later
+resume from it.
+
+**Reuse marker**:
+`cache_control: {"type": "ephemeral"}` on a decision `state`'s content part:
+the caller's **reuse boundary** at the end of that part. It chooses where state
+is kept, never what a request may claim — matching stays by content.
+_Avoid_: cache breakpoint.
+
+**Lineage**:
+One conversation's chain of **prompt checkpoints**, and the only name a
+conversation has. The clients send no session id, so what ties turn N+1's
+checkpoint to turn N's is the link that does exist: turn N+1 claimed turn N's
+entry.
+
+**Chained prefix**:
+A **shared prefix** published on top of another. It publishes the pages it
+warmed itself *over* that entry, taking over the reference it was holding
+rather than adding one, so every page is still charged to the pool exactly
+once and a claimant of the chain shares all of it.
+
+**Pages-only link**:
+A **chained prefix** with no image of mutable state: the whole pages between
+what a request shares and its generation opener's page floor, handed over by
+the **prompt checkpoint**'s capture so that something outlives the request to
+hold them. No request stands at its end, so it is never claimed on its own; it
+takes no **retained slot**, and it goes when nothing stands on it any more.
+_Avoid_: imageless prefix.
+
+**Retained state**:
+Prompt checkpoints and retained prefixes: state no live request needs. It
+never costs a live request anything — on the device it is always the first
+thing to go — and in KV-RAM it is discarded before any evicted live sequence.
+
+**Retained slot**:
+A place reserved at load for one mutable-state image of a **shared prefix**
+(retained, chained or still claimed) or of a **prompt checkpoint**, the same
+size as a **lane**'s own state (under hq-e8-2b that includes its **residual
+window**, which the VRAM plan counts on a line of its own). Two kinds: a
+**device** retained slot sits in the device state arenas beside the lanes and
+is copied device to device; a **host** retained slot sits in one pinned host
+block reserved at load and costs a PCIe copy per capture and per claim, but no
+VRAM.
+_Avoid_: retained pool (a ledger of bytes, not a place).
+
+**Match key**:
+What a piece of **retained state**, and every **shared prefix**, is addressed
+by: a hash chain over the prompt tokens it covers, with each media item's
+identity (its content digest and grid) mixed in at that item's **first**
+placeholder, so a prefix covering one placeholder has committed to the whole
+image. Token ids alone are not enough: two same-size images expand to
+identical placeholder ids.
+
+**Prefix reuse**:
+Requests sharing a prefix skip the redundant prefill — concurrent siblings
+through a **shared prefix**, later requests through **retained state**: the
+shared **KV pages** are refcounted and shared in place on the device, and the
+mutable **state sections** are cloned device-to-device. It never round-trips
+through host RAM, and sharing pages alone would save nothing, since prefill
+must traverse every layer to produce the mutable state (ADR 0024).
+
+**Shared prefix**:
+The leaf-owned object prefix reuse is built on: the physical KV pages of a
+prompt head plus a device image of the mutable state at its end, held by a
+refcount. Every holder's block-table row addresses the same pages, the pool is
+charged for them once, and they return when the last holder releases, unless
+it becomes a **retained prefix**.
+
+**Publish point**:
+The chunk boundary a prefix is published at, and 0 for a request that publishes
+nothing. A shared or retained prefix's is always a whole number of KV pages in
+— a **chained prefix**'s is measured from the start of the prompt, not from
+what the publisher already shares; a **prompt checkpoint**'s is the generation
+opener wherever it falls, and whoever reuses it copies the partial page rather
+than sharing it.
+
+**Eviction priority**:
+The one ordering that decides what loses residency, on the device, in KV-RAM
+and on KV-disk (ADR 0023, ADR 0045). A need moves only what ranks below its
+requester: retained state first, then `Agent` before `Interactive`, then what
+is not in the decode round, then the latest-submitted.
+
+**Chunked prefill**:
+Prefilling a prompt span through the span+position prefill call in **prefill
+chunks** rather than one token at a time. The leaf knows how to loop over a
+span of any length; it is no longer the only one that does — under
+interleaving the scheduler hands it one chunk per call and keeps the loop
+itself.
+
+**Prefill chunk**:
+The number of tokens one traversal of the model processes during chunked
+prefill: a model-load option, default 1024, a multiple of 128. The unit the
+prefill scratch is sized for; with vision, that scratch is also the vision
+encoder's workspace and is sized for the larger of the two (the VRAM plan's
+`workspace` line).
+
+**Per-token prefill route**:
+The G1 prefill path that runs the program one token at a time (recurrent GDN,
+small-T attention). Retained after G2 as a test-only, per-call route: the
+self-oracle chunked prefill is checked against.
+
+**Compute policy**:
+The per-call activation-precision policy handed to every NVFP4 projection
+(`A16Only` or `AllowA4`). The engine's policy is the reference's: `AllowA4` on
+every NVFP4 text projection, prefill and decode alike, with the vendored
+per-projection token thresholds deciding the actual route.
+
+**Decode round**:
+One step for every decode-ready lane, run as a single batch-wide traversal of
+the model: the lanes are the batch's rows at one token each, so eight lanes
+stream the weights once rather than eight times. It is the unit a decode CUDA
+graph is captured over, per batch width.
+
+**Prefill batch**:
+The group of queued requests handed to the backend in one prefill call. A call
+shape, not a traversal: the runtime walks the group and runs one model
+traversal per request.
+
+**Packed prefill**:
+Several requests' prefill tokens in *one* traversal of the model (varlen
+attention, per-sequence GDN state side by side). Not built; its phase is
+decided after the per-chunk synchronization investigation reports.
+_Avoid_: prefill batch (for this: naming a group of requests does not make it
+one forward pass).
+
+**Prefill/decode interleaving**:
+Running a decode round between two prefill chunks of the same sequence of
+work, on the one model stream. Nothing is concurrent on the GPU: the two take
+turns, so a long prefill costs the decode lanes one chunk of latency instead of
+the whole span.
+
+**Decode share**:
+The part of the model's time decoding lanes keep while a prompt prefills
+(`--model-decode-share`, in percent). It bounds the lanes' rate during a
+prefill, not the gap a single chunk leaves: only the chunk width moves that.
+
+**True prefill/decode overlap**:
+Prefill and decode resident on the GPU at the same time, on separate streams,
+contending for SMs. Distinct from **prefill/decode interleaving** and
+deliberately not built: the north-star item (roadmap phase 6), excluded from G3
+by ADR 0018.
+
+**Chunk boundary**:
+The position between two prefill chunks: the sequence's KV pages, GDN
+recurrent slot, conv taps and position have all advanced past the same token,
+and the chunk's synchronization has returned. A property of the serving loop,
+and what **prefill progress** resumes from — resuming is nothing more than
+scheduling the next chunk.
+
+**Snapshot point**:
+A position from which the *whole* sequence state may be captured to the host
+tier and later restored. Every **chunk boundary** is one for the state that
+exists today; the two terms coincide without being the same property, and a
+new state section (G4's exact-key side store) must earn the permission again.
+
+**Prefill progress**:
+How far into its prompt a request has been prefilled. It makes `Prefilling` a
+state a request *lives in* for tens of rounds rather than a moment between two,
+so the admission machinery can see a half-prefilled request.
+
+**Decode graph**:
+The CUDA graph replayed for a decode round, captured per **exact** batch width
+1..8. Widths are never padded up to a captured one: the GDN slot traffic is per
+sequence (144 MiB each), so padding a width-1 round to width 8 moves 1.15 GB
+instead of 144 MB and spends several times the C=1 gate's whole margin.
+
+**Per-lane sampling**:
+Sampling parameters and RNG state carried per sequence, not per decode round:
+lanes in one round hold different temperatures, seeds and penalty histories.
+Sampling happens device-side in the leaf, which returns token ids: the
+**decode** path never ships logits to the host.
+
+**N-lane concurrency**:
+The resident decode lanes a load runs at once: 8 (N=8) on a 32 GB **card
+class**, fewer on a smaller one, with overflow to the host KV-RAM tier; sized
+for a ~10-subagent concurrent coding workload. Real at long context only under
+hq-e8-2b: eight lanes at a 40,960-token context are ~20 GiB of BF16 KV against
+~3.02 GB of hq (**KV format**).
+
+**DFlash2**:
+The 5-layer sliding-window (2048) speculative-decoding drafter (hidden 5120,
+draft tokens 1..7, native acceptance 3.4–3.7 tokens/round). Selected at load
+(`--spec-backend dflash2 --spec-draft-tokens N`); without it none of the 66
+`dflash2/*` objects is bound.
+
+**Draft window**:
+The number of tokens the drafter proposes per round (`--spec-draft-tokens`,
+1..7), fixed for the life of a load. Not to be confused with the drafter's own
+2048-token sliding **drafter window**.
+
+**Drafter window**:
+A sequence's DFlash2 context: every drafter layer's BF16 K and V for the last
+2048 positions (40 MiB). Per-sequence state in the sequence pool, one lane per
+slot, and one **state section** of a pool built with the drafter.
+
+**Feature taps**:
+The target's hidden states at layers 5, 19, 33, 47 and 61, concatenated and
+projected into the drafter's context. Taken by a prefill chunk and by the
+verify traversal; scoped to that chunk or round: never persisted, never a state
+section.
+
+**Verify round**:
+The speculative form of the **decode round** (P5-04): each lane contributes
+`k+1` columns — its anchor (the pending successor) followed by the drafts, the
+tail padded with the anchor — and the 64 layers traverse the batch's columns
+once, the GQA layers appending every valid column and the GDN layers recording
+instead of advancing. Selected per call through the decode options at the
+load's draft window, never padded to it; window 0 is today's round.
+
+**Extent (verify round)**:
+The draft columns a lane actually verifies in a round: `min(k, proposed,
+remaining budget − 1, remaining context − 1)`, where under DFlash2 the drafter
+always proposes `k`. Extent 0 is a fallback step inside the same round, one
+committed token.
+
+**Committed run**:
+The tokens a verify round emits for a lane: the anchor plus the accepted
+drafts, cut at the first stop id inclusive (1..k+1). The KV frontier, the GDN
+slot and the pending token move by exactly the run, so a sequence never stands
+past the text it emitted.
+
+**Prefill outcome**:
+What one prefill chunk cost beyond warming its KV (`PrefillOutcome`,
+GitHub #192): today the microseconds the leaf spent encoding a media item,
+which is 0 on a text chunk and on one that reuses an embedding an earlier chunk
+of the same item encoded. One per job, in order, the way a committed run crosses the
+seam per lane; the request log sums them into `media.encode_seconds`.
+
+**ReplaySSM record and fold**:
+How the GDN layers speculate without advancing: the verify traversal records
+each column's conv input, key, value and gates (the **records**), and after
+accept the **fold** replays the committed prefix of each lane's records into
+its recurrent slot and conv taps in one vendored call. A rejected draft's
+transition is recorded and never folded — that is the whole rollback.
+
+**Drafter**:
+Whatever fills a verify round's proposal seam: **DFlash2** inside the leaf
+(P5-05), proposing each lane's drafts from its **drafter window** in the same
+pass that verifies them, or a fake drafter in the substrate's own tests
+(`verify-only` load: the verify substrate with nothing bound, the drafts passed
+per call).
+
+**Teacher-forced round**:
+A **verify round** whose accept verdict is a recorded text's instead of the
+target's draw (GitHub #267; test-only, the decode options' `forced_tokens`,
+which no serving path sets). The pass is any round's — under **DFlash2** the
+drafter proposes from the lane's **drafter window** — but the lane accepts the
+leading drafts the recording agrees with, at most its **extent**, and takes the
+recorded token after them as its correction, so the **committed run** is the
+recording's.
+
+**Proposal readout**:
+The drafter's proposals at a sequence's frontier, read without running a round
+(GitHub #267, test-only): the drafts, each draft column's 16 candidates, their
+proposal-head logits and the selector's transition scores, the lattice the
+replay walks other selection rules over. Named after the **readout**'s
+precedent — a measurement beside the program, never a second way to generate —
+but not one: a **readout** reads named tokens' target logits at one position
+and costs a prefill; this reads the drafter's lattice and costs one eager
+drafter forward.
+
+**MTP**:
+The model's native multi-token-prediction head, the alternative drafter (draft
+window 1..7 chosen at load, verification width chosen per round). Flash-Next
+drafts with it, its **MTP head** (`--spec-backend mtp`); the 27B drafts with
+**DFlash2** and refuses it.
+
+**Vision**:
+Multimodal input: images today, video refused until its own spec. A load
+option (`--vision-enabled`): without it nothing of the tower is bound or
+reserved and text serving is unchanged.
+
+**Media acquisition**:
+Turning a request's image parts into prepared **media items** before it is
+admitted: decoding a `data:` URI or fetching a URL under the media policy
+(private addresses refused unless `--media-allow-private-network`, byte cap,
+deadline), then preprocessing, memoized by content digest. A refused image
+refuses its request before admission; nothing reaches the scheduler.
+
+**Media encode**:
+The prefill step that runs the **vision encoder** over one **media item** and
+leaves its **media embedding** in the **embedding pool**, in the first chunk
+that reaches the item — unless the pool already holds that item's, in which
+case the chunk does no encoding at all. Its wall time is reported on the
+request, apart from the prefill's.
+
+**Media item**:
+One image in a prompt: its patch grid, the run of placeholder tokens it expands
+to, its BF16 patch rows and the digest of the bytes it came from. The unit the
+processor prepares, the encoder encodes and a prefill chunk carries at most one
+of.
+
+**Vision tokens**:
+A media item's *merged* tokens, one per 2x2 block of patches: the placeholder
+run's length, and what the per-request envelope (`--vision-max-tokens`) is
+counted in. The envelope also bounds each image: one over it is downscaled onto
+a smaller grid, not refused (#248).
+
+**Media embedding**:
+A media item's encoder output, `[hidden, vision tokens]`, device-resident and
+leaf-owned. **Held** by a request from its encode until the item's last
+placeholder is prefilled, and **resident** in the **embedding pool** past that,
+until something needs its room: a fan-out of N questions over one image
+encodes it once (ADR 0035).
+
+**Embedding pool**:
+The load's one device reservation for **media embeddings**
+(`--vision-embedding-pool-mib`, defaulting to one envelope-wide item), carved
+into fixed-width **column pages** so an item takes the pages its own columns
+need rather than a slot sized for the envelope. An embedding is contiguous in
+column space and not in memory: the encoder writes it a page at a time and a
+prefill chunk scatters it back a page run at a time, with the same ops either
+did over one flat buffer.
+
+**Vision encoder**:
+The 27-block tower plus the 2x2 merger that turns patch rows into a media
+embedding. Run once per item by the **media encode** step, never per chunk.
+
+**Rope delta**:
+`max_position + 1 - prompt_length` for a multimodal prompt, whose three-axis
+positions advance more slowly than its tokens. Every decode round after such a
+prompt rotates at `position + rope_delta`; the position itself stays the KV
+index and the sampler's key.
+
+### Decisions
+
+**Decision**:
+One question put to the model about supplied evidence, whose answer is a
+distribution over a declared set of options rather than generated text. It is
+the unit a decision request is made of: one evidence, many decisions.
+
+**Readout**:
+Reading the logits of named tokens at one position instead of sampling a token
+there. A readout costs one prefill and generates nothing.
+
+**Answer token**:
+The single token that stands for one option of a **decision**, and whose logit
+the **readout** reads. Nothing to do with a decode **lane**, a **GDN slot** or a
+**retained slot**, which are all per-sequence device resources; an answer token
+is a vocabulary entry.
+
+**Answer alphabet**:
+The ordered pool answer tokens are drawn from: single characters first
+(`A`-`Z`, `a`-`z`, `0`-`9`), then uppercase bigrams. It is **computed from the
+loaded tokenizer, never compiled in**: a label is admitted only if it encodes to
+exactly one token that decodes back to itself, which rejects 114 of the 676
+uppercase bigrams in the 27B's tokenizer.
+
+**Constrained decode**:
+A decode whose sampling is restricted, per lane, to a declared set of tokens.
+What a **readout** is to one position, this is to a run of them: the answer's
+shape is the caller's, so no parser has to survive a shape the model chose.
+
+**Permitted set**:
+The vocabulary entries one step of a **constrained decode** may draw from, at
+most 32 of them. The leaf drives every other column of the logits row to
+`-1e30` before the vendored sampler runs, so the constraint composes with
+temperature, top-k, seeds and penalties instead of replacing them, and what
+comes back is a token id like any other.
+
+**Schedule**:
+One **permitted set** per token a **constrained decode** may emit, in order. It
+is that request's whole generation budget, and its whole stopping condition
+**unless it names a terminator**: the run ends when the schedule is spent, with
+`stop`, and never on EOS, because a token drawn from a set of digits cannot be
+one.
+_Avoid_: scheduler (for a schedule: it schedules alphabets, not requests).
+
+**Terminator**:
+A token a **schedule** names, permitted by its steps like any other, that ends
+the run when it is drawn. Not EOS by another name, and the difference is whose
+decision it is: EOS is the model saying it has nothing more to say, while a
+terminator closes the *shape the caller asked for*.
+
+**Draw**:
+One token a **constrained decode** emitted, and its probability *within that
+step's **permitted set*** — a restricted softmax over at most 32 logits,
+computed on the device and temperature-free on purpose: it is the model's
+confidence in the token, not the chance the sampler happened to pick it. A
+run's draws, in order, are its **trace**.
+
+**Forced literal**:
+Tokens a request is made to generate, one **permitted set** of one per round,
+after which it is **released** and generates freely: not a **schedule**, which
+ends its run when spent. `tool_choice: "required"` or a named function forces
+the opening of a tool call this way (GitHub #286), from the first token with
+thinking off and right after the reasoning block with it on; the thinking
+budget's forced close is the same shape.
+
+**Answer mass**:
+How much of the whole next-token distribution the answer tokens hold,
+`exp(logsumexp(answer logits) - logsumexp(all logits))`. It is what says
+whether a restricted softmax is reading the model or renormalizing noise: a
+**decision** whose answer mass is near zero has an argmax that means nothing.
+
+**Attention readout**:
+Reading attention heads' pre-softmax scores (`q · k / sqrt(head_dim)`) at a
+prefill's last position over one span of its keys — an image's placeholders, or
+a text state's tokens — instead of the logits of answer tokens
+(GitHub #260, #263, #264 and #275; ADR 0038, ADR 0039, ADR 0040 and ADR 0041).
+A `point`, a head `box` or a **locate** answered this way is a **decision**:
+one prefill, no decode round, no lane.
+
+**Pointing head**:
+The attention head that names *which* object a `point` or a head `box` is
+about: L39.h10 (GQA ordinal 9, query head 10) on the served 27B, read at the
+position after the forced `{"x":`. A **calibrated constant keyed to the
+artifact's content hash**: chosen on labelled scenes by cross-validation, never
+computed at load, and never read on an artifact nobody calibrated it for — such
+a load answers `point` with the digit chain.
+
+**Head set**:
+The attention heads read together beside the **pointing head**, one image cell
+each: where that head looks hardest, the **fallback cells** skipped
+(GitHub #263, ADR 0039). Each reads a different part of the object the question asked
+for — its boundary, mostly — so the cells near the pointing head's point
+outline the object.
+
+**Fallback cells**:
+The image cells attention heads peak on when nothing in the image matches the
+question: the first and the last image cell on every grid, and on a grid the
+calibration measured, the cells it found there (on 32x32 also (0,1) and
+(6,31)). The **head set**'s argmax skips them; the **pointing head**'s map
+keeps them, and a map flat enough to fall back to one (`region.share` about
+0.03) is nothing found.
+
+**Sub-cell peak**:
+Where a **head set**'s head looks hardest *inside* its image cell, not just
+which cell (GitHub #264, ADR 0040): parabolic interpolation over its score at
+its peak and the two in-line neighbours on each axis, in cells, zero when a
+neighbour is off the grid or the triple is not a strict peak. It is what lets a
+box frame an object smaller than the cell grid can express — a 1024 px button
+is 1.44 cells tall, and a box on cell geometry cannot clear the digit chain at
+that size.
+
+**Allowance**:
+What the **extent** grows the kept heads' span by on each side: `0.05 + 4.5 /
+n` cells, `n` the distinct cells they peak on (never under three, the fewest
+measured). The span is a *lower bound* on the object — it reaches only the
+parts the heads hit — and what one part leaves unobserved falls as more parts
+are seen: on synthetic scenes the set tiles the object (17-56 distinct cells),
+on a photograph it piles onto one distinctive part (6-13).
+
+**Locate**:
+The `/v1/decide` primitive that names the **segment** of a text `state` an
+instruction asks for (GitHub #275, #278; specs 18 and 22; ADR 0041, ADR 0042),
+with nothing written into the state and nothing generated. Two methods: the
+**shortlist** (the default) and the **head vote**.
+
+**Shortlist**:
+A **locate**'s default method (GitHub #278, ADR 0042): the calibrated heads
+narrow the text to a few candidates — 5 templates at a fold's **level 1**, 16
+rows at its **level 2**, 16 lines, sentences or records otherwise — and a
+labelled `choice` over them decides, with no token generated. The heads narrow
+a very long text; the `choice` resolves near-duplicates, which it does well
+among a handful and badly among hundreds.
+
+**End reading**:
+A **shortlist**'s reading of logs and records: a segment scored by where it
+closes — its last key, its separator and the next segment's first key — each
+head's lift over the **content-free baseline** standardized over the window's
+segments and summed over the **end heads**. At length a line is marked at its
+end, not its start.
+
+**Sum reading**:
+A **shortlist**'s reading of prose: a segment scored by all its keys, as the
+**head vote** does, standardized and summed over the **sum heads** rather than
+voted.
+
+**End heads**:
+One of the two head sets of a `locate` calibration (spec 22): 32 heads of GQA
+layers 35 to 55 with the best single-head top-1 at a line's closing keys on
+development sets (spec 23). Keyed to the artifact's content hash with
+`LOCATE_WINDOW_KEYS`, as the **sum heads** are.
+
+**Sum heads**:
+The other head set of a `locate` calibration (spec 22): the **head vote**'s 32
+heads.
+
+**Template fold**:
+A `locate`'s `template_fold` compression (spec 22): a log's lines grouped
+Drain-style into templates — same source label, same token count, tokens
+agreeing on half the positions, times removed and obvious variables masked — so
+a long log is read as a short text first. Reversible: every **level-2** row
+maps back to the lines it stands for.
+
+**Level 1**:
+A **template fold**'s first text: one line per template, its variable slots
+showing their distinct values while they fit 600 characters, and `(xN)`.
+
+**Level 2**:
+One template's lines as their values only, values first and the line's time
+last, exact repeats one row with `(xN)`. The **shortlist** ranks rows by their
+values and shows the last `choice` each row's first original line, because
+whether a line answers cannot be read from its values alone.
+
+**Window**:
+A stretch of at most `LOCATE_WINDOW_KEYS` (200,000 on the served 27B) keys of a
+text the heads read, cut at segment boundaries — at an empty segment where one
+is in reach (a paragraph break), else before the segment that would not fit —
+and read as its own prefill with its own **content-free baseline**; windows'
+scores are standardized and merged. A text's length is then bounded by the
+request, not the context.
+
+**Pointer**:
+Every candidate of a `locate`'s last `choice` at a share of 0.05 or more, the
+pick always first: one answer, or the several segments a two-part answer needs.
+
+**Records array**:
+A JSON array of two or more elements, every one an object, and not the
+content-parts shape (every element with a string `type`): what `auto` reads as
+`records`, without a statistic.
+
+**Found**:
+Whether a `locate`'s text answers at all (spec 22 § Not found): the last
+`choice` asked again with a "none" option, and for a folded log a yes/no; `1 -
+p(none)`, averaged with `p(yes)` for a log. Below 0.5 the answer names no
+segment and keeps its ranking.
+
+**Segment**:
+One place a **locate** can answer with: a line of a string state, split on `\n`
+exactly (a `\r` stays part of its line), or an element of an array, `within` an
+optional JSON Pointer. Numbered the way the caller would number them — the
+0-based index of `split("\n")`, the array index.
+
+**Head vote**:
+How a **locate** is read (spec 19's track L, GitHub #276): each of 32 heads of
+GQA layers 35 to 63 names the **segment** whose share of its softmax over the
+span the question raised most above the **content-free baseline**'s, and the
+most-voted segment wins, a tie to the segment the best-ranked head named. A
+**calibrated constant keyed to the artifact's content hash**, like the
+**pointing head**: the heads with the most training hits on development sets,
+never computed at load.
+
+**Content-free baseline**:
+The same prompt with the instruction replaced by `N/A` (ICR's, QRHead's and
+contextual calibration's "N/A"): what the heads do with the state and the
+scaffold when nothing is asked — sinks, first lines, position — which the
+**head vote** subtracts before a head votes. One per **locate** target in a
+request, shared by every `locate` over it; it claims the state's prefix like
+any sibling, and costs input tokens but is no **decision** of its own.
+
+**Extent (head box)**:
+The box the kept heads of a **head set** span: the heads within three times the
+median distance of the **pointing head**'s point, at their **sub-cell peaks**,
+their 15%-85% quantiles on each axis grown by the **allowance**, clamped to the
+image. A head `point` is its centre and carries it as `extent`; a head `box` is
+it.
+
+### The Responses API
+
+**Stream**:
+One of the independent request sequences a Responses WebSocket multiplexes
+(OpenAI's `stream_id`; the connection's **default stream** when it names
+none). Its requests run in order and never overlap; different streams run side
+by side.
+_Avoid_: lane (for a stream: a lane is a decode slot, and the stream is the
+standard's word, nothing in the engine).
+
+**Continuation cache**:
+What one Responses WebSocket remembers so a request can name
+`previous_response_id` and send only new items: per **stream**, its latest
+finished response and the whole conversation that response saw. It chooses
+nothing about retained state: a continuation re-renders that conversation, and
+reuse stays a content match on the **prompt checkpoint** and **retained
+prefix** (ADR 0029).
+
+**Warm-up request**:
+A request that ends where its prefill ends and generates nothing, like a
+**decision**, but reads nothing out and keeps what an ordinary request of the
+same prompt keeps: the **retained prefix** at its system block and the **prompt
+checkpoint** at its generation opener, for the turn that follows. The Responses
+WebSocket's `generate: false`.
+_Avoid_: prewarm (for the request kind; it is the client's word for the act).
+
+**Socket admission queue**:
+The one server-wide first-in, first-out queue a Responses WebSocket request
+waits in when the engine is full, told so with `response.queued`, instead of
+being refused with a 503 as an HTTP request is. Only its head retries, each
+time a request leaves the scheduler.
+
+**Idle socket**:
+A Responses WebSocket with nothing running, queued or waiting on it and no text
+or binary frame from its client since its last response ended; a ping does not
+make it busy. One idle for `server.socket_idle_close` is closed by the server
+(GitHub #329), since an open socket holds a Knative pod.
+
+### Configuration
+
+**Field**:
+One configurable setting, declared once (`config::schema`): its flag
+`--<group>-<field>`, env var `IGNIS_<GROUP>_<FIELD>`, config-file key
+`<group>.<field>`, default, rule and help text all come from that one
+declaration. Fields are grouped by concern (`server`, `model`, `vram`, `reuse`,
+`switch`, `spec`, `vision`, `media`, `download`, `ngram`, `kv_disk`).
+
+**Family scope**:
+A field both model families take but want sized differently has a variant per
+family (`qwen38`, `qwen38flashnext`, from `ModelFamily`, never a served id):
+`--qwen38flashnext-reuse-kv-host-pool-bytes`. A tiebreaker *within* each
+source, not a source of its own: the command line wins whatever its scope.
+
+**Applicability**:
+The families a field means anything for (`Only(Flash-Next)` for the expert
+cache's floor, `Only(27B)` for vision). An explicit value for a family that
+cannot take it is refused at start and dropped, with a log line, on a switch;
+a value equal to the field's default is neither.
+
+**Card class**:
+The device memory a profile is shaped for: 32 GB (RTX 5090), 96 GB (RTX PRO
+6000), 16 GB (RTX 5060 Ti / 5070 Ti / 5080). It decides which artifact, how
+many lanes and what context the profile defaults to.
+_Avoid_: GPU tier.
+
+**Profile**:
+A named bundle of hardware-shaped field defaults (`--profile`, built-in
+`rtx50-16gb`, `rtx5090` or `rtxpro6000`, or a config file's `profiles:`):
+below the config file, above the hardcoded defaults — a default, never an
+override. `auto`, the default, picks the built-in profile of the card's **card
+class** from NVML's total memory (ADR 0063); a named profile always wins.
+
+**Adaptation**:
+A 27B load lowering the values its profile or the hardcoded defaults gave, in a
+fixed order, until its VRAM plan fits (ADR 0063): the drafter's `shortlist`
+head to `full`, then the context down its **ladder**, then one decode lane.
+Only a plan refused below its minimum adapts; one that fits as configured
+changes nothing.
+
+**Ladder**:
+The contexts an adaptation plans, from the configured one down every multiple
+of the context step (`model.adapt_context_step`, 65,536) to one step, keeping
+the largest whose KV pool holds one full sequence and a spare reservation
+(`vram.adapt_spare_tokens`, 65,536) at more than one lane.
+_Avoid_: step (bare) for one of its rungs: an adaptation taken is an
+adaptation step.
+
+**Live change**:
+A `PATCH /v1/config` that touches only server-level values (timeouts, message
+policies, thinking defaults, switch knobs) and no model.
+
+**Reload**:
+A `PATCH /v1/config` that runs the whole patch through the model switch,
+reloading the same model with the patched configuration. One patch is a live
+change or a reload, never both.
+
+### Observability
+
+**Canonical event**:
+The one structured representation of a log occurrence (severity, event name,
+body, attributes, trace context). Formatters are presentation, never the
+source of truth (ADR 0011).
+
+**Event name**:
+A stable, class-level identifier (`ignis.<subsystem>.<event>`, e.g.
+`ignis.model.loaded`), never occurrence-specific data.
+
+**`request.id`**:
+Reused as the OTel `trace_id` for the request's span tree (root span at HTTP
+ingress, children per admission/prefill/**decode round**/MTP
+verify/completion); one identifier for the same causal unit across fairness,
+logs, and spans (ADR 0012).
+
+**Hot-path logging constraint**:
+Normal INFO operation must not emit one record per
+token/layer/kernel/allocation on the prefill/decode path; any logging or
+tracing change touching that path must pass the G4 performance gate (ADR
+0007) before merge, not just design review.
+
+**Hotpath lint**:
+The grep-based, hand-maintained scan over a fixed list of
+prefill/decode/CUDA-graph-adjacent files that fails `cargo test` on any
+INFO-or-above `tracing` call or raw `println!`/`eprintln!`/`print!` found
+there.
+
+**Playground**:
+The opt-in browser page ignis serves for trying the engine by hand: a chat
+against its own OpenAI surface, with per-request figures the browser measures
+itself, and the **Monitor**. A debugging aid for the owner — not a product UI,
+not an operator surface (that is Prometheus), and never a source of facts the
+engine does not already expose.
+
+**Monitor**:
+The Playground's live dashboard over the Prometheus exposition (GitHub #165):
+the browser
+scrapes `/ui/metrics`, keeps a rolling in-memory history, and derives rates,
+latency quantiles and a plain-words verdict from ADR 0017's contract metrics
+only. Offered only when metrics are on; not a replacement for Prometheus, and
+gone on reload.
+
+### Acceptance
+
+**Gate**:
+A milestone acceptance measured **on the GPU**, never on CPU tests. G1
+correctness floor, G2 prefill, G3 decode + serving loop, G4 the reference
+feature floor, G5 speculative decoding (`docs/ROADMAP.md`).
+
+**GPU profile**:
+The explicit test profile for GPU work: it requires the 5090 free and
+**fails**, never skips, when the GPU is busy or a kernel errors.
+
+**Generated token**:
+A token the engine decoded, on **either** channel: the answer
+(`delta.content`) or the thinking trace (`delta.reasoning_content`, on by
+default). Every throughput and latency cell counts generated tokens, because
+both channels are the same decode work; a correctness check reads the answer
+channel alone, because scratch work is not an answer.
+
+**Canary suite**:
+The fixed set of short, high-signal prompts used to detect divergences.
+Sanity is judged on everything the turn generated: a turn whose budget ran out
+mid-thought produced sane tokens, not empty output.
+
+**Canary oracle**:
+The recorded fixture the canary suite is checked against: the reference
+engine's greedy (exact-argmax) completions on those prompts for the same
+artifact, tokenized with the artifact's tokenizer.
+
+**Teacher-forced agreement**:
+How the canary oracle is scored, and the G1 correctness floor: at each of the
+first 32 positions the engine is fed the *oracle's own* token prefix, and its
+greedy next-token argmax is compared with the oracle's recorded token. The
+floor is ≥ 95% overall (ADR 0014).
+
+**Free-running agreement**:
+The older scoring, where the engine generates its own continuation and the two
+token streams are diffed. **Diagnostic only** (ADR 0014): after the first
+divergence the engines no longer share a prefix, so it measures continuation
+similarity, not forward-pass health.
+
+**TTFT cell**:
+One fixed prompt length (8K, 32K) at which time to first token is measured
+through the bench, the same way against either engine: streaming, greedy,
+thinking off, a small output budget, deterministic synthetic prompts of
+exactly that many tokens. Every sample is a **cold prefix**: each sample (the
+warmup included) gets its own prompt, distinct from the first content token,
+so no prefix cache or host KV tier on either engine can serve it; the engine's
+own computed-prefill-token count must equal the prompt length or the sample is
+void.
+
+**ITL measurement window**:
+The stretch of a G3 ITL cell in which *every* decode lane was alive: it opens
+at the last lane's first token and closes at the first lane's end, and only
+the prefill windows closing inside it are pooled against. A lane the harness
+cancelled ends at the cancellation, since it was generating until then; a lane
+the engine ended — its own EOS, the safety cap — ends at its last token.
+
+**Live/live gate**:
+How G2 is judged: ignis and the reference measured on the same TTFT cells in
+the same session on the same machine, and the ratio ignis/reference must be
+≤ 1.5. A committed reference record exists for regression and sanity only; it
+never decides the gate.
+
+**Measurement session**:
+The identifier both engines' TTFT records carry when they were measured back
+to back in one sitting. It is what makes live/live checkable rather than
+asserted: `ignis-bench g2` refuses a verdict when the two records do not share
+one, which is also what stops a committed fixture from ever being the live
+side.
+
+**TTFT record**:
+One engine's measured cells plus the identity a later reader needs to audit
+them: every sample and its computed-prefill count, the median, the endpoint,
+the engine, the artifact, the profile, the date and the measurement session
+(`ignis-bench ttft --out`).
+
+**f64 layer reference**:
+A CPU fp64 computation of one GQA layer and one GDN layer on the real weights,
+the tolerance target for the leaf's per-layer output at G1.
+
+**Performance gate (99%)**:
+The acceptance criterion at G4: ≥ 99% of the reference's performance
+(throughput / latency) on the trace-replay load, **not** token-agreement;
+correctness is self-checked (sane output, same model, greedy, fixed seed). It
+is the first of a ladder of performance gates: G5 asks ≥ 99% of the
+reference's committed tok/s under DFlash2, and the phase beyond the reference
+gates each item on its own (`docs/ROADMAP.md`).
+
+**Trace replay**:
+Re-sending a recorded "1 main agent + N subagents" load trace against both
+engines to compare scheduler behavior, scored per **lane tag**. The trace is
+the load, not the baseline: the reference's own run is measured live in the
+same session (**live/live gate**), over at least two launches per engine (ADR
+0021), and the verdict is the pooled cell statistic.
+
+**Load trace**:
+The recorded agent session a **trace replay** sends. It holds real working
+content, so it is never committed: its SHA-256 and its shape (request count,
+class split, arrival span, prompt-length distribution) ship with the gate
+artifacts, and both run records carry the hash so a reader can prove the two
+engines replayed the same load.
