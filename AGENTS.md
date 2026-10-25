@@ -26,8 +26,8 @@ Single-context: root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
 
 `.scratch/` is the untracked scratchpad, local to each clone, for temporary
 artifacts, experiments, raw logs and workflow output. When something there
-must outlive the task: its home is under Artifact boundaries in
-`docs/agents/findings.md`.
+must outlive the task, it moves into the repo: Artifact boundaries in
+`docs/agents/findings.md` names the usual homes.
 
 ### Coding standards
 
