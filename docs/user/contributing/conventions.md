@@ -48,8 +48,8 @@ file of a server `make start` launched is under `.scratch/serve/`.
   title as its heading and one to three sentences of context, decision and
   reason, with a status, the options it rejected or its consequences only when
   they add something. ADRs 0001 to 0069 keep their longer form with the number
-  in the heading; the release notes name both kinds "ADR NNNN — title", the
-  number taken from the file name. An ADR takes the next free number when it
+  in the heading; the release notes name both kinds "ADR NNNN — title",
+  taking a short one's number from its file name. An ADR takes the next free number when it
   merges into `main`, and is renumbered, with every line that cites it, when
   another ADR took that number first. It is written when the decision is
   taken, and amended rather than rewritten when it changes. The
