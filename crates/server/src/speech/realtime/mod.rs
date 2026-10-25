@@ -207,8 +207,9 @@ enum Failure {
     Load(String),
     /// A call to the executor failed.
     Executor(String),
-    /// Longer than `speech.max_clip_seconds`.
-    TooLong(u32),
+    /// Longer than `speech.max_clip_seconds` (the limit), counting the
+    /// milliseconds of leading silence a `server_vad` item is fed after.
+    TooLong(u32, u32),
     /// Past `server.stream_timeout` from its first append.
     TimedOut(Timeout),
 }
@@ -219,10 +220,17 @@ impl Failure {
         let (kind, code, message) = match self {
             Self::Load(why) => ("server_error", "speech_unavailable", format!("the speech model could not be loaded: {why}")),
             Self::Executor(_) => ("server_error", "engine_error", "the speech model failed this item's transcription".to_owned()),
-            Self::TooLong(limit) => (
+            Self::TooLong(limit, 0) => (
                 "invalid_request_error",
                 "invalid_request_error",
                 format!("the item holds more than speech.max_clip_seconds ({limit} s) of audio; nothing is split automatically, commit sooner"),
+            ),
+            Self::TooLong(limit, lead_ms) => (
+                "invalid_request_error",
+                "invalid_request_error",
+                format!(
+                    "the item holds more than speech.max_clip_seconds ({limit} s) of audio, counting the {lead_ms} ms of silence (speech.vad_leading_silence_ms) the speech model reads before it; nothing is split automatically, commit sooner"
+                ),
             ),
             Self::TimedOut(timeout) => ("request_timeout", "request_timeout", timeout.message()),
         };
@@ -250,10 +258,10 @@ struct Item {
     /// Samples appended, at whatever rate, and the seconds they make.
     samples_in: u64,
     seconds: f64,
-    /// The seconds of digital silence the model reads before its audio, under
-    /// `server_vad`: counted against `speech.max_clip_seconds`, as the model
-    /// counts them, and nowhere else.
-    lead: f64,
+    /// The milliseconds of digital silence the model reads before its audio,
+    /// under `server_vad`: counted against `speech.max_clip_seconds`, as the
+    /// model counts them, and nowhere else.
+    lead_ms: u32,
     timeout: Timeout,
     deadline: Option<Instant>,
     /// The stable text sent as deltas, and the tail last sent.
@@ -440,7 +448,7 @@ impl Connection {
             opened_with: open.clone(),
             samples_in: 0,
             seconds: 0.0,
-            lead: 0.0,
+            lead_ms: 0,
             timeout: Timeout::NONE,
             deadline: None,
             emitted: String::new(),
@@ -596,8 +604,9 @@ impl Connection {
         if item.failure.is_some() {
             return false;
         }
-        if item.seconds + item.lead > f64::from(limit) {
-            self.fail_current(Failure::TooLong(limit));
+        if item.seconds + f64::from(item.lead_ms) / 1000.0 > f64::from(limit) {
+            let lead_ms = item.lead_ms;
+            self.fail_current(Failure::TooLong(limit, lead_ms));
             return false;
         }
         true
@@ -625,9 +634,9 @@ impl Connection {
     /// Its times, its `usage` and the samples it counts are the client's
     /// audio alone.
     fn lead_in(&mut self) {
-        let silence = ignis_speech::vad::leading_silence(self.server.live().speech.vad_leading_silence_ms);
-        self.current().lead = silence.len() as f64 / f64::from(TARGET_RATE);
-        self.take_audio(silence);
+        let lead_ms = self.server.live().speech.vad_leading_silence_ms;
+        self.current().lead_ms = lead_ms;
+        self.take_audio(ignis_speech::vad::leading_silence(lead_ms));
     }
 
     /// The session's next 16 kHz samples: the current item's under manual

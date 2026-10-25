@@ -377,15 +377,17 @@ the spec left open, or differs from it:
     factor's runs under factor 1's better one by more than factor 1's own
     spread, 15 ms). Nothing measured better, so nothing changes by default;
     the field is there for a CPU where it helps. On the i9 every arm's WER is
-    within 1 pt of the batch path's (+0.65 pt at most). On the container
-    factor 1 is over that line by two words in 620 (+1.29 pt, one run), 2 and
-    3 under it (+0.97 pt): two words is inside the spread of one factor's two
-    runs on the i9 (0.16-0.32 pt), so it does not separate the factors, and
-    AC 5's 1 pt is the i9's. Weighed otherwise, factor 2 would be the choice
-    at the same median, though its slowest commit there was 9.7 s, 6 s of it
-    waiting for a refresh in flight.
-  - **What the 2 s is made of.** The executor's own commit is 1.9-2.0 s on a
-    quiet i9 and 4.0 s on the container at every factor: at factor 1 the
+    within 1 pt of the batch path's (+0.65 pt at most). **Open for the
+    owner:** on the container factor 1 is over that line by two words in 620
+    (+1.29 pt, one run), 2 and 3 under it (+0.97 pt). The rule judged WER on
+    the i9 only, where AC 5 was measured, and two words is inside the spread
+    of one factor's two runs there (0.16-0.32 pt); but spec 01's 1 pt names no
+    machine. If the container's WER should decide, factor 2 is the default it
+    gives, at the same median, though its slowest commit there was 9.7 s, 6 s
+    of it waiting for a refresh in flight.
+  - **What the 2 s is made of.** The executor's own commit is 1.9-2.5 s on
+    the i9 (2.8 s in the slower run) and 3.9-4.2 s on the container at every
+    factor, with no trend in the factor: at factor 1 the
     stable text already keeps up, and fewer refreshes do not shorten the
     commit's decode. The rest is the wait for a refresh in flight when the
     commit arrives, which a commit cannot overtake: 0 to 2.6 s on the i9, a

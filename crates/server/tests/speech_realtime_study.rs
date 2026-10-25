@@ -127,15 +127,20 @@ impl SpeechExecutor for Timed {
     }
 }
 
+/// The number in the environment variable `name`, or `default`.
+fn env_or(name: &str, default: u32) -> u32 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 /// `speech.partial_interval_ms` for the run: its default, or `IGNIS_SPEECH_PARTIAL_MS` to see what
 /// a slower cadence does to the commit.
 fn interval_ms() -> u32 {
-    std::env::var("IGNIS_SPEECH_PARTIAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(SpeechGroup::default().partial_interval_ms)
+    env_or("IGNIS_SPEECH_PARTIAL_MS", SpeechGroup::default().partial_interval_ms)
 }
 
 /// `speech.partial_cost_factor` for the run: its default, or `IGNIS_SPEECH_PARTIAL_FACTOR`.
 fn cost_factor() -> u32 {
-    std::env::var("IGNIS_SPEECH_PARTIAL_FACTOR").ok().and_then(|v| v.parse().ok()).unwrap_or(SpeechGroup::default().partial_cost_factor)
+    env_or("IGNIS_SPEECH_PARTIAL_FACTOR", SpeechGroup::default().partial_cost_factor)
 }
 
 /// A server over the real CPU executor and the built-in catalog, the files under the study disk's

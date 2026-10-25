@@ -180,8 +180,8 @@ in the group's style.
   to `completed` on the i9 (two runs at each `speech.partial_cost_factor`, 1 to
   3; the eleven dictations' median 1.7-2.2 s, 3.2 s in the one run on a
   slower machine) and 5.8-6.1 s on the 4-core container at factor 1 (median
-  3.8 s over the eleven). The executor's own commit takes 1.9-2.0 s on the i9
-  and 4.0 s on the container; the rest is the wait for a refresh in flight.
+  3.8 s over the eleven). The executor's own commit takes 1.9-2.5 s on the i9
+  and about 4 s on the container; the rest is the wait for a refresh in flight.
   No factor measured better than 1 (Q76), so 1 is the default. A slower or
   busier machine adds more: the first measurement, on a machine whose window
   pushes took about 60% longer, gave 6.7 s and 11.8 s. Not met; the levers

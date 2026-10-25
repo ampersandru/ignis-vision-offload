@@ -206,5 +206,8 @@ something the spec left open, or differs from it:
   padding repeated, or low noise) was needed. Each item's leading silence
   counts toward `speech.max_clip_seconds`, since the model's own limit counts
   every sample it reads: an item under `server_vad` holds at most the limit
-  less the silence of the client's audio.
+  less the silence of the client's audio, and the error then names the
+  silence. A silence at or over the limit fails every item; no rule ties the
+  two fields. The leg asserted at the default, run again on the committed
+  code, passes: 4.68% against 4.03%.
 - **`chunking_strategy`** on the batch route stays refused, unchanged.

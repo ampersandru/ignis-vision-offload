@@ -30,6 +30,7 @@ const COMPLETED: &str = "conversation.item.input_audio_transcription.completed";
 const STARTED: &str = "input_audio_buffer.speech_started";
 const STOPPED: &str = "input_audio_buffer.speech_stopped";
 const COMMITTED: &str = "input_audio_buffer.committed";
+const FAILED: &str = "conversation.item.input_audio_transcription.failed";
 
 /// The clip's PCM16 bytes: its `data` chunk.
 fn clip() -> &'static [u8] {
@@ -203,6 +204,34 @@ async fn the_threshold_the_padding_and_the_silence_are_honoured() {
     let refused = next_event(&mut socket).await;
     assert_eq!((refused["type"].as_str(), refused["error"]["code"].as_str()), (Some("error"), Some("input_audio_buffer_commit_empty")), "{refused}");
     assert_eq!(executor.samples_pushed(), 0);
+}
+
+/// Q77: the leading silence counts toward `speech.max_clip_seconds`, as the
+/// model reads it. The clip's item holds 7.628 s of audio: under a limit of
+/// 8 s it is transcribed with no leading silence, and fails with 500 ms of it,
+/// the error naming the silence; its times and `usage` stay the audio's.
+#[tokio::test]
+async fn the_leading_silence_counts_toward_the_clip_limit() {
+    let (mut socket, _executor, _live, _dir) = opened_with(None, |group| {
+        group.max_clip_seconds = 8;
+        group.vad_leading_silence_ms = 0;
+    })
+    .await;
+    send_clip(&mut socket, 0, 144_960).await;
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(of(&events, COMPLETED)[0]["usage"]["seconds"], 7.628);
+
+    let (mut socket, _executor, _live, _dir) = opened_with(None, |group| {
+        group.max_clip_seconds = 8;
+        group.vad_leading_silence_ms = 500;
+    })
+    .await;
+    send_clip(&mut socket, 0, 144_960).await;
+    let events = until(&mut socket, FAILED).await;
+    assert_eq!(kinds(&events), [STARTED, "error", STOPPED, COMMITTED, FAILED], "{events:?}");
+    let message = of(&events, FAILED)[0]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("speech.max_clip_seconds (8 s)") && message.contains("500 ms of silence"), "{message}");
+    assert_eq!((events[0]["audio_start_ms"].as_u64(), events[2]["audio_end_ms"].as_u64()), (Some(884), Some(8_512)));
 }
 
 /// A commit during a turn ends its item at once, with no `speech_stopped`; the

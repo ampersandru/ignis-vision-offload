@@ -165,7 +165,7 @@ fn by_server_vad(exec: &Executor, audio: &[f32], lead: &[f32]) -> Vec<String> {
     texts
 }
 
-/// The leading silences to measure, in milliseconds: `IGNIS_SPEECH_LEAD_MS` (`0,500,1000`), and
+/// The leading silences to measure, in milliseconds: `IGNIS_SPEECH_LEAD_MS` (`0,500,1000,1500`), and
 /// always the default, `speech.vad_leading_silence_ms`'s, which the criterion is asserted on.
 fn lead_arms() -> Vec<u32> {
     let asked = std::env::var("IGNIS_SPEECH_LEAD_MS").unwrap_or_default();

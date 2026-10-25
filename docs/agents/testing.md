@@ -346,7 +346,7 @@ FLEURS clips and the 11 dictations within the bound (seconds), and AC 7's
 WER gate, `server_vad`'s items against a manual commit on the dictations with
 the default variant, each item fed after the server's leading silence (about
 15 minutes): run that alone, as the oracle's WER legs. `IGNIS_SPEECH_LEAD_MS`
-(`0,500,1000`) adds arms of other leading silences, each reported and each
+(`0,500,1000,1500`) adds arms of other leading silences, each reported and each
 some 5 minutes more; the default is the one asserted.
 
 ```sh

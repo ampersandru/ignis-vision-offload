@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The model's files on disk, as the slot found them: every file of the
 /// catalog entry (the decoder GGUF, `decoder`, and the encoder GGUF beside
@@ -184,7 +184,7 @@ pub struct FakeExecutor {
     /// the sessions opened from 0.
     pub calls: Arc<Mutex<Vec<String>>>,
     /// When each `partial` began, over every session, in order.
-    pub partials_at: Arc<Mutex<Vec<std::time::Instant>>>,
+    pub partials_at: Arc<Mutex<Vec<Instant>>>,
     /// Per session, in the order opened, the samples it was pushed before
     /// its first that is not zero: the digital silence it was fed first.
     pub silent_lead: Arc<Mutex<Vec<usize>>>,
@@ -232,7 +232,7 @@ impl FakeExecutor {
     }
 
     /// When each refresh so far began ([`FakeExecutor::partials_at`]).
-    pub fn partials_at(&self) -> Vec<std::time::Instant> {
+    pub fn partials_at(&self) -> Vec<Instant> {
         self.partials_at.lock().unwrap().clone()
     }
 
@@ -257,7 +257,7 @@ struct FakeSession {
     /// Its number among the sessions opened, and the executor's call log.
     index: usize,
     calls: Arc<Mutex<Vec<String>>>,
-    partials_at: Arc<Mutex<Vec<std::time::Instant>>>,
+    partials_at: Arc<Mutex<Vec<Instant>>>,
     /// The executor's record of leading silence, and whether this session
     /// has been pushed a sample that is not zero.
     silent_lead: Arc<Mutex<Vec<usize>>>,
@@ -282,7 +282,7 @@ impl SpeechSession for FakeSession {
 
     fn partial(&mut self) -> Result<Partial, SpeechError> {
         self.calls.lock().unwrap().push(format!("partial {}", self.index));
-        self.partials_at.lock().unwrap().push(std::time::Instant::now());
+        self.partials_at.lock().unwrap().push(Instant::now());
         std::thread::sleep(self.delay);
         let (stable, tail) = self.words.split_at(self.stable_words);
         let tail = tail.first().map(|word| format!(" {word}")).unwrap_or_default();
