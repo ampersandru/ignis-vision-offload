@@ -1388,6 +1388,20 @@ The audio from before the speech that a `server_vad` item keeps, in milliseconds
 
 The silence after the speech at which `server_vad` commits the item, in milliseconds: the default of its `silence_duration_ms`. Read when a session opens.
 
+### `speech.vad_leading_silence_ms`
+
+| | |
+|---|---|
+| Flag | `--speech-vad-leading-silence-ms` |
+| Env var | `IGNIS_SPEECH_VAD_LEADING_SILENCE_MS` |
+| Kind | `ms` |
+| Default | `500` |
+| Rule | 0..=10000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The digital silence put before each `server_vad` item's audio when it is fed to the speech model, in milliseconds: the model's transcript depends on the audio before the speech, and an item starts only its prefix padding before it. No event and no `usage` counts it; it counts toward `speech.max_clip_seconds`, as the model reads it. A manual commit's item gets none. Read at each item's start.
+
 ### `speech.loan_grace_seconds`
 
 | | |

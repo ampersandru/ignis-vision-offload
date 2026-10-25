@@ -746,6 +746,14 @@ config_group! {
         /// item, in milliseconds: the default of its `silence_duration_ms`.
         /// Read when a session opens.
         vad_silence_duration_ms: Millis = 500, between(0, 60_000), ALL, [Visible, Patchable];
+        /// The digital silence put before each `server_vad` item's audio
+        /// when it is fed to the speech model, in milliseconds: the model's
+        /// transcript depends on the audio before the speech, and an item
+        /// starts only its prefix padding before it. No event and no `usage`
+        /// counts it; it counts toward `speech.max_clip_seconds`, as the model
+        /// reads it. A manual commit's item gets none. Read at each item's
+        /// start.
+        vad_leading_silence_ms: Millis = ignis_speech::vad::DEFAULT_LEADING_SILENCE_MS, between(0, 10_000), ALL, [Visible, Patchable];
         /// How long a loan of free KV pages to the speech model outlives its
         /// transcription, in seconds (spec speech/06), not served yet.
         loan_grace_seconds: Secs = 30, between(0, 3600), ALL, [Visible, Patchable];

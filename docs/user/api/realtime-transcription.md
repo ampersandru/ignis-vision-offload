@@ -153,6 +153,16 @@ commit when the server has heard no speech since the last item is an `error`,
 `input_audio_buffer_commit_empty`. A clear discards the utterance in progress
 and the padding the server holds.
 
+The speech model reads each of these items after `speech.vad_leading_silence_ms`
+(500) of digital silence, which the server adds as it feeds the item to the
+model: Qwen3-ASR's transcript depends on how much audio comes before the
+speech, and an item starts only `prefix_padding_ms` before it. The client sees
+none of it: the times, `usage` and the events are the audio's. On eleven
+Italian dictations with the default model, the items joined score 4.7% WER
+with it, 7.6% without it, against 4.0% for one manual commit of each whole
+dictation. The silence counts toward `speech.max_clip_seconds`, since the
+model reads it. A manual commit's item is fed as sent.
+
 | `server_vad` field | |
 |---|---|
 | `threshold` | 0 to 1; default `speech.vad_threshold` (0.5). Higher needs louder speech, for a noisy room. |

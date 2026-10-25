@@ -157,8 +157,8 @@ impl SpeechExecutor for NoExecutor {
 /// session's transcript is the `words` it was scripted with: one more of them
 /// is stable per 8 s window pushed (128,000 samples), the last arriving only
 /// at the commit. It records what it was opened with, the samples it was
-/// pushed, what it was loaded with, and every call its sessions took, in
-/// order ([`FakeExecutor::calls`]).
+/// pushed, what it was loaded with, every call its sessions took, in order
+/// ([`FakeExecutor::calls`]), and the silence each session was fed first.
 #[derive(Debug)]
 pub struct FakeExecutor {
     pub words: Vec<String>,
@@ -182,6 +182,9 @@ pub struct FakeExecutor {
     /// `push <n> <samples>`, `partial <n>` and `commit <n>`, `n` counting
     /// the sessions opened from 0.
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// Per session, in the order opened, the samples it was pushed before
+    /// its first that is not zero: the digital silence it was fed first.
+    pub silent_lead: Arc<Mutex<Vec<usize>>>,
 }
 
 impl FakeExecutor {
@@ -202,6 +205,7 @@ impl FakeExecutor {
             load_settings: Mutex::new(Vec::new()),
             load_files: Mutex::new(Vec::new()),
             calls: Arc::new(Mutex::new(Vec::new())),
+            silent_lead: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -222,6 +226,12 @@ impl FakeExecutor {
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// Each session's leading digital silence so far
+    /// ([`FakeExecutor::silent_lead`]).
+    pub fn silent_lead(&self) -> Vec<usize> {
+        self.silent_lead.lock().unwrap().clone()
+    }
 }
 
 /// Samples in one 8 s window at 16 kHz.
@@ -238,6 +248,10 @@ struct FakeSession {
     /// Its number among the sessions opened, and the executor's call log.
     index: usize,
     calls: Arc<Mutex<Vec<String>>>,
+    /// The executor's record of leading silence, and whether this session
+    /// has been pushed a sample that is not zero.
+    silent_lead: Arc<Mutex<Vec<usize>>>,
+    sounded: bool,
 }
 
 impl SpeechSession for FakeSession {
@@ -246,6 +260,11 @@ impl SpeechSession for FakeSession {
         self.pushed += samples.len();
         self.log.lock().unwrap().push(samples.len());
         self.calls.lock().unwrap().push(format!("push {} {}", self.index, samples.len()));
+        if !self.sounded {
+            let silent = samples.iter().take_while(|&&sample| sample == 0.0).count();
+            self.silent_lead.lock().unwrap()[self.index] += silent;
+            self.sounded = silent < samples.len();
+        }
         // One more stable word per window pushed, the last left to the commit.
         self.stable_words = (self.pushed / WINDOW_SAMPLES).min(self.words.len().saturating_sub(1));
         Ok(())
@@ -314,6 +333,7 @@ impl SpeechExecutor for FakeExecutor {
         let mut opened = self.opened.lock().unwrap();
         let index = opened.len();
         self.calls.lock().unwrap().push(format!("open {index} {}", open.context));
+        self.silent_lead.lock().unwrap().push(0);
         opened.push(open);
         Ok(Box::new(FakeSession {
             words: self.words.clone(),
@@ -325,6 +345,8 @@ impl SpeechExecutor for FakeExecutor {
             log: Arc::clone(&self.pushed),
             index,
             calls: Arc::clone(&self.calls),
+            silent_lead: Arc::clone(&self.silent_lead),
+            sounded: false,
         }))
     }
 }

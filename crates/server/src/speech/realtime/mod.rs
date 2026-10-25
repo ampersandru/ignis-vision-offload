@@ -18,7 +18,9 @@
 //!   the VAD reads the 16 kHz audio on this socket's task and decides what
 //!   reaches an item: speech starts one (`speech_started`, the prefix padding
 //!   before it), the silence after it commits it (`speech_stopped`), and with
-//!   an idle timeout so much audio without speech is an item of its own. With
+//!   an idle timeout so much audio without speech is an item of its own. The
+//!   model reads each such item after `speech.vad_leading_silence_ms` of
+//!   digital silence, which no event and no `usage` counts (Q77). With
 //!   `turn_detection: null` every sample goes to the current item and the
 //!   client commits.
 //! - **Units.** Every call to the executor is one unit on the speech worker,
@@ -89,7 +91,7 @@ pub(crate) const MAX_APPEND_BYTES: usize = 15 << 20;
 
 On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection` `{type: \"server_vad\", threshold, prefix_padding_ms, silence_duration_ms, idle_timeout_ms: null}` at the server's `speech.vad_threshold`, `speech.vad_prefix_padding_ms` and `speech.vad_silence_duration_ms` (0.5, 300, 500, OpenAI's), `noise_reduction: null`, `include: []` and `ignis.provisional_tail: false`. The speech model is loaded if it is not, and the context prefilled.
 
-Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it (silence, even the silence that ended the item before, never an earlier item's speech); once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened, the last item or the field's change, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
+Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it (silence, even the silence that ended the item before, never an earlier item's speech); once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened, the last item or the field's change, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. The speech model reads each of these items after `speech.vad_leading_silence_ms` of digital silence, since its transcript depends on the audio before the speech; no time and no `usage` counts it. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
 
 Client events, each a text frame of one JSON object:
 - `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
@@ -244,6 +246,10 @@ struct Item {
     /// Samples appended, at whatever rate, and the seconds they make.
     samples_in: u64,
     seconds: f64,
+    /// The seconds of digital silence the model reads before its audio, under
+    /// `server_vad`: counted against `speech.max_clip_seconds`, as the model
+    /// counts them, and nowhere else.
+    lead: f64,
     timeout: Timeout,
     deadline: Option<Instant>,
     /// The stable text sent as deltas, and the tail last sent.
@@ -424,6 +430,7 @@ impl Connection {
             opened_with: open.clone(),
             samples_in: 0,
             seconds: 0.0,
+            lead: 0.0,
             timeout: Timeout::NONE,
             deadline: None,
             emitted: String::new(),
@@ -579,7 +586,7 @@ impl Connection {
         if item.failure.is_some() {
             return false;
         }
-        if item.seconds > f64::from(limit) {
+        if item.seconds + item.lead > f64::from(limit) {
             self.fail_current(Failure::TooLong(limit));
             return false;
         }
@@ -599,6 +606,16 @@ impl Connection {
             item.deadline = Some(item.timeout.from_now());
             self.next_partial = Some(Instant::now() + interval);
         }
+    }
+
+    /// A `server_vad` item's leading silence, before its first sample:
+    /// `speech.vad_leading_silence_ms` of zeros the model reads first (Q77).
+    /// Its times, its `usage` and the samples it counts are the client's
+    /// audio alone.
+    fn lead_in(&mut self) {
+        let silence = ignis_speech::vad::leading_silence(self.server.live().speech.vad_leading_silence_ms);
+        self.current().lead = silence.len() as f64 / f64::from(TARGET_RATE);
+        self.take_audio(silence);
     }
 
     /// The session's next 16 kHz samples: the current item's under manual
@@ -627,6 +644,7 @@ impl Connection {
                 self.begin_item();
                 let id = self.current().id.clone();
                 self.send(json!({ "type": "input_audio_buffer.speech_started", "audio_start_ms": millis(start), "item_id": id }));
+                self.lead_in();
             }
             TurnEvent::Audio(samples) => self.give(samples),
             TurnEvent::Stopped { end } => {
@@ -643,6 +661,7 @@ impl Connection {
                     "audio_end_ms": millis(end),
                     "item_id": id,
                 }));
+                self.lead_in();
                 self.give(audio);
                 self.end_item();
             }

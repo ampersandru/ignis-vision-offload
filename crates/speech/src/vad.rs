@@ -32,6 +32,17 @@ pub const FRAME: usize = 512;
 /// Samples per millisecond at 16 kHz.
 const PER_MS: u64 = 16;
 
+/// The digital silence the server puts before each `server_vad` turn's audio when it feeds the
+/// turn to the speech model, in milliseconds: the default of `speech.vad_leading_silence_ms`
+/// (spec speech/05, acceptance 7). Qwen3-ASR's transcript moves with the audio before the
+/// speech, and a turn starts only its prefix padding before it.
+pub const DEFAULT_LEADING_SILENCE_MS: u32 = 500;
+
+/// `ms` milliseconds of digital silence at 16 kHz: what goes before a turn's audio.
+pub fn leading_silence(ms: u32) -> Vec<f32> {
+    vec![0.0; ms as usize * PER_MS as usize]
+}
+
 /// What reads a frame: its speech probability, from 0 to 1. The model, or a script in tests.
 pub trait SpeechProbability {
     fn frame(&mut self, samples: &[f32]) -> f32;

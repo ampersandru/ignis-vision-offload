@@ -144,11 +144,14 @@ default, never a constant (the owner's rule).
 | `speech.max_sessions` | 4 open Realtime sessions | Q44 | 02, 03 |
 | `speech.max_queue` | 4 waiting batch requests | Q44 | 02 |
 | `speech.vad_threshold`, `speech.vad_prefix_padding_ms`, `speech.vad_silence_duration_ms` | 0.5, 300, 500 | Q22 | 05 |
+| `speech.vad_leading_silence_ms` | 500: the digital silence the model reads before each `server_vad` item, never shown to the client (AC 7 met with it: 4.68% against the manual commit's 4.03%; 7.58% without) | Q77 | 05 |
 | `speech.loan_grace_seconds` | 30 | Q32 | 06 |
 | `speech.loan_wait_seconds` | 5 | Q35 ("a short wait") | 06 |
 
 Every field name above, and every default no Q gave, is the owner's
-(2026-10-24).
+(2026-10-24), but `speech.vad_leading_silence_ms`: the owner made it a field
+with a default chosen from measurement (Q77, 2026-10-25), and the name is the
+build's, in the group's style.
 
 ## Requirements (Q28, Q34)
 
