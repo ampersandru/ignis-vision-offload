@@ -1,13 +1,14 @@
 ---
 title: "The agent path"
-description: "For an AI agent working for a user: what ignis is in one paragraph, the checks before installing it, the choices that are the user's, starting it and seeing it serve, connecting a client, and where each question is answered."
+description: "For an AI agent working for a user: what ignis is in one paragraph, the checks before installing it, the choices that are the user's, starting it and seeing it serve, connecting a client, testing a 16 GB card and reporting it, and where each question is answered."
 sidebar:
   order: 5
 ---
 
 For an AI agent (a coding agent or an assistant) working for a user who asked
-about ignis: what it is, whether it runs on their machine, to install it, or to
-point a client at it. It is information for the task the user gave you, and
+about ignis: what it is, whether it runs on their machine, to install it, to
+point a client at it, or to test it on a 16 GB card and report how it went. It
+is information for the task the user gave you, and
 asks for nothing beyond it. The pages it links are plain Markdown: in the
 repository under `docs/user/`, as raw files at
 `https://raw.githubusercontent.com/gpillon/ignis/main/docs/user/<page>.md`,
@@ -78,6 +79,9 @@ Ask before the install does anything large or visible:
    API key ([Access](../configuration/access.md)).
 5. **Whether to stop what holds the card**, when the last check found
    something.
+6. **For a test of a 16 GB card**, the plan, then the advanced part, posting
+   the report, and keeping ignis or removing it
+   ([Testing a 16 GB card](#testing-a-16-gb-card)).
 
 ## Install
 
@@ -160,6 +164,235 @@ model, set the same three in your harness's OpenAI-compatible provider.
   whole conversation again
   ([The KV cache and prompt reuse](../concepts/kv-cache-and-prompt-reuse.md)).
 
+## Testing a 16 GB card
+
+The `rtx50-16gb` profile is derived from an RTX 5090 held inside a 16 GB
+budget: no real 16 GB card has run it
+([the profile](../concepts/profiles.md#rtx50-16gb)). A user who asks you to
+test ignis on their RTX 5060 Ti 16 GB, 5070 Ti or 5080 and report how it went
+gives the project its first real numbers. The reports are collected on
+[issue #360](https://github.com/gpillon/ignis/issues/360), one comment per
+card. The test is the install above with the 16 GB model, a short ladder of
+settings for when the default is refused, and a report; after the 13.4 GB
+download it takes 15 to 30 minutes.
+
+### The card, and the plan the user approves
+
+```
+nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used,display_active,driver_version --format=csv
+```
+
+A 16 GB card reads a `memory.total` near 16,300 MiB. An RTX 50 with 8 or
+12 GB passes the other checks, but the 16 GB model does not fit it: the test
+ends there, with that reason. `memory.used` and `display_active`, read before
+ignis starts, go into the report. The memory the desktop and other programs
+hold is what most decides whether the default fits: estimated from the
+5090's plans, the default keeps 262,144 tokens of context with about 0.3 GiB
+held, adapts to 131,072 with 1 GiB and is refused with 3 GiB. The test is what
+measures it.
+
+Before anything large, the user gets one plan to approve:
+
+- where ignis goes, where the model goes (`qwen3.8-27b-16g`, 13.4 GB), and
+  the archive or the container;
+- what holds the card now, which the test leaves running;
+- that the server is started and stopped several times with different
+  settings, on `127.0.0.1` only;
+- how long it takes;
+- that an advanced part is offered once the base report is written, and is
+  their choice then;
+- that the report is shown to them whole before anything is posted, and that
+  at the end they choose to keep ignis or remove what the test installed.
+
+Their yes covers the base test and the report. What waits for the user's word
+(below) still waits.
+
+### The base test
+
+1. **Install** and fetch `qwen3.8-27b-16g` as in [Install](#install).
+2. **The default first**: a start with no setting named (the profile is
+   `auto`, and the load adapts itself), as in
+   [Start it, and see it serve](#start-it-and-see-it-serve). The report keeps
+   this attempt whatever it does: whether the default holds on a real card is
+   the first thing the project wants to know.
+3. **When a start is refused**, the next attempt adds one setting to the ones
+   before it, until a start serves:
+
+   | Attempt | Adds | What it trades |
+   |---|---|---|
+   | 1 | nothing | |
+   | 2 | `--model-adapt-context-step 16384` | The load lowers the context in steps of 16,384 instead of 65,536, down to 16,384, so it can run a context the default's steps skip over. |
+   | 3 | `--spec-backend off` | DFlash2's weights and buffers go to the KV pool; decode is slower. |
+   | 4 | `--vram-headroom-bytes 512M` | The profile leaves 1,200 MiB for the desktop. With 512 MiB, a desktop that grows after the start makes Windows page the card's memory and decode collapse; the bench's figures show it. |
+
+   A card refused at attempt 4 is reported as refused, with all four
+   attempts: below 16,384 tokens a coding agent has no room to work. For each
+   attempt the report keeps its flags and its outcome. For a start that
+   served, it keeps `max_model_len`, `decode_lanes` and `adapted` from
+   `GET /v1/models`. For a refused one, it keeps the refusal from the last
+   lines of the log, which carries the plan's deficit and every adaptation
+   tried ([when a profile does not fit](../concepts/profiles.md#when-a-profile-does-not-fit)),
+   with each path replaced by `<dir>`.
+4. **The smoke check**, on the first start that serves. Two greedy requests
+   with thinking off:
+
+   ```bash
+   curl http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' \
+     -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"What is 17 * 23? Answer with the number only."}],"enable_thinking":false,"temperature":0,"max_tokens":16}'
+   curl http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' \
+     -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Write a Python function that reverses a string."}],"enable_thinking":false,"temperature":0,"max_tokens":256}'
+   ```
+
+   The first passes when `choices[0].message.content` contains `391`; of the
+   second, the report keeps the first five lines. A server that answers
+   wrongly is a result of its own, not a refusal: the ladder does not go on,
+   and the report says so.
+5. **The bench**, with nothing else using the server:
+
+   ```
+   ignis-bench small-card --endpoint http://127.0.0.1:8000 --out small-card.json
+   ```
+
+   It takes several minutes on a 16 GB card, most of them the 64K
+   time-to-first-token cell, which is longer than a shell tool's usual
+   timeout. It runs the way the server does, without holding the shell, with
+   its progress on stderr ([Measure a 16 GB card](../guides/measure-a-16gb-card.md)).
+
+### The report
+
+The report is in English, whatever language the conversation is in: the
+project reads it, and so do other owners of the same card. It is written to a
+local file and carries these fields and nothing else:
+
+| Field | From |
+|---|---|
+| Operating system and version | Windows: `(Get-CimInstance Win32_OperatingSystem).Caption` and `.Version`. Linux: `PRETTY_NAME` in `/etc/os-release`, and `uname -r` |
+| Driver, CUDA version | `driver_version` above; the header of `nvidia-smi` |
+| CPU | Windows: `(Get-CimInstance Win32_Processor).Name`. Linux: `Model name` in `lscpu` |
+| Host RAM | the total, rounded to the GB |
+| Card | `name` and `memory.total` |
+| VRAM held before the start | `memory.used` in MiB, and `display_active`; no process names |
+| ignis | `ignis-server version`; archive or container |
+| Attempts | per attempt, as above |
+| Smoke check | pass or fail, and the five lines |
+| The bench | its record, which carries no key, path or address ([what it never records](../guides/measure-a-16gb-card.md#what-it-never-records)) |
+
+Nothing else goes in: no user or host name, no path, no IP address, no GPU
+UUID or serial number, no process name, no environment variable. The summary
+line reads the record's `decode.coding.median_tokens_per_s`,
+`decode.agent.median_tokens_per_s`, `decode.speculative.acceptance` and the
+`median_ttft_ms` of each `ttft` cell:
+
+````markdown
+### <card> · <OS> · default: works | adapted | refused · runs with: <flags, or "the default">
+
+| | |
+|---|---|
+| OS | <name and version> |
+| Driver / CUDA | <driver> / <CUDA version> |
+| CPU | <model> |
+| Host RAM | <n> GB |
+| Card | <name>, <memory.total> MiB |
+| VRAM held before the start | <n> MiB, display active: <yes or no> |
+| ignis | <version>, <archive or container> |
+
+| # | Flags | Outcome | Context | Lanes | Adapted, or the refusal |
+|---|---|---|---|---|---|
+| 1 | (the default) | ... | ... | ... | ... |
+
+**Smoke check:** 17 * 23 -> <answer> (<pass or fail>)
+
+```python
+<the first five lines>
+```
+
+**Summary:** decode <n> tok/s on the coding prompts, <n> tok/s on the agent
+turns; DFlash2 acceptance <n>; time to first token <n> s at 8K, <n> s at 64K.
+
+<details><summary>ignis-bench small-card</summary>
+
+```json
+<the whole record>
+```
+
+</details>
+
+**Notes from the user:** <anything they want to add, or "none">
+````
+
+The user reads it whole before it goes anywhere. Posting it is their call: with
+their yes and a `gh` already signed in (`gh auth status`), it goes up with
+`gh issue comment 360 --repo gpillon/ignis --body-file <report>`; otherwise
+they paste it into [issue #360](https://github.com/gpillon/ignis/issues/360)
+themselves.
+
+### The advanced part
+
+It is offered once the user has seen the base report, as their choice. It
+takes about 30 minutes, which they can stop at any time. Each step starts
+from the settings the base test served with:
+
+- **The context ceiling.** `--model-max-context` named in steps of 16,384
+  above the context the base ran, up to 262,144, until a start is refused. A
+  named context does not adapt, so the last one that served is the ceiling.
+- **One lane against two.** `--spec-decode-lanes 1`, then `2`, at the same
+  context, each measured with
+  `ignis-bench small-card --cells 8192`.
+- **DFlash2 on against off**, at the same context, measured the same way. It
+  shows whether speculation pays on this card.
+- **The default on a freer card**, only when the base needed a setting. The
+  user closes what holds the card, or moves the display to the integrated
+  GPU, `memory.used` is read again, and the default is tried again.
+
+Between runs, a server left 300 seconds without a request unloads the model,
+and the next request waits for it to load again
+([Idle unload](../api/idle-unload.md)): a slow first answer is that, not a
+hang. The results go into the same report, under an `Advanced` heading, and
+end with the best settings found: the start command that runs them, and the
+config file below.
+
+### Keeping it, or removing it
+
+At the end the user chooses to keep ignis or to remove it.
+
+- **Keeping it**: the start command with the settings that worked, the
+  Playground at <http://127.0.0.1:8000/ui/>, and
+  [Connect a client](../start/connect-a-client.md). A config file lets a bare
+  `ignis-server` start with those settings. It goes where a start looks with
+  no `--config`: `%APPDATA%\ignis\config.yaml` on Windows,
+  `$XDG_CONFIG_HOME/ignis/config.yaml` or `~/.config/ignis/config.yaml` on
+  Linux ([the config file](../configuration/index.md)). It holds only the
+  model's directory and the settings the test named, not every field: a value
+  in the file comes before the profile, so a file of every default (what
+  `config generate` writes) would hold them over `rtx50-16gb` and over a
+  later release's defaults. `config patch` writes such a file, and checks it:
+  the file starts as `{}`, then
+
+  ```
+  ignis-server config patch --file <path> --download-path <dir> --model-adapt-context-step 16384
+  ```
+
+  The user sees the path, the reason and the file's contents before it is
+  written. A file already at that path is not replaced: they see what would
+  change, and decide. `ignis-server config print` then shows what a bare start
+  runs. With the container, the file goes in the mounted model directory and
+  `IGNIS_CONFIG` names it.
+- **Removing it**: the test keeps, from its first step, a list of what it
+  created: the ignis directory, the model it fetched, the logs, the config
+  file, and for the container its image, container and volume. A directory
+  the user already had is not on it, only what the test added inside. The
+  user sees every file and directory on the list before anything is deleted,
+  and the deleting waits for their yes, with the server stopped first. The
+  report stays until it is posted.
+  Anything installed with administrator rights, such as the CUDA runtime, is
+  named and stays, unless the user asks for it to go.
+
+### Without a shell
+
+An assistant that cannot run commands follows the same steps by giving the
+user one command at a time and reading the output they paste back. The plan,
+the ladder and the report are the same.
+
 ## Where each question is answered
 
 | The user asks about | Read |
@@ -173,6 +406,7 @@ model, set the same three in your harness's OpenAI-compatible provider.
 | The Playground | [The Playground](../playground/index.md) |
 | How it serves a request, and why | [How ignis serves a request](../concepts/how-ignis-serves.md) |
 | What changed in a release | [The releases](https://github.com/gpillon/ignis/releases) |
+| Testing a 16 GB card and reporting it | [Testing a 16 GB card](#testing-a-16-gb-card), [Measure a 16 GB card](../guides/measure-a-16gb-card.md), [issue #360](https://github.com/gpillon/ignis/issues/360) |
 
 ## What waits for the user's word
 
@@ -185,3 +419,6 @@ model, set the same three in your harness's OpenAI-compatible provider.
 - Building from source instead of taking a release: it needs a CUDA toolkit
   and a long build ([Building from source](../contributing/building.md)).
 - The uncensored model, and the image model for anything commercial.
+- Posting a report, or anything else, to GitHub or any other site.
+- Writing a config file, and deleting what an install or a test put on the
+  machine.
