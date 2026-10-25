@@ -1,4 +1,4 @@
-//! ignis-speech: the speech model's CPU executor, ours in Rust (ADR 0067,
+//! ignis-speech: the speech model's CPU executor, ours in Rust (ADR 0068,
 //! spec `docs/specs/speech/01-cpu-executor.md`).
 //!
 //! Qwen3-ASR on the CPU: our GGUF reader, the activation quantizers and the

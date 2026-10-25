@@ -1,5 +1,5 @@
 //! The speech model's CPU executor in the server: `ignis-speech` (spec
-//! speech/01, ADR 0067) behind [`SpeechExecutor`].
+//! speech/01, ADR 0068) behind [`SpeechExecutor`].
 //!
 //! A load builds the crate's executor from the catalog entry's files and the
 //! load's settings; the server's worker keeps the idle clock (spec 02), so the

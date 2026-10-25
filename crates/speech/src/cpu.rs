@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The reason the executor gives on a CPU without the three features (ADR 0066's state with a reason).
+/// The reason the executor gives on a CPU without the three features (ADR 0067's state with a reason).
 pub const NO_AVX2: &str = "the CPU lacks AVX2";
 
 /// The CPU features the kernels need, detected or injected by a test.

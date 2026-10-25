@@ -1,4 +1,4 @@
-//! The speech model in the server (spec speech/02, ADR 0066): Qwen3-ASR,
+//! The speech model in the server (spec speech/02, ADR 0067): Qwen3-ASR,
 //! loaded beside the active model, on the CPU, at first use.
 //!
 //! It is a slot of its own on [`crate::Server`], not a [`crate::Runner`]: it

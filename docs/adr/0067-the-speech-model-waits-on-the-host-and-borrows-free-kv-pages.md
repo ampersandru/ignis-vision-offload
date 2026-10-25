@@ -1,4 +1,4 @@
-# ADR 0066 — the speech model waits on the host and borrows free KV pages
+# ADR 0067 — the speech model waits on the host and borrows free KV pages
 
 ## Status
 
@@ -104,7 +104,7 @@ uploads are the same GGUF the CPU reads, so a model is one download (Q46).
   decode (Q14).
 
 **Unavailable is a state with a reason.** The executor detects AVX2 at run
-time and picks its kernels by what it finds (ADR 0067). If the CPU executor
+time and picks its kernels by what it finds (ADR 0068). If the CPU executor
 cannot run (no AVX2) and the loan does not fit, a transcription waits a
 short while, then gets `503` with `Retry-After`. On a card where the loan
 rarely fits, the speech model is shown unavailable (Q35).

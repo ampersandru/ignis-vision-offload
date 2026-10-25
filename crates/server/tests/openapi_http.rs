@@ -681,7 +681,7 @@ fn the_document_describes_the_speech_model_and_its_route() {
     let document = document();
     let info = document["info"]["description"].as_str().unwrap();
     assert!(!info.contains("more than one loaded model"), "{info}");
-    assert!(info.contains("speech model") && info.contains("ADR 0066"), "{info}");
+    assert!(info.contains("speech model") && info.contains("ADR 0067"), "{info}");
     let post = &document["paths"]["/v1/audio/transcriptions"]["post"];
     let description = post["description"].as_str().unwrap();
     for said in ["speech.compat_names", "whisper-1", "verbose_json", "transcript.text.delta", "speech.max_clip_seconds", "speech.max_queue", "`504 request_timeout`"] {

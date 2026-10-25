@@ -7,8 +7,8 @@
 - Scope: speech / Qwen3-ASR 0.6B and 1.7B (bf16, Q8_0, Q4_K_M) on llama.cpp b11840, CPU only, on the owner's
   i9-10900K (Windows) and a 4-core podman container: time per clip, threads, memory, FLEURS WER, the owner's eleven
   dictations with and without context, language ID
-- Related: [ADR 0066](../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md),
-  [ADR 0067](../adr/0067-the-speech-models-cpu-executor-is-ours-in-rust.md),
+- Related: [ADR 0067](../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md),
+  [ADR 0068](../adr/0068-the-speech-models-cpu-executor-is-ours-in-rust.md),
   [spec speech](../specs/speech/spec.md), [spec speech/01](../specs/speech/01-cpu-executor.md),
   [Rust quantized matmul matches ggml on the CPU](2026-10-24-rust-quantized-matmul-matches-ggml.md)
 - Superseded by: none
@@ -141,9 +141,9 @@ variant within 10% is 0.6B Q8_0 (9.1%, 6.7x).
 
 ## Implications
 
-- ADR 0066: the CPU executor is the speech model's baseline, and Realtime's incremental path is on phase 1's
+- ADR 0067: the CPU executor is the speech model's baseline, and Realtime's incremental path is on phase 1's
   critical path.
-- ADR 0067: the CPU path needs quantized SIMD kernels, since FP32 is ~3x slower, and Q4_K_M with a repacked layout
+- ADR 0068: the CPU path needs quantized SIMD kernels, since FP32 is ~3x slower, and Q4_K_M with a repacked layout
   is worth keeping. This run compared llama.cpp only with Transformers FP32, so it shows that such kernels are
   needed, not that they must be ggml's; [Rust quantized matmul matches ggml on the
   CPU](2026-10-24-rust-quantized-matmul-matches-ggml.md) measured ours.

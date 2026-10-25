@@ -7,7 +7,7 @@ Accepted (2026-10-13, owner): the grilling session on Qwen-Image of
 scope of `CONTEXT.md`'s *ignis* (text models and an image model) and, for this
 model only, ADR 0005/0007's "at least as fast as the reference".
 
-**Amended by ADR 0066** (2026-10-24): "one model at a time" holds between the
+**Amended by ADR 0067** (2026-10-24): "one model at a time" holds between the
 text and image models. The speech model is loaded beside either, on the
 host, and is never reached by a switch.
 

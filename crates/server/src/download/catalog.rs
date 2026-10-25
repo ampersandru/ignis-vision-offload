@@ -111,7 +111,7 @@ pub struct CatalogEntry {
     /// The file the server loads, one of [`CatalogEntry::files`].
     pub artifact: String,
     /// What the entry is, when the catalog says it: `Some(ModelKind::Speech)`
-    /// for a speech model (`kind: speech`; ADR 0066), never switched to,
+    /// for a speech model (`kind: speech`; ADR 0067), never switched to,
     /// whose files are GGUFs with no sidecar. `None` for the rest: a text or
     /// image model, told apart by its artifact's header.
     pub kind: Option<ModelKind>,
@@ -745,7 +745,7 @@ mod tests {
         ),
     ];
 
-    /// The speech releases (ADR 0066, spec speech/01 AC 22): `(id, repo,
+    /// The speech releases (ADR 0067, spec speech/01 AC 22): `(id, repo,
     /// revision, decoder, [(file, bytes, sha256)])`, written out again from
     /// the repos' `SHA256SUMS`. A speech entry states no card class: it runs
     /// on the CPU, so no card refuses it.

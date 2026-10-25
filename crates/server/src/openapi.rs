@@ -62,7 +62,7 @@ The inference surface of an `ignis` server: OpenAI-compatible chat \
 completions and responses, plus `/v1/decide` (ADR 0034), which reads an \
 answer out of the model's own readout instead of generating one; and, with \
 the image model loaded (ADR 0050), OpenAI's image generations and edits; \
-and, with the speech model available (ADR 0066), OpenAI's audio \
+and, with the speech model available (ADR 0067), OpenAI's audio \
 transcriptions and its Realtime transcription session, on the CPU beside \
 the model on the card.\n\n\
 Every operation below is served by the listener this page was loaded \
@@ -89,7 +89,7 @@ holds no request past its connection); audio out (no model here speaks) and \
 hears, it does not translate); LoRA adapters (trained against BF16 weights, \
 and the checkpoint is NVFP4: merge and re-export instead); a second model on \
 the card (the VRAM plan is decided at load, for one; the speech model is the \
-exception, because it runs on the CPU and never holds VRAM, ADR 0066).",
+exception, because it runs on the CPU and never holds VRAM, ADR 0067).",
         version = env!("CARGO_PKG_VERSION"),
         license(name = "Apache-2.0"),
     ),
@@ -106,7 +106,7 @@ exception, because it runs on the CPU and never holds VRAM, ADR 0066).",
         (name = "tokenize", description = "A prompt's token count, and token ids back to text, without serving anything."),
         (name = "decide", description = "Typed decisions read from the readout (ADR 0034)."),
         (name = "images", description = "Images from the image model: generations and edits (ADR 0050)."),
-        (name = "audio", description = "Transcripts from the speech model (ADR 0066)."),
+        (name = "audio", description = "Transcripts from the speech model (ADR 0067)."),
     ),
 )]
 pub struct ApiDoc;

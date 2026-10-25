@@ -65,7 +65,7 @@ pub struct Tiles {
 }
 
 impl Tiles {
-    /// The spike's tuned tiles (ADR 0067): interleaved Q4_K GEMV of 16 rows and GEMM 4 × 16,
+    /// The spike's tuned tiles (ADR 0068): interleaved Q4_K GEMV of 16 rows and GEMM 4 × 16,
     /// Q6_K GEMM 8 × 1, Q8_0 GEMM 6 × 2.
     pub fn default_for(ty: WType) -> Tiles {
         match ty {

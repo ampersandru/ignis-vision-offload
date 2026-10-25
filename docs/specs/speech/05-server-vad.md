@@ -2,7 +2,7 @@
 
 GitHub: #355 (master #350). Phase 2 (Q56). Feature: `spec.md`. Needs 03.
 
-ADRs: 0051 (adapted code, licences), 0066 (the speech model).
+ADRs: 0051 (adapted code, licences), 0067 (the speech model).
 
 Decided 2026-10-23/24 in the speech grill (Q22, Q54, Q56). Details the grill
 left open were decided by the owner on 2026-10-24, cited as

@@ -8,7 +8,7 @@
   against ggml b11840, at the shapes of Qwen3-ASR-1.7B Q4_K_M and its Q8_0 audio encoder: one decode token, a
   512-token prefill and one encoder window, on the owner's i9-10900K (Windows, 10 threads) and a 4-core podman
   container (Linux, 4 threads)
-- Related: [ADR 0067](../adr/0067-the-speech-models-cpu-executor-is-ours-in-rust.md),
+- Related: [ADR 0068](../adr/0068-the-speech-models-cpu-executor-is-ours-in-rust.md),
   [spec speech/01](../specs/speech/01-cpu-executor.md),
   [Qwen3-ASR on the CPU](2026-10-24-qwen3-asr-on-cpu.md)
 - Superseded by: none
@@ -151,7 +151,7 @@ baseline and a GGUF reader are 1,317 more.
 
 ## Implications
 
-- ADR 0067: the speech model's CPU executor is ours, in Rust, with these kernels, our Q4_K layout and our own pool.
+- ADR 0068: the speech model's CPU executor is ours, in Rust, with these kernels, our Q4_K layout and our own pool.
   No ggml enters the tree.
 - Spec speech/01: the correctness method (fp64 reference with this normalisation and gate, negative controls,
   scalar and AVX2 quantizers bit-identical) becomes acceptance criteria.

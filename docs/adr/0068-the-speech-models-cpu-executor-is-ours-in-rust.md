@@ -1,9 +1,9 @@
-# ADR 0067 — the speech model's CPU executor is ours, in Rust
+# ADR 0068 — the speech model's CPU executor is ours, in Rust
 
 ## Status
 
 Accepted (2026-10-24, owner): decisions Q59-Q63 of the speech grill of
-2026-10-23/24 (ADR 0066 has the session), taken when the owner reviewed the
+2026-10-23/24 (ADR 0067 has the session), taken when the owner reviewed the
 vendoring the grill had first chosen, and the spike Q61 asked for, which
 passed every criterion fixed before it ran; Q64-Q68 settled the details the
 rewrite left open. Spec
@@ -30,7 +30,7 @@ the session's decision log, kept untracked in
 
 ## Context
 
-ADR 0066 makes a CPU executor the speech model's baseline. The CPU
+ADR 0067 makes a CPU executor the speech model's baseline. The CPU
 measurement (the first finding) says what it must run:
 - The official Transformers path in FP32 is 2.8-2.9x slower than llama.cpp's
   Q8_0 on the same CPU. 1.7B then runs barely faster than real time.
@@ -117,7 +117,7 @@ over ggml b11840's:
    module is compiled only on x86-64, and the scalar kernels everywhere.
 6. **Q4_K is repacked at load into our interleaved 8-row layout** (the
    spike): +2.8% over the file's bytes, and the only copy of those tensors
-   kept. ADR 0066's load at first use (Q53) is this repack.
+   kept. ADR 0067's load at first use (Q53) is this repack.
 7. **Our own thread pool**, spin then park (Q60, the spike): rayon failed
    decode on 4 cores (1.184). It runs at `speech.threads` (Q38).
 8. **Both graphs are written by us, in Rust** (Q60):
@@ -135,12 +135,12 @@ over ggml b11840's:
     converts the GGUF files (Q47). It is never in the tree or in the build.
 11. **AVX2 stays the minimum** (Q28; the spike's kernels need FMA and F16C
     beside it). On a CPU without the three the CPU executor is unavailable,
-    with ADR 0066's reason (Q35). Runtime selection removes the
+    with ADR 0067's reason (Q35). Runtime selection removes the
     illegal-instruction risk the CPUID check guarded against: no AVX2
     instruction runs outside a function selected after detection.
 
 One pipeline drives two compute adapters (Q41): this executor, and the CUDA
-loan of phase 3 (ADR 0066), which builds on our kernel leaf alone, with no
+loan of phase 3 (ADR 0067), which builds on our kernel leaf alone, with no
 ggml-cuda base (Q62). Both read the same GGUF files (Q46).
 
 **Licences.** No code is copied, so ADR 0051's list does not come into play

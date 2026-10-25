@@ -3,7 +3,7 @@
 GitHub: #354 (master #350). Phase 1. Feature: `spec.md`. Needs 03 (the Realtime
 route); its components can be built against a fake socket first.
 
-ADRs: 0066 (the speech model), 0028 (exposure always keyed). Specs:
+ADRs: 0067 (the speech model), 0028 (exposure always keyed). Specs:
 playground/06 (the image studio), decide (the Decide view).
 
 Decided 2026-10-23/24 in the speech grill. The behaviour below is the

@@ -32,4 +32,4 @@ every default, is [the configuration reference](../reference/configuration.md).
 
 The fields marked "not served yet" are declared so that a configuration file
 written today keeps its meaning: the loan that reads them comes with its own
-ticket ([ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).
+ticket ([ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).

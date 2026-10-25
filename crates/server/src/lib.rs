@@ -154,7 +154,7 @@ pub struct Server {
     /// The edits decoding their condition images now, at most
     /// `image.max_condition_decodes` at once ([`images::Decodes`]).
     pub image_decodes: std::sync::Arc<images::Decodes>,
-    /// The speech model beside the active one (ADR 0066, spec speech/02):
+    /// The speech model beside the active one (ADR 0067, spec speech/02):
     /// its availability, its executor and the compute worker behind
     /// `POST /v1/audio/transcriptions`. Shared by every clone, like the active
     /// model; a model switch does not touch it.
@@ -595,7 +595,7 @@ impl Server {
         self
     }
 
-    /// Serve transcriptions with `speech` (ADR 0066): `main` passes the slot
+    /// Serve transcriptions with `speech` (ADR 0067): `main` passes the slot
     /// over its executor and the catalog; a server built without one has a
     /// speech model that is unavailable, saying so.
     pub fn with_speech(mut self, speech: std::sync::Arc<speech::Speech>) -> Self {

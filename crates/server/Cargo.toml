@@ -10,7 +10,7 @@ ignis-core = { path = "../core" }
 ignis-artifact = { path = "../artifact" }
 ignis-runtime = { path = "../runtime" }
 ignis-logging = { path = "../logging" }
-# The speech model's CPU executor (spec speech/01, ADR 0067): pure Rust, in every build.
+# The speech model's CPU executor (spec speech/01, ADR 0068): pure Rust, in every build.
 ignis-speech = { path = "../speech" }
 serde = { workspace = true }
 serde_json = { workspace = true }

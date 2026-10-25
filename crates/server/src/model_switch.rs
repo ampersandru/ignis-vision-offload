@@ -396,7 +396,7 @@ pub enum Unswitchable {
     /// that fits (ADR 0064 §3): `409 model_above_card_class`, before anything
     /// is prepared or torn down.
     AboveClass(ClassRefusal),
-    /// A speech model's catalog entry (ADR 0066): loaded beside the active
+    /// A speech model's catalog entry (ADR 0067): loaded beside the active
     /// model by the first transcription, never switched to.
     Speech,
 }
@@ -590,7 +590,7 @@ impl Switcher {
     }
 
     /// Whether `model` names a speech model's catalog entry (`kind: speech`,
-    /// ADR 0066): loaded beside the active model, never switched to, so it
+    /// ADR 0067): loaded beside the active model, never switched to, so it
     /// is no model a switch resolves, lists or fetches an artifact for.
     pub fn is_speech(&self, model: &str) -> bool {
         self.catalog.as_ref().and_then(|catalog| catalog.catalog.entry(model)).is_some_and(|entry| entry.is_speech())
@@ -790,7 +790,7 @@ impl Switcher {
     /// entry's. A catalog id above the card's class is not one, listed or
     /// not (ADR 0064 §3): a request naming it never switches.
     pub fn known(&self, model: &str) -> Option<PathBuf> {
-        // A speech model is no model to switch to (ADR 0066).
+        // A speech model is no model to switch to (ADR 0067).
         if self.is_speech(model) {
             return None;
         }

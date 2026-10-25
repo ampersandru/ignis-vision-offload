@@ -60,7 +60,7 @@ pub enum ModelKind {
     Text,
     /// The image model: an image runner and its job queue.
     Image,
-    /// The speech model (ADR 0066, spec speech/02): audio in, its transcript
+    /// The speech model (ADR 0067, spec speech/02): audio in, its transcript
     /// out, on the CPU, loaded beside the active model and never switched to.
     Speech,
 }

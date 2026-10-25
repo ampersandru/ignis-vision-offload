@@ -13,7 +13,7 @@ The audio never leaves the machine. The model is a third **model kind**:
 it takes audio and gives back its transcript, and never converses (Q8, Q9).
 It is loaded beside the text or image model, never resident in VRAM. It runs
 on the CPU, and in phase 3 also on free KV pages lent to it for one
-**transcription** (ADR 0066). It is loaded at first use and unloaded when
+**transcription** (ADR 0067). It is loaded at first use and unloaded when
 idle (Q53).
 
 Surfaces:
@@ -24,9 +24,9 @@ Surfaces:
 - the Playground's **dictation**, always over Realtime (Q3, Q33).
 
 **Decisions:**
-- [ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md):
+- [ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md):
   the speech model waits on the host and borrows free KV pages.
-- [ADR 0067](../../adr/0067-the-speech-models-cpu-executor-is-ours-in-rust.md):
+- [ADR 0068](../../adr/0068-the-speech-models-cpu-executor-is-ours-in-rust.md):
   the speech model's CPU executor is ours, in Rust.
 - The grill of 2026-10-23/24, Q1-Q68 and the validated mockup of the
   Playground (Q17). Q59-Q63 are the owner's review of the vendoring the
@@ -160,7 +160,7 @@ in the group's style.
 - **A CPU with AVX2** (Haswell, 2013, or later) for the CPU executor. The
   executor detects AVX2, FMA and F16C at run time and picks its kernels by
   what it finds; one binary serves every x86-64 CPU. Without AVX2 the speech
-  model runs only on a loan, or is unavailable (ADR 0066, 0067).
+  model runs only on a loan, or is unavailable (ADR 0067, 0068).
 - **The 4-core figure goes into the requirements** (Q34). On a 4-core
   container sharing the i9's L3 and memory bandwidth, our CPU executor at
   `speech.threads: auto` (3 threads there) runs `qwen3-asr-1.7b` at 2.9-3.0x
@@ -227,7 +227,7 @@ Read at `711b1d85`; every line checked in this worktree.
   - `models\`: the GGUF files measured;
   - `src\llama.cpp\`: a read-only clone at tag b11840 (`36e36e63a`), the
     comparison and benchmark baseline, never in the tree or the build
-    (ADR 0067);
+    (ADR 0068);
   - `rust-spike\`: the spike's source and raw results;
   - `scripts\`, `logs\`.
 - **Python:** `H:\speech-study\venv` (torch 2.14.1+cpu, transformers
@@ -251,7 +251,7 @@ Read at `711b1d85`; every line checked in this worktree.
 - **Formatting:** never `cargo fmt`; diffs are semantic only.
 - **Copied code** (ADR 0051): only MIT, BSD, Apache-2.0 or MIT-CMU.
   Provenance goes in the file header and in `NOTICE` or `kernel/NOTICE`. The
-  CPU executor copies none (ADR 0067).
+  CPU executor copies none (ADR 0068).
 - **Native code outside `cuda`** (Q63, Q42): the executor is pure Rust and
   adds no native code. The C a build without `cuda` already compiles
   (`ring`, and the oniguruma and esaxx parts of `tokenizers`) goes through

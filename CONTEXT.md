@@ -10,11 +10,11 @@ When output names a domain concept, use the term as defined here.
   speech model loaded beside whichever it is.
   Deliberately specialized: few model families, one GPU class. ADR 0043 added
   a second text model, **Flash-Next**; ADR 0050 adds the image model; ADR
-  0066 the **speech model**.
+  0067 the **speech model**.
 - **Kernel leaf** — the C++/CUDA compute library linked into ignis behind a C ABI.
   The forward pass of the text and image models and all GPU compute live here;
   Rust owns everything above the **step** — scheduling, KV accounting, serving
-  (ADR 0009). The speech model's CPU executor is Rust (ADR 0067).
+  (ADR 0009). The speech model's CPU executor is Rust (ADR 0068).
 - **Step ABI** — the C ABI between Rust and the leaf, named after its
   granularity: one call per *step* (model load, sequence lifecycle, a prefill
   span, a decode round), not one per operator. Device-resident — no host
@@ -343,13 +343,13 @@ When output names a domain concept, use the term as defined here.
   **Last switch**.
   _Avoid_: borrow.
 
-## Speech model (specs `speech/01-06`, ADRs 0066-0067)
+## Speech model (specs `speech/01-06`, ADRs 0067-0068)
 
 - **Speech model** — a model that takes audio in and gives back its
   transcript; it never converses. The third **model kind**, beside the text
   model and the image model: Qwen3-ASR. Loaded beside the text or image model
   rather than reached by a switch, and never resident in VRAM: it runs on the
-  CPU, or on free KV pages lent to it for one **transcription** (ADR 0066).
+  CPU, or on free KV pages lent to it for one **transcription** (ADR 0067).
   _Avoid_: voice model, ASR model, audio model
 - **Transcription** — one server job turning audio into text, from admission
   to the delivery of its last text: a whole clip, or live from a stream of
@@ -437,7 +437,7 @@ When output names a domain concept, use the term as defined here.
   takes text and images and gives back tokens, and converses (the 27B,
   Flash-Next); an **image model** takes a prompt and gives back pixels (the
   image model, ADR 0050); a **speech model** takes audio and gives back its
-  transcript, and never converses (ADR 0066). Above the model family: every
+  transcript, and never converses (ADR 0067). Above the model family: every
   family is of one kind. Engine, lane, sequence, KV and generation cap are
   text-model terms.
   _Avoid_: modality (the 27B already takes images in), pipeline
@@ -457,7 +457,7 @@ When output names a domain concept, use the term as defined here.
   entry's own id, or claimed by two entries. The OpenAI model names a config
   field lists for the **speech model** (`whisper-1`, `gpt-4o-transcribe` and
   the others) are aliases of its served id too, on every card and outside the
-  catalog: a request naming one is served by the speech model (ADR 0066).
+  catalog: a request naming one is served by the speech model (ADR 0067).
 - **Catalog** — the models the server knows how to fetch: the **built-in
   catalog**, shipped inside the binary, plus the **operator catalog**, a
   separate file the config names.
@@ -489,7 +489,7 @@ When output names a domain concept, use the term as defined here.
   until the implicit switch resolves aliases. The **speech model**
   is listed too, right after the active one (`kind: "speech"`), without being
   switched to: it is loaded beside the active model, on the CPU, and only
-  while it is available (ADR 0066).
+  while it is available (ADR 0067).
   _Avoid_: available model, installed model
 - **Last switch** — how the most recent switch or reload ended (`switched`,
   `refused`, `restored`, `failed`, with the reason), kept on `GET /v1/models`
@@ -506,7 +506,7 @@ When output names a domain concept, use the term as defined here.
   the state routes. A transcription is
   not use of the text model: the speech model is another model, on the CPU, with
   its own idle clock (`speech.idle_unload`), and it never resets this one (ADR
-  0066).
+  0067).
   _Avoid_: sleep, suspend, eviction (that word is a sequence's, not a model's)
 
 ## Prompt rendering

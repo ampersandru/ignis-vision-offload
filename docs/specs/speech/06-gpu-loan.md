@@ -2,7 +2,7 @@
 
 GitHub: #356 (master #350). Phase 3 (Q33, Q56). Feature: `spec.md`. Needs 01-03.
 
-ADRs: 0066 (the loan), 0067 (one pipeline, two compute adapters), 0030
+ADRs: 0067 (the loan), 0068 (one pipeline, two compute adapters), 0030
 (nothing allocated on the device while serving), 0045 (KV pool policy,
 eviction priority), 0049 (idle unload), 0051 (kernel provenance).
 
@@ -73,7 +73,7 @@ decided by the owner on 2026-10-24, cited as `(owner, 2026-10-24)`.
 
 ### The CUDA adapter
 
-One pipeline, two compute adapters (Q41, ADR 0067). This one runs 01's
+One pipeline, two compute adapters (Q41, ADR 0068). This one runs 01's
 session on the loan:
 - the front end stays on the host (01's Rust mel);
 - the program is the image model's pattern: a flat C ABI per stage, driven
@@ -158,5 +158,5 @@ measurement:
 
 - Lending anything but free KV pages, for example the expert cache or a
   workspace (Q30).
-- Keeping the speech model resident (ADR 0066).
+- Keeping the speech model resident (ADR 0067).
 - `server_vad`: spec 05, phase 2 (Q56).

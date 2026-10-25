@@ -198,7 +198,7 @@ description names the things this engine does not serve **as choices**, so a
 reader stops looking: embeddings and a generic reranker over a second model,
 `/v1/completions`, `/v1/batches`, audio out and `/v1/audio/translations`, LoRA
 adapters on an NVFP4 checkpoint, and a second model on the card (the speech
-model, which runs on the CPU, is the exception: ADR 0066). Each with its
+model, which runs on the CPU, is the exception: ADR 0067). Each with its
 one-line reason.
 This is documentation, not a refusal path — those routes simply 404 as they
 do today.

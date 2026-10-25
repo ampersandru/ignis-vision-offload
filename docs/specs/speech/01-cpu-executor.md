@@ -2,7 +2,7 @@
 
 GitHub: #351 (master #350). Phase 1. Feature: `spec.md`.
 
-ADRs: 0067 (the CPU executor is ours, in Rust), 0066 (the speech model), 0051
+ADRs: 0068 (the CPU executor is ours, in Rust), 0067 (the speech model), 0051
 (ours / adapted / vendored), 0043 (no reference engine: the checkpoint's own
 modelling code is the oracle), 0032 (the default build is pure Rust), 0047
 (catalog).
@@ -32,7 +32,7 @@ cited as "the spike"). The details that review left open are Q64-Q67.
 
 ## Solution
 
-### 1. The executor, in Rust (ADR 0067)
+### 1. The executor, in Rust (ADR 0068)
 
 - **Pure Rust in the default build** (Q60; Q58 is moot). The executor is the
   crate `crates/speech` (`ignis-speech`, owner, 2026-10-24). Its own code
@@ -80,7 +80,7 @@ cited as "the spike"). The details that review left open are Q64-Q67.
   against, and they are not served on x86-64 (Q28, Q35). No setting serves
   them either, not even for debugging (Q64).
 
-### 2. The graphs, ours in Rust (ADR 0067)
+### 2. The graphs, ours in Rust (ADR 0068)
 
 - **Encoder (AuT):**
   - the convolutional stem: three 3×3 convolutions of stride 2 (1 → 480 →
@@ -352,7 +352,7 @@ Same method as the image model (Q25), with Q52's changes:
     2026-10-24). Every variant's pooled WER
     on the finding's FLEURS clips and the 11 dictations is within 1 pt of
     llama.cpp b11840's on the same clips. The spike timed the matmuls alone
-    (ADR 0067), so this is the whole executor's gate. The ratio to llama.cpp
+    (ADR 0068), so this is the whole executor's gate. The ratio to llama.cpp
     b11840's end-to-end time on the same clips is reported beside it and does
     not gate (Q65).
 25. `cargo test` passes workspace-wide (AGENTS.md, not a grill decision).
@@ -367,7 +367,7 @@ Same method as the image model (Q25), with Q52's changes:
   not a priority, owner). ignis builds no aarch64 target today.
 - AVX-VNNI and AVX-512 kernels: not in phase 1. A later ticket, if a
   measurement on such a CPU shows a gap to ggml's variants for it (Q67,
-  ADR 0067).
+  ADR 0068).
 
 ## As built (GitHub #351, 2026-10-24)
 

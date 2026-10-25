@@ -674,7 +674,7 @@ config_group! {
 }
 
 config_group! {
-    /// The speech model (spec speech/02, ADR 0066): Qwen3-ASR, loaded beside
+    /// The speech model (spec speech/02, ADR 0067): Qwen3-ASR, loaded beside
     /// the active model on the CPU at first use. Read while any model is
     /// loaded, so every family takes them, and each changes live.
     SpeechGroup = "speech" {

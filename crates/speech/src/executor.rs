@@ -103,7 +103,7 @@ pub struct ModelFiles {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Availability {
     Available,
-    /// Unavailable, with the reason (ADR 0066): "the CPU lacks AVX2".
+    /// Unavailable, with the reason (ADR 0067): "the CPU lacks AVX2".
     Unavailable(String),
 }
 

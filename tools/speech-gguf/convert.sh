@@ -3,7 +3,7 @@
 # sizes of Qwen3-ASR, decoder and audio encoder (mmproj), in bf16, Q8_0 and
 # Q4_K_M, converted from Qwen's official weights at the pinned revisions with
 # llama.cpp b11840's converter and quantizer. llama.cpp is an out-of-tree tool
-# here (ADR 0067): it is never in the tree or the build.
+# here (ADR 0068): it is never in the tree or the build.
 #
 # usage: tools/speech-gguf/convert.sh STUDY OUT
 #   STUDY  the study directory: models/hf/Qwen3-ASR-{1.7B,0.6B} (Qwen's

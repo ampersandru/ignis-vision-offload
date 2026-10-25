@@ -470,7 +470,7 @@ async fn main() {
         known_models = %tables.known.keys().cloned().collect::<Vec<_>>().join(","),
         "a request naming one of these models, other than the loaded one, switches the server to it"
     );
-    // ADR 0066, spec speech/02: the speech model beside the active one. Its
+    // ADR 0067, spec speech/02: the speech model beside the active one. Its
     // files are looked for in the same catalog and directory; its executor is
     // `ignis-speech` on the CPU (spec speech/01), unavailable with its reason
     // on a CPU without AVX2.

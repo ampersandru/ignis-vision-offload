@@ -76,7 +76,7 @@ models:
       - { name: qwen3_8_27b_trellis_sc30-v2.ninfer.conversion.json, bytes: 309495, sha256: "210ab54bfe8b04e5fc4337ee3755c340ea3f21239aa625c505aa2406645a340d" }
       - { name: qwen3_8_27b_trellis_sc30-v2.ninfer, bytes: 13379877124, sha256: "2c4c9ee4d6b25c08da6c2d85840126e73d120564e230f926b6230b5b95ee8b3c" }
 
-  # The speech models (ADR 0066, spec speech/01 §6, GitHub #351): the
+  # The speech models (ADR 0067, spec speech/01 §6, GitHub #351): the
   # Qwen3-ASR decoder and its audio encoder as GGUFs, converted by the owner
   # (tools/speech-gguf/convert.sh) and run on the CPU beside the active model.
   # `kind: speech` marks them: no sidecar, never switched to. The artifact is

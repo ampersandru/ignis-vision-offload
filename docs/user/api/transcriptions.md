@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The server transcribes speech with **Qwen3-ASR**
-([ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)),
+([ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)),
 on OpenAI's route `POST /v1/audio/transcriptions`. It is a model of its own
 kind, loaded **beside** the text or image model and never instead of it: it
 runs on the CPU, takes no VRAM, and is not switched to. A transcription is

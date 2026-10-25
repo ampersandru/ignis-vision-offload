@@ -3,7 +3,7 @@
 GitHub: #352 (master #350). Phase 1. Feature: `spec.md`. Built against a fake
 executor first; 01 for the real one.
 
-ADRs: 0066 (the speech model), 0058 (deadlines), 0049 (idle unload), 0047
+ADRs: 0067 (the speech model), 0058 (deadlines), 0049 (idle unload), 0047
 and 0064 (catalog, aliases), 0046 (config v2), 0017 (metrics); spec
 server/09 (honoured or refused).
 
@@ -30,7 +30,7 @@ decided by the owner on 2026-10-24, cited as `(owner, 2026-10-24)`.
 ### The speech model beside the active one
 
 - **Its own slot on `Server`**, beside `active`, not a third `Runner`. Its
-  state: ready, unavailable with a reason, or off (ADR 0066). `ModelKind`
+  state: ready, unavailable with a reason, or off (ADR 0067). `ModelKind`
   gains `Speech`.
 - **`speech.model`** (Q39, Q49):
   - `auto` (the default) is the 1.7B Q4_K_M catalog entry;
@@ -177,7 +177,7 @@ stereo 16-bit WAV is ~230 MB. That adds no new threshold (owner,
   - documents the route, every field's rule, the answers and the events;
   - its not-served list says audio *out* and `/v1/audio/translations`, and
     no longer says "more than one loaded model": a speech model is loaded
-    beside the other (ADR 0066);
+    beside the other (ADR 0067);
   - `openapi_http.rs:286` pins the new wording.
 - `README.md`:
   - `:541` and `:544-546` change to match the OpenAPI document;

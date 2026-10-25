@@ -12,7 +12,7 @@ settles. On the CPU this is the fast path: the model encodes and prefills the
 audio while it arrives, so a commit leaves only the last few seconds to
 decode, where [`POST /v1/audio/transcriptions`](transcriptions.md) starts on
 the whole clip once it is in
-([ADR 0066](../../adr/0066-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).
+([ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).
 
 It is the GA protocol's transcription subset: a client written for OpenAI's
 `wss://api.openai.com/v1/realtime?intent=transcription` connects with the

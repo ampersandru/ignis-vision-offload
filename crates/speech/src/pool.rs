@@ -3,7 +3,7 @@
 //! other workers spin, then park.
 //!
 //! rayon dispatched decode's 197 matmuls a token at 1.184 of ggml's time on
-//! 4 cores; this shape ran them at 1.014 (ADR 0067). Between units of work
+//! 4 cores; this shape ran them at 1.014 (ADR 0068). Between units of work
 //! every worker parks, so an idle executor keeps no thread busy.
 
 use std::cell::UnsafeCell;
