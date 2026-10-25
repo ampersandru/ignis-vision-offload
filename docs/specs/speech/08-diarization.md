@@ -46,8 +46,8 @@ spec settles a protocol detail the grill left to it (Q118), it says `(spec 08)`.
 ### The catalog and availability (Q118)
 
 - Its own catalog entry, `kind: diarizer`, downloaded with `ignis-server model download <id>`.
-- `speech.diarization_model`: `auto` (the catalog's diarizer entry), an id, or `off`. A text, image or speech id is
-  refused at start and on a PATCH, as `speech.model` refuses a text id.
+- `diarizer.model`: `auto` (the catalog's diarizer entry), an id, or `off`. A text, image or speech id is refused at
+  start and on a PATCH, as `speech.model` refuses a text id.
 - **Not in `/v1/models`**: no request names it. The `speech` object that `GET /v1/models` carries in every status
   gains a `diarizer` member: available, or unavailable with its reason (files missing with the download command, a
   CPU without AVX2, `off`).
@@ -69,14 +69,15 @@ spec settles a protocol detail the grill left to it (Q118), it says `(spec 08)`.
 - **Live:** the default is a long chunk, SPKCACHE 264 / FIFO 264 / CHUNK 25 / RIGHT CONTEXT 4 / UPDATE PERIOD 222
   frames of 80 ms (2.32 s of latency). It measured 3.60% DER against the card's low geometry's 3.97%, at 2.6x less CPU.
 - **File:** the card's offline geometry, 264 / 40 / 340 / 40 / 300 (30.4 s), for a session fed faster than real time.
-- **The session picks** `live` or `file` in its opt-in (below). Every geometry parameter of both is a `speech.*`
-  field with the measured default. The names follow the group's style, chosen at the build, as Q76's and Q77's were.
+- **The session picks** `live` or `file` in its opt-in (below). Every geometry parameter of both is a field of the
+  `diarizer` group, applicable only to the `Nemotron3Diarization` family, with the measured default (Configuration,
+  below). The names follow the group's style, chosen at the build, as Q76's and Q77's were.
 
 ### One speaker per utterance (Q107, Q108)
 
 - **Speaker of an item.** Each 80 ms frame's speaker is the established channel with the highest activity. An item's
   speaker is the established channel that holds most of its speech frames.
-- **The ghost rule** (Q108, Q116): a channel is established once it holds `speech.diarization_min_speaker_seconds` of
+- **The ghost rule** (Q108, Q116): a channel is established once it holds `diarizer.min_speaker_seconds` of
   speech, counted on the frames where it is the most active. Until then its frames count for the established channel
   with the next highest activity, and its items carry that one.
   - The session's first channel is established at once.
@@ -86,7 +87,7 @@ spec settles a protocol detail the grill left to it (Q118), it says `(spec 08)`.
 - **The cut at a change.** When the speaker of the frames changes to another established channel inside an item, the
   server ends the item at the change, as the VAD does on a silence:
   - the change is the first frame of the new speaker's run. A channel established only now counts from the start of
-    the run that established it, so the cut can reach back by up to `speech.diarization_min_speaker_seconds` plus
+    the run that established it, so the cut can reach back by up to `diarizer.min_speaker_seconds` plus
     the geometry's latency (spec 08);
   - the events (spec 08): `input_audio_buffer.speech_stopped` with `audio_end_ms` at the change, then
     `input_audio_buffer.committed`; then `input_audio_buffer.speech_started` for a new item with `audio_start_ms` at
@@ -141,19 +142,40 @@ spec settles a protocol detail the grill left to it (Q118), it says `(spec 08)`.
   spec 07's client pace (60 s) and is chosen with the file AC.
 - A session fed at real time never reaches it; a file fed flat out does when its client does not pace it.
 
-### Configuration
+### Configuration: a `diarizer` group and a family (owner, 2026-10-25)
 
-| field | default | from |
-|---|---|---|
-| `speech.diarization_model` | `auto`; an id; `off` | Q116, Q118 |
-| the live geometry (5 fields) | 264 / 264 / 25 / 4 / 222 frames | Q106 |
-| the file geometry (5 fields) | 264 / 40 / 340 / 40 / 300 frames | Q106 |
-| `speech.diarization_min_speaker_seconds` | measured on the twenty conversations; `0` off | Q108, Q116 |
-| `speech.max_utterance_seconds` | 120, then AC 12's measurement; `0` off | Q117 |
-| `speech.utterance_cut_search_ms` | measured with AC 12 | spec 08 |
-| `speech.max_queued_audio_seconds` | above 60, measured with the file AC | Q99 |
+- **A group of its own,** `diarizer`, as the image model has `image` and the speech model `speech`: the diarizer is the
+  fourth model kind (ADR 0046's groups; ADR 0069).
+- **A family of its own:** `ModelFamily` gains `Nemotron3Diarization`. Every field that is a concept of Sortformer, the
+  geometries and the speaker cache's constants, is `applicable_to: Only([Nemotron3Diarization])` under its plain key
+  `diarizer.<field>`. A diarizer of another family refuses them rather than applying them in silence (ADR 0046's
+  rule for a field one family has). A field two diarizer families would want sized differently takes ADR 0046's
+  family scope, `diarizer.<family>.<field>`, when that family comes.
+- **The speaker cache's constants default to `auto`:** the value the checkpoint's `streaming_config` gives, which the
+  conversion tool writes into the GGUF's metadata. An override is validated by a `Range`. The effective value is
+  logged at load and shown in the Server view, and a session reads them when it opens, as it reads
+  `speech.rollback_tokens`.
+- **What stays in `speech`:** the length guard and the queue limit. Both hold for every `server_vad` session, with
+  speakers or without.
+
+| field | applicable to | default | from |
+|---|---|---|---|
+| `diarizer.model` | every diarizer | `auto` (the catalog's diarizer entry); an id; `off` | Q116, Q118 |
+| `diarizer.min_speaker_seconds` | every diarizer | measured on the twenty conversations; `0` off | Q108, Q116 |
+| the live geometry (5 fields: speaker cache, FIFO, chunk, right context, update period) | `Nemotron3Diarization` | 264 / 264 / 25 / 4 / 222 frames | Q106 |
+| the file geometry (the same 5 fields) | `Nemotron3Diarization` | 264 / 40 / 340 / 40 / 300 frames | Q106 |
+| `diarizer.prediction_score_threshold` | `Nemotron3Diarization` | `auto` (the checkpoint's 0.25) | owner, 2026-10-25 |
+| `diarizer.latest_frames_score_boost` | `Nemotron3Diarization` | `auto` (0.05) | owner, 2026-10-25 |
+| `diarizer.strong_boost_rate` | `Nemotron3Diarization` | `auto` (0.75) | owner, 2026-10-25 |
+| `diarizer.weak_boost_rate` | `Nemotron3Diarization` | `auto` (1.5) | owner, 2026-10-25 |
+| `diarizer.min_positive_scores_rate` | `Nemotron3Diarization` | `auto` (0.5) | owner, 2026-10-25 |
+| `diarizer.speaker_cache_silence_frames_per_speaker` | `Nemotron3Diarization` | `auto` (1) | owner, 2026-10-25 |
+| `speech.max_utterance_seconds` | the speech model | 120, then AC 12's measurement; `0` off | Q117 |
+| `speech.utterance_cut_search_ms` | the speech model | measured with AC 12 | spec 08 |
+| `speech.max_queued_audio_seconds` | the speech model | above 60, measured with the file AC | Q99 |
 
 Every field is declared once (ADR 0046), patchable live where the group's fields are, and in the generated reference.
+The constants' names are the checkpoint's own keys.
 
 ## Acceptance
 
@@ -169,7 +191,7 @@ Every field is declared once (ADR 0046), patchable live where the group's fields
    `--ignored` leg), the port's DER at collar 0.25 is within +0.5 pt of NeMo-Speech.cpp's at the same geometry, at
    the live and the file geometries (Q114).
 4. A small public real-meeting set (AMI, English) is scored and reported in "As built"; it does not gate (Q114).
-5. `speech.diarization_min_speaker_seconds`'s default is the value that minimizes DER on the twenty conversations
+5. `diarizer.min_speaker_seconds`'s default is the value that minimizes DER on the twenty conversations
    with no conversation's count of speakers worse than with `0`. `0` turns the rule off (Q108, Q116).
 6. A speaker change inside an item ends it at the change. The events are `speech_stopped`, `committed` and
    `speech_started`, with the times at the change. The new item has no prefix padding and has the leading silence
@@ -192,9 +214,12 @@ Every field is declared once (ADR 0046), patchable live where the group's fields
     (Q117, Q80).
 13. `speech.max_queued_audio_seconds` refuses the append past it with `ignis_audio_queue_full`, and the session stays
     open (Q99).
-14. `speech.diarization_model` resolves `auto`, an id and `off`, and refuses a text, image or speech id. The
-    diarizer has its catalog entry (`kind: diarizer`), is downloadable with `ignis-server model download`, is not
-    in `/v1/models`, and its availability is in the `speech` object there. The Server view shows it (Q118).
+14. `diarizer.model` resolves `auto`, an id and `off`, and refuses a text, image or speech id. The diarizer has its
+    catalog entry (`kind: diarizer`), is downloadable with `ignis-server model download`, is not in `/v1/models`,
+    and its availability is in the `speech` object there. The Server view shows it (Q118). The `diarizer` group's
+    Sortformer fields are `Only([Nemotron3Diarization])`, and a test shows another family refusing them. The speaker
+    cache's constants resolve `auto` to the GGUF's values from the checkpoint, take an override within their
+    ranges, and log and show the effective value (owner, 2026-10-25).
 15. The diarizer loads at the first session that asks for speakers and unloads with the speech model (Q116).
 16. Every new field is in the generated configuration reference; the OpenAPI document and
     `docs/user/api/realtime-transcription.md` describe the opt-in, the event, the cuts, the guard, the queue limit
@@ -222,8 +247,10 @@ Every field is declared once (ADR 0046), patchable live where the group's fields
 - `crates/server/src/speech/realtime/mod.rs`: the cuts, the events, the per-item speaker, the text rule of a diarized
   session, the queue limit.
 - `crates/server/src/speech/worker.rs`: the diarizer's unit and its rank.
-- `crates/server/src/config/schema.rs`: the fields. `crates/server/src/download/catalog.rs` and the catalog file: the
-  entry and `kind: diarizer`.
+- `crates/server/src/config/schema.rs`: the `diarizer` group and the `speech` fields. `crates/core/src/compute.rs`:
+  `ModelFamily::Nemotron3Diarization`. `crates/server/src/download/catalog.rs` and the catalog file: the entry and
+  `kind: diarizer`.
 - `web/src/speech/realtime.ts`: the dictation sends `session.ignis.max_utterance_seconds: 0`.
 - `web/src/server/`: the diarizer in the Server view.
-- The tool that converts the weights, beside `tools/speech-vad/`.
+- The tool that converts the weights, beside `tools/speech-vad/`; it writes the checkpoint's `streaming_config` into
+  the GGUF's metadata.

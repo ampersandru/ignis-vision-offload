@@ -52,8 +52,8 @@ Italian conversations built from VoxPopuli:
    fails its gates.
 2. **The diarizer is a model of its own kind**, the fourth beside text, image and speech: it takes audio and gives
    back who spoke when, and never transcribes (Q118). It has its own catalog entry, of kind `diarizer`, downloaded
-   with `ignis-server model download` and chosen by `speech.diarization_model` (`auto`, `off` or an id). It is not
-   in `/v1/models`, since no request names it; the Server view shows it beside the speech model.
+   with `ignis-server model download` and chosen by `diarizer.model` (`auto`, `off` or an id). It is not in
+   `/v1/models`, since no request names it; the Server view shows it beside the speech model.
 3. **Ours, in Rust, on the CPU** (ADR 0068's rule; Q104). The 31-layer RoPE Transformer, the Sortformer head, the
    arrival-order speaker cache and the FIFO are restated from NeMo's Apache-2.0 source as an adapted op under
    ADR 0051, with provenance in the file header and in `NOTICE`. The weights keep their OpenMDW-1.1 licence beside
@@ -64,14 +64,19 @@ Italian conversations built from VoxPopuli:
    the stored format.
 5. **It shares the speech model's worker.** Its steps rank below the speech model's windows and commits and above
    its partials, so on a slow CPU the partials thin out first and the labels keep up (Q113).
-6. **Its geometry is configuration:**
-   - the live default is a long chunk, about 2.3 s, which cost no DER against the card's low geometry at 2.6x less
-     CPU (Q106);
-   - a session that is fed a file asks for the offline geometry (Q106);
-   - every geometry parameter is a `speech.*` field with a measured default, by the owner's rule for thresholds.
+6. **Its configuration is a group and a family of its own** (owner, 2026-10-25; ADR 0046):
+   - the `diarizer` group, as the image model has `image` and the speech model `speech`;
+   - `ModelFamily` gains `Nemotron3Diarization`, and every field that is a concept of Sortformer is
+     `applicable_to: Only([Nemotron3Diarization])`, so a diarizer of another family refuses it rather than applying
+     it in silence;
+   - the geometry: the live default is a long chunk, about 2.3 s, which cost no DER against the card's low geometry
+     at 2.6x less CPU, and a session fed a file asks for the offline geometry (Q106). Every geometry parameter is a
+     field with a measured default, by the owner's rule for thresholds;
+   - the speaker cache's constants (score threshold, boosts, minimum positive rate, silence frames per speaker) are
+     fields too, defaulting to `auto`: the checkpoint's values, carried in the GGUF, overridable.
 7. **One speaker per utterance.** A speaker change inside an item makes the server end the item there, as the VAD
-   does on a silence (Q107). A new speaker's label appears only after `speech.diarization_min_speaker_seconds` of
-   their speech (0 = off; Q108, Q116).
+   does on a silence (Q107). A new speaker's label appears only after `diarizer.min_speaker_seconds` of their speech
+   (0 = off; Q108, Q116).
 8. **An ignis extension of Realtime transcription** (the names rule, Q57): opt in with `session.ignis.diarization`;
    each item's speaker arrives in `ignis.input_audio_transcription.speaker` before its `completed` (Q111). OpenAI's
    events do not change, and a client that does not opt in sees nothing new.

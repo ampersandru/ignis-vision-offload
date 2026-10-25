@@ -171,9 +171,6 @@ default, never a constant (the owner's rule).
 | `speech.vad_leading_silence_ms` | 500: the digital silence the model reads before each `server_vad` item, never shown to the client (AC 7 met with it: 4.68% against the manual commit's 4.03%; 7.58% without) | Q77 | 05 |
 | `speech.loan_grace_seconds` | 30 | Q32 | 06 |
 | `speech.loan_wait_seconds` | 5 | Q35 ("a short wait") | 06 |
-| `speech.diarization_model` | `auto` (the catalog's diarizer entry); an id; or `off` | Q116, Q118 | 08 |
-| the diarizer's live and file geometries (5 fields each) | live 264 / 264 / 25 / 4 / 222, file 264 / 40 / 340 / 40 / 300 frames of 80 ms | Q106 | 08 |
-| `speech.diarization_min_speaker_seconds` | measured on the twenty conversations; `0` off | Q108, Q116 | 08 |
 | `speech.max_utterance_seconds` | 120, then 08's measurement; `0` off | Q117 | 08 |
 | `speech.utterance_cut_search_ms` | measured with 08's AC 12 | 08 | 08 |
 | `speech.max_queued_audio_seconds` | above 07's client pace of 60 s, measured | Q99 | 08 |
@@ -183,7 +180,23 @@ Every field name above, and every default no Q gave, is the owner's
 `speech.vad_leading_silence_ms`: the owner made them fields with defaults
 chosen from measurement (Q76, Q77, 2026-10-25), and the names are the build's,
 in the group's style. The Transcribe track's names come from its grill
-(2026-10-25), and the geometries' are the build's, in the group's style.
+(2026-10-25).
+
+**The `diarizer` group** (08; owner, 2026-10-25). The diarizer, the fourth
+model kind, has a group of its own, as the image model has `image`, and a
+family of its own, `Nemotron3Diarization`. Its Sortformer fields are
+`applicable_to: Only([Nemotron3Diarization])`, so a diarizer of another family
+refuses them:
+
+| field | applicable to | default | from |
+|---|---|---|---|
+| `diarizer.model` | every diarizer | `auto` (the catalog's diarizer entry); an id; or `off` | Q116, Q118 |
+| `diarizer.min_speaker_seconds` | every diarizer | measured on 08's twenty conversations; `0` off | Q108, Q116 |
+| the live and file geometries (5 fields each) | `Nemotron3Diarization` | live 264 / 264 / 25 / 4 / 222, file 264 / 40 / 340 / 40 / 300 frames of 80 ms | Q106 |
+| the speaker cache's six constants (`prediction_score_threshold`, `latest_frames_score_boost`, `strong_boost_rate`, `weak_boost_rate`, `min_positive_scores_rate`, `speaker_cache_silence_frames_per_speaker`) | `Nemotron3Diarization` | `auto`: the checkpoint's values, carried in the GGUF | owner, 2026-10-25 |
+
+The geometries' names are the build's, in the group's style; the constants'
+are the checkpoint's own keys.
 
 ## Requirements (Q28, Q34)
 
