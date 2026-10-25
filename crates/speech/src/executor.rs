@@ -1,15 +1,16 @@
 //! The executor the server drives (spec speech/01 §3-4): availability with
-//! its reason, the model loaded at first use and unloaded when idle, the
-//! thread count, the prefix cache, and one unit of compute at a time.
+//! its reason, the model loaded at first use and unloaded when asked, the
+//! thread count and the prefix cache.
 //!
 //! The server owns the `speech` config group and the routes (spec 02); the
-//! executor takes its settings as plain values.
+//! executor takes its settings as plain values. The server's one compute
+//! worker (spec 02 §Admission) decides when the model is idle, and runs one
+//! unit of work at a time: each call a session takes is a unit, and a commit
+//! is one per [`Commit::step`](crate::session::Commit::step), a window, the
+//! decode's prefill or 16 decode steps.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
 use crate::cpu::{select, Features, Isa};
 use crate::decoder::Cache;
@@ -44,8 +45,6 @@ pub struct Settings {
     pub threads: Threads,
     /// `speech.pinned_weights`: a private, locked copy instead of the mapped file (Q31).
     pub pinned_weights: bool,
-    /// `speech.idle_unload`: unloaded after this long with no transcription; zero never (Q53).
-    pub idle_unload: Duration,
     /// `speech.partial_interval_ms` (Q37).
     pub partial_interval_ms: u64,
     /// `speech.rollback_tokens`: the provisional tail's length (Q37).
@@ -66,7 +65,6 @@ impl Default for Settings {
         Settings {
             threads: Threads::Auto,
             pinned_weights: false,
-            idle_unload: Duration::from_secs(300),
             partial_interval_ms: 2000,
             rollback_tokens: 10,
             unfixed_partials: 2,
@@ -142,50 +140,13 @@ pub(crate) struct Core {
     pub settings: Settings,
     /// The prefix cache's one entry: the last prompt head and its K/V (Q50).
     pub prefix: Mutex<Option<PrefixEntry>>,
-    compute: Mutex<()>,
-    /// Units running now, and the most ever at once (acceptance 19's witness: never above 1).
-    in_unit: AtomicUsize,
-    max_in_unit: AtomicUsize,
-    last_use: Mutex<Instant>,
     loaded: Mutex<Option<Arc<Loaded>>>,
-    /// Bumped by every load and unload, so a stale idle watcher stands down.
-    generation: Mutex<u64>,
 }
 
 impl Core {
-    /// One unit of compute at a time (Q44): a window, a partial or a commit's decode.
-    pub fn unit(&self) -> Unit<'_> {
-        let guard = self.compute.lock().unwrap_or_else(|e| e.into_inner());
-        let now = self.in_unit.fetch_add(1, Ordering::SeqCst) + 1;
-        self.max_in_unit.fetch_max(now, Ordering::SeqCst);
-        Unit { core: self, _guard: guard }
-    }
-
-    pub fn touch(&self) {
-        *self.last_use.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-    }
-
-    fn idle_for(&self) -> Duration {
-        self.last_use.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
-    }
-
     fn unload(&self) {
-        let mut g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
-        *g += 1;
         self.loaded.lock().unwrap_or_else(|e| e.into_inner()).take();
         self.prefix.lock().unwrap_or_else(|e| e.into_inner()).take();
-    }
-}
-
-/// A unit of compute in progress: holds the compute lock.
-pub(crate) struct Unit<'a> {
-    core: &'a Core,
-    _guard: MutexGuard<'a, ()>,
-}
-
-impl Drop for Unit<'_> {
-    fn drop(&mut self) {
-        self.core.in_unit.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -193,23 +154,13 @@ pub struct Executor {
     core: Arc<Core>,
     files: ModelFiles,
     isa: Result<Isa, &'static str>,
-    watcher: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Executor {
     /// Nothing is mapped or loaded here (Q53): the model loads at the first signal.
     pub fn new(settings: Settings, files: ModelFiles, features: Features) -> Executor {
-        let core = Arc::new(Core {
-            settings,
-            prefix: Mutex::new(None),
-            compute: Mutex::new(()),
-            in_unit: AtomicUsize::new(0),
-            max_in_unit: AtomicUsize::new(0),
-            last_use: Mutex::new(Instant::now()),
-            loaded: Mutex::new(None),
-            generation: Mutex::new(0),
-        });
-        Executor { core, files, isa: select(features), watcher: Mutex::new(None) }
+        let core = Arc::new(Core { settings, prefix: Mutex::new(None), loaded: Mutex::new(None) });
+        Executor { core, files, isa: select(features) }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -221,11 +172,6 @@ impl Executor {
             Ok(_) => Availability::Available,
             Err(r) => Availability::Unavailable(r.to_string()),
         }
-    }
-
-    /// The most units of compute that ever ran at once: 1 once anything ran (Q44).
-    pub fn max_concurrent_units(&self) -> usize {
-        self.core.max_in_unit.load(Ordering::SeqCst)
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -241,7 +187,6 @@ impl Executor {
     fn loaded(&self) -> Result<(Arc<Loaded>, Option<LoadReport>), ExecError> {
         let isa = self.isa.map_err(|r| ExecError::Unavailable(r.to_string()))?;
         let mut slot = self.core.loaded.lock().unwrap_or_else(|e| e.into_inner());
-        self.core.touch();
         if let Some(l) = slot.as_ref() {
             return Ok((l.clone(), None));
         }
@@ -263,35 +208,20 @@ impl Executor {
         );
         let l = Arc::new(Loaded { model, pool: Pool::new(n), isa, mel: Mel::new() });
         *slot = Some(l.clone());
-        drop(slot);
-        let generation = {
-            let mut g = self.core.generation.lock().unwrap_or_else(|e| e.into_inner());
-            *g += 1;
-            *g
-        };
-        self.watch(generation);
         Ok((l, Some(report)))
     }
 
     /// Drops the model: the mapped files, the repacked weights, the pool and the prefix cache.
-    /// Sessions still open keep theirs until they end.
+    /// Sessions still open keep theirs until they end. The server's worker asks for it once the
+    /// model has gone unused for `speech.idle_unload` (spec 02).
     pub fn unload(&self) {
         self.core.unload();
-        if let Some(h) = self.watcher.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            h.thread().unpark();
-        }
     }
 
     /// Opens a transcription with `context` as the system turn, loading the model if needed.
     /// `language` forces the official prefill (Q6); `None` lets the model detect it.
     pub fn open(&self, context: &str, language: Option<&str>) -> Result<Session, ExecError> {
         self.open_tuned(context, language, self.core.settings.tuning())
-    }
-
-    /// [`open`](Self::open) with the context capped at `context_max_tokens` (the live
-    /// `speech.context_max_tokens` the server passes per request) rather than the settings'.
-    pub fn open_capped(&self, context: &str, language: Option<&str>, context_max_tokens: usize) -> Result<Session, ExecError> {
-        self.open_tuned(context, language, SessionTuning { context_max_tokens, ..self.core.settings.tuning() })
     }
 
     /// [`open`](Self::open) with the settings a session reads at its opening passed in: the
@@ -301,44 +231,11 @@ impl Executor {
         let (l, _) = self.loaded()?;
         Ok(Session::open(l, self.core.clone(), context, language, tuning))
     }
-
-    /// The idle unloader: wakes when the idle time may have run out and unloads once
-    /// `idle_unload` passed with no transcription.
-    fn watch(&self, generation: u64) {
-        let idle = self.core.settings.idle_unload;
-        if idle.is_zero() {
-            return;
-        }
-        let core = self.core.clone();
-        let h = thread::Builder::new()
-            .name("ignis-speech-idle".into())
-            .spawn(move || loop {
-                if *core.generation.lock().unwrap_or_else(|e| e.into_inner()) != generation {
-                    return;
-                }
-                let quiet = core.idle_for();
-                if quiet >= idle {
-                    // hotpath-lint-allow: one line per unload.
-                    tracing::info!(name: "ignis.speech.unload", idle_secs = quiet.as_secs(), "speech model unloaded after {} s idle", quiet.as_secs());
-                    core.unload();
-                    return;
-                }
-                thread::park_timeout(idle - quiet);
-            })
-            .expect("spawn the speech idle watcher");
-        let old = self.watcher.lock().unwrap_or_else(|e| e.into_inner()).replace(h);
-        if let Some(old) = old {
-            old.thread().unpark();
-        }
-    }
 }
 
 impl Drop for Executor {
+    /// The model and the prefix cache go with the executor; a session still open keeps its own.
     fn drop(&mut self) {
         self.core.unload();
-        if let Some(h) = self.watcher.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            h.thread().unpark();
-            let _ = h.join();
-        }
     }
 }

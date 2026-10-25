@@ -64,6 +64,9 @@ symphonia = { version = "0.6.1", default-features = false, features = ["wav", "p
 libc = "0.2"
 
 [dev-dependencies]
+# The scripted speech executor the integration tests drive (`fake-speech`,
+# below): this crate again, with the feature on, so a shipped build has none.
+ignis-server = { path = ".", features = ["fake-speech"] }
 tower = { workspace = true }
 http-body-util = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -89,3 +92,7 @@ cuda = ["ignis-core/cuda", "ignis-artifact/cuda", "ignis-runtime/cuda"]
 # Test-only: forwards `ignis-core`'s attention-input tap for
 # `tests/attention_head_point_gpu.rs`. Never enabled in a production build.
 attn-tap = ["ignis-core/attn-tap"]
+# Test-only: `speech::executor::FakeExecutor`, the scripted speech executor
+# the route, the worker and the Realtime tests run against. The integration
+# tests turn it on through the dev-dependency above; never in a shipped build.
+fake-speech = []

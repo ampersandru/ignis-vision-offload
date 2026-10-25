@@ -14,8 +14,8 @@
 //!   first request loads it (Q53), and the worker unloads it when idle.
 //!
 //! The executor is behind [`executor::SpeechExecutor`]; the route
-//! ([`route`]), this slot and the worker ([`worker`]) are tested against
-//! [`executor::FakeExecutor`].
+//! ([`route`]), this slot and the worker ([`worker`]) are tested against the
+//! scripted `executor::FakeExecutor` (test builds only).
 
 pub mod audio;
 pub mod cpu;
@@ -31,8 +31,13 @@ use std::sync::{Arc, OnceLock};
 
 use crate::config::schema::SpeechGroup;
 use crate::download::Catalog;
-use executor::{NoExecutor, SpeechExecutor, SpeechFiles};
+use executor::{LoadSettings, NoExecutor, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession};
 use worker::{Full, Gauges, Job, Worker};
+
+/// The `Retry-After` of a refused Realtime session: room frees when a person
+/// ends a dictation, which no clip length estimates, so the shortest wait.
+/// Not an operator threshold (spec speech/02 As built).
+pub const SESSION_RETRY_AFTER_SECS: u64 = 1;
 
 /// The catalog and the directory the speech model's files are looked for in:
 /// `download.path`.
@@ -67,6 +72,9 @@ pub struct Speech {
     worker: OnceLock<Worker>,
     /// The next Realtime session's key: its lane on the worker.
     next_session: AtomicU64,
+    /// `speech.idle_unload` in seconds as the live configuration last said:
+    /// the worker's idle clock reads it ([`Speech::live_changed`]).
+    idle_unload_secs: Arc<AtomicU64>,
 }
 
 impl Default for Speech {
@@ -78,11 +86,33 @@ impl Default for Speech {
 
 impl Speech {
     pub fn new(executor: Arc<dyn SpeechExecutor>, models: Option<SpeechModels>) -> Self {
-        Self { executor, models, gauges: Arc::default(), worker: OnceLock::new(), next_session: AtomicU64::new(0) }
+        Self {
+            executor,
+            models,
+            gauges: Arc::default(),
+            worker: OnceLock::new(),
+            next_session: AtomicU64::new(0),
+            idle_unload_secs: Arc::new(AtomicU64::new(u64::from(SpeechGroup::default().idle_unload))),
+        }
+    }
+
+    /// The live `speech.*` settings changed (the server's start, a `PATCH
+    /// /v1/config`, a reload): the idle clock takes `speech.idle_unload` at
+    /// once, the model in use or idle.
+    pub fn live_changed(&self, group: &SpeechGroup) {
+        self.idle_unload_secs.store(u64::from(group.idle_unload), Ordering::SeqCst);
+        if let Some(worker) = self.worker.get() {
+            worker.wake();
+        }
     }
 
     pub fn executor(&self) -> &Arc<dyn SpeechExecutor> {
         &self.executor
+    }
+
+    /// The catalog the speech model is looked up in, when the server has one.
+    pub fn catalog(&self) -> Option<&Catalog> {
+        self.models.as_ref().map(|models| &*models.catalog)
     }
 
     /// Publish the worker's gauges to `metrics` (`Server::with_metrics`).
@@ -91,7 +121,7 @@ impl Speech {
     }
 
     fn worker(&self) -> &Worker {
-        self.worker.get_or_init(|| Worker::start(Arc::clone(&self.executor), Arc::clone(&self.gauges)))
+        self.worker.get_or_init(|| Worker::start(Arc::clone(&self.executor), Arc::clone(&self.gauges), Arc::clone(&self.idle_unload_secs)))
     }
 
     /// The id `speech.model` names: `auto` is the 1.7B Q4_K_M entry, `off`
@@ -114,8 +144,8 @@ impl Speech {
     }
 
     /// The files to serve with, or why there is no model to serve: checked in
-    /// the order a person fixes them — off, an id the catalog has, a host
-    /// that can run it, the files on disk.
+    /// the order a person fixes them — off, an id the catalog has as a speech
+    /// model, a host that can run it, the files on disk.
     pub fn resolve(&self, group: &SpeechGroup) -> Result<SpeechFiles, Unavailable> {
         let Some(id) = Self::served_id(group) else {
             return Err(Unavailable("the speech model is turned off (`speech.model` is `off`)".to_owned()));
@@ -124,6 +154,9 @@ impl Speech {
         let Some((models, entry)) = entry else {
             return Err(Unavailable(format!("`speech.model` names `{id}`, which is not in the model catalog")));
         };
+        if !entry.is_speech() {
+            return Err(Unavailable(format!("`speech.model` names `{id}`, which is not a speech model: name a speech entry of the catalog")));
+        }
         self.executor.availability().map_err(Unavailable)?;
         let files: Vec<PathBuf> = entry.files.iter().map(|file| models.dir.join(&file.name)).collect();
         if !files.iter().all(|file| file.is_file()) {
@@ -141,12 +174,9 @@ impl Speech {
         self.worker().room(group.max_queue)
     }
 
-    /// Queue a batch job, or say when room frees. Starts the worker, and
-    /// hands it the live idle time.
+    /// Queue a batch job, or say when room frees. Starts the worker.
     pub fn submit(&self, job: Box<dyn Job>, group: &SpeechGroup) -> Result<(), Full> {
-        let worker = self.worker();
-        worker.set_idle_unload(group.idle_unload);
-        worker.submit(job, group.max_queue)
+        self.worker().submit(job, group.max_queue)
     }
 
     /// Whether a Realtime session would open now, or when room frees: the
@@ -154,7 +184,7 @@ impl Speech {
     /// [`Speech::open_session`] checks again.
     pub fn session_room(&self, group: &SpeechGroup) -> Result<(), Full> {
         if self.gauges.sessions.load(Ordering::SeqCst) >= group.max_sessions as usize {
-            return Err(Full { retry_after_secs: 1 });
+            return Err(Full { retry_after_secs: SESSION_RETRY_AFTER_SECS });
         }
         Ok(())
     }
@@ -165,9 +195,7 @@ impl Speech {
         let mut open = self.gauges.sessions.load(Ordering::SeqCst);
         loop {
             if open >= group.max_sessions as usize {
-                // Room frees when a person ends a session: there is no clip
-                // to estimate from, so the shortest wait.
-                return Err(Full { retry_after_secs: 1 });
+                return Err(Full { retry_after_secs: SESSION_RETRY_AFTER_SECS });
             }
             match self.gauges.sessions.compare_exchange(open, open + 1, Ordering::SeqCst, Ordering::SeqCst) {
                 Ok(_) => break,
@@ -190,13 +218,75 @@ impl Speech {
 
     /// Queue a unit of an open Realtime session's (spec speech/03): after
     /// the ones it queued before, ahead of every batch window, in turn with
-    /// the other sessions'. Starts the worker, and hands it the live idle
-    /// time.
-    pub fn submit_interactive(&self, session: &SessionGuard, task: worker::Task, group: &SpeechGroup) {
-        let worker = self.worker();
-        worker.set_idle_unload(group.idle_unload);
-        worker.submit_interactive(session.key, task);
+    /// the other sessions'. Starts the worker.
+    pub fn submit_interactive(&self, session: &SessionGuard, task: worker::Task) {
+        self.worker().submit_interactive(session.key, task);
     }
+}
+
+/// `speech.model` and `speech.compat_names` against `catalog`, the operator's
+/// file among it (spec speech/02 §Which model): a model naming an entry of
+/// another kind is refused, since it would be listed and served as speech,
+/// and so is a compat name equal to an entry's id or alias, since a request
+/// naming it would be two models' at once. Checked at start, where the
+/// catalog is read, and by a `PATCH /v1/config` naming either field; the
+/// config's own check covers the built-in entries and the model families.
+pub fn check_names(catalog: &Catalog, group: &SpeechGroup) -> Result<(), String> {
+    if let Some(id) = Speech::served_id(group) {
+        if let Some(entry) = catalog.entries().iter().find(|entry| entry.id == id).filter(|entry| !entry.is_speech()) {
+            return Err(format!("`speech.model` names `{}`, which is not a speech model: name a speech entry of the catalog, `auto` or `off`", entry.id));
+        }
+    }
+    for name in &group.compat_names {
+        if catalog.entries().iter().any(|entry| entry.id.eq_ignore_ascii_case(name) || entry.aliases.iter().any(|alias| alias.eq_ignore_ascii_case(name))) {
+            return Err(format!("`speech.compat_names` names `{name}`, which is a catalog model's id: a compat name is for a name no served model has"));
+        }
+    }
+    Ok(())
+}
+
+/// What `text` adds to `sent`, when it extends it: the only text a delta may
+/// carry, since a delta only ever appends (a streamed transcription's and a
+/// Realtime item's alike).
+pub(crate) fn extension<'a>(sent: &str, text: &'a str) -> Option<&'a str> {
+    (text.len() > sent.len() && text.starts_with(sent)).then(|| &text[sent.len()..])
+}
+
+/// Why a transcription stopped short: the model would not load, or a call to
+/// it failed. The executor's own words are the log's (`reason`), never a
+/// client's but for a load's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Fault {
+    Load(String),
+    Executor(String),
+}
+
+impl Fault {
+    /// The error code and message every surface answers it with: the route's
+    /// body and its `error` event, and a Realtime item's `failed`. `what`
+    /// names what failed.
+    pub(crate) fn error(&self, what: &str) -> (&'static str, String) {
+        match self {
+            Fault::Load(why) => ("speech_unavailable", format!("the speech model could not be loaded: {why}")),
+            Fault::Executor(_) => ("engine_error", format!("the speech model failed {what}")),
+        }
+    }
+
+    /// The executor's own words, for the transcription's log line.
+    pub(crate) fn reason(&self) -> &str {
+        match self {
+            Fault::Load(why) | Fault::Executor(why) => why,
+        }
+    }
+}
+
+/// Load the model if it is not, then open a session on it: a batch job's
+/// first step, and a Realtime item's opening.
+pub(crate) fn open_loaded(executor: &dyn SpeechExecutor, files: &SpeechFiles, load: LoadSettings, open: SessionOpen) -> Result<Box<dyn SpeechSession>, Fault> {
+    if !executor.is_loaded() {
+        executor.load(files, load).map_err(|error| Fault::Load(error.0))?;
+    }
+    executor.open(open).map_err(|error| Fault::Executor(error.0))
 }
 
 /// An open Realtime session's place among `speech.max_sessions`, and its
@@ -304,6 +394,61 @@ mod tests {
         std::fs::remove_file(dir.join("qwen3-asr-1.7b-decoder.gguf")).unwrap();
         assert!(reason("auto").contains("AVX2"));
         assert!(Speech::default().availability(&group("auto")).reason.unwrap().contains("not in the model catalog"));
+    }
+
+    /// Spec speech/02 §Which model: `speech.model` naming a catalog entry that
+    /// is not a speech model is unavailable, saying so, files on disk or not,
+    /// so it is neither listed as speech nor served by the speech routes.
+    #[test]
+    fn a_model_of_another_kind_is_not_the_speech_model() {
+        let dir = tempfile_dir("kind");
+        let mut models = fixture_models(&dir);
+        let mut entries = models.catalog.entries().to_vec();
+        let mut text = entries[0].clone();
+        (text.id, text.kind, text.artifact) = ("qwen3.8-27b".to_owned(), Some(ignis_core::compute::ModelKind::Text), "qwen3.8-27b-decoder.gguf".to_owned());
+        text.files.iter_mut().zip(["qwen3.8-27b-encoder.gguf", "qwen3.8-27b-decoder.gguf"]).for_each(|(file, name)| file.name = name.to_owned());
+        entries.push(text);
+        models.catalog = Arc::new(Catalog::from_entries(entries));
+        put_files(&dir, "qwen3.8-27b");
+        let speech = Speech::new(Arc::new(executor::FakeExecutor::saying(&["hi"])), Some(models.clone()));
+        let reason = speech.availability(&group("qwen3.8-27b")).reason.expect("unavailable");
+        assert!(reason.contains("`qwen3.8-27b`") && reason.contains("not a speech model"), "{reason}");
+        let refused = check_names(&models.catalog, &group("qwen3.8-27b")).unwrap_err();
+        assert!(refused.contains("speech.model") && refused.contains("not a speech model"), "{refused}");
+        assert!(check_names(&models.catalog, &group("qwen3-asr-0.6b")).is_ok());
+        assert!(check_names(&models.catalog, &group("auto")).is_ok());
+    }
+
+    /// The compat names against the catalog the server runs with, an
+    /// operator's entries among it: one equal to an entry's id is refused.
+    #[test]
+    fn a_compat_name_equal_to_a_catalog_id_is_refused() {
+        let models = fixture_models(&tempfile_dir("compat"));
+        let named = |names: &[&str]| SpeechGroup { compat_names: names.iter().map(|name| (*name).to_owned()).collect(), ..SpeechGroup::default() };
+        assert!(check_names(&models.catalog, &named(&["whisper-1"])).is_ok());
+        let refused = check_names(&models.catalog, &named(&["whisper-1", "QWEN3-ASR-0.6B"])).unwrap_err();
+        assert!(refused.contains("speech.compat_names") && refused.contains("QWEN3-ASR-0.6B"), "{refused}");
+    }
+
+    /// `speech.idle_unload` changed live reaches the worker's idle clock
+    /// before anything is submitted again.
+    #[test]
+    fn a_live_idle_unload_reaches_the_idle_clock() {
+        let fake = Arc::new(executor::FakeExecutor::saying(&["hi"]));
+        let speech = Speech::new(fake.clone(), None);
+        speech.live_changed(&SpeechGroup { idle_unload: 0, ..SpeechGroup::default() });
+        // The worker starts with the first request; the model is loaded by it.
+        assert!(speech.admit(&SpeechGroup::default()).is_ok());
+        fake.loaded.store(true, Ordering::SeqCst);
+        speech.worker().touch();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(fake.is_loaded(), "0 never unloads");
+        speech.live_changed(&SpeechGroup { idle_unload: 1, ..SpeechGroup::default() });
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while fake.is_loaded() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!fake.is_loaded(), "a live 1 s did not unload the idle model");
     }
 
     /// AC 11: past `max_sessions` open sessions the next is refused with a

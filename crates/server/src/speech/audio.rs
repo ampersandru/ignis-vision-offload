@@ -18,8 +18,8 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
-/// The rate the speech model takes.
-pub const TARGET_RATE: u32 = 16_000;
+/// The rate the speech model takes: the executor's front end's.
+pub const TARGET_RATE: u32 = ignis_speech::mel::SAMPLE_RATE as u32;
 
 /// What the route says is accepted, in a refusal.
 pub const ACCEPTED: &str = "WAV, FLAC, MP3 and AAC (ADTS or MP4/M4A), and the Ogg and Matroska/WebM containers when they carry FLAC";
@@ -214,6 +214,16 @@ impl Resampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Q42: symphonia is an MPL-2.0 dependency, used unmodified, and `NOTICE`
+    /// says so.
+    #[test]
+    fn the_notice_records_symphonia_and_its_licence() {
+        let notice = include_str!("../../../../NOTICE");
+        let at = notice.find("symphonia").expect("NOTICE names symphonia");
+        let paragraph = &notice[at..at + notice[at..].find("\n\n").unwrap_or(notice.len() - at)];
+        assert!(paragraph.contains("Mozilla Public License, Version 2.0") && paragraph.contains("unmodified"), "{paragraph}");
+    }
 
     const WAV: &[u8] = include_bytes!("../../tests/fixtures/audio/tone.wav");
     const WAV_44K_STEREO: &[u8] = include_bytes!("../../tests/fixtures/audio/tone-44k-stereo.wav");

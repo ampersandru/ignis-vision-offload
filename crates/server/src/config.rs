@@ -1378,11 +1378,15 @@ fn derive_download(
     }))
 }
 
-/// `speech.compat_names` against the ids the server serves (spec speech/02):
-/// a compat name equal to one is refused at start, since a request naming it
-/// would be two models' at once. The ids it knows here are the built-in
-/// catalog's, the model families' own, the start model's and the speech
-/// model's; an operator catalog's are checked where it is read.
+/// `speech.model` and `speech.compat_names` against the ids the server
+/// serves (spec speech/02), at start and on every `PATCH /v1/config`: a
+/// model that is a text or image model (a built-in entry of another kind, or
+/// a model family's id) is refused, since it would be listed and served as
+/// speech; a compat name equal to a served id is refused, since a request
+/// naming it would be two models' at once. The ids it knows here are the
+/// built-in catalog's, the model families' own, the start model's and the
+/// speech model's; an operator catalog's are checked where it is read
+/// (`speech::check_names`: at start, and by the `PATCH`).
 fn derive_speech(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> String) -> Result<(), ConfigError> {
     let s = &resolution.settings;
     let speech_id = match s.speech.model.as_str() {
@@ -1390,6 +1394,16 @@ fn derive_speech(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> Strin
         "off" => None,
         id => Some(id),
     };
+    if let Some(id) = speech_id {
+        let other_kind = crate::download::Catalog::built_in().entry(id).is_some_and(|entry| !entry.is_speech())
+            || ModelFamily::of_model_id(id).is_some_and(|family| family.kind() != ignis_core::compute::ModelKind::Speech);
+        if other_kind {
+            return Err(ConfigError(format!(
+                "`{}` names `{id}`, which is not a speech model: name a speech entry of the catalog, `auto` or `off`",
+                spelled("speech", "model")
+            )));
+        }
+    }
     for name in &s.speech.compat_names {
         let served = crate::download::Catalog::built_in().ids().contains(&name.as_str())
             || ModelFamily::of_model_id(name).is_some()

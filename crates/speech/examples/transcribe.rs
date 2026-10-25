@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let unfixed_partials = take(&mut args, "--unfixed").map(|v| v.parse().expect("--unfixed N")).unwrap_or(d.unfixed_partials);
     assert!(args.len() >= 3, "usage: transcribe DECODER.gguf ENCODER.gguf [--threads N] [--realtime] [--rollback N] [--unfixed N] [--reps N] FILE.wav...");
     let files = ModelFiles { decoder: args[0].clone().into(), encoder: args[1].clone().into() };
-    let settings = Settings { threads, idle_unload: std::time::Duration::ZERO, rollback_tokens, unfixed_partials, ..d };
+    let settings = Settings { threads, rollback_tokens, unfixed_partials, ..d };
     let exec = Executor::new(settings, files, Features::detect());
     let t0 = Instant::now();
     let report = exec.load()?.expect("a fresh load");

@@ -361,6 +361,7 @@ impl Server {
     pub fn update_live(&self, edit: impl FnOnce(&mut Live)) {
         let mut live = Live::clone(&self.live());
         edit(&mut live);
+        self.speech.live_changed(&live.speech);
         self.live.store(std::sync::Arc::new(live));
     }
 
@@ -370,7 +371,10 @@ impl Server {
     /// not, with implicit switching). What a live `PATCH /v1/config`
     /// applies, and what a reload applies once its model serves.
     pub fn apply_config(&self, config: &config::Config) {
-        self.live.store(std::sync::Arc::new(Live::of(config)));
+        let live = Live::of(config);
+        // The speech worker's idle clock reads `speech.idle_unload` live.
+        self.speech.live_changed(&live.speech);
+        self.live.store(std::sync::Arc::new(live));
         if let Some(switcher) = &self.switcher {
             // The explicit switch by id (spec playground/05) names these
             // whether or not implicit switching is on; only the implicit one
@@ -599,6 +603,7 @@ impl Server {
     /// over its executor and the catalog; a server built without one has a
     /// speech model that is unavailable, saying so.
     pub fn with_speech(mut self, speech: std::sync::Arc<speech::Speech>) -> Self {
+        speech.live_changed(&self.live().speech);
         self.speech = speech;
         self
     }

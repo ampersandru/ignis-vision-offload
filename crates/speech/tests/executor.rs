@@ -1,17 +1,18 @@
 //! The executor and the session on a tiny synthetic GGUF pair, in the default suite (spec
-//! speech/01 testing decisions): load at first use and unload (idle or asked), pinned weights,
-//! the Q4_K repack as the only copy, the prefix cache, the incremental session against a
-//! whole-clip run, partials and their stable text, and one unit of compute at a time.
+//! speech/01 testing decisions): load at first use and unload, pinned weights, the Q4_K repack
+//! as the only copy, the prefix cache, the incremental session against a whole-clip run,
+//! partials and their stable text, a commit a unit of compute at a time, and the KV cache's
+//! text room.
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use common::synthetic;
-use ignis_speech::{Availability, Executor, Features, ModelFiles, SessionTuning, Settings, Threads};
+use ignis_speech::session::DECODE_UNIT;
+use ignis_speech::text::Prompt;
+use ignis_speech::{Availability, Executor, Features, Model, ModelFiles, SessionTuning, Settings, Threads};
 
 fn settings() -> Settings {
-    Settings { threads: Threads::Count(2), idle_unload: Duration::ZERO, max_clip_seconds: 60, ..Settings::default() }
+    Settings { threads: Threads::Count(2), max_clip_seconds: 60, ..Settings::default() }
 }
 
 fn exec(files: &ModelFiles, s: Settings) -> Executor {
@@ -43,21 +44,17 @@ fn the_model_loads_at_first_use_and_unloads_whole() {
     synthetic::remove(&files).expect("the files are still mapped after the unload");
 }
 
-/// Acceptance 21: unloaded after `idle_unload` with no transcription, and a later session loads
-/// it again.
+/// Acceptance 21: an unload (the server's worker asks for one after `speech.idle_unload`, spec
+/// 02) gives the files back once every session ended, and a later session loads the model again.
 #[test]
-fn the_model_unloads_when_idle() {
+fn a_session_after_an_unload_loads_the_model_again() {
     let files = synthetic::pair("idle");
-    let e = exec(&files, Settings { idle_unload: Duration::from_millis(300), ..settings() });
+    let e = exec(&files, settings());
     let mut s = e.open("", None).unwrap();
     s.push(&synthetic::audio(1.0)).unwrap();
     s.commit().unwrap();
-    let t0 = Instant::now();
-    while e.is_loaded() {
-        assert!(t0.elapsed() < Duration::from_secs(10), "still loaded after 10 s idle");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(t0.elapsed() >= Duration::from_millis(200), "unloaded before idle_unload ran out");
+    e.unload();
+    assert!(!e.is_loaded());
     // Every session ended: the files are unmapped.
     std::fs::rename(&files.decoder, files.decoder.with_extension("moved")).expect("the decoder is still mapped");
     std::fs::rename(files.decoder.with_extension("moved"), &files.decoder).unwrap();
@@ -184,8 +181,8 @@ fn stop_after(points: usize) -> impl Fn() -> bool {
 /// Q79: a partial stopped at any of the points it checks leaves the session as it was before it
 /// began: the cache rolled back to the audio prefix, so the commit's transcript is the one with
 /// no partial attempted, and the partial not counted (the count decides which partials fix no
-/// text, `unfixed_partials`). The synthetic decoder emits one token, so its decode never
-/// reaches a yield of the compute unit; the stop there is the same return.
+/// text, `unfixed_partials`). The synthetic decoder emits one token, so its decode checks once
+/// before that token's forward pass.
 #[test]
 fn a_stopped_partial_leaves_the_session_as_it_was() {
     let files = synthetic::pair("stopped");
@@ -215,8 +212,9 @@ fn a_stopped_partial_leaves_the_session_as_it_was() {
         assert_eq!(s.commit().unwrap(), untried, "stopped after {points} checks, then a partial: the transcript changed");
         points += 1;
     }
-    // Before the encode, before the window's prefill, before the decode's prefill and after it.
-    assert_eq!(points, 4, "the points a partial checks before its decode's first step");
+    // Before the encode, before the window's prefill, before the decode's prefill and after it,
+    // and before the one token's forward pass.
+    assert_eq!(points, 5, "the points a partial checks");
     // The synthetic decoder's token does not depend on what the cache holds, so one commit
     // cannot tell a cache left grown. A hundred partials stopped and not rolled back would fill
     // it about ten times over (each adds the incomplete window and the prompt's tail): the
@@ -229,12 +227,12 @@ fn a_stopped_partial_leaves_the_session_as_it_was() {
     assert_eq!(s.commit().unwrap(), untried, "a hundred stopped partials changed the transcript");
 }
 
-/// Q79: a partial's decode checks its stop where it yields the compute unit, every 16 steps.
-/// On the pair whose head has no EOS the decode runs to the KV cache's end, through many
-/// yields; a partial stopped at the first of them, or at the last, leaves the session as it
-/// was, as one stopped before the decode does.
+/// Q79: a partial's decode checks its stop before every token's forward pass, so a commit waits
+/// at most one decode step for the refresh in flight. On the pair whose head has no EOS the
+/// decode runs to the KV cache's end; a partial stopped at its first token, or at its last,
+/// leaves the session as it was, as one stopped before the decode does.
 #[test]
-fn a_partial_stops_where_its_decode_yields() {
+fn a_partial_stops_at_every_step_of_its_decode() {
     let files = synthetic::endless_pair("yields");
     let audio = synthetic::audio(9.3);
     let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, max_clip_seconds: 20, ..settings() });
@@ -244,7 +242,7 @@ fn a_partial_stops_where_its_decode_yields() {
         s
     };
     let untried = session().commit().unwrap();
-    assert!(untried.tokens.len() > 2 * 16, "the decode runs through yields: {} tokens", untried.tokens.len());
+    assert!(untried.tokens.len() > 2 * DECODE_UNIT, "the decode runs long: {} tokens", untried.tokens.len());
     let polls = std::cell::Cell::new(0);
     let counted = || {
         polls.set(polls.get() + 1);
@@ -252,8 +250,9 @@ fn a_partial_stops_where_its_decode_yields() {
     };
     assert!(session().partial_unless(&counted).unwrap().is_some());
     let checks = polls.get();
-    // Four before the decode's first step, then one at each yield.
-    assert!(checks > 6, "a decode through yields checks at each: {checks} checks");
+    // Four before the decode's first step, then one a token: as many checks as tokens, where a
+    // check every 16 steps made a sixteenth of them.
+    assert!(checks >= untried.tokens.len(), "a decode of {} tokens checked {checks} times", untried.tokens.len());
     for points in [4, checks - 1] {
         let mut s = session();
         let before = s.stats().clone();
@@ -276,37 +275,82 @@ fn a_session_holds_the_tuning_it_opened_with() {
     let tuned = SessionTuning { context_max_tokens: 64, rollback_tokens: 3, unfixed_partials: 0 };
     assert_eq!(e.open_tuned("", None, tuned).unwrap().tuning(), tuned);
     assert_eq!(e.open("", None).unwrap().tuning(), SessionTuning { context_max_tokens: 512, rollback_tokens: 10, unfixed_partials: 2 });
-    assert_eq!(e.open_capped("", None, 7).unwrap().tuning(), SessionTuning { context_max_tokens: 7, rollback_tokens: 10, unfixed_partials: 2 });
 }
 
-/// Acceptance 19: one unit of compute at a time, whatever the number of sessions driving it.
+/// Acceptance 19 (Q44): a commit is a unit of work a step, so the server's one worker runs other
+/// sessions' units between two: the last window with the audio's last frames, then the decode's
+/// prefill, then 16 decode steps a step. On the pair whose head has no EOS the decode runs to the
+/// KV cache's end; stepped, the commit gives the transcript a whole one does.
 #[test]
-fn sessions_on_two_threads_never_run_two_units_at_once() {
-    let files = synthetic::pair("units");
-    let e = std::sync::Arc::new(exec(&files, settings()));
-    let audio = synthetic::audio(12.0);
-    let mut one = e.open("", None).unwrap();
-    one.push(&audio).unwrap();
-    let alone = one.commit().unwrap();
-    let handles: Vec<_> = (0..2)
-        .map(|_| {
-            let (e, audio) = (e.clone(), audio.clone());
-            std::thread::spawn(move || {
-                let mut s = e.open("", None).unwrap();
-                for c in audio.chunks(3200) {
-                    s.push(c).unwrap();
-                    if s.partial_due() {
-                        s.partial().unwrap();
-                    }
-                }
-                s.commit().unwrap()
-            })
-        })
-        .collect();
-    for h in handles {
-        assert_eq!(h.join().unwrap().audio_tokens, alone.audio_tokens);
-    }
-    assert_eq!(e.max_concurrent_units(), 1);
+fn a_commit_is_a_unit_of_work_a_step() {
+    let files = synthetic::endless_pair("steps");
+    let e = exec(&files, Settings { max_clip_seconds: 20, ..settings() });
+    let session = || {
+        let mut s = e.open("", None).unwrap();
+        s.push(&synthetic::audio(9.3)).unwrap();
+        s
+    };
+    let whole = session().commit().unwrap();
+    let decoded = whole.tokens.len();
+    assert!(decoded > 4 * DECODE_UNIT, "the decode runs long: {decoded} tokens");
+    let mut commit = session().into_commit();
+    let mut steps = 0;
+    let stepped = loop {
+        steps += 1;
+        if let Some(t) = commit.step().unwrap() {
+            break t;
+        }
+    };
+    assert_eq!(stepped, whole);
+    // The window, the prefill, then one step per 16 forward passes: the cache's end comes with
+    // the last token taken, which is not forwarded.
+    assert_eq!(steps, 2 + (decoded - 1) / DECODE_UNIT + 1);
+    assert!(matches!(commit.step(), Err(ignis_speech::SessionError::Committed)));
+}
+
+/// The KV cache keeps a text room after the longest clip's audio and the stable text never
+/// outgrows it, so no clip within `max_clip_seconds` fails for want of cache: on the pair whose
+/// head has no EOS a partial halfway through a 20 s clip decodes to the cache's end, and with no
+/// rollback all of it would turn stable, more than the room left once the rest of the audio is
+/// in. The commit still has the room its prefill needs.
+#[test]
+fn stable_text_never_outgrows_the_text_room() {
+    let files = synthetic::endless_pair("room");
+    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, max_clip_seconds: 20, ..settings() });
+    let audio = synthetic::audio(19.0);
+    let mut s = e.open("", None).unwrap();
+    s.push(&audio[..audio.len() / 2]).unwrap();
+    let p = s.partial().unwrap();
+    s.push(&audio[audio.len() / 2..]).unwrap();
+    let t = s.commit().expect("a 19 s clip within a 20 s limit commits");
+    assert!(t.text.starts_with(&p.stable));
+}
+
+/// Acceptance 16: no language is forced unless asked, and a forced one is the official
+/// assistant prefill, `language <Name><asr_text>` after the assistant turn's head; the model's
+/// output is then all text, labelled with the forced language.
+#[test]
+fn a_forced_language_is_the_official_prefill() {
+    let files = synthetic::pair("forced");
+    let model = Model::load(&files.decoder, &files.encoder, false).unwrap();
+    let text = &model.text;
+    let auto = Prompt::new(text, "", 512, None);
+    let forced = Prompt::new(text, "", 512, Some("Italian"));
+    assert_eq!(forced.head, auto.head, "the prefix cache's entry does not depend on the language");
+    assert!(text.decode(&auto.tail).ends_with("assistant\n"), "{:?}", text.decode(&auto.tail));
+    assert!(text.decode(&forced.tail).ends_with("assistant\nlanguage Italian<asr_text>"), "{:?}", text.decode(&forced.tail));
+    assert_eq!(forced.tail.last(), Some(&text.asr_text), "`<asr_text>` is the marker token, not its spelling");
+    drop(model);
+    let e = exec(&files, settings());
+    let transcribe = |language: Option<&str>| {
+        let mut s = e.open("", language).unwrap();
+        s.push(&synthetic::audio(2.0)).unwrap();
+        s.commit().unwrap()
+    };
+    assert_eq!(transcribe(Some("Italian")).language.as_deref(), Some("Italian"));
+    // The synthetic decoder's one token is no `language X<asr_text>` header: auto-detection
+    // labels nothing.
+    assert_eq!(transcribe(None).language, None);
 }
 
 /// Acceptance 20: `auto` is the physical cores less one, an explicit count is used as given.

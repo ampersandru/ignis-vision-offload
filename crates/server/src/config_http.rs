@@ -691,6 +691,20 @@ fn check_enhancer(server: &Server, next: &Config, patch: &Layer) -> Result<(), S
     }
 }
 
+/// `speech.model` and `speech.compat_names` against the catalog this server
+/// runs with, an operator's file among it, when the patch names either: what
+/// the start checks where it reads the catalog (`speech::check_names`); the
+/// config's own check has the built-in entries already.
+fn check_speech(server: &Server, next: &Config, patch: &Layer) -> Result<(), String> {
+    if !patch.named().any(|(meta, _)| meta.group == "speech" && (meta.name == "model" || meta.name == "compat_names")) {
+        return Ok(());
+    }
+    match server.speech.catalog() {
+        Some(catalog) => crate::speech::check_names(catalog, &next.settings().speech),
+        None => Ok(()),
+    }
+}
+
 /// `PATCH /v1/config` — change the running configuration.
 #[utoipa::path(
     patch,
@@ -728,6 +742,9 @@ pub(crate) async fn patch_config(State(server): State<Arc<Server>>, Json(body): 
         Err(error) => return refused("config_invalid", error.0),
     };
     if let Err(error) = check_enhancer(&server, &next, &patch) {
+        return refused("config_invalid", error);
+    }
+    if let Err(error) = check_speech(&server, &next, &patch) {
         return refused("config_invalid", error);
     }
     let shadowed = shadowed_at_restart(&patch, &running);

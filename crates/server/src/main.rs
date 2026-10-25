@@ -295,6 +295,12 @@ async fn main() {
             exit_after_flush(&logging_handle, 1);
         }
     };
+    // Spec speech/02: the speech names against that catalog, an operator's
+    // file among it; the config's own check had the built-in entries only.
+    if let Err(why) = ignis_server::speech::check_names(&catalog, &start_options.settings().speech) {
+        tracing::error!(name: "ignis.config.speech_invalid", error = %why, "refusing to start");
+        exit_after_flush(&logging_handle, 1);
+    }
 
     // ADR 0064 (spec 27b-16gb/04 §6): with no artifact named, the model is
     // the catalog's, fitted to the card's class before it is looked for or

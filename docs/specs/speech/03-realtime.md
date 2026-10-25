@@ -421,8 +421,10 @@ the spec left open, or differs from it:
   seam's `partial`, which now takes it and answers `None` for a refresh
   stopped. `ignis-speech`'s `Session::partial_unless` checks it before the
   encode, between the encode and the incomplete window's prefill, before the
-  decode's prefill and after it, and every 16 decode steps, where the decode
-  yields the unit (01, As built); a stopped partial truncates the cache to the
+  decode's prefill and after it, and before every token its decode computes
+  (Q79's granularity, owner 2026-10-25: the check is an atomic load, and a
+  commit waits at most one decode step for the refresh, where the 16-step
+  yield let it wait 16; 01, As built); a stopped partial truncates the cache to the
   audio prefix and counts as no partial, so `speech.unfixed_partials` still
   counts the refreshes that ran. A refresh queued and not begun when the
   commit arrives stops at its first check; one past its last check (the end
@@ -431,8 +433,8 @@ the spec left open, or differs from it:
   which stays the last finished refresh's. On the scripted executor a commit
   during a 20 s refresh completes in well under 5 s, with one delta, the
   commit's (`speech_realtime.rs`). On the synthetic pairs a partial stopped at
-  any of its checks, the decode's yields included (a pair whose head has no
-  EOS decodes to the cache's end), leaves the commit's transcript the one with
+  any of its checks, its decode's first token and its last included (a pair
+  whose head has no EOS decodes to the cache's end), leaves the commit's transcript the one with
   no partial tried (`ignis-speech`'s `tests/executor.rs`; the adapter's in
   `cpu.rs`). **Expected, an
   estimate from the parts already measured and not a measurement:** the
@@ -440,3 +442,9 @@ the spec left open, or differs from it:
   plus what a stopped refresh still runs to its next check, about 2-3 s from
   the commit to `completed` on the i9 and 4-4.7 s on the container, against
   AC 13's 2 s. The study leg counts a stopped refresh apart (`stop`).
+- **The final review's fixes (2026-10-25).** An item's commit is a unit of
+  work a step on the worker (the rest pushed, then the executor's steps:
+  spec 01 As built): the task stays first in its session's lane and the
+  other sessions take their turn between two steps (AC 14). A key under
+  `session.ignis` other than `provisional_tail` is refused, naming it, as
+  ignis's own namespace lists its keys (spec server/09's honoured or refused).

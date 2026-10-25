@@ -17,8 +17,9 @@ use super::super::route::{self, FieldRefusal, ModelRefusal};
 
 /// OpenAI's PCM16 rate, the default.
 pub(crate) const OPENAI_RATE: u32 = 24_000;
-/// The model's own rate: accepted as a declared extension, and not resampled.
-pub(crate) const MODEL_RATE: u32 = 16_000;
+/// The model's own rate ([`TARGET_RATE`]) is accepted as a declared
+/// extension, and not resampled.
+use super::super::audio::TARGET_RATE;
 
 /// `transcription.delay`'s values. Inert: the cadence is
 /// `speech.partial_interval_ms`.
@@ -73,7 +74,7 @@ impl VadDefaults {
 /// What a session runs with.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SessionConfig {
-    /// The rate its PCM16 arrives at: [`OPENAI_RATE`] or [`MODEL_RATE`].
+    /// The rate its PCM16 arrives at: [`OPENAI_RATE`] or [`TARGET_RATE`].
     pub rate: u32,
     /// The speech model's served id, whatever name the client sent.
     pub model: String,
@@ -174,6 +175,14 @@ impl SessionConfig {
         }
         include(session.get("include"))?;
         if let Some(ignis) = object(session, "ignis", "session.ignis")? {
+            // ignis's own namespace lists its keys, so a misspelt opt-in is
+            // refused rather than passing unnoticed.
+            if let Some(unknown) = ignis.keys().find(|key| key.as_str() != "provisional_tail") {
+                return Err(Refusal::invalid(
+                    format!("session.ignis.{unknown} is not an ignis session field: session.ignis takes provisional_tail"),
+                    &format!("session.ignis.{unknown}"),
+                ));
+            }
             match ignis.get("provisional_tail") {
                 None => {}
                 Some(Value::Null) => next.provisional_tail = false,
@@ -209,7 +218,7 @@ impl SessionConfig {
         self.rate = match format.get("rate") {
             None | Some(Value::Null) => OPENAI_RATE,
             Some(rate) => match rate.as_u64() {
-                Some(rate) if rate == u64::from(OPENAI_RATE) || rate == u64::from(MODEL_RATE) => rate as u32,
+                Some(rate) if rate == u64::from(OPENAI_RATE) || rate == u64::from(TARGET_RATE) => rate as u32,
                 _ => {
                     return Err(Refusal::unsupported(
                         format!("{PARAM}.rate {rate} is not served: send 24000, OpenAI's, or 16000, the model's own"),
@@ -665,6 +674,17 @@ mod tests {
         assert_eq!(on.effective("s")["ignis"]["provisional_tail"], true);
         let refused = update(&fresh(), json!({ "ignis": { "provisional_tail": "yes" } })).unwrap_err();
         assert_eq!(refused.param.as_deref(), Some("session.ignis.provisional_tail"));
+    }
+
+    /// Honoured or refused (spec server/09): a key under `session.ignis` that
+    /// is not one of ignis's is refused naming it, the update not applied.
+    #[test]
+    fn an_unknown_ignis_key_is_refused_naming_it() {
+        let refused = update(&fresh(), json!({ "ignis": { "provisional_tial": true } })).unwrap_err();
+        assert_eq!(refused.param.as_deref(), Some("session.ignis.provisional_tial"));
+        assert!(refused.message.contains("provisional_tial") && refused.message.contains("provisional_tail"), "{}", refused.message);
+        let refused = update(&fresh(), json!({ "ignis": { "provisional_tail": true, "extra": 1 } })).unwrap_err();
+        assert_eq!(refused.param.as_deref(), Some("session.ignis.extra"));
     }
 
     /// AC 9, 11: the prompt and keywords are the context, as spec 02 joins

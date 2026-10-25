@@ -2,12 +2,15 @@
 //! speech/01 §4, speech/02): the operations the server needs of it and no
 //! more. The real executor is `ignis-speech` (`crates/speech`, ticket #351),
 //! adapted in [`super::cpu`]; the route, the slot and the queue are built and
-//! tested against [`FakeExecutor`] behind this trait, and the adapter is the
-//! one place that knows both.
+//! tested against `FakeExecutor` (test builds and the `fake-speech` feature
+//! only) behind this trait, and the adapter is the one place that knows both.
 
 use std::path::PathBuf;
+#[cfg(any(test, feature = "fake-speech"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(any(test, feature = "fake-speech"))]
 use std::sync::{Arc, Mutex};
+#[cfg(any(test, feature = "fake-speech"))]
 use std::time::{Duration, Instant};
 
 /// The model's files on disk, as the slot found them: every file of the
@@ -108,8 +111,10 @@ pub trait SpeechSession: Send {
     /// points it checks: a refresh a commit, a clear or the session's end
     /// stopped (Q79), which leaves the session as it was before the call.
     fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError>;
-    /// The last window, then the transcript to its end.
-    fn commit(self: Box<Self>) -> Result<Transcript, SpeechError>;
+    /// One unit of the commit (spec speech/01 §3, Q44): the last window, a window, the
+    /// decode's prefill or 16 decode steps, so the worker runs other units between two; `Some`
+    /// with the transcript at its end. The session takes nothing after its first.
+    fn commit_step(&mut self) -> Result<Option<Transcript>, SpeechError>;
 }
 
 /// The speech model's executor.
@@ -162,7 +167,8 @@ impl SpeechExecutor for NoExecutor {
 /// pushed, what it was loaded with, every call its sessions took, in order
 /// ([`FakeExecutor::calls`]), when each refresh began, how many stopped, and
 /// the silence each session was fed first. A refresh checks its stop every
-/// millisecond it takes.
+/// millisecond it takes; a commit takes `commit_steps` steps. Test builds only.
+#[cfg(any(test, feature = "fake-speech"))]
 #[derive(Debug)]
 pub struct FakeExecutor {
     pub words: Vec<String>,
@@ -182,6 +188,8 @@ pub struct FakeExecutor {
     pub partial_delay: Arc<Mutex<Duration>>,
     /// The refreshes stopped before their end (Q79).
     pub stopped: Arc<AtomicUsize>,
+    /// The steps each session's commit takes, read when it opens; 1 by default.
+    pub commit_steps: AtomicUsize,
     pub opened: Mutex<Vec<SessionOpen>>,
     /// The length of every `push`, in order, over every session.
     pub pushed: Arc<Mutex<Vec<usize>>>,
@@ -198,6 +206,7 @@ pub struct FakeExecutor {
     pub silent_lead: Arc<Mutex<Vec<usize>>>,
 }
 
+#[cfg(any(test, feature = "fake-speech"))]
 impl FakeExecutor {
     pub fn saying(words: &[&str]) -> Self {
         Self {
@@ -213,6 +222,7 @@ impl FakeExecutor {
             step_delay: Mutex::new(Duration::ZERO),
             partial_delay: Arc::new(Mutex::new(Duration::ZERO)),
             stopped: Arc::new(AtomicUsize::new(0)),
+            commit_steps: AtomicUsize::new(1),
             opened: Mutex::new(Vec::new()),
             pushed: Arc::new(Mutex::new(Vec::new())),
             load_settings: Mutex::new(Vec::new()),
@@ -261,6 +271,7 @@ impl FakeExecutor {
 /// Samples in one 8 s window at 16 kHz.
 pub const WINDOW_SAMPLES: usize = 128_000;
 
+#[cfg(any(test, feature = "fake-speech"))]
 struct FakeSession {
     words: Vec<String>,
     language: Option<String>,
@@ -279,8 +290,11 @@ struct FakeSession {
     /// has been pushed a sample that is not zero.
     silent_lead: Arc<Mutex<Vec<usize>>>,
     sounded: bool,
+    /// The commit's steps still to take.
+    commit_steps: usize,
 }
 
+#[cfg(any(test, feature = "fake-speech"))]
 impl SpeechSession for FakeSession {
     fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
         std::thread::sleep(self.delay);
@@ -317,20 +331,29 @@ impl SpeechSession for FakeSession {
         Ok(Some(Partial { stable: stable.join(" "), tail }))
     }
 
-    fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
+    /// One step of `commit_steps`, each logged `commit <n>`; the last fails if `fail_commit`.
+    fn commit_step(&mut self) -> Result<Option<Transcript>, SpeechError> {
+        if self.commit_steps == 0 {
+            return Err(SpeechError("committed already".to_owned()));
+        }
         self.calls.lock().unwrap().push(format!("commit {}", self.index));
         std::thread::sleep(self.delay);
+        self.commit_steps -= 1;
+        if self.commit_steps > 0 {
+            return Ok(None);
+        }
         if self.fail_commit.load(Ordering::SeqCst) {
             return Err(SpeechError("the fake executor was told to fail".to_owned()));
         }
-        Ok(Transcript {
+        Ok(Some(Transcript {
             text: self.words.join(" "),
             language: self.language.clone(),
             tokens: (0..self.words.len() as u32).collect(),
-        })
+        }))
     }
 }
 
+#[cfg(any(test, feature = "fake-speech"))]
 impl SpeechExecutor for FakeExecutor {
     fn name(&self) -> &'static str {
         self.name
@@ -389,6 +412,7 @@ impl SpeechExecutor for FakeExecutor {
             partials_at: Arc::clone(&self.partials_at),
             silent_lead: Arc::clone(&self.silent_lead),
             sounded: false,
+            commit_steps: self.commit_steps.load(Ordering::SeqCst).max(1),
         }))
     }
 }

@@ -12,8 +12,10 @@
 //!
 //! The audio is decoded in memory ([`super::audio`]) and handed to the
 //! compute worker as a job that pushes it to the executor a window at a
-//! time ([`super::worker`]). The transcript is not logged, nor the audio:
-//! one `ignis.speech.transcription` line carries the numbers (Q13, Q45).
+//! time, then takes the commit a unit at a time ([`super::worker`]), so a
+//! long clip's decode never holds the worker from the Realtime sessions. The
+//! transcript is not logged, nor the audio: one `ignis.speech.transcription`
+//! line carries the numbers, and a failure's reason (Q13, Q45).
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -38,7 +40,7 @@ use super::audio;
 use super::executor::{LoadSettings, SessionOpen, SpeechExecutor, SpeechFiles, Transcript, WINDOW_SAMPLES};
 use super::languages;
 use super::worker::{Job, Step};
-use super::Unavailable;
+use super::{extension, open_loaded, Fault, Unavailable};
 use crate::api::{bad_request_param, error_response, error_response_naming, refused_field, unknown_model, ApiError};
 use crate::config::schema::SpeechGroup;
 use crate::deadline::Timeout;
@@ -454,13 +456,19 @@ struct Done {
 enum Failure {
     /// The request went away, or its deadline passed: nobody is waiting.
     Cancelled,
-    /// The model would not load.
-    Load(String),
-    /// A call to the executor failed.
-    Executor(String),
+    /// The model would not load, or a call to it failed.
+    Fault(Fault),
 }
 
-/// One transcription, a window per step.
+/// What a client is told failed, on this route.
+const THIS_TRANSCRIPTION: &str = "this transcription; the request can be sent again";
+
+/// The log's reason when the worker dropped a job's reply: its step
+/// panicked, or the server is stopping.
+const WORKER_DROPPED: &str = "the speech worker dropped the transcription: its step panicked, or the server is stopping";
+
+/// One transcription, a unit per step: a window pushed, the refresh after it
+/// when the request streams, then the commit a step at a time.
 struct Transcription {
     executor: Arc<dyn SpeechExecutor>,
     files: SpeechFiles,
@@ -474,6 +482,8 @@ struct Transcription {
     /// The stable text, as it grows, when the request streams.
     deltas: Option<mpsc::UnboundedSender<String>>,
     emitted: String,
+    /// A window was pushed and its refresh, when streaming, is the next step.
+    refresh_due: bool,
     reply: Option<oneshot::Sender<Result<Done, Failure>>>,
     began: Option<Instant>,
 }
@@ -493,37 +503,36 @@ impl Transcription {
         // Only text that extends what was sent is a delta: the executor's
         // stable text is never revised, and a violation sends nothing rather
         // than deltas that do not join to the answer.
-        if text.len() > self.emitted.len() && text.starts_with(self.emitted.as_str()) {
-            if deltas.send(text[self.emitted.len()..].to_owned()).is_err() {
+        if let Some(delta) = extension(&self.emitted, text) {
+            if deltas.send(delta.to_owned()).is_err() {
                 self.cancelled.store(true, Ordering::SeqCst);
             }
             self.emitted = text.to_owned();
         }
     }
 
-    fn advance(&mut self) -> Result<Option<Transcript>, Failure> {
+    fn advance(&mut self) -> Result<Option<Transcript>, Fault> {
+        let executor_fault = |error: super::executor::SpeechError| Fault::Executor(error.0);
         if self.session.is_none() {
-            if !self.executor.is_loaded() {
-                self.executor.load(&self.files, self.load).map_err(|error| Failure::Load(error.0))?;
-            }
             let open = self.open.take().expect("opened once");
-            self.session = Some(self.executor.open(open).map_err(|error| Failure::Executor(error.0))?);
+            self.session = Some(open_loaded(self.executor.as_ref(), &self.files, self.load, open)?);
         }
         let session = self.session.as_mut().expect("opened above");
-        if self.cursor < self.samples.len() {
-            let end = (self.cursor + WINDOW_SAMPLES).min(self.samples.len());
-            session.push(&self.samples[self.cursor..end]).map_err(|error| Failure::Executor(error.0))?;
-            self.cursor = end;
-            if self.deltas.is_some() {
-                // Nothing stops a batch job's partial.
-                if let Some(partial) = session.partial(&|| false).map_err(|error| Failure::Executor(error.0))? {
-                    self.emit(&partial.stable);
-                }
+        if std::mem::take(&mut self.refresh_due) {
+            // Nothing stops a batch job's refresh.
+            if let Some(partial) = session.partial(&|| false).map_err(executor_fault)? {
+                self.emit(&partial.stable);
             }
             return Ok(None);
         }
-        let transcript = self.session.take().expect("opened above").commit().map_err(|error| Failure::Executor(error.0))?;
-        Ok(Some(transcript))
+        if self.cursor < self.samples.len() {
+            let end = (self.cursor + WINDOW_SAMPLES).min(self.samples.len());
+            session.push(&self.samples[self.cursor..end]).map_err(executor_fault)?;
+            self.cursor = end;
+            self.refresh_due = self.deltas.is_some();
+            return Ok(None);
+        }
+        session.commit_step().map_err(executor_fault)
     }
 }
 
@@ -543,13 +552,7 @@ impl Job for Transcription {
                 self.emit(&transcript.text);
                 self.finish(Ok(Done { transcript, computed: began.elapsed() }))
             }
-            Err(failure) => {
-                if let Failure::Load(why) | Failure::Executor(why) = &failure {
-                    // The executor's own words: no audio, no transcript.
-                    tracing::warn!(name: "ignis.speech.failed", variant = %self.files.id, reason = %why, "a transcription failed");
-                }
-                self.finish(Err(failure))
-            }
+            Err(fault) => self.finish(Err(Failure::Fault(fault))),
         }
     }
 }
@@ -655,6 +658,7 @@ pub(crate) async fn create_transcription(State(server): State<Arc<Server>>, mult
         cancelled: Arc::clone(&cancelled),
         deltas,
         emitted: String::new(),
+        refresh_due: false,
         reply: Some(reply),
         began: None,
     };
@@ -709,6 +713,16 @@ impl Ending {
     }
 
     pub(super) fn end(&mut self, outcome: SpeechOutcome, transcript: Option<&Transcript>, computed: Option<Duration>) {
+        self.end_with(outcome, transcript, computed, None);
+    }
+
+    /// The end of a transcription the speech model failed: the one line, at
+    /// WARN, carries the executor's own words as `reason`.
+    pub(super) fn fail(&mut self, outcome: SpeechOutcome, fault: Option<&Fault>) {
+        self.end_with(outcome, None, None, fault);
+    }
+
+    fn end_with(&mut self, outcome: SpeechOutcome, transcript: Option<&Transcript>, computed: Option<Duration>, fault: Option<&Fault>) {
         if std::mem::replace(&mut self.ended, true) {
             return;
         }
@@ -718,17 +732,32 @@ impl Ending {
         }
         // Neither the audio nor the transcript: the numbers (Q13, Q45).
         let x_real_time = computed.filter(|computed| !computed.is_zero()).map(|computed| self.audio_seconds / computed.as_secs_f64());
-        tracing::info!(
-            name: "ignis.speech.transcription",
-            audio_seconds = self.audio_seconds,
-            executor = self.executor_name,
-            variant = %self.variant,
-            x_real_time = x_real_time.unwrap_or(0.0),
-            wait_ms = wait.as_millis() as u64,
-            language = transcript.and_then(|transcript| transcript.language.as_deref()).unwrap_or("none"),
-            outcome = outcome.label(),
-            "a transcription ended"
-        );
+        let language = transcript.and_then(|transcript| transcript.language.as_deref()).unwrap_or("none");
+        match fault {
+            Some(fault) => tracing::warn!(
+                name: "ignis.speech.transcription",
+                audio_seconds = self.audio_seconds,
+                executor = self.executor_name,
+                variant = %self.variant,
+                x_real_time = 0.0,
+                wait_ms = wait.as_millis() as u64,
+                language,
+                outcome = outcome.label(),
+                reason = fault.reason(),
+                "a transcription failed"
+            ),
+            None => tracing::info!(
+                name: "ignis.speech.transcription",
+                audio_seconds = self.audio_seconds,
+                executor = self.executor_name,
+                variant = %self.variant,
+                x_real_time = x_real_time.unwrap_or(0.0),
+                wait_ms = wait.as_millis() as u64,
+                language,
+                outcome = outcome.label(),
+                "a transcription ended"
+            ),
+        }
     }
 }
 
@@ -743,21 +772,27 @@ impl Drop for Ending {
     }
 }
 
-/// How a failed job is answered.
-fn failure_response(failure: &Failure) -> Response {
+/// What a failed job is answered with: a fault's code and message, or the
+/// executor's when the worker dropped the job (`None`).
+fn failure_error(failure: Option<&Failure>) -> (&'static str, String) {
     match failure {
-        Failure::Load(why) => error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "server_error",
-            "speech_unavailable",
-            format!("the speech model could not be loaded: {why}"),
-        ),
-        Failure::Executor(_) | Failure::Cancelled => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            "engine_error",
-            "the speech model failed this transcription; the request can be sent again",
-        ),
+        Some(Failure::Fault(fault)) => fault.error(THIS_TRANSCRIPTION),
+        Some(Failure::Cancelled) | None => Fault::Executor(String::new()).error(THIS_TRANSCRIPTION),
+    }
+}
+
+/// How a failed job is answered.
+fn failure_response(failure: Option<&Failure>) -> Response {
+    let (code, message) = failure_error(failure);
+    let status = if code == "speech_unavailable" { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::INTERNAL_SERVER_ERROR };
+    error_response(status, "server_error", code, message)
+}
+
+/// The fault of a failed job, for its log line.
+fn fault_of(failure: &Failure) -> Option<&Fault> {
+    match failure {
+        Failure::Fault(fault) => Some(fault),
+        Failure::Cancelled => None,
     }
 }
 
@@ -775,12 +810,12 @@ async fn answer(
             body(&done.transcript, ending.audio_seconds, format)
         }
         Ok(Ok(Err(failure))) => {
-            ending.end(SpeechOutcome::Failed, None, None);
-            failure_response(&failure)
+            ending.fail(SpeechOutcome::Failed, fault_of(&failure));
+            failure_response(Some(&failure))
         }
         Ok(Err(_)) => {
-            ending.end(SpeechOutcome::Failed, None, None);
-            failure_response(&Failure::Executor("the worker ended".to_owned()))
+            ending.fail(SpeechOutcome::Failed, Some(&Fault::Executor(WORKER_DROPPED.to_owned())));
+            failure_response(None)
         }
         Err(_) => {
             ending.cancelled.store(true, Ordering::SeqCst);
@@ -876,12 +911,12 @@ async fn stream_answer(
             }));
         }
         Some(Ok(Err(failure))) => {
-            ending.end(SpeechOutcome::Failed, None, None);
-            send(json!({ "type": "error", "error": error_event(&failure) }));
+            ending.fail(SpeechOutcome::Failed, fault_of(&failure));
+            send(json!({ "type": "error", "error": error_event(Some(&failure)) }));
         }
         Some(Err(_)) => {
-            ending.end(SpeechOutcome::Failed, None, None);
-            send(json!({ "type": "error", "error": error_event(&Failure::Executor("the worker ended".to_owned())) }));
+            ending.fail(SpeechOutcome::Failed, Some(&Fault::Executor(WORKER_DROPPED.to_owned())));
+            send(json!({ "type": "error", "error": error_event(None) }));
         }
         None => {
             ending.cancelled.store(true, Ordering::SeqCst);
@@ -897,14 +932,9 @@ fn body_of(error: &ApiError) -> Value {
     serde_json::to_value(error).expect("an error body serializes")["error"].clone()
 }
 
-/// The body of an `error` event.
-fn error_event(failure: &Failure) -> Value {
-    let (code, message) = match failure {
-        Failure::Load(why) => ("speech_unavailable", format!("the speech model could not be loaded: {why}")),
-        Failure::Executor(_) | Failure::Cancelled => {
-            ("engine_error", "the speech model failed this transcription; the request can be sent again".to_owned())
-        }
-    };
+/// The body of an `error` event: what the answer would have been.
+fn error_event(failure: Option<&Failure>) -> Value {
+    let (code, message) = failure_error(failure);
     body_of(&ApiError::new("server_error", code, &message))
 }
 

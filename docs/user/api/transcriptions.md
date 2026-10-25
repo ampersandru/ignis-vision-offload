@@ -126,6 +126,8 @@ wait behind the one running; the next is `503 engine_full` with a `Retry-After`
 of one to fifteen seconds, an estimate of when room frees.
 It is answered before the audio is decoded, so a body that is not audio gets
 the `503`, not a `400`, while the queue is full.
+A long clip's transcript is decoded a little at a time (16 tokens a step), so
+live sessions are served between the steps rather than after the whole clip.
 
 A request is held to the [deadline](deadlines.md) from its admission, queue
 included: `server.request_timeout`, or `server.stream_timeout` when it
@@ -139,7 +141,9 @@ transcription at the next window.
 Neither the audio nor the transcript is ever written to a log, and the audio is
 never written to disk. Each transcription writes one `ignis.speech.transcription`
 line: audio seconds, executor (`cpu`), variant (the served id), x real time, the
-wait from the last byte received, the detected language and the outcome. The
+wait from the last byte received, the detected language and the outcome. One
+the speech model failed is the same line at WARN, with `reason`, the executor's
+own words (a load that failed names the file). The
 [metrics](../reference/metrics.md) are `ignis_speech_transcriptions_total{executor,outcome}`,
 `ignis_speech_audio_seconds_total`, `ignis_speech_commit_wait_seconds` and the
 gauges `ignis_speech_sessions_open` and `ignis_speech_queue_length`, shown in
@@ -150,7 +154,8 @@ Each load of the model writes two lines: `ignis.speech.threads`, the threads it
 computes with and whether `auto` chose them, and `ignis.speech.load`, how long
 it took and how many bytes it repacked into its own memory (the Q4_K weights,
 rearranged for the CPU's kernels) and read from the files, and whether the
-weights are pinned.
+weights are pinned. An unload after `speech.idle_unload` seconds unused writes
+`ignis.speech.unloaded`, with `idle_seconds`.
 
 `POST /v1/audio/translations` is not served (`404`): the model transcribes the
 language it hears.

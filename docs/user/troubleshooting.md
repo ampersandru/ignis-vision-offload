@@ -303,6 +303,14 @@ produces) is not decoded yet: send WAV, or convert it. A clip longer than
   item's deltas do not join to its `completed.transcript` (which is still the
   model's text). The executor promises never to revise stable text: report it,
   with the server's version.
+- A WARN `ignis.speech.transcription` with `outcome: "failed"`: the speech
+  model failed that transcription or item; its `reason` is the executor's own
+  words (a load that failed names the file). The client got `engine_error`, or
+  `speech_unavailable` for a load.
+- The server refuses to start with `ignis.config.speech_invalid`:
+  `speech.model` names a catalog entry that is not a speech model, or a
+  `speech.compat_names` entry is an id of the catalog in use (an operator's
+  `--download-catalog` among it). The error names the field and the id.
 
 ### `vision_disabled`, or `media_budget_exceeded`
 
