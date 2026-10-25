@@ -1116,10 +1116,10 @@ whether a restricted softmax is reading the model or renormalizing noise: a
 **Attention readout**:
 Reading attention heads' pre-softmax scores (`q · k / sqrt(head_dim)`) at a
 prefill's last position over one span of its keys — an image's placeholders, or
-a text state's tokens — instead of the logits of answer tokens (GitHub
-#260, #263, #264 and #275; ADR 0038, ADR 0039, ADR 0040 and ADR 0041). A
-`point`, a head `box` or a **locate** answered this way is a **decision**: one
-prefill, no decode round, no lane.
+a text state's tokens — instead of the logits of answer tokens
+(GitHub #260, #263, #264 and #275; ADR 0038, ADR 0039, ADR 0040 and ADR 0041).
+A `point`, a head `box` or a **locate** answered this way is a **decision**:
+one prefill, no decode round, no lane.
 
 **Pointing head**:
 The attention head that names *which* object a `point` or a head `box` is

@@ -24,12 +24,14 @@ none.
 
 System One's three primitives (`noul`, `choice`, `score`) are read from the
 logits of named answer tokens at a single position: **nothing is generated**,
-they cost one prefill, and `usage.output_tokens` is 0. ignis adds four of its
-own: `number`, `point` and `box` generate one constrained digit per step, so
-they cost a prefill plus a round per digit, and `locate` names a line or an
-item ([below](#finding-a-line-or-an-item)).
+they cost one prefill, and `usage.output_tokens` is 0. ignis adds five of its
+own: `number`, `scalar`, `point` and `box` generate one constrained token per
+step, so they cost a prefill plus a round per token (a `point` or `box` read
+off the calibrated attention heads costs the prefill alone), and `locate` names
+a line or an item ([below](#finding-a-line-or-an-item)).
 
-`number`, `point`, `box` and `scalar` are constrained decodes: each step draws
+`number`, `scalar`, and a `point` or `box` answered by the digit chain are
+constrained decodes: each step draws
 from a permitted set of at most 32 tokens, and a set the leaf cannot honour is
 refused, never truncated, since a constraint silently narrowed is a wrong
 answer that looks like a right one. `number` reads a number digit by digit into
