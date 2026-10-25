@@ -230,7 +230,7 @@ artifact contract, not a guess.
 **Flash-Next**:
 Qwen3.8-Flash-Next, the second model: 125B mixture of experts, 6B active, 48
 layers in 12 blocks of 3 GDN + 1 QSA, hidden 2560. Served from its own
-artifact, selected at start; never loaded beside the 27B.
+artifact, loaded at start or by a switch, and never beside the 27B.
 
 **Expert**:
 One of a layer's 512 routed SwiGLU MLPs (2560 → 640 → 2560); the **router**
@@ -982,8 +982,9 @@ drafter forward.
 
 **MTP**:
 The model's native multi-token-prediction head, the alternative drafter (draft
-window 1..7 chosen at load, verification width chosen per round). Deferred
-behind **DFlash2** at G5.
+window 1..7 chosen at load, verification width chosen per round). Flash-Next
+drafts with it, its **MTP head** (`--spec-backend mtp`); the 27B drafts with
+**DFlash2** and refuses it.
 
 **Vision**:
 Multimodal input: images today, video refused until its own spec. A load
@@ -1491,7 +1492,9 @@ the tolerance target for the leaf's per-layer output at G1.
 The acceptance criterion at G4: ≥ 99% of the reference's performance
 (throughput / latency) on the trace-replay load, **not** token-agreement;
 correctness is self-checked (sane output, same model, greedy, fixed seed). It
-is the first of a ladder of performance gates (later gates TBD).
+is the first of a ladder of performance gates: G5 asks ≥ 99% of the
+reference's committed tok/s under DFlash2, and the phase beyond the reference
+gates each item on its own (`docs/ROADMAP.md`).
 
 **Trace replay**:
 Re-sending a recorded "1 main agent + N subagents" load trace against both
