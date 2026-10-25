@@ -92,8 +92,8 @@ under way.
 - Exclusivity is a property of the *machine*, not of a worktree. Two agent
   sessions in two worktrees share one 5090, and neither preflight sees the
   other.
-- `docs/agents/testing.md` carries this as runbook step 0, and `GLOSSARY.md`'s
-  **GPU profile** entry now says what *free* means.
+- `docs/agents/testing.md` carries this as runbook step 0 and says what
+  *free* means (`GLOSSARY.md`'s **GPU profile** entry said it too until #370).
 
 ## Limits and unknowns
 

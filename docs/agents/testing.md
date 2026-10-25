@@ -185,6 +185,13 @@ suite (`crates/bench/src/canary.rs::CANARIES`), 32 greedy tokens per
 prompt. `ignis-bench oracle compare` diffs a candidate engine's tokens
 against it (§"Oracle (two levels)", spec `01-device-resident-forward`).
 
+The canary suite itself (`ignis-bench canary`) judges sanity on everything a
+turn generated. Its 64-token budget stays that way under the serving default,
+so most canaries are read on the thinking channel and the report says so
+(`answer=thinking-only`). Checking the *answer* is this fixture's job, token by
+token with thinking off; the suite's own job is catching a degenerate engine,
+which shows on either channel (GitHub #144).
+
 Re-record it (needs the GPU and the reference stack, ADR 0006 — stop
 `ignis-server` first):
 
@@ -482,6 +489,12 @@ checkpoint is retired (blob format 5): `dflash2_window_gpu.rs` asserts a
 snapshot no longer lists it. `crates/runtime/tests/cuda_leaf_dflash2_gpu.rs` drives the same
 drafter end to end through `RuntimeCompute`: the leaf passes no drafts, and
 every round's speculative counters match the lane's extent and committed run.
+The acceptance replay of recorded agent turns (GitHub #267,
+`crates/core/tests/dflash2_replay_seams_gpu.rs`) walks a turn in
+teacher-forced rounds. The recorded token after a lane's run is its pending
+token, so it must be a vocabulary id; the pad past a recording's end is taken
+only after a stop id, and leaves no pending token until a prefill gives one.
+Only greedy lanes may be forced, and only on 27B loads.
 
 Vision is a load option too (GitHub #177): `--vision-enabled` (with
 `--vision-max-tokens N`, default 32,768 merged tokens) binds the 333 `vision/*`
@@ -728,6 +741,13 @@ half an hour; never lower it to "make a run finish".
 - Bug fix: the regression test goes first — reproduce the bug, watch
   the test go red, then fix.
 - The standard loop is red-green, driven by the `/tdd` skill.
+- Logging on the prefill/decode path: the hotpath lint
+  (`crates/logging/src/hotpath_lint.rs`) fails `cargo test` on an
+  INFO-or-above `tracing` call or a raw `println!`/`eprintln!`/`print!` in
+  its hand-maintained list of hot-path files. It makes the hot-path logging
+  constraint checkable in review, not only provable later at the G4 gate; a
+  `hotpath-lint-allow:` comment marks a reviewed, intentional exception, never
+  a silent one.
 
 ## Done means
 

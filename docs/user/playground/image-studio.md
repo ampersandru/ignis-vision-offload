@@ -23,7 +23,7 @@ use only. ignis's own code is Apache-2.0; the weights are not.
 
 A session keeps every picture uploaded into it, made by it or marked in it,
 each named `#N` (its **pool**). Each step sends a prompt and up to ten input
-pictures:
+pictures, which the Image view labels "Inputs":
 
 - **no input** makes a new picture (`POST /v1/images/generations`);
 - **one or more inputs** edits them (`POST /v1/images/edits`): "What should

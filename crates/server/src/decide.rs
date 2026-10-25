@@ -3948,7 +3948,8 @@ fn engine_full() -> Answer {
 /// Flash-Next. So it is read from the engine the wave is put to
 /// ([`crate::engine::Engine::max_in_flight`]), never assumed — and *not*
 /// because a decision occupies a decode lane, which it never does
-/// (`GLOSSARY.md`: a decision takes only the single global prefill lane).
+/// (ADR 0034: it takes no decode lane, only `GLOSSARY.md`'s single global
+/// **prefill lane**).
 /// Being too small is a slower fan-out, being too large a wave of refusals
 /// the retry in [`in_waves`] pays for.
 ///
