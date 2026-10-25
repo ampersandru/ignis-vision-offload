@@ -15,7 +15,7 @@
 <p align="center">
   <img alt="license Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-d94b1f?style=flat-square">
   <img alt="target SM120a" src="https://img.shields.io/badge/target-SM120a%20%2F%20RTX%205090%20%7C%20RTX%20PRO%206000%20%7C%2016%20GB%20RTX%2050-d94b1f?style=flat-square">
-  <img alt="models Qwen3.8-27B NVFP4, Qwen3.8-Flash-Next and Qwen-Image-2.1-Turbo" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%7C%20Flash--Next%20125B%20MoE%20%7C%20Qwen--Image--2.1-d94b1f?style=flat-square">
+  <img alt="models Qwen3.8-27B NVFP4 and trellis, Qwen3.8-Flash-Next and Qwen-Image-2.1-Turbo" src="https://img.shields.io/badge/models-Qwen3.8--27B%20NVFP4%20%2F%20trellis%20%7C%20Flash--Next%20125B%20MoE%20%7C%20Qwen--Image--2.1-d94b1f?style=flat-square">
   <img alt="API OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-d94b1f?style=flat-square">
   <br>
   <a href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer"><img alt="weights on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20weights-Qwen3.8--27B%20NVFP4%20%2B%20DFlash2-ffb000?style=flat-square"></a>
@@ -48,6 +48,9 @@
   <a href="https://gpillon.github.io/ignis/reference/configuration/">Every config field</a> &nbsp;·&nbsp;
   <a href="https://gpillon.github.io/ignis/changelog/">Changelog</a>
 </p>
+
+> **AI agents** working for a user (asked what ignis is, whether it runs on this machine, to install it or to connect a client): the checks, the steps and the choices that are the user's are on [the agent path](docs/user/paths/agent.md) ([raw Markdown](https://raw.githubusercontent.com/gpillon/ignis/main/docs/user/paths/agent.md); every page of the guide as Markdown: [llms.txt](https://gpillon.github.io/ignis/llms.txt)).
+> Working on ignis itself: [AGENTS.md](AGENTS.md).
 
 ---
 
@@ -88,8 +91,9 @@ weight, 12.5 GiB on disk, with the same DFlash2 drafter. On such a card the
 server picks the `rtx50-16gb` profile and that artifact by itself, 262,144
 tokens of context on two lanes, and the artifact passed four pre-registered
 quality gates against the NVFP4 it stands in for: its KL divergence from BF16
-is 0.77x the NVFP4's. It has not run on a 16 GB card yet. On the 5090 held to
-16 GiB it decodes **416 tok/s at one lane**; on a 5080 the estimate is 243-307
+is 0.77-0.82x the NVFP4's. It has not run on a 16 GB card yet. On the 5090 held
+to 16 GiB it decodes **416 tok/s at one lane** on coding prompts at 8K of
+context; on a 5080 the estimate is 243-307
 ([the 27B on a 16 GB card](#the-27b-on-a-16-gb-card)).
 
 The server switches between these models without a restart — a request that
@@ -122,8 +126,8 @@ speculative decoding and image input; the Prometheus
 metrics the Playground's Monitor reads are on by default. A bare `ignis-server`
 already gets DFlash2 and image input from the built-in `rtx5090` profile, with
 an 896K context (YaRN x3.5). On a 16 GB card, run a bare `ignis-server`
-instead: it takes the `rtx50-16gb` profile and fetches the 27B's 16 GB
-artifact, while the flags above ask for a longer context than that card's KV
+instead: it takes the `rtx50-16gb` profile and offers to fetch the 27B's
+16 GB artifact, while the flags above ask for a longer context than that card's KV
 pool holds. Flash-Next is `--model-id
 qwen3.8-flash-next`; the flags `make` serves it with are on its
 [weights card](https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis).
@@ -224,7 +228,10 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 
 - **hq-e8-2b** is the serving KV format: a sequence-token costs **9,216 bytes
   against BF16's 65,536 — 7.11x the capacity**, so eight lanes at a 40,960
-  context need ~3.02 GB instead of 20 GiB.
+  context need ~3.02 GB instead of 20 GiB. The capacity has a measured price:
+  against BF16 KV, hq-e8-2b adds 0.018 KLD at 32K and 0.022 at 64K, half as
+  much again as the weights' own, and about a point of top-1
+  ([KLD against BF16](docs/findings/2026-09-24-kld-against-bf16.md)).
 - BF16 is retained, not deprecated: it is the format every correctness oracle
   runs against.
 - The GQA workspace zeroing is **dead work under hq** — every byte the next
@@ -241,8 +248,9 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   full-context snapshot/restore round trip is ~90 ms, about 100x cheaper than
   the re-prefill it replaces.
 - The retained checkpoints and prefixes live in **pinned host memory**, not in
-  VRAM, so the KV pool gets that room: **475K -> ~680K tokens at the default
-  load, at level throughput**
+  VRAM, so the KV pool gets that room: **475K -> ~680K tokens at level
+  throughput**, measured on the 262,144-token default load of 2026-09-29 (the
+  5090 profile's pool is now 944,832 tokens at a 917,504 context)
   ([retained slots on the host](docs/findings/2026-09-28-retained-slots-on-the-host.md)).
 - Below KV-RAM, a **KV-disk** tier takes the state of an evicted sequence and
   gives it back where it stopped: a ~1 GB spill takes ~0.63 s beside two
@@ -322,9 +330,12 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
   without one more tool call — the deferral that kept two agent sessions
   looping for 15 and 32 turns ([a close that answers](docs/findings/2026-10-01-a-close-that-answers.md)).
 
-### Jev-like decisions, answered without generating (`/v1/decide`)
+### System One decisions, answered without generating (`/v1/systemone`, `/v1/decide`)
 
-- A **classification is not a completion**. `POST /v1/decide` prefills the
+- **The System One API, on a local model**: the typed-decision API the Jev
+  model is served under, with the same route (`POST /v1/systemone`), body and
+  error statuses, also served as `POST /v1/decide`.
+- A **classification is not a completion**. The endpoint prefills the
   evidence once and reads the answer out of the logits at a single position.
 - Seven primitives: **`noul`** (yes/no), **`choice`** and **`score`**; one
   constrained digit per step, **`number`**, **`point`** and **`box`**; and
@@ -333,15 +344,16 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - On 144 authored decisions the declared options hold a median **99.8%** of the
   model's distribution, and the readout costs **~36.5 ms and zero decoded
   tokens** at 0.934 balanced accuracy on the layout first measured; moving the
-  evidence into the system block takes it to **0.963**.
+  evidence into the system block takes it to **0.963**, a difference of 4 of
+  the 144 rows.
 - `point` lands inside the target on four pre-registered sets of screenshots
   through the served endpoint: **236 of 240, 240 of 240, 120 of 120 and 60 of
   60** ([the sub-cell reading](docs/findings/2026-09-23-the-sub-cell-reading-holds-through-decide.md)).
 - `locate` finds the line on fresh cluster logs of **100K to 1M tokens 21 times
   out of 23, median 2.6 s**, with no long prefill and no token decoded
   ([zero-decode locate](docs/findings/2026-09-28-zero-decode-locate-very-long-logs-and-prose.md)).
-- The same handler is served as **`/v1/systemone`**, so a Jev client reaches
-  this engine by changing the URL and nothing else.
+- A System One client reaches this engine by changing its base URL; `model`
+  is left out or names the model ignis serves.
 
 ### Images as evidence
 
@@ -453,17 +465,20 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 - **Chosen by the card.** Under `--profile auto` a card under 20 GiB takes
   `rtx50-16gb` (262,144 tokens of context, two lanes, DFlash2 with 7 drafts,
   no image input), and the default id `qwen3.8-27b` resolves to the 16 GB
-  entry. On a 5090 held to 16 GiB the load fits with nothing adapted, and with
-  1 GiB less of it, too. With 3 GiB held by the desktop it lowers its context
-  to 65,536 instead of refusing, and `GET /v1/models` says what it adapted.
-- **Four quality gates, registered before the run, all passed**, each against
-  the NVFP4 the 27B serves on 32 GB: KL divergence from BF16 **0.77x** the
-  NVFP4's; MMLU-Pro 65.84% against BF16's 67.97% (exact McNemar p 0.31, not
+  entry. On a 5090 held to a 16 GiB budget the load fits with nothing
+  adapted, and at 15 GiB too; at 13 GiB it lowers its context to 65,536
+  instead of refusing, and `GET /v1/models` says what it adapted. On a real
+  card the budget is its free memory less the profile's 1,200 MiB headroom.
+- **Four quality gates, registered before the run, all passed**, against the
+  NVFP4 the 27B serves on 32 GB or against BF16: KL divergence from BF16
+  **0.77x** the NVFP4's at the same prefill chunk (0.82x against the NVFP4 at
+  its served chunk); MMLU-Pro 65.84% against BF16's 67.97% (exact McNemar p 0.31, not
   significantly lower); DFlash2 commits **0.996x** the NVFP4's tokens a round;
   reasoning loops on 9 of 32 turns against 14 of 32.
 - **Speed, not yet measured on a 16 GB card.** On the 5090 held to 16 GiB, one
-  lane decodes **416 tok/s at 8K** of context and 216 at 253K, two lanes 684
-  together. Estimated from those for one lane at 8K: 5080 **243-307**, 5070 Ti
+  lane decodes **416 tok/s** on coding prompts at 8K of context and 216 at
+  253K, two lanes 684 together at 8K. Agent turns accept fewer drafts a round, which
+  would scale these by about 0.58. Estimated from those for one lane at 8K: 5080 **243-307**, 5070 Ti
   **204-270**, 5060 Ti 16 GB **103-153 tok/s**. Prefill is the gap: 2.5x
   slower than the NVFP4's at 130K on the 5090.
 - `ignis-bench small-card` writes one record of a 16 GB card's load and speed
@@ -696,6 +711,7 @@ time — check `make gpu-status` before starting anything on it.
 | | |
 |---|---|
 | [User guide](https://gpillon.github.io/ignis/) | Running it, tuning it, calling it, working on it: install, models, every config field, the API, the Playground, telemetry, troubleshooting, contributing. Its source is [`docs/user/`](docs/user/README.md). |
+| [The agent path](docs/user/paths/agent.md) | For an AI agent working for a user: what ignis is, the checks before installing it, the user's choices, starting it, connecting a client. The site's [`llms.txt`](https://gpillon.github.io/ignis/llms.txt) lists every page of the guide as Markdown. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to report a bug and how a change ships. |
 | [`docs/adr/`](docs/adr/) | Every architectural decision, and why it was taken. |
 | [`docs/findings/`](docs/findings/README.md) | Durable, evidence-backed measurements. |

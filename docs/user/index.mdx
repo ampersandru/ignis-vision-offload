@@ -46,6 +46,19 @@ main conversation and its subagents on the same GPU at once.
   <LinkCard title="The Playground, view by view" description="Chat with subagents on their own lanes, Decide, the image studio, the live Monitor and the Server view, with screenshots." href="playground/" />
 </CardGrid>
 
+## The models, on Hugging Face
+
+Every model the server fetches by itself is a public Hugging Face repository,
+pinned file by file at a fixed revision ([Get a model](guides/models.md)).
+
+<CardGrid>
+  <LinkCard title="Qwen3.8-27B, NVFP4 + DFlash2" description="qwen3.8-27b, the default: 18.1 GiB, with its grafted DFlash2 drafter. RTX 5090 and RTX PRO 6000." href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-NInfer" />
+  <LinkCard title="Qwen3.8-27B for 16 GB cards" description="qwen3.8-27b-16g: the 27B with a 3-bit trellis body, 12.5 GiB, for the RTX 5060 Ti 16 GB, 5070 Ti and 5080." href="https://huggingface.co/gpillon/Qwen3.8-27B-trellis-3bpw-ignis" />
+  <LinkCard title="Qwen3.8-27B, uncensored" description="qwen3.8-27b-abliterated: the same 27B, abliterated (uncensored), 18.1 GiB." href="https://huggingface.co/gpillon/Qwen3.8-27B-nvfp4full-dflash2-abliterated-NInfer" />
+  <LinkCard title="Qwen3.8-Flash-Next, 125B MoE" description="qwen3.8-flash-next: experts in a 2.5-bit trellis code, 67.8 GiB with its MTP head, on a 32 GB card." href="https://huggingface.co/gpillon/Qwen3.8-Flash-Next-trellis-a25-ignis" />
+  <LinkCard title="Qwen-Image-2.1-Turbo" description="ignis-image-2.1-turbo: the image model, 15.6 GiB. Non-commercial licence." href="https://huggingface.co/gpillon/ignis-image-2.1-turbo" />
+</CardGrid>
+
 ## Pick your path
 
 Every page of this guide belongs to one site; each path is an order to read
@@ -76,12 +89,19 @@ it in, from the first command to the deepest knob.
 
     <a href="paths/contributor/">The contributor path →</a>
   </Card>
+  <Card title="I am an AI agent" icon="puzzle">
+    Working for a user: what ignis is, the checks before installing it, the
+    choices that are the user's, starting it and connecting a client.
+
+    <a href="paths/agent/">The agent path →</a>
+  </Card>
 </CardGrid>
 
 ## Jump in
 
 <CardGrid>
   <LinkCard title="Install" description="The container image and the release archives." href="start/install/" />
+  <LinkCard title="Install with a coding agent" description="Tell the agent you already use to install it: what it checks and what it asks you." href="start/install-with-an-agent/" />
   <LinkCard title="Get a model" description="The catalog, model download, and pointing at your own artifact." href="guides/models/" />
   <LinkCard title="Configuration" description="Every setting is one field: flag, env var, config file." href="configuration/" />
   <LinkCard title="Every config field" description="The generated reference, straight from the server's field table." href="reference/configuration/" />

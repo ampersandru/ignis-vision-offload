@@ -1,5 +1,9 @@
 # AGENTS.md
 
+This file is for agents working **on** ignis: its code, its guide, its issues.
+An agent here for a user of ignis (to explain it, install it, or connect a
+client to it) wants [the agent path](docs/user/paths/agent.md) instead.
+
 ## Agent skills
 
 ### Issue tracker

@@ -1,6 +1,6 @@
 ---
 title: "Measure a 16 GB card"
-description: "Run `ignis-bench small-card` against your server and paste the record into a GitHub issue: the card, the VRAM plan, what the load adapted, decode speed and time to first token."
+description: "Run `ignis-bench small-card` against your server and post the record on issue #360: the card, the VRAM plan, what the load adapted, decode speed and time to first token. A coding agent can run the whole test for you."
 sidebar:
   order: 5
 ---
@@ -8,8 +8,14 @@ sidebar:
 The `rtx50-16gb` profile is derived, not measured: the project has no 16 GB
 card ([the profile](../concepts/profiles.md#rtx50-16gb)). If you run the 27B
 on an RTX 5060 Ti 16 GB, a 5070 Ti or a 5080, one command against your running
-server writes a record of what it does there, and a GitHub issue with that
-record is how the profile gets real numbers.
+server writes a record of what it does there, and that record, posted on
+[issue #360](https://github.com/gpillon/ignis/issues/360), is how the profile
+gets real numbers.
+
+A coding agent can run the whole test for you, the install included: it
+tries the default, tries a few settings if the default is refused, and writes
+the report for you to read before anything is posted
+([Install with a coding agent](../start/install-with-an-agent.md#test-a-16-gb-card)).
 
 ## Run it
 
@@ -86,9 +92,9 @@ measured. Run it against a server without a key.
 
 ## Send it
 
-Open an issue at
-[github.com/gpillon/ignis/issues](https://github.com/gpillon/ignis/issues/new)
-titled with your card, and paste the whole file in a fenced block:
+Comment on [issue #360](https://github.com/gpillon/ignis/issues/360), the one
+that collects the 16 GB reports, starting with your card's name, and paste the
+whole file in a fenced block:
 
 ````markdown
 ```json

@@ -35,9 +35,10 @@ the artifact it stands in for. The DFlash2 drafter is the same.
 With `--profile auto`, the default, the server reads the card's memory and
 picks `rtx50-16gb` under 20 GiB: 262,144 tokens of context, two decode lanes,
 DFlash2 with 7 drafts, vision off (the tower and its encoder peak are VRAM the
-card does not have). When the desktop holds more VRAM than the profile
-assumed, the load does not fail: it lowers the context step by step until the
-plan fits, and `GET /v1/models` names what it adapted
+card does not have). The VRAM budget is the card's free memory less the
+profile's 1,200 MiB of headroom, so whatever the desktop holds comes out of it.
+When the plan does not fit that budget, the load lowers the context step by step
+instead of refusing at once, and `GET /v1/models` names what it adapted
 ([when a profile does not fit](../concepts/profiles.md#when-a-profile-does-not-fit)).
 
 **A catalog entry that knows its class** ([ADR 0064](../../adr/0064-a-catalog-entry-states-its-card-class.md)).
@@ -52,8 +53,8 @@ card is refused before anything is torn down.
 | KLD from BF16 **0.0403, 0.77x the NVFP4's** at chunk 1,024 (0.82x at 2,048; gate 1.2x) | the 2026-09-24 KLD suite, through ignis's engine path | [Quality gates](../../findings/2026-10-24-27b-16gb-quality-gates.md) |
 | MMLU-Pro **65.84%** against BF16's 67.97%, exact McNemar p 0.31 | through the engine's logits | same |
 | DFlash2 commits **0.996x** the NVFP4's tokens a round (3.370 against 3.383, 95% interval 0.993-0.999; floor 0.90) | 200 recorded agent turns, teacher-forced | same |
-| Reasoning loops **9 of 32** against the NVFP4's 14 of 32 (gate: not significantly more, one-sided Fisher p 0.94) | the loop study's four prompts, eight seeds each | same |
-| 16 GiB, and 16 GiB less 1 GiB of desktop: **262,144 tokens on two lanes**, nothing adapted; less 3 GiB adapts to 65,536 | RTX 5090 held to the budget | [Capacity on the 5090](../../findings/2026-10-24-27b-16gb-capacity-on-the-5090.md) |
+| Reasoning loops **9 of 32** against the NVFP4's 14 of 32 (gate: not significantly more at one-sided Fisher p < 0.05; p 0.94) | the loop study's four prompts, eight seeds each | same |
+| A 16 GiB and a 15 GiB budget: **262,144 tokens on two lanes**, nothing adapted; a 13 GiB budget adapts to 65,536 | RTX 5090, the budget named by `--vram-budget-bytes` | [Capacity on the 5090](../../findings/2026-10-24-27b-16gb-capacity-on-the-5090.md) |
 | **416 / 216 tok/s** at one lane (8K / 253K of context), 684 / 275 across two | RTX 5090 held to 16 GiB, uncapped | [Speed estimate](../../findings/2026-10-24-27b-16gb-speed-estimate.md) |
 | Estimated, one lane at 8K: 5080 **243-307**, 5070 Ti **204-270**, 5060 Ti 16 GB **103-153** tok/s | an estimate, not a measurement | same |
 
@@ -80,6 +81,9 @@ thinking budget forced a close on 15 of 32 turns against 8 of 32 on NVFP4.
 - Prefill is slower than on NVFP4: the trellis kernels' prefill reaches about
   half the card's tensor peak.
 - The speeds are an estimate until someone measures a real card.
+- The capacity figures are budgets named by hand on a 5090. On a real card
+  the budget is what is free less the 1,200 MiB headroom, so the context a load
+  keeps there depends on what else holds the card's memory.
 
 ## Read more
 

@@ -5,7 +5,8 @@ sidebar:
   order: 6
 ---
 
-**Decide** builds a request for [`POST /v1/decide`](../api/decide.md), sends
+**Decide** builds a request for [`POST /v1/decide`](../api/decide.md), the
+same handler as ignis's **System One-compatible** `POST /v1/systemone`, sends
 it, and draws what comes back. A decision is one piece of **evidence** (text,
 a JSON record or an image) and any number of **questions** over it. The server
 prefills the evidence once and reads each answer straight off the model's
@@ -110,5 +111,5 @@ metric `ignis_decision_answer_mass`.
 
 ## Read more
 
-- [Decisions without decoding](../why-ignis/decisions.md): how it works and what was measured.
+- [System One decisions, without decoding](../why-ignis/decisions.md): how it works and what was measured.
 - [`/v1/decide`](../api/decide.md): the request and the response, field by field.

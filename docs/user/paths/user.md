@@ -14,7 +14,8 @@ defaults are the ones measured on the owner's own cards.
    **[Why ignis](../why-ignis/index.mdx)**, what sets it apart, with its numbers.
 2. **[Install](../start/install.md)** — the container image or a release
    archive, and what each needs from the host: the NVIDIA driver, and for the
-   archives the CUDA runtime.
+   archives the CUDA runtime. Or let the coding agent you already use do it:
+   [Install with a coding agent](../start/install-with-an-agent.md).
 3. **[Quick start](../start/quick-start.md)** — one command to a running
    server, the Playground in the browser, one request with curl.
 4. **[Get a model](../guides/models.md)** — the built-in catalog, `ignis-server

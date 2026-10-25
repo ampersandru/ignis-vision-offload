@@ -16,9 +16,10 @@ Edit the right-hand column to match whatever vocabulary you actually use.
 
 ## Repo-only labels
 
-Two labels this repo adds to the five roles above.
+Two labels this repo adds to the five roles above. Both are added beside the
+issue's other labels: neither replaces its state role or category.
 
 | Label   | Kind     | Meaning |
 | ------- | -------- | ------- |
-| `idea`  | state    | Parked: kept open, not specified, not scheduled. Use it instead of `ready-for-human` for a proposal nobody will build soon; it counts as the issue's state role. When picked up it goes back to `needs-triage` and into `/grill-with-docs`; close it with a link to the spec or tickets it became. |
-| `quick` | modifier | The owner's decision is fast and the work after it is small. It combines with any state (e.g. `idea` + `quick`) and never replaces one. When showing what needs attention, list open `quick` issues as a fourth bucket. |
+| `idea`  | marker   | Parked: kept open, not specified, not scheduled. Add it to a proposal nobody will build soon, and keep the state role it has (often `ready-for-human`). When picked up, remove `idea` and take the issue into `/grill-with-docs`; close it with a link to the spec or tickets it became. |
+| `quick` | marker   | The owner's decision is fast and the work after it is small. It combines with any state and with `idea`. When showing what needs attention, list open `quick` issues as a fourth bucket. |

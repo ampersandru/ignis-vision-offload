@@ -2,13 +2,15 @@
 
 This folder is the source of the guide published at
 **https://gpillon.github.io/ignis/**, where it has search, navigation and
-reading paths. Every page is plain Markdown and reads here as well.
+reading paths. Every page is plain Markdown and reads here as well. An AI
+agent working for a user (asked what ignis is, to install it, or to connect a
+client) starts at [the agent path](paths/agent.md).
 
 | Section | Start with |
 |---|---|
-| Start here | [Install](start/install.md) |
+| Start here | [Install](start/install.md), or [with a coding agent](start/install-with-an-agent.md) |
 | Why ignis | [What sets it apart](why-ignis/index.mdx), a topic per page with its numbers and sources |
-| Reading paths | [User](paths/user.md), [advanced](paths/advanced.md), [developer](paths/developer.md), [contributor](paths/contributor.md) |
+| Reading paths | [User](paths/user.md), [advanced](paths/advanced.md), [developer](paths/developer.md), [contributor](paths/contributor.md), [agent](paths/agent.md) |
 | Guides | [Get a model](guides/models.md), [air-gapped machines](guides/air-gapped.md), [Knative](guides/knative.md), [telemetry](guides/telemetry.md), [measure a 16 GB card](guides/measure-a-16gb-card.md) |
 | Concepts | [How ignis serves a request](concepts/how-ignis-serves.md) |
 | Configuration | [Fields, precedence, profiles](configuration/index.md) |
