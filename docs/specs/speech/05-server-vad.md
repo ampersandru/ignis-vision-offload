@@ -41,6 +41,14 @@ left open were decided by the owner on 2026-10-24, cited as
 - **Config fields** for the server's defaults, by the owner's rule for
   thresholds (owner, 2026-10-24): `speech.vad_threshold` 0.5,
   `speech.vad_prefix_padding_ms` 300, `speech.vad_silence_duration_ms` 500.
+- **A leading silence** (Q77; owner, 2026-10-25): the server feeds each
+  `server_vad` item to the speech model after `speech.vad_leading_silence_ms`
+  of digital silence (zero samples), since Qwen3-ASR's output moves with the
+  audio before the speech and an item starts only its prefix padding before
+  it. Invisible to clients: the protocol, `audio_start_ms`/`audio_end_ms`,
+  `usage` and OpenAI's defaults (the padding stays 300 ms) do not change. A
+  manual commit's item is not padded. The default is chosen from AC 7's
+  measurement.
 - **The batch route's `chunking_strategy` stays refused** (owner,
   2026-10-24). Q19 rules out an automatic split in v1, and a VAD split is one.
 
@@ -150,31 +158,56 @@ something the spec left open, or differs from it:
   `speech_realtime_vad.rs` shows a `null` session getting no VAD event and
   every sample in its item. The realtime tests' 16 kHz helper (`at_16_khz`)
   now asks for manual commit too.
-- **AC 7 is not met.** On the 11 dictations, `qwen3-asr-1.7b` at the defaults
+- **AC 7, first measured: not met.** On the 11 dictations, `qwen3-asr-1.7b` at the defaults
   (0.5, 300, 500), fed 100 ms at a time with a second of silence after the
-  last word, the items joined score 7.58% pooled WER (47 edits in 620
+  last word, the items joined scored 7.58% pooled WER (47 edits in 620
   words); a manual commit of each whole dictation through the same path
-  scores 4.03% (25 edits). Six dictations of eleven are within a word;
-  d04, d06, d07, d10 and d11 are three to seven words worse. In their
+  scores 4.03% (25 edits). Six dictations of eleven were within a word;
+  d04, d06, d07, d10 and d11 were three to seven words worse. In their
   transcripts no speech is lost to a cut: the errors are the kind a different
-  start brings, numbers in spoken form ("ventisette b" for 27B), an
-  identifier read out, a word heard differently ("web file" for WAV file). One run of two more arms places the
-  cost:
+  start brings, numbers in spoken form, an identifier read out, a word heard
+  differently. One run of two more arms placed the cost:
   - a control, the whole dictation as **one** item from where
     `server_vad`'s first item starts (its leading silence trimmed to the
-    300 ms padding, nothing cut), scores the same 7.58% pooled: d06 goes from
+    300 ms padding, nothing cut), scored the same 7.58% pooled: d06 went from
     4 edits to 13, d03 from 3 to 9. Dictation by dictation the control and
     `server_vad` differ (d03 is worse trimmed, d04 worse cut), so the run
-    shows that trimming the leading silence alone costs as much as the whole
+    showed that trimming the leading silence alone costs as much as the whole
     gap, not that the cuts cost nothing. The model's output depends on how
-    much audio comes before the speech, and the 1-pt gate against the
-    untrimmed commit is below that;
+    much audio comes before the speech;
   - `server_vad`'s items, each with its predecessors' transcript as its
-    context, which is not built (Q50's context is the client's), score
+    context, which is not built (Q50's context is the client's), scored
     6.94%.
 
-  The owner's call: restate AC 7 against the trimmed commit, build a
-  mitigation (more leading audio, a longer padding default or synthetic
-  silence; the predecessors' text as context), or accept the gap. The
-  `--ignored` leg (`crates/speech/tests/vad.rs`) asserts AC 7 as written.
+  The owner chose the synthetic leading silence (Q77, 2026-10-25) over
+  restating AC 7 or accepting the gap.
+- **AC 7 is met with the leading silence** (Q77). The `--ignored` leg
+  (`crates/speech/tests/vad.rs`) feeds each item after the silence the server
+  feeds (`ignis_speech::vad::leading_silence`, at
+  `ignis_speech::vad::DEFAULT_LEADING_SILENCE_MS`, the field's default), and
+  takes more arms from `IGNIS_SPEECH_LEAD_MS` (`0,500,1000,1500`), each
+  reported, the default asserted. One run, the i9, 2026-10-25, manual commit
+  4.03% (25 edits in 620 words) in the same run; the default chosen by the
+  rule written before the run, the lowest pooled WER with ties within one edit
+  to the shorter silence:
+
+  | leading silence | pooled WER | edits | against the manual commit |
+  |---|---|---|---|
+  | 0 ms (as first built) | 7.58% | 47 | +3.55 pt, not met |
+  | **500 ms (the default)** | **4.68%** | **29** | **+0.65 pt, met** |
+  | 1000 ms | 5.00% | 31 | +0.97 pt |
+  | 1500 ms | 4.68% | 29 | +0.65 pt |
+
+  Per dictation, the silence takes d06 from 11 edits to 2, d04 from 8 to 3,
+  d07 from 7 to 4 and d11 from 3 to 0; d02, d05 and d09 come out one or two
+  words worse at 500 ms than with none. Between 500 and 1500 ms the dictations move
+  by a word or two either way, which is the arms' noise: digital zeros at any
+  of these lengths close most of the gap, and no arm of real audio (the
+  padding repeated, or low noise) was needed. Each item's leading silence
+  counts toward `speech.max_clip_seconds`, since the model's own limit counts
+  every sample it reads: an item under `server_vad` holds at most the limit
+  less the silence of the client's audio, and the error then names the
+  silence. A silence at or over the limit fails every item; no rule ties the
+  two fields. The leg asserted at the default, run again on the committed
+  code, passes: 4.68% against 4.03%.
 - **`chunking_strategy`** on the batch route stays refused, unchanged.

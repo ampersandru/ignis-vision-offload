@@ -18,7 +18,9 @@
 //!   the VAD reads the 16 kHz audio on this socket's task and decides what
 //!   reaches an item: speech starts one (`speech_started`, the prefix padding
 //!   before it), the silence after it commits it (`speech_stopped`), and with
-//!   an idle timeout so much audio without speech is an item of its own. With
+//!   an idle timeout so much audio without speech is an item of its own. The
+//!   model reads each such item after `speech.vad_leading_silence_ms` of
+//!   digital silence, which no event and no `usage` counts (Q77). With
 //!   `turn_detection: null` every sample goes to the current item and the
 //!   client commits.
 //! - **Units.** Every call to the executor is one unit on the speech worker,
@@ -30,6 +32,9 @@
 //!   at most every `speech.partial_interval_ms`, and a refresh is skipped,
 //!   never queued, while any unit of the socket's is still in the worker: a
 //!   CPU that cannot keep up drops refreshes, never windows or the commit.
+//!   The next refresh also waits `speech.partial_cost_factor` times the last
+//!   one's compute time (Q76), so the refreshes keep to about that share of
+//!   the worker as the item grows and each costs more.
 //! - **Text.** `delta` carries stable text only, so the deltas joined are the
 //!   transcript `completed` carries (Q43). A session that opted in with
 //!   `session.ignis.provisional_tail` also gets the tail, the text still
@@ -89,7 +94,7 @@ pub(crate) const MAX_APPEND_BYTES: usize = 15 << 20;
 
 On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection` `{type: \"server_vad\", threshold, prefix_padding_ms, silence_duration_ms, idle_timeout_ms: null}` at the server's `speech.vad_threshold`, `speech.vad_prefix_padding_ms` and `speech.vad_silence_duration_ms` (0.5, 300, 500, OpenAI's), `noise_reduction: null`, `include: []` and `ignis.provisional_tail: false`. The speech model is loaded if it is not, and the context prefilled.
 
-Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it (silence, even the silence that ended the item before, never an earlier item's speech); once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened, the last item or the field's change, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
+Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it (silence, even the silence that ended the item before, never an earlier item's speech); once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened, the last item or the field's change, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. The speech model reads each of these items after `speech.vad_leading_silence_ms` of digital silence, since its transcript depends on the audio before the speech; no time and no `usage` counts it. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
 
 Client events, each a text frame of one JSON object:
 - `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
@@ -98,7 +103,7 @@ Client events, each a text frame of one JSON object:
 - `input_audio_buffer.clear`: discards the buffer and the item's partial state (under `server_vad`, the speech and the padding the VAD holds); answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
 
-Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
+Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed, and the next waits at least `speech.partial_cost_factor` times the last one's compute time), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
 
 A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) -- no item committed and still being transcribed, and no text or binary frame from the client -- is closed with a normal close frame (1000) whose reason says so.",
     params(("intent" = String, Query, description = "`transcription`: the only session this route serves.")),
@@ -183,7 +188,8 @@ enum Unit {
 
 /// What a unit tells the socket.
 enum Outcome {
-    Partial(Partial),
+    /// A refresh, and its compute time on the worker.
+    Partial(Partial, Duration),
     Transcript(Transcript, Duration),
     Failed(Failure),
 }
@@ -201,8 +207,9 @@ enum Failure {
     Load(String),
     /// A call to the executor failed.
     Executor(String),
-    /// Longer than `speech.max_clip_seconds`.
-    TooLong(u32),
+    /// Longer than `speech.max_clip_seconds` (the limit), counting the
+    /// milliseconds of leading silence a `server_vad` item is fed after.
+    TooLong(u32, u32),
     /// Past `server.stream_timeout` from its first append.
     TimedOut(Timeout),
 }
@@ -213,10 +220,17 @@ impl Failure {
         let (kind, code, message) = match self {
             Self::Load(why) => ("server_error", "speech_unavailable", format!("the speech model could not be loaded: {why}")),
             Self::Executor(_) => ("server_error", "engine_error", "the speech model failed this item's transcription".to_owned()),
-            Self::TooLong(limit) => (
+            Self::TooLong(limit, 0) => (
                 "invalid_request_error",
                 "invalid_request_error",
                 format!("the item holds more than speech.max_clip_seconds ({limit} s) of audio; nothing is split automatically, commit sooner"),
+            ),
+            Self::TooLong(limit, lead_ms) => (
+                "invalid_request_error",
+                "invalid_request_error",
+                format!(
+                    "the item holds more than speech.max_clip_seconds ({limit} s) of audio, counting the {lead_ms} ms of silence (speech.vad_leading_silence_ms) the speech model reads before it; nothing is split automatically, commit sooner"
+                ),
             ),
             Self::TimedOut(timeout) => ("request_timeout", "request_timeout", timeout.message()),
         };
@@ -244,6 +258,10 @@ struct Item {
     /// Samples appended, at whatever rate, and the seconds they make.
     samples_in: u64,
     seconds: f64,
+    /// The milliseconds of digital silence the model reads before its audio,
+    /// under `server_vad`: counted against `speech.max_clip_seconds`, as the
+    /// model counts them, and nowhere else.
+    lead_ms: u32,
     timeout: Timeout,
     deadline: Option<Instant>,
     /// The stable text sent as deltas, and the tail last sent.
@@ -278,6 +296,10 @@ struct Connection {
     previous_item_id: Option<String>,
     /// When the current item's live transcript may next be refreshed.
     next_partial: Option<Instant>,
+    /// When the session's last refresh was queued, and the earliest the next
+    /// may be: `speech.partial_cost_factor` times its compute time later.
+    refresh_queued: Instant,
+    refresh_hold: Instant,
     /// This socket's units queued on the worker and not yet out of it.
     in_worker: usize,
     outbox: Vec<Value>,
@@ -314,6 +336,8 @@ impl Connection {
             pending: Vec::new(),
             previous_item_id: None,
             next_partial: None,
+            refresh_queued: Instant::now(),
+            refresh_hold: Instant::now(),
             in_worker: 0,
             outbox: Vec::new(),
             next_event: 0,
@@ -424,6 +448,7 @@ impl Connection {
             opened_with: open.clone(),
             samples_in: 0,
             seconds: 0.0,
+            lead_ms: 0,
             timeout: Timeout::NONE,
             deadline: None,
             emitted: String::new(),
@@ -579,8 +604,9 @@ impl Connection {
         if item.failure.is_some() {
             return false;
         }
-        if item.seconds > f64::from(limit) {
-            self.fail_current(Failure::TooLong(limit));
+        if item.seconds + f64::from(item.lead_ms) / 1000.0 > f64::from(limit) {
+            let lead_ms = item.lead_ms;
+            self.fail_current(Failure::TooLong(limit, lead_ms));
             return false;
         }
         true
@@ -588,17 +614,29 @@ impl Connection {
 
     /// The current item's first audio, at its first append or when the VAD
     /// heard speech: its id, its deadline (`server.stream_timeout`, per item
-    /// from its first audio, ADR 0058), and when its first refresh falls due.
+    /// from its first audio, ADR 0058), and when its first refresh falls due:
+    /// an interval on, and not before the session's last refresh allows.
     fn begin_item(&mut self) {
         let live = self.server.live();
         let interval = Duration::from_millis(u64::from(live.speech.partial_interval_ms));
+        let hold = self.refresh_hold;
         let item = self.current();
         if item.id.is_none() {
             item.id = Some(format!("item_{}", random_suffix()));
             item.timeout = Timeout::of(&live, true);
             item.deadline = Some(item.timeout.from_now());
-            self.next_partial = Some(Instant::now() + interval);
+            self.next_partial = Some((Instant::now() + interval).max(hold));
         }
+    }
+
+    /// A `server_vad` item's leading silence, before its first sample:
+    /// `speech.vad_leading_silence_ms` of zeros the model reads first (Q77).
+    /// Its times, its `usage` and the samples it counts are the client's
+    /// audio alone.
+    fn lead_in(&mut self) {
+        let lead_ms = self.server.live().speech.vad_leading_silence_ms;
+        self.current().lead_ms = lead_ms;
+        self.take_audio(ignis_speech::vad::leading_silence(lead_ms));
     }
 
     /// The session's next 16 kHz samples: the current item's under manual
@@ -627,6 +665,7 @@ impl Connection {
                 self.begin_item();
                 let id = self.current().id.clone();
                 self.send(json!({ "type": "input_audio_buffer.speech_started", "audio_start_ms": millis(start), "item_id": id }));
+                self.lead_in();
             }
             TurnEvent::Audio(samples) => self.give(samples),
             TurnEvent::Stopped { end } => {
@@ -643,6 +682,7 @@ impl Connection {
                     "audio_end_ms": millis(end),
                     "item_id": id,
                 }));
+                self.lead_in();
                 self.give(audio);
                 self.end_item();
             }
@@ -797,10 +837,13 @@ impl Connection {
     fn done(&mut self, done: Done) {
         self.in_worker -= 1;
         let Some(outcome) = done.outcome else { return };
+        if let Outcome::Partial(_, cost) = &outcome {
+            self.hold_refreshes(*cost);
+        }
         // An item cleared or ended since: nobody is waiting for it.
         let Some(index) = self.items.iter().position(|item| item.seq == done.item) else { return };
         match outcome {
-            Outcome::Partial(partial) => {
+            Outcome::Partial(partial, _) => {
                 let opted_in = self.config.provisional_tail;
                 let item = &mut self.items[index];
                 if item.failure.is_some() {
@@ -867,6 +910,18 @@ impl Connection {
         }
     }
 
+    /// A refresh of the session's took `cost` on the worker: the next waits
+    /// at least `speech.partial_cost_factor` times that from when this one was
+    /// queued, never less than `speech.partial_interval_ms` (Q76), so the
+    /// refreshes take at most about one part in that many of the worker
+    /// however much each costs. Read live, at each refresh.
+    fn hold_refreshes(&mut self, cost: Duration) {
+        self.refresh_hold = self.refresh_queued + cost * self.server.live().speech.partial_cost_factor;
+        if let Some(at) = self.next_partial.as_mut() {
+            *at = (*at).max(self.refresh_hold);
+        }
+    }
+
     /// The timers: the live transcript's refresh, and the items' deadlines.
     fn tick(&mut self) {
         let now = Instant::now();
@@ -880,6 +935,7 @@ impl Connection {
             if self.in_worker == 0 && item.failure.is_none() && item.fresh_audio {
                 let rest = std::mem::take(&mut self.pending);
                 self.queue(Unit::Partial(rest));
+                self.refresh_queued = now;
                 self.current().fresh_audio = false;
             }
         }
@@ -971,9 +1027,10 @@ fn run(unit: Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &Sp
             let began = std::time::Instant::now();
             let session = slot.session.as_mut()?;
             let partial = push(session.as_mut(), &samples).and_then(|()| session.partial());
-            slot.computed += began.elapsed();
+            let cost = began.elapsed();
+            slot.computed += cost;
             match partial {
-                Ok(partial) => Some(Outcome::Partial(partial)),
+                Ok(partial) => Some(Outcome::Partial(partial, cost)),
                 Err(error) => failed(&mut *slot, error.0),
             }
         }

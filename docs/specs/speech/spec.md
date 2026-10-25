@@ -139,16 +139,21 @@ default, never a constant (the owner's rule).
 | `speech.pinned_weights` | `false` (memory-mapped file) | Q31 | 01 |
 | `speech.idle_unload` | 300 s without a transcription, `model.idle_unload`'s default | Q53 | 01 |
 | `speech.partial_interval_ms` | 2000 | Q37 | 01, 03 |
+| `speech.partial_cost_factor` | 1: the next refresh waits at least this many times the last one's compute time; 2 and 3 measured no faster (spec 03, As built) | Q76 | 03 |
 | `speech.rollback_tokens` | 10 (Q75; the official package's `unfixed_token_num` is 5) | Q37 | 01 |
 | `speech.unfixed_partials` | 2 (the official package's `unfixed_chunk_num`): the first partials fix nothing. A field since the integration fixes, read with `rollback_tokens` when a session opens | #351 | 01, 03 |
 | `speech.max_sessions` | 4 open Realtime sessions | Q44 | 02, 03 |
 | `speech.max_queue` | 4 waiting batch requests | Q44 | 02 |
 | `speech.vad_threshold`, `speech.vad_prefix_padding_ms`, `speech.vad_silence_duration_ms` | 0.5, 300, 500 | Q22 | 05 |
+| `speech.vad_leading_silence_ms` | 500: the digital silence the model reads before each `server_vad` item, never shown to the client (AC 7 met with it: 4.68% against the manual commit's 4.03%; 7.58% without) | Q77 | 05 |
 | `speech.loan_grace_seconds` | 30 | Q32 | 06 |
 | `speech.loan_wait_seconds` | 5 | Q35 ("a short wait") | 06 |
 
 Every field name above, and every default no Q gave, is the owner's
-(2026-10-24).
+(2026-10-24), but `speech.partial_cost_factor` and
+`speech.vad_leading_silence_ms`: the owner made them fields with defaults
+chosen from measurement (Q76, Q77, 2026-10-25), and the names are the build's,
+in the group's style.
 
 ## Requirements (Q28, Q34)
 
@@ -171,11 +176,16 @@ Every field name above, and every default no Q gave, is the owner's
   built; spec 03's concern).
 - **Live dictation's commit is slower than the 2 s target** (spec 03, AC 13,
   measured through the real Realtime route on a 67 s Italian dictation at
-  `speech.threads: auto`, the default 2000 ms refresh): 6.7 s from the commit
-  to `completed` on the i9 and 11.8 s on the 4-core container. The partials
-  leave the worker no slack, so the stable text lags and the commit decodes the
-  lag; the executor alone commits in 1.6 s. Not met; the levers are in spec 03,
-  As built.
+  `speech.threads: auto` and the default refresh): 2.4-4.4 s from the commit
+  to `completed` on the i9 (two runs at each `speech.partial_cost_factor`, 1 to
+  3; the eleven dictations' median 1.7-2.2 s, 3.2 s in the one run on a
+  slower machine) and 5.8-6.1 s on the 4-core container at factor 1 (median
+  3.8 s over the eleven). The executor's own commit takes 1.9-2.5 s on the i9
+  and about 4 s on the container; the rest is the wait for a refresh in flight.
+  No factor measured better than 1 (Q76), so 1 is the default. A slower or
+  busier machine adds more: the first measurement, on a machine whose window
+  pushes took about 60% longer, gave 6.7 s and 11.8 s. Not met; the levers
+  left are in spec 03, As built.
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
   model is in use, KV at a 4,096-token context included. Nothing once
   `speech.idle_unload` has unloaded it (Q53).

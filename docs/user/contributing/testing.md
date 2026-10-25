@@ -71,7 +71,9 @@ The fixtures and their bounds are recorded by `tools/speech-oracle/record.py`
 `server_vad`'s voice activity detection has its own: the default suite checks
 the port against Silero's recorded probabilities on the fixture clip, and the
 `--ignored` legs check the FLEURS clips and the dictations and run the
-`server_vad` WER gate on the dictations, which is CPU-heavy and runs alone.
+`server_vad` WER gate on the dictations, which is CPU-heavy and runs alone
+(`IGNIS_SPEECH_LEAD_MS=0,500,1000,1500` adds arms of other leading silences, each
+reported).
 Its records come from `tools/speech-vad/record.py`
 ([spec speech/05](../../specs/speech/05-server-vad.md)):
 

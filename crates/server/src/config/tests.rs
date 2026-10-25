@@ -2738,6 +2738,7 @@ fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
         ("pinned_weights", "true", "false", "true"),
         ("idle_unload", "0", "60", "120"),
         ("partial_interval_ms", "500", "1000", "3000"),
+        ("partial_cost_factor", "5", "6", "7"),
         ("rollback_tokens", "2", "3", "8"),
         ("unfixed_partials", "1", "3", "4"),
         ("max_sessions", "1", "2", "8"),
@@ -2745,6 +2746,7 @@ fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
         ("vad_threshold", "0.25", "0.75", "1"),
         ("vad_prefix_padding_ms", "100", "200", "400"),
         ("vad_silence_duration_ms", "100", "200", "800"),
+        ("vad_leading_silence_ms", "250", "750", "1500"),
         ("loan_grace_seconds", "10", "20", "40"),
         ("loan_wait_seconds", "1", "2", "9"),
     ];
@@ -2771,7 +2773,8 @@ fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
 
 /// The defaults are the table's: `auto`, the five compat names, `auto`
 /// threads, 1200 s, 512 tokens, mapped weights, 300 s idle, 2000 ms, 10, 2, 4 and
-/// 4, the VAD's 0.5, 300 and 500, the loan's 30 and 5.
+/// 4, a refresh cost factor of 1, the VAD's 0.5, 300, 500 and 500 ms of leading
+/// silence, the loan's 30 and 5.
 #[test]
 fn the_speech_defaults_are_the_specs() {
     let speech = config(&[]).settings().speech.clone();
@@ -2780,7 +2783,8 @@ fn the_speech_defaults_are_the_specs() {
     assert_eq!(speech.threads, None);
     assert_eq!((speech.max_clip_seconds, speech.context_max_tokens, speech.pinned_weights, speech.idle_unload), (1200, 512, false, 300));
     assert_eq!((speech.partial_interval_ms, speech.rollback_tokens, speech.unfixed_partials, speech.max_sessions, speech.max_queue), (2000, 10, 2, 4, 4));
-    assert_eq!((speech.vad_threshold, speech.vad_prefix_padding_ms, speech.vad_silence_duration_ms), (500, 300, 500));
+    assert_eq!(speech.partial_cost_factor, 1);
+    assert_eq!((speech.vad_threshold, speech.vad_prefix_padding_ms, speech.vad_silence_duration_ms, speech.vad_leading_silence_ms), (500, 300, 500, 500));
     assert_eq!((speech.loan_grace_seconds, speech.loan_wait_seconds), (30, 5));
     let shown = config(&[]).settings().render();
     assert_eq!(shown["speech"]["threads"], "auto");
@@ -2795,6 +2799,8 @@ fn a_speech_field_past_its_bounds_is_refused_naming_it() {
         ("max_clip_seconds", 1, 1200),
         ("context_max_tokens", 0, 4096),
         ("partial_interval_ms", 100, 60_000),
+        ("partial_cost_factor", 1, 16),
+        ("vad_leading_silence_ms", 0, 10_000),
         ("rollback_tokens", 0, 64),
         ("unfixed_partials", 0, 16),
         ("max_sessions", 1, 64),

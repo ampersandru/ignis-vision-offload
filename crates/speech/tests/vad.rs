@@ -14,7 +14,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::*;
-use ignis_speech::vad::{SpeechProbability, TurnEvent, TurnSettings, Turns, Vad, FRAME};
+use ignis_speech::vad::{leading_silence, SpeechProbability, TurnEvent, TurnSettings, Turns, Vad, DEFAULT_LEADING_SILENCE_MS, FRAME};
 use ignis_speech::{Executor, Features, Settings, Threads};
 
 fn vad_fixtures() -> PathBuf {
@@ -135,8 +135,9 @@ impl Item {
 
 /// The dictation as `server_vad` cuts it at its defaults (0.5, 300 ms, 500 ms), fed 100 ms at a
 /// time and followed by a second of silence, as an open microphone goes on after the last
-/// word: each item's transcript, in order.
-fn by_server_vad(exec: &Executor, audio: &[f32]) -> Vec<String> {
+/// word, each item fed to the model after `lead`, as the server feeds it
+/// (`speech.vad_leading_silence_ms`): each item's transcript, in order.
+fn by_server_vad(exec: &Executor, audio: &[f32], lead: &[f32]) -> Vec<String> {
     let settings = TurnSettings { threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500, idle_timeout_ms: None };
     let mut turns = Turns::new(Vad::new(), settings, 0);
     let (mut item, mut texts, mut events) = (None, Vec::new(), Vec::new());
@@ -146,7 +147,11 @@ fn by_server_vad(exec: &Executor, audio: &[f32]) -> Vec<String> {
         turns.push(chunk, &mut events);
         for event in events.drain(..) {
             match event {
-                TurnEvent::Started { .. } => item = Some(Item::open(exec)),
+                TurnEvent::Started { .. } => {
+                    let mut opened = Item::open(exec);
+                    opened.push(lead);
+                    item = Some(opened);
+                }
                 TurnEvent::Audio(samples) => item.as_mut().expect("audio inside a turn").push(&samples),
                 TurnEvent::Stopped { .. } => texts.push(item.take().expect("a turn to stop").commit()),
                 TurnEvent::TimedOut { .. } => unreachable!("no idle timeout"),
@@ -160,14 +165,26 @@ fn by_server_vad(exec: &Executor, audio: &[f32]) -> Vec<String> {
     texts
 }
 
+/// The leading silences to measure, in milliseconds: `IGNIS_SPEECH_LEAD_MS` (`0,500,1000,1500`), and
+/// always the default, `speech.vad_leading_silence_ms`'s, which the criterion is asserted on.
+fn lead_arms() -> Vec<u32> {
+    let asked = std::env::var("IGNIS_SPEECH_LEAD_MS").unwrap_or_default();
+    let mut arms: Vec<u32> =
+        asked.split(',').map(str::trim).filter(|arm| !arm.is_empty()).map(|arm| arm.parse().expect("IGNIS_SPEECH_LEAD_MS: milliseconds, comma-separated")).collect();
+    if !arms.contains(&DEFAULT_LEADING_SILENCE_MS) {
+        arms.push(DEFAULT_LEADING_SILENCE_MS);
+    }
+    arms
+}
+
 /// Acceptance 7: on each of the owner's dictations, the items `server_vad` commits, joined, have
 /// a pooled WER at most 1 pt worse than a manual commit of the whole dictation through the same
-/// incremental path (spec 03's), on the default variant (`qwen3-asr-1.7b`).
+/// incremental path (spec 03's), on the default variant (`qwen3-asr-1.7b`), each item fed after
+/// the server's leading silence.
 ///
-/// **It fails as built** (spec 05, As built): 7.58% against 4.03% on the i9, 2026-10-24. The
-/// whole dictation as one item from where `server_vad`'s first item starts, its leading silence
-/// trimmed to the padding, scores the same 7.58% pooled: trimming the leading silence alone costs
-/// as much as the whole gap. The leg asserts the criterion as written, for the owner's decision.
+/// On the i9, 2026-10-25 (spec 05, As built): manual commit 4.03%; `server_vad` 7.58% with no
+/// leading silence (the criterion failed), 4.68% with 500 ms (the default), 5.00% with 1000 ms,
+/// 4.68% with 1500 ms.
 #[test]
 #[ignore]
 fn server_vad_items_joined_are_within_a_point_of_a_manual_commit() {
@@ -176,27 +193,29 @@ fn server_vad_items_joined_are_within_a_point_of_a_manual_commit() {
     let threads = Threads::Auto.resolve().0;
     let exec = Executor::new(Settings { threads: Threads::Count(threads), ..Settings::default() }, v.files(), Features::detect());
     let d = study().join("dictations");
-    let (mut manual, mut vad) = (Vec::new(), Vec::new());
+    let arms = lead_arms();
+    let (mut manual, mut vad) = (Vec::new(), vec![Vec::new(); arms.len()]);
     for i in 1..=11 {
         let id = format!("d{i:02}");
         let reference = norm_dictation(&std::fs::read_to_string(d.join(format!("{id}.txt"))).unwrap());
         let audio = read_wav(&d.join("16k").join(format!("{id}.wav")));
         let mut whole = Item::open(&exec);
         whole.push(&audio);
-        let whole = whole.commit();
-        let items = by_server_vad(&exec, &audio);
-        let (m, s) = (norm_dictation(&whole), norm_dictation(&items.join(" ")));
-        println!(
-            "{id}: {} items, manual {} edits, server_vad {} edits, of {} words",
-            items.len(),
-            edits(&reference, &m),
-            edits(&reference, &s),
-            reference.len()
-        );
-        manual.push((reference.clone(), m));
-        vad.push((reference, s));
+        let m = norm_dictation(&whole.commit());
+        let mut line = format!("{id}: of {} words, manual {} edits", reference.len(), edits(&reference, &m));
+        for (&arm, pairs) in arms.iter().zip(&mut vad) {
+            let items = by_server_vad(&exec, &audio, &leading_silence(arm));
+            let s = norm_dictation(&items.join(" "));
+            line += &format!("; lead {arm} ms: {} items, {} edits", items.len(), edits(&reference, &s));
+            pairs.push((reference.clone(), s));
+        }
+        println!("{line}");
+        manual.push((reference, m));
     }
-    let (m, s) = (pooled_wer(&manual), pooled_wer(&vad));
-    println!("{}: pooled WER manual commit {:.2}%, server_vad {:.2}%", v.id, 100.0 * m, 100.0 * s);
+    let m = pooled_wer(&manual);
+    for (arm, pairs) in arms.iter().zip(&vad) {
+        println!("{}: pooled WER manual commit {:.2}%, server_vad with {arm} ms of leading silence {:.2}%", v.id, 100.0 * m, 100.0 * pooled_wer(pairs));
+    }
+    let s = pooled_wer(&vad[arms.iter().position(|&arm| arm == DEFAULT_LEADING_SILENCE_MS).unwrap()]);
     assert!(s <= m + 0.01, "server_vad's items joined are {:.2} pt worse than a manual commit", 100.0 * (s - m));
 }

@@ -1289,7 +1289,21 @@ Seconds with no transcription, and no Realtime session open, after which the spe
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-How often at most a Realtime session's live transcript is refreshed while audio arrives, in milliseconds: each refresh sends the new stable text, and the provisional tail to a session that opted in. Best effort: a refresh is skipped while the session's windows are still being computed. Read by every open session at its next refresh.
+How often at most a Realtime session's live transcript is refreshed while audio arrives, in milliseconds: each refresh sends the new stable text, and the provisional tail to a session that opted in. Best effort: a refresh is skipped while the session's windows are still being computed, and waits longer after a costly one (`speech.partial_cost_factor`). Read by every open session at its next refresh.
+
+### `speech.partial_cost_factor`
+
+| | |
+|---|---|
+| Flag | `--speech-partial-cost-factor` |
+| Env var | `IGNIS_SPEECH_PARTIAL_COST_FACTOR` |
+| Kind | `times` |
+| Default | `1` |
+| Rule | 1..=16 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How long a Realtime session's next refresh waits at least, as a multiple of the compute time of its last one, from when that one was queued; never less than `speech.partial_interval_ms`. Each refresh decodes the item so far again, so it costs more as the item grows: the refreshes then take at most about one part in this many of the speech worker. 1 waits only for the last refresh to finish; 2 and 3 measured no faster commits on a 10-core or a 4-core CPU. Read by every open session at its next refresh.
 
 ### `speech.rollback_tokens`
 
@@ -1387,6 +1401,20 @@ The audio from before the speech that a `server_vad` item keeps, in milliseconds
 | `/v1/config` | shown by `GET`, patchable live |
 
 The silence after the speech at which `server_vad` commits the item, in milliseconds: the default of its `silence_duration_ms`. Read when a session opens.
+
+### `speech.vad_leading_silence_ms`
+
+| | |
+|---|---|
+| Flag | `--speech-vad-leading-silence-ms` |
+| Env var | `IGNIS_SPEECH_VAD_LEADING_SILENCE_MS` |
+| Kind | `ms` |
+| Default | `500` |
+| Rule | 0..=10000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The digital silence put before each `server_vad` item's audio when it is fed to the speech model, in milliseconds: the model's transcript depends on the audio before the speech, and an item starts only its prefix padding before it. No event and no `usage` counts it; it counts toward `speech.max_clip_seconds`, as the model reads it. A manual commit's item gets none. Read at each item's start.
 
 ### `speech.loan_grace_seconds`
 

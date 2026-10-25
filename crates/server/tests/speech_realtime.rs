@@ -298,6 +298,68 @@ async fn refreshes_are_skipped_while_the_worker_is_behind() {
     assert_eq!(deltas, of(&events, COMPLETED)[0]["transcript"].as_str().unwrap());
 }
 
+/// Q76: after a refresh the next waits `speech.partial_cost_factor` times its
+/// compute time, from when it was queued, beyond `speech.partial_interval_ms`.
+/// Audio arrives all along and never fills a window, so every unit is a
+/// refresh, and each takes at least 200 ms on the worker (a 100 ms push of
+/// the audio so far, a 100 ms partial). At factor 3 every refresh begins at
+/// least 600 ms after the one before, though the 100 ms interval and the free
+/// worker would allow one as soon as the last ends; at factor 1, the rule
+/// before Q76, one follows as soon as the last ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_waits_the_factor_times_the_last_ones_compute_time() {
+    let mut gaps = Vec::new();
+    for factor in [3, 1] {
+        let executor = saying(&["uno", "due"]);
+        executor.set_step_delay(Duration::from_millis(100));
+        let (live, _server, _dir) = served(&executor, |group| group.partial_cost_factor = factor).await;
+        let mut socket = session_16k(&live).await;
+        // Three seconds, 100 ms at a time.
+        for _ in 0..30 {
+            send(&mut socket, append(1_600)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let began = executor.partials_at();
+        assert!(began.len() >= 3, "factor {factor}: {} refreshes", began.len());
+        gaps.push(began.windows(2).map(|pair| pair[1] - pair[0]).collect::<Vec<_>>());
+    }
+    let (held, before) = (&gaps[0], &gaps[1]);
+    // 3 × 200 ms, less the scheduling slack between two partials' starts.
+    let bound = Duration::from_millis(550);
+    assert!(held.iter().all(|gap| *gap >= bound), "a refresh began sooner than 3 times the last one's compute time: {held:?}");
+    assert!(before.iter().any(|gap| *gap < bound), "at factor 1 a refresh follows the last at once: {before:?}");
+}
+
+/// Q76: the hold is the session's, not the item's. A refresh of the first
+/// item takes at least 400 ms (a 200 ms push, a 200 ms partial); the item is
+/// committed after it ends and the next item's audio starts at once, so its
+/// first refresh would fall due an interval (100 ms) on, once the commit is
+/// out of the worker. At factor 3 it waits for the hold the first item's
+/// refresh set: it begins at least 1.2 s after that one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hold_of_a_refresh_carries_into_the_next_item() {
+    let executor = saying(&["uno", "due"]);
+    executor.set_step_delay(Duration::from_millis(200));
+    let (live, _server, _dir) = served(&executor, |group| group.partial_cost_factor = 3).await;
+    let mut socket = session_16k(&live).await;
+    send(&mut socket, append(1_600)).await;
+    until_true("the first item's refresh", || !executor.partials_at().is_empty()).await;
+    // Its partial is running: past its end before the commit.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    send(&mut socket, commit()).await;
+    for _ in 0..20 {
+        send(&mut socket, append(1_600)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let partials: Vec<String> = executor.calls().into_iter().filter(|call| call.starts_with("partial")).collect();
+    let next = partials.iter().position(|call| call == "partial 1").expect("the next item refreshed");
+    assert_eq!(partials[..next], ["partial 0"], "{partials:?}");
+    let began = executor.partials_at();
+    // 3 × 400 ms, less the scheduling slack between two partials' starts.
+    let gap = began[next] - began[0];
+    assert!(gap >= Duration::from_millis(1_150), "the next item's first refresh began {gap:?} after the last one's");
+}
+
 // ── AC 7: usage and failures ────────────────────────────────────────────────
 
 /// AC 7: an item over `speech.max_clip_seconds` gets an `error` naming the

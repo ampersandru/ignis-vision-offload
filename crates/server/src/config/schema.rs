@@ -712,9 +712,19 @@ config_group! {
         /// refreshed while audio arrives, in milliseconds: each refresh sends
         /// the new stable text, and the provisional tail to a session that
         /// opted in. Best effort: a refresh is skipped while the session's
-        /// windows are still being computed. Read by every open session at
+        /// windows are still being computed, and waits longer after a costly
+        /// one (`speech.partial_cost_factor`). Read by every open session at
         /// its next refresh.
         partial_interval_ms: Millis = 2000, between(100, 60_000), ALL, [Visible, Patchable];
+        /// How long a Realtime session's next refresh waits at least, as a
+        /// multiple of the compute time of its last one, from when that one
+        /// was queued; never less than `speech.partial_interval_ms`. Each
+        /// refresh decodes the item so far again, so it costs more as the
+        /// item grows: the refreshes then take at most about one part in this
+        /// many of the speech worker. 1 waits only for the last refresh to
+        /// finish; 2 and 3 measured no faster commits on a 10-core or a
+        /// 4-core CPU. Read by every open session at its next refresh.
+        partial_cost_factor: Times = 1, between(1, 16), ALL, [Visible, Patchable];
         /// The tokens of a live transcript held back as provisional, the rest
         /// being stable: the tail a Realtime session that asks for it gets.
         /// Read by the speech executor when a session opens, so a change holds
@@ -746,6 +756,14 @@ config_group! {
         /// item, in milliseconds: the default of its `silence_duration_ms`.
         /// Read when a session opens.
         vad_silence_duration_ms: Millis = 500, between(0, 60_000), ALL, [Visible, Patchable];
+        /// The digital silence put before each `server_vad` item's audio
+        /// when it is fed to the speech model, in milliseconds: the model's
+        /// transcript depends on the audio before the speech, and an item
+        /// starts only its prefix padding before it. No event and no `usage`
+        /// counts it; it counts toward `speech.max_clip_seconds`, as the model
+        /// reads it. A manual commit's item gets none. Read at each item's
+        /// start.
+        vad_leading_silence_ms: Millis = ignis_speech::vad::DEFAULT_LEADING_SILENCE_MS, between(0, 10_000), ALL, [Visible, Patchable];
         /// How long a loan of free KV pages to the speech model outlives its
         /// transcription, in seconds (spec speech/06), not served yet.
         loan_grace_seconds: Secs = 30, between(0, 3600), ALL, [Visible, Patchable];
