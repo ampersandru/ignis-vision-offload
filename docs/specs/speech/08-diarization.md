@@ -157,8 +157,9 @@ Every field is declared once (ADR 0046), patchable live where the group's fields
 
 ## Acceptance
 
-1. The diarizer runs in Rust on the CPU. Teacher-forced on the same audio, its per-frame speaker probabilities match
-   the checkpoint's Transformers code in FP32 within a bound fixed before the run, recorded as AC 1 of spec 05 was:
+1. The diarizer runs in Rust on the CPU. Fed the same audio chunk by chunk, with the same streaming state, its
+   per-frame speaker probabilities match the checkpoint's Transformers code in FP32 within a bound fixed before the
+   run, recorded as AC 1 of spec 05 was:
    a multiple of the reference's own distance from fp64, with a negative control past it. The streaming state
    (speaker cache, compression, FIFO) is in the comparison. Its provenance is in its header and in `NOTICE`
    (Q114, Q104).
