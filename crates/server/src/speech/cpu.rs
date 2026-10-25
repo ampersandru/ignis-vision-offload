@@ -160,6 +160,14 @@ fn commit(mut s: Box<dyn SpeechSession>) -> Result<Transcript, SpeechError> {
     }
 }
 
+// Declared here, outside the inline `tests` block, so the path is relative to
+// this file's directory: inside an inline module it would go through
+// `cpu/tests/`, which Linux cannot resolve because it does not exist.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../speech/tests/common/synthetic.rs"]
+mod synthetic;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,9 +232,7 @@ mod tests {
         assert!(!e.is_loaded());
     }
 
-    #[allow(dead_code)]
-    #[path = "../../../../../speech/tests/common/synthetic.rs"]
-    mod synthetic;
+    use super::synthetic;
 
     /// Q79: the adapter hands the server's stop to the crate's session. On the crate's synthetic
     /// pair (its encoder under the fixed `mmproj-` name), a refresh whose stop says so answers
