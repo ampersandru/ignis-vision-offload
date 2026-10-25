@@ -10,7 +10,7 @@ Each kind of record has one home, and nothing is said twice.
 | What | Where |
 |---|---|
 | Status, blocking, labels, closure | the [GitHub issue](https://github.com/gpillon/ignis/issues) |
-| Acceptance criteria and the seam a change goes in | its spec, `docs/specs/<feature>/NN-name.md` |
+| A feature's spec, and the tickets that build it | the spec's GitHub issue and its sub-issues |
 | A decision hard to reverse, and its reasons | an ADR, `docs/adr/NNNN-title.md` |
 | A measured or researched result worth reusing | a finding, `docs/findings/` |
 | What a user can see and do | this guide, `docs/user/` |
@@ -18,9 +18,15 @@ Each kind of record has one home, and nothing is said twice.
 
 ## Issues
 
-Issues live only on GitHub, and an issue's body is short: a few lines of
-context, a link to its spec and the issues that block it. Five labels carry
-triage ([`docs/agents/triage-labels.md`](../../agents/triage-labels.md)):
+Issues live only on GitHub. A feature's spec is an issue, and the tickets
+that build it are its sub-issues, each with its acceptance criteria and with
+the tickets that block it as GitHub's own blocking links
+([`docs/agents/issue-tracker.md`](../../agents/issue-tracker.md)). An issue
+opened before 2026-10-25 has a short body instead, which links its spec: a
+file under `docs/specs/`, kept as it was and no longer added to.
+
+Each triaged issue carries `bug` or `enhancement`, and one of five state
+labels ([`docs/agents/triage-labels.md`](../../agents/triage-labels.md)):
 
 - `needs-triage`: a maintainer has to evaluate it;
 - `needs-info`: waiting on the reporter;
@@ -34,8 +40,9 @@ file of a server `make start` launched is under `.scratch/serve/`.
 
 ## Specs, ADRs and findings
 
-- **A spec** holds a work item's acceptance criteria, numbered, and the seam
-  the change goes in; the issue links it and does not repeat it
+- **A spec** is a GitHub issue: the problem, the solution, the user stories
+  and the implementation and testing decisions. Its tickets, the sub-issues,
+  carry the acceptance criteria
   ([`docs/agents/issue-tracker.md`](../../agents/issue-tracker.md)).
 - **An ADR** records a decision, the options it rejected and its consequences.
   It is written when the decision is taken, and amended rather than rewritten

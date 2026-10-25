@@ -12,7 +12,14 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
+
+## Category roles
+
+| Role          | Label in our tracker |
+| ------------- | -------------------- |
+| `bug`         | `bug`                |
+| `enhancement` | `enhancement`        |
 
 ## Repo-only labels
 
@@ -23,3 +30,10 @@ issue's other labels: neither replaces its state role or category.
 | ------- | -------- | ------- |
 | `idea`  | marker   | Parked: kept open, not specified, not scheduled. Add it to a proposal nobody will build soon, and keep the state role it has (often `ready-for-human`). When picked up, remove `idea` and take the issue into `/grill-with-docs`; close it with a link to the spec or tickets it became. |
 | `quick` | marker   | The owner's decision is fast and the work after it is small. It combines with any state and with `idea`. When showing what needs attention, list open `quick` issues as a fourth bucket. |
+
+## Other labels
+
+`Bucket 1`, `Bucket 2`, `dependencies`, `javascript`, `python`, `documentation`,
+`accessibility`, `good first issue`, `help wanted`, `question`, `duplicate` and
+`invalid` are not roles: triage leaves them as they are.
+

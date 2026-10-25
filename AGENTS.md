@@ -8,33 +8,25 @@ client to it) wants [the agent path](docs/user/paths/agent.md) instead.
 
 ### Issue tracker
 
-Issues live **exclusively on GitHub** (`gpillon/ignis`, via the `gh` CLI).
-GitHub is the single source of truth for issue tracking: status, blocking
-relationships, labels, and closure. Each GitHub issue body is short
-(1-3 lines of context) and links to the implementation spec.
+GitHub Issues on `gpillon/ignis`, through the `gh` CLI: a spec is an issue and
+its tickets are sub-issues with native blocking. See `docs/agents/issue-tracker.md`.
 
-Implementation specs (acceptance criteria, seam description, ADR references)
-live under `docs/specs/<feature>/` in this repo. These are **specs, not
-issues** — they do not track status or blocking (that is GitHub's job).
+### Triage labels
+
+The five canonical roles and the two categories as same-name labels, plus the
+repo's `idea` and `quick` markers. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+## Repo conventions
+
+### Scratch
 
 `.scratch/` is **not tracked by git**: it is the scratchpad for temporary
 artifacts, experiments, raw logs and workflow output, local to each clone.
 Nothing durable lives there, and it is never an issue tracker.
-
-See `docs/agents/issue-tracker.md` for the full convention.
-
-### Triage labels
-
-The five canonical triage roles, mapped 1:1 to same-name labels
-(`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`).
-See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context — root `GLOSSARY.md` for the glossary, `docs/adr/` for ADRs.
-See `docs/agents/domain.md`.
-
-## Repo conventions
 
 ### Findings
 
