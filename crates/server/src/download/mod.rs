@@ -19,8 +19,9 @@
 //!   catalog, an `exists` probe and whatever the operator answered; every
 //!   cell of spec 01's table is a unit test below;
 //! - [`bearer_token`] — which token a request carries: pure;
-//! - `transfer.rs` — the [`Downloader`], driven against loopback `axum`
-//!   servers (`tests/model_download.rs`);
+//! - `transfer.rs` — the [`Downloader`], and the [`Download`] it runs in the
+//!   background, driven against loopback `axum` servers
+//!   (`tests/model_download.rs`);
 //! - `command.rs` — `model download` and `model list`.
 
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ mod transfer;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
-pub use transfer::{DownloadError, Downloader, Report};
+pub use transfer::{Download, DownloadError, Downloader, Ended, Report};
 
 /// The host whose own credential `HF_TOKEN` is.
 const HUGGINGFACE_HOST: &str = "huggingface.co";
