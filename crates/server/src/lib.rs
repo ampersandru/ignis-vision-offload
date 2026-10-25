@@ -33,6 +33,7 @@ pub mod deadline;
 pub mod decide;
 pub mod decoder;
 pub mod download;
+pub mod download_http;
 pub mod engine;
 pub mod expose;
 pub mod idle;
@@ -159,6 +160,11 @@ pub struct Server {
     /// `POST /v1/audio/transcriptions`. Shared by every clone, like the active
     /// model; a model switch does not touch it.
     pub speech: std::sync::Arc<speech::Speech>,
+    /// What `POST /v1/models/download` fetches with, and the download it
+    /// runs (GitHub #376): shared by every clone, like the switcher. `None`
+    /// answers the route `501`: a server built in a test without one has no
+    /// endpoint to fetch from.
+    pub downloads: Option<std::sync::Arc<download_http::Downloads>>,
 }
 
 /// The server-level knobs a live config change may touch (spec config-v2/02
@@ -348,6 +354,7 @@ impl Server {
             config: None,
             image_decodes: std::sync::Arc::default(),
             speech: std::sync::Arc::default(),
+            downloads: None,
         }
     }
 
@@ -653,6 +660,14 @@ impl Server {
     /// options; tests install their own.
     pub fn with_switcher(mut self, switcher: model_switch::Switcher) -> Self {
         self.switcher = Some(std::sync::Arc::new(switcher));
+        self
+    }
+
+    /// Let `POST /v1/models/download` fetch the switcher's catalog entries
+    /// as `downloads` says (GitHub #376): `main` builds it from the running
+    /// configuration; tests build their own.
+    pub fn with_downloads(mut self, downloads: download_http::Downloads) -> Self {
+        self.downloads = Some(std::sync::Arc::new(downloads));
         self
     }
 

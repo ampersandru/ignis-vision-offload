@@ -123,6 +123,35 @@ describe("createServerSim", () => {
   });
 });
 
+describe("createServerSim: downloads (GitHub #376)", () => {
+  const rowOf = (sim: ReturnType<typeof createServerSim>, id: string, now: number) => (sim.catalog(now).data as CatalogRow[]).find((row) => row.id === id)!;
+
+  it("downloads in the background for about ten seconds, then the entry is on disk and switchable", () => {
+    const sim = createServerSim();
+    const accepted = sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T);
+    expect(accepted).toMatchObject({ status: 202, body: { status: "downloading", model: "qwen3.8-27b-abliterated", bytes: 19406984175, bytes_on_disk: 6442450944 } });
+    const halfway = rowOf(sim, "qwen3.8-27b-abliterated", T + 5_000);
+    expect(halfway).toMatchObject({ download: "running", on_disk: "partial", switchable: false });
+    expect(halfway.bytes_on_disk).toBeGreaterThan(6442450944);
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T + 5_000)).toMatchObject({ status: 409, body: { error: { code: "download_in_progress" } } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 10_000)).toMatchObject({ download: "none", on_disk: "complete", switchable: true, bytes_on_disk: 19406984175 });
+    expect((sim.models(T + 10_000).data as { id: string }[]).map((entry) => entry.id)).toContain("qwen3.8-27b-abliterated");
+    expect(sim.switchTo({ model: "qwen3.8-27b-abliterated" }, T + 10_000)).toMatchObject({ status: 202 });
+  });
+
+  it("fails an operator entry with a 401's reason, kept until its next download, and refuses what it cannot download", () => {
+    const sim = createServerSim();
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T)).toMatchObject({ status: 202 });
+    const failed = rowOf(sim, "qwen3.8-27b-custom", T + 1_000);
+    expect(failed).toMatchObject({ download: "failed", on_disk: "absent" });
+    expect(failed.download_reason).toContain("401 Unauthorized");
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T + 1_000)).toMatchObject({ status: 202 });
+    expect(rowOf(sim, "qwen3.8-27b-custom", T + 1_500)).toMatchObject({ download: "running" });
+    expect(sim.downloadModel({ model: "qwen3.8-flash-next" }, T + 2_000)).toMatchObject({ status: 409, body: { error: { code: "model_already_downloaded" } } });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-fail" }, T + 2_000)).toMatchObject({ status: 404, body: { error: { code: "model_not_found" } } });
+  });
+});
+
 describe("createServerSim: per-model values", () => {
   const model = (sim: ReturnType<typeof createServerSim>, now = T) => sim.config(now).body.model as Record<string, any>;
 

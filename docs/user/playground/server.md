@@ -26,8 +26,15 @@ much of it is on disk, and one action:
 - **Loaded** for the model that serves;
 - **Load** for one on disk: it switches to it by id (`POST /v1/models/switch`),
   whatever `switch.allow_implicit` says;
-- **Copy download command** for one not on disk, or only partly: it copies
-  `ignis-server model download <id>`. The page never downloads anything.
+- **Download** for a catalog entry not on disk, or only partly: the server
+  downloads it ([Downloading a model](#downloading-a-model));
+- **Downloading…** while its download runs;
+- **Not for this card** for an entry above the card's class
+  ([the catalog](../guides/models.md#the-catalog)), with the server's reason as
+  its tooltip: neither loaded nor downloaded;
+- **Copy download command** in place of **Download** when the server does not
+  download from the page (`download.enabled` or `download.from_ui` false): it
+  copies `ignis-server model download <id>`.
 
 During a switch the band says what is happening and for how long; afterwards
 it keeps the outcome: `Switched from … to …`, or why the switch was refused
@@ -38,6 +45,36 @@ reply streams, the band says how long a switch would let it finish
 (`switch.drain_timeout`) before cancelling it.
 
 ![A switch from the 27B to Flash-Next, under way](../images/playground/server-switching.png)
+
+## Downloading a model
+
+**Download** sends `POST /v1/models/download` with the entry's id, and the
+server fetches it into its own `download.path`, whatever machine the browser
+runs on, with the same transfer as `ignis-server model download`: each file
+resumed from its `.part`, checked against its pinned size and SHA-256
+([Get a model](../guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)).
+It runs in the background while the loaded model keeps serving. The row then
+reads `Downloading, <on disk> of <total>, <speed>/s`: the page reads
+`GET /v1/models/catalog` every second while a download runs, and the speed is
+the bytes landed between those reads. One download runs at a time, so every
+other **Download** is out of reach until it ends; so is every one during a
+switch, or while no model serves.
+
+Once every file verified, the row reads `On disk` and offers **Load**: the
+server never switches to a model by itself. A partly downloaded entry's
+**Download** resumes it. A download that fails keeps its reason under the row,
+`Download failed: …`, until the entry's next download or a restart; a gated
+repository fails naming the token the server reads from its environment
+(`IGNIS_DOWNLOAD_TOKEN`, or `HF_TOKEN` for huggingface.co). The page never asks
+for a token nor shows one. A refused **Download** (another one running, the
+entry already on disk, downloading turned off) shows the server's reason in the
+band.
+
+Downloading takes the same API key as **Apply**
+([ADR 0071](../../adr/0071-the-server-downloads-and-removes-models-from-the-server-view.md)).
+`download.from_ui` false turns it off for the page and the API, and
+`download.enabled` false keeps the server off the network altogether; both are
+shown read-only, `Set at start`, in the Download group.
 
 ## The configuration
 

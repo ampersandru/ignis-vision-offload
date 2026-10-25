@@ -6,6 +6,7 @@ import { changes, drainTimeout, familiesOf, needsReload, primaryLabel, waitingFo
 import { ModelBand } from "./ModelBand.tsx";
 import { drainNote, type Line } from "./outcome.ts";
 import { runningFamily } from "./band.ts";
+import { downloadsFromPage, runningDownload } from "./download.ts";
 import type { ServerActions, ServerState } from "./useServer.ts";
 
 // The Server view (spec playground/05, GitHub #316): the loaded model and the
@@ -28,7 +29,8 @@ export function ServerView({
   now: number;
 }) {
   const config = state.config.state === "ok" ? state.config.value : null;
-  const family = runningFamily(state.catalog.state === "ok" ? state.catalog.value : null);
+  const rows = state.catalog.state === "ok" ? state.catalog.value : null;
+  const family = runningFamily(rows);
   const drain = drainTimeout(config);
   const count = Object.keys(changes(state.draft)).length;
   const docked = Object.keys(state.draft).length > 0 || state.result !== null || state.pending !== null;
@@ -39,11 +41,15 @@ export function ServerView({
           model={model}
           catalog={state.catalog}
           loadingId={state.loadingId}
-          refusal={state.loadRefusal}
+          refusal={state.loadRefusal ?? state.downloadRefusal}
           streaming={streaming}
           drain={drain}
           now={now}
           onLoad={actions.load}
+          downloads={{ fromPage: downloadsFromPage(config), busy: state.downloadingId !== null || runningDownload(rows) !== null }}
+          downloadingId={state.downloadingId}
+          downloadSpeed={state.downloadSpeed}
+          onDownload={actions.download}
         />
         <ConfigForm
           fields={state.fields}

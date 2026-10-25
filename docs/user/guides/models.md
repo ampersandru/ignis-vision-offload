@@ -104,6 +104,62 @@ starts a download.
 
 A client configured with two known models reloads the server back and forth: opencode sends its `small_model` requests (titles, summaries) to the id named by `small_model`, so a `model` and a `small_model` naming different ignis ids switch the server on alternate requests, 13-33 s each. The same holds for a front end that picks its ids from `GET /v1/models`, which lists every servable model: Open WebUI's task model (titles, tags, follow-ups) or Hermes set to another listed id than the chat's does it too. Point both at the same id, or start with `--switch-allow-implicit false`. The Playground's chat and Decide never cause a switch: their requests name no model, so the server serves the one loaded, and the header and the context limit follow it, read again from `GET /v1/models` when a turn starts. The Playground switches only when asked to: **Load** on its Server view, **Generate** and **Edit** on its Image view with a text model loaded ([in the Playground](../api/images.md)), the chat's `make_image` tool (to the image model and back), and the chat's picker for the next message's model ([the Playground](../playground/index.md)); each of these switches with `POST /v1/models/switch` or by naming the image model, never by a chat request naming a model.
 
+## Downloading from the Server view: `POST /v1/models/download`
+
+A running server downloads a catalog entry itself, while it keeps serving:
+**Download** on the [Server view](../playground/server.md#downloading-a-model)'s
+row, or the same request from any client
+([ADR 0071](../../adr/0071-the-server-downloads-and-removes-models-from-the-server-view.md)):
+
+```
+curl -X POST http://127.0.0.1:8000/v1/models/download \
+  -H "Authorization: Bearer $IGNIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.8-flash-next"}'
+```
+
+It answers `202 {"status": "downloading", "model", "bytes", "bytes_on_disk"}`
+at once, and fetches every file of the entry into `--download-path` with the
+same transfer as `model download`: resumed from a `.part`, verified against the
+pins, small files first, the token sent to the endpoint only. Only a catalog
+entry is downloaded, the built-in ones and an operator catalog's alike, never
+an arbitrary repository, and the request carries no token: the server uses
+the one it read at start ([endpoint and token](#where-the-bytes-come-from-endpoint-and-token)).
+`GET /v1/models/catalog` follows it: the entry's row carries `download`
+(`running`, then `none`; `failed` with a `download_reason` when it failed) and
+`bytes_on_disk`, what of it is there, partial files included. Once every file
+verified, the row is `on_disk: complete` and `switchable`, `GET /v1/models`
+lists it, and `POST /v1/models/switch` loads it: the server never switches to
+it by itself, and a switch still never starts a download. A failed download's
+reason stays on the row, in memory, until the entry's next download or a
+restart; nothing about a download is written down, and nothing resumes by
+itself at the next start: a partial entry's next download resumes it.
+
+| Answer | When |
+|---|---|
+| `202` | The download began. |
+| `400` | `model` is empty. |
+| `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
+| `403 download_disabled` | `--download-enabled false` (the server never uses the network) or `--download-from-ui false`; the message names which. |
+| `404 model_not_found` | `model` is not a catalog entry. |
+| `409 download_in_progress` | A download already runs, named in the message: one at a time, never queued. |
+| `409 model_above_card_class` | The entry's `card_class` is above this card's. |
+| `409 model_already_downloaded` | Every file of it is already on disk. |
+| `503 model_switching` | A switch is under way; retry once it lands. |
+
+A failure is the transfer's own reason, as `model download` prints it. A
+gated repository's `401` or `403` names the token and where it is read from:
+`IGNIS_DOWNLOAD_TOKEN` (`download.token`), or `HF_TOKEN` when the endpoint is
+huggingface.co, set where the server starts; the token itself is never shown,
+logged or sent by the page. The log has the transfer's own
+`ignis.model.download_started`, `ignis.model.download_progress` and
+`ignis.model.downloaded` events, as a start's fetch logs them, and
+`ignis.model.download_failed` with the reason.
+
+`--download-from-ui false` (`download.from_ui`, on by default) turns this route
+off, so the Server view can be exposed without exposing downloads; `model
+download` on the server's machine still fetches. Neither switch can be changed
+by `PATCH /v1/config`.
+
 ## Letting the server fetch it
 
 A GPU build started **without** `--model-artifact` / `IGNIS_MODEL_ARTIFACT`

@@ -222,11 +222,16 @@ pub fn bearer_token(endpoint: &str, configured: Option<&ApiKey>, hf_token: Optio
         return Some(token.clone());
     }
     let hf_token = hf_token.map(str::trim).filter(|token| !token.is_empty())?;
-    let huggingface = reqwest::Url::parse(endpoint)
+    is_huggingface(endpoint).then(|| ApiKey::new(hf_token))
+}
+
+/// Whether `endpoint`'s host is `huggingface.co` itself, the one host
+/// `HF_TOKEN` is sent to ([`bearer_token`]).
+pub(crate) fn is_huggingface(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint)
         .ok()
         .and_then(|url| url.host_str().map(|host| host.eq_ignore_ascii_case(HUGGINGFACE_HOST)))
-        .unwrap_or(false);
-    huggingface.then(|| ApiKey::new(hf_token))
+        .unwrap_or(false)
 }
 
 /// Put the question to the operator on stderr and read the answer from stdin.

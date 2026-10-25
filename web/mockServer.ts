@@ -37,9 +37,16 @@ import type { CatalogRow, ConfigDocument, FieldDecl } from "./src/server/routes.
 // replaces a family's value that is not the operator's own, a `null` cannot
 // remove one, and a group-key value for a field only the other family takes
 // is refused, as the server refuses it.
+//
+// Downloads (GitHub #376): POST /v1/models/download runs for ten seconds, its
+// row's `bytes_on_disk` growing from what is on disk to the whole entry, one at
+// a time. An operator entry fails after a second with a 401's reason, as a
+// private repository does without its token.
 
 const SWITCH_MS = 3_000;
 const RESTORE_MS = 1_000;
+const DOWNLOAD_MS = 10_000;
+const REFUSED_MS = 1_000;
 const CONFIG_PATH = "ignis.yaml";
 const COUNTS = new Set(["tokens", "seconds", "slots", "percent", "lanes", "MiB", "rows", "tokens|off"]);
 
@@ -117,10 +124,37 @@ export function createServerSim() {
   let last: LastSwitch | undefined;
   // A switch that left nothing serving: `loaded` is then only the model torn down.
   let dead: { reason: string } | null = null;
+  // The download under way, the entries one fetched, and why an entry's last one failed.
+  let download: { id: string; from: number; total: number; since: number; until: number; fails: boolean } | null = null;
+  const landed = new Set<string>();
+  const failures = new Map<string, string>();
+  const onDisk = (row: CatalogRow) => row.on_disk === "complete" || landed.has(row.id);
 
   const familyOf = (id: string) => CATALOG.find((row) => row.id === id)?.family ?? "qwen38";
 
+  /** A row's download as the catalog reads it at `now`: running with its bytes, fetched, or failed with its reason. */
+  function downloadOf(row: CatalogRow, now: number): Partial<CatalogRow> {
+    if (download?.id === row.id) {
+      const done = download.fails ? 0 : Math.min(1, (now - download.since) / DOWNLOAD_MS);
+      return { download: "running", bytes_on_disk: Math.round(download.from + (download.total - download.from) * done) };
+    }
+    if (landed.has(row.id)) return { on_disk: "complete", bytes_on_disk: row.bytes };
+    const reason = failures.get(row.id);
+    return reason ? { download: "failed", download_reason: reason } : {};
+  }
+
   function advance(now: number) {
+    if (download && now >= download.until) {
+      const ended = download;
+      download = null;
+      if (!ended.fails) landed.add(ended.id);
+      else {
+        failures.set(
+          ended.id,
+          `GET https://huggingface.co/acme/${ended.id}/resolve/main/${ended.id}.ninfer: 401 Unauthorized: the endpoint wants a token and none was sent: set IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN for the server (read at its start) or for \`model download\``,
+        );
+      }
+    }
     if (running && now >= running.until) {
       const ended = running;
       running = null;
@@ -222,7 +256,7 @@ export function createServerSim() {
   // The servable rest of GET /v1/models (spec model-switch/03): every row on
   // disk but the loaded one, in catalog order.
   const servable = () =>
-    CATALOG.filter((row) => row.on_disk === "complete" && row.id !== loaded).map((row) => ({
+    CATALOG.filter((row) => onDisk(row) && row.id !== loaded).map((row) => ({
       id: row.id,
       object: "model",
       owned_by: "ignis",
@@ -278,7 +312,7 @@ export function createServerSim() {
         data: CATALOG.map((row) => {
           const isLoaded = !dead && row.id === loaded;
           // A switch can begin while serving or after a failed one, never during one.
-          return { ...row, loaded: isLoaded, switchable: !running && !isLoaded && row.on_disk === "complete" };
+          return { ...row, loaded: isLoaded, switchable: !running && !isLoaded && onDisk(row), ...downloadOf(row, now) };
         }),
       };
     },
@@ -332,7 +366,7 @@ export function createServerSim() {
       if (!row) {
         return refuse(404, "model_not_found", "model_not_found", `unknown model: ${id} is neither in switch.known_models nor a catalog entry; GET /v1/models/catalog lists the models this server can switch to`);
       }
-      if (row.on_disk !== "complete") {
+      if (!onDisk(row)) {
         return refuse(
           404,
           "model_not_found",
@@ -347,6 +381,31 @@ export function createServerSim() {
       running = { from: loaded, to: id, until: now + SWITCH_MS, failure: gone ? undefined : failure, dead: gone };
       restoring = null;
       return { status: 202, body: { status: "switching", from: loaded, to: id } };
+    },
+
+    /** POST /v1/models/download (GitHub #376): a catalog entry not on disk, in the background, one at a time. */
+    downloadModel(body: unknown, now: number): MockAnswer {
+      advance(now);
+      if (running) {
+        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
+      }
+      const id = isObject(body) && typeof body.model === "string" ? body.model.trim() : "";
+      if (!id) return refuse(400, "invalid_request_error", "invalid_request_error", "`model` must name the catalog entry to download");
+      const row = CATALOG.find((r) => r.id === id && r.source !== "known");
+      if (!row) {
+        return refuse(404, "model_not_found", "model_not_found", `unknown model: ${id} is not a catalog entry, and only catalog entries are downloaded; GET /v1/models/catalog lists them`);
+      }
+      if (onDisk(row)) {
+        return refuse(409, "invalid_request_error", "model_already_downloaded", `${id} is already on disk under download.path; POST /v1/models/switch with it loads it`);
+      }
+      if (download) {
+        return refuse(409, "invalid_request_error", "download_in_progress", `a download of ${download.id} is already running; downloads are one at a time, never queued`);
+      }
+      const fails = row.source === "operator";
+      const from = row.bytes_on_disk ?? 0;
+      failures.delete(id);
+      download = { id, from, total: row.bytes ?? 0, since: now, until: now + (fails ? REFUSED_MS : DOWNLOAD_MS), fails };
+      return { status: 202, body: { status: "downloading", model: id, bytes: row.bytes ?? 0, bytes_on_disk: from } };
     },
   };
 }

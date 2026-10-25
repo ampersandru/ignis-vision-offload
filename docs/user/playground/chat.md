@@ -202,8 +202,8 @@ Under the box, the picker names the model the **next message** goes to, and a
 chip beside it says what sending will do first: **Loaded**, **Loads when you
 send** (after an idle unload), or **Switches from … when you send**. The menu
 lists the text models the server knows, with their size and whether a message
-can go to them; one that is not on disk points at the Server view, where the
-download command is.
+can go to them; one that is not on disk points at the Server view, where it is
+downloaded.
 
 ![The model picker](../images/playground/model-picker.png)
 

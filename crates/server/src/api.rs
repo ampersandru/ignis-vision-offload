@@ -164,6 +164,8 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .routes(routes!(switch_model))
         // Spec playground/05: the models a switch can go to or fetch.
         .routes(routes!(crate::catalog_http::get_models_catalog))
+        // GitHub #376: download a catalog entry in the background.
+        .routes(routes!(crate::download_http::post_model_download))
         // Spec config-v2/02: the running configuration, read and changed.
         .routes(routes!(crate::config_http::get_config, crate::config_http::patch_config))
         // Spec playground/05: what each of those fields is, and where each
@@ -210,6 +212,7 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .route("/v1/models", options(cors_preflight))
         .route("/v1/models/switch", options(cors_preflight))
         .route("/v1/models/catalog", options(cors_preflight))
+        .route("/v1/models/download", options(cors_preflight))
         .route("/v1/config", options(cors_preflight))
         .route("/v1/config/fields", options(cors_preflight))
         .route("/v1/config/origins", options(cors_preflight))
@@ -3647,6 +3650,8 @@ mod tests {
             // They drive a switch or a reload, which holds the switch's slot.
             ("POST", "/v1/models/switch"),
             ("PATCH", "/v1/config"),
+            // A download fetches files beside the model (GitHub #376).
+            ("POST", "/v1/models/download"),
             // The Responses socket's upgrade: its jobs count, one by one.
             ("GET", "/v1/responses"),
             // The speech model runs beside the text model on the CPU, and a

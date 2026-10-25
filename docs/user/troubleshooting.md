@@ -146,6 +146,31 @@ missing, or an artifact that does not verify against its provenance sidecar
 (`.graft.json` or `.conversion.json`), refuses the start
 ([Get a model](guides/models.md)).
 
+### The Server view's Download is refused, or fails
+
+**Download** (`POST /v1/models/download`) answers with the server's reason,
+shown in the model band
+([Downloading from the Server view](guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)):
+
+- `403 download_disabled`: `--download-enabled false` or
+  `--download-from-ui false`, named in the message; the row then offers the
+  `model download` command to copy. Turn the field on and restart the server,
+  or run the command on the server's machine.
+- `409 download_in_progress`: one download runs at a time; its row shows its
+  progress. Download the next one once it ends.
+- `409 model_already_downloaded`: the entry is on disk; **Load** switches to it.
+- `409 model_above_card_class`: the card cannot load the entry (**Not for this
+  card**).
+
+A download that began and failed keeps its reason under its row,
+`Download failed: …`, until its next download or a restart. `GET …: 401
+Unauthorized: the endpoint wants a token and none was sent`, or `403 Forbidden:
+the endpoint refused the token sent`, is a gated or private repository: set
+`IGNIS_DOWNLOAD_TOKEN` (`download.token`), or `HF_TOKEN` for huggingface.co,
+where the server starts, restart it, and press **Download** again; the page
+never takes a token. Any other reason is the transfer's, as `model download`
+prints it, and the next **Download** resumes from what is on disk.
+
 ### `not enough RAM: the load holds … and keeps 4 GiB free for the system, so it needs … available`
 
 The host plan refused the load, before anything was pinned. Flash-Next needs

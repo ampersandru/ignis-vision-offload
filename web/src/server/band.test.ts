@@ -12,20 +12,49 @@ const ready: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786
 const switching: ModelState = { state: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next", since: 0 };
 
 describe("rowAction", () => {
-  it("is Loaded on the loaded row, Load where a switch can begin, and the download command where nothing is on disk", () => {
+  it("is Loaded on the loaded row, Load where a switch can begin, and Download where the entry is not wholly on disk", () => {
     expect(rowAction(row("qwen3.8-27b"), ready)).toEqual({ kind: "loaded" });
     expect(rowAction(row("qwen3.8-flash-next"), ready)).toEqual({ kind: "load", enabled: true });
-    expect(rowAction(row("qwen3.8-27b-abliterated"), ready)).toEqual({ kind: "download" });
-    expect(rowAction(row("qwen3.8-27b-custom"), ready)).toEqual({ kind: "download" });
+    expect(rowAction(row("qwen3.8-27b-abliterated"), ready)).toEqual({ kind: "download", enabled: true });
+    expect(rowAction(row("qwen3.8-27b-custom"), ready)).toEqual({ kind: "download", enabled: true });
   });
 
-  // ADR 0064: an entry above this card's class offers neither Load nor the
-  // download command, whatever is on disk; the server's reason is its tooltip.
+  // GitHub #376: one download at a time, followed on its row; where the
+  // server downloads nothing from the page, the row copies the command.
+  it("shows a running download on its row and keeps every other Download out of reach meanwhile", () => {
+    const busy = { fromPage: true, busy: true };
+    expect(rowAction({ ...row("qwen3.8-27b-abliterated"), download: "running" }, ready, busy)).toEqual({ kind: "downloading" });
+    expect(rowAction(row("qwen3.8-27b-custom"), ready, busy)).toEqual({ kind: "download", enabled: false });
+    expect(rowAction(row("qwen3.8-flash-next"), ready, busy)).toEqual({ kind: "load", enabled: true });
+  });
+
+  it("offers Download again after a failure, and none while no model serves or a switch runs", () => {
+    expect(rowAction({ ...row("qwen3.8-27b-custom"), download: "failed", download_reason: "401" }, ready)).toEqual({ kind: "download", enabled: true });
+    expect(rowAction(row("qwen3.8-27b-custom"), switching)).toEqual({ kind: "download", enabled: false });
+    expect(rowAction(row("qwen3.8-27b-custom"), { state: "error", message: "x", failed: true })).toEqual({ kind: "download", enabled: false });
+    expect(rowAction(row("qwen3.8-27b-custom"), { state: "unloaded", id: "qwen3.8-27b", contextLimit: null })).toEqual({ kind: "download", enabled: true });
+  });
+
+  it("copies the download command where download.enabled or download.from_ui is off", () => {
+    const off = { fromPage: false, busy: false };
+    expect(rowAction(row("qwen3.8-27b-custom"), ready, off)).toEqual({ kind: "copy" });
+    expect(rowAction(row("qwen3.8-27b-abliterated"), ready, off)).toEqual({ kind: "copy" });
+    expect(rowAction(row("qwen3.8-flash-next"), ready, off)).toEqual({ kind: "load", enabled: true });
+  });
+
+  it("switches to an entry its download just finished, and offers no Download for it", () => {
+    const landed = { ...row("qwen3.8-27b-custom"), on_disk: "complete" as const, switchable: true, download: "none" as const, bytes_on_disk: 19406949449 };
+    expect(rowAction(landed, ready)).toEqual({ kind: "load", enabled: true });
+  });
+
+  // ADR 0064: an entry above this card's class offers neither Load nor
+  // Download, whatever is on disk; the server's reason is its tooltip.
   it("offers nothing for an entry above the card's class, and gives the server's reason", () => {
     const reason = "qwen3.8-flash-next needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
     const above = { ...row("qwen3.8-flash-next"), switchable: false, available: false, reason };
     expect(rowAction(above, ready)).toEqual({ kind: "unavailable", reason });
     expect(rowAction({ ...above, on_disk: "absent" }, ready)).toEqual({ kind: "unavailable", reason });
+    expect(rowAction({ ...above, on_disk: "absent" }, ready, { fromPage: false, busy: false })).toEqual({ kind: "unavailable", reason });
     expect(rowAction({ ...above, loaded: true }, ready)).toEqual({ kind: "loaded" });
     expect(rowAction({ ...row("qwen3.8-flash-next"), available: true }, ready)).toEqual({ kind: "load", enabled: true });
   });
