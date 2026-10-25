@@ -25,7 +25,7 @@ pinned reference commit via the manifest script (spec: kernel policy).
 
 | # | Ticket | Blocked by | Delivers (verifiable) |
 |---|---|---|---|
-| P1-01 (#37) | Docs reset: ADR 0009 (step ABI), ADR 0010 (vendoring), revise ADR 0001, README / CONTEXT / design / PENDING status | — | Design record matches reality; no "code-complete" claims |
+| P1-01 (#37) | Docs reset: ADR 0009 (step ABI), ADR 0010 (vendoring), revise ADR 0001, README / CONTEXT / design / PENDING (deleted by #368) status | — | Design record matches reality; no "code-complete" claims |
 | P1-02 (#38) | GPU gate profile: explicit GPU test profile that fails (never skips) when the GPU is busy or a kernel errors; preflight script; runbook (stop ninfer → run → restart) | — | `cargo test` stays CPU-only; the GPU profile refuses to run while ninfer holds the GPU and fails on errors |
 | P1-03 (#39) | Contract: delete the superseded forward, toy graphs, host-pointer surfaces, scalar kernels, their GPU tests, the parked worktree | — | Workspace green on CPU with the mock; the artifact crate's VRAM materialization still works |
 | P1-04 (#40) | Canary oracle tooling: canary prompt set; recorder that queries the reference engine (exact argmax) over HTTP, tokenizes with the artifact tokenizer, writes the fixture; comparer (agreement %, first divergence); CPU tests on a mock | — | Fixture format + tools tested; recording itself is P1-05 |
