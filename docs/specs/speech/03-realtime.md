@@ -425,10 +425,16 @@ the spec left open, or differs from it:
   yields the unit (01, As built); a stopped partial truncates the cache to the
   audio prefix and counts as no partial, so `speech.unfixed_partials` still
   counts the refreshes that ran. A refresh queued and not begun when the
-  commit arrives stops at its first check. A stopped refresh answers nothing:
-  no event, and no Q76 hold, which stays the last finished refresh's. On the
-  scripted executor a commit during a 20 s refresh completes in well under
-  5 s, with one delta, the commit's (`speech_realtime.rs`). **Expected, an
+  commit arrives stops at its first check; one past its last check (the end
+  of its decode near) runs to its end and sends its text before the
+  commit's. A stopped refresh answers nothing: no event, and no Q76 hold,
+  which stays the last finished refresh's. On the scripted executor a commit
+  during a 20 s refresh completes in well under 5 s, with one delta, the
+  commit's (`speech_realtime.rs`). On the synthetic pairs a partial stopped at
+  any of its checks, the decode's yields included (a pair whose head has no
+  EOS decodes to the cache's end), leaves the commit's transcript the one with
+  no partial tried (`ignis-speech`'s `tests/executor.rs`; the adapter's in
+  `cpu.rs`). **Expected, an
   estimate from the parts already measured and not a measurement:** the
   executor's own commit (1.9-2.5 s on the i9, 3.9-4.2 s on the container)
   plus what a stopped refresh still runs to its next check, about 2-3 s from

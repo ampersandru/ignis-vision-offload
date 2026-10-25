@@ -145,6 +145,16 @@ fn byte_chars() -> Vec<String> {
 
 /// Writes the pair into a fresh directory named after `tag` and returns its files.
 pub fn pair(tag: &str) -> ModelFiles {
+    build(tag, false)
+}
+
+/// The pair with the head's EOS rows (`<|im_end|>`, `<|endoftext|>`) zero, so its decoder never
+/// stops by itself: a decode runs to the KV cache's end, through the yields of the compute unit.
+pub fn endless_pair(tag: &str) -> ModelFiles {
+    build(tag, true)
+}
+
+fn build(tag: &str, endless: bool) -> ModelFiles {
     let dir = std::env::temp_dir().join(format!("ignis-speech-synth-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut r = Rng(0x2545_F491_4F6C_DD1D);
@@ -167,6 +177,9 @@ pub fn pair(tag: &str) -> ModelFiles {
         for d in 1..HIDDEN {
             head[t * HIDDEN + d] = r.f();
         }
+    }
+    if endless {
+        head[..2 * HIDDEN].fill(0.0);
     }
     let ones = |n: usize| f32s(&vec![1.0; n]);
     let h = HIDDEN as u64;

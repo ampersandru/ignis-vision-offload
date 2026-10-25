@@ -276,11 +276,11 @@ impl Session {
         let dec = &loaded.model.decoder;
         let mut ids = self.prompt.tail.clone();
         ids.extend(&self.stable);
-        if !self.cache.reserve(self.cache.len + ids.len() + 1) {
-            return Err(SessionError::CacheFull);
-        }
         if stop() {
             return Ok(None);
+        }
+        if !self.cache.reserve(self.cache.len + ids.len() + 1) {
+            return Err(SessionError::CacheFull);
         }
         let mut unit = core.unit();
         let mut logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &ids), Logits::Last, None);
@@ -319,9 +319,9 @@ impl Session {
         (p.text, p.language)
     }
 
-    /// A partial's incomplete window: encoded and prefilled after the audio prefix. `false`
+    /// A partial's incomplete window: encoded and prefilled after the audio prefix. `None`
     /// when `stop` says so between the encode and the prefill (Q79).
-    fn prefill_incomplete(&mut self, stop: &dyn Fn() -> bool) -> bool {
+    fn prefill_incomplete(&mut self, stop: &dyn Fn() -> bool) -> Option<()> {
         let core = self.core.clone();
         let _unit = core.unit();
         let (tail, total) = self.tail_frames();
@@ -331,13 +331,13 @@ impl Session {
             let l = &self.loaded;
             let x = encode_window(&l.model.encoder, &l.pool, l.isa, &mel, total - first, None);
             if stop() {
-                return false;
+                return None;
             }
             if self.cache.reserve(self.cache.len + x.len() / l.model.decoder.hidden) {
                 decoder::forward(&l.model.decoder, &l.pool, l.isa, &mut self.cache, x, Logits::None, None);
             }
         }
-        true
+        Some(())
     }
 
     /// Re-encodes the incomplete window, decodes, and moves all but the last `rollback_tokens`
@@ -362,7 +362,10 @@ impl Session {
         if stop() {
             return Ok(None);
         }
-        let decoded = if self.prefill_incomplete(stop) { self.decode_after_audio(stop) } else { Ok(None) };
+        let decoded = match self.prefill_incomplete(stop) {
+            Some(()) => self.decode_after_audio(stop),
+            None => Ok(None),
+        };
         self.cache.truncate(self.audio_prefix);
         let Some(decoded) = decoded? else { return Ok(None) };
         self.since_partial = 0;

@@ -190,7 +190,8 @@ fn stop_after(points: usize) -> impl Fn() -> bool {
 fn a_stopped_partial_leaves_the_session_as_it_was() {
     let files = synthetic::pair("stopped");
     let audio = synthetic::audio(9.3);
-    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, ..settings() });
+    // A 20 s cache leaves room for about ten partials not rolled back (below).
+    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, max_clip_seconds: 20, ..settings() });
     let session = || {
         let mut s = e.open("", None).unwrap();
         s.push(&audio).unwrap();
@@ -218,13 +219,48 @@ fn a_stopped_partial_leaves_the_session_as_it_was() {
     assert_eq!(points, 4, "the points a partial checks before its decode's first step");
     // The synthetic decoder's token does not depend on what the cache holds, so one commit
     // cannot tell a cache left grown. A hundred partials stopped and not rolled back would fill
-    // it (each adds the incomplete window and the prompt's tail): the session takes them all.
+    // it about ten times over (each adds the incomplete window and the prompt's tail): the
+    // session takes them all.
     let mut s = session();
     for i in 0..100 {
         assert!(s.partial_unless(&stop_after(i % points)).unwrap().is_none());
     }
     assert_eq!(s.stats().partials, 0);
     assert_eq!(s.commit().unwrap(), untried, "a hundred stopped partials changed the transcript");
+}
+
+/// Q79: a partial's decode checks its stop where it yields the compute unit, every 16 steps.
+/// On the pair whose head has no EOS the decode runs to the KV cache's end, through many
+/// yields; a partial stopped at the first of them, or at the last, leaves the session as it
+/// was, as one stopped before the decode does.
+#[test]
+fn a_partial_stops_where_its_decode_yields() {
+    let files = synthetic::endless_pair("yields");
+    let audio = synthetic::audio(9.3);
+    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, max_clip_seconds: 20, ..settings() });
+    let session = || {
+        let mut s = e.open("", None).unwrap();
+        s.push(&audio).unwrap();
+        s
+    };
+    let untried = session().commit().unwrap();
+    assert!(untried.tokens.len() > 2 * 16, "the decode runs through yields: {} tokens", untried.tokens.len());
+    let polls = std::cell::Cell::new(0);
+    let counted = || {
+        polls.set(polls.get() + 1);
+        false
+    };
+    assert!(session().partial_unless(&counted).unwrap().is_some());
+    let checks = polls.get();
+    // Four before the decode's first step, then one at each yield.
+    assert!(checks > 6, "a decode through yields checks at each: {checks} checks");
+    for points in [4, checks - 1] {
+        let mut s = session();
+        let before = s.stats().clone();
+        assert!(s.partial_unless(&stop_after(points)).unwrap().is_none(), "not stopped after {points} checks");
+        assert_eq!(*s.stats(), before, "stopped after {points} checks: the partial counted");
+        assert_eq!(s.commit().unwrap(), untried, "stopped after {points} checks: the session changed");
+    }
 }
 
 /// The server passes `speech.context_max_tokens`, `speech.rollback_tokens` and
