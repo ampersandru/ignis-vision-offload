@@ -343,7 +343,7 @@ When output names a domain concept, use the term as defined here.
   **Last switch**.
   _Avoid_: borrow.
 
-## Speech model (specs `speech/01-06`, ADRs 0067-0068)
+## Speech model (specs `speech/01-08`, ADRs 0067-0069)
 
 - **Speech model** — a model that takes audio in and gives back its
   transcript; it never converses. The third **model kind**, beside the text
@@ -358,6 +358,24 @@ When output names a domain concept, use the term as defined here.
 - **Dictation** — the Playground act: the user speaks into a composer and the
   transcript lands at the cursor, editable, never sent by itself.
   _Avoid_: voice input
+- **Diarizer** — a model that tells the voices in audio apart and gives back
+  who spoke when; it never transcribes. The fourth **model kind**: Nemotron 3
+  Diarization, loaded beside the **speech model** and never resident in VRAM
+  (ADR 0069). No request names it.
+  _Avoid_: speaker model, voice model, diarization model
+- **Transcript** — the Playground's record of one conversation heard in its
+  Transcribe view: its **utterances** in order, each with its times, its
+  **speaker** and its text, and never its audio. Not a **dictation**: nothing
+  lands in a composer.
+  _Avoid_: conversation (the chat's), recording, meeting
+- **Utterance** — one stretch of a **transcript** spoken by one **speaker**,
+  from where speech is heard to the silence, the speaker change or the length
+  limit that ends it. A pause can split one speaker's turn into two.
+  _Avoid_: turn, segment (a **locate**'s), item (the Realtime protocol's)
+- **Speaker** — one voice the **diarizer** told apart in a **transcript**,
+  numbered in the order voices first spoke, and renamed by the user; on a call,
+  the microphone's voice is "Me".
+  _Avoid_: channel (the model's output slot), participant
 
 ## Weights & artifact
 
@@ -437,7 +455,8 @@ When output names a domain concept, use the term as defined here.
   takes text and images and gives back tokens, and converses (the 27B,
   Flash-Next); an **image model** takes a prompt and gives back pixels (the
   image model, ADR 0050); a **speech model** takes audio and gives back its
-  transcript, and never converses (ADR 0067). Above the model family: every
+  transcript, and never converses (ADR 0067); a **diarizer** takes audio and
+  gives back who spoke when, and never transcribes (ADR 0069). Above the model family: every
   family is of one kind. Engine, lane, sequence, KV and generation cap are
   text-model terms.
   _Avoid_: modality (the 27B already takes images in), pipeline

@@ -1,6 +1,7 @@
 # Speech recognition in ignis — the feature, its tickets, and how to run them
 
-GitHub: master #350; one ticket per spec, 01-06 = #351-#356.
+GitHub: master #350; one ticket per spec, 01-06 = #351-#356; 07 and 08, the
+Transcribe track, have a ticket each under #350.
 
 The feature-level document the speech tickets decompose
 (`docs/agents/issue-tracker.md`). Read this first, then the ticket's spec.
@@ -21,7 +22,11 @@ Surfaces:
   (Q2, Q23);
 - `wss://…/v1/realtime?intent=transcription`, the OpenAI Realtime GA
   transcription subset (Q20);
-- the Playground's **dictation**, always over Realtime (Q3, Q33).
+- the Playground's **dictation**, always over Realtime (Q3, Q33);
+- the Playground's **Transcribe** view: a whole conversation heard from the
+  microphone, a call or a file, written down utterance by utterance with its
+  **speakers**, which come from a **diarizer** beside the speech model
+  (specs 07-08, ADR 0069).
 
 **Decisions:**
 - [ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md):
@@ -48,6 +53,13 @@ Surfaces:
     names among them.
 - The evidence: [Qwen3-ASR on the CPU](../../findings/2026-10-24-qwen3-asr-on-cpu.md)
   and [Rust quantized matmul matches ggml on the CPU](../../findings/2026-10-24-rust-quantized-matmul-matches-ggml.md).
+- **The Transcribe track** (specs 07-08): the Transcribe grill of 2026-10-25,
+  Q81-Q118 in the same log, and the spike Q91 asked for, the finding
+  [Nemotron on the CPU](../../findings/2026-10-25-nemotron-on-the-cpu.md).
+  [ADR 0069](../../adr/0069-the-speakers-come-from-nemotron-diarization-beside-qwen3-asr.md):
+  the speakers come from Nemotron 3 Diarization beside Qwen3-ASR, ours in
+  Rust, never in VRAM. No mockup: the view is designed with the
+  `frontend-design` skill (Q103).
 
 ## The model
 
@@ -107,6 +119,10 @@ needs the owner's OK and a privacy scan at upload time (Q47).
 
 Q56 swapped phases 2 and 3: `server_vad` first, the loan last.
 
+**The Transcribe track** (07-08, 2026-10-25) is not a phase: it needs phase 2's
+`server_vad` and nothing of phase 3. The diarizer is CPU-only, and phase 3's
+loan does not cover it.
+
 Q34 makes the CPU go **only** through incremental Realtime transcription.
 Q33 puts the Playground on Realtime for push-to-talk too. So Realtime is on
 phase 1's critical path, and Q16's "batch first, live after" no longer
@@ -122,11 +138,14 @@ holds.
 | [04](04-playground.md) | dictation in chat, Decide and the image studio, from the Q17 mockup | 03 | its components, against a fake socket |
 | [05](05-server-vad.md) | phase 2: `server_vad` | 03 | the VAD port and its oracle |
 | [06](06-gpu-loan.md) | phase 3: the KV-page loan, the CUDA adapter, its kernels | 01-03 | the plan and the policy, on CPU tests |
+| [07](07-transcribe.md) | the Transcribe track: the Playground view (microphone, call, file; utterances, speakers and their corrections, the Transcript in the store, export, Open in chat). Web only | 05; 08 for real speakers, the cuts and the queue limit | yes, against a fake socket speaking 08's events |
+| [08](08-diarization.md) | the Transcribe track: the diarizer in Rust (Nemotron 3 Diarization), its catalog entry, the worker's rank, the geometries, the cut at a speaker change, the ghost rule, the length guard, the opt-in and the speaker event, the queue limit | 05 | yes, everything |
 
 **Order.** 01 and 02 start together; 02 is built against a fake executor,
 as image serving was against a fake leaf. 03 follows 02's speech slot. 04
 follows 03. Phase 1 closes with 03's latency criterion and 01's quality gate
-on the real executor. Then 05 (phase 2), then 06 (phase 3) (Q56).
+on the real executor. Then 05 (phase 2), then 06 (phase 3) (Q56). 07 and 08
+run in parallel once 05 is in, 07 against a fake socket as 04 was (Q115).
 
 ## Configuration: the `speech` group
 
@@ -152,12 +171,19 @@ default, never a constant (the owner's rule).
 | `speech.vad_leading_silence_ms` | 500: the digital silence the model reads before each `server_vad` item, never shown to the client (AC 7 met with it: 4.68% against the manual commit's 4.03%; 7.58% without) | Q77 | 05 |
 | `speech.loan_grace_seconds` | 30 | Q32 | 06 |
 | `speech.loan_wait_seconds` | 5 | Q35 ("a short wait") | 06 |
+| `speech.diarization_model` | `auto` (the catalog's diarizer entry); an id; or `off` | Q116, Q118 | 08 |
+| the diarizer's live and file geometries (5 fields each) | live 264 / 264 / 25 / 4 / 222, file 264 / 40 / 340 / 40 / 300 frames of 80 ms | Q106 | 08 |
+| `speech.diarization_min_speaker_seconds` | measured on the twenty conversations; `0` off | Q108, Q116 | 08 |
+| `speech.max_utterance_seconds` | 120, then 08's measurement; `0` off | Q117 | 08 |
+| `speech.utterance_cut_search_ms` | measured with 08's AC 12 | 08 | 08 |
+| `speech.max_queued_audio_seconds` | above 07's client pace of 60 s, measured | Q99 | 08 |
 
 Every field name above, and every default no Q gave, is the owner's
 (2026-10-24), but `speech.partial_cost_factor` and
 `speech.vad_leading_silence_ms`: the owner made them fields with defaults
 chosen from measurement (Q76, Q77, 2026-10-25), and the names are the build's,
-in the group's style.
+in the group's style. The Transcribe track's names come from its grill
+(2026-10-25), and the geometries' are the build's, in the group's style.
 
 ## Requirements (Q28, Q34)
 
@@ -202,6 +228,14 @@ in the group's style.
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
   model is in use, KV at a 4,096-token context included. Nothing once
   `speech.idle_unload` has unloaded it (Q53).
+- **The diarizer** (08; the finding
+  [Nemotron on the CPU](../../findings/2026-10-25-nemotron-on-the-cpu.md),
+  measured on NeMo-Speech.cpp Q8_0, before our port): at the live geometry
+  (2.32 s) it runs at 3.8x real time on 4 threads on the i9 and 3.3x on 3
+  threads in the 4-core container; at the card's low geometry (1.04 s), at
+  1.44x and 1.26x, half of the container. With speakers on, the partials of a
+  4-core machine come less often (Q113). About 0.2-0.4 GB more host RAM,
+  by its stored format. 08's AC 11 measures our port beside Qwen3-ASR.
 
 ## Existing artifacts the implementation must amend
 
@@ -269,8 +303,12 @@ Read at `711b1d85`; every line checked in this worktree.
   field, event or value is there for compatibility with OpenAI clients.
   What ignis adds carries ignis's names: the provisional tail's opt-in
   `session.ignis.provisional_tail` and its event
-  `ignis.input_audio_transcription.provisional` (03), the `ignis_` metrics
-  and the `ignis.` log events.
+  `ignis.input_audio_transcription.provisional` (03), the speakers' opt-in
+  `session.ignis.diarization` and their event
+  `ignis.input_audio_transcription.speaker`, the length guard's
+  `session.ignis.max_utterance_seconds`, the queue limit's error code
+  `ignis_audio_queue_full` (08), the `ignis_` metrics and the `ignis.` log
+  events.
 - **Privacy** (Q13): audio is never written to disk or to a log. A
   transcript follows the rule for prompt text (`docs/specs/logging/spec.md`
   §29: not logged by default).
