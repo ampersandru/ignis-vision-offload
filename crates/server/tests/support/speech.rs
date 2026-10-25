@@ -74,17 +74,20 @@ pub fn put_files(dir: &std::path::Path, id: &str) {
 /// A server over the mock text model with the speech model's files on disk
 /// and `executor` behind the route; `edit` changes the `speech.*` settings.
 pub fn server(executor: Arc<FakeExecutor>, edit: impl FnOnce(&mut SpeechGroup)) -> (Server, PathBuf) {
-    let dir = temp_dir("server");
-    put_files(&dir, SPEECH_MODEL);
     let scheduler = ConcreteScheduler::with_config(
         SchedulerConfig { model: TEXT_MODEL.into(), ..SchedulerConfig::default() },
         Arc::new(MockCompute::new()),
     );
+    server_on(Server::new(Engine::new(Box::new(scheduler)), Box::new(SimpleTemplateProvider)), executor, edit)
+}
+
+/// [`server`] over `base`, a server of the test's own (an image model loaded, say).
+pub fn server_on(base: Server, executor: Arc<FakeExecutor>, edit: impl FnOnce(&mut SpeechGroup)) -> (Server, PathBuf) {
+    let dir = temp_dir("server");
+    put_files(&dir, SPEECH_MODEL);
     let mut group = SpeechGroup::default();
     edit(&mut group);
-    let server = Server::new(Engine::new(Box::new(scheduler)), Box::new(SimpleTemplateProvider))
-        .with_speech(Arc::new(Speech::new(executor, Some(models(&dir)))))
-        .with_speech_group(group);
+    let server = base.with_speech(Arc::new(Speech::new(executor, Some(models(&dir))))).with_speech_group(group);
     (server, dir)
 }
 

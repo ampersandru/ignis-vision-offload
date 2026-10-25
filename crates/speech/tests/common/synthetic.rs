@@ -149,7 +149,9 @@ pub fn pair(tag: &str) -> ModelFiles {
 }
 
 /// The pair with the head's EOS rows (`<|im_end|>`, `<|endoftext|>`) zero, so its decoder never
-/// stops by itself: a decode runs to the KV cache's end, through the yields of the compute unit.
+/// stops by itself: a decode runs to the KV cache's end, through many units of the commit. After
+/// its first token every token is a space (`Ġ`, its row 5·e₀), so a refresh's stable text ends on
+/// a whole word wherever it is cut, and can take all the room the cache leaves it.
 pub fn endless_pair(tag: &str) -> ModelFiles {
     build(tag, true)
 }
@@ -180,6 +182,8 @@ fn build(tag: &str, endless: bool) -> ModelFiles {
     }
     if endless {
         head[..2 * HIDDEN].fill(0.0);
+        let space = tokens.iter().position(|t| t == "\u{120}").unwrap();
+        head[space * HIDDEN] = 5.0;
     }
     let ones = |n: usize| f32s(&vec![1.0; n]);
     let h = HIDDEN as u64;

@@ -266,9 +266,12 @@ decided something the spec left open, or differs from it:
   `is_loaded`. `Transcript` carries the model's label (`None` is `None`) and
   the decoded token ids, for `verbose_json`'s segment. The adapter to
   `ignis-speech` came with #351 (`crates/server/src/speech/cpu.rs`): `main`
-  wires it, a load builds the crate's executor from the entry's files with
-  the crate's idle unload off (the worker keeps the idle clock), and a CPU
-  without AVX2 reads "the CPU lacks AVX2, which the speech model needs".
+  wires it, a load builds the crate's executor from the entry's files (the
+  worker keeps the idle clock), and a CPU without AVX2 reads "the CPU lacks
+  AVX2, which the speech model needs". The scripted executor is test-only:
+  `cfg(test)` and the crate's `fake-speech` feature, which the integration
+  tests turn on through a dev-dependency on the crate itself; a shipped build
+  has none.
 - **The context cap lives in the executor** (it owns the tokenizer): the
   route passes the context and `speech.context_max_tokens` to `open`. AC 9 is
   tested up to that call.
@@ -333,6 +336,34 @@ decided something the spec left open, or differs from it:
   (`Speech::admit`) before it decodes the clip, so a request that finds it full
   is a `503 engine_full` and costs no decode; the submit checks again, as the
   room can go in between.
+- **The final review's fixes (2026-10-25).**
+  - **Units.** A batch job's commit is a unit a step (spec 01 As built), and
+    with `stream` a window's push and its refresh are two steps, so the
+    Realtime sessions get the worker between any two (AC 11, spec 01 AC 19;
+    `a_realtime_unit_runs_between_the_steps_of_a_batch_commit`).
+  - **`speech.idle_unload` is read live.** The slot holds the live value,
+    which every live change of the configuration writes (`Server::update_live`,
+    `apply_config`), and wakes the worker's idle clock under its lock: a
+    `PATCH` from 0 or 300 to 1 unloads an idle model a second after its last
+    use, nothing submitted since (`a_patch_of_the_idle_time_reaches_an_idle_model`).
+  - **"An id is that catalog entry", a speech one.** `speech.model` naming a
+    built-in entry of another kind or a model family's id is refused by the
+    config (at start and on a `PATCH`); one an operator catalog has as another
+    kind is refused at start, where `main` reads the catalog
+    (`ignis.config.speech_invalid`), and by a `PATCH`; and `resolve` answers it
+    unavailable, so it is never listed nor served as speech. The compat names
+    are checked the same way against the catalog in use, an operator's
+    entries and aliases among it.
+  - **One log line per transcription.** A failed one is the
+    `ignis.speech.transcription` line at WARN with `reason`, the executor's
+    words; `ignis.speech.failed` is gone. The idle unload writes
+    `ignis.speech.unloaded`, the one unload event (the crate's
+    `ignis.speech.unload` went with its watcher). Both are in the guide.
+  - **Constants that are not thresholds.** A refused session's `Retry-After`
+    is 1 s (`SESSION_RETRY_AFTER_SECS`): room frees when a person ends a
+    dictation, which no clip length estimates. The queue's estimate starts at
+    3 x real time (`ASSUMED_SPEED_MILLI`), a seed the first finished job
+    replaces. Neither is a limit an operator tunes, so neither is a field.
 - **Open:** AC 16 (the 5090's decode while a 60 s transcription runs) needs the
   real executor and the GPU: measurement deferred to #359 (owner,
   2026-10-25); AC 9's cap against the real tokenizer; Opus.

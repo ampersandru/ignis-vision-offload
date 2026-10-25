@@ -418,6 +418,9 @@ async fn a_window_appended_during_a_refresh_does_not_stop_it() {
     let events = until(&mut socket, DELTA).await;
     assert_eq!(of(&events, DELTA)[0]["delta"], "uno", "the refresh ran to its end");
     assert_eq!(executor.stopped.load(Ordering::SeqCst), 0);
+    // The delta can reach the socket before the worker takes the window queued
+    // behind the refresh: wait for its push, then read the order.
+    until_true("the second window pushed", || executor.calls().iter().filter(|call| call.starts_with("push")).count() == 2).await;
     let calls: Vec<String> = executor.calls().into_iter().filter(|call| !call.starts_with("open")).collect();
     assert_eq!(calls[..3], ["push 0 128000", "partial 0", "push 0 128000"], "the window waited behind the refresh");
 }

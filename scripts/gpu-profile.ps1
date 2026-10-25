@@ -53,6 +53,16 @@ $MarkerPath = Join-Path $env:TEMP "ignis-gpu-preflight.ok"
 # needed (GitHub #135). The sweep skips it by name.
 $CpuOracleTest = "gqa_and_gdn_references_cover_two_tokens"
 
+# The `--ignored` tests of ignis-server that touch no GPU, which the sweep
+# skips by name too: the eleven dictations through the route on the CPU (they
+# need the study disk, spec speech/03) and the speech catalog's download
+# (about 1 GB from Hugging Face). Each binary has a test that its leg's name
+# is listed here, so a rename cannot put it back in the sweep.
+$NotGpuLegs = @(
+    "the_eleven_dictations_through_the_real_route_at_real_time_pace",
+    "the_smallest_speech_entry_downloads_and_verifies_against_its_pins"
+)
+
 # Per-stage wall time (GitHub #135): the profile's cost is the point of this
 # script, so it reports where the time went instead of leaving the reader to
 # add up per-test output.
@@ -149,9 +159,12 @@ try {
         # figure (GitHub #135) among them. Nothing interleaves at
         # `--test-threads=1`, so there is no reason to capture here.
         # `--exclude ignis-speech`: the speech executor's ignored tests are CPU legs on the study
-        # disk, hours long and run alone on the machine (spec speech/01), not GPU tests.
+        # disk, hours long and run alone on the machine (spec speech/01), not GPU tests; the
+        # server's speech legs are skipped by name (`$NotGpuLegs`).
+        $Skips = @("--skip", $CpuOracleTest)
+        foreach ($Leg in $NotGpuLegs) { $Skips += @("--skip", $Leg) }
         Invoke-Stage "gpu tests (serialized)" {
-            & cargo test --workspace --exclude ignis-speech --features cuda -- --ignored --test-threads=1 --nocapture --skip $CpuOracleTest
+            & cargo test --workspace --exclude ignis-speech --features cuda -- --ignored --test-threads=1 --nocapture @Skips
         }
     }
 

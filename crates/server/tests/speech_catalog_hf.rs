@@ -8,6 +8,15 @@
 
 use ignis_server::download::{Catalog, Downloader};
 
+/// The GPU profile's serialized pass runs every `--ignored` test it does not
+/// skip; this leg is a download, so `scripts/gpu-profile.ps1` skips it by name.
+#[test]
+fn the_gpu_profile_skips_this_leg() {
+    let script = include_str!("../../../scripts/gpu-profile.ps1");
+    let listed = script.split("$NotGpuLegs = @(").nth(1).and_then(|rest| rest.split(')').next()).expect("gpu-profile.ps1 lists $NotGpuLegs");
+    assert!(listed.contains("\"the_smallest_speech_entry_downloads_and_verifies_against_its_pins\""), "{listed}");
+}
+
 #[tokio::test]
 #[ignore = "downloads about 1 GB from huggingface.co"]
 async fn the_smallest_speech_entry_downloads_and_verifies_against_its_pins() {

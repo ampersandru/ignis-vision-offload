@@ -97,7 +97,7 @@ with an `error`, the session keeping the configuration it had.
 | `audio.input.turn_detection` | `{type: "server_vad", ...}`, the default, or `null` for manual commit: [turn detection](#turn-detection). `semantic_vad` is refused. |
 | `audio.input.noise_reduction` | `null`. `near_field` and `far_field` are refused. |
 | `include` | Empty. `item.input_audio_transcription.logprobs` is refused. |
-| `ignis.provisional_tail` | `true` to receive the provisional tail, below. |
+| `ignis.provisional_tail` | `true` to receive the provisional tail, below. Any other key under `ignis` is an `error` naming it. |
 
 `transcription_session.update`, the retired beta's event, is an `error` naming
 `session.update`, and every conversation event (`response.create`,
@@ -148,10 +148,13 @@ itself.
 
 Every time is in milliseconds of the audio the session has received, from its
 first sample, and falls on a 32 ms step. The client may still commit: a commit
-during an utterance ends its item at once, with no `speech_stopped`, and a
-commit when the server has heard no speech since the last item is an `error`,
-`input_audio_buffer_commit_empty`. A clear discards the utterance in progress
-and the padding the server holds.
+during an utterance ends its item at once, with no `speech_stopped`. A commit
+when the server has heard no speech since the last item makes an item, as
+OpenAI's does, of the audio appended since that item ended (at most
+`speech.max_clip_seconds` of it, the leading silence below included): a quiet
+speaker's dictation is transcribed, not dropped. With nothing appended since,
+it is an `error`, `input_audio_buffer_commit_empty`. A clear discards the
+utterance in progress, the padding the server holds and that audio.
 
 The speech model reads each of these items after `speech.vad_leading_silence_ms`
 (500) of digital silence, which the server adds as it feeds the item to the
@@ -195,8 +198,8 @@ than queued behind it. A CPU that cannot keep up sends fewer deltas, never a
 later transcript: the audio and the commit go first. The text after the last
 refresh is decoded at the commit, and a commit (or a clear) that arrives
 while a refresh is running stops it at its next check, between the steps of
-its work and every 16 tokens it decodes: a stopped refresh sends nothing, and
-the commit decodes from the text already sent. Measured on a 67 s dictation
+its work and before every token it decodes: a stopped refresh sends nothing,
+and the commit decodes from the text already sent. Measured on a 67 s dictation
 with the default model, before a commit stopped the refresh, the commit took
 2.4 to 4.4 s to `completed` on a 10-core desktop CPU (2 to 2.5 s of its own,
 the rest the refresh it waited for; 1.7 to 2.2 s for the median of eleven
@@ -247,7 +250,8 @@ a client that rejects unknown events is safe.
 
 One compute worker serves the speech model. Up to `speech.max_sessions` (4)
 sessions are open at once; they take turns a unit of work at a time (a window
-of audio, a refresh, a commit) and every unit goes ahead of the
+of audio, a refresh, or a step of a commit: a window, 104 tokens of the
+decode's prefill or 16 tokens decoded) and every unit goes ahead of the
 [transcription requests](transcriptions.md#waiting-and-refusing), which run in
 the gaps.
 
@@ -264,6 +268,6 @@ session; `speech.idle_unload` counts from the end of the last one.
 
 As for a transcription: neither the audio nor the text is logged. Each
 committed item writes one `ignis.speech.transcription` line, its wait counted
-from the commit, and counts in `ignis_speech_transcriptions_total` and
+from the commit (at WARN with a `reason` when the speech model failed it), and counts in `ignis_speech_transcriptions_total` and
 `ignis_speech_commit_wait_seconds`; `ignis_speech_sessions_open` is the open
 sessions ([metrics](../reference/metrics.md)).

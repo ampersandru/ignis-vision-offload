@@ -198,11 +198,54 @@ async fn the_threshold_the_padding_and_the_silence_are_honoured() {
     assert_eq!(kinds(&events), [STARTED, COMMITTED, DELTA, COMPLETED], "{events:?}");
     assert_eq!(executor.samples_pushed(), lead() + 144_960 - 14_144, "the item holds the clip from its padded start to its last sample");
 
+    // At 1.0 nothing is speech: the commit makes an item of every sample
+    // appended, as OpenAI's buffer holds them, and the next finds it empty.
     let (mut socket, executor, _live, _dir) = opened(vad(json!({ "threshold": 1.0 }))).await;
     send_clip(&mut socket, 0, 144_960).await;
     send(&mut socket, commit()).await;
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(kinds(&events), [COMMITTED, DELTA, COMPLETED], "{events:?}");
+    assert_eq!(events[2]["usage"]["seconds"], 9.06);
+    assert_eq!(executor.samples_pushed(), lead() + 144_960);
+    send(&mut socket, commit()).await;
     let refused = next_event(&mut socket).await;
     assert_eq!((refused["type"].as_str(), refused["error"]["code"].as_str()), (Some("error"), Some("input_audio_buffer_commit_empty")), "{refused}");
+}
+
+/// A commit with no speech heard commits the audio appended since the last
+/// item ended, as OpenAI's buffer holds it: after the clip's item, stopped at
+/// 8,512 ms, the 548 ms that followed; the speech after one keeps no padding
+/// from before it (the clip's first second committed, its padded start at
+/// 884 ms comes at 1,000); a clear empties it.
+#[tokio::test]
+async fn a_commit_with_no_speech_commits_the_audio_since_the_last_item() {
+    let (mut socket, executor, _live, _dir) = opened(None).await;
+    send_clip(&mut socket, 0, 144_960).await;
+    until(&mut socket, COMPLETED).await;
+    let item = executor.samples_pushed();
+    send(&mut socket, commit()).await;
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(kinds(&events), [COMMITTED, DELTA, COMPLETED], "{events:?}");
+    assert_eq!(executor.samples_pushed() - item, lead() + 144_960 - 136_192);
+
+    // The VAD starts again where the commit left the stream: the speech after
+    // it keeps no padding from the audio the commit already made an item of.
+    let (mut socket, _executor, _live, _dir) = opened(None).await;
+    send_clip(&mut socket, 0, 16_000).await;
+    send(&mut socket, commit()).await;
+    let first = until(&mut socket, COMPLETED).await;
+    assert_eq!(kinds(&first), [COMMITTED, DELTA, COMPLETED], "{first:?}");
+    send_clip(&mut socket, 16_000, 128_960).await;
+    let second = until(&mut socket, COMPLETED).await;
+    assert_eq!(of(&second, STARTED)[0]["audio_start_ms"], 1_000, "{second:?}");
+
+    let (mut socket, executor, _live, _dir) = opened(vad(json!({ "threshold": 1.0 }))).await;
+    send_clip(&mut socket, 0, 16_000).await;
+    send(&mut socket, json!({ "type": "input_audio_buffer.clear" })).await;
+    until(&mut socket, "input_audio_buffer.cleared").await;
+    send(&mut socket, commit()).await;
+    let refused = next_event(&mut socket).await;
+    assert_eq!(refused["error"]["code"], "input_audio_buffer_commit_empty", "{refused}");
     assert_eq!(executor.samples_pushed(), 0);
 }
 

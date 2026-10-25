@@ -63,7 +63,12 @@ impl Drop for AlignedBuf {
     }
 }
 
-/// Read-only bytes: owned, or borrowed from storage `owner` keeps alive.
+/// Read-only bytes: owned, or borrowed from storage `owner` keeps alive. Only the crate
+/// borrows, since nothing outside it can tie a view to its owner:
+///
+/// ```compile_fail
+/// let _ = ignis_speech::mem::Blob::borrowed(&[0u8; 4], std::sync::Arc::new(()));
+/// ```
 pub struct Blob {
     ptr: *const u8,
     len: usize,
@@ -81,7 +86,9 @@ impl Blob {
     }
 
     /// A view of `bytes`, which must live inside storage `owner` keeps alive and never mutates.
-    pub fn borrowed(bytes: &[u8], owner: Arc<dyn Send + Sync>) -> Blob {
+    /// Nothing in the signature ties the two, so it is the crate's own: the model's tensors,
+    /// borrowed from the mapped file or the pinned copy that `owner` is.
+    pub(crate) fn borrowed(bytes: &[u8], owner: Arc<dyn Send + Sync>) -> Blob {
         Blob { ptr: bytes.as_ptr(), len: bytes.len(), _owner: owner }
     }
 

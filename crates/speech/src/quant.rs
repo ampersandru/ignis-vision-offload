@@ -526,15 +526,41 @@ pub fn dequant_act_f64(ty: AType, data: &[u8], m: usize, k: usize, out: &mut [f6
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A type any bytes are a valid value of, with no padding and no pointer: the block formats,
+/// `u16` (f16 bits) and `f32`. Sealed, so the casts below take nothing else.
+pub trait Pod: Copy + sealed::Sealed {}
+
+macro_rules! pod {
+    ($($t:ty),*) => {$(
+        impl sealed::Sealed for $t {}
+        impl Pod for $t {}
+    )*};
+}
+
+// Each block is `repr(C)` of byte, i8, i16, u16 and f32 fields with no padding (the size
+// assertions above), so every bit pattern is a value.
+pod!(u16, f32, BlockQ4K, BlockQ6K, BlockQ8K, BlockQ80, BlockQ4Kx8);
+
 /// Reinterprets the first `n` elements' worth of `bytes` as `T` (checked size and alignment).
-pub fn cast_slice<T: Copy>(bytes: &[u8], n: usize) -> &[T] {
+///
+/// A type some bytes are not a value of is refused at compile time:
+///
+/// ```compile_fail
+/// let _ = ignis_speech::quant::cast_slice::<bool>(&[2u8; 4], 1);
+/// ```
+pub fn cast_slice<T: Pod>(bytes: &[u8], n: usize) -> &[T] {
     assert!(bytes.len() >= n * std::mem::size_of::<T>(), "slice too short");
     assert_eq!(bytes.as_ptr() as usize % std::mem::align_of::<T>(), 0, "slice misaligned");
-    // SAFETY: length and alignment checked above; every T here is a plain-old-data block.
+    // SAFETY: length and alignment checked above; any bytes are a `T` (`Pod`).
     unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, n) }
 }
 
-pub fn cast_slice_mut<T: Copy>(bytes: &mut [u8], n: usize) -> &mut [T] {
+/// [`cast_slice`], writable: a `T` written is bytes with no padding to read back.
+pub fn cast_slice_mut<T: Pod>(bytes: &mut [u8], n: usize) -> &mut [T] {
     assert!(bytes.len() >= n * std::mem::size_of::<T>(), "slice too short");
     assert_eq!(bytes.as_ptr() as usize % std::mem::align_of::<T>(), 0, "slice misaligned");
     // SAFETY: as in `cast_slice`, and the borrow is exclusive.

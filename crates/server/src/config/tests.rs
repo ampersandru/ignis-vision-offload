@@ -2823,6 +2823,21 @@ fn a_speech_field_past_its_bounds_is_refused_naming_it() {
     assert!(err.contains("--speech-compat-names") && err.contains("whitespace"), "{err}");
 }
 
+/// `speech.model` naming a text or image model is refused (spec speech/02:
+/// an id is that catalog entry, a speech one): a built-in entry of another
+/// kind, or a model family's id. A speech entry, `auto`, `off` and an id the
+/// catalog lacks (unavailable, with its reason, at serve time) are taken.
+#[test]
+fn a_speech_model_of_another_kind_is_refused() {
+    for id in ["qwen3.8-27b", "ignis-image-2.1-turbo"] {
+        let err = refused(&["--speech-model", id]);
+        assert!(err.contains("--speech-model") && err.contains(id) && err.contains("not a speech model"), "{err}");
+    }
+    for id in ["qwen3-asr-0.6b", "auto", "off", "an-asr-of-my-own"] {
+        assert!(resolve(&args(&["--speech-model", id]), no_env).is_ok(), "{id}");
+    }
+}
+
 /// A compat name equal to a served id is refused at start (spec speech/02):
 /// a catalog entry's, a model family's, the start model's or the speech
 /// model's own.

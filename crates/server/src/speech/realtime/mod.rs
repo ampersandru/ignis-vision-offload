@@ -20,14 +20,16 @@
 //!   before it), the silence after it commits it (`speech_stopped`), and with
 //!   an idle timeout so much audio without speech is an item of its own. The
 //!   model reads each such item after `speech.vad_leading_silence_ms` of
-//!   digital silence, which no event and no `usage` counts (Q77). With
-//!   `turn_detection: null` every sample goes to the current item and the
-//!   client commits.
+//!   digital silence, which no event and no `usage` counts (Q77). A commit
+//!   the client sends with no speech heard commits the audio appended since
+//!   the last item, as OpenAI's buffer holds it. With `turn_detection: null`
+//!   every sample goes to the current item and the client commits.
 //! - **Units.** Every call to the executor is one unit on the speech worker,
-//!   in this socket's lane: a window pushed, a partial, a commit, an open.
-//!   The sessions take turns, unit by unit, ahead of the batch windows (Q44).
-//!   The executor's session lives in a slot the units share; they run one at
-//!   a time on the worker's one thread, in the order queued.
+//!   in this socket's lane: a window pushed, a partial, an open, a step of a
+//!   commit (the rest pushed, a window, the decode's prefill, 16 decode
+//!   steps). The sessions take turns, unit by unit, ahead of the batch
+//!   windows (Q44). The executor's session lives in a slot the units share;
+//!   they run one at a time on the worker's one thread, in the order queued.
 //! - **Refreshes are best effort** (Q74). The live transcript is refreshed
 //!   at most every `speech.partial_interval_ms`, and a refresh is skipped,
 //!   never queued, while any unit of the socket's is still in the worker: a
@@ -74,8 +76,8 @@ use tokio::time::Instant;
 use super::audio::TARGET_RATE;
 use super::executor::{LoadSettings, Partial, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession, Transcript, WINDOW_SAMPLES};
 use super::route::{self, Ending};
-use super::worker::Full;
-use super::SessionGuard;
+use super::worker::{Full, Step};
+use super::{extension, open_loaded, Fault, SessionGuard};
 use crate::api::{self, bad_request_param, ApiError};
 use crate::deadline::Timeout;
 use crate::metrics::SpeechOutcome;
@@ -102,9 +104,9 @@ On open the server sends `session.created` with the effective configuration: `au
 Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it (silence, even the silence that ended the item before, never an earlier item's speech); once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened, the last item or the field's change, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. The speech model reads each of these items after `speech.vad_leading_silence_ms` of digital silence, since its transcript depends on the audio before the speech; no time and no `usage` counts it. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
 
 Client events, each a text frame of one JSON object:
-- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail.
+- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail; any other key under `session.ignis` is an `error` naming it.
 - `input_audio_buffer.append` `{audio}`: base64 16-bit little-endian mono PCM at the session's rate, up to 15 MiB of base64 an event. No reply.
-- `input_audio_buffer.commit`: ends the item. `input_audio_buffer.committed` `{item_id, previous_item_id}`, then the last stable text as a `delta`, then `completed`. An empty buffer is an `error` (`input_audio_buffer_commit_empty`); under `server_vad` the buffer holds the speech the VAD has heard since the last item, and a commit during it ends that item at once, with no `speech_stopped`.
+- `input_audio_buffer.commit`: ends the item. `input_audio_buffer.committed` `{item_id, previous_item_id}`, then the last stable text as a `delta`, then `completed`. An empty buffer is an `error` (`input_audio_buffer_commit_empty`). Under `server_vad` the buffer holds the audio appended since the last item ended, as OpenAI's does: a commit during speech ends that item at once, with no `speech_stopped`, and one with no speech heard makes an item of that audio (at most `speech.max_clip_seconds` of it, the leading silence included); a clear discards it.
 - `input_audio_buffer.clear`: discards the buffer and the item's partial state (under `server_vad`, the speech and the padding the VAD holds); answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
 
@@ -187,8 +189,16 @@ enum Unit {
     Push(Vec<f32>),
     /// Push what is in, then refresh the live transcript.
     Partial(Vec<f32>),
-    /// Push the rest, then decode to the end.
+    /// Push the rest, then the commit, a step of it a unit: the task's
+    /// samples are taken by its first step.
     Commit(Vec<f32>),
+}
+
+/// Where a unit is: steps left (a commit), or out of the worker with what it
+/// says, if anything.
+enum Progress {
+    More,
+    Done(Option<Outcome>),
 }
 
 /// What a unit tells the socket.
@@ -208,10 +218,8 @@ struct Done {
 /// Why an item failed.
 #[derive(Debug, Clone)]
 enum Failure {
-    /// The model would not load.
-    Load(String),
-    /// A call to the executor failed.
-    Executor(String),
+    /// The model would not load, or a call to it failed.
+    Fault(Fault),
     /// Longer than `speech.max_clip_seconds` (the limit), counting the
     /// milliseconds of leading silence a `server_vad` item is fed after.
     TooLong(u32, u32),
@@ -223,8 +231,10 @@ impl Failure {
     /// The `failed` event's `error`.
     fn error(&self) -> Value {
         let (kind, code, message) = match self {
-            Self::Load(why) => ("server_error", "speech_unavailable", format!("the speech model could not be loaded: {why}")),
-            Self::Executor(_) => ("server_error", "engine_error", "the speech model failed this item's transcription".to_owned()),
+            Self::Fault(fault) => {
+                let (code, message) = fault.error("this item's transcription");
+                ("server_error", code, message)
+            }
             Self::TooLong(limit, 0) => (
                 "invalid_request_error",
                 "invalid_request_error",
@@ -320,6 +330,54 @@ struct Connection {
     /// Under `server_vad`, the turns the VAD finds in the audio; `None` for
     /// manual commit (spec speech/05).
     turns: Option<Turns<Vad>>,
+    /// Under `server_vad`, the audio heard since the last item ended.
+    since_item: SinceItem,
+}
+
+/// Under `server_vad`, the 16 kHz audio heard since the last item ended: what
+/// a commit with no speech heard makes an item of, as OpenAI's buffer holds
+/// everything appended since the last commit. It always ends at the VAD's
+/// clock (the samples the session heard), so an item's end, a sample of that
+/// clock, drops what came before it. At most `speech.max_clip_seconds` of it
+/// is kept: 77 MB at the default 1,200 s, for a session that long silent.
+#[derive(Default)]
+struct SinceItem {
+    samples: VecDeque<f32>,
+    /// The clock at its first sample.
+    from: u64,
+}
+
+impl SinceItem {
+    /// Nothing heard since sample `at`: the VAD starts there, or a clear.
+    fn reset(&mut self, at: u64) {
+        self.samples.clear();
+        self.from = at;
+    }
+
+    /// `samples` heard, at most the last `keep` kept.
+    fn heard(&mut self, samples: &[f32], keep: usize) {
+        self.samples.extend(samples);
+        let over = self.samples.len().saturating_sub(keep);
+        self.samples.drain(..over);
+        self.from += over as u64;
+    }
+
+    /// An item ended at sample `end` of the clock.
+    fn ended_at(&mut self, end: u64) {
+        let gone = end.saturating_sub(self.from).min(self.samples.len() as u64);
+        self.samples.drain(..gone as usize);
+        self.from += gone;
+    }
+
+    /// The last `room` samples, for the item a commit makes of them; nothing
+    /// is left.
+    fn take(&mut self, room: usize) -> Vec<f32> {
+        let end = self.from + self.samples.len() as u64;
+        let skip = self.samples.len().saturating_sub(room);
+        let audio = self.samples.iter().skip(skip).copied().collect();
+        self.reset(end);
+        audio
+    }
 }
 
 impl Connection {
@@ -352,6 +410,7 @@ impl Connection {
             quiet_since: Instant::now(),
             heard: 0,
             turns: None,
+            since_item: SinceItem::default(),
         }
     }
 
@@ -483,7 +542,10 @@ impl Connection {
         let holds_audio = self.current().samples_in > 0;
         match (&self.config.turn_detection, self.turns.as_mut()) {
             (Some(vad), Some(turns)) => turns.set_settings(vad.settings()),
-            (Some(vad), None) if !holds_audio => self.turns = Some(Turns::new(Vad::new(), vad.settings(), self.heard)),
+            (Some(vad), None) if !holds_audio => {
+                self.turns = Some(Turns::new(Vad::new(), vad.settings(), self.heard));
+                self.since_item.reset(self.heard);
+            }
             (None, Some(_)) if !holds_audio => self.turns = None,
             _ => {}
         }
@@ -492,7 +554,7 @@ impl Connection {
     /// Queue `unit` of the current item on the worker, in this socket's lane.
     /// Every unit answers when it is out of the worker, so the socket knows
     /// what it still has in it.
-    fn queue(&mut self, unit: Unit) {
+    fn queue(&mut self, mut unit: Unit) {
         let item = self.items.back().expect("a current item");
         let (seq, cancel, stop) = (item.seq, Arc::clone(&item.cancel), Arc::clone(&item.stop_refresh));
         let slot = Arc::clone(&self.slot);
@@ -500,18 +562,24 @@ impl Connection {
         let files = self.files.clone();
         let results = self.results_tx.clone();
         let task = Box::new(move || {
-            let outcome = match cancel.load(Ordering::SeqCst) {
-                true => None,
-                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(unit, &slot, executor.as_ref(), &files, &stop))).unwrap_or_else(|_| {
+            let progress = match cancel.load(Ordering::SeqCst) {
+                true => Progress::Done(None),
+                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut unit, &slot, executor.as_ref(), &files, &stop))).unwrap_or_else(|_| {
                     // A unit that panicked leaves no session to go on with.
                     slot.lock().unwrap_or_else(PoisonError::into_inner).session = None;
-                    Some(Outcome::Failed(Failure::Executor("the speech executor panicked".to_owned())))
+                    Progress::Done(Some(Outcome::Failed(Failure::Fault(Fault::Executor("the speech executor panicked".to_owned())))))
                 }),
             };
-            let _ = results.send(Done { item: seq, outcome });
+            match progress {
+                Progress::More => Step::More,
+                Progress::Done(outcome) => {
+                    let _ = results.send(Done { item: seq, outcome });
+                    Step::Done
+                }
+            }
         });
         self.in_worker += 1;
-        self.server.speech.submit_interactive(&self.guard, task, &self.server.live().speech);
+        self.server.speech.submit_interactive(&self.guard, task);
     }
 
     /// One client frame.
@@ -660,6 +728,7 @@ impl Connection {
         };
         let mut events = Vec::new();
         turns.push(&samples, &mut events);
+        self.since_item.heard(&samples, self.server.live().speech.max_clip_seconds as usize * TARGET_RATE as usize);
         for event in events {
             self.turn(event);
         }
@@ -682,6 +751,7 @@ impl Connection {
                 let id = self.current().id.clone();
                 self.send(json!({ "type": "input_audio_buffer.speech_stopped", "audio_end_ms": millis(end), "item_id": id }));
                 self.end_item();
+                self.since_item.ended_at(end);
             }
             TurnEvent::TimedOut { start, end, audio } => {
                 self.begin_item();
@@ -695,6 +765,7 @@ impl Connection {
                 self.lead_in();
                 self.give(audio);
                 self.end_item();
+                self.since_item.ended_at(end);
             }
         }
     }
@@ -727,12 +798,29 @@ impl Connection {
         if let Some(turns) = self.turns.as_mut() {
             // Under `server_vad` a commit ends the turn the VAD is in; the
             // stream goes on, so the resampler keeps its state.
-            if !turns.speaking() {
-                let empty = "the input audio buffer holds no speech: under server_vad it holds what the VAD heard as speech since the last item".to_owned();
+            if turns.speaking() {
+                let rest = turns.end_turn();
+                self.give(rest);
+                self.end_item();
+                return self.since_item.reset(self.heard);
+            }
+            // No speech heard: as OpenAI's, the buffer is the audio appended
+            // since the last item, and the commit makes it one, after the
+            // leading silence, as long as the limit allows with it. The VAD
+            // starts again where the commit left the stream, as after a
+            // commit during speech: no padding and no idle time reach back
+            // into this item.
+            if self.since_item.samples.is_empty() {
+                let empty = "the input audio buffer is empty: append audio before committing".to_owned();
                 return self.refuse(Refusal { code: "input_audio_buffer_commit_empty", message: empty, param: None }, event_id);
             }
-            let rest = turns.end_turn();
-            self.give(rest);
+            turns.clear();
+            let live = self.server.live();
+            let limit = live.speech.max_clip_seconds as usize * TARGET_RATE as usize;
+            let audio = self.since_item.take(limit.saturating_sub(ignis_speech::vad::ms_samples(live.speech.vad_leading_silence_ms) as usize));
+            self.begin_item();
+            self.lead_in();
+            self.give(audio);
             return self.end_item();
         }
         if self.current().samples_in == 0 {
@@ -777,8 +865,10 @@ impl Connection {
     fn clear(&mut self) {
         let vad = self.turns.is_some();
         if let Some(turns) = self.turns.as_mut() {
-            // The padding the VAD keeps, and a turn on, go as well.
+            // The padding the VAD keeps, and a turn on, go as well, and the
+            // audio heard since the last item: the buffer.
             turns.clear();
+            self.since_item.reset(self.heard);
         }
         let current = self.current();
         if current.samples_in > 0 || current.id.is_some() {
@@ -821,9 +911,6 @@ impl Connection {
     fn end_failed(&mut self, index: usize) {
         let mut item = self.items.remove(index).expect("an item at the index");
         let failure = item.failure.clone().expect("a failed item");
-        if let Failure::Load(why) | Failure::Executor(why) = &failure {
-            tracing::warn!(name: "ignis.speech.failed", variant = %self.files.id, reason = %why, "a transcription failed");
-        }
         self.end_tail(&mut item);
         self.send(json!({
             "type": "conversation.item.input_audio_transcription.failed",
@@ -832,7 +919,10 @@ impl Connection {
             "error": failure.error(),
         }));
         if let Some(mut ending) = item.ending.take() {
-            ending.end(failure.outcome(), None, None);
+            match &failure {
+                Failure::Fault(fault) => ending.fail(failure.outcome(), Some(fault)),
+                _ => ending.end(failure.outcome(), None, None),
+            }
         }
         self.quiet_since = Instant::now();
     }
@@ -998,63 +1088,63 @@ impl Connection {
     }
 }
 
-/// What `text` adds to `sent`, when it extends it: the only text a delta may
-/// carry, since a delta only ever appends.
-fn extension<'a>(sent: &str, text: &'a str) -> Option<&'a str> {
-    (text.len() > sent.len() && text.starts_with(sent)).then(|| &text[sent.len()..])
-}
-
-/// Run one unit on the worker thread. `None` when it has nothing to say: an
-/// open or a push that went through, a refresh `stop` stopped (Q79), or a
-/// unit after a failure that left no session (the failure already answered).
-fn run(unit: Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Option<Outcome> {
+/// Run a unit's next step on the worker thread: `More` for a commit with
+/// steps left; done with `None` when it has nothing to say: an open or a push
+/// that went through, a refresh `stop` stopped (Q79), or a unit after a
+/// failure that left no session (the failure already answered).
+fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Progress {
     let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
     let failed = |slot: &mut Slot, why: String| {
         slot.session = None;
-        Some(Outcome::Failed(Failure::Executor(why)))
+        Progress::Done(Some(Outcome::Failed(Failure::Fault(Fault::Executor(why)))))
     };
+    let began = std::time::Instant::now();
     match unit {
         Unit::Open(open, load) => {
             slot.session = None;
             slot.computed = Duration::ZERO;
-            if !executor.is_loaded() {
-                if let Err(error) = executor.load(files, load) {
-                    return Some(Outcome::Failed(Failure::Load(error.0)));
-                }
-            }
-            match executor.open(open) {
+            match open_loaded(executor, files, *load, std::mem::take(open)) {
                 Ok(session) => {
                     slot.session = Some(session);
-                    None
+                    Progress::Done(None)
                 }
-                Err(error) => failed(&mut *slot, error.0),
+                Err(fault) => Progress::Done(Some(Outcome::Failed(Failure::Fault(fault)))),
             }
         }
         Unit::Push(samples) => {
-            let began = std::time::Instant::now();
-            let pushed = slot.session.as_mut()?.push(&samples);
+            let Some(session) = slot.session.as_mut() else { return Progress::Done(None) };
+            let pushed = session.push(samples);
             slot.computed += began.elapsed();
-            pushed.err().and_then(|error| failed(&mut *slot, error.0))
+            match pushed {
+                Ok(()) => Progress::Done(None),
+                Err(error) => failed(&mut *slot, error.0),
+            }
         }
         Unit::Partial(samples) => {
-            let began = std::time::Instant::now();
-            let session = slot.session.as_mut()?;
+            let Some(session) = slot.session.as_mut() else { return Progress::Done(None) };
             // The audio goes in whatever happens: the commit has the rest.
-            let partial = push(session.as_mut(), &samples).and_then(|()| session.partial(&|| stop.load(Ordering::SeqCst)));
+            let partial = push(session.as_mut(), samples).and_then(|()| session.partial(&|| stop.load(Ordering::SeqCst)));
             let cost = began.elapsed();
             slot.computed += cost;
             match partial {
-                Ok(partial) => partial.map(|partial| Outcome::Partial(partial, cost)),
+                Ok(partial) => Progress::Done(partial.map(|partial| Outcome::Partial(partial, cost))),
                 Err(error) => failed(&mut *slot, error.0),
             }
         }
         Unit::Commit(samples) => {
-            let began = std::time::Instant::now();
-            let mut session = slot.session.take()?;
-            let transcript = push(session.as_mut(), &samples).and_then(|()| session.commit());
-            let computed = slot.computed + began.elapsed();
-            match transcript {
-                Ok(transcript) => Some(Outcome::Transcript(transcript, computed)),
+            let Some(session) = slot.session.as_mut() else { return Progress::Done(None) };
+            // The rest first, a step of its own, then the commit's steps.
+            let step = match samples.is_empty() {
+                true => session.commit_step(),
+                false => push(session.as_mut(), &std::mem::take(samples)).map(|()| None),
+            };
+            slot.computed += began.elapsed();
+            match step {
+                Ok(None) => Progress::More,
+                Ok(Some(transcript)) => {
+                    slot.session = None;
+                    Progress::Done(Some(Outcome::Transcript(transcript, slot.computed)))
+                }
                 Err(error) => failed(&mut *slot, error.0),
             }
         }
@@ -1068,4 +1158,31 @@ fn push(session: &mut dyn SpeechSession, samples: &[f32]) -> Result<(), super::e
         return Ok(());
     }
     session.push(samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SinceItem;
+
+    /// The audio heard since the last item stays on the VAD's clock: one
+    /// started at a later sample (`server_vad` switched on mid-session), an
+    /// item's end, the cap and a commit's take all keep it there.
+    #[test]
+    fn the_audio_since_the_last_item_stays_on_the_vads_clock() {
+        let mut since = SinceItem::default();
+        since.reset(1_000);
+        since.heard(&[1.0; 300], 10_000);
+        // An item ended at sample 1,200: the 100 samples after it are what is left.
+        since.ended_at(1_200);
+        assert_eq!((since.from, since.samples.len()), (1_200, 100));
+        since.heard(&[2.0; 50], 120);
+        assert_eq!((since.from, since.samples.len()), (1_230, 120), "at most the cap, the oldest dropped");
+        let taken = since.take(100);
+        assert_eq!(taken.len(), 100);
+        assert_eq!(taken.iter().filter(|&&sample| sample == 2.0).count(), 50, "the last of it");
+        assert!(since.samples.is_empty());
+        assert_eq!(since.from, 1_350, "empty from the end of what was heard");
+        since.ended_at(1_300);
+        assert_eq!(since.from, 1_350, "an end before it drops nothing");
+    }
 }

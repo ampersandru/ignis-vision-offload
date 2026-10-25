@@ -2,20 +2,23 @@
 //! Q44): a single thread that does one unit of work at a time.
 //!
 //! - **Interactive tasks** (Realtime sessions, spec speech/03) run first,
-//!   each a window or less. Each session queues its own in order, and the
-//!   sessions take turns, one task each.
+//!   each a window or less a step. Each session queues its own in order, and
+//!   the sessions take turns, one step each: a task with steps left (a
+//!   commit) stays first in its session's lane.
 //! - **Batch jobs** (a transcription request) fill the gaps, first in first
-//!   out, a window at a time: between two windows of the job at the front the
-//!   interactive tasks run, and the front job goes back to the front.
+//!   out, a unit at a time (a window, a refresh, or a step of the commit):
+//!   between two steps of the job at the front the interactive tasks run, and
+//!   the front job goes back to the front.
 //! - At most `speech.max_queue` batch jobs wait behind the one running; the
 //!   next is refused with a `Retry-After` that estimates when room frees.
 //! - The same thread is the idle clock: with nothing to do, no Realtime
 //!   session open, and the model unused for `speech.idle_unload` seconds, it
 //!   unloads the model. An open session is a dictation in progress; its end
-//!   restarts the clock.
+//!   restarts the clock. `speech.idle_unload` is read live: a change wakes the
+//!   clock, which waits for the new value from the model's last use.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -25,7 +28,8 @@ use super::executor::SpeechExecutor;
 pub trait Job: Send {
     /// The clip's length, for the estimate of when room frees.
     fn audio_seconds(&self) -> f64;
-    /// One window of work (or the commit), on the worker thread.
+    /// One unit of work (a window, a refresh, a step of the commit), on the
+    /// worker thread.
     fn step(&mut self) -> Step;
 }
 
@@ -36,8 +40,10 @@ pub enum Step {
     Done,
 }
 
-/// An interactive task: a Realtime window, one call to the executor.
-pub type Task = Box<dyn FnOnce() + Send>;
+/// An interactive task: a Realtime unit, one call to the executor, or a
+/// commit, one step of it a call. `Step::More` keeps it first in its
+/// session's lane, and the session's turn passes.
+pub type Task = Box<dyn FnMut() -> Step + Send>;
 
 /// One session's interactive tasks, in the order it queued them.
 struct Lane {
@@ -96,13 +102,13 @@ struct Shared {
     wake: Condvar,
     executor: Arc<dyn SpeechExecutor>,
     gauges: Arc<Gauges>,
-    /// `speech.idle_unload` in seconds, 0 never.
-    idle_unload_secs: AtomicU64,
+    /// `speech.idle_unload` in seconds, 0 never: the live value, which the
+    /// speech slot writes.
+    idle_unload_secs: Arc<AtomicU64>,
     last_used: Mutex<Instant>,
     /// The speed the worker has made, in thousandths of audio seconds per
     /// second: the estimate of how long a queued clip takes.
     speed_milli: AtomicU64,
-    stopped: AtomicBool,
 }
 
 /// The batch queue is full: when room frees, estimated.
@@ -116,7 +122,8 @@ pub struct Full {
 pub const RETRY_AFTER_MAX_SECS: u64 = crate::engine::RETRY_AFTER_OVERDUE_MAX_SECS;
 
 /// What a clip is assumed to run at before the worker has run one: 3 x real
-/// time, the 4-core container's figure (`spec.md`, Requirements).
+/// time, the 4-core container's figure (`spec.md`, Requirements). A seed the
+/// first finished job replaces, not a threshold an operator tunes.
 const ASSUMED_SPEED_MILLI: u64 = 3000;
 
 pub struct Worker {
@@ -125,16 +132,16 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start(executor: Arc<dyn SpeechExecutor>, gauges: Arc<Gauges>) -> Self {
+    /// The worker, its idle clock reading `idle_unload_secs` (0 never).
+    pub fn start(executor: Arc<dyn SpeechExecutor>, gauges: Arc<Gauges>, idle_unload_secs: Arc<AtomicU64>) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
             executor,
             gauges,
-            idle_unload_secs: AtomicU64::new(0),
+            idle_unload_secs,
             last_used: Mutex::new(Instant::now()),
             speed_milli: AtomicU64::new(ASSUMED_SPEED_MILLI),
-            stopped: AtomicBool::new(false),
         });
         let running = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -144,12 +151,19 @@ impl Worker {
         Self { shared, thread: Mutex::new(Some(thread)) }
     }
 
-    /// `speech.idle_unload`, read live.
+    /// Set `speech.idle_unload` (the value the slot shares, tests) and wake the clock.
+    #[cfg(test)]
     pub fn set_idle_unload(&self, secs: u32) {
-        let before = self.shared.idle_unload_secs.swap(u64::from(secs), Ordering::SeqCst);
-        if before != u64::from(secs) {
-            self.shared.wake.notify_all();
-        }
+        self.shared.idle_unload_secs.store(u64::from(secs), Ordering::SeqCst);
+        self.wake();
+    }
+
+    /// Wake the idle clock to read `speech.idle_unload` again. The state lock
+    /// is taken first: the clock reads the value and starts waiting under it,
+    /// so the wake cannot fall between the two.
+    pub fn wake(&self) {
+        drop(self.shared.lock());
+        self.shared.wake.notify_all();
     }
 
     /// Whether a batch job would be queued now: `Ok` unless `max_queue` jobs
@@ -208,7 +222,6 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.shared.lock().stop = true;
-        self.shared.stopped.store(true, Ordering::SeqCst);
         self.shared.wake.notify_all();
         if let Some(thread) = self.thread.lock().expect("worker thread lock").take() {
             let _ = thread.join();
@@ -255,15 +268,25 @@ impl Shared {
                 return;
             }
             if let Some(mut lane) = state.interactive.pop_front() {
-                let task = lane.tasks.pop_front().expect("a lane holds a task");
+                let session = lane.session;
+                let mut task = lane.tasks.pop_front().expect("a lane holds a task");
                 // Its next task waits its turn behind the other sessions'.
                 if !lane.tasks.is_empty() {
                     state.interactive.push_back(lane);
                 }
                 drop(state);
-                // A panic in a task is that task's, not the worker's.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+                // A panic in a task is that task's, not the worker's: it is over.
+                let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task())).unwrap_or(Step::Done);
                 self.touch();
+                if step == Step::More {
+                    // First in its session's lane again, ahead of what the
+                    // session queued since, with the turn passed on.
+                    let mut state = self.lock();
+                    match state.interactive.iter_mut().find(|lane| lane.session == session) {
+                        Some(lane) => lane.tasks.push_front(task),
+                        None => state.interactive.push_back(Lane { session, tasks: VecDeque::from([task]) }),
+                    }
+                }
                 continue;
             }
             if let Some(mut entry) = state.batch.pop_front() {
@@ -367,7 +390,16 @@ mod tests {
 
     fn worker() -> (Worker, Arc<Gauges>) {
         let gauges = Arc::new(Gauges::default());
-        (Worker::start(Arc::new(FakeExecutor::saying(&["x"])), Arc::clone(&gauges)), gauges)
+        (Worker::start(Arc::new(FakeExecutor::saying(&["x"])), Arc::clone(&gauges), Arc::default()), gauges)
+    }
+
+    /// A one-step interactive task that logs `unit`.
+    fn logs(log: &Arc<Mutex<Vec<String>>>, unit: &str) -> Task {
+        let (log, unit) = (Arc::clone(log), unit.to_owned());
+        Box::new(move || {
+            log.lock().unwrap().push(unit.clone());
+            Step::Done
+        })
     }
 
     fn job(name: &'static str, windows: u32, seconds: f64, log: &Arc<Mutex<Vec<String>>>, done: &mpsc::Sender<&'static str>) -> Box<Windows> {
@@ -399,8 +431,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         worker.submit(job("b", 2, 16.0, &log, &done), 4).unwrap();
-        let task_log = Arc::clone(&log);
-        worker.submit_interactive(0, Box::new(move || task_log.lock().unwrap().push("rt".to_owned())));
+        worker.submit_interactive(0, logs(&log, "rt"));
         open(&held);
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "a");
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
@@ -427,12 +458,44 @@ mod tests {
         // Session 1 queues three units, then session 2 two, while the batch
         // job's first window is held.
         for (session, unit) in [(1, "x1"), (1, "x2"), (1, "x3"), (2, "y1"), (2, "y2")] {
-            let task_log = Arc::clone(&log);
-            worker.submit_interactive(session, Box::new(move || task_log.lock().unwrap().push(unit.to_owned())));
+            worker.submit_interactive(session, logs(&log, unit));
         }
         open(&held);
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
         assert_eq!(*log.lock().unwrap(), ["b1", "x1", "y1", "x2", "y2", "x3", "b2"]);
+    }
+
+    /// Spec speech/01 AC 19, 03 AC 14: an interactive task of several steps
+    /// (a session's commit) takes one a turn, the other sessions' units
+    /// between two, and its session's next task waits for its last.
+    #[test]
+    fn a_task_of_several_steps_takes_one_a_turn_and_keeps_its_place_in_its_lane() {
+        let (worker, _) = worker();
+        let (done, finished) = mpsc::channel();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let held = gate();
+        let mut batch = job("b", 2, 16.0, &log, &done);
+        batch.hold = Some(Arc::clone(&held));
+        worker.submit(batch, 4).unwrap();
+        while worker.shared.lock().stepping.is_none() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let commit_log = Arc::clone(&log);
+        let mut steps = 0;
+        worker.submit_interactive(
+            1,
+            Box::new(move || {
+                steps += 1;
+                commit_log.lock().unwrap().push(format!("c{steps}"));
+                if steps == 3 { Step::Done } else { Step::More }
+            }),
+        );
+        worker.submit_interactive(1, logs(&log, "open"));
+        worker.submit_interactive(2, logs(&log, "y1"));
+        worker.submit_interactive(2, logs(&log, "y2"));
+        open(&held);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
+        assert_eq!(*log.lock().unwrap(), ["b1", "c1", "y1", "c2", "y2", "c3", "open", "b2"]);
     }
 
     /// AC 11: past `max_queue` waiting jobs the next is refused, with a
@@ -515,7 +578,7 @@ mod tests {
     fn an_open_session_keeps_the_model_loaded() {
         let executor = Arc::new(FakeExecutor::saying(&["x"]));
         let gauges = Arc::new(Gauges::default());
-        let worker = Worker::start(executor.clone(), Arc::clone(&gauges));
+        let worker = Worker::start(executor.clone(), Arc::clone(&gauges), Arc::default());
         executor.loaded.store(true, Ordering::SeqCst);
         gauges.sessions.store(1, Ordering::SeqCst);
         worker.set_idle_unload(1);
@@ -536,7 +599,7 @@ mod tests {
     #[test]
     fn a_model_unused_for_the_idle_time_is_unloaded() {
         let executor = Arc::new(FakeExecutor::saying(&["x"]));
-        let worker = Worker::start(executor.clone(), Arc::new(Gauges::default()));
+        let worker = Worker::start(executor.clone(), Arc::new(Gauges::default()), Arc::default());
         executor.loaded.store(true, Ordering::SeqCst);
         worker.set_idle_unload(1);
         worker.touch();
@@ -548,5 +611,29 @@ mod tests {
         }
         assert!(!executor.is_loaded());
         assert_eq!(executor.unloads.load(Ordering::SeqCst), 1);
+    }
+
+    /// `speech.idle_unload` is read live: a clock waiting on 0 (never) or on
+    /// a long time takes a shorter value as soon as it changes, counted from
+    /// the model's last use.
+    #[test]
+    fn a_live_change_of_the_idle_time_reaches_a_waiting_clock() {
+        for before in [0, 300] {
+            let executor = Arc::new(FakeExecutor::saying(&["x"]));
+            let idle = Arc::new(AtomicU64::new(before));
+            let worker = Worker::start(executor.clone(), Arc::new(Gauges::default()), Arc::clone(&idle));
+            executor.loaded.store(true, Ordering::SeqCst);
+            worker.touch();
+            // The clock is waiting on `before` by now.
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(executor.is_loaded());
+            idle.store(1, Ordering::SeqCst);
+            worker.wake();
+            let until = Instant::now() + Duration::from_secs(10);
+            while executor.is_loaded() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(!executor.is_loaded(), "from {before} s to 1 s: still loaded");
+        }
     }
 }

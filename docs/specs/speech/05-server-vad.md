@@ -220,4 +220,16 @@ something the spec left open, or differs from it:
   silence. A silence at or over the limit fails every item; no rule ties the
   two fields. The leg asserted at the default, run again on the committed
   code, passes: 4.68% against 4.03%.
+- **A commit with no speech heard** (final review, 2026-10-25) makes an item,
+  as OpenAI's commit does, of the audio appended since the last item ended,
+  which OpenAI's buffer holds: as first built it was refused and that audio
+  lost, so a speaker under the threshold lost the dictation. The socket keeps
+  that audio, positioned on the VAD's clock (an item's end drops what came
+  before it), at most `speech.max_clip_seconds` of it (77 MB of f32 at the
+  default 1,200 s, for a session that long without an item); the item takes
+  the last of it that fits under the limit with the leading silence, and the
+  VAD starts again where the commit left the stream, as after a commit
+  during speech, so no padding and no idle time reach back into it. With nothing
+  appended since, the commit is `input_audio_buffer_commit_empty`; a clear
+  discards that audio too (`a_commit_with_no_speech_commits_the_audio_since_the_last_item`).
 - **`chunking_strategy`** on the batch route stays refused, unchanged.

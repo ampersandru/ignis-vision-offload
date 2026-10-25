@@ -391,8 +391,27 @@ Where the build decided something the spec left open, or differs from it:
 - **The server serves it.** #352 left the adapter open
   (`crates/server/src/speech/cpu.rs`): a load builds the crate's executor from
   the catalog entry's decoder and the `mmproj-` file beside it, with the
-  load's threads and pinned weights; the crate's idle unload stays off (the
-  worker keeps the idle clock); `open` takes the request's context cap.
+  load's threads and pinned weights; `open` takes the request's context cap.
+- **One compute worker is the server's** (final review, 2026-10-25). The
+  crate kept an idle watcher and a compute mutex of its own, which the
+  server's worker duplicated (it turned the watcher off and never contended
+  for the mutex). Both are gone: the server is the crate's one user, the
+  pool has its own dispatch lock, and a `Session` is driven one call at a
+  time. A commit is a unit of work a step (`Session::into_commit`,
+  `Commit::step`): the audio's last frames with a window, each window, the
+  decode's prefill (the prompt's tail and the stable text, which a long
+  dictation's refreshes grow) 104 tokens a step, then 16 decode steps a step,
+  each about a window's prefill (a derivation, not an operator threshold);
+  `commit()` steps one to its end. A refresh stays one unit (Q74): it
+  prefills the stable text again each time, so on a long item it grows past a
+  window, which the cost factor (Q76) bounds as a share of the worker. The seam's `commit_step` hands the steps to the worker, so a batch
+  transcription's decode, minutes for a 1,200 s clip, never holds the
+  Realtime sessions. AC 19's witness is the step count on the pair whose
+  head has no EOS (`a_commit_is_a_unit_of_work_a_step`,
+  `a_commits_prefill_is_a_window_of_tokens_a_step`; after its first token
+  that pair's tokens are spaces, so a refresh can fix all the text room) and
+  the worker's order tests; AC 21's idle unload is the worker's (spec 02), the crate's
+  unload test shows the memory given back.
 - **`speech.threads: auto`** is the physical cores less one *counted within
   the CPUs the process may run on*: on Linux `num_cpus::get_physical` reads
   `/proc/cpuinfo`, which a cpuset does not narrow (the container saw 10 cores
@@ -414,14 +433,20 @@ Where the build decided something the spec left open, or differs from it:
   `partial_interval_ms` stays the server's: it decides when `partial()` is
   called.
 - **The KV cache** is sized for `speech.max_clip_seconds` (the executor's
-  default, 1,200 s: the seam carries no clip length) plus half as many text
-  tokens as audio tokens, but grows to it on demand, doubling from the head, two
-  windows and the tail; decoding stops at its end. A decode yields the compute
-  unit every 16 steps, about a window's prefill.
+  default, 1,200 s: the seam carries no clip length) plus a text room of half
+  as many tokens as the audio's and 64 more, but grows to it on demand,
+  doubling from the head, two windows and the tail; decoding stops at its end.
+  The stable text never outgrows the text room, so a commit's prefill always
+  fits and no clip within `max_clip_seconds` fails for want of cache (the
+  `CacheFull` error is gone; `stable_text_never_outgrows_the_text_room`). It
+  is a derivation, not an operator threshold: a decode that fills the room
+  ends there, as at EOS.
 - **A partial can be stopped** (Q79, #353): `Session::partial_unless(stop)`
   asks `stop` before the encode, between the encode and the incomplete
-  window's prefill, before the decode's prefill and after it, and at each
-  16-step yield. Stopped, it returns `None`, the cache truncated to the audio
+  window's prefill, before the decode's prefill and after it, and before
+  every token's forward pass (Q79's granularity, owner 2026-10-25: a check is
+  an atomic load, and a commit waits at most one decode step, not 16).
+  Stopped, it returns `None`, the cache truncated to the audio
   prefix, the stable text and the partials counted (`Stats::partials`, which
   `unfixed_partials` reads) unchanged. `partial()` is the one nothing stops.
 - **Pinned weights** copy every tensor but the repacked Q4_K ones into

@@ -82,6 +82,8 @@ struct Timed {
 struct TimedSession {
     inner: Box<dyn SpeechSession>,
     calls: Arc<std::sync::Mutex<Vec<(&'static str, Duration)>>>,
+    /// The commit's steps so far: timed as one commit at its last.
+    committing: Duration,
 }
 
 impl SpeechSession for TimedSession {
@@ -99,11 +101,13 @@ impl SpeechSession for TimedSession {
         self.calls.lock().unwrap().push((name, began.elapsed()));
         out
     }
-    fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
-        let calls = Arc::clone(&self.calls);
+    fn commit_step(&mut self) -> Result<Option<Transcript>, SpeechError> {
         let began = Instant::now();
-        let out = self.inner.commit();
-        calls.lock().unwrap().push(("commit", began.elapsed()));
+        let out = self.inner.commit_step();
+        self.committing += began.elapsed();
+        if !matches!(out, Ok(None)) {
+            self.calls.lock().unwrap().push(("commit", self.committing));
+        }
         out
     }
 }
@@ -125,7 +129,7 @@ impl SpeechExecutor for Timed {
         self.inner.is_loaded()
     }
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {
-        Ok(Box::new(TimedSession { inner: self.inner.open(open)?, calls: Arc::clone(&self.calls) }))
+        Ok(Box::new(TimedSession { inner: self.inner.open(open)?, calls: Arc::clone(&self.calls), committing: Duration::ZERO }))
     }
 }
 
@@ -211,7 +215,20 @@ fn batch(executor: &CpuExecutor, audio: &[f32]) -> String {
     for chunk in audio.chunks(128_000) {
         s.push(chunk).unwrap();
     }
-    s.commit().unwrap().text
+    loop {
+        if let Some(t) = s.commit_step().unwrap() {
+            return t.text;
+        }
+    }
+}
+
+/// The GPU profile's serialized pass runs every `--ignored` test it does not skip; this leg is
+/// the CPU's, on the study disk, so `scripts/gpu-profile.ps1` skips it by name.
+#[test]
+fn the_gpu_profile_skips_this_leg() {
+    let script = include_str!("../../../scripts/gpu-profile.ps1");
+    let listed = script.split("$NotGpuLegs = @(").nth(1).and_then(|rest| rest.split(')').next()).expect("gpu-profile.ps1 lists $NotGpuLegs");
+    assert!(listed.contains("\"the_eleven_dictations_through_the_real_route_at_real_time_pace\""), "{listed}");
 }
 
 /// AC 5 and 13 on the real executor: the 11 dictations through the route at real-time pace.

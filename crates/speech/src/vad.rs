@@ -414,7 +414,7 @@ impl<V: SpeechProbability> Turns<V> {
 }
 
 /// `ms` milliseconds in samples at 16 kHz.
-fn ms_samples(ms: u32) -> u64 {
+pub fn ms_samples(ms: u32) -> u64 {
     u64::from(ms) * PER_MS
 }
 

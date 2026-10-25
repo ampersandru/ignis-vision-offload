@@ -2,11 +2,10 @@
 //! speech/01, ADR 0068) behind [`SpeechExecutor`].
 //!
 //! A load builds the crate's executor from the catalog entry's files and the
-//! load's settings; the server's worker keeps the idle clock (spec 02), so the
-//! crate's own idle unload stays off.
+//! load's settings; the server's worker keeps the idle clock (spec 02) and
+//! asks for the unload.
 
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
 
 use ignis_speech::{Features, ModelFiles, SessionTuning, Settings, Threads};
 
@@ -38,8 +37,8 @@ impl CpuExecutor {
         CpuExecutor::with_features(Features::detect())
     }
 
-    /// With the CPU features injected (tests).
-    pub fn with_features(features: Features) -> CpuExecutor {
+    /// With features taken away from what detection reported (a test of the unavailable state).
+    fn with_features(features: Features) -> CpuExecutor {
         CpuExecutor { features, loaded: Mutex::new(None) }
     }
 
@@ -87,7 +86,7 @@ impl SpeechExecutor for CpuExecutor {
             .clone();
         let model = ModelFiles { decoder: files.decoder.clone(), encoder };
         let threads = settings.threads.map_or(Threads::Auto, |n| Threads::Count(n as usize));
-        let s = Settings { threads, pinned_weights: settings.pinned_weights, idle_unload: Duration::ZERO, ..Settings::default() };
+        let s = Settings { threads, pinned_weights: settings.pinned_weights, ..Settings::default() };
         *slot = None;
         let exec = ignis_speech::Executor::new(s, model, self.features);
         exec.load().map_err(err)?;
@@ -112,25 +111,52 @@ impl SpeechExecutor for CpuExecutor {
             unfixed_partials: open.unfixed_partials as usize,
         };
         let s = l.exec.open_tuned(&open.context, open.language.as_deref(), tuning).map_err(err)?;
-        Ok(Box::new(CpuSession(s)))
+        Ok(Box::new(CpuSession::Open(s)))
     }
 }
 
-struct CpuSession(ignis_speech::Session);
+/// A transcription: open, then committing a unit at a time, then spent.
+enum CpuSession {
+    Open(ignis_speech::Session),
+    Committing(ignis_speech::Commit),
+    Spent,
+}
+
+const COMMITTED: &str = "the transcription is committed and takes no more audio";
 
 impl SpeechSession for CpuSession {
     fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
-        self.0.push(samples).map_err(err)
+        match self {
+            CpuSession::Open(s) => s.push(samples).map_err(err),
+            _ => Err(SpeechError(COMMITTED.to_owned())),
+        }
     }
 
     fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError> {
-        let p = self.0.partial_unless(stop).map_err(err)?;
+        let CpuSession::Open(s) = self else { return Err(SpeechError(COMMITTED.to_owned())) };
+        let p = s.partial_unless(stop).map_err(err)?;
         Ok(p.map(|p| Partial { stable: p.stable, tail: p.provisional }))
     }
 
-    fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
-        let t = self.0.commit().map_err(err)?;
-        Ok(Transcript { text: t.text, language: t.language, tokens: t.tokens })
+    fn commit_step(&mut self) -> Result<Option<Transcript>, SpeechError> {
+        if let CpuSession::Open(_) = self {
+            let CpuSession::Open(s) = std::mem::replace(self, CpuSession::Spent) else { unreachable!() };
+            *self = CpuSession::Committing(s.into_commit());
+        }
+        let CpuSession::Committing(commit) = self else { return Err(SpeechError(COMMITTED.to_owned())) };
+        let Some(t) = commit.step().map_err(err)? else { return Ok(None) };
+        *self = CpuSession::Spent;
+        Ok(Some(Transcript { text: t.text, language: t.language, tokens: t.tokens }))
+    }
+}
+
+/// A session's commit stepped to its end (tests).
+#[cfg(test)]
+fn commit(mut s: Box<dyn SpeechSession>) -> Result<Transcript, SpeechError> {
+    loop {
+        if let Some(t) = s.commit_step()? {
+            return Ok(t);
+        }
     }
 }
 
@@ -169,7 +195,7 @@ mod tests {
 
     #[test]
     fn a_cpu_without_avx2_is_unavailable_with_the_reason_the_guide_shows() {
-        let e = CpuExecutor::with_features(Features::default());
+        let e = CpuExecutor::with_features(Features::none());
         assert_eq!(e.name(), "cpu");
         assert_eq!(e.availability(), Err(NO_AVX2_REASON.to_owned()));
         let r = e.load(&files(&std::env::temp_dir(), true), LoadSettings::default());
@@ -223,10 +249,36 @@ mod tests {
             s.push(&synthetic::audio(9.3)).unwrap();
             s
         };
-        let untried = session().commit().unwrap();
+        let untried = commit(session()).unwrap();
         let mut s = session();
         assert_eq!(s.partial(&|| true).unwrap(), None);
-        assert_eq!(s.commit().unwrap(), untried);
+        assert_eq!(commit(s).unwrap(), untried);
         assert!(session().partial(&|| false).unwrap().is_some(), "a refresh nothing stops answers");
+    }
+
+    /// Spec speech/01 AC 19 through the seam: the adapter's commit is the crate's, a unit a step
+    /// (the last window with the audio's last frames, then the decode's prefill, then the
+    /// decode), and a spent session takes no more audio and no more steps.
+    #[test]
+    fn the_adapters_commit_is_a_unit_a_step_and_then_spent() {
+        let e = CpuExecutor::new();
+        if e.availability().is_err() {
+            eprintln!("SKIP: this CPU lacks AVX2; the model is not loaded");
+            return;
+        }
+        let pair = synthetic::pair("adapter-steps");
+        let encoder = pair.encoder.with_file_name("mmproj-synthetic.gguf");
+        std::fs::rename(&pair.encoder, &encoder).unwrap();
+        let files = SpeechFiles { id: "synthetic".into(), decoder: pair.decoder.clone(), files: vec![pair.decoder.clone(), encoder] };
+        e.load(&files, LoadSettings { threads: Some(2), pinned_weights: false }).unwrap();
+        let mut s = e.open(SessionOpen { context_max_tokens: 512, ..SessionOpen::default() }).unwrap();
+        s.push(&synthetic::audio(9.3)).unwrap();
+        assert_eq!(s.commit_step().unwrap(), None, "the last window");
+        assert_eq!(s.commit_step().unwrap(), None, "the decode's prefill");
+        // The synthetic decoder's one token, then EOS: one decode step ends it.
+        let t = s.commit_step().unwrap().expect("the decode ends");
+        assert_eq!(t.tokens.len(), 1);
+        assert!(s.commit_step().is_err());
+        assert!(s.push(&[0.0; 160]).is_err());
     }
 }

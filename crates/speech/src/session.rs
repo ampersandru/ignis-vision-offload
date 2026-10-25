@@ -11,10 +11,20 @@
 //!    provisional tail (the rest joins the stable text, never revised), and rolls the cache
 //!    back to the audio prefix. The first `unfixed_partials` fix nothing, as the official
 //!    streaming's first chunks do. `partial_unless` is a partial its caller can stop (Q79):
-//!    it checks before each step of its work and where its decode yields the unit, and a
-//!    partial stopped leaves the session as it was.
+//!    it checks before each step of its work and before each token its decode computes, and
+//!    a partial stopped leaves the session as it was.
 //! 4. `commit` encodes the last window and decodes from the stable text to EOS, so the
-//!    transcript begins with every stable text reported (Q43).
+//!    transcript begins with every stable text reported (Q43). [`Commit`] is the same work a
+//!    unit at a time (Q44): a window, a window's worth of the decode's prefill (the prompt's
+//!    tail and the stable text), or 16 decode steps per [`Commit::step`], so the server's
+//!    worker runs other sessions' units between two and a long clip's decode never holds it
+//!    for its whole length.
+//!
+//! The KV cache holds the head, the longest clip's audio and the tail, then a text room of
+//! half as many tokens as the audio's (speech gives about a third) and 64 more. The stable
+//! text never outgrows that room, so a commit always has the room its prefill needs, and a
+//! decode that reaches the cache's end stops there: no clip within `max_clip_seconds` fails
+//! for want of cache.
 //!
 //! The mel floor (the maximum − 8) is taken over the frames computed so far: a stream cannot
 //! know a clip's maximum before its end. A whole clip pushed at once has every frame but its
@@ -24,15 +34,15 @@ use std::sync::Arc;
 
 use crate::decoder::{self, argmax, Cache, Logits};
 use crate::encoder::encode_window;
-use crate::executor::{Core, Loaded, SessionTuning};
+use crate::executor::{Core, Loaded, PrefixEntry, SessionTuning};
 use crate::mel::{self, audio_tokens, frames_of, normalise, CHUNK_FRAMES, HOP, MIN_SAMPLES, N_FFT, N_MELS, WINDOW_CHUNKS};
 use crate::text::{parse, Prompt};
 
 const WINDOW_FRAMES: usize = CHUNK_FRAMES * WINDOW_CHUNKS;
 const WINDOW_TOKENS: usize = 104;
-/// Decode steps per unit of compute: about a window's prefill, so a long decode interleaves
+/// Decode steps per [`Commit::step`]: about a window's prefill, so a long decode interleaves
 /// with other sessions' windows (Q44).
-const DECODE_UNIT: usize = 16;
+pub const DECODE_UNIT: usize = 16;
 
 /// A partial result: the stable text (never revised) and the provisional tail.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,21 +74,23 @@ pub struct Stats {
     /// Audio tokens prefilled into the audio prefix: each once.
     pub audio_prefilled: usize,
     pub partials: usize,
+    /// The stable text's tokens: what a commit's prefill carries after the prompt's tail.
+    pub stable_tokens: usize,
 }
 
 #[derive(Debug)]
 pub enum SessionError {
     /// The clip passed `max_clip_seconds`.
     TooLong { seconds: u32 },
-    /// The KV cache filled before the decoder stopped.
-    CacheFull,
+    /// A commit was asked for another step after it ended.
+    Committed,
 }
 
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionError::TooLong { seconds } => write!(f, "the audio is longer than {seconds} s"),
-            SessionError::CacheFull => write!(f, "the transcription filled its KV cache"),
+            SessionError::Committed => write!(f, "the transcription was already committed"),
         }
     }
 }
@@ -103,6 +115,9 @@ pub struct Session {
     cache: Cache,
     /// Cache positions after the head and every encoded window.
     audio_prefix: usize,
+    /// The positions the cache keeps for text after the longest clip's audio and the tail:
+    /// the stable text stays shorter, so a commit's prefill always fits.
+    text_room: usize,
     stable: Vec<u32>,
     since_partial: usize,
     stats: Stats,
@@ -112,8 +127,6 @@ pub struct Session {
 
 impl Session {
     pub(crate) fn open(loaded: Arc<Loaded>, core: Arc<Core>, context: &str, language: Option<&str>, tuning: SessionTuning) -> Session {
-        let guard = core.clone();
-        let _unit = guard.unit();
         let s = &core.settings;
         let text = &loaded.model.text;
         let prompt = Prompt::new(text, context, tuning.context_max_tokens, language);
@@ -122,7 +135,8 @@ impl Session {
         // Sized for the context cap, the longest clip's audio tokens and the decode (§2): room
         // for half as many text tokens as audio tokens, where speech gives about a third. It
         // starts at the head, a window and the tail, and grows as the transcription does.
-        let max = prompt.head.len() + audio_cap + prompt.tail.len() + audio_cap / 2 + 64;
+        let text_room = audio_cap / 2 + 64;
+        let max = prompt.head.len() + audio_cap + prompt.tail.len() + text_room;
         let first = prompt.head.len() + 2 * WINDOW_TOKENS + prompt.tail.len() + 64;
         let mut cache = Cache::growing(dec, first, max);
         let mut stats = Stats::default();
@@ -136,7 +150,7 @@ impl Session {
                     stats.context_prefilled = prompt.context_tokens;
                     let mut keep = Cache::new(dec, prompt.head.len());
                     keep.copy_prefix(&cache, prompt.head.len());
-                    *entry = Some(crate::executor::PrefixEntry { head: prompt.head.clone(), cache: keep });
+                    *entry = Some(PrefixEntry { head: prompt.head.clone(), cache: keep });
                 }
             }
         }
@@ -156,6 +170,7 @@ impl Session {
             windows: 0,
             cache,
             audio_prefix,
+            text_room,
             stable: Vec::new(),
             since_partial: 0,
             stats,
@@ -188,7 +203,6 @@ impl Session {
         if self.total_samples + samples.len() > max as usize * mel::SAMPLE_RATE {
             return Err(SessionError::TooLong { seconds: max });
         }
-        self.core.touch();
         self.samples.extend_from_slice(samples);
         self.total_samples += samples.len();
         self.since_partial += samples.len();
@@ -196,13 +210,9 @@ impl Session {
         // Frame 0 also reflects at the start: it needs sample 200.
         let ready = if self.total_samples > N_FFT / 2 { (self.total_samples - N_FFT / 2) / HOP + 1 } else { 0 };
         if ready > self.next_frame {
-            let core = self.core.clone();
-            let _unit = core.unit();
             self.compute_frames(ready - self.next_frame);
         }
         while self.next_frame >= (self.windows + 1) * WINDOW_FRAMES {
-            let core = self.core.clone();
-            let _unit = core.unit();
             let mel = self.window_mel(self.windows * WINDOW_FRAMES, WINDOW_FRAMES, &[]);
             self.prefill_window(&mel, WINDOW_FRAMES);
         }
@@ -267,45 +277,65 @@ impl Session {
         (out, total)
     }
 
-    /// Greedy decoding after the audio: the prompt's tail and the stable text, then up to EOS
-    /// or the cache's end (§2), a unit of compute per `DECODE_UNIT` steps. `None` once `stop`
-    /// says so, before the prefill, after it or where it yields the unit (Q79).
-    fn decode_after_audio(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Vec<u32>>, SessionError> {
-        let core = self.core.clone();
+    /// The decode's prefill after the audio: the prompt's tail and the stable text.
+    fn decode_prompt(&self) -> Vec<u32> {
+        [&self.prompt.tail[..], &self.stable[..]].concat()
+    }
+
+    /// Prefills `ids`, a piece of the decode's prompt, and answers the next token's logits
+    /// when it is the last piece. The text room holds the whole prompt (the stable text never
+    /// outgrows it), so a clip within `max_clip_seconds` always has the positions.
+    fn prefill_text(&mut self, ids: &[u32], last: bool) -> Option<Vec<f32>> {
         let loaded = self.loaded.clone();
         let dec = &loaded.model.decoder;
-        let mut ids = self.prompt.tail.clone();
-        ids.extend(&self.stable);
-        if stop() {
-            return Ok(None);
-        }
-        if !self.cache.reserve(self.cache.len + ids.len() + 1) {
-            return Err(SessionError::CacheFull);
-        }
-        let mut unit = core.unit();
-        let mut logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &ids), Logits::Last, None);
-        if stop() {
-            return Ok(None);
-        }
-        let mut out = Vec::new();
-        loop {
-            let t = argmax(&logits);
+        let fits = self.cache.reserve(self.cache.len + ids.len() + 1);
+        debug_assert!(fits, "the stable text outgrew the text room");
+        let want = if last { Logits::Last } else { Logits::None };
+        let logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, ids), want, None);
+        last.then_some(logits)
+    }
+
+    /// The whole decode's prefill in one call: a partial's.
+    fn begin_decode(&mut self) -> Decode {
+        let ids = self.decode_prompt();
+        Decode { out: Vec::new(), logits: self.prefill_text(&ids, true).expect("the last piece answers logits") }
+    }
+
+    /// Up to `steps` greedy steps of `d`: `Some(true)` once it ended, at EOS or at the cache's
+    /// end (§2), `Some(false)` with steps left to take, `None` once `stop` says so, which it
+    /// is asked before every token's forward pass (Q79).
+    fn decode_steps(&mut self, d: &mut Decode, steps: usize, stop: &dyn Fn() -> bool) -> Option<bool> {
+        let loaded = self.loaded.clone();
+        let dec = &loaded.model.decoder;
+        for _ in 0..steps {
+            let t = argmax(&d.logits);
             if loaded.model.text.eos.contains(&t) {
-                return Ok(Some(out));
+                return Some(true);
             }
-            out.push(t);
+            d.out.push(t);
             if !self.cache.reserve(self.cache.len + 1) {
-                return Ok(Some(out));
+                return Some(true);
             }
-            if out.len() % DECODE_UNIT == 0 {
-                drop(unit);
-                if stop() {
-                    return Ok(None);
-                }
-                unit = core.unit();
+            if stop() {
+                return None;
             }
-            logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &[t]), Logits::Last, None);
+            d.logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &[t]), Logits::Last, None);
         }
+        Some(false)
+    }
+
+    /// Greedy decoding after the audio, to EOS or the cache's end, in one call: a partial's.
+    /// `None` once `stop` says so, before the prefill, after it or before any token (Q79).
+    fn decode_after_audio(&mut self, stop: &dyn Fn() -> bool) -> Option<Vec<u32>> {
+        if stop() {
+            return None;
+        }
+        let mut d = self.begin_decode();
+        if stop() {
+            return None;
+        }
+        self.decode_steps(&mut d, usize::MAX, stop)?;
+        Some(d.out)
     }
 
     /// The transcript text of output ids: after the `<asr_text>` header, or all of it under a
@@ -322,8 +352,6 @@ impl Session {
     /// A partial's incomplete window: encoded and prefilled after the audio prefix. `None`
     /// when `stop` says so between the encode and the prefill (Q79).
     fn prefill_incomplete(&mut self, stop: &dyn Fn() -> bool) -> Option<()> {
-        let core = self.core.clone();
-        let _unit = core.unit();
         let (tail, total) = self.tail_frames();
         let first = self.windows * WINDOW_FRAMES;
         if total > first {
@@ -353,7 +381,6 @@ impl Session {
     /// prefix, the stable text and the partials counted unchanged, so a commit next decodes
     /// from the stable text already reported.
     pub fn partial_unless(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SessionError> {
-        self.core.touch();
         if self.total_samples == 0 {
             self.since_partial = 0;
             self.stats.partials += 1;
@@ -362,16 +389,15 @@ impl Session {
         if stop() {
             return Ok(None);
         }
-        let decoded = match self.prefill_incomplete(stop) {
-            Some(()) => self.decode_after_audio(stop),
-            None => Ok(None),
-        };
+        let decoded = self.prefill_incomplete(stop).and_then(|()| self.decode_after_audio(stop));
         self.cache.truncate(self.audio_prefix);
-        let Some(decoded) = decoded? else { return Ok(None) };
+        let Some(decoded) = decoded else { return Ok(None) };
         self.since_partial = 0;
         self.stats.partials += 1;
         let r = self.tuning.rollback_tokens;
         let mut cut = if self.stats.partials <= self.tuning.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
+        // The stable text stays inside the text room, with a position for the next token.
+        cut = cut.min(self.text_room.saturating_sub(self.stable.len() + 1));
         // The stable text ends on a whole word: the provisional tail starts where a word does
         // (a token that decodes with a leading space), so an identifier the audio has not
         // finished (`model_switch.rs`) stays provisional whole. A whole word also ends on a
@@ -384,6 +410,7 @@ impl Session {
             cut -= 1;
         }
         self.stable.extend_from_slice(&decoded[..cut]);
+        self.stats.stable_tokens = self.stable.len();
         let (stable, language) = self.body(&self.stable);
         let all: Vec<u32> = [&self.stable[..], &decoded[cut..]].concat();
         let (full, _) = self.body(&all);
@@ -391,36 +418,87 @@ impl Session {
         Ok(Some(Partial { stable, provisional, language: language.or_else(|| self.language.clone()) }))
     }
 
-    /// Encodes the rest of the audio and decodes to EOS from the stable text.
-    pub fn commit(mut self) -> Result<Transcript, SessionError> {
-        self.core.touch();
-        let (tail, total) = {
-            let core = self.core.clone();
-            let _unit = core.unit();
-            self.tail_frames()
-        };
-        // The tail frames are final now: fold them into the computed ones.
-        self.max_log = tail.iter().fold(self.max_log, |m, &v| m.max(v));
-        self.frames.extend_from_slice(&tail);
-        self.next_frame = total;
-        while self.windows * WINDOW_FRAMES < total {
-            let core = self.core.clone();
-            let _unit = core.unit();
-            let first = self.windows * WINDOW_FRAMES;
-            let n = (total - first).min(WINDOW_FRAMES);
-            let mel = self.window_mel(first, n, &[]);
-            self.prefill_window(&mel, n);
+    /// Encodes the rest of the audio and decodes to EOS from the stable text: a [`Commit`]
+    /// stepped to its end.
+    pub fn commit(self) -> Result<Transcript, SessionError> {
+        let mut commit = self.into_commit();
+        loop {
+            if let Some(transcript) = commit.step()? {
+                return Ok(transcript);
+            }
         }
-        let out = self.decode_after_audio(&|| false)?.expect("a commit is never stopped");
-        let all: Vec<u32> = [&self.stable[..], &out[..]].concat();
-        let text = &self.loaded.model.text;
-        let p = parse(&text.decode(&all), self.language.as_deref());
-        Ok(Transcript {
-            text: p.text,
-            language: p.language,
-            audio_seconds: self.seconds(),
-            audio_tokens: audio_tokens(total),
-            tokens: all,
-        })
+    }
+
+    /// The commit, to be taken a unit at a time ([`Commit::step`]). Nothing is computed here.
+    pub fn into_commit(self) -> Commit {
+        Commit { session: self, total: None, prompt: None, decode: None, done: false }
+    }
+}
+
+/// A greedy decode in progress: the tokens so far and the logits of the next.
+struct Decode {
+    out: Vec<u32>,
+    logits: Vec<f32>,
+}
+
+/// A commit in progress (§4, Q44): the session's last windows, the decode's prefill, then the
+/// decode, a unit of compute per [`step`](Commit::step).
+pub struct Commit {
+    session: Session,
+    /// The clip's frames, once the first step folded in the last ones.
+    total: Option<usize>,
+    /// The decode's prompt, and how much of it is prefilled.
+    prompt: Option<(Vec<u32>, usize)>,
+    decode: Option<Decode>,
+    done: bool,
+}
+
+impl Commit {
+    /// One unit of the commit: the audio's last frames and a window of it, a window, a
+    /// window's worth of tokens (104) of the decode's prefill, or [`DECODE_UNIT`] decode
+    /// steps. `Some` with the transcript once the decode ends; a step after that is
+    /// [`SessionError::Committed`].
+    pub fn step(&mut self) -> Result<Option<Transcript>, SessionError> {
+        if self.done {
+            return Err(SessionError::Committed);
+        }
+        let s = &mut self.session;
+        let total = match self.total {
+            Some(total) => total,
+            None => {
+                let (tail, total) = s.tail_frames();
+                // The tail frames are final now: fold them into the computed ones.
+                s.max_log = tail.iter().fold(s.max_log, |m, &v| m.max(v));
+                s.frames.extend_from_slice(&tail);
+                s.next_frame = total;
+                *self.total.insert(total)
+            }
+        };
+        let Some(d) = self.decode.as_mut() else {
+            if s.windows * WINDOW_FRAMES < total {
+                let first = s.windows * WINDOW_FRAMES;
+                let n = (total - first).min(WINDOW_FRAMES);
+                let mel = s.window_mel(first, n, &[]);
+                s.prefill_window(&mel, n);
+                return Ok(None);
+            }
+            let (ids, done) = self.prompt.get_or_insert_with(|| (s.decode_prompt(), 0));
+            let to = (*done + WINDOW_TOKENS).min(ids.len());
+            let piece = ids[*done..to].to_vec();
+            let last = to == ids.len();
+            *done = to;
+            if let Some(logits) = s.prefill_text(&piece, last) {
+                self.decode = Some(Decode { out: Vec::new(), logits });
+            }
+            return Ok(None);
+        };
+        if !s.decode_steps(d, DECODE_UNIT, &|| false).expect("nothing stops a commit") {
+            return Ok(None);
+        }
+        self.done = true;
+        let all: Vec<u32> = [&s.stable[..], &d.out[..]].concat();
+        let text = &s.loaded.model.text;
+        let p = parse(&text.decode(&all), s.language.as_deref());
+        Ok(Some(Transcript { text: p.text, language: p.language, audio_seconds: s.seconds(), audio_tokens: audio_tokens(total), tokens: all }))
     }
 }

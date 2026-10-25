@@ -46,12 +46,13 @@ fn events(sink: &MemorySink, name: &str) -> Vec<Value> {
 /// AC 14, 15: the run's log holds no audio byte and none of the transcript's
 /// words nor the prompt's, and each transcription wrote one line with the
 /// audio seconds, the executor, the variant, x real time, the wait, the
-/// language and the outcome.
+/// language and the outcome, and a failed one its reason.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transcription_writes_one_line_of_numbers_and_no_text_or_audio() {
     let sink = captured();
     let executor = Arc::new(FakeExecutor::saying(&WORDS));
     executor.set_step_delay(Duration::from_millis(20));
+    let failing = Arc::clone(&executor);
     let (server, _dir) = speech::server(executor, |_| {});
     let app = server.app();
     for stream in [false, true] {
@@ -71,9 +72,17 @@ async fn a_transcription_writes_one_line_of_numbers_and_no_text_or_audio() {
     // A refused one logs nothing of its text either.
     let refused = app.clone().oneshot(speech::transcription(&[Part::File("file", speech::WAV), Part::Text("prompt", "quokka"), Part::Text("temperature", "0.9")])).await.unwrap();
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    // One the executor fails writes its one line too, at WARN, with the
+    // executor's own words as its reason.
+    failing.fail_commit.store(true, std::sync::atomic::Ordering::SeqCst);
+    let failed = app.clone().oneshot(speech::transcription(&[Part::File("file", speech::WAV)])).await.unwrap();
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
-    let lines = events(&sink, "ignis.speech.transcription");
-    assert_eq!(lines.len(), 2, "one line per transcription: {lines:?}");
+    let mut lines = events(&sink, "ignis.speech.transcription");
+    assert_eq!(lines.len(), 3, "one line per transcription: {lines:?}");
+    let failed = lines.pop().unwrap();
+    assert_eq!((failed["outcome"].as_str(), failed["reason"].as_str()), (Some("failed"), Some("the fake executor was told to fail")), "{failed}");
+    assert!(events(&sink, "ignis.speech.failed").is_empty(), "a second line for a failure");
     for line in &lines {
         assert!((line["audio_seconds"].as_f64().unwrap() - 1.0).abs() < 0.01, "{line}");
         assert_eq!(line["executor"], "cpu");

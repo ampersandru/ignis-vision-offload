@@ -15,7 +15,11 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use ignis_server::speech::executor::FakeExecutor;
+use ignis_server::config::file::RealFiles;
+use ignis_server::config::{resolve_with, ConfigOutcome};
+use ignis_server::config_http::ConfigState;
+use ignis_server::speech::executor::{FakeExecutor, SpeechExecutor};
+use ignis_server::speech::worker::Step;
 use ignis_server::{ModelStatus, Server};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -648,6 +652,116 @@ async fn transcriptions_are_served_through_a_switch_a_warm_up_and_an_unload() {
             assert_eq!(answer(&app, chat).await.0, StatusCode::SERVICE_UNAVAILABLE, "{status:?}");
         }
     }
+}
+
+/// AC 13 (Q40): with the image model loaded instead of a text model, a
+/// transcription is served on the CPU beside it, and the image model stays.
+#[tokio::test]
+async fn a_transcription_is_served_with_the_image_model_loaded() {
+    let image = ignis_server::images::ImageModel::new("ignis-image-2.1-turbo", Box::new(ignis_core::image::FakeImageRunner::default()));
+    let base = Server::from_active(ignis_server::ActiveModel::image(image));
+    let (server, _dir) = speech::server_on(base, fake(), |_| {});
+    assert_eq!(server.active().kind(), ignis_core::compute::ModelKind::Image);
+    let app = app(&server);
+    let (code, _, body) = transcribe(&app, &[]).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["text"], "hello from ignis");
+    assert_eq!(server.active().kind(), ignis_core::compute::ModelKind::Image, "the image model is still the one loaded");
+    assert_eq!(server.usage.in_flight(), 0, "a transcription is no use of the loaded model");
+}
+
+/// Spec speech/02 AC 11, 01 AC 19: a batch transcription's commit is a unit
+/// of work a step, so a Realtime session's unit queued while it decodes runs
+/// between two of its steps, not after the whole commit.
+#[tokio::test]
+async fn a_realtime_unit_runs_between_the_steps_of_a_batch_commit() {
+    let executor = fake();
+    executor.commit_steps.store(3, Ordering::SeqCst);
+    executor.set_step_delay(Duration::from_millis(200));
+    let (server, _dir) = speech::server(executor.clone(), |_| {});
+    let speech = Arc::clone(&server.speech);
+    let app = app(&server);
+    let running = tokio::spawn({
+        let app = app.clone();
+        async move { transcribe(&app, &[]).await }
+    });
+    until(|| executor.calls().iter().any(|call| call == "commit 0")).await;
+    let session = speech.open_session(&server.live().speech).unwrap();
+    let calls = Arc::clone(&executor.calls);
+    speech.submit_interactive(
+        &session,
+        Box::new(move || {
+            calls.lock().unwrap().push("realtime".to_owned());
+            Step::Done
+        }),
+    );
+    assert_eq!(running.await.unwrap().0, StatusCode::OK);
+    let calls: Vec<String> = executor.calls().into_iter().filter(|call| call.starts_with("commit") || call == "realtime").collect();
+    assert_eq!(calls, ["commit 0", "realtime", "commit 0", "commit 0"]);
+}
+
+/// A server running a configuration resolved from `argv`, with the config
+/// state a start builds, so `PATCH /v1/config` applies to it.
+fn configured(server: Server, argv: &[&str]) -> Server {
+    let argv: Vec<String> = argv.iter().map(|arg| arg.to_string()).collect();
+    let config = match resolve_with(&argv, |_| None, &RealFiles).expect("the options resolve") {
+        ConfigOutcome::Config(config) => config,
+        other => panic!("{other:?}"),
+    };
+    let server = server.with_config(Arc::new(ConfigState::new(config.clone(), Arc::new(RealFiles))));
+    server.apply_config(&config);
+    server
+}
+
+async fn patch(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder().method("PATCH").uri("/v1/config").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+    let (status, _, body) = answer(app, request).await;
+    (status, body)
+}
+
+/// `speech.idle_unload` is read live (the guide: every field is): a `PATCH`
+/// while the model is loaded and idle reaches the idle clock, from 0 (never)
+/// and from a long time alike, nothing submitted since.
+#[tokio::test]
+async fn a_patch_of_the_idle_time_reaches_an_idle_model() {
+    for before in ["0", "300"] {
+        let executor = fake();
+        let (server, _dir) = speech::server(executor.clone(), |_| {});
+        let server = configured(server, &["--speech-idle-unload", before]);
+        let app = app(&server);
+        assert_eq!(transcribe(&app, &[]).await.0, StatusCode::OK);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(executor.is_loaded(), "{before}: unloaded before the patch");
+        let (status, applied) = patch(&app, json!({ "speech": { "idle_unload": 1 } })).await;
+        assert_eq!(status, StatusCode::OK, "{applied}");
+        until(|| !executor.is_loaded()).await;
+    }
+}
+
+/// Spec speech/02 §Which model: a `PATCH` naming a text model as
+/// `speech.model`, or a compat name equal to an id of the catalog the server
+/// runs with (an operator's entry here), is refused, and nothing applies.
+#[tokio::test]
+async fn a_patch_of_a_text_model_or_a_catalog_id_as_a_speech_name_is_refused() {
+    let (server, dir) = speech::server(fake(), |_| {});
+    let mut models = speech::models(&dir);
+    let mut entries = models.catalog.entries().to_vec();
+    let mut operator = entries[0].clone();
+    operator.id = "operator-asr".to_owned();
+    entries.push(operator);
+    models.catalog = Arc::new(ignis_server::download::catalog::Catalog::from_entries(entries));
+    let server = configured(server.with_speech(Arc::new(ignis_server::speech::Speech::new(fake(), Some(models)))), &[]);
+    let app = app(&server);
+    let (status, refused) = patch(&app, json!({ "speech": { "model": "qwen3.8-27b" } })).await;
+    assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("config_invalid")), "{refused}");
+    assert!(refused["error"]["message"].as_str().unwrap().contains("not a speech model"), "{refused}");
+    let (status, refused) = patch(&app, json!({ "speech": { "compat_names": ["whisper-1", "operator-asr"] } })).await;
+    assert_eq!((status, refused["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("config_invalid")), "{refused}");
+    assert!(refused["error"]["message"].as_str().unwrap().contains("operator-asr"), "{refused}");
+    assert_eq!(server.live().speech.model, "auto");
+    assert!(!server.live().speech.compat_names.iter().any(|name| name == "operator-asr"));
+    let (status, applied) = patch(&app, json!({ "speech": { "compat_names": ["whisper-1", "my-transcriber"] } })).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
 }
 
 /// AC 13: a transcription in flight is not a request using the text model.
