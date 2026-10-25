@@ -49,9 +49,9 @@ a recorded patch, made with `scripts/vendor-ninfer.ps1 record-patch`: a
 measurement that shows the op is the bottleneck (ADR 0031), or a demonstrated
 correctness bug, whose patch ships with a test that fails without it and a
 `reason` naming the bug and the test (ADR 0037). An op rewritten as ours, or
-changed beyond a recorded patch, leaves the vendored tree and makes no parity
-claim (ADR 0031, ADR 0051). A comparison with the reference says whether it
-crosses an Ignis-patched behaviour.
+changed beyond a recorded patch, leaves the vendored tree and
+makes no parity claim (ADR 0031, ADR 0051). A comparison with the reference
+says whether it crosses an Ignis-patched behaviour.
 
 ## After a merge or a rebase
 
