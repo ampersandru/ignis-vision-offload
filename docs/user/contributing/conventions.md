@@ -45,9 +45,17 @@ file of a server `make start` launched is under `.scratch/serve/`.
   and the implementation and testing decisions. Its tickets, the sub-issues,
   carry the acceptance criteria
   ([`docs/agents/issue-tracker.md`](../../agents/issue-tracker.md)).
-- **An ADR** records a decision, the options it rejected and its consequences.
-  It is written when the decision is taken, and amended rather than rewritten
-  when it changes. The [list](../../adr/) is the project's memory of why.
+- **An ADR** records a decision and why it was taken, in the short format: a
+  title as its heading and one to three sentences of context, decision and
+  reason, with a status, the options it rejected or its consequences only when
+  they add something. ADRs 0001 to 0069 keep their longer form with the number
+  in the heading; the release notes name both kinds "ADR NNNN — title",
+  taking a short one's number from its file name. An ADR takes the next free number when it
+  merges into `main`, and is renumbered, with every line that cites it, when
+  another ADR took that number first. It is written when the decision is
+  taken, and amended rather than rewritten when it changes. The
+  [list](../../adr/) is the project's memory of why; ADR 0070 lists the places
+  where the repo differs from the agent skills it follows.
 - **A finding** preserves evidence another reader can inspect or reproduce:
   a discovery, a research result or an experiment, with its question, its
   evidence, its limits ([`docs/agents/findings.md`](../../agents/findings.md)).

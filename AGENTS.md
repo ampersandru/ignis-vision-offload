@@ -37,6 +37,15 @@ Writing, reviewing or merging a change, or running a skill that writes files: `C
 When recording or consulting durable findings from discovery, research, or
 experiments, start from `docs/findings/README.md`.
 
+### ADRs
+
+When recording a decision in `docs/adr/`, write it in the `/domain-modeling`
+skill's short format, with the bare title as its heading: the release notes
+take the number from the file name. An ADR takes the next free number when it
+merges into `main`; if `main` took that number first, the ADR is renumbered
+with every line that cites it (b61a224f). Where the repo differs from the
+skills: ADR 0070.
+
 ### Testing
 
 Every code change ships with a test, and the task is not complete until
