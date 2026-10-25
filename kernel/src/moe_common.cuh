@@ -93,7 +93,7 @@ template <typename F> __device__ __forceinline__ void dispatch_k2(uint32_t k2, F
   }
 }
 
-// A record's planes (layout.md §3): the trellis at offset 0, then suh [in] and svh [out] fp16.
+// A record's planes (flash-next-layout.md §3): the trellis at offset 0, then suh [in] and svh [out] fp16.
 struct RecordPlanes {
   const uint32_t *trellis;
   const __half *suh;

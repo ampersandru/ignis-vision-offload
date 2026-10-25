@@ -1,4 +1,4 @@
-"""The reference readouts and the scorers spec 04 shares (layout.md §10)."""
+"""The reference readouts and the scorers spec 04 shares (flash-next-layout.md §10)."""
 import math
 
 import pytest

@@ -28,7 +28,7 @@ def _linear(key, rows, columns, words, mul1=exl3.MUL1, suh_len=None, trellis_dty
 
 
 def test_record_bytes_match_the_containers_class_table():
-    # docs/specs/flash-next/layout.md §3's class table (the reader's trellis_geometry).
+    # docs/formats/flash-next-layout.md §3's class table (the reader's trellis_geometry).
     assert exl3.record_bytes(4, 1280, 2560) == 827_392
     assert exl3.record_bytes(5, 1280, 2560) == 1_032_192
     assert exl3.record_bytes(6, 2560, 640) == 622_592

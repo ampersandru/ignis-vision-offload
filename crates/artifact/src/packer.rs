@@ -1,6 +1,6 @@
 //! The packer: assembles the Flash-Next `.ninfer` v2 container from the
 //! converter's work tree (spec flash-next/01, "Who writes the container";
-//! the work-file contract is `docs/specs/flash-next/layout.md`).
+//! the work-file contract is `docs/formats/flash-next-layout.md`).
 //!
 //! The converter never writes the container format. Its work tree holds one
 //! directory per **unit** — `frontend/`, `global/`, `ngram/` (with the table
@@ -37,7 +37,7 @@
 //! merges a `converter.json` written after the container was finished.
 //!
 //! The same mechanics pack the MTP head's companion container
-//! ([`Family::Mtp`], layout.md §13): one unit, `mtp/`, and a sidecar that
+//! ([`Family::Mtp`], flash-next-layout.md §13): one unit, `mtp/`, and a sidecar that
 //! pins the main container it belongs to (`pair.main`, read from the main
 //! container itself, so its hash is the one the binder computes).
 //!
@@ -76,11 +76,11 @@ pub const DEFAULT_HEADER_BYTES: u64 = 64 << 20;
 pub const DEFAULT_DELETE_BATCH_BYTES: u64 = 1 << 30;
 
 /// The container's file name, beside the converter's `work/` directory
-/// (layout.md §1; the packer's default `--out`).
+/// (flash-next-layout.md §1; the packer's default `--out`).
 pub const ARTIFACT_FILE_NAME: &str = "qwen3_8_flash_next_trellis_a25-v2.ninfer";
 
 /// The MTP companion container's file name, beside the main one
-/// (layout.md §13.1).
+/// (flash-next-layout.md §13.1).
 pub const MTP_ARTIFACT_FILE_NAME: &str = "qwen3_8_flash_next_mtp_3p0-v2.ninfer";
 
 /// The companion's header reservation: its directory is ~0.2 MB.
@@ -89,7 +89,7 @@ pub const MTP_HEADER_BYTES: u64 = 1 << 20;
 /// Room a `keep_work` run leaves free beyond its second copy.
 const KEEP_WORK_MARGIN_BYTES: u64 = 2 << 30;
 
-/// The default artifact identity (layout.md: never mistakable for a 27B).
+/// The default artifact identity (flash-next-layout.md: never mistakable for a 27B).
 pub fn default_identity() -> ArtifactIdentity {
     ArtifactIdentity {
         model_id: crate::flash_next::MODEL_ID.into(),
@@ -133,7 +133,7 @@ pub fn trellis_27b_identity() -> ArtifactIdentity {
     }
 }
 
-/// The MTP companion container's identity (layout.md §13.2).
+/// The MTP companion container's identity (flash-next-layout.md §13.2).
 pub fn mtp_identity() -> ArtifactIdentity {
     ArtifactIdentity {
         model_id: MTP_MODEL_ID.into(),
@@ -146,7 +146,7 @@ pub fn mtp_identity() -> ArtifactIdentity {
 pub enum Family {
     /// The model: frontend, globals, the n-gram unit, the layers.
     Main,
-    /// The MTP head's companion (layout.md §13): the one unit `mtp/`,
+    /// The MTP head's companion (flash-next-layout.md §13): the one unit `mtp/`,
     /// pinned to the main container `pair_main`.
     Mtp { pair_main: PathBuf },
     /// The image model (spec image-model/01): `frontend/` and the four
@@ -688,7 +688,7 @@ fn plan_unit(
     };
     let flash_next = || geometry.ok_or_else(|| fail(format!("unit {unit} needs Flash-Next's geometry")));
     let mut plan = UnitPlan::new(dir);
-    // Only the files layout.md names are read; anything else in a unit
+    // Only the files flash-next-layout.md names are read; anything else in a unit
     // directory (a layer's `layer.json`, `route_*.npy`) is the converter's
     // own record. A container object the converter forgot to list is caught
     // by the bind, which requires every object of the inventory.
@@ -732,7 +732,7 @@ fn plan_unit(
     Ok(Some(plan))
 }
 
-/// The tensors a `tensors.json` lists (layout.md §6.3), each whole in its
+/// The tensors a `tensors.json` lists (flash-next-layout.md §6.3), each whole in its
 /// file, under its own name, which must start with `prefix` when one is
 /// given (a layer's `layers.{L}.`, the MTP head's `mtp.`).
 fn plan_tensors_json(plan: &mut UnitPlan, done: &Done, prefix: Option<&str>) -> Result<()> {
@@ -776,7 +776,7 @@ fn plan_tensors_json(plan: &mut UnitPlan, done: &Done, prefix: Option<&str>) -> 
 }
 
 /// A layer's expert projections: `experts.bin` sliced by `experts.idx`
-/// (layout.md §4), one tensor per projection, named by `name`.
+/// (flash-next-layout.md §4), one tensor per projection, named by `name`.
 fn plan_experts(
     plan: &mut UnitPlan,
     done: &Done,
@@ -842,7 +842,7 @@ fn plan_experts(
     Ok(())
 }
 
-/// The n-gram unit (layout.md §7): the table from its shards, the hash
+/// The n-gram unit (flash-next-layout.md §7): the table from its shards, the hash
 /// buffers, the hot rows. `false` while `table/` is not complete yet.
 fn plan_ngram(plan: &mut UnitPlan, done: &Done, geometry: &FlashNextGeometry) -> Result<bool> {
     // The shards live in `table/`, with their own DONE (or, equally, listed
@@ -868,7 +868,7 @@ fn plan_ngram(plan: &mut UnitPlan, done: &Done, geometry: &FlashNextGeometry) ->
         }
     }
     // hot_rows.json records how many shards the sweep converted and whether
-    // that is the whole table (layout.md §7.3).
+    // that is the whole table (flash-next-layout.md §7.3).
     let manifest = if done.contains_key("hot_rows.json") {
         read_json(&plan.dir.join("hot_rows.json"))?
     } else {
@@ -1266,7 +1266,7 @@ fn remove_file(path: &Path) -> Result<()> {
     }
 }
 
-/// What an MTP companion records of its main container (layout.md §13.5
+/// What an MTP companion records of its main container (flash-next-layout.md §13.5
 /// `pair.main`), read from the container itself: `content_hash` is
 /// [`Reader::content_hash`], the hash the binder compares at load, and
 /// `file_sha256` the whole file's (one pass over it, at pack time only).

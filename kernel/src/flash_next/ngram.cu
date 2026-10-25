@@ -89,7 +89,7 @@ __device__ float block_sum(float value, float *shared) {
 
 // e[r][h * head_dim + i] = bf16((nibble - 8) * scale): byte i / 2 of row h
 // holds value i in its low nibble when i is even, its high one when odd; the
-// fp16 scales follow the codes (layout.md 7.1).
+// fp16 scales follow the codes (flash-next-layout.md 7.1).
 __global__ void dequant_rows(const uint8_t *rows_int4, int32_t tokens, int32_t t0, int32_t n,
                              int32_t heads, int32_t head_dim, int32_t row_bytes, __nv_bfloat16 *e) {
   const int32_t r = blockIdx.x;

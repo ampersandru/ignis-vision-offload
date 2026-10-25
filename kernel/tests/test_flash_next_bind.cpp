@@ -1,7 +1,7 @@
 // GitHub #302 (spec flash-next/04): the Flash-Next binder
 // (kernel/src/flash_next/bind.cu) -- OURS, not vendored.
 //
-// Descriptors named and shaped as docs/specs/flash-next/layout.md section 6
+// Descriptors named and shaped as docs/formats/flash-next-layout.md section 6
 // and crates/artifact/src/flash_next.rs's inventory have them, at Flash-Next's
 // real geometry (48 layers), carrying no planes: the binder only reads names,
 // formats and shapes. A complete set binds and every weight lands where the

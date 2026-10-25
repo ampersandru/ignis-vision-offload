@@ -1,4 +1,4 @@
-"""A reduced work tree in the exact layout of layout.md, from synthetic data, CPU only.
+"""A reduced work tree in the exact layout of flash-next-layout.md, from synthetic data, CPU only.
 
 For the packer's end-to-end tests: 2 layers of 8 experts spread over at least three K
 classes (records at the real projection shapes, so the size table holds), a few FP8 and

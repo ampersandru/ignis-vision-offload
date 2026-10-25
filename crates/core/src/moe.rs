@@ -39,7 +39,7 @@ pub const DECODE_CLUSTERS: u32 = 1;
 pub const DECODE_REGISTERS: u32 = 2;
 
 /// One slot-table entry, 1:1 with `struct ignis_moe_slot`: the device address of an expert
-/// projection's record (layout.md §3) and its bit width as `k2 = 2 K`. A layer's table is
+/// projection's record (flash-next-layout.md §3) and its bit width as `k2 = 2 K`. A layer's table is
 /// `EXPERTS * 2` entries indexed `expert * 2 + projection`; a selected entry with a NULL
 /// record traps the kernel.
 #[repr(C)]
@@ -186,7 +186,7 @@ fn check(rc: i32) -> Result<(), String> {
     if rc == 0 { Ok(()) } else { Err(last_error()) }
 }
 
-/// Bytes of one expert-projection record, padding included (layout.md's class table).
+/// Bytes of one expert-projection record, padding included (flash-next-layout.md's class table).
 pub fn record_bytes(projection: u32, k2: u32) -> Result<u64, String> {
     let mut bytes = 0u64;
     check(unsafe { ffi::ignis_moe_record_bytes(projection, k2, &mut bytes) })?;
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn record_bytes_are_layout_mds_class_table() {
-        // docs/specs/flash-next/layout.md §3, record bytes with padding, k2 = 4, 5, 6, 8.
+        // docs/formats/flash-next-layout.md §3, record bytes with padding, k2 = 4, 5, 6, 8.
         let gate_up = [827_392u64, 1_032_192, 1_236_992, 1_646_592];
         let down = [417_792u64, 520_192, 622_592, 827_392];
         for (i, k2) in [4u32, 5, 6, 8].into_iter().enumerate() {

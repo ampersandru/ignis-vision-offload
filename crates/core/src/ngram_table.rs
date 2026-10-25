@@ -3,7 +3,7 @@
 //! hot list, the NVMe reader, and the gathers the scheduler calls.
 //!
 //! [`NgramTable`] owns everything a load needs to turn tokens into the bytes
-//! the device's `fn_ngram_add` reads (`[tokens][heads][row_bytes]`, layout.md
+//! the device's `fn_ngram_add` reads (`[tokens][heads][row_bytes]`, flash-next-layout.md
 //! 7.1): the checkpoint's hasher ([`crate::ngram::NgramHasher`]), the hot rows
 //! in RAM ([`crate::ngram::HotRows`], a byte budget, 1 GiB by default), and a
 //! pool of worker threads, each with its own unbuffered handle to the
@@ -1046,7 +1046,7 @@ mod tests {
         // A whole table's scan: two spans of reads in flight.
         assert!(AUTO_LOAD_HEADROOM_BYTES >= 2 * HOT_LOAD_SPAN_BYTES);
         // The hot list's load: one span, and the 8-byte ids of every row it
-        // loads, for a list at the converter's 2 GiB cap (layout.md 7.3).
+        // loads, for a list at the converter's 2 GiB cap (flash-next-layout.md 7.3).
         let capped_list_rows = (2u64 << 30) / 90;
         assert!(AUTO_LOAD_HEADROOM_BYTES >= HOT_LOAD_SPAN_BYTES + capped_list_rows * 8);
     }

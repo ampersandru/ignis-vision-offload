@@ -12,7 +12,7 @@
 //                every K, over counter-hash trellis words (any bit pattern is a valid
 //                encoding), against the checksum of `reconstruct` recorded for the same words,
 //                and element by element against the host restatement.
-//   records      the expert-projection record sizes against layout.md's class table.
+//   records      the expert-projection record sizes against flash-next-layout.md's class table.
 //
 // ADR 0006 / docs/agents/testing.md: no SKIP_RETURN_CODE; a missing GPU or fixture fails.
 
@@ -102,7 +102,7 @@ void geometry_arm() {
 }
 
 void records_arm() {
-  // layout.md §3's class table, record bytes with padding.
+  // flash-next-layout.md §3's class table, record bytes with padding.
   const uint64_t gu[] = {827392, 1032192, 1236992, 1646592};
   const uint64_t dn[] = {417792, 520192, 622592, 827392};
   for (int k = 0; k < 4; ++k) {

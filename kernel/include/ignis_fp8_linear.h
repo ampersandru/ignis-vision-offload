@@ -1,7 +1,7 @@
 /* ignis kernel leaf: the FP8 row-scale linear -- OURS (spec flash-next/04's op, written for spec
  * 02's shared expert; ADR 0043, no port claim).
  *
- * `weight` is an FP8_E4M3FN_ROW_BF16S / row-scale-v1 payload (docs/specs/flash-next/layout.md
+ * `weight` is an FP8_E4M3FN_ROW_BF16S / row-scale-v1 payload (docs/formats/flash-next-layout.md
  * §6.1): E4M3FN codes [rows][cols] row-major, zero padding to a multiple of 256 bytes, then BF16
  * scales [rows]. y[t][r] = scale[r] * sum_c e4m3(code[r][c]) * x[t][c] with BF16 activations,
  * token-major (token t's row at x + t * cols), and fp32 accumulation: an E4M3 x BF16 product is

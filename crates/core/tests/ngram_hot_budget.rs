@@ -2,7 +2,7 @@
 //! size, the 1 GiB default, or `auto` -- what the host plan leaves the line
 //! once its other lines and the margin are placed, capped at the whole
 //! table. Pure arithmetic over the table's shape and the host plan's lines;
-//! the shapes below are the real artifact's (layout.md 7: 320,001,536 rows of
+//! the shapes below are the real artifact's (flash-next-layout.md 7: 320,001,536 rows of
 //! 90 bytes, a hot list of 15,642,665 rows) and the host plan measured on the
 //! 5090 box (`docs/findings/2026-10-06-flash-next-on-the-5090.md`).
 

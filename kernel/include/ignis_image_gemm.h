@@ -13,7 +13,7 @@
  * scale 1 and zero codes. A non-finite x gives a non-finite scale or code: it is never clamped
  * into a finite one.
  *
- * Weights are the FP8_E4M3FN_ROW_BF16S / row-scale-v1 payload (docs/specs/flash-next/layout.md
+ * Weights are the FP8_E4M3FN_ROW_BF16S / row-scale-v1 payload (docs/formats/flash-next-layout.md
  * §6.1): E4M3FN codes [rows][cols] row-major, zero padding to a multiple of 256 bytes, then BF16
  * scales [rows] -- what ignis_fp8_linear reads.
  *

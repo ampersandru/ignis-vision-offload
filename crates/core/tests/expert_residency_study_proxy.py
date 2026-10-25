@@ -3,7 +3,7 @@
 Spec flash-next/03 (GitHub #301) replays the converter's routing traces through the
 residency policy model. Until the converter has run, the compression study's run-3
 routing (BF16 path, `real/e2e3/routing.pt`) stands in for them. This script writes it
-in the shape `docs/specs/flash-next/layout.md` gives the real artifact, so one reader
+in the shape `docs/formats/flash-next-layout.md` gives the real artifact, so one reader
 serves both:
 
     <out>/work/converter.json          k_map, k_classes (record bytes), expert_traffic
@@ -39,7 +39,7 @@ LAYERS, EXPERTS, TOP_K, LOOKAHEAD = 48, 512, 10, 20
 HIDDEN, INTER = 2560, 640
 K = np.array([2.0, 2.5, 3.0, 4.0])
 K2 = [4, 5, 6, 8]
-# layout.md §3: 4 KiB-aligned records, tiles + suh + svh.
+# flash-next-layout.md §3: 4 KiB-aligned records, tiles + suh + svh.
 RECORD = {"gu": [827392, 1032192, 1236992, 1646592], "dn": [417792, 520192, 622592, 827392]}
 # Scale bits per weight: fp16 suh + svh over the plane's weights.
 OVERHEAD = {"gu": (HIDDEN + 2 * INTER) * 16 / (HIDDEN * 2 * INTER),
@@ -129,7 +129,7 @@ def main():
         experts[rows].astype("<i2").tofile(f"{out}/experts.i16")
         look[rows].astype("<i2").tofile(f"{out}/lookahead.i16")
         with open(f"{out}/manifest.json", "w", encoding="utf-8") as f:
-            # finish.py's manifest, field for field (layout.md §12).
+            # finish.py's manifest, field for field (flash-next-layout.md §12).
             json.dump({"tokens": int(rows.size), "layers": LAYERS, "set": "test",
                        "chunks": chunks, "valid": valid,
                        "stream": "bf16 (study run 3, proxy)",

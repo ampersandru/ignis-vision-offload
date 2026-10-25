@@ -62,7 +62,7 @@ pub struct FixturePrompt {
     pub expected_argmax: Option<Vec<u32>>,
     /// The prompt as the fixture's recorder rendered and tokenized it, when
     /// the engine must not render it itself: Flash-Next's fixture renders
-    /// with Flash-Next's own template (docs/specs/flash-next/layout.md §11),
+    /// with Flash-Next's own template (docs/formats/flash-next-layout.md §11),
     /// and `expected_argmax` is conditioned on exactly these tokens. Absent,
     /// the harness renders `prompt`, as for the 27B's fixture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,7 +108,7 @@ impl FixturePrompt {
     }
 }
 
-/// How a fixture's recorder rendered its prompts (layout.md §11).
+/// How a fixture's recorder rendered its prompts (flash-next-layout.md §11).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FixtureRender {
     /// The chat template and the revision it came from.
@@ -130,7 +130,7 @@ pub struct Fixture {
     /// One entry per canary, in [`CANARIES`] order.
     pub prompts: Vec<FixturePrompt>,
     /// How the prompts' `prompt_token_ids` were rendered, when the fixture
-    /// carries them (Flash-Next's, layout.md §11).
+    /// carries them (Flash-Next's, flash-next-layout.md §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render: Option<FixtureRender>,
     /// Which stream the expected argmax comes from (`quantized`: the
@@ -780,7 +780,7 @@ mod tests {
     // ── the expected-argmax column (spec flash-next/04) ───────────────────
 
     /// A canary; with an expected column, also the recorded prompt the
-    /// column was conditioned on, as layout.md §11 writes them together.
+    /// column was conditioned on, as flash-next-layout.md §11 writes them together.
     fn canary(token_ids: Vec<u32>, expected_argmax: Option<Vec<u32>>) -> FixturePrompt {
         FixturePrompt {
             id: "c".into(),
@@ -860,7 +860,7 @@ mod tests {
         assert!(err.contains("2 expected") && err.contains("3 fed"), "{err}");
     }
 
-    /// A Flash-Next G1 fixture as docs/specs/flash-next/layout.md §11 writes
+    /// A Flash-Next G1 fixture as docs/formats/flash-next-layout.md §11 writes
     /// it: the 27B fixture's shape, plus the prompt rendered with
     /// Flash-Next's own template, the expected and BF16 argmax columns, and
     /// how the prompt was rendered.
@@ -893,11 +893,11 @@ mod tests {
         let original: serde_json::Value = serde_json::from_str(FLASH_NEXT_FIXTURE).expect("json");
         let rewritten: serde_json::Value =
             serde_json::from_str(&fixture.to_json().expect("serialize")).expect("json");
-        assert_eq!(rewritten, original, "no field of layout.md §11 is dropped");
+        assert_eq!(rewritten, original, "no field of flash-next-layout.md §11 is dropped");
     }
 
     /// The prompt a canary is fed: the fixture's own rendered tokens when it
-    /// has them (Flash-Next's template, layout.md §11), never a re-render
+    /// has them (Flash-Next's template, flash-next-layout.md §11), never a re-render
     /// with the engine's template; else the canary text rendered as the 27B
     /// fixture always was.
     #[test]

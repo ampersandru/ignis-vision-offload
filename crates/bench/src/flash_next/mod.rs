@@ -1,6 +1,6 @@
 //! Flash-Next's acceptance scorers (spec `flash-next/04`, acceptance 4-6
 //! and 8): an engine's teacher-forced logits judged against the references
-//! the converter recorded (`docs/specs/flash-next/layout.md` §10-11).
+//! the converter recorded (`docs/formats/flash-next-layout.md` §10-11).
 //!
 //! - [`kld`]: the converter's top-64 KLD scorer, ported from
 //!   `tools/flash-next-converter/scoring.py`, per domain, on the 2048-token

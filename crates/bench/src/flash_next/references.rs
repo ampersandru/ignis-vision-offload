@@ -1,4 +1,4 @@
-//! A converter reference set (`references/<set>/`, layout.md §10) read
+//! A converter reference set (`references/<set>/`, flash-next-layout.md §10) read
 //! whole: the windows, their fed tokens, and per stored position the BF16
 //! and quantized streams' 64 most probable next tokens; plus the parts of
 //! the converter's record (`work/converter.json`, or the sidecar it is
@@ -217,7 +217,7 @@ pub struct MmluFigures {
     pub mcnemar: BTreeMap<String, Paired>,
 }
 
-/// The converter's record (layout.md §9), the parts the acceptance limits
+/// The converter's record (flash-next-layout.md §9), the parts the acceptance limits
 /// read: `work/converter.json`, or the sidecar its fields are merged into.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConverterRecord {

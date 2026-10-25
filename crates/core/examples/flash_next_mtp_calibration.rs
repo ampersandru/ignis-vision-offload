@@ -1,5 +1,5 @@
 //! Spec flash-next/07 phase B, the engine side of the MTP head's
-//! calibration (layout.md §13.4): the trunk's states over the trunk's own
+//! calibration (flash-next-layout.md §13.4): the trunk's states over the trunk's own
 //! calibration corpus, as the served engine computes them.
 //!
 //! ```text

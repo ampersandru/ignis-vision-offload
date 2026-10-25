@@ -28,7 +28,7 @@ them.
   [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md).
 - **A decision that is hard to reverse gets an ADR**, a measured result that
   future work will reuse gets a finding, and the acceptance criteria of a piece
-  of work live in its spec ([How work is tracked](conventions.md)).
+  of work live in its spec's tickets ([How work is tracked](conventions.md)).
 
 ## The repository
 
@@ -45,7 +45,7 @@ them.
 | `kernel/` | The C++/CUDA kernel leaf (SM120a), with its own CTest op tests |
 | `web/` | The Playground (React, Vite, vitest), embedded in the server binary |
 | `docs/user/` | This guide; `docs/site/` builds it |
-| `docs/adr/`, `docs/specs/`, `docs/findings/` | Decisions, the specs written before 2026-10-25 (later ones are GitHub issues), measured results |
+| `docs/adr/`, `docs/specs/`, `docs/formats/`, `docs/findings/` | Decisions, the specs written before 2026-10-25 (later ones are GitHub issues), the byte and wire contracts code cites, measured results |
 | `docs/agents/` | The conventions agents (and humans) follow |
 | `CODING_STANDARDS.md` | The rules a review holds a diff to, and what the review leaves out |
 | `tools/`, `scripts/`, `bench/` | Converters and fixtures, local run helpers, bench traces |
@@ -62,7 +62,7 @@ is defined once in [`GLOSSARY.md`](../../../GLOSSARY.md); the
 2. [Testing](testing.md): the default suite, the GPU profile, the Playground's
    and the guide's own checks.
 3. [Working with make](make.md): the targets, and how a run is guarded.
-4. [How work is tracked](conventions.md): issues, specs, ADRs, findings, the
-   guide, commits.
+4. [How work is tracked](conventions.md): issues, specs, ADRs, contracts,
+   findings, the guide, commits.
 5. [Cutting a release](releases.md): version, changelog, tag, and what the
    workflows publish.

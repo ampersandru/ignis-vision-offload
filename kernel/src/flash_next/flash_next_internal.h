@@ -129,7 +129,7 @@ struct Geometry {
   // The n-gram conv's past columns: (kernel - 1) * dilation, dilation = ngram_size.
   int32_t ngram_conv_state_columns() const { return (ngram_conv_kernel - 1) * ngram_size; }
   // One table row's bytes: INT4 codes of a head_dim-wide row, then one fp16
-  // scale per 32 values (layout.md section 7.1: 90 on Flash-Next).
+  // scale per 32 values (flash-next-layout.md section 7.1: 90 on Flash-Next).
   int32_t ngram_head_dim() const { return ngram_embed_dim / ngram_heads; }
   int32_t ngram_row_bytes() const { return ngram_head_dim() / 2 + ngram_head_dim() / 32 * 2; }
 
@@ -169,9 +169,9 @@ struct Geometry {
 
 // ---------------------------------------------------------------------------
 // Weights, as the binder (S1) hands them: device pointers into the artifact's
-// arena, names from docs/specs/flash-next/layout.md section 6, not fused.
+// arena, names from docs/formats/flash-next-layout.md section 6, not fused.
 
-// How a linear weight is stored (layout.md 6.1). FP8 is the converter's
+// How a linear weight is stored (flash-next-layout.md 6.1). FP8 is the converter's
 // default; every linear also has a BF16 route, because a part whose FP8 cost
 // the conversion flags is re-converted to BF16 (coordinator, 2026-10-05).
 enum class WeightFormat : int32_t {
@@ -434,7 +434,7 @@ std::size_t fn_qsa_attention_scratch_bytes(const Geometry &g, int32_t rows, int3
 
 // [S4] Adds the n-gram embedding to every stream of `hidden` (BF16
 // [rows][streams * hidden], before layer ngram_layer's attention mix):
-// `rows_int4` holds each token's ngram_heads table rows (layout.md 7.1,
+// `rows_int4` holds each token's ngram_heads table rows (flash-next-layout.md 7.1,
 // ngram_row_bytes each, [rows][ngram_heads][ngram_row_bytes]) as the host
 // gathered them (ignis_core::ngram::GatherPlan), already on the device.
 // Updates the lanes' n-gram conv state.

@@ -1,5 +1,5 @@
 """The n-gram table in INT4 groups of 32: 90-byte rows, the shard files, the hot-row list
-(layout.md §7).
+(flash-next-layout.md §7).
 
 A row is 160 values: bytes [0, 80) hold the 4-bit codes (byte j: value 2j in the low
 nibble, 2j+1 in the high one), bytes [80, 90) the five fp16 group scales. A value decodes

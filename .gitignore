@@ -35,7 +35,7 @@ local.mk
 
 # the scratchpad: temporary artifacts, experiments, raw logs, workflow output
 # and the server pid/logs from `make start`. Local to each clone; durable
-# material belongs in docs/ (see docs/agents/issue-tracker.md).
+# material belongs in docs/ (see AGENTS.md, Scratch).
 .scratch/
 
 # local artifact store (junction/symlink to the .ninfer artifact dir, never committed)
