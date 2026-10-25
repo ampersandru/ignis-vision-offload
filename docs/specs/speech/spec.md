@@ -185,7 +185,14 @@ in the group's style.
   No factor measured better than 1 (Q76), so 1 is the default. A slower or
   busier machine adds more: the first measurement, on a machine whose window
   pushes took about 60% longer, gave 6.7 s and 11.8 s. Not met; the levers
-  left are in spec 03, As built.
+  left are in spec 03, As built. The owner chose the next one (Q79,
+  2026-10-25): a commit stops the refresh in flight at its next yield, so it
+  waits for no refresh; measured after it is built.
+- **WER gates are judged on the i9** (Q78, owner, 2026-10-25), as every WER
+  criterion of these specs was measured there. The 4-core container's WER is
+  reported beside it and does not gate: there the refreshes come less often
+  and the text is fixed at other moments (live path +1.29 pt over batch at
+  `speech.partial_cost_factor` 1, against +0.48 to +0.65 pt on the i9).
 - **Host RAM:** 1.4 GB (0.6B) to 3.1 GB (1.7B Q8_0) resident while the
   model is in use, KV at a 4,096-token context included. Nothing once
   `speech.idle_unload` has unloaded it (Q53).
