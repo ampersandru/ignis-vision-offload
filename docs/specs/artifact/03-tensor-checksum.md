@@ -46,5 +46,4 @@ calls `verify()` / `ChecksumReport::is_clean()` yet — the acceptance line
 as an *inspectable* report; making a sidecar mismatch actually **fail
 the load** needs a call site holding both the `Reader` and the sidecar
 in the engine/loader path (the `crates/server` territory — the natural
-next step for the server actor; done by GitHub #21, 134c6372:
-`load_artifact` in `crates/server/src/loader.rs` refuses the load).
+next step for the server actor, see PENDING.md, deleted by #368).
