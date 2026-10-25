@@ -123,9 +123,9 @@ impl SpeechSession for CpuSession {
         self.0.push(samples).map_err(err)
     }
 
-    fn partial(&mut self) -> Result<Partial, SpeechError> {
-        let p = self.0.partial().map_err(err)?;
-        Ok(Partial { stable: p.stable, tail: p.provisional })
+    fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError> {
+        let p = self.0.partial_unless(stop).map_err(err)?;
+        Ok(p.map(|p| Partial { stable: p.stable, tail: p.provisional }))
     }
 
     fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {

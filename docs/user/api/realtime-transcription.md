@@ -192,10 +192,12 @@ while the session's audio is still being computed a refresh is skipped rather
 than queued behind it. A CPU that cannot keep up sends fewer deltas, never a
 later transcript: the audio and the commit go first. The text after the last
 refresh is decoded at the commit, and a commit that arrives while a refresh
-is running waits for it. Measured on a 67 s dictation with the default model,
-the commit takes 2.4 to 4.4 s to `completed` on a 10-core desktop CPU (2 to
-2.5 s of its own, the rest the refresh it waited for; 1.7 to 2.2 s for the
-median of eleven dictations) and about 6 s on 4 cores. A busier or slower
+is running stops it: that refresh sends nothing, and the commit decodes from
+the text already sent. Measured on a 67 s dictation with the default model,
+before a commit stopped the refresh, the commit took 2.4 to 4.4 s to
+`completed` on a 10-core desktop CPU (2 to 2.5 s of its own, the rest the
+refresh it waited for; 1.7 to 2.2 s for the median of eleven dictations) and
+about 6 s on 4 cores. A busier or slower
 machine adds to it: an earlier run on the same desktop, its windows computing
 60% slower, gave 6.7 s. A longer `speech.partial_interval_ms` (4000) gave
 2.8 s.

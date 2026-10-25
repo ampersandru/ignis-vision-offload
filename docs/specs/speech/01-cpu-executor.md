@@ -170,6 +170,10 @@ One session per transcription, for 03 to drive, and used whole by 02:
    - the last `speech.rollback_tokens` of what it decoded are the
      **provisional tail**, and the rest joins the stable text;
    - then rolls the cache back to the audio prefix.
+   - A partial its caller stops (Q79, a Realtime commit: spec 03) ends at its
+     next yield, before each step above and where its decode yields the
+     compute unit, and leaves the session as it was before it began: nothing
+     joins the stable text, and the cache is rolled back.
 4. `commit()`: encodes the last window, prefills it, and decodes from the
    stable text to EOS. The completed transcript is the stable text plus what
    this decode adds. So **it begins with every stable text ever reported**,
@@ -409,6 +413,12 @@ Where the build decided something the spec left open, or differs from it:
   tokens as audio tokens, but grows to it on demand, doubling from the head, two
   windows and the tail; decoding stops at its end. A decode yields the compute
   unit every 16 steps, about a window's prefill.
+- **A partial can be stopped** (Q79, #353): `Session::partial_unless(stop)`
+  asks `stop` before the encode, between the encode and the incomplete
+  window's prefill, before the decode's prefill and after it, and at each
+  16-step yield. Stopped, it returns `None`, the cache truncated to the audio
+  prefix, the stable text and the partials counted (`Stats::partials`, which
+  `unfixed_partials` reads) unchanged. `partial()` is the one nothing stops.
 - **Pinned weights** copy every tensor but the repacked Q4_K ones into
   anonymous memory (locked with `mlock` on Linux; memmap2 offers no lock on
   Windows, where the private copy is what pins). The files are not held open.

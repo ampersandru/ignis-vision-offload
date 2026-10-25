@@ -30,7 +30,7 @@ mod support;
 #[path = "support/switch.rs"]
 mod switch_support;
 use switch_support::MockLoader;
-use support::realtime::{self, append, at_16_khz, commit, live, next_event, of, open, send, session, until, until_true, update, Socket, WINDOW};
+use support::realtime::{self, append, at_16_khz, commit, live, next_event, of, open, quiet_for, send, session, until, until_true, update, Socket, WINDOW};
 use support::speech::{self, SPEECH_MODEL, TEXT_MODEL};
 
 const DELTA: &str = "conversation.item.input_audio_transcription.delta";
@@ -358,6 +358,90 @@ async fn the_hold_of_a_refresh_carries_into_the_next_item() {
     // 3 × 400 ms, less the scheduling slack between two partials' starts.
     let gap = began[next] - began[0];
     assert!(gap >= Duration::from_millis(1_150), "the next item's first refresh began {gap:?} after the last one's");
+}
+
+/// A session at 16 kHz that opted in to the provisional tail.
+async fn session_with_tail(live: &realtime::Live) -> Socket {
+    let mut socket = session_16k(live).await;
+    send(&mut socket, update(json!({ "ignis": { "provisional_tail": true } }))).await;
+    assert_eq!(next_event(&mut socket).await["type"], "session.updated");
+    socket
+}
+
+/// Q79: a commit stops the refresh in flight, and the commit runs next. The
+/// first refresh is quick and sends its stable text and tail; once a window
+/// more is in, the next takes 20 s, and the item is committed while it runs.
+/// `completed` comes long before that refresh would have ended; the refresh
+/// sends nothing, neither the word it would have fixed as a delta nor its
+/// tail; and the commit decodes from the stable text already sent, so its
+/// delta carries the rest and the deltas joined are the transcript.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commit_stops_the_refresh_in_flight() {
+    let executor = saying(&["uno", "due", "tre"]);
+    let (live, _server, _dir) = served(&executor, |_| {}).await;
+    let mut socket = session_with_tail(&live).await;
+    send(&mut socket, append(WINDOW)).await;
+    let first = until(&mut socket, PROVISIONAL).await;
+    assert_eq!(of(&first, DELTA)[0]["delta"], "uno");
+    assert_eq!(of(&first, PROVISIONAL)[0]["text"], " due");
+    executor.set_partial_delay(Duration::from_secs(20));
+    send(&mut socket, append(WINDOW)).await;
+    until_true("the second refresh began", || executor.partials_at().len() == 2).await;
+    let sent = std::time::Instant::now();
+    send(&mut socket, commit()).await;
+    let events = until(&mut socket, COMPLETED).await;
+    let took = sent.elapsed();
+    assert!(took < Duration::from_secs(5), "the commit waited {took:?} for the refresh in flight");
+    assert_eq!(executor.stopped.load(Ordering::SeqCst), 1, "the refresh stopped");
+    let deltas: Vec<&str> = of(&events, DELTA).iter().map(|event| event["delta"].as_str().unwrap()).collect();
+    assert_eq!(deltas, [" due tre"], "the commit's delta alone, nothing of the stopped refresh's: {events:?}");
+    let tails: Vec<&str> = of(&events, PROVISIONAL).iter().map(|event| event["text"].as_str().unwrap()).collect();
+    assert_eq!(tails, [""], "only the item's end clears the tail: {events:?}");
+    let completed = of(&events, COMPLETED)[0]["transcript"].as_str().unwrap();
+    assert_eq!(format!("uno{}", deltas.concat()), completed);
+    let calls: Vec<String> = executor.calls().into_iter().filter(|call| !call.starts_with("open")).collect();
+    assert_eq!(calls, ["push 0 128000", "partial 0", "push 0 128000", "partial 0", "commit 0"]);
+}
+
+/// Q79: only a commit, a clear or the session's end stops a refresh. A
+/// window appended while one runs waits behind it, and the refresh ends and
+/// sends its text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_window_appended_during_a_refresh_does_not_stop_it() {
+    let executor = saying(&["uno", "due", "tre"]);
+    executor.set_partial_delay(Duration::from_millis(600));
+    let (live, _server, _dir) = served(&executor, |_| {}).await;
+    let mut socket = session_16k(&live).await;
+    send(&mut socket, append(WINDOW)).await;
+    until_true("the refresh began", || executor.partials_at().len() == 1).await;
+    send(&mut socket, append(WINDOW)).await;
+    let events = until(&mut socket, DELTA).await;
+    assert_eq!(of(&events, DELTA)[0]["delta"], "uno", "the refresh ran to its end");
+    assert_eq!(executor.stopped.load(Ordering::SeqCst), 0);
+    let calls: Vec<String> = executor.calls().into_iter().filter(|call| !call.starts_with("open")).collect();
+    assert_eq!(calls[..3], ["push 0 128000", "partial 0", "push 0 128000"], "the window waited behind the refresh");
+}
+
+/// Q79: a clear stops the refresh in flight, and so does the session's end:
+/// neither waits for it, and the cleared item gets nothing from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clear_or_the_sessions_end_stops_the_refresh_in_flight() {
+    let executor = saying(&["uno", "due"]);
+    executor.set_partial_delay(Duration::from_secs(20));
+    let (live, _server, _dir) = served(&executor, |_| {}).await;
+    let mut socket = session_with_tail(&live).await;
+    send(&mut socket, append(WINDOW)).await;
+    until_true("the refresh began", || executor.partials_at().len() == 1).await;
+    send(&mut socket, json!({ "type": "input_audio_buffer.clear" })).await;
+    let events = until(&mut socket, "input_audio_buffer.cleared").await;
+    until_true("the refresh stopped at the clear", || executor.stopped.load(Ordering::SeqCst) == 1).await;
+    assert!(of(&events, DELTA).is_empty() && of(&events, PROVISIONAL).is_empty(), "{events:?}");
+    assert!(quiet_for(&mut socket, Duration::from_millis(300)).await.is_none(), "the stopped refresh said something");
+
+    send(&mut socket, append(WINDOW)).await;
+    until_true("the next item's refresh began", || executor.partials_at().len() == 2).await;
+    drop(socket);
+    until_true("the refresh stopped at the session's end", || executor.stopped.load(Ordering::SeqCst) == 2).await;
 }
 
 // ── AC 7: usage and failures ────────────────────────────────────────────────

@@ -126,6 +126,15 @@ phase 2, a missing `turn_detection` means `server_vad` (spec 05).
   leaving the commit less to decode. The factor is a config field with a
   default chosen from AC 13's measurement: 1, the rule before, since no factor
   measured better (As built). Making a partial cheaper is not this change.
+- **A commit stops the refresh in flight** (Q79; owner, 2026-10-25). When a
+  commit arrives while the item's refresh is in the worker, that refresh
+  stops at its next yield (01 §4) and the commit runs next. A stopped
+  refresh sends nothing, no stable text and no tail, and leaves the session
+  as it was before it began, its cache rolled back to the audio prefix: the
+  commit decodes from the stable text already sent, so the deltas joined are
+  still `completed.transcript`. A clear or the session's end stops it too; a
+  window pushed never does. Refreshes stay best effort, never queued (Q74),
+  and the factor still spaces them (Q76).
 - `commit`: `committed`, then 01's `commit()`. Whatever stable text is left
   goes out as `delta`, then `completed`.
 - The next item reuses the session's prefilled context (01's prefix cache)
@@ -403,5 +412,25 @@ the spec left open, or differs from it:
     7.1 s, this machine's speed: its 2.8 s compares with the 2.4-4.4 s here.
   - **The levers left** are the owner's: a commit that does not wait for the
     refresh in flight (no refresh started near the end of an item, or one the
-    commit can stop), or a cheaper refresh (option C, not chosen). Neither is
-    built.
+    commit can stop), or a cheaper refresh (option C, not chosen). The owner
+    chose the refresh the commit stops (Q79), built below; option C is not.
+- **AC 13 with Q79's stopped refresh: built; measurement deferred to #359
+  (owner, 2026-10-25).** A commit, a clear or the socket's end sets the
+  item's stop; the refresh's unit pushes its audio whatever happens (the
+  commit has only the rest) and passes the stop to the executor, through the
+  seam's `partial`, which now takes it and answers `None` for a refresh
+  stopped. `ignis-speech`'s `Session::partial_unless` checks it before the
+  encode, between the encode and the incomplete window's prefill, before the
+  decode's prefill and after it, and every 16 decode steps, where the decode
+  yields the unit (01, As built); a stopped partial truncates the cache to the
+  audio prefix and counts as no partial, so `speech.unfixed_partials` still
+  counts the refreshes that ran. A refresh queued and not begun when the
+  commit arrives stops at its first check. A stopped refresh answers nothing:
+  no event, and no Q76 hold, which stays the last finished refresh's. On the
+  scripted executor a commit during a 20 s refresh completes in well under
+  5 s, with one delta, the commit's (`speech_realtime.rs`). **Expected, an
+  estimate from the parts already measured and not a measurement:** the
+  executor's own commit (1.9-2.5 s on the i9, 3.9-4.2 s on the container)
+  plus what a stopped refresh still runs to its next check, about 2-3 s from
+  the commit to `completed` on the i9 and 4-4.7 s on the container, against
+  AC 13's 2 s. The study leg counts a stopped refresh apart (`stop`).

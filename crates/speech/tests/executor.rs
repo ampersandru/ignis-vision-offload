@@ -171,6 +171,62 @@ fn partials_roll_back_and_the_transcript_keeps_the_stable_text() {
     }
 }
 
+/// A stop that says so from its call after the first `points`: a partial stopped after passing
+/// that many of the points it checks.
+fn stop_after(points: usize) -> impl Fn() -> bool {
+    let polls = std::cell::Cell::new(0);
+    move || {
+        polls.set(polls.get() + 1);
+        polls.get() > points
+    }
+}
+
+/// Q79: a partial stopped at any of the points it checks leaves the session as it was before it
+/// began: the cache rolled back to the audio prefix, so the commit's transcript is the one with
+/// no partial attempted, and the partial not counted (the count decides which partials fix no
+/// text, `unfixed_partials`). The synthetic decoder emits one token, so its decode never
+/// reaches a yield of the compute unit; the stop there is the same return.
+#[test]
+fn a_stopped_partial_leaves_the_session_as_it_was() {
+    let files = synthetic::pair("stopped");
+    let audio = synthetic::audio(9.3);
+    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, ..settings() });
+    let session = || {
+        let mut s = e.open("", None).unwrap();
+        s.push(&audio).unwrap();
+        s
+    };
+    let untried = session().commit().unwrap();
+    let mut points = 0;
+    while points < 64 {
+        let mut s = session();
+        let before = s.stats().clone();
+        if s.partial_unless(&stop_after(points)).unwrap().is_some() {
+            assert_eq!(s.stats().partials, 1, "a partial nothing stopped counts");
+            break;
+        }
+        assert_eq!(*s.stats(), before, "stopped after {points} checks: the partial counted");
+        assert_eq!(s.commit().unwrap(), untried, "stopped after {points} checks: the cache was not rolled back");
+        let mut s = session();
+        assert!(s.partial_unless(&stop_after(points)).unwrap().is_none());
+        s.partial().unwrap();
+        assert_eq!(s.stats().partials, 1, "stopped after {points} checks: the next partial is the first");
+        assert_eq!(s.commit().unwrap(), untried, "stopped after {points} checks, then a partial: the transcript changed");
+        points += 1;
+    }
+    // Before the encode, before the window's prefill, before the decode's prefill and after it.
+    assert_eq!(points, 4, "the points a partial checks before its decode's first step");
+    // The synthetic decoder's token does not depend on what the cache holds, so one commit
+    // cannot tell a cache left grown. A hundred partials stopped and not rolled back would fill
+    // it (each adds the incomplete window and the prompt's tail): the session takes them all.
+    let mut s = session();
+    for i in 0..100 {
+        assert!(s.partial_unless(&stop_after(i % points)).unwrap().is_none());
+    }
+    assert_eq!(s.stats().partials, 0);
+    assert_eq!(s.commit().unwrap(), untried, "a hundred stopped partials changed the transcript");
+}
+
 /// The server passes `speech.context_max_tokens`, `speech.rollback_tokens` and
 /// `speech.unfixed_partials` per session: a session holds the tuning it opened with, not the
 /// executor's settings, so a live change of the config holds from the next session. (The
