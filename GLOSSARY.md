@@ -555,6 +555,19 @@ or a mirror answering the same repo/revision/file paths. Chosen per machine,
 not per entry.
 _Avoid_: registry, hub
 
+**Download**:
+The server fetching a catalog entry's pinned files from the endpoint into its
+models folder, resumed where it stopped and verified against the pins. It is
+started at start-up, by the `model download` command, or from the Server
+view, one at a time, and never by a switch.
+_Avoid_: pull, install
+
+**Removal**:
+Deleting a downloaded catalog entry's files, finished or partial, from the
+models folder. It never touches the model loaded, loading or being downloaded,
+nor a file another entry on disk also lists.
+_Avoid_: uninstall, delete (for a model)
+
 **Switch by id**:
 An explicit `POST /v1/models/switch` naming only the served id: resolved as a
 known model (`switch.known_models`, the start model), then a catalog entry on
