@@ -83,6 +83,21 @@ pub fn on_disk(entry: &CatalogEntry, dir: &Path, size_of: &dyn Fn(&Path) -> Opti
     if any { OnDisk::Partial } else { OnDisk::Absent }
 }
 
+/// How many bytes of `entry` are under `dir`: each file's at its final name
+/// when it is there, else its `.part`'s, at most its pinned byte count — what
+/// a download running, cancelled or interrupted has fetched so far.
+/// `size_of` as for [`on_disk`]: sizes only.
+pub fn bytes_on_disk(entry: &CatalogEntry, dir: &Path, size_of: &dyn Fn(&Path) -> Option<u64>) -> u64 {
+    entry
+        .files
+        .iter()
+        .map(|file| {
+            let path = dir.join(&file.name);
+            size_of(&path).or_else(|| size_of(&part_path(&path))).map_or(0, |bytes| bytes.min(file.bytes))
+        })
+        .sum()
+}
+
 /// One row of `model list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListRow {
@@ -290,6 +305,30 @@ mod tests {
         ] {
             let listed: Vec<(&str, u64)> = files.iter().map(|(name, bytes)| (name.as_str(), *bytes)).collect();
             assert_eq!(on_disk(entry, dir, &sizes(&listed)), want, "{files:?}");
+        }
+    }
+
+    /// GitHub #375: the bytes of an entry on disk count each file once — at
+    /// its final name when it is there, else its `.part` — so a running or
+    /// cancelled download reads as what it has fetched so far; never more
+    /// than a file's pin, whatever a file of another size holds.
+    #[test]
+    fn the_bytes_on_disk_count_each_file_at_its_final_name_or_its_part() {
+        let entry = Catalog::built_in().entry("qwen3.8-27b").unwrap();
+        let (sidecar, artifact) = (&entry.files[0], &entry.files[1]);
+        let dir = Path::new("m");
+        let part = format!("{}.part", artifact.name);
+        for (files, want) in [
+            (vec![], 0),
+            (vec![(format!("{}.part", sidecar.name), 3)], 3),
+            (vec![(sidecar.name.clone(), sidecar.bytes), (part.clone(), 4096)], sidecar.bytes + 4096),
+            (vec![(sidecar.name.clone(), sidecar.bytes), (artifact.name.clone(), artifact.bytes)], entry.total_bytes()),
+            // A stale `.part` beside a complete file is not counted twice.
+            (vec![(sidecar.name.clone(), sidecar.bytes), (artifact.name.clone(), artifact.bytes), (part.clone(), 4096)], entry.total_bytes()),
+            (vec![(sidecar.name.clone(), sidecar.bytes + 99)], sidecar.bytes),
+        ] {
+            let listed: Vec<(&str, u64)> = files.iter().map(|(name, bytes)| (name.as_str(), *bytes)).collect();
+            assert_eq!(bytes_on_disk(entry, dir, &sizes(&listed)), want, "{files:?}");
         }
     }
 
