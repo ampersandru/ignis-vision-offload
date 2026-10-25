@@ -28,7 +28,7 @@ meet that, before any GPU code exists?
 model (`crates/core/src/residency/policy.rs`) over the study's run-3 routing
 (BF16 path, `real/e2e3/routing.pt`), which
 `crates/core/tests/expert_residency_study_proxy.py` rewrites in the
-artifact's trace layout (layout.md §9, §12) as a machine-local proxy: 58 test
+artifact's trace layout (flash-next-layout.md §9, §12) as a machine-local proxy: 58 test
 chunks of 2,048 tokens over nine domains, 48 layers, the lookahead router's
 top-20. The proxy's K map is a stand-in for the converter's: a Lagrangian over
 K in {2, 2.5, 3, 4} at 2.5 bits per weight (scales included) on the run-3

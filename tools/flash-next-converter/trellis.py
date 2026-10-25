@@ -2,7 +2,7 @@
 
 Only this module imports exllamav3 (pinned 1.5.3, MIT): its batch quantizer encodes an
 expert projection at one K with our Hessian, and `decode` reconstructs the weight a record
-stands for (layout.md §3). Never set TORCH_CUDA_ARCH_LIST before importing it: the
+stands for (flash-next-layout.md §3). Never set TORCH_CUDA_ARCH_LIST before importing it: the
 extension rebuilds for minutes.
 """
 import os
@@ -64,7 +64,7 @@ def quantize_batch(W, hds, k2, seeds, debug_dir, device):
 
 
 def decode(rec, k2, proj, device):
-    """(out, in) float32 weight a record stands for (layout.md §3's oracle)."""
+    """(out, in) float32 weight a record stands for (flash-next-layout.md §3's oracle)."""
     ext, xq = _ext()
     i, o = layout.SHAPES[proj]
     w = torch.empty((i, o), dtype=torch.half, device=device)

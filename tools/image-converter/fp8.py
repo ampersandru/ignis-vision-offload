@@ -1,5 +1,5 @@
 """FP8 E4M3FN weights with one bf16 scale per output row: the container's
-`FP8_E4M3FN_ROW_BF16S` / `row-scale-v1` payload (docs/specs/flash-next/layout.md §6.1).
+`FP8_E4M3FN_ROW_BF16S` / `row-scale-v1` payload (docs/formats/flash-next-layout.md §6.1).
 
 Copied from tools/flash-next-converter/fp8.py (same repository), unchanged but for this header
 and `rel_error`: one FP8 encoder for both converters. Keep the two in step.

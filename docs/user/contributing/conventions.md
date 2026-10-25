@@ -1,6 +1,6 @@
 ---
 title: "How work is tracked"
-description: "GitHub issues and their triage labels, specs, ADRs, findings, the guide, worktrees and commit messages."
+description: "GitHub issues and their triage labels, specs, ADRs, contracts, findings, the guide, worktrees and commit messages."
 sidebar:
   order: 5
 ---
@@ -12,6 +12,7 @@ Each kind of record has one home, and nothing is said twice.
 | Status, blocking, labels, closure | the [GitHub issue](https://github.com/gpillon/ignis/issues) |
 | A feature's spec, and the tickets that build it | the spec's GitHub issue and its sub-issues |
 | A decision hard to reverse, and its reasons | an ADR, `docs/adr/NNNN-title.md` |
+| The bytes, ABI or wire format two sides must match, as code cites it | a contract, `docs/formats/` |
 | A measured or researched result worth reusing | a finding, `docs/findings/` |
 | What a user can see and do | this guide, `docs/user/` |
 | Temporary logs, experiments, raw output | `.scratch/`, untracked |
@@ -38,7 +39,7 @@ A bug report says what you ran (the command, or `make config`'s output), what
 you expected, what happened, and the server's log lines around it. The log
 file of a server `make start` launched is under `.scratch/serve/`.
 
-## Specs, ADRs and findings
+## Specs, ADRs, contracts and findings
 
 - **A spec** is a GitHub issue: the problem, the solution, the user stories
   and the implementation and testing decisions. Its tickets, the sub-issues,
@@ -55,6 +56,13 @@ file of a server `make start` launched is under `.scratch/serve/`.
   taken, and amended rather than rewritten when it changes. The
   [list](../../adr/) is the project's memory of why; ADR 0070 lists the places
   where the repo differs from the agent skills it follows.
+- **A contract** is the description of bytes, an ABI or a wire format that
+  two sides must match, which the code on both sides cites as normative: the
+  Flash-Next converter's output, for one. It lives in [`docs/formats/`](../../formats/),
+  and its header names the ADR that says why the format is what it is. Code
+  cites a contract by section number, so a section keeps its number. A
+  contract that began inside a spec under `docs/specs/` left a one-line
+  pointer there.
 - **A finding** preserves evidence another reader can inspect or reproduce:
   a discovery, a research result or an experiment, with its question, its
   evidence, its limits ([`docs/agents/findings.md`](../../agents/findings.md)).

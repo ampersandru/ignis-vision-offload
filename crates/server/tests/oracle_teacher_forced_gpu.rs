@@ -141,7 +141,7 @@ fn teacher_forced_canary_agreement_meets_the_g1_floor() {
 
     for canary in &fixture.prompts {
         // A fixture that recorded its rendered prompt (Flash-Next's,
-        // docs/specs/flash-next/layout.md §11) is fed exactly that; the 27B's
+        // docs/formats/flash-next-layout.md §11) is fed exactly that; the 27B's
         // canary text is rendered with the artifact's template.
         let prompt_tokens: Vec<i32> = canary
             .prompt_tokens(|text| {

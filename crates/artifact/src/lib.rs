@@ -165,7 +165,7 @@ const V1_MAGIC: [u8; 8] = *b"NINFER\x00\x01";
 /// Persistent numeric formats (the closed v2 registry).
 ///
 /// I64, Q4G32_F16S and the trellis codes up to K4 are Flash-Next's (spec
-/// flash-next/01, layout.md): the n-gram hash buffers' I64, the n-gram
+/// flash-next/01, flash-next-layout.md): the n-gram hash buffers' I64, the n-gram
 /// table's INT4, and the expert projections' trellis at each K (ADR 0044) —
 /// K is part of the format because the closed directory entry has no other
 /// place for it, and the stored size, which the reader checks, depends on it.
@@ -380,7 +380,7 @@ pub struct RowScaleGeometry {
     pub encoded_bytes: u64,
 }
 
-/// Geometry of a `trellis-tile16-v1` expert projection (layout.md §3).
+/// Geometry of a `trellis-tile16-v1` expert projection (flash-next-layout.md §3).
 ///
 /// The shape is `[out, in]` like every other layout's; the bytes are
 /// ExLlamaV3's tensors bit for bit: the trellis (`in·out·K/8` bytes, int16
@@ -1537,7 +1537,7 @@ mod tests {
 
     #[test]
     fn trellis_records_have_the_converters_eight_class_sizes() {
-        // layout.md §3's class table: (shape [out, in], k2) -> record bytes.
+        // flash-next-layout.md §3's class table: (shape [out, in], k2) -> record bytes.
         let gate_up = [1280u64, 2560];
         let down = [2560u64, 640];
         let classes = [
@@ -1586,7 +1586,7 @@ mod tests {
 
     #[test]
     fn an_ngram_table_row_is_ninety_bytes() {
-        // layout.md §7.1: 160 values -> 80 code bytes + 5 fp16 scales.
+        // flash-next-layout.md §7.1: 160 values -> 80 code bytes + 5 fp16 scales.
         let g = row_interleaved_geometry(NumericFormat::Q4G32F16S, &[320_001_536, 160]).unwrap();
         assert_eq!(g.scale_offset, 80);
         assert_eq!(g.row_bytes, 90);

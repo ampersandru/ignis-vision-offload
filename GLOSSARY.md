@@ -289,7 +289,7 @@ When output names a domain concept, use the term as defined here.
   `flash-next/07`): it combines the trunk's pre-mixer streams with the next
   token's embedding and drafts the token after it.
 - **Companion container** — a small `.ninfer` beside the main one that holds
-  only the MTP head (layout.md §13), with its own identity; bound only when
+  only the MTP head (flash-next-layout.md §13), with its own identity; bound only when
   MTP is on.
 - **Pair pin** — the companion's record of the one main container it belongs
   to (`model_id`, `weights_id`, content hash), checked at load; a mismatched

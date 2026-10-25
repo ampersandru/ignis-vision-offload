@@ -110,7 +110,7 @@ double e4m3_value(uint8_t code) {
   return sign * std::ldexp(1.0 + mantissa / 8.0, exponent - 7);
 }
 
-// An FP8 row-scale payload (layout.md 6.1) of uniform values in +-`scale`:
+// An FP8 row-scale payload (flash-next-layout.md 6.1) of uniform values in +-`scale`:
 // codes [rows][cols], then BF16 scales at the next multiple of 256 bytes.
 // `value` gets each weight as the reference reads it, scale * e4m3(code).
 std::vector<uint8_t> fp8_payload(int rows, int cols, double scale, uint32_t seed, std::vector<double> &value) {

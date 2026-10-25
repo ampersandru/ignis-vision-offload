@@ -21,7 +21,7 @@ rules here.
    [glossary](../reference/glossary.md) — the vocabulary the code and the
    issues use.
 6. **[How work is tracked](../contributing/conventions.md)** — issues and their
-   labels, specs, ADRs, findings, this guide, commits.
+   labels, specs, ADRs, contracts, findings, this guide, commits.
 7. **[Cutting a release](../contributing/releases.md)** — the version, the
    changelog, the tag, and what the workflows publish.
 

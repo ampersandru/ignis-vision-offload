@@ -1,4 +1,4 @@
-"""The INT4 g32 n-gram table rows and the hot-row list (layout.md §7)."""
+"""The INT4 g32 n-gram table rows and the hot-row list (flash-next-layout.md §7)."""
 import numpy as np
 import torch
 

@@ -340,7 +340,7 @@ kernel's order. With `S_i` the exact fp64 prefix sum after step `i`:
 
 **Quantization error**, against the unquantized product. The reference is
 fp64 of BF16 x times BF16 W, with W quantized per row as the converter does
-(layout.md §6.1: the row scale is amax / 448 rounded **up** to the next
+(flash-next-layout.md §6.1: the row scale is amax / 448 rounded **up** to the next
 BF16). Shapes are 4096 tokens × (4096 × 4096) and (4096 × 12288):
 
 | x | W8A8 relative RMS | cosine | weights only |

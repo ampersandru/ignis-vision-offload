@@ -1,4 +1,4 @@
-"""Non-expert tensors as work files (layout.md §6): each file holds exactly its container payload.
+"""Non-expert tensors as work files (flash-next-layout.md §6): each file holds exactly its container payload.
 
 Used by the pass and by the reduced fixture, so both write the same bytes.
 """

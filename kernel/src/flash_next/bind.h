@@ -3,7 +3,7 @@
 //
 // The binder matches the descriptors the Rust loader hands across the load
 // ABI (crates/artifact/src/flash_next.rs's inventory, placed on the device)
-// against the topology-derived schema of docs/specs/flash-next/layout.md
+// against the topology-derived schema of docs/formats/flash-next-layout.md
 // section 6: every name required, every shape exact, linears either FP8
 // row-scale or BF16 (a part the conversion flags is re-converted to BF16),
 // everything else BF16, and any descriptor the schema does not name refused.
@@ -45,7 +45,7 @@ struct Weights {
 std::unique_ptr<Weights> bind_flash_next(const ignis_bound_tensor *tensors, uint64_t count,
                                          const ignis_topology &topology, std::string *error);
 
-// The MTP head's non-expert weights (spec flash-next/07; layout.md section 13.3, the companion
+// The MTP head's non-expert weights (spec flash-next/07; flash-next-layout.md section 13.3, the companion
 // container's names, `mtp.` kept): the fusion of the trunk's stack with the next token's
 // embedding, one QSA + MoE decoder layer with its hyper-connections, and its mixer. The token
 // embedding and the output head are the trunk's; the 1024 expert projections are not bound

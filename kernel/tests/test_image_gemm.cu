@@ -257,7 +257,7 @@ struct Options {
   double max_quant_rel_rms = 0.1;
 };
 
-// A row-scale-v1 payload (layout.md §6.1) of random codes (every finite E4M3 value) and BF16 row
+// A row-scale-v1 payload (flash-next-layout.md §6.1) of random codes (every finite E4M3 value) and BF16 row
 // scales around `scale_mag`; the host keeps only the payload, decoding codes through a table.
 std::vector<uint8_t> make_weight(uint32_t stream, int rows, int cols, float scale_mag) {
   const std::size_t codes = static_cast<std::size_t>(rows) * cols;
@@ -493,7 +493,7 @@ float gaussian(uint32_t stream, uint64_t i) {
 }
 
 void quant_error_arm(const Options &o, int tokens, int rows, int cols, bool outliers) {
-  // W: BF16, ~N(0, 0.02^2); quantized per row as the converter does (layout.md §6.1,
+  // W: BF16, ~N(0, 0.02^2); quantized per row as the converter does (flash-next-layout.md §6.1,
   // tools/flash-next-converter/fp8.py): scale = the smallest BF16 >= fp32(amax / 448), so no code
   // saturates, or 1 for an all-zero row; codes E4M3(w / scale).
   std::vector<float> wf(static_cast<std::size_t>(rows) * cols);

@@ -2,7 +2,7 @@
 // flash-next/04, GitHub #302; OURS, ADR 0043). S1-private.
 //
 // Embedding: embed_tokens' row of each token id, decoded as the converter's
-// quantized reference decodes FP8 (bf16(e4m3(code) * scale), layout.md 6.1)
+// quantized reference decodes FP8 (bf16(e4m3(code) * scale), flash-next-layout.md 6.1)
 // or copied when BF16, then repeated into every hyper-connection stream
 // (transformers: hidden_states.repeat(1, 1, hc_count)).
 // Head: the final hyper-connection mixer (which is also the model's final

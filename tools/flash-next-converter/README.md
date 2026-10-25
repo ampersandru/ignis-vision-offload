@@ -5,7 +5,7 @@ tool that turns `Qwen/Qwen3.8-Flash-Next` at revision
 `de4b8e4d43b917e7706784d8bb445c9af86a3540` into ignis **work files** (trellis experts with a K
 per expert, FP8 non-experts, the INT4 n-gram table), the **reference recordings** and the
 **routing traces**, in one layer-streamed GPU pass. The byte contract is
-`docs/specs/flash-next/layout.md`; the Rust packer (`ignis-artifact-pack`, `crates/artifact`)
+`docs/formats/flash-next-layout.md`; the Rust packer (`ignis-artifact-pack`, `crates/artifact`)
 assembles the `.ninfer` container from the work files. Python never writes the container.
 
 The recipe and the pass are the compression study's run 8 (`real/e2e8.py`), ported here.
@@ -21,7 +21,7 @@ n-gram cache and the coverage sample's parquet files are passed by command-line 
 | `pipeline.py` | The pass: three streams per layer (BF16, quantized, FP8-only), Hessians, the four-K sweep, allocation, work files, replay of finished layers, the n-gram table sweep, the kernel recordings. |
 | `finish.py` | After the last layer: the head, stored references, the G1 fixture, traces, the verdicts (acceptance 2-4), `converter.json`, `report.txt`. |
 | `driver.py` | The layer loop: DONE markers checked on resume, replay, the crash-safe checkpoint, the stop file (exit 75). |
-| `layout.py`, `fp8.py`, `table.py` | The byte formats of layout.md: expert records and index, FP8 row-scale payloads, INT4 g32 table rows, the non-expert encoding rule, the DONE protocol. |
+| `layout.py`, `fp8.py`, `table.py` | The byte formats of flash-next-layout.md: expert records and index, FP8 row-scale payloads, INT4 g32 table rows, the non-expert encoding rule, the DONE protocol. |
 | `allocate.py` | Run 8's Lagrangian K allocation, rate = K + fp16 scales. |
 | `corpus.py`, `corpus_manifest.json` | The study's run 4-8 calibration/test set in its order; every source checked against the allowlist; token files pinned by sha256; the n-gram cache pinned per shard (size and the sha256 of its first and last MiB, all 128 shards; a full hash of 102 GB is too slow); the coverage sample's parquet files pinned by sha256. |
 | `container.py` | Reads expert records back out of a packed container (for `verify`). |
@@ -83,7 +83,7 @@ other streams' on `C:/flash-next-ckpt-small`, the packer at `target/x86_64-pc-wi
   K = 2 (zero routed energy). The dry run's layer 0 had 6 of them.
 - **FP8 scales are bf16** (the container's existing format), rounded up from amax/448.
 - **The hot-row list** ranks the calibration set together with the research session's n-gram
-  coverage sample (layout.md §7.3).
+  coverage sample (flash-next-layout.md §7.3).
 
 ## Resources
 

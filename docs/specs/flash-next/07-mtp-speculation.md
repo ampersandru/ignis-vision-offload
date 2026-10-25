@@ -266,7 +266,7 @@ above.
   - It is pinned to the main container by `weights_id` and the main
     container's sha256, recorded in its conversion JSON. The binder refuses a
     mismatch by name.
-  - *As built (layout.md §13.2):* the sidecar records the main container's
+  - *As built (flash-next-layout.md §13.2):* the sidecar records the main container's
     `model_id`, `weights_id`, `Reader::content_hash` and whole-file sha256.
     The packer refuses a companion whose converter calibrated on a main
     container with another sha256; the load compares `model_id`,
@@ -274,9 +274,9 @@ above.
     computes) and refuses a mismatch or a missing sidecar by name. The load
     does not re-hash 71.8 GB; verify does, offline.
   - Appending to the main container would make it a re-conversion
-    (layout.md: any change is). It would also change the identity the owner
+    (flash-next-layout.md: any change is). It would also change the identity the owner
     accepted and force a 71.8 GB re-download for a ~0.9 GB head.
-- **Formats, as the trunk's (layout.md):**
+- **Formats, as the trunk's (flash-next-layout.md):**
   - experts: trellis at the trunk's budget, 2.5 b: 786 MB; 3.0 b would be
     944 MB;
   - attention, indexer and HC mix down/up, the shared expert, `fc_hidden`,
@@ -701,7 +701,7 @@ Where the build departs from the text above:
 ## Phase B result (2026-10-06)
 
 The companion is `qwen3_8_flash_next_mtp_3p0-v2.ninfer` (1053 objects, 1,037,905,920 bytes),
-beside the main container. Its contract is layout.md §13; the run record is its sidecar.
+beside the main container. Its contract is flash-next-layout.md §13; the run record is its sidecar.
 
 - **Calibration.** The served engine (hq-e8-2b) tapped its states over the trunk's corpus:
   290 chunks in 794 s, 453,005 calibration entries and 131,912 test entries. All 512 experts

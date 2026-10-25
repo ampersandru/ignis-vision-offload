@@ -5,7 +5,7 @@ Per decoder layer (the study's run 8 pipeline, `real/e2e8.py`, extended to the a
    and routing of the 2048-token chunks;
 2. Hessians from the calibration tokens; every expert projection encoded at every K of
    {2, 2.5, 3, 4} by exllamav3; Lagrangian allocation; the chosen records written;
-3. the non-expert tensors written (FP8 row scale or BF16, layout.md §6);
+3. the non-expert tensors written (FP8 row scale or BF16, flash-next-layout.md §6);
 4. the **quantized** stream runs the test chunks, the long windows and the canaries on
    what was written (experts decoded from experts.bin, FP8 decoded from its payloads,
    the INT4 n-gram rows), recording its routing;
@@ -47,7 +47,7 @@ FRONTEND = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "g
 TABLE_SHARDS, SHARD_ROWS = 128, 2_500_012
 HOT_CAP_ROWS = (2 << 30) // table.ROW_BYTES
 CONVERTER_SCHEMA = "flash-next-converter-v1"
-# kernel-level recordings for spec 02 (layout.md §10): whole-MoE-block inputs/outputs and
+# kernel-level recordings for spec 02 (flash-next-layout.md §10): whole-MoE-block inputs/outputs and
 # full-shape reconstruct checksums at three depths
 MOE_BLOCK_LAYERS, MOE_BLOCK_TOKENS, MOE_BLOCK_FIRST = (2, 24, 46), 64, 1024
 CHECKSUM_LAYERS, CHECKSUMS_PER_CLASS = (0, 24, 47), 2
@@ -716,7 +716,7 @@ class Conversion:
 
     def _record_moe_block(self, layer, state, L, d):
         """Spec 02's whole-MoE-block reference: MOE_BLOCK_TOKENS tokens of the first test chunk
-        through this layer's quantized MoE block (layout.md §10, moe_block/). Runs the layer on a
+        through this layer's quantized MoE block (flash-next-layout.md §10, moe_block/). Runs the layer on a
         copy of that chunk's state, so the stream itself is untouched."""
         cap = {}
         hooks = [layer.mlp.register_forward_hook(lambda m, a, o: cap.update(x=a[0], y=o)),

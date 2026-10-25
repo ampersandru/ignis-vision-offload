@@ -111,7 +111,7 @@ __device__ __forceinline__ float dot8(const uint4 &wv, const uint4 &xv, float ac
   return acc;
 }
 
-// The FP8 row-scale payload's scales (layout.md 6.1): BF16 [rows] at the next
+// The FP8 row-scale payload's scales (flash-next-layout.md 6.1): BF16 [rows] at the next
 // multiple of 256 bytes after the codes.
 const __nv_bfloat16 *fp8_scales(const Linear &w) {
   const std::size_t codes = static_cast<std::size_t>(w.rows) * w.cols;
