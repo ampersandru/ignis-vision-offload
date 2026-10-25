@@ -150,10 +150,13 @@ async fn the_catalog_lists_every_entry_then_every_known_model_with_its_state_on_
     assert!(built_in.get("family").is_none(), "no artifact, no header to name a family");
 
     let full = row(&rows, "acme-full");
-    assert_eq!(full, &json!({ "id": "acme-full", "source": "operator", "on_disk": "complete", "bytes": 8, "loaded": false, "switchable": true, "available": true }));
+    assert_eq!(full, &json!({ "id": "acme-full", "source": "operator", "on_disk": "complete", "bytes": 8, "loaded": false, "switchable": true, "available": true, "download": "none", "bytes_on_disk": 8 }));
     assert_eq!(row(&rows, "acme-part")["on_disk"], "partial");
     assert_eq!(row(&rows, "acme-part")["switchable"], false, "its artifact is not there");
+    // GitHub #376: what of an entry is there now, its 1-byte sidecar of 8.
+    assert_eq!((row(&rows, "acme-part")["bytes_on_disk"].clone(), row(&rows, "acme-part")["download"].clone()), (json!(1), json!("none")));
     assert_eq!((row(&rows, "acme-none")["on_disk"].clone(), row(&rows, "acme-none")["bytes"].clone()), (json!("absent"), json!(8)));
+    assert_eq!(row(&rows, "acme-none")["bytes_on_disk"], 0);
 
     let known = row(&rows, "mock-k");
     assert_eq!((known["source"].clone(), known["on_disk"].clone(), known["bytes"].clone()), (json!("known"), json!("complete"), json!(7)));
@@ -161,6 +164,9 @@ async fn the_catalog_lists_every_entry_then_every_known_model_with_its_state_on_
     let missing = row(&rows, "mock-gone");
     assert_eq!((missing["on_disk"].clone(), missing["switchable"].clone()), (json!("absent"), json!(false)));
     assert!(missing.get("bytes").is_none(), "absent: no size: {missing}");
+    // A known model is never downloaded: its artifact's size, or 0.
+    assert_eq!((known["bytes_on_disk"].clone(), known["download"].clone()), (json!(7), json!("none")));
+    assert_eq!((missing["bytes_on_disk"].clone(), missing["download"].clone()), (json!(0), json!("none")));
 
     let loaded: Vec<&str> = rows["data"].as_array().unwrap().iter().filter(|row| row["loaded"] == true).map(|row| row["id"].as_str().unwrap()).collect();
     assert_eq!(loaded, ["mock-a"], "exactly the model serving");

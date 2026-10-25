@@ -488,6 +488,10 @@ async fn main() {
     // under `--download-path` when a request names it is switchable too, so
     // a `model download` into this directory needs no restart.
     let catalog_models = ignis_server::model_switch::CatalogModels { catalog, dir: model_download_path.clone() };
+    // GitHub #376 (ADR 0071): a catalog entry downloaded in the background
+    // through `POST /v1/models/download`, from the endpoint and with the
+    // token the start-time fetch uses, `HF_TOKEN` read now as it reads it.
+    let downloads = ignis_server::download_http::Downloads::of(&config_state.current(), std::env::var("HF_TOKEN").ok().as_deref());
     let server = server
         .with_switcher(
             switcher
@@ -497,6 +501,7 @@ async fn main() {
                 .with_card_class(card_class),
         )
         .with_config(config_state)
+        .with_downloads(downloads)
         .with_speech(Arc::new(speech));
 
     // Spec image-model/05 §Prompt enhancement: an enhancer no switch reaches

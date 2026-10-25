@@ -16,7 +16,7 @@ import type { ServerActions, ServerState } from "./useServer.ts";
 
 const ready: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786432 };
 
-const actions: ServerActions = { load: () => {}, edit: () => {}, remove: () => {}, undo: () => {}, discard: () => {}, apply: () => {}, dismiss: () => {} };
+const actions: ServerActions = { load: () => {}, download: () => {}, edit: () => {}, remove: () => {}, undo: () => {}, discard: () => {}, apply: () => {}, dismiss: () => {} };
 
 const base: ServerState = {
   fields: { state: "ok", value: FIELDS },
@@ -30,6 +30,9 @@ const base: ServerState = {
   applying: false,
   loadingId: null,
   loadRefusal: null,
+  downloadingId: null,
+  downloadRefusal: null,
+  downloadSpeed: null,
 };
 
 const render = (state: Partial<ServerState> = {}, model: ModelState = ready, streaming = false, now = 0) =>
@@ -80,10 +83,45 @@ describe("ServerView: the model band", () => {
     expect(html).toContain(">Loaded<");
     expect(html).toContain('aria-label="Load qwen3.8-flash-next"');
     expect(html).toContain('aria-label="Load qwen3.8-27b-fail"');
-    expect(html).toContain('aria-label="Copy download command for qwen3.8-27b-abliterated"');
-    expect(html).toContain('aria-label="Copy download command for qwen3.8-27b-custom"');
+    expect(html).toContain('aria-label="Download qwen3.8-27b-abliterated"');
+    expect(html).toContain('aria-label="Download qwen3.8-27b-custom"');
+    expect(html).not.toContain("Copy download command");
     expect(html).toContain("On disk, 67.8 GiB");
     expect(html).toContain("Partly downloaded, 18.07 GiB in all");
+  });
+
+  // GitHub #376: a download from the page, followed on its row.
+  it("follows a running download on its row, with its bytes and speed, and keeps every other Download out of reach", () => {
+    const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, on_disk: "partial" as const, download: "running" as const, bytes_on_disk: 1.5 * 1024 ** 3 } : r));
+    const html = render({ catalog: { state: "ok", value: rows }, downloadSpeed: 85.3 * 1024 ** 2 });
+    expect(html).toContain("Downloading, 1.5 GiB of 18.07 GiB, 85.3 MiB/s");
+    expect(html).toContain(">Downloading…<");
+    expect(html).not.toContain('aria-label="Download qwen3.8-27b-custom"');
+    expect(html).toMatch(/aria-label="Download qwen3\.8-27b-abliterated" disabled=""/);
+    expect(html).not.toMatch(/aria-label="Load qwen3\.8-flash-next" disabled=""/);
+  });
+
+  it("keeps a failed download's reason on its row and offers Download again; shows a refused one's reason", () => {
+    const reason = "GET http://hf/acme/x/resolve/v1/x.ninfer: 401 Unauthorized: the endpoint wants a token and none was sent: set IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN";
+    const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, download: "failed" as const, download_reason: reason } : r));
+    const html = render({ catalog: { state: "ok", value: rows } });
+    expect(html).toContain(`Download failed: ${reason}`);
+    expect(html).not.toMatch(/aria-label="Download qwen3\.8-27b-custom" disabled=""/);
+    expect(html).toContain('aria-label="Download qwen3.8-27b-custom"');
+    expect(render({ downloadRefusal: "downloading through the API is off on this server (download.from_ui is false)" })).toContain("download.from_ui is false");
+    expect(render({ downloadingId: "qwen3.8-27b-custom" })).toMatch(/aria-label="Download qwen3\.8-27b-custom" disabled=""[^>]*>Sending…</);
+  });
+
+  it("offers Not for this card and no Download above the card's class, and the command where the page downloads nothing", () => {
+    const reason = "qwen3.8-27b-custom needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
+    const above = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, available: false, reason } : r));
+    const html = render({ catalog: { state: "ok", value: above } });
+    expect(html).toContain("Not for this card");
+    expect(html).not.toContain('aria-label="Download qwen3.8-27b-custom"');
+    const off = { ...CONFIG, download: { ...CONFIG.download, from_ui: false } };
+    const copying = render({ config: { state: "ok", value: off } });
+    expect(copying).toContain('aria-label="Copy download command for qwen3.8-27b-custom"');
+    expect(copying).not.toContain('aria-label="Download qwen3.8-27b-custom"');
   });
 
   it("has no Loaded row while nothing serves, and offers Load for the retry, the torn-down model's included", () => {
@@ -160,6 +198,12 @@ describe("ServerView: the configuration", () => {
     expect(known).not.toMatch(/<input|<select/);
     expect(rowOf(html, "model.max_context")).toContain(">reload<");
     expect(rowOf(html, "server.request_timeout")).not.toContain(">reload<");
+  });
+
+  it("shows download.from_ui read-only, set at start like the rest of download", () => {
+    const fromUi = rowOf(render(), "download.from_ui");
+    expect(fromUi).toContain("Set at start");
+    expect(fromUi).not.toMatch(/<input|<select|role="switch"/);
   });
 
   it("reads a scoped field from the running family's section and says so", () => {

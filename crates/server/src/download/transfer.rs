@@ -358,6 +358,16 @@ impl Downloader {
                 file.name
             )));
         }
+        // A gated or private repository: say which token was sent and where
+        // it is read from, never what it is.
+        if matches!(status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) {
+            return Err(DownloadError::new(format!(
+                "GET {url}: {} {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or(""),
+                self.token_hint()
+            )));
+        }
         if !status.is_success() {
             return Err(DownloadError::new(format!(
                 "GET {url}: {} {}",
@@ -445,6 +455,21 @@ impl Downloader {
             .map_err(|err| DownloadError::new(format!("rename {}: {err}", part.display())))?;
         self.say(Event::Fetched { entry, file, path, seconds: started.elapsed().as_secs() });
         Ok(Landed::Verified)
+    }
+
+    /// What a `401` or `403` from the endpoint is told: whether a token was
+    /// sent, and where it is read from — `HF_TOKEN` named only for Hugging
+    /// Face itself, the one host it is sent to. Never the token.
+    fn token_hint(&self) -> String {
+        let names = if super::is_huggingface(&self.endpoint) {
+            "IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN"
+        } else {
+            "IGNIS_DOWNLOAD_TOKEN (download.token)"
+        };
+        match self.token {
+            None => format!("the endpoint wants a token and none was sent: set {names} for the server (read at its start) or for `model download`"),
+            Some(_) => format!("the endpoint refused the token sent, {names} as the server (at its start) or `model download` read it"),
+        }
     }
 
     /// Report `event` the way this downloader reports. No event carries the

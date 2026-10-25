@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { loadUnderWay, type ModelState } from "../api/model.ts";
-import { diskLabel, downloadCommand, elapsed, rowAction, runningFamily, sourceLabel } from "./band.ts";
+import { diskLabel, downloadCommand, type DownloadGate, elapsed, rowAction, runningFamily, sourceLabel } from "./band.ts";
+import { downloadFailure, progressLabel } from "./download.ts";
 import { familyName } from "./form.ts";
 import { drainNote, lastSwitchLine, type Line } from "./outcome.ts";
 import type { CatalogRow } from "./routes.ts";
@@ -23,6 +24,10 @@ export function ModelBand({
   drain,
   now,
   onLoad,
+  downloads,
+  downloadingId,
+  downloadSpeed,
+  onDownload,
 }: {
   model: ModelState;
   catalog: Loaded<CatalogRow[]>;
@@ -34,6 +39,13 @@ export function ModelBand({
   drain: number | null;
   now: number;
   onLoad: (id: string) => void;
+  /** Whether the server downloads from the page, and whether a download runs. */
+  downloads: DownloadGate;
+  /** The id whose Download is being sent. */
+  downloadingId: string | null;
+  /** The running download's bytes per second, once read. */
+  downloadSpeed: number | null;
+  onDownload: (id: string) => void;
 }) {
   const rows = catalog.state === "ok" ? catalog.value : null;
   const family = runningFamily(rows);
@@ -64,7 +76,13 @@ export function ModelBand({
           </div>
         )}
       </div>
-      <Catalog catalog={catalog} model={model} loadingId={loadingId} onLoad={onLoad} />
+      <Catalog
+        catalog={catalog}
+        model={model}
+        loadingId={loadingId}
+        onLoad={onLoad}
+        downloads={{ gate: downloads, sendingId: downloadingId, speed: downloadSpeed, onDownload }}
+      />
     </section>
   );
 }
@@ -132,7 +150,22 @@ function Figure({ label, value, dot }: { label: string; value: string; dot?: str
   );
 }
 
-function Catalog({ catalog, model, loadingId, onLoad }: { catalog: Loaded<CatalogRow[]>; model: ModelState; loadingId: string | null; onLoad: (id: string) => void }) {
+/** What a row needs to offer Download and follow it. */
+type RowDownloads = { gate: DownloadGate; sendingId: string | null; speed: number | null; onDownload: (id: string) => void };
+
+function Catalog({
+  catalog,
+  model,
+  loadingId,
+  onLoad,
+  downloads,
+}: {
+  catalog: Loaded<CatalogRow[]>;
+  model: ModelState;
+  loadingId: string | null;
+  onLoad: (id: string) => void;
+  downloads: RowDownloads;
+}) {
   if (catalog.state !== "ok") {
     return (
       <p className="border-t border-kiln-line px-5 py-3 text-sm text-[#939ba4] md:px-6">
@@ -149,18 +182,35 @@ function Catalog({ catalog, model, loadingId, onLoad }: { catalog: Loaded<Catalo
         >
           <span className="font-display text-base font-semibold text-white [overflow-wrap:anywhere]">{row.id}</span>
           <span className="col-start-1 text-xs text-[#939ba4] sm:col-start-auto sm:text-sm">{sourceLabel(row.source)}</span>
-          <span className="col-start-1 text-xs text-[#939ba4] sm:col-start-auto sm:text-sm">{diskLabel(row)}</span>
+          <span className="col-start-1 text-xs text-[#939ba4] sm:col-start-auto sm:text-sm">
+            {row.download === "running" ? progressLabel(row, downloads.speed) : diskLabel(row)}
+          </span>
           <div className="col-start-2 row-span-3 row-start-1 justify-self-end sm:col-start-auto sm:row-span-1 sm:row-start-auto">
-            <RowActionView row={row} model={model} loadingId={loadingId} onLoad={onLoad} />
+            <RowActionView row={row} model={model} loadingId={loadingId} onLoad={onLoad} downloads={downloads} />
           </div>
+          {downloadFailure(row) !== null && (
+            <p className="col-span-full pt-1 text-xs text-fault [overflow-wrap:anywhere]">Download failed: {downloadFailure(row)}</p>
+          )}
         </li>
       ))}
     </ul>
   );
 }
 
-function RowActionView({ row, model, loadingId, onLoad }: { row: CatalogRow; model: ModelState; loadingId: string | null; onLoad: (id: string) => void }) {
-  const action = rowAction(row, model);
+function RowActionView({
+  row,
+  model,
+  loadingId,
+  onLoad,
+  downloads,
+}: {
+  row: CatalogRow;
+  model: ModelState;
+  loadingId: string | null;
+  onLoad: (id: string) => void;
+  downloads: RowDownloads;
+}) {
+  const action = rowAction(row, model, downloads.gate);
   switch (action.kind) {
     case "loaded":
       return <span className="font-display text-[13px] font-semibold text-good">Loaded</span>;
@@ -179,7 +229,21 @@ function RowActionView({ row, model, loadingId, onLoad }: { row: CatalogRow; mod
         </button>
       );
     case "download":
+      return (
+        <button
+          type="button"
+          aria-label={`Download ${row.id}`}
+          disabled={!action.enabled || downloads.sendingId !== null}
+          onClick={() => downloads.onDownload(row.id)}
+          className="border border-[#4a525c] px-3 py-1.5 font-display text-[13px] font-semibold text-white hover:border-[#ff5a1f] hover:bg-[#ff5a1f]/15 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[#4a525c] disabled:hover:bg-transparent"
+        >
+          {downloads.sendingId === row.id ? "Sending…" : "Download"}
+        </button>
+      );
+    case "copy":
       return <CopyCommand id={row.id} />;
+    case "downloading":
+      return <span className="font-display text-[13px] font-semibold text-[#ff8a4c]">Downloading…</span>;
     case "missing":
       return null;
     case "unavailable":

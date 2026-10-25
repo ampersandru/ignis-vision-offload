@@ -87,6 +87,8 @@ fn the_document_lists_exactly_the_v1_surface() {
         // Spec playground/05: the models a switch can go to or fetch, and
         // what each configuration field is.
         "get /v1/models/catalog",
+        // GitHub #376: download a catalog entry in the background.
+        "post /v1/models/download",
         "get /v1/config/fields",
         // Spec playground/05 follow-up 2: where each of those values comes
         // from.
@@ -241,6 +243,7 @@ fn the_card_class_refusal_and_availability_are_documented() {
         ("/v1/images/edits", "409"),
         ("/v1/tokenize", "409"),
         ("/v1/models/switch", "409"),
+        ("/v1/models/download", "409"),
         ("/v1/decide", "422"),
     ] {
         let said = document["paths"][path]["post"]["responses"][status]["description"].as_str().unwrap_or_default();

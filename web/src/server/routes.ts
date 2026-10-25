@@ -69,6 +69,12 @@ export type CatalogRow = {
   available?: boolean;
   /** Why it is not available, naming both classes; only with `available: false`. */
   reason?: string;
+  /** Its download through `POST /v1/models/download`: running now, or the last one failed. An older server sends none of the three. */
+  download?: "none" | "running" | "failed";
+  /** Why the last download failed; only with `download: "failed"`. */
+  download_reason?: string;
+  /** What of it is on disk now, partial files included. */
+  bytes_on_disk?: number;
 };
 
 /** Why the card cannot load a row (ADR 0064), as the server words it; null when it can. The one wording every view shows. */
@@ -142,6 +148,15 @@ export const switchTo = (id: string, fetcher: typeof fetch = fetch) =>
     "/v1/models/switch",
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: id }) },
     (body) => body as { from: string; to: string },
+    fetcher,
+  );
+
+/** Download the catalog entry `id` onto the server, in the background: GET /v1/models/catalog follows it. */
+export const startDownload = (id: string, fetcher: typeof fetch = fetch) =>
+  call(
+    "/v1/models/download",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: id }) },
+    (body) => body as { model: string; bytes: number; bytes_on_disk: number },
     fetcher,
   );
 

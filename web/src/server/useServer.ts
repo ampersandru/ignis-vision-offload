@@ -14,8 +14,10 @@ import {
   readFields,
   readOrigins,
   type Refusal,
+  startDownload,
   switchTo,
 } from "./routes.ts";
+import { afterDownload, followDownloads, nextProgress, type Progress, runningDownload, speedOf } from "./download.ts";
 
 // The Server view's state (spec playground/05): the declarations, the
 // running configuration, where its values come from and the catalog as read, the draft of changes, and
@@ -25,7 +27,9 @@ import {
 // The model state is the page's (api/model.ts), which re-reads it each
 // second while a switch runs. This hook only starts that following after a
 // 202 — the state still reads `ready` until the next read — and reads the
-// configuration and the catalog again once the model serves again.
+// configuration and the catalog again once the model serves again. While a
+// download runs (GitHub #376), whoever started it, the hook reads the catalog
+// each second the view is shown, and the speed from those reads.
 
 export type Loaded<T> = { state: "loading" } | { state: "ok"; value: T } | { state: "error"; refusal: Refusal };
 
@@ -47,10 +51,18 @@ export type ServerState = {
   loadingId: string | null;
   /** Why the server refused the last "Load". */
   loadRefusal: string | null;
+  /** The id whose "Download" is being sent. */
+  downloadingId: string | null;
+  /** Why the server refused the last "Download". */
+  downloadRefusal: string | null;
+  /** The running download's speed, in bytes per second, once two catalog reads gave one. */
+  downloadSpeed: number | null;
 };
 
 export type ServerActions = {
   load: (id: string) => void;
+  /** Download the catalog entry `id` onto the server, and follow it. */
+  download: (id: string) => void;
   /** Set `decl` where `inForce` says: a family's section, or the group. */
   edit: (decl: FieldDecl, inForce: InForce, value: string | boolean) => void;
   /** Take the family's own value of `decl` away, so the shared one applies to it again. */
@@ -78,10 +90,23 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
   const [applying, setApplying] = useState(false);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [loadRefusal, setLoadRefusal] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadRefusal, setDownloadRefusal] = useState<string | null>(null);
+  // A download runs: the catalog is read each second, the speed taken from the reads.
+  const [following, setFollowing] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
   // A 202 answered: follow the model until it leaves `ready` or records another switch.
   const [awaiting, setAwaiting] = useState<{ before?: LastSwitch } | null>(null);
   const modelNow = useRef(model);
   modelNow.current = model;
+
+  // A catalog read: the rows, and whether a download runs to be followed.
+  const acceptCatalog = useCallback((answer: Answer<CatalogRow[]>) => {
+    setCatalog(loaded(answer));
+    if (!answer.ok) return;
+    setProgress((current) => nextProgress(current, answer.value, Date.now()));
+    setFollowing(runningDownload(answer.value) !== null);
+  }, []);
 
   // The declarations never change while the server runs: read until one read
   // answers (the warm-up holds every /v1 route but GET /v1/models).
@@ -95,8 +120,8 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
     }
     void readConfig().then((answer) => setConfig(loaded(answer)));
     void readOrigins().then((answer) => setOrigins(loaded(answer)));
-    void readCatalog().then((answer) => setCatalog(loaded(answer)));
-  }, []);
+    void readCatalog().then(acceptCatalog);
+  }, [acceptCatalog]);
 
   // Read on opening the view, and again on each return to it: another client
   // may have switched, or a download landed, since.
@@ -136,6 +161,18 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
     return () => clearInterval(timer);
   }, [awaiting, model, refreshModel]);
 
+  // A download runs: the catalog each second while the view is shown, a failed
+  // read keeping the rows last read. Once none runs, the model it fetched is
+  // servable: GET /v1/models is read again for the rest of the page.
+  useEffect(() => {
+    if (!following || !visible) return;
+    return followDownloads(readCatalog, (answer) => {
+      if (!answer.ok) return;
+      acceptCatalog(answer);
+      if (!runningDownload(answer.value)) refreshModel();
+    });
+  }, [following, visible, acceptCatalog, refreshModel]);
+
   // A reload ends: the draft clears once it took, and is kept when it did not.
   useEffect(() => {
     if (!pending) return;
@@ -158,6 +195,7 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
     () => ({
       load(id) {
         setLoadRefusal(null);
+        setDownloadRefusal(null);
         setLoadingId(id);
         void switchTo(id).then((answer) => {
           const after = afterSwitch(answer);
@@ -165,6 +203,18 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
           setLoadRefusal(after.refusal);
           if (after.follow) setAwaiting({ before: lastSwitchOf(modelNow.current) });
           if (after.refreshModel) refreshModel();
+        });
+      },
+      download(id) {
+        setDownloadRefusal(null);
+        setLoadRefusal(null);
+        setDownloadingId(id);
+        void startDownload(id).then((answer) => {
+          const after = afterDownload(answer);
+          setDownloadingId(null);
+          setDownloadRefusal(after.refusal);
+          // The row reads `running` at once: read it now, then each second.
+          if (after.follow) void readCatalog().then(acceptCatalog);
         });
       },
       edit(decl, inForce, value) {
@@ -212,10 +262,13 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
         setResult(null);
       },
     }),
-    [draft, fieldList, refreshModel, reread],
+    [draft, fieldList, refreshModel, reread, acceptCatalog],
   );
 
-  return [{ fields, config, origins, catalog, draft, marked, result, pending, applying, loadingId, loadRefusal }, actions];
+  return [
+    { fields, config, origins, catalog, draft, marked, result, pending, applying, loadingId, loadRefusal, downloadingId, downloadRefusal, downloadSpeed: speedOf(progress) },
+    actions,
+  ];
 }
 
 const lastSwitchOf = (model: ModelState) => (model.state === "reading" ? undefined : model.lastSwitch);

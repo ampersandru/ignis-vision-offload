@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAuth, saveKey } from "../api/auth.ts";
-import { patchConfig, readCatalog, readConfigFile, readFields, readOrigins, refusalOf, switchTo } from "./routes.ts";
+import { patchConfig, readCatalog, readConfigFile, readFields, readOrigins, refusalOf, startDownload, switchTo } from "./routes.ts";
 
 // The Server view's requests (spec playground/05): what each sends, and how
 // each answer is read.
@@ -65,6 +65,26 @@ describe("switchTo", () => {
     saveKey("sk-test");
     const body = { error: { message: "model x is in the catalog but not on disk", type: "model_not_found", code: "model_not_found" } };
     expect(await switchTo("x", answering(404, body))).toEqual({ ok: false, status: 404, message: "model x is in the catalog but not on disk", code: "model_not_found" });
+  });
+});
+
+describe("startDownload", () => {
+  it("sends POST /v1/models/download with the catalog id alone, never a token, and the key", async () => {
+    saveKey("sk-test");
+    const sent: Sent[] = [];
+    const accepted = { status: "downloading", model: "qwen3.8-27b-abliterated", bytes: 19406984175, bytes_on_disk: 0 };
+    const answer = await startDownload("qwen3.8-27b-abliterated", answering(202, accepted, sent));
+    expect(answer).toEqual({ ok: true, status: 202, value: accepted });
+    expect(sent[0].url).toBe("/v1/models/download");
+    expect(sent[0].init.method).toBe("POST");
+    expect(JSON.parse(sent[0].init.body as string)).toEqual({ model: "qwen3.8-27b-abliterated" });
+    expect(sent[0].init.headers).toMatchObject({ Authorization: "Bearer sk-test", "Content-Type": "application/json" });
+  });
+
+  it("reads a refusal as the server's message and code", async () => {
+    saveKey("sk-test");
+    const body = { error: { message: "a download of qwen3.8-flash-next is already running; downloads are one at a time, never queued", code: "download_in_progress" } };
+    expect(await startDownload("x", answering(409, body))).toEqual({ ok: false, status: 409, message: body.error.message, code: "download_in_progress" });
   });
 });
 

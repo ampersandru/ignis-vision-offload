@@ -39,7 +39,11 @@ model download <id>` that fetches it; a switch never starts a download.
 `GET /v1/models/catalog` lists the models a switch can go to, one row each:
 `id`, `source` (`built-in`, `operator` or `known`), `on_disk` (`complete`,
 `partial` or `absent`), `bytes`, `family`, `loaded` and `switchable`. It
-answers during a switch and while one has failed, and carries no path.
+answers during a switch and while one has failed, and carries no path. Each
+row also carries `bytes_on_disk`, what of it is there now, partial files
+included, and `download`: `running` while a
+[download through the API](../guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)
+fetches it, `failed` with a `download_reason` once one failed, else `none`.
 
 **How the last one ended.** After the first switch or reload since start,
 `GET /v1/models` carries `last_switch: {from, to, outcome, reason?, host_plan?}`:
