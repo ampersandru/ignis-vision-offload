@@ -2,7 +2,7 @@ import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useMemo
 import { keyRequired } from "../api/auth.ts";
 import type { SpeechStatus } from "../api/model.ts";
 import { startCapture } from "./capture.ts";
-import { DictationController, type DictationHandle, type DictationState } from "./dictation.ts";
+import { DictationController, type DictationHandle, type DictationState, dictating, subscribeDictating } from "./dictation.ts";
 import { openTranscription } from "./realtime.ts";
 
 /** A field's dictation: what drives it, and the textarea it writes into. */
@@ -39,7 +39,7 @@ export function useDictation(options: {
           context: () => latest.current.context(),
         },
         {
-          open: (context, handlers) => openTranscription(context, handlers),
+          open: (context, handlers, autoStop) => openTranscription(context, handlers, {}, autoStop),
           capture: (onChunk) => startCapture(onChunk),
           onKeyRequired: keyRequired,
           onUnavailable: () => latest.current.onUnavailable?.(),
@@ -52,6 +52,11 @@ export function useDictation(options: {
   useEffect(() => controller.setAvailability({ secure, speech }), [controller, secure, speech]);
   useEffect(() => () => controller.dispose(), [controller]);
   return useMemo(() => ({ controller, field }), [controller]);
+}
+
+/** Whether any field on the page is being dictated into: what a send waits on (Q4). */
+export function useDictating(): boolean {
+  return useSyncExternalStore(subscribeDictating, dictating, dictating);
 }
 
 /**

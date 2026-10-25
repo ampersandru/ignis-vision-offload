@@ -53,6 +53,7 @@ function recorder() {
   const handlers: TranscriptionHandlers = {
     onDelta: (text) => calls.push(["delta", text]),
     onTail: (text) => calls.push(["tail", text]),
+    onCommitted: () => calls.push(["committed", null]),
     onCompleted: (text) => calls.push(["completed", text]),
     onFailed: (message) => calls.push(["failed", message]),
     onRefused: (refusal) => calls.push(["refused", refusal]),
@@ -97,9 +98,9 @@ describe("openTranscription", () => {
     expect(sockets[1].protocols).toEqual(["realtime"]);
   });
 
-  it("configures the session as spec 04 says: manual commit, PCM16 at 16 kHz, the context, the provisional tail, no language", () => {
+  it("configures the session as spec 04 says: manual commit when the auto-stop is Off, PCM16 at 16 kHz, the context, the provisional tail, no language", () => {
     const { sockets, handlers, deps } = setup();
-    openTranscription("The last reply.\n\nThe composer's text.", handlers, deps);
+    openTranscription("The last reply.\n\nThe composer's text.", handlers, deps, null);
     sockets[0].accept();
     expect(sockets[0].sent).toEqual([
       {
@@ -118,6 +119,67 @@ describe("openTranscription", () => {
       },
     ]);
     expect(JSON.stringify(sockets[0].sent)).not.toContain("language");
+  });
+
+  it("asks for server_vad with the viewer's silence and the server's defaults for the rest (Q80)", () => {
+    const { sockets, handlers, deps } = setup();
+    openTranscription("", handlers, deps, 3_000);
+    sockets[0].accept();
+    const detection = (sockets[0].sent[0] as { session: { audio: { input: { turn_detection: object } } } }).session.audio.input.turn_detection;
+    expect(detection).toEqual({ type: "server_vad", silence_duration_ms: 3_000 });
+  });
+
+  it("waits to configure while the auto-stop is pending, audio included, then sends it as settled", () => {
+    const { sockets, handlers, deps } = setup();
+    const session = openTranscription("", handlers, deps, "pending");
+    sockets[0].accept();
+    session.append(new Int16Array([1]));
+    expect(sockets[0].sent).toEqual([]);
+    session.autoStop(null);
+    expect(sockets[0].sent).toHaveLength(1);
+    expect(sockets[0].sent[0]).toMatchObject({ type: "session.update", session: { audio: { input: { turn_detection: null } } } });
+    session.autoStop(2_000);
+    expect(sockets[0].sent).toHaveLength(1);
+    sockets[0].emit({ type: "session.updated", event_id: "event_2", session: {} });
+    expect(sockets[0].types()).toEqual(["session.update", "input_audio_buffer.append"]);
+  });
+
+  it("settled before the greeting, configures at the greeting", () => {
+    const { sockets, handlers, deps } = setup();
+    const session = openTranscription("", handlers, deps, "pending");
+    session.autoStop(5_000);
+    expect(sockets[0].sent).toEqual([]);
+    sockets[0].accept();
+    expect(sockets[0].sent[0]).toMatchObject({ session: { audio: { input: { turn_detection: { type: "server_vad", silence_duration_ms: 5_000 } } } } });
+  });
+
+  it("tells the first server commit, and hears nothing of a later item", () => {
+    const { sockets, calls, handlers, deps } = setup();
+    openTranscription("", handlers, deps, 3_000);
+    sockets[0].accept();
+    sockets[0].emit({ type: "session.updated", event_id: "e2", session: {} });
+    sockets[0].emit({ type: "input_audio_buffer.speech_stopped", audio_end_ms: 900, item_id: "item_1" });
+    sockets[0].emit({ type: "input_audio_buffer.committed", item_id: "item_1", previous_item_id: null });
+    sockets[0].emit({ type: "conversation.item.input_audio_transcription.delta", item_id: "item_1", delta: "hello" });
+    sockets[0].emit({ type: "input_audio_buffer.committed", item_id: "item_2", previous_item_id: "item_1" });
+    sockets[0].emit({ type: "conversation.item.input_audio_transcription.delta", item_id: "item_2", delta: "again" });
+    sockets[0].emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_2", transcript: "again" });
+    sockets[0].emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", transcript: "hello" });
+    expect(calls).toEqual([["committed", null], ["delta", "hello"], ["completed", "hello"]]);
+  });
+
+  it("ignores the empty-commit error of a commit that crossed the server's own, and reports any other", () => {
+    const { sockets, calls, handlers, deps } = setup();
+    openTranscription("", handlers, deps, 3_000);
+    sockets[0].accept();
+    const empty = { type: "error", error: { code: "input_audio_buffer_commit_empty", message: "nothing to commit" } };
+    sockets[0].emit(empty);
+    expect(calls).toEqual([["failed", "nothing to commit"]]);
+    calls.length = 0;
+    sockets[0].emit({ type: "input_audio_buffer.committed", item_id: "item_1", previous_item_id: null });
+    sockets[0].emit(empty);
+    sockets[0].emit({ type: "error", error: { code: "other", message: "boom" } });
+    expect(calls).toEqual([["committed", null], ["failed", "boom"]]);
   });
 
   it("sends no prompt when there is no context", () => {
@@ -161,6 +223,7 @@ describe("openTranscription", () => {
     expect(calls).toEqual([
       ["delta", "Apri vram.rs"],
       ["tail", " e controlla"],
+      ["committed", null],
       ["tail", ""],
       ["completed", "Apri vram.rs e controlla."],
     ]);
@@ -235,6 +298,15 @@ describe("openTranscription", () => {
 
     it("is busy on 503 engine_full: every session is taken", async () => {
       expect(await refusedWith(answering(503, { error: { code: "engine_full", message: "the speech model has 4 Realtime sessions open" } }))).toEqual({ kind: "busy" });
+    });
+
+    it("reads the busy answer's Retry-After", async () => {
+      const busy = (async () =>
+        new Response(JSON.stringify({ error: { code: "engine_full", message: "full" } }), { status: 503, headers: { "Retry-After": "7" } })) as typeof fetch;
+      expect(await refusedWith(busy)).toEqual({ kind: "busy", retryAfter: 7 });
+      const odd = (async () =>
+        new Response(JSON.stringify({ error: { code: "engine_full", message: "full" } }), { status: 503, headers: { "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" } })) as typeof fetch;
+      expect(await refusedWith(odd)).toEqual({ kind: "busy" });
     });
 
     it("is unavailable, with the server's reason, on 503 speech_unavailable", async () => {

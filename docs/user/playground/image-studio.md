@@ -40,8 +40,8 @@ input but no prompt, **Ideas** suggests edits: watercolour, golden hour, cut
 out, winter, a 3D clay figure, a new angle.
 
 The **mic** beside Generate dictates the prompt, as the
-[chat's mic](chat.md#dictating-a-prompt) does: **Done** puts the text at the
-cursor, and Generate (or **Switch & generate**) waits until the dictation
+[chat's mic](chat.md#dictating-a-prompt) does: **Done** (or a silence, which
+ends a dictation as Done does) puts the text at the cursor, and Generate (or **Switch & generate**) waits until the dictation
 ends; nothing runs until you press it. The context it sends is the last
 step's prompt, as prompt enhancement rewrote it, then what is in the box.
 

@@ -42,7 +42,9 @@ mic: speech is for prose (Q17).
   dictation, opened at the press. The press is also the signal that loads the
   speech model (Q53), and in phase 3 the loan's (Q32, Q56). The session is
   configured with:
-  - `turn_detection: null`;
+  - `turn_detection: {type: "server_vad", silence_duration_ms: <the viewer's
+    setting>}`, the server's defaults for the rest, or `null` (manual commit)
+    when the setting is Off (Q80, below);
   - PCM16 at 16 kHz, the declared extension (Q21);
   - the context (below);
   - the provisional-tail opt-in, `session.ignis.provisional_tail: true` (Q43
@@ -52,6 +54,20 @@ mic: speech is for prose (Q17).
 - **Done** commits. `completed` inserts the transcript and the session
   closes. **Esc** clears the buffer, closes the session, and discards the
   dictation (Q17).
+- **A silence ends it** (Q80; owner, 2026-10-25, after his live test). The
+  dictation stops by itself after a silence, **on by default at 3 s**. It is
+  built on the server's `server_vad` (spec 05): the session asks for
+  `turn_detection: {type: "server_vad", silence_duration_ms: <setting>}`,
+  with the server's defaults for the rest. The **first** server commit
+  (`input_audio_buffer.committed`, after `speech_stopped`) ends the
+  dictation exactly as Done does: one item, the mic let go, "Finishing the
+  last words.", and the text lands at the cursor. A pause shorter than the
+  setting cuts nothing. A **held** Ctrl+Shift+Space (push-to-talk) never
+  stops by itself: the release is what ends it. **Off** is the manual
+  commit, `turn_detection: null`, as before.
+  - The setting is **per viewer**, in the settings panel's General tab:
+    Off / 2 s / 3 s / 5 s, kept in the browser like the transport.
+  - It applies to every mic: the chat's, the studio's and Decide's.
 - **Language:** none is sent, so the model detects it. The Playground never
   forces one (Q6, Q51).
 - **Context** (Q15, Q17):
@@ -156,8 +172,8 @@ it."
 1. One mic component serves chat, Decide's prose fields and the image
    studio. The JSON textareas have none (Q3, Q17).
 2. The transcript is inserted at the cursor, selected and editable. Send
-   (Generate, in the studio) is disabled while listening and finishing, and
-   nothing is ever sent by a dictation (Q4, Q17).
+   (Generate, in the studio; Decide, in Decide) is disabled while listening
+   and finishing, and nothing is ever sent by a dictation (Q4, Q17).
 3. A click on the mic toggles. Ctrl+Shift+Space works inside the composer:
    push-to-talk when held past 400 ms, a toggle on a tap (Q5, Q17; owner,
    2026-10-24).
@@ -165,9 +181,10 @@ it."
    provisional tail grey, with the level meter and the timer (Q5, Q17, Q43).
 5. Esc clears the buffer, closes the session, keeps the composer as it was,
    and shows "Dictation discarded." (Q17).
-6. Every dictation is one Realtime session with `turn_detection: null`, PCM16
-   at 16 kHz and `session.ignis.provisional_tail: true`.
-   Done commits (Q33, Q21, Q43).
+6. Every dictation is one Realtime session with `turn_detection` as the
+   viewer's silence setting says (AC 19), PCM16 at 16 kHz and
+   `session.ignis.provisional_tail: true`. Done commits (Q33, Q21, Q43;
+   amended by Q80: it was `turn_detection: null` always).
 7. The context sent is the last reply and the composer text, or in Decide the
    question and the evidence text, never raw JSON (Q15, Q17).
 8. No `language` is ever sent (Q51).
@@ -175,8 +192,10 @@ it."
    sentence (Q18).
 10. Each unavailable cause shows the struck-through mic and its sentence
     from the table (Q35, Q39, Q17).
-11. A `503` with `Retry-After` shows the busy sentence, counts down, and
-    retries once (Q44, Q35, Q17).
+11. A `503` with `Retry-After` shows the busy sentence, counts down from that
+    `Retry-After`, and retries once (Q44, Q35, Q17). The page reads it from
+    the plain `GET` of the route (a same-origin `fetch` can), and counts 3 s
+    when the answer gave none.
 12. A closed connection keeps what was heard in the strip, with "Insert what
     was heard" and "Discard", and the fault sentence (Q17).
 13. In Decide, each prose field has its own mic and strip, the field keeps
@@ -191,6 +210,13 @@ it."
     unknown example (Q11).
 18. The web tests pass, and `cargo test` passes workspace-wide (AGENTS.md,
     not a grill decision).
+19. A dictation stops by itself after a silence (Q80). The setting is
+    Off / 2 s / 3 s / 5 s per viewer, default 3 s. The session asks for
+    `server_vad` with that `silence_duration_ms` and the server's defaults for
+    the rest; Off asks for `turn_detection: null`. The first server commit
+    ends the dictation as Done does, with one item and the text at the
+    cursor. A held Ctrl+Shift+Space never stops by itself, a tap follows the
+    setting, and a shorter pause cuts nothing.
 
 ## Out of Scope
 
@@ -220,8 +246,7 @@ differs from it:
   follows it. `prompt` is left out when there is no context.
 - **Busy (AC 11).** A browser cannot read a refused upgrade's status or
   `Retry-After`: it sees a close before the open. The page then asks the
-  server why (below). The countdown is the page's own, 3 s (`BUSY_RETRY_SECONDS`; #353 answers
-  `Retry-After: 1`), the mic is let go while it runs, and the one retry
+  server why (below). The countdown is the page's own, the mic is let go while it runs, and the one retry
   refused again says "The dictation still could not open: speech is busy.
   Press the mic to try again." (warn).
   **Read, no longer inferred** (integration fixes): the server answers a
@@ -232,11 +257,15 @@ differs from it:
   upgrade_required` means the server would have opened the socket, so
   something between the page and the server lost the upgrade: "Dictation
   could not start: the server is up, but this address does not carry
-  WebSockets." (fault, no retry). The countdown stays the page's 3 s; the
-  `Retry-After` is not read.
+  WebSockets." (fault, no retry).
+  **`Retry-After` is read** (final fixes): the busy answer's header is read
+  from that plain `GET`, and the countdown starts from it, rounded up and
+  capped at 15 s (`BUSY_RETRY_MAX_SECONDS`). Without a usable header it is 3 s
+  (`BUSY_RETRY_SECONDS`). #353 answers `Retry-After: 1` for a session
+  limit, so a full server counts 1 s today.
 - **The download command (AC 15)** is the server's: `ignis-server model
-  download <id>`, the binary's real name, taken from the reason, where the
-  table says `ignis model download <id>`. A server reason the table has no row
+  download <id>`, the binary's real name, taken from the reason (the table
+  above spells it the same). A server reason the table has no row
   for (an id not in the catalog, a build with no executor, a server older than
   speech) is "Speech is unavailable on this server: <reason>."
 - **A struck mic stays pressable** (`aria-disabled`, not `disabled`). For a
@@ -283,3 +312,53 @@ differs from it:
   status; the speech entry, `active` after `data[0]`, is never read as the
   loaded model. The dev mock (`npm run dev:mock`) has no socket and reports
   the speech model's files missing, so its mic shows struck.
+
+### Final fixes (Q80, AC 2 in Decide, AC 11)
+
+- **A silence ends the dictation (Q80, AC 19).** `web/src/speech/silence.ts`
+  holds the setting: `ignis.dictationSilence` in `localStorage` (`off`, or
+  the milliseconds), 3 s when nothing is stored or the value is not one of the
+  four, and the page's own copy where storage throws. The settings panel's
+  General tab shows it as "Dictation stops after", between the parallel
+  switch and the transport. A press reads it (`DictationDeps.silence`) and
+  passes it to the session (`openTranscription(..., autoStop)`), which sends
+  `{type: "server_vad", silence_duration_ms}` and nothing else of
+  `server_vad`: the threshold and the padding are the server's
+  (`speech.vad_*`).
+  - **The first commit.** `input_audio_buffer.committed` reaches the
+    controller as `onCommitted`; while listening it behaves as Done after the
+    flush: the clock stops, the phase is "finishing", the mic is let go, and
+    the transcript lands as for Done. The mic's last 100 ms are not flushed:
+    the item is closed, and audio sent now would open a next one. The
+    session remembers that first item's id and ignores every event of a later
+    one, so a second item the server starts before the page has closed the
+    socket adds nothing. A Done pressed in the same moment sends no commit of
+    its own (the second would find an empty buffer). A manual commit's
+    `committed` is told too, and changes nothing.
+  - **Held keys.** A chord press cannot know yet whether it is a tap or a
+    hold, and spec 05 says a switch between `null` and `server_vad` while an
+    item holds audio holds only from the next item. So the session is opened
+    with the auto-stop pending: the configuration, and the audio behind it,
+    wait for the release (a tap: the setting) or for `HOLD_MS` + 1 ms with the
+    key still down (a hold: `null`). The wait is at most 401 ms, and the audio
+    queued meanwhile is sent in order after the configuration, as for the
+    greeting. A click on the mic is decided at once.
+  - **Tests.** `silence.test.ts` (default, stored picks, an unknown value,
+    storage that throws); `realtime.test.ts` ("asks for server_vad with the
+    viewer's silence", "waits to configure while the auto-stop is pending",
+    "settled before the greeting", "tells the first server commit, and hears
+    nothing of a later item", the Off configuration); `dictation.test.ts`
+    ("a silence", "Ctrl+Shift+Space and the silence");
+    `SettingsPanel.test.tsx` ("the dictation's silence").
+  - **Not measured live**: the owner's own test is the oracle, as for the
+    rest of the Playground. Spec 05's AC 7 (real-time pace through the route)
+    is #359's.
+- **Decide waits for a dictation (AC 2).** `dictating()` is a page-wide flag,
+  true from the press until the text has landed or the dictation was dropped
+  (a listening, finishing, waiting or stopped one). Bench's Decide button is
+  disabled while it is, with "A dictation is under way. Decide waits until its
+  words land.", and `send()` checks it too. Tests: `DecideView.test.tsx`
+  ("Bench: the Decide button"), `dictation.test.ts` ("the page's dictation").
+- **Busy reads `Retry-After` (AC 11).** `realtime.test.ts` ("reads the busy
+  answer's Retry-After"), `dictation.test.ts` ("counts down the refusal's
+  Retry-After, to a cap").

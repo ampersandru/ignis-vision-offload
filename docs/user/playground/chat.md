@@ -36,7 +36,7 @@ The **mic** beside Send dictates into the box, with the
 [speech model](../api/transcriptions.md) on the server. Click it, or press
 **Ctrl+Shift+Space** with the focus in the box: held for longer than 400 ms it
 is push-to-talk, and letting go ends the dictation; tapped, it starts one, and
-the next tap ends it.
+the next tap ends it. A silence ends it too, as described below.
 
 While you speak:
 
@@ -47,7 +47,14 @@ While you speak:
   **Listening…** before the first word;
 - the box's underline runs.
 
-**Done** ends it. The strip reads **Finishing** while the server decodes the
+**Done** ends it, and so does a silence: after 3 seconds without speech the
+dictation stops by itself, exactly as if you had pressed Done. A shorter pause
+cuts nothing. Push-to-talk never stops by itself: a held
+Ctrl+Shift+Space ends when you let go. The silence is a
+[setting](settings.md#dictation) in General: Off, 2 s, 3 s or 5 s, kept by
+this browser; with Off, only Done, a second tap or letting go ends a dictation.
+
+The strip reads **Finishing** while the server decodes the
 last words; then the text lands at the cursor, selected, with a space added
 where it would touch a word. Edit it as you like, and press Send when it is
 ready. **Esc**, or **Discard** on the strip, throws the dictation away and
@@ -72,10 +79,11 @@ The line under the box follows along:
 
 **Busy.** The server holds `speech.max_sessions` (4) dictations at once
 ([speech](../configuration/speech.md)). One more is refused; the page counts
-down 3 seconds and tries once more. A browser cannot read why a socket was
-refused, nor its `Retry-After`, so the page asks the same route with a plain
-`GET`, which the server answers as it would the upgrade: `503 engine_full` is
-busy, `503 speech_unavailable` is the unavailable reason, and a server that
+down the server's `Retry-After` (3 seconds when there is none, 15 at most) and
+tries once more. A browser cannot read why a socket was refused, nor its
+`Retry-After`, so the page asks the same route with a plain `GET`, which the
+server answers as it would the upgrade and which it can read: `503 engine_full`
+is busy, with the `Retry-After` the countdown starts from, `503 speech_unavailable` is the unavailable reason, and a server that
 would have opened the socket says so, which means something between the page
 and the server (a proxy that does not carry WebSockets) lost the upgrade.
 
@@ -95,7 +103,11 @@ Each dictation is one session on the server's Realtime transcription route,
 the text lands. Pressing the mic is also what loads the speech model, if it is
 not loaded. The session asks for:
 
-- **manual commit** (`turn_detection: null`): **Done** commits;
+- **the server's turn detection**: `turn_detection` is `{type: "server_vad",
+  silence_duration_ms: <the setting>}`, the server's own defaults for the rest,
+  and the server's first commit ends the dictation as Done does. With the
+  setting Off, and for a held Ctrl+Shift+Space, it is **manual commit**
+  (`turn_detection: null`) and **Done** commits;
 - **16-bit PCM at 16 kHz**, the model's own rate: the browser downsamples the
   mic and sends 100 ms of audio at a time;
 - **the provisional tail** (`session.ignis.provisional_tail: true`): the grey

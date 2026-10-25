@@ -7,17 +7,24 @@ import { pcmBase64, TARGET_RATE } from "./pcm.ts";
 // speech/04; the wire is spec speech/03): opened at the press, configured,
 // fed the mic's audio, committed by Done or cleared by Esc, and closed.
 //
-// - **Configured** once the server has greeted it: manual commit, PCM16 at
-//   16 kHz, the context as the prompt, the provisional tail (Q21, Q33, Q43).
-//   No language: the model detects it (Q51). Audio that arrives before the
+// - **Configured** once the server has greeted it: PCM16 at 16 kHz, the
+//   context as the prompt, the provisional tail (Q21, Q43), and the turn
+//   detection: the server's `server_vad` with the viewer's silence, which ends
+//   the item by itself (Q80), or manual commit when that is Off (Q33). No
+//   language: the model detects it (Q51). Audio that arrives before the
 //   server has answered the configuration waits here, so none of it is read
 //   at the default 24 kHz.
+// - **A chord press** does not know yet whether it is a tap or push-to-talk,
+//   and a switch between `null` and `server_vad` while an item holds audio
+//   holds only from the next item (spec speech/05). So the configuration waits
+//   for `autoStop()`, the audio with it, and a held key never auto-stops.
 // - **A refused upgrade** is a close before the open, whatever the server
 //   answered: a page cannot read a failed upgrade's status or `Retry-After`.
 //   A plain GET of the same route is answered what the upgrade would have been
 //   (spec speech/03), and the page reads that: a 401 wants the key; `503
 //   speech_unavailable` is `unavailable` with its reason; `503 engine_full` is
-//   `busy`; `400 upgrade_required` says the server would have opened it, so the
+//   `busy`, with the answer's `Retry-After` (a same-origin `fetch` can read
+//   it); `400 upgrade_required` says the server would have opened it, so the
 //   upgrade was lost on the way (a proxy that does not carry WebSockets).
 // - The socket, its URL and the probe's `fetch` are injectable, so all of it
 //   runs in a test without a server.
@@ -26,12 +33,18 @@ export const REALTIME_PATH = "/v1/realtime?intent=transcription";
 
 /** Why the session never opened. */
 export type Refusal =
-  | { kind: "busy" }
+  | { kind: "busy"; /** The answer's `Retry-After`, in seconds, when it gave one. */ retryAfter?: number }
   | { kind: "unavailable"; reason: string }
   | { kind: "key"; message: string }
   | { kind: "unreachable"; message: string }
   /** The server would have opened it: the upgrade did not get through. */
   | { kind: "no_websocket" };
+
+/**
+ * The silence that ends the item by itself, in ms; `null` for manual commit (Done); `"pending"` while the
+ * dictation does not know yet (a chord press that may be push-to-talk): the configuration waits for `autoStop()`.
+ */
+export type AutoStop = number | null | "pending";
 
 /** What the session tells the dictation. Nothing is called once the page has closed it. */
 export type TranscriptionHandlers = {
@@ -39,6 +52,8 @@ export type TranscriptionHandlers = {
   onDelta: (text: string) => void;
   /** The whole provisional tail, which replaces the last; `""` once the item ends. */
   onTail: (text: string) => void;
+  /** The server committed the item itself, after a silence (`server_vad`): the first commit ends the dictation. */
+  onCommitted: () => void;
   /** The committed item's transcript: the deltas joined. */
   onCompleted: (transcript: string) => void;
   /** The item failed, or the server refused an event: its message. */
@@ -50,6 +65,8 @@ export type TranscriptionHandlers = {
 
 export type Transcription = {
   append: (pcm: Int16Array) => void;
+  /** Settles a `"pending"` auto-stop: the silence in ms, or `null` for manual commit. */
+  autoStop: (silenceMs: number | null) => void;
   /** Ends the item: its transcript follows. */
   commit: () => void;
   /** Esc: clears the server's buffer and closes the session. */
@@ -78,7 +95,7 @@ function protocols(): string[] {
 }
 
 /** The session's configuration (spec speech/04, AC 6-8). */
-function configuration(context: string) {
+function configuration(context: string, silenceMs: number | null) {
   return {
     type: "session.update",
     session: {
@@ -87,13 +104,17 @@ function configuration(context: string) {
         input: {
           format: { type: "audio/pcm", rate: TARGET_RATE },
           transcription: context === "" ? {} : { prompt: context },
-          turn_detection: null,
+          // The server's defaults for the rest (spec speech/05): threshold, prefix padding.
+          turn_detection: silenceMs === null ? null : { type: "server_vad", silence_duration_ms: silenceMs },
         },
       },
       ignis: { provisional_tail: true },
     },
   };
 }
+
+/** The error a commit gets when the buffer holds nothing: spec speech/03. */
+const EMPTY_COMMIT = "input_audio_buffer_commit_empty";
 
 /** The reason in `the speech model is unavailable: <reason>`, the server's sentence. */
 const UNAVAILABLE_PREFIX = "the speech model is unavailable: ";
@@ -110,7 +131,10 @@ async function probe(doFetch: typeof fetch): Promise<Refusal> {
     } catch {
       // Not JSON: no code to read.
     }
-    if (res.status === 503 && error.code === "engine_full") return { kind: "busy" };
+    if (res.status === 503 && error.code === "engine_full") {
+      const seconds = Number(res.headers.get("Retry-After"));
+      return Number.isFinite(seconds) && seconds > 0 ? { kind: "busy", retryAfter: seconds } : { kind: "busy" };
+    }
     if (res.status === 503 && error.code === "speech_unavailable") {
       const message = error.message ?? "no reason given";
       return { kind: "unavailable", reason: message.startsWith(UNAVAILABLE_PREFIX) ? message.slice(UNAVAILABLE_PREFIX.length) : message };
@@ -126,13 +150,19 @@ async function probe(doFetch: typeof fetch): Promise<Refusal> {
 
 type ServerEvent = {
   type?: string;
+  item_id?: string;
   delta?: string;
   text?: string;
   transcript?: string;
-  error?: { message?: string };
+  error?: { message?: string; code?: string };
 };
 
-export function openTranscription(context: string, handlers: TranscriptionHandlers, deps: RealtimeDeps = {}): Transcription {
+export function openTranscription(
+  context: string,
+  handlers: TranscriptionHandlers,
+  deps: RealtimeDeps = {},
+  autoStop: AutoStop = null,
+): Transcription {
   const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
   const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
   /** The page closed it: nothing more is said, a refusal still being asked about included. */
@@ -143,6 +173,9 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
   let configured = false;
   let completed = false;
   let commitAsked = false;
+  let greeted = false;
+  /** The item the first commit made: a later item's events are not this dictation's. */
+  let item: string | undefined;
   const waiting: string[] = [];
   let socket: SocketLike | null = null;
 
@@ -150,9 +183,16 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
   const sendAppend = (audio: string) => send({ type: "input_audio_buffer.append", audio });
 
   function onMessage(event: ServerEvent) {
+    if (item !== undefined && event.item_id !== undefined && event.item_id !== item) return;
     switch (event.type) {
       case "session.created":
-        send(configuration(context));
+        greeted = true;
+        if (autoStop !== "pending") send(configuration(context, autoStop));
+        return;
+      case "input_audio_buffer.committed":
+        if (item !== undefined) return;
+        item = event.item_id;
+        handlers.onCommitted();
         return;
       case "session.updated":
         if (configured) return;
@@ -170,8 +210,12 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
         completed = true;
         handlers.onCompleted(event.transcript ?? "");
         return;
-      case "conversation.item.input_audio_transcription.failed":
       case "error":
+        // A commit of ours that crossed the server's own: the item is committed, the empty buffer is no fault.
+        if (item !== undefined && event.error?.code === EMPTY_COMMIT) return;
+        handlers.onFailed(event.error?.message ?? "the server refused the dictation");
+        return;
+      case "conversation.item.input_audio_transcription.failed":
         handlers.onFailed(event.error?.message ?? "the server refused the dictation");
         return;
     }
@@ -222,6 +266,11 @@ export function openTranscription(context: string, handlers: TranscriptionHandle
       if (ended) return;
       commitAsked = true;
       if (configured) send({ type: "input_audio_buffer.commit" });
+    },
+    autoStop(silenceMs) {
+      if (autoStop !== "pending" || ended) return;
+      autoStop = silenceMs;
+      if (greeted) send(configuration(context, silenceMs));
     },
     discard() {
       if (!ended && configured) send({ type: "input_audio_buffer.clear" });

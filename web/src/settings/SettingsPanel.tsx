@@ -6,6 +6,7 @@ import type { Attachment } from "../tools/local/attachments.ts";
 import { useMemoryNotes } from "../tools/local/memory.ts";
 import { setTavilyKey, useTavilyKey } from "../tools/web/tavilyKey.ts";
 import { caption, field } from "../ui/classes.ts";
+import { chooseSilence, SILENCE_CHOICES, useSilence } from "../speech/silence.ts";
 import { Segmented } from "../ui/Segmented.tsx";
 import { Slider } from "../ui/Slider.tsx";
 import { Switch } from "../ui/Switch.tsx";
@@ -139,6 +140,8 @@ function GeneralSettings(props: {
       />
 
       <ParallelSetting on={props.parallel} onChange={props.onParallelChange} />
+
+      <SilenceSetting />
 
       <TransportSetting />
 
@@ -395,6 +398,27 @@ function ParallelSetting({ on, onChange }: { on: boolean; onChange: (on: boolean
         </span>
       </div>
       <Switch on={on} onChange={onChange} labelledBy="parallel-label" />
+    </div>
+  );
+}
+
+/** How long a silence ends a dictation by itself (Q80): this browser's, kept like the transport. */
+export function SilenceSetting() {
+  const silence = useSilence();
+  return (
+    <div className="flex flex-col gap-2">
+      <Segmented
+        legend="Dictation stops after"
+        name="dictation-silence"
+        value={String(silence)}
+        options={SILENCE_CHOICES.map((c) => ({ value: String(c.value), label: c.label }))}
+        onChange={(v) => chooseSilence(v === "null" ? null : Number(v))}
+      />
+      <span className="text-xs leading-snug text-ash">
+        {silence === null
+          ? "A dictation ends when you press Done. A held Ctrl+Shift+Space ends when you let go."
+          : "A silence this long ends a dictation as Done does. A held Ctrl+Shift+Space never stops by itself."}
+      </span>
     </div>
   );
 }

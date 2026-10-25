@@ -33,7 +33,9 @@ left open were decided by the owner on 2026-10-24, cited as
   the speech start (Q20, Q22).
 - **The default.** From this phase on, a session that sends no
   `turn_detection` gets `server_vad`, as OpenAI's do (Q22, Q54). The
-  Playground keeps sending `null` and committing at Done (Q33).
+  Playground kept sending `null` and committing at Done (Q33) until Q80, which
+  makes its default `server_vad` with the viewer's silence (3 s), `null` only
+  when the viewer sets Off.
 - **`semantic_vad`** stays refused (Q22).
 - **The other `server_vad` fields** (owner, 2026-10-24): `idle_timeout_ms`
   is honoured. `create_response` and `interrupt_response` are inert, since
@@ -65,7 +67,9 @@ left open were decided by the owner on 2026-10-24, cited as
 4. A session that sends no `turn_detection` runs `server_vad`, and
    `session.created` says so (Q22, Q54, Q56).
 5. `semantic_vad` is refused (Q22).
-6. The Playground's dictation is unchanged: `null`, committed at Done (Q33).
+6. The Playground's dictation asks for `null`, committed at Done, when its
+   silence setting is Off (Q33), and otherwise for `server_vad` with the
+   viewer's `silence_duration_ms` (amended by Q80; spec 04, AC 19).
 7. On each dictation fed at real-time pace with `server_vad`, the items it
    commits, joined, have a pooled WER at most 1 pt worse than 03's manual
    commit of the whole dictation, after Q52's 1-pt rule
@@ -153,8 +157,14 @@ something the spec left open, or differs from it:
   `interrupt_response` are echoed when set. The fields hold at once; a switch
   between `null` and `server_vad` while the item holds audio holds from the
   next item, as a changed context does.
-- **AC 6.** The Playground is unchanged: `web/src/speech/realtime.ts` sends
-  `turn_detection: null` (`realtime.test.ts` pins it), and
+- **AC 6, amended by Q80** (owner, 2026-10-25). The Playground no longer
+  sends `null` always: `web/src/speech/realtime.ts` sends
+  `{type: "server_vad", silence_duration_ms}` with the viewer's setting
+  (default 3 s) and `null` for Off, and a held Ctrl+Shift+Space is configured
+  `null` (`realtime.test.ts` pins both; spec 04, As built). The first
+  `committed` ends the dictation. AC 7's measurement through the route at
+  real-time pace stays #359's. Before the amendment:
+  `web/src/speech/realtime.ts` sent `turn_detection: null` always, and
   `speech_realtime_vad.rs` shows a `null` session getting no VAD event and
   every sample in its item. The realtime tests' 16 kHz helper (`at_16_khz`)
   now asks for manual commit too.

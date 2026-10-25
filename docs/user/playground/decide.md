@@ -74,8 +74,9 @@ Each prose field has a mic of its own: a question's card on its top row
 [chat's mic](chat.md#dictating-a-prompt) does, Ctrl+Shift+Space included, in
 the field it belongs to: the field keeps an ember border while you speak, the
 strip sits under it, the text lands at its cursor, and nothing is sent until
-you press **Decide**. A JSON evidence, a file loaded as the evidence and the
-**JSON** request body have no mic: speech is for prose.
+you press **Decide**, which waits while any field is being dictated into. A
+JSON evidence, a file loaded as the evidence and the **JSON** request body
+have no mic: speech is for prose.
 
 The context a dictation sends is the other prose on the bench first and the
 field's own text last: the questions, then the evidence, for the evidence; the

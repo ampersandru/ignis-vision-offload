@@ -32,6 +32,7 @@ export function Bench({
   speech,
   busy,
   loading,
+  dictating = false,
   open,
   onEdit,
   onSpare,
@@ -53,6 +54,8 @@ export function Bench({
   speech?: SpeechStatus;
   busy: boolean;
   loading: boolean;
+  /** A field is being dictated into: Decide waits until the words have landed (Q4). */
+  dictating?: boolean;
   open: boolean;
   onEdit: (draft: Draft) => void;
   onSpare: (spare: Spare) => void;
@@ -143,7 +146,7 @@ export function Bench({
         ) : (
           <button
             type="button"
-            disabled={blocked || !ready || loading}
+            disabled={blocked || !ready || loading || dictating}
             onClick={onSend}
             className="cut w-full bg-ink px-4 py-2.5 font-display text-[14px] font-semibold text-ground hover:bg-ember disabled:cursor-not-allowed disabled:bg-line disabled:text-ash"
           >
@@ -155,11 +158,13 @@ export function Bench({
             ? "Waiting for the model."
             : busy
               ? "One prefill of the evidence, shared by every question."
-              : draft.questions.length === 0
-                ? "Add a question, or pick an example."
-                : blocked
-                  ? "Something above needs finishing."
-                  : `${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}, one request.`}
+              : dictating
+                ? "A dictation is under way. Decide waits until its words land."
+                : draft.questions.length === 0
+                  ? "Add a question, or pick an example."
+                  : blocked
+                    ? "Something above needs finishing."
+                    : `${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}, one request.`}
         </p>
       </div>
     </aside>

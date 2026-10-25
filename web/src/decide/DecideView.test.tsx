@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { Bench } from "./Bench.tsx";
 import { DecideView } from "./DecideView.tsx";
 import { EvidenceEditor } from "./EvidenceEditor.tsx";
 import { EXAMPLES } from "./examples.ts";
@@ -25,6 +26,45 @@ const ask = (kind: Primitive, extra: Partial<Question> = {}): Question => ({
   ...newQuestion(kind, kind),
   instructions: jsonString("Decide."),
   ...extra,
+});
+
+// A dictation under way holds Decide, as it holds Send (spec speech/04, AC 2).
+describe("Bench: the Decide button", () => {
+  const bench = (dictating: boolean) =>
+    renderToStaticMarkup(
+      <Bench
+        draft={{ ...EMPTY_DRAFT, questions: [ask("scalar")] }}
+        spare={EMPTY_SPARE}
+        mode="build"
+        json=""
+        jsonError={null}
+        faults={[]}
+        ready
+        busy={false}
+        loading={false}
+        dictating={dictating}
+        open={false}
+        onEdit={() => {}}
+        onSpare={() => {}}
+        onFiles={() => {}}
+        fileError={null}
+        onMode={() => {}}
+        onJson={() => {}}
+        onAdd={() => {}}
+        onSend={() => {}}
+        onStop={() => {}}
+      />,
+    );
+  const decideButton = (html: string) => html.match(/<button[^>]*>Decide<\/button>/)?.[0] ?? "";
+
+  it("waits while a field is dictated into, and says why", () => {
+    expect(decideButton(bench(true))).toContain('disabled=""');
+    expect(bench(true)).toContain("A dictation is under way");
+  });
+
+  it("is pressable once the dictation has ended", () => {
+    expect(decideButton(bench(false))).not.toContain('disabled=""');
+  });
 });
 
 describe("DecideView", () => {

@@ -4,6 +4,8 @@ import type { PromptImage } from "../conversation/images.ts";
 import { mergeLoaded } from "../store/docs.ts";
 import { pageStore } from "../store/index.ts";
 import { useStoredSessions } from "../store/useStoredSessions.ts";
+import { dictating } from "../speech/dictation.ts";
+import { useDictating } from "../speech/useDictation.ts";
 import { caption } from "../ui/classes.ts";
 import { IconPaperclip } from "../ui/icons.tsx";
 import { Answers } from "./Answers.tsx";
@@ -59,6 +61,7 @@ export function DecideView({
   /** Whether the speech model can serve, for the prose fields' mics (spec speech/04). */
   speech?: SpeechStatus;
 }) {
+  const dictatingNow = useDictating();
   const [list, setList] = useState(startList);
   const [mode, setMode] = useState<Mode>("build");
   // The JSON view's text is what a reader edits while it is open; the draft
@@ -215,7 +218,7 @@ export function DecideView({
   async function send() {
     const id = active.id;
     const sent = active.draft;
-    if (!ready || active.running || faults.length > 0 || (mode === "json" && jsonError !== null)) return;
+    if (!ready || active.running || dictating() || faults.length > 0 || (mode === "json" && jsonError !== null)) return;
     const controller = new AbortController();
     controllers.current.set(id, controller);
     change(id, (d) => ({ ...d, running: true, refusal: null }));
@@ -299,6 +302,7 @@ export function DecideView({
         speech={speech}
         busy={active.running}
         loading={loading}
+        dictating={dictatingNow}
         open={drawer === "settings"}
         onEdit={edit}
         onSpare={(spare) => change(active.id, (d) => ({ ...d, spare }))}
