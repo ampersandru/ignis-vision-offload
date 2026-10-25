@@ -52,7 +52,11 @@ Accepts `messages` (role + content), `model`, `stream`, `max_tokens`,
   | `enable_thinking: false` | 0.7 | 0.80 | 20 | 1.5 | 0 |
 
   An absent `seed` is a fresh one per request, so two identical requests are
-  two independent samples; a sent `seed` is kept. **Greedy is
+  two independent samples; a sent `seed` is kept. Sampling runs on the GPU,
+  and its RNG is counter-based, keyed by the seed, the sequence's own position
+  and the draw's purpose (prefill or decode): what a request generates depends on its own seed alone, never on
+  which requests shared its decode round, and no RNG state travels with a
+  sequence that is moved off the device and back. **Greedy is
   `temperature: 0`**: the fields such a request does not send are neutral,
   and because the leaf's greedy branch does not read stochastic filters or
   penalties, a non-neutral `top_p`, `top_k`, `presence_penalty` or
@@ -78,7 +82,10 @@ Accepts `messages` (role + content), `model`, `stream`, `max_tokens`,
   name when one is named — and the model writes the arguments. With thinking
   on (the default) the opening is forced right after the reasoning block
   closes, so the model still thinks first; with `enable_thinking: false` it
-  is the first thing generated. The call comes back as any other call does,
+  is the first thing generated. After a `</think>` the model wrote itself,
+  the first forced token is the opening's second, its joiner (the `\n` after
+  `<tool_call>`): the token before it was drawn unseen, and may itself have
+  opened the call. The call comes back as any other call does,
   with `finish_reason: "tool_calls"`. Naming a function that is not in
   `tools`, `"required"` with no tools, and a `max_tokens` shorter than the
   opening are a 400; so is a tokenizer that cannot force the opening

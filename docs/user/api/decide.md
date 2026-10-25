@@ -14,15 +14,35 @@ is copied, not invented: one `state`, a map of `questions`, typed answers with
 a probability on each, and System One's own error statuses (a request body
 that fails validation is a `422`). The one field that differs is `model`: leave
 it out or name the model ignis serves, since a Jev model name is refused with
-`422 model_not_found`.
+`422 model_not_found`. A decision runs in the `agent` lane class where every
+other route defaults to `interactive`, since it holds no residency and takes no
+decode lane; a caller whose single decision really is interactive says so with
+an `@interactive` suffix on `model`. A fan-out of two or more questions keeps
+the longest common prefix of its rendered questions until the fan-out ends;
+questions of different kinds do not share their system text, so they have
+none.
 
 System One's three primitives (`noul`, `choice`, `score`) are read from the
 logits of named answer tokens at a single position: **nothing is generated**,
 they cost one prefill, and `usage.output_tokens` is 0. ignis adds four of its
 own: `number`, `point` and `box` generate one constrained digit per step, so
 they cost a prefill plus a round per digit, and `locate` names a line or an
-item ([below](#finding-a-line-or-an-item)). The body is one `state` and a map
-of `questions`:
+item ([below](#finding-a-line-or-an-item)).
+
+`number`, `point`, `box` and `scalar` are constrained decodes: each step draws
+from a permitted set of at most 32 tokens, and a set the leaf cannot honour is
+refused, never truncated, since a constraint silently narrowed is a wrong
+answer that looks like a right one. `number` reads a number digit by digit into
+a field of fixed width, and `point` and `box` two or four of those; a `point`
+is a digit chain only when asked for with `"method": "chain"` or on a load with
+no calibrated pointing head, and a `box` may be asked for with
+`"method": "head"` instead. `scalar` adds the closing brace to the alphabet, so
+a number that is complete closes its own object instead of filling a field, and
+its `digits` is a maximum. The first token of a run is drawn by its prefill,
+not by its first decode round, because a round returns the token the previous
+call made ready.
+
+The body is one `state` and a map of `questions`:
 
 ```bash
 curl http://127.0.0.1:8000/v1/decide \
@@ -77,7 +97,12 @@ curl http://127.0.0.1:8000/v1/decide \
   array, whose segments are its elements. `segment` numbers them from 0, the
   way `split("\n")` or the array index would — always into the state you
   sent, whatever was folded or windowed — and `value` is the segment as you
-  sent it.
+  sent it. A segment's keys are the prompt tokens holding most of its bytes,
+  found from the byte range recorded as the state was written, never by
+  searching the text, so two identical lines are two segments; an empty or
+  all-whitespace one keeps its index and owns no key. The reading prompt puts
+  the evidence alone in the system message (layout L1) and reads at the copy
+  scaffold `{"quote":"`.
 - **`kind`** names the reading: `log`, `prose` or `records`, or `auto` (the
   default). `auto` says `records` for an array of two or more JSON objects;
   otherwise it folds the target's first 2,000 non-blank segments into
@@ -90,7 +115,8 @@ curl http://127.0.0.1:8000/v1/decide \
 - **`method`**: `shortlist` (the default) or `vote`, the head vote served
   before GitHub #278, unchanged — one prefill over at most 4,554 tokens on the
   served artifact (`locate_too_long` past that), no `found`, `pointers` its
-  winner alone.
+  winner alone. Its `confidence` is how much the heads agree, not a calibrated
+  probability.
 
 What each combination does, costs and measured
 ([spec 22](../../specs/decide/22-locate-by-copy-over-a-folded-state.md); the

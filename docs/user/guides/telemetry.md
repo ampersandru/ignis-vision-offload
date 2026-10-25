@@ -28,6 +28,22 @@ Everything goes through one structured log on stdout, in the format
 
 - The VRAM layout decided at load is the `ignis.runtime.vram_plan` event.
 
+A request id names one request for the life of the process: a switch, a reload
+and the load after an idle unload go on counting from the same number.
+
+Writing a line never waits on the disk or the pipe behind stdout. A call site
+hands its event to a queue, and a background thread is the only thing that ever
+performs the real write: INFO, WARN and ERROR go through a bounded priority
+channel that blocks briefly rather than drop, so an ERROR never silently
+vanishes, while DEBUG and TRACE go through a bounded ring buffer that drops its
+oldest entry on overflow rather than ever blocking. At shutdown the flush waits,
+up to a fixed budget, only on the priority channel, since a pending DEBUG or
+TRACE line is what that channel already permits losing. An attribute whose key
+contains a sensitive whole word (`password`, `secret`, `token`,
+`authorization`, `bearer`, `cookie`, `credential`) or word pair (`api_key`,
+`private_key`) is logged as `[REDACTED]` by construction, not by call-site
+discretion; a key that counts tokens, such as `token_capacity`, is not one.
+
 With metrics on (the default; `--server-metrics false` turns them off), the Prometheus exposition covers the request lifecycle and
 rejections, KV pool pages and evictions, the KV-RAM arena, retained slots and
 what reuse held or gave up, the VRAM plan, decoded tokens, forced thinking
