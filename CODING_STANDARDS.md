@@ -44,14 +44,14 @@ owner. ADR 0069 applies the rule.
 ## Vendored ops
 
 A vendored op stays the upstream's file byte for byte, or a recorded patch of
-it, under its manifest (ADR 0010, `kernel/vendor/VENDOR.md`). Two reasons admit a recorded patch,
-made with `scripts/vendor-ninfer.ps1 record-patch`: a measurement that shows
-the op is the bottleneck (ADR 0031), or a demonstrated correctness bug, whose
-patch ships with a test that fails without it and a `reason` naming the bug
-and the test (ADR 0037). An op rewritten as ours, or changed beyond a recorded
-patch, leaves the vendored tree and makes no parity claim (ADR 0031, ADR 0051).
-A comparison with the reference says whether it crosses an Ignis-patched
-behaviour.
+it, under its manifest (ADR 0010, `kernel/vendor/VENDOR.md`). Two reasons admit
+a recorded patch, made with `scripts/vendor-ninfer.ps1 record-patch`: a
+measurement that shows the op is the bottleneck (ADR 0031), or a demonstrated
+correctness bug, whose patch ships with a test that fails without it and a
+`reason` naming the bug and the test (ADR 0037). An op rewritten as ours, or
+changed beyond a recorded patch, leaves the vendored tree and makes no parity
+claim (ADR 0031, ADR 0051). A comparison with the reference says whether it
+crosses an Ignis-patched behaviour.
 
 ## After a merge or a rebase
 
@@ -89,6 +89,6 @@ The smell baseline does not apply to:
 
 Tooling already enforces the kernel's vendored tree against its manifest and
 the generated pages against the code (both in `cargo test`), and the guide's
-links (`make docs-build`). The
-guardrails are `make ci`, run by hand before a merge, and the release
-workflow's `cargo test` on Linux and Windows on every code push to `main`.
+links (`make docs-build`). The guardrails are `make ci`, run by hand before a
+merge, and the release workflow's `cargo test` on Linux and Windows on every
+code push to `main`.

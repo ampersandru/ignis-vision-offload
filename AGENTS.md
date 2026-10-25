@@ -31,7 +31,8 @@ must outlive the task, it moves into the repo: Artifact boundaries in
 
 ### Coding standards
 
-Writing, reviewing or merging a change, or running a skill that writes files: `CODING_STANDARDS.md`.
+Writing, reviewing or merging a change, or running a skill that writes files:
+`CODING_STANDARDS.md`.
 
 ### Findings
 
@@ -89,4 +90,5 @@ whatever its tool, Claude Code included, whose own default is
 
 ### Orchestrated builds
 
-Coordinating implementer agents on a spec's tickets: `docs/agents/orchestrated-builds.md`.
+Coordinating implementer agents on a spec's tickets:
+`docs/agents/orchestrated-builds.md`.
