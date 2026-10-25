@@ -3,7 +3,8 @@ import { MIC_BLOCKED, unavailable } from "./availability.ts";
 import { type Capture, MicBlocked } from "./capture.ts";
 import { insertAt, wordCount } from "./insert.ts";
 import { levelOf } from "./pcm.ts";
-import type { Refusal, Transcription, TranscriptionHandlers } from "./realtime.ts";
+import type { AutoStop, Refusal, Transcription, TranscriptionHandlers } from "./realtime.ts";
+import { dictationSilence } from "./silence.ts";
 
 // One field's dictation (spec speech/04): the state the mic, the strip and the
 // hint line read, and what drives it. It knows the field only as text with a
@@ -13,8 +14,12 @@ import type { Refusal, Transcription, TranscriptionHandlers } from "./realtime.t
 // - A press opens the session and asks for the mic at once; the audio waits
 //   in the session until the server has taken the configuration.
 // - Done flushes the mic, lets it go and commits; the transcript lands at the
-//   cursor, selected. Esc clears the session's buffer and closes it. Nothing a
-//   dictation does sends the prompt (Q4).
+//   cursor, selected. So does a silence (Q80): the server's `server_vad` commits
+//   the item after the viewer's silence (3 s unless set otherwise), and that
+//   first commit ends the dictation as Done does. A held Ctrl+Shift+Space
+//   (push-to-talk) never stops by itself: a press by the key waits out the
+//   hold before the session is told which it is. Esc clears the session's
+//   buffer and closes it. Nothing a dictation does sends the prompt (Q4).
 // - The whole page dictates into one field at a time: starting another ends
 //   the current one, whose text still lands in its own field (Q17).
 // - Partials are best effort: the text shows as it comes, at no assumed pace.
@@ -26,10 +31,13 @@ export const METER_BARS = 28;
 export const HOLD_MS = 400;
 
 /**
- * The wait before the one retry of a session refused for every one being taken. The browser cannot read the
- * refusal's `Retry-After` (realtime.ts), and a session frees when a person ends a dictation.
+ * The wait before the one retry of a session refused for every one being taken, when the refusal gave no
+ * `Retry-After`: a session frees when a person ends a dictation.
  */
 export const BUSY_RETRY_SECONDS = 3;
+
+/** The longest the page waits on a `Retry-After` before its one retry. */
+export const BUSY_RETRY_MAX_SECONDS = 15;
 
 const INSERTED_MS = 6_000;
 const DISCARDED_MS = 4_000;
@@ -83,7 +91,9 @@ export type DictationTarget = {
 };
 
 export type DictationDeps = {
-  open: (context: string, handlers: TranscriptionHandlers) => Transcription;
+  open: (context: string, handlers: TranscriptionHandlers, autoStop: AutoStop) => Transcription;
+  /** The silence that ends a dictation, read at the press; `null` is Off. */
+  silence?: () => number | null;
   capture: (onChunk: (pcm: Int16Array) => void) => Promise<Capture>;
   now?: () => number;
   onKeyRequired?: () => void;
@@ -93,6 +103,8 @@ export type DictationDeps = {
 
 /** The part of a keyboard event the shortcut reads. */
 export type KeyLike = { key: string; code: string; ctrlKey: boolean; shiftKey: boolean; repeat: boolean; preventDefault: () => void };
+
+const silenceOf = (deps: DictationDeps) => (deps.silence ?? dictationSilence)();
 
 const quiet = (): number[] => Array(METER_BARS).fill(0);
 
@@ -125,6 +137,18 @@ export function dictationContext(parts: string[]): string {
 /** The dictation under way on this page, if any: one field at a time. */
 let holder: DictationController | null = null;
 
+/** Every field whose dictation is not idle, for what waits on any of them: Decide's run (Q4). */
+const underWay = new Set<DictationController>();
+const pageListeners = new Set<() => void>();
+
+/** Whether any field on the page is being dictated into: a listening, finishing, waiting or stopped dictation. */
+export const dictating = (): boolean => underWay.size > 0;
+
+export function subscribeDictating(listener: () => void): () => void {
+  pageListeners.add(listener);
+  return () => pageListeners.delete(listener);
+}
+
 export class DictationController {
   private state: DictationState = IDLE_STATE;
   private readonly listeners = new Set<() => void>();
@@ -142,6 +166,10 @@ export class DictationController {
   /** This press was refused busy once already. */
   private retried = false;
   private holdAt = 0;
+  private chordPress = false;
+  private holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The server committed this dictation's item: Done must not commit again. */
+  private serverCommitted = false;
   private seq = 0;
   private secure = true;
   private speech: SpeechStatus | undefined;
@@ -177,12 +205,13 @@ export class DictationController {
   }
 
   /** The mic's click, and a tap of the shortcut. */
-  toggle() {
+  toggle(options: { chord?: boolean } = {}) {
     if (this.state.phase === "listening") return void this.done();
     if (this.state.phase !== "idle") return;
     const cause = this.state.unavailable;
     if (cause && !cause.blocked) return this.say(cause.sentence, "ash", NOTICE_MS);
     this.retried = false;
+    this.chordPress = options.chord === true;
     this.start();
   }
 
@@ -192,6 +221,8 @@ export class DictationController {
     const attempt = this.attempt;
     this.stopClock();
     this.update({ phase: "finishing" });
+    // A release that came before the hold timer: the commit must not wait on a configuration still pending.
+    this.settleAutoStop(null);
     const mic = await this.mic;
     if (attempt !== this.attempt) return;
     if (mic) {
@@ -205,7 +236,20 @@ export class DictationController {
       this.end();
       return this.say(NOTHING_HEARD, "ash", NOTICE_MS, { phase: "idle" });
     }
-    this.session?.commit();
+    // The server may have committed the item already (a silence): a second commit would find nothing.
+    if (!this.serverCommitted) this.session?.commit();
+  }
+
+  /** The server committed the item after a silence: the dictation ends as Done does, the mic let go. */
+  private serverCommit() {
+    this.serverCommitted = true;
+    if (this.state.phase !== "listening") return;
+    clearTimeout(this.holdTimer);
+    this.stopClock();
+    this.update({ phase: "finishing" });
+    this.capture?.stop();
+    this.capture = null;
+    this.mic = Promise.resolve(null);
   }
 
   /** Esc, or the strip's Discard: the field stays as it was. */
@@ -233,7 +277,7 @@ export class DictationController {
     if (event.repeat) return;
     if (this.state.phase === "idle") {
       this.holdAt = this.now();
-      this.toggle();
+      this.toggle({ chord: true });
     } else if (this.state.phase === "listening") {
       void this.done();
     }
@@ -244,6 +288,14 @@ export class DictationController {
     const held = this.now() - this.holdAt;
     this.holdAt = 0;
     if (held > HOLD_MS) void this.done();
+    else this.settleAutoStop(silenceOf(this.deps));
+  }
+
+  /** A chord press told which it is: a tap follows the setting, a hold is manual. */
+  private settleAutoStop(silenceMs: number | null) {
+    clearTimeout(this.holdTimer);
+    this.holdTimer = undefined;
+    this.session?.autoStop(silenceMs);
   }
 
   /** The field is going away: whatever is under way stops, and the mic is let go. */
@@ -273,6 +325,7 @@ export class DictationController {
     holder = this;
     const attempt = ++this.attempt;
     this.samples = 0;
+    this.serverCommitted = false;
     this.blocked = false;
     this.startedAt = this.now();
     clearTimeout(this.noticeTimer);
@@ -281,23 +334,30 @@ export class DictationController {
     this.clock = setInterval(() => this.update({ elapsed: this.elapsed() }), 1_000);
 
     const live = () => attempt === this.attempt;
+    const silence = silenceOf(this.deps);
+    // A key press may turn out push-to-talk, which never stops by itself: until it is known, the session waits.
+    const pending = this.chordPress && this.holdAt !== 0;
+    clearTimeout(this.holdTimer);
+    if (pending) this.holdTimer = setTimeout(() => this.settleAutoStop(null), HOLD_MS + 1);
     this.session = this.deps.open(this.target.context(), {
+      onCommitted: () => live() && this.serverCommit(),
       onDelta: (text) => live() && this.update({ stable: this.state.stable + text }),
       onTail: (text) => live() && this.update({ tail: text }),
       onCompleted: (transcript) => live() && this.land(transcript, "completed"),
       onFailed: (message) => live() && this.fail(stopped(message)),
       onClosed: () => live() && this.fail(CONNECTION_LOST),
       onRefused: (refusal) => live() && this.refused(refusal),
-    });
+    }, pending ? "pending" : silence);
     this.mic = this.deps
       .capture((pcm) => {
-        if (!live()) return;
+        // After the server's commit the item is closed: more audio would open a next one.
+        if (!live() || this.serverCommitted) return;
         this.samples += pcm.length;
         this.session?.append(pcm);
         this.update({ levels: [...this.state.levels.slice(1), levelOf(pcm)], elapsed: this.elapsed() });
       })
       .then((capture) => {
-        if (live()) return (this.capture = capture);
+        if (live() && !this.serverCommitted) return (this.capture = capture);
         capture.stop();
         return null;
       })
@@ -324,7 +384,7 @@ export class DictationController {
       case "busy":
         if (this.retried) return this.say(STILL_BUSY, "warn", NOTICE_MS, { phase: "idle" });
         this.retried = true;
-        return this.countDown(BUSY_RETRY_SECONDS);
+        return this.countDown(Math.min(BUSY_RETRY_MAX_SECONDS, Math.ceil(refusal.retryAfter ?? BUSY_RETRY_SECONDS)));
       case "unavailable":
         this.refusedReason = refusal.reason;
         this.update({ phase: "idle" });
@@ -383,6 +443,7 @@ export class DictationController {
   /** Stops the mic and the clocks, and lets later answers from this attempt go unheard. */
   private end() {
     this.attempt++;
+    clearTimeout(this.holdTimer);
     this.stopClock();
     this.capture?.stop();
     this.capture = null;
@@ -423,6 +484,10 @@ export class DictationController {
     });
     const same = cause?.sentence === next.unavailable?.sentence && cause?.blocked === next.unavailable?.blocked;
     this.state = { ...next, unavailable: same ? next.unavailable : cause };
+    const was = underWay.size > 0;
+    if (next.phase === "idle") underWay.delete(this);
+    else underWay.add(this);
+    if (was !== underWay.size > 0) for (const listener of pageListeners) listener();
     for (const listener of this.listeners) listener();
   }
 }

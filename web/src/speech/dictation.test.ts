@@ -2,44 +2,49 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MIC_BLOCKED, SECURE_CONTEXT, TURNED_OFF } from "./availability.ts";
 import { type Capture, MicBlocked } from "./capture.ts";
 import {
+  BUSY_RETRY_MAX_SECONDS,
   BUSY_RETRY_SECONDS,
   CONNECTION_LOST,
   DictationController,
   dictationContext,
   type DictationDeps,
   type DictationState,
+  dictating,
   dictationHint,
   DISCARDED,
   FINISHING,
+  HOLD_MS,
   LISTENING,
   METER_BARS,
   NOTHING_HEARD,
   NO_WEBSOCKET,
   STILL_BUSY,
 } from "./dictation.ts";
-import type { Refusal, Transcription, TranscriptionHandlers } from "./realtime.ts";
+import type { AutoStop, Refusal, Transcription, TranscriptionHandlers } from "./realtime.ts";
 
 // One field's dictation (spec speech/04) through the controller the mic, the
 // strip and the hint line read: the session and the mic are fakes the test
 // drives, the field a string with a cursor.
 
-type FakeSession = { context: string; handlers: TranscriptionHandlers; calls: string[]; appended: number[][] };
+type FakeSession = { context: string; handlers: TranscriptionHandlers; calls: string[]; appended: number[][]; autoStop: AutoStop; settled: (number | null)[] };
 type FakeMic = { chunk: (pcm: number[]) => void; stopped: boolean; flushes: number };
 
 /** Every controller a test made, disposed after it: the page-wide one-at-a-time rule must not leak between tests. */
 const made: DictationController[] = [];
 
-function harness(options: { value?: string; at?: number; context?: string; refuseMic?: Error } = {}) {
+function harness(options: { value?: string; at?: number; context?: string; refuseMic?: Error; silence?: number | null } = {}) {
   const field = { value: options.value ?? "", at: options.at ?? (options.value ?? "").length };
   const sessions: FakeSession[] = [];
   const mics: FakeMic[] = [];
   const events: string[] = [];
   const deps: DictationDeps = {
-    open: (context, handlers) => {
-      const session: FakeSession = { context, handlers, calls: [], appended: [] };
+    silence: () => (options.silence === undefined ? 3_000 : options.silence),
+    open: (context, handlers, autoStop) => {
+      const session: FakeSession = { context, handlers, calls: [], appended: [], autoStop, settled: [] };
       sessions.push(session);
       const transcription: Transcription = {
         append: (pcm) => session.appended.push([...pcm]),
+        autoStop: (ms) => session.settled.push(ms),
         commit: () => session.calls.push("commit"),
         discard: () => session.calls.push("discard"),
         close: () => session.calls.push("close"),
@@ -240,6 +245,152 @@ describe("Ctrl+Shift+Space", () => {
   });
 });
 
+describe("the page's dictation", () => {
+  it("is under way from the press to the text landing, in any field, so a send can wait on it (Q4)", async () => {
+    const a = harness();
+    const b = harness();
+    expect(dictating()).toBe(false);
+    a.controller.toggle();
+    expect(dictating()).toBe(true);
+    await settle();
+    a.mic().chunk([1]);
+    await a.controller.done();
+    expect(dictating()).toBe(true);
+    a.session().handlers.onCompleted("words");
+    expect(dictating()).toBe(false);
+    b.controller.toggle();
+    expect(dictating()).toBe(true);
+    b.controller.discard();
+    expect(dictating()).toBe(false);
+  });
+});
+
+// Q80: a silence ends the dictation by itself, as Done does.
+
+describe("a silence", () => {
+  it("opens the session asking for the viewer's silence, read at the press", () => {
+    const h = harness({ silence: 5_000 });
+    h.controller.toggle();
+    expect(h.session().autoStop).toBe(5_000);
+  });
+
+  it("is manual commit when the setting is Off", () => {
+    const h = harness({ silence: null });
+    h.controller.toggle();
+    expect(h.session().autoStop).toBeNull();
+  });
+
+  it("ends the dictation at the server's first commit as Done does: the mic let go, one item, the text at the cursor", async () => {
+    const h = harness({ value: "Hello", at: 5 });
+    h.controller.toggle();
+    await settle();
+    h.mic().chunk([1, 2, 3]);
+    h.session().handlers.onDelta("world");
+    h.session().handlers.onCommitted();
+    expect(h.state().phase).toBe("finishing");
+    expect(dictationHint(h.state(), "Send")).toEqual({ text: FINISHING, tone: "ash" });
+    expect(h.mic().stopped).toBe(true);
+    // The server committed already: nothing more is committed from here.
+    expect(h.session().calls).toEqual([]);
+    h.session().handlers.onCompleted("world");
+    expect(h.field.value).toBe("Hello world");
+    expect(h.state().phase).toBe("idle");
+    expect(h.session().calls).toEqual(["close"]);
+  });
+
+  it("does not commit a second time when Done was already on its way", async () => {
+    const h = harness();
+    h.controller.toggle();
+    await settle();
+    h.mic().chunk([1]);
+    const done = h.controller.done();
+    h.session().handlers.onCommitted();
+    await done;
+    expect(h.session().calls).toEqual([]);
+  });
+
+  it("hears the server's commit that answers Done's own, which changes nothing", async () => {
+    const h = harness({ silence: null });
+    h.controller.toggle();
+    await settle();
+    h.mic().chunk([1]);
+    await h.controller.done();
+    expect(h.session().calls).toEqual(["commit"]);
+    h.session().handlers.onCommitted();
+    expect(h.state().phase).toBe("finishing");
+  });
+
+  it("sends no more audio once the server committed: a chunk after it would open a next item", async () => {
+    const h = harness();
+    h.controller.toggle();
+    await settle();
+    h.mic().chunk([1]);
+    h.session().handlers.onCommitted();
+    h.mic().chunk([2]);
+    expect(h.session().appended).toEqual([[1]]);
+  });
+
+  it("lets a mic that resolves after the server's commit go at once", async () => {
+    const h = harness();
+    h.controller.toggle();
+    h.session().handlers.onCommitted();
+    await settle();
+    expect(h.mic().stopped).toBe(true);
+  });
+
+  it("lands nothing from a commit that comes after Esc", async () => {
+    const h = harness();
+    h.controller.toggle();
+    await settle();
+    h.controller.discard();
+    h.session().handlers.onCommitted();
+    expect(h.state().phase).toBe("idle");
+  });
+});
+
+describe("Ctrl+Shift+Space and the silence", () => {
+  it("a press waits to know: held it settles to manual commit, so a held key never stops by itself", async () => {
+    const h = harness({ silence: 2_000 });
+    h.controller.keyDown(chord());
+    expect(h.session().autoStop).toBe("pending");
+    await vi.advanceTimersByTimeAsync(HOLD_MS + 50);
+    expect(h.session().settled).toEqual([null]);
+  });
+
+  it("Done pressed before the hold timer settles to manual commit, so its commit is not left waiting", async () => {
+    const h = harness({ silence: 2_000 });
+    h.controller.keyDown(chord());
+    await settle();
+    h.mic().chunk([1]);
+    await h.controller.done();
+    expect(h.session().settled).toEqual([null]);
+    expect(h.session().calls).toEqual(["commit"]);
+  });
+
+  it("a tap settles to the viewer's silence at the release", async () => {
+    const h = harness({ silence: 2_000 });
+    h.controller.keyDown(chord());
+    await vi.advanceTimersByTimeAsync(150);
+    h.controller.keyUp(key("Space", { key: " " }));
+    expect(h.session().settled).toEqual([2_000]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.session().settled).toEqual([2_000]);
+  });
+
+  it("a tap with the setting Off settles to manual commit", () => {
+    const h = harness({ silence: null });
+    h.controller.keyDown(chord());
+    h.controller.keyUp(key("Space", { key: " " }));
+    expect(h.session().settled).toEqual([null]);
+  });
+
+  it("the mic's click is decided at once", () => {
+    const h = harness({ silence: 2_000 });
+    h.controller.toggle();
+    expect(h.session().autoStop).toBe(2_000);
+  });
+});
+
 describe("when the session is refused", () => {
   const refuse = (h: ReturnType<typeof harness>, refusal: Refusal) => h.session().handlers.onRefused(refusal);
 
@@ -261,6 +412,22 @@ describe("when the session is refused", () => {
     expect(h.state().phase).toBe("idle");
     expect(dictationHint(h.state(), "Send")).toEqual({ text: STILL_BUSY, tone: "warn" });
     expect(h.sessions).toHaveLength(2);
+  });
+
+  it("busy: counts down the refusal's Retry-After, to a cap", async () => {
+    const h = harness();
+    h.controller.toggle();
+    await settle();
+    refuse(h, { kind: "busy", retryAfter: 1 });
+    expect(h.state()).toMatchObject({ phase: "waiting", retryIn: 1 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.sessions).toHaveLength(2);
+    await settle();
+    h.controller.discard();
+    h.controller.toggle();
+    await settle();
+    refuse(h, { kind: "busy", retryAfter: 600 });
+    expect(h.state().retryIn).toBe(BUSY_RETRY_MAX_SECONDS);
   });
 
   it("no_websocket: the server would have opened it, so it is not busy and is not retried", async () => {

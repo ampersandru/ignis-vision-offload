@@ -7,7 +7,7 @@ sidebar:
 
 The right-hand column of the chat holds what the next message is sent with.
 Nothing here is sent until you send, and nothing is stored: a reload puts the
-defaults back, apart from the two switches marked *stored* below. It has two
+defaults back, apart from the three settings marked *stored* below. It has two
 tabs, **General** and **Tools**.
 
 ![The General tab](../images/playground/settings-general.png) ![The Tools tab](../images/playground/settings-tools.png)
@@ -25,6 +25,7 @@ tabs, **General** and **Tools**.
 | **Max tokens** | 16384 | `max_tokens` (HTTP) or `max_output_tokens` (WebSocket); empty sends none and the server's default applies |
 | **Lane tag**: Interactive, Agent | Interactive | `class` |
 | **Parallel sessions** (*stored*) | off | nothing: page behaviour |
+| **Dictation stops after**: Off, 2 s, 3 s, 5 s (*stored*) | 3 s | nothing: the silence the mic's dictation asks the server to end on |
 | **Transport**: WebSocket, HTTP (*stored*) | WebSocket | the route the chat uses |
 | **Markdown in replies** | on | nothing: display only |
 
@@ -58,6 +59,16 @@ before you send.
 yields first when the engine is short of memory, the class subagents run
 with. What the tag changes on the server:
 [Lanes that know who is asking](../why-ignis/lanes.md).
+
+### Dictation
+
+**Dictation stops after** is how long a silence ends a dictation by itself, as
+if you had pressed Done ([dictating a prompt](chat.md#dictating-a-prompt)). It
+is the same for every mic on the page: the chat's, the Image studio's and
+Decide's. A shorter pause cuts nothing, and a held Ctrl+Shift+Space (push to
+talk) never stops by itself. **Off** leaves the end to you: Done, a second tap
+of the shortcut, or letting go of a held one. The choice is kept by this
+browser, not the server.
 
 ### Parallel sessions and the transport
 

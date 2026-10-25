@@ -63,8 +63,9 @@ request as `Authorization: Bearer`; the WebSocket offers it as a subprotocol.
 
 The chat's sessions, the Decide tab's decisions and the Image view's sessions
 and pictures are stored in this browser (IndexedDB) and come back after a
-reload; nothing is stored on the server. Settings are not stored: a reload
-puts the defaults back. The details, and what each key holds:
+reload; nothing is stored on the server. Settings are not stored, apart from
+the three marked *stored* in [Settings](settings.md): a reload puts the
+defaults back. The details, and what each key holds:
 [Sessions and storage](sessions.md).
 
 ## Turning it off, building it in
