@@ -85,7 +85,7 @@ reader builds on them.
 20. As the engine owner, I want the scheduler's KV pool to count real device pages reported by the runtime, so that admission decisions reflect VRAM.
 21. As the engine owner, I want the old forward pass, the toy decode graph and the host-pointer kernel surfaces removed, so that no agent or reviewer mistakes them for the engine.
 22. As the engine owner, I want the superseded specs and ADR 0008 marked superseded, and ADR 0009 / 0010 written, so that the design record matches the code.
-23. As the engine owner, I want README, GLOSSARY.md, the design doc and PENDING to state the true status, so that "v1 code-complete" stops misleading readers.
+23. As the engine owner, I want README, GLOSSARY.md, the design doc and PENDING (deleted by #368) to state the true status, so that "v1 code-complete" stops misleading readers.
 24. As the engine owner, I want the canary prompts and the oracle dumps to be reproducible from a script, so that G1 can be re-run after every kernel change.
 25. As a coding-agent user, I want streaming chat completions to deliver real tokens as they are generated, so that the engine is usable interactively once G1 holds.
 26. As the bench actor, I want the runtime to expose per-step timing and kernel/graph counters, so that the harness can report phase rates once performance work starts.
@@ -213,7 +213,7 @@ survive only where a ported op test reuses them.
 **Documentation.** ADR 0009 and ADR 0010 written; ADR 0008 marked
 superseded; kernel-abi specs 01–10 carry a superseded banner pointing here;
 README status, GLOSSARY.md (GDN head structure, sequence state, step ABI,
-oracle, GPU suite), the design doc milestones and PENDING rewritten to the
+oracle, GPU suite), the design doc milestones and PENDING (deleted by #368) rewritten to the
 true status.
 
 **Explicitly deferred but shaped for:** batched decode rounds and per-width
