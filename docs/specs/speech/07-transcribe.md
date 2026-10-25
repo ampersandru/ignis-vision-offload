@@ -27,7 +27,7 @@ the skill. The view follows the Playground's existing style and components.
   `View`). It is mounted from its first visit on, as Decide is, so a listening goes on while the user looks at
   another view. The header shows that a listening is under way, from any view.
 - **What it holds:** a **Transcript**, the record of one conversation heard there. Its **utterances** come in order,
-  each with its times, its **speaker** and its text, and never its audio (CONTEXT.md).
+  each with its times, its **speaker** and its text, and never its audio (GLOSSARY.md).
 
 ### Sources (the grill's first round, Q93, Q94)
 

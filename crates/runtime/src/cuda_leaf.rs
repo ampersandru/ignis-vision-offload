@@ -897,7 +897,7 @@ impl StepLeaf for CudaLeaf {
 
     /// The output head's width — 248,320 columns, which is what the kernel
     /// writes into a readout buffer (GitHub #237). ignis is specialized for
-    /// this one topology (`CONTEXT.md`), so the number comes from the same
+    /// this one topology (`GLOSSARY.md`), so the number comes from the same
     /// `ModelConfig` the load itself is built from rather than being asked
     /// of the leaf.
     fn vocab(&self, _model: &Self::Model) -> u32 {

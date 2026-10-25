@@ -995,7 +995,7 @@ fn media_rejection(rejection: MediaRejection) -> Response {
     error_response(status, type_, rejection.code, rejection.message)
 }
 
-/// Split an optional `model` into its base id and any Lane tag (`CONTEXT.md`:
+/// Split an optional `model` into its base id and any Lane tag (`GLOSSARY.md`:
 /// "the request's own statement of its class") named by an "@<lane>" suffix
 /// (GitHub #120: the OpenAI `model` field has no room of its own for an
 /// extension, so this is the second entry point for the `class` ignis
@@ -2338,7 +2338,7 @@ struct ChatCompletionsRequest {
     /// force the call's opening (GitHub #286): from the first token with
     /// thinking off, right after the reasoning block with it on.
     tool_choice: Option<JsonValue>,
-    /// The Lane tag (GitHub #120, `CONTEXT.md`): an ignis extension, not an
+    /// The Lane tag (GitHub #120, `GLOSSARY.md`): an ignis extension, not an
     /// OpenAI parameter (the way `top_k` went in at #101). `"interactive"`
     /// (default) or `"agent"`, the admission class `admission.rs` schedules
     /// the request under. Also settable via an "@<lane>" suffix on `model`

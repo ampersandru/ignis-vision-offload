@@ -1,4 +1,4 @@
-//! **Retained slots** (GitHub #211, ADR 0030, `CONTEXT.md`): the places in
+//! **Retained slots** (GitHub #211, ADR 0030, `GLOSSARY.md`): the places in
 //! the sequence pool, beside the [`N_DECODE_LANES`](crate::N_DECODE_LANES)
 //! lane slots, that hold one mutable-state image each — a lane's own state
 //! size — reserved at load.

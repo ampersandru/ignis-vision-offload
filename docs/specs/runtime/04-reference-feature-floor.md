@@ -32,7 +32,7 @@ feature floor the reference actually runs on, and four gaps separate the two.
 carries BF16; the reference runs hq-e8-2b. At this geometry a sequence-token
 costs 65,536 bytes of BF16 KV (16 GQA layers × 4 KV heads × 256 × K+V × 2
 bytes), so eight lanes at a 40,960-token context would need 20 GiB next to
-~19 GB of weights. `N-lane concurrency` in `CONTEXT.md` is therefore a
+~19 GB of weights. `N-lane concurrency` in `GLOSSARY.md` is therefore a
 short-context promise today, and the G2 and G3 verdicts each carry the format
 difference as a recorded inequality rather than as a measurement. The hq
 kernels are already vendored and have never been run: `hq_codec.cuh`,

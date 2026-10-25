@@ -13,7 +13,7 @@ propagation (incoming `traceparent` headers) is not the actual need. The
 project owner's actual requirement is narrower and concrete: know, per
 request, which internal stages it traversed (admission, prefill, one or more
 **decode rounds** — the existing glossary unit a decode CUDA graph is
-captured over, per `CONTEXT.md` — MTP verify, completion).
+captured over, per `GLOSSARY.md` — MTP verify, completion).
 
 Ignis already has a `request.id` concept in the admission/fairness machinery
 (`crates/core/src/admission.rs`, `crates/core/src/concrete.rs`). Introducing

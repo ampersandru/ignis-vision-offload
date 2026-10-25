@@ -272,7 +272,7 @@ const WARM_UP_TIMEOUT: Duration = Duration::from_secs(600);
 /// telemetry consumer drops as the server's own, run to completion, and how
 /// long it took. Shared by the start ([`Server::warm_up`]) and the model
 /// switch, which warms the new engine before any client can reach it. Not a
-/// *warm-up request* in CONTEXT.md's sense (`RequestInput::warm_up`, a
+/// *warm-up request* in GLOSSARY.md's sense (`RequestInput::warm_up`, a
 /// prefill with no decode): this one decodes, to capture the decode graphs.
 pub async fn warm_up_engine(engine: &Engine) -> Result<Duration, String> {
     let started = std::time::Instant::now();

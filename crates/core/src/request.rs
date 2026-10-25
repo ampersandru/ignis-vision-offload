@@ -1,7 +1,7 @@
 //! Request state machine + basic admission — `core-03`.
 //!
 //! The request lifecycle is `admitted → prefilling → running → done`
-//! (`CONTEXT.md`). This module models a request in flight: its lifecycle
+//! (`GLOSSARY.md`). This module models a request in flight: its lifecycle
 //! state, its class (for admission / backfill), the decode lane it holds, and
 //! its token count, plus — since `core-05` — the admission state
 //! machine's bookkeeping: the KV resources the request reserves, its
@@ -332,7 +332,7 @@ impl Request {
         true
     }
 
-    /// The **publish point** (CONTEXT.md): the prefill position at which this
+    /// The **publish point** (GLOSSARY.md): the prefill position at which this
     /// request publishes its prompt head as a shared prefix, or 0 for a
     /// request that publishes nothing (P4-10, GitHub #126).
     ///

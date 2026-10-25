@@ -84,7 +84,7 @@ Three options:
   prefill was atomic, so "mid-prefill" and "mid-chunk" were the same position;
   chunked prefill separates them, and a chunk boundary is as consistent as a
   decode round's. Whether the *whole* sequence state may be captured there is
-  a separate property — see **snapshot point** in `CONTEXT.md` — and it holds
+  a separate property — see **snapshot point** in `GLOSSARY.md` — and it holds
   today for the state that exists.
 - **`Prefilling` becomes a durable state carrying prefill progress**, since a
   request now lives in it for tens of ticks. Resumption needs no primitive:

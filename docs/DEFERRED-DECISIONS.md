@@ -110,7 +110,7 @@ G3 therefore records each completed chunk boundary with
 `GdnState::checkpoint`, not `advance`, and G4 inherits the ability to evict
 a half-prefilled sequence rather than having to re-open the invariant.
 
-Two terms were separated in `CONTEXT.md` to keep this honest: **chunk
+Two terms were separated in `GLOSSARY.md` to keep this honest: **chunk
 boundary** is a consistency property of the serving loop; **snapshot point**
 is a permission granted to the host tier. They coincide today without being
 the same property.
@@ -130,7 +130,7 @@ it is a budget shared across all lanes rather than a per-lane reservation.
 Eight lanes at full context would be ~20 GiB next to ~19 GB of weights.
 
 So **N=8 in BF16 exists only at short contexts**, and the `N-lane
-concurrency` term in `CONTEXT.md` becomes real at long contexts only with
+concurrency` term in `GLOSSARY.md` becomes real at long contexts only with
 hq-e8-2b. This is written into the G3 gate as a recorded inequality so that
 nobody reads G3's concurrency as a promise G4 has not yet delivered.
 
@@ -237,7 +237,7 @@ not measured.
 What MTP would still buy: no drafter TTFT (the head is one layer fed by the
 target's own hidden state), `--lm-head-draft`, and the adaptive width
 controller, which DFlash2 in the reference does not have. The glossary keeps
-the term; `CONTEXT.md` marks it deferred.
+the term; `GLOSSARY.md` marks it deferred.
 
 ### 2. Rebuilding the DFlash2 drafter state on restore, instead of carrying it
 

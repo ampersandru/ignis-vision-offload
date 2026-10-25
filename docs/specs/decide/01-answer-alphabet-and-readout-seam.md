@@ -42,7 +42,7 @@ stands on.
 ## References
 
 - ADR 0034 (the leaf answers without generating).
-- `CONTEXT.md`: **readout**, **answer token**, **answer alphabet**, **answer
+- `GLOSSARY.md`: **readout**, **answer token**, **answer alphabet**, **answer
   mass**, and the amended **per-lane sampling**.
 - Finding: `docs/findings/2026-09-19-typed-option-logit-readout.md`.
 - Existing measurement: `crates/server/tests/classify_readout_gpu.rs`,

@@ -2,7 +2,7 @@
 
 GitHub: #163
 
-ADR: 0026 (Playground embedded when built, served opt-in). Glossary: **Playground** (`CONTEXT.md`).
+ADR: 0026 (Playground embedded when built, served opt-in). Glossary: **Playground** (`GLOSSARY.md`).
 
 ## Problem Statement
 

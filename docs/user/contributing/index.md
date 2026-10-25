@@ -49,7 +49,7 @@ them.
 | `mk/`, `Makefile` | The make targets and their per-OS hooks |
 
 The domain vocabulary — lane, KV page, retained state, served id, card class —
-is defined once in [`CONTEXT.md`](../../../CONTEXT.md); the
+is defined once in [`GLOSSARY.md`](../../../GLOSSARY.md); the
 [glossary](../reference/glossary.md) is its user-facing share.
 
 ## Where to go next

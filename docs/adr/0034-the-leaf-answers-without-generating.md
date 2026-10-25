@@ -9,7 +9,7 @@ GitHub #237**: this ADR first sized the readout buffer at 151,936 × f32 ≈
 is 248,320, so the buffer is ≈ 970 KB. An arithmetic correction only: it
 makes the case for keeping the gather below the seam stronger, not weaker,
 and no decision here turns on it. **Amends the *Per-lane sampling* invariant** in
-`CONTEXT.md`, which said the leaf "returns token ids and never ships logits to
+`GLOSSARY.md`, which said the leaf "returns token ids and never ships logits to
 the host": that claim is now the decode path's, and this ADR names the two
 paths that sit beside it.
 
@@ -126,7 +126,7 @@ model that would have written the sentence.
 - A decision holds no residency and takes no decode lane, so **eviction
   priority** has nothing of its to take and the admission classes mean something
   different for it. That is why a decision request defaults to `Agent` where
-  every other route defaults to `Interactive` (`CONTEXT.md`, *Lane tag*).
+  every other route defaults to `Interactive` (`GLOSSARY.md`, *Lane tag*).
 - The sampling ABI gains a per-lane token set, which every future sampling
   change has to carry. That is the cost of not having the host in the loop.
 - `ignis_decoded_tokens_total` does not move for a readout, which is correct and

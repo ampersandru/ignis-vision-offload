@@ -274,7 +274,7 @@ handed to the engine (running, or waiting in the socket admission queue);
 further `response.create` events wait on the connection, in order, until one
 finishes.
 The standard's word is "stream"; this spec never calls it a lane, which in
-ignis is a decode slot (CONTEXT.md).
+ignis is a decode slot (GLOSSARY.md).
 
 **Connection-local continuation.** Each connection keeps, per stream, its
 latest finished response: the full item history that response saw (its

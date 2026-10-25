@@ -3,7 +3,7 @@
 //! This is the **stable public contract** between the engine (`ignis-core`)
 //! and its consumers (the server crate, tests, the kernel leaf). The types
 //! here are deliberately small and `Send + Sync` friendly. See
-//! `docs/design/ignis-v1.md` §2 and `CONTEXT.md` for the domain vocabulary.
+//! `docs/design/ignis-v1.md` §2 and `GLOSSARY.md` for the domain vocabulary.
 
 /// Opaque id for a request admitted by the scheduler.
 pub type RequestId = u64;
@@ -213,7 +213,7 @@ pub enum BoundaryLifetime {
 }
 
 /// A prompt position a request's state is kept at for a later request to
-/// resume from, and how long (GitHub #270, `CONTEXT.md`'s **reuse boundary**).
+/// resume from, and how long (GitHub #270, `GLOSSARY.md`'s **reuse boundary**).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReuseBoundary {
     /// Leading prompt tokens: an exact token prefix of the prompt, before any
@@ -307,7 +307,7 @@ impl RequestInput {
     }
 
     /// Whether this request is a **constrained decode** (GitHub #242,
-    /// `CONTEXT.md`): it emits exactly its schedule's length in tokens, each
+    /// `GLOSSARY.md`): it emits exactly its schedule's length in tokens, each
     /// drawn from that step's permitted set.
     pub fn is_constrained(&self) -> bool {
         self.constrained.is_some()
@@ -469,7 +469,7 @@ impl Default for DecodeParams {
     }
 }
 
-/// The lifecycle of a request inside the engine (`CONTEXT.md`: "request state
+/// The lifecycle of a request inside the engine (`GLOSSARY.md`: "request state
 /// machine (admit → prefill → decode → done / evict)").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestState {
@@ -494,7 +494,7 @@ pub enum RequestState {
 /// Admission / backfill class for the admission state machine (ADR 0004).
 /// Drives protection, backfill priority, and eviction ordering.
 ///
-/// GitHub #120: reachable from HTTP as the **Lane tag** (`CONTEXT.md`: "the
+/// GitHub #120: reachable from HTTP as the **Lane tag** (`GLOSSARY.md`: "the
 /// request's own statement of its class"), the `class` ignis extension field
 /// (an unrecognized or absent wire value maps to `Interactive` — [`Default`]
 /// mirrors that so every call site that has not yet heard otherwise gets the
@@ -530,7 +530,7 @@ impl RequestClass {
     /// when it stated none — where every other route defaults to
     /// [`RequestClass::Interactive`].
     ///
-    /// `CONTEXT.md`'s **Lane tag** entry carries why, and carries it once:
+    /// `GLOSSARY.md`'s **Lane tag** entry carries why, and carries it once:
     /// the short of it is that a decision has no residency an **eviction
     /// priority** could take and no decode lane to protect, so
     /// `Interactive` would spend a protection it cannot use on behalf of a

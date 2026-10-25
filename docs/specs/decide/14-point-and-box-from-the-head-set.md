@@ -162,7 +162,7 @@ the chain's box beside it under a rule written below.
   New: the **head set** (the heads read together, one cell each), the
   **fallback cells** (image cells heads peak on when nothing matches), the
   **extent** (the box the kept head-set cells span), and the **anchored
-  reading** (the rule below). `CONTEXT.md` gains *Head set*, *Fallback cells*
+  reading** (the rule below). `GLOSSARY.md` gains *Head set*, *Fallback cells*
   and *Extent*, and *Pointing head* and *Attention readout* are rewritten to
   match.
 
@@ -303,7 +303,7 @@ the chain's box beside it under a rule written below.
 - **Observability** is unchanged: a head box counts as a `box` decision, a
   head point as a `point`. A `method` label stays out (ADR 0017).
 
-- **Documentation**: ADR 0039; `CONTEXT.md` as above; the OpenAPI document
+- **Documentation**: ADR 0039; `GLOSSARY.md` as above; the OpenAPI document
   gains `extent`, `box`'s `method` and the head box; the head answer's doc
   comment stops saying the point sits where the label begins — that was the
   pointing head alone.
@@ -412,7 +412,7 @@ design and are not split.
    otherwise it stays the chain and `head` stays opt-in. Recorded as a
    finding with a README row, whichever way it goes.
 7. The harness fixes (short-prompt hq self-check, non-square scoring) are in,
-   and ADR 0039, `CONTEXT.md` and the OpenAPI document are updated.
+   and ADR 0039, `GLOSSARY.md` and the OpenAPI document are updated.
 
 ## Out of Scope
 

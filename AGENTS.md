@@ -31,7 +31,7 @@ See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context — root `CONTEXT.md` for the glossary, `docs/adr/` for ADRs.
+Single-context — root `GLOSSARY.md` for the glossary, `docs/adr/` for ADRs.
 See `docs/agents/domain.md`.
 
 ## Repo conventions

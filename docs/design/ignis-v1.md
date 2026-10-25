@@ -145,7 +145,7 @@ ignis/
 ├── bench/traces/      # recorded load traces (JSONL)
 ├── docs/              # adr/, design/ (this file), agents/
 ├── webui/             # (v1.4+ / later phase) React+Vite+TS, same repo
-├── CONTEXT.md
+├── GLOSSARY.md
 └── AGENTS.md
 ```
 

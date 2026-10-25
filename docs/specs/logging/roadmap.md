@@ -2,7 +2,7 @@
 
 Grilling session 2026-09-07 on `docs/specs/logging/spec.md`. Decisions
 recorded in ADR 0011/0012/0013 and
-`CONTEXT.md` (Observability section). This file is the execution plan only —
+`GLOSSARY.md` (Observability section). This file is the execution plan only —
 it will go stale as phases land; the spec and ADRs are the durable record.
 
 **Every phase touching prefill/decode/CUDA-graph code MUST re-run the G4

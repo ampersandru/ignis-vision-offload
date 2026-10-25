@@ -133,7 +133,7 @@ download — exactly the ids the implicit switch resolves
     front end that picks ids from `/v1/models` (Open WebUI's task model,
     Hermes): two different ids reload the server on alternate requests,
     13–33 s each; point both at the same id or start with
-    `--switch-allow-implicit false`. `CONTEXT.md`: **Servable model**
+    `--switch-allow-implicit false`. `GLOSSARY.md`: **Servable model**
     (the active model plus every model the implicit switch resolves to an
     artifact on disk; what `GET /v1/models` lists).
 14. Tests run on the mock loader, no GPU; `cargo test` workspace-wide and,

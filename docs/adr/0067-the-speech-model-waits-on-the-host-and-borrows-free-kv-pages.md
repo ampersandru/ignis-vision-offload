@@ -12,7 +12,7 @@ Q56. Specs
   loaded beside a text model.
 - **Amends ADR 0049**: a transcription is not use of the text model, and
   opening a Realtime transcription session loads an unloaded text model.
-- **Amends** `CONTEXT.md`'s *ignis* and *Model kind*.
+- **Amends** `GLOSSARY.md`'s *ignis* and *Model kind*.
 - **Contradicts, on purpose,** the OpenAPI description and the README, which
   list "audio in or out" and "more than one loaded model" as not served.
   Spec speech/02 amends both, and the test that pins them.

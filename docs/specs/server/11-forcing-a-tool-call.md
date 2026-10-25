@@ -243,7 +243,7 @@ from the body, and guessing it would change what the model reads.
 8. **Unchanged.** `"auto"` and `"none"` requests produce the same tokens as
    before this spec, greedy, against a recorded fixture.
 9. **Docs.** The OpenAPI operation description says which `tool_choice`
-   values are served and names the thinking exclusion; `CONTEXT.md` gains
+   values are served and names the thinking exclusion; `GLOSSARY.md` gains
    the forced-literal term.
 10. `cargo test` passes workspace-wide.
 

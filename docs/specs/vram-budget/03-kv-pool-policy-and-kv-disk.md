@@ -324,7 +324,7 @@ compute, and its drop path frees them.
     `KV_DISK_BYTES`, `KV_DISK_PATH` and `ALLOW_EXPERT_CACHE_BELOW_FLOOR`.
   - `make config` prints the pool policy, the pool's tokens, the default cap,
     and the disk directory and budget.
-  - `docs/user/README.md`, and `CONTEXT.md` (updated with ADR 0045).
+  - `docs/user/README.md`, and `GLOSSARY.md` (updated with ADR 0045).
 
 ## Acceptance criteria
 

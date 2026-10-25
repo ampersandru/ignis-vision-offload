@@ -239,7 +239,7 @@ reuse depend on anything but content.
    - `ignis_retained_reused_tokens_total{kind="prefix"}` grows in B, D and E.
 
    Recorded as a finding with a README row.
-8. **Docs.** ADR 0029's amendment matches what was built, `CONTEXT.md`'s
+8. **Docs.** ADR 0029's amendment matches what was built, `GLOSSARY.md`'s
    reuse terms match it, and the OpenAPI document shows the marker and both
    refusals.
 9. `cargo test` passes workspace-wide.

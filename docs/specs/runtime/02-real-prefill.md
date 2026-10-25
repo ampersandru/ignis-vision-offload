@@ -285,7 +285,7 @@ routes.
 
 **Documentation.** ADR 0015 (live/live G2 gate on cold-prefix samples) and
 ADR 0016 (extensible options at the step ABI) are written; ADR 0009 gains an
-amendment note. `CONTEXT.md` gains the phase's vocabulary (prefill chunk,
+amendment note. `GLOSSARY.md` gains the phase's vocabulary (prefill chunk,
 chunked prefill, per-token prefill route, compute policy, TTFT cell,
 live/live gate, cold prefix). The roadmap's G2 row points here, and the
 verdict is recorded in the review and the roadmap when the gate runs.

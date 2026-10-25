@@ -66,7 +66,7 @@ resort, when it removes much more work than it costs to carry.
   `kernel/NOTICE`.
 - ExLlamaV3 (MIT) may now be copied from, except its QTIP-derived code. The
   converter's use of the exllamav3 package (ADR 0044) is unchanged.
-- `CONTEXT.md` gains *Adapted op*, and *Vendored op* widens from "copied from
+- `GLOSSARY.md` gains *Adapted op*, and *Vendored op* widens from "copied from
   the reference" to "copied verbatim from a named upstream".
 - A licence check is part of the review of any adapted or vendored op.
 - Pillow (MIT-CMU) may be copied from: the Lanczos resize in `media.rs`

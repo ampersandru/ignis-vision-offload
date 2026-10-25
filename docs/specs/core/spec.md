@@ -53,7 +53,7 @@ prefix → sibling-prefix reuse).
 
 - Design: `docs/design/ignis-v1.md` §2 (Scheduler, Paged KV, KV-RAM, GDN),
   §3 (milestones).
-- Glossary: `CONTEXT.md` (Scheduling & cache, Engine & process).
+- Glossary: `GLOSSARY.md` (Scheduling & cache, Engine & process).
 - Upstream: `artifact-01` (device materialization) for KV tensor geometry.
 - Kernel side: `kernel-abi-01` (prefill + GDN C ABI) for the scheduler to
   drive.

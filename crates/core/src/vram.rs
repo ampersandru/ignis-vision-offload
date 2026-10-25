@@ -1,5 +1,5 @@
 //! The load's device-memory plan within a **VRAM budget** (GitHub #210,
-//! ADR 0030, `CONTEXT.md`).
+//! ADR 0030, `GLOSSARY.md`).
 //!
 //! Pure arithmetic over numbers the loader has already measured or asked the
 //! leaf for: what was free at start, what each fixed reservation costs, and

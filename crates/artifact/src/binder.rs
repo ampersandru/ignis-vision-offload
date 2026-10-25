@@ -80,7 +80,7 @@ pub struct HostPlacement {
     pub handle: ObjectHandle,
 }
 
-/// One placement in the **expert pool** (CONTEXT.md: every expert
+/// One placement in the **expert pool** (GLOSSARY.md: every expert
 /// projection, in pinned host RAM for the life of the model; residency moves
 /// them from there into its device cache, spec flash-next/03). The
 /// materializer does not fill the pool; residency does.

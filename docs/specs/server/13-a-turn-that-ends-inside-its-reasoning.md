@@ -169,7 +169,7 @@ WARN generation produced reasoning but no content or tool call
 9. **GPU.** The profile checks in Testing Decisions pass on the 27B and on
    Flash-Next, under `IGNIS_GPU_PROFILE=1`.
 10. **Docs.**
-    - CONTEXT.md gains **Reasoning redirect**.
+    - GLOSSARY.md gains **Reasoning redirect**.
     - `docs/user/README.md`'s thinking section says what a turn that ends
       inside its reasoning now does.
     - Spec 08 notes the lag hole and points here.

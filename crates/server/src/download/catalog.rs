@@ -92,7 +92,7 @@ pub struct CatalogFile {
     pub sha256: String,
 }
 
-/// One published model (`CONTEXT.md`, **Catalog entry**): its served id,
+/// One published model (`GLOSSARY.md`, **Catalog entry**): its served id,
 /// where it is published, and every file it needs with its byte count and
 /// digest pinned.
 ///

@@ -1,6 +1,6 @@
 //! The KV-RAM host tier — `core-06`.
 //!
-//! The host-RAM KV cache tier (`CONTEXT.md`: "KV-RAM"): snapshots GPU lanes
+//! The host-RAM KV cache tier (`GLOSSARY.md`: "KV-RAM"): snapshots GPU lanes
 //! so sibling requests **restore** instead of re-prefilling, with a
 //! **two-tier eviction** (probation → protected). This is the CPU-side state
 //! model the concrete scheduler drives: the actual H2D / D2H copies live in
@@ -103,7 +103,7 @@ use crate::types::{LaneId, RequestClass, RequestId};
 /// measured one.
 pub const DEFAULT_RETAINED_INTERACTIVE_TTL: Duration = Duration::from_secs(300);
 
-/// The two-tier eviction tiers of the host tier (`CONTEXT.md`: "two-tier
+/// The two-tier eviction tiers of the host tier (`GLOSSARY.md`: "two-tier
 /// eviction (probation → protected)"). Request class (ADR 0023, GitHub
 /// #127) is the *primary* discard key; this tier is the secondary one — see
 /// the module-level doc.

@@ -45,7 +45,7 @@ mod tests;
 use source::{FileSource, Fit, Resolution, Sources};
 
 /// The default loaded-model id (the v1 specialization: Qwen 3.8-27B —
-/// `CONTEXT.md`).
+/// `GLOSSARY.md`).
 pub const DEFAULT_MODEL: &str = "qwen3.8-27b";
 
 /// The default bind address: localhost, port 8000 (OpenAI convention).

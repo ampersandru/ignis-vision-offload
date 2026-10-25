@@ -13,7 +13,7 @@
 //! proxy tests).
 //!
 //! The canary prompts themselves are [`crate::canary::CANARIES`] (already
-//! committed and referenced by `CONTEXT.md`'s "Canary suite" entry) — the
+//! committed and referenced by `GLOSSARY.md`'s "Canary suite" entry) — the
 //! oracle fixture and the self-consistency check (ADR 0007) run the *same*
 //! fixed prompt set, just checked two different ways.
 

@@ -4,7 +4,7 @@
 
 Accepted (2026-10-13, owner): the grilling session on Qwen-Image of
 2026-10-13, decisions Q1-Q34. Specs `docs/specs/image-model/`. **Amends** the
-scope of `CONTEXT.md`'s *ignis* (text models and an image model) and, for this
+scope of `GLOSSARY.md`'s *ignis* (text models and an image model) and, for this
 model only, ADR 0005/0007's "at least as fast as the reference".
 
 **Amended by ADR 0067** (2026-10-24): "one model at a time" holds between the

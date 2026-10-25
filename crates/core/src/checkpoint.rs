@@ -224,7 +224,7 @@ pub enum RetainedStateOperation {
 pub const KV_RAM_RESTORE_FLOOR_TOKENS: u32 = 1024;
 
 /// One residency tier in the ordered list retained state lives across
-/// (CONTEXT.md, "Residency tier"; GitHub #189).
+/// (GLOSSARY.md, "Residency tier"; GitHub #189).
 ///
 /// A tier is a place plus the price of reaching it. The price is what makes
 /// the list more than an enum: state on the device is already where it is
@@ -568,7 +568,7 @@ pub struct CheckpointMatch {
     pub prefix: PrefixId,
     /// Leading prompt tokens the claimant skips: the whole prompt up to the
     /// opener, **not** a whole number of pages — the claimant copies the
-    /// partial tail page rather than sharing it (CONTEXT.md, "publish point").
+    /// partial tail page rather than sharing it (GLOSSARY.md, "publish point").
     pub tokens: u32,
     /// The whole KV pages the entry's shared prefix holds. The claimant's own
     /// reservation shrinks by these: they are charged to the pool once.

@@ -64,7 +64,7 @@ const ARENA_ALIGN: u64 = 256;
 /// A speculative backend a load can select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeculativeBackend {
-    /// The 5-layer sliding-window DFlash2 drafter (`CONTEXT.md`).
+    /// The 5-layer sliding-window DFlash2 drafter (`GLOSSARY.md`).
     Dflash2,
     /// The verify substrate alone (P5-04, GitHub #153): the verify round,
     /// its ReplaySSM records and its graphs at the window, with no drafter

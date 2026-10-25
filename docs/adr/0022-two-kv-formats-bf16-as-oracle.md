@@ -16,7 +16,7 @@ through it (ADR 0015; `crates/bench/src/g2.rs:416`).
 The capacity argument for hq is decisive at this geometry. A sequence-token
 costs 65,536 bytes of BF16 KV against 9,216 bytes of hq-e8-2b, a factor of
 7.11, so eight lanes at a 40,960-token context need 20 GiB under BF16 and about
-3.02 GB under hq. `N-lane concurrency` in `CONTEXT.md` is a short-context
+3.02 GB under hq. `N-lane concurrency` in `GLOSSARY.md` is a short-context
 promise until that changes.
 
 The complication is not the codec, which is vendored and whose format keeps the

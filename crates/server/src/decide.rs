@@ -34,7 +34,7 @@
 //! failure is the declared options holding none of the distribution — the
 //! answers are then well-formed noise with a plausible argmax, and neither
 //! `confidence` nor `probabilities` can show it, because both are computed
-//! *after* the restriction throws the rest away (`CONTEXT.md`, **answer
+//! *after* the restriction throws the rest away (`GLOSSARY.md`, **answer
 //! mass**; ADR 0034 calls it "the only failure of this endpoint that nothing
 //! else would show"). It is deliberately not a response field: Jev's answer
 //! shape has none, and an aggregate is the useful form of it. GitHub #241
@@ -951,7 +951,7 @@ impl QuestionKind {
     }
 
     /// Whether this primitive answers with a **constrained decode**
-    /// (`CONTEXT.md`) rather than a readout of one position.
+    /// (`GLOSSARY.md`) rather than a readout of one position.
     pub fn is_constrained(self) -> bool {
         self.layout().is_some() || self == Self::Scalar
     }
@@ -2583,7 +2583,7 @@ async fn serve(
         ));
     }
     // The **Lane tag**, exactly as every other route reads it — off the
-    // `model` field's `@<lane>` suffix (`CONTEXT.md`). What is left is the
+    // `model` field's `@<lane>` suffix (`GLOSSARY.md`). What is left is the
     // model the caller named, which goes to the scheduler rather than
     // being echoed back unexamined: a decision addressed to a model this
     // engine does not load is refused like any other request.
@@ -3062,7 +3062,7 @@ fn log_decision(
         types = types.join(","),
         // The same spelling the `ignis.request.*` events give it, since a
         // decision defaults to `Agent` where every other route defaults to
-        // `Interactive` (`CONTEXT.md`, *Lane tag*) and a reader comparing
+        // `Interactive` (`GLOSSARY.md`, *Lane tag*) and a reader comparing
         // the two should not have to know that.
         class = class.as_extension_str(),
         answered = prepared.len() - errors,
@@ -3948,7 +3948,7 @@ fn engine_full() -> Answer {
 /// Flash-Next. So it is read from the engine the wave is put to
 /// ([`crate::engine::Engine::max_in_flight`]), never assumed — and *not*
 /// because a decision occupies a decode lane, which it never does
-/// (`CONTEXT.md`: a decision takes only the single global prefill lane).
+/// (`GLOSSARY.md`: a decision takes only the single global prefill lane).
 /// Being too small is a slower fan-out, being too large a wave of refusals
 /// the retry in [`in_waves`] pays for.
 ///

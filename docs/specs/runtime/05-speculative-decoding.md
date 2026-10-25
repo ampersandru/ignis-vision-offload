@@ -223,7 +223,7 @@ followed by an optional finish — the ticket picks the shape that keeps
 token of the run; `usage` counts committed tokens. The request log gains
 `spec.rounds`, `spec.drafted`, `spec.accepted` per request (the reference's
 counters, same names where they exist). Spans stay at decode-round
-granularity (CONTEXT.md, `request.id`).
+granularity (GLOSSARY.md, `request.id`).
 
 **CLI.** `ignis-server --spec dflash2 --draft-tokens N` (N in 1..7);
 `--spec` absent means off. No per-request field: speculation is engine
@@ -325,6 +325,6 @@ fold with one launch and no reference.
   content) but not the width-8 int8 tile (`f92234ca`); neither matters to
   ignis beyond the note above.
 - `README.md`'s artifact section now says what the drafter module is for;
-  `CONTEXT.md` defines **DFlash2** and marks **MTP** deferred. Terms this
+  `GLOSSARY.md` defines **DFlash2** and marks **MTP** deferred. Terms this
   phase adds to the glossary when they land in code: drafter, draft window,
   verify round, extent, committed token, ReplaySSM record and fold.

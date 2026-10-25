@@ -2,7 +2,7 @@
 
 GitHub: #164
 
-ADR: 0026. Glossary: **Playground**, **Lane tag** (`CONTEXT.md`). Builds on 01.
+ADR: 0026. Glossary: **Playground**, **Lane tag** (`GLOSSARY.md`). Builds on 01.
 
 ## Problem Statement
 

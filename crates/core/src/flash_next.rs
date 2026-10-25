@@ -1084,7 +1084,7 @@ pub struct LaneRound {
 /// round, the window + 1 in a verify round) and its BF16 rows,
 /// `[lanes][columns][vocab]`. Every row the round's head produced, copied
 /// while the round still samples -- not a **readout**, which reads named
-/// tokens and draws nothing (CONTEXT.md).
+/// tokens and draws nothing (GLOSSARY.md).
 pub struct RoundLogits<'a> {
     pub lanes: &'a [usize],
     pub columns: usize,

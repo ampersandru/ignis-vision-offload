@@ -112,7 +112,7 @@ pub struct KvGeometry {
 }
 
 impl KvGeometry {
-    /// The Qwen 3.8-27B geometry (`CONTEXT.md`): 16 GQA layers, 4 KV heads
+    /// The Qwen 3.8-27B geometry (`GLOSSARY.md`): 16 GQA layers, 4 KV heads
     /// of 256.
     pub fn qwen38_27b() -> Self {
         Self {

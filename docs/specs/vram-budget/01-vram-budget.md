@@ -110,7 +110,7 @@ prompt, then a hook-injected line.
 ### Slice 2 — instruction-message policies
 
 Terms: **instruction message**, **system prompt**, **system message
-policy**, **developer message policy** (CONTEXT.md). Every accepted
+policy**, **developer message policy** (GLOSSARY.md). Every accepted
 instruction message reaches the model as `<|im_start|>system\n…<|im_end|>`.
 The model has no `developer` role (the Qwen 3.8 template raises "Unexpected
 message role."). Rendering happens in Rust before the template sees the

@@ -227,7 +227,7 @@ produced it.
   chain's. A `method` label on the decision metrics is a contract change
   (ADR 0017) and is left out of this spec.
 
-- **Documentation**: `CONTEXT.md` gains *Attention readout* and *Pointing
+- **Documentation**: `GLOSSARY.md` gains *Attention readout* and *Pointing
   head*; the OpenAPI document gains `method` and the head answer's fields.
 
 ## Testing Decisions
@@ -319,7 +319,7 @@ formats, the host rule and the endpoint are one design and are not split.
    distance from the target's centre, and the wall time of a head point and
    a chain point on the same prompt. Recorded as a finding with a README row.
 6. ADR (the attention readout as the third thing the `Compute` seam
-   carries), `CONTEXT.md` (*Attention readout*, *Pointing head*) and the
+   carries), `GLOSSARY.md` (*Attention readout*, *Pointing head*) and the
    OpenAPI document are updated.
 
 ## Out of Scope

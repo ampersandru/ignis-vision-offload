@@ -3,7 +3,7 @@
 GitHub: #313. ADR 0047 (amends ADR 0033). Builds on
 `docs/specs/model-download/01-model-download.md`: the start-time decision,
 the `.part`/resume/verify transfer and the `[y/N]` question stay; this spec
-grows what they run over. Glossary: `CONTEXT.md` § *Models, catalog &
+grows what they run over. Glossary: `GLOSSARY.md` § *Models, catalog &
 download* (**Model family**, **Served id**, **Catalog**, **Catalog entry**,
 **Endpoint**).
 

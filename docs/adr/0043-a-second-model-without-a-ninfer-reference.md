@@ -5,7 +5,7 @@
 Accepted (2026-10-04): the owner approved the Flash-Next specs
 (`docs/specs/flash-next/`) and asked for their tickets. Spec `flash-next/04`'s
 acceptance verifies it; its numbers are written here when it holds.
-**Amends** the "one model family" scope (`CONTEXT.md`, *ignis*).
+**Amends** the "one model family" scope (`GLOSSARY.md`, *ignis*).
 **Extends ADR 0010**: ops with no ninfer provenance are our own
 implementation. **Replaces ADR 0014's oracle and ADR 0015's gate for this model
 only**; both stand unchanged for Qwen3.8-27B.
@@ -92,7 +92,7 @@ package as an offline tool (ADR 0044).
 
 ## Consequences
 
-- `CONTEXT.md`'s "one model family" becomes "two models, one loaded at a time";
+- `GLOSSARY.md`'s "one model family" becomes "two models, one loaded at a time";
   glossary entries for the new concepts land with the specs.
 - A model-selection knob (Make and CLI) chooses the artifact family at start.
   The 27B stays the default and every 27B gate is unchanged.

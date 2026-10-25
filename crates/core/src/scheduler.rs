@@ -41,7 +41,7 @@ pub struct SharedPrefixClaim {
 /// it is that name. The difference is what the number means: a shared
 /// prefix's `tokens` is always whole KV pages, a checkpoint's is the
 /// generation opener **wherever it falls**, so the claimant copies the
-/// partial tail page rather than sharing it (CONTEXT.md, "publish point").
+/// partial tail page rather than sharing it (GLOSSARY.md, "publish point").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckpointClaim {
     /// The request whose prefill captured the checkpoint. It is long

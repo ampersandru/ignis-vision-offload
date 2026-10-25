@@ -621,7 +621,7 @@ pub trait StepLeaf: Send + Sync + 'static {
     ///
     /// `model` is taken for symmetry with [`StepLeaf::stats`], not because
     /// today's leaf reads it: ignis is specialized for one topology
-    /// (`CONTEXT.md`), so `CudaLeaf` answers from its `ModelConfig` and
+    /// (`GLOSSARY.md`), so `CudaLeaf` answers from its `ModelConfig` and
     /// ignores the handle.
     fn vocab(&self, model: &Self::Model) -> u32;
     /// Allocate one sequence with its full context reservation.

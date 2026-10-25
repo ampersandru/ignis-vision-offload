@@ -21,7 +21,7 @@ All of it is web only: the server is unchanged.
 
 The Image view takes the chat's shape: **image sessions** on the left, the
 next step's settings on the right, the session's steps between them, the
-prompt box at the foot (CONTEXT.md: image session, image pool, image input).
+prompt box at the foot (GLOSSARY.md: image session, image pool, image input).
 
 - A session holds an **image pool** — every picture uploaded into it, made by
   it, marked in it or brought from the chat, each named `#N` for good — and its

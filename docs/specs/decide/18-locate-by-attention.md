@@ -342,7 +342,7 @@ Phase A decides whether the baseline is used, as part of the reading.
   - the image-only refusal removed;
   - the score room sized for text;
   - under R3, the per-segment reduction as a new thing crossing the seam.
-- `CONTEXT.md` gains *Segment* and *Locate*, and *Attention readout* stops
+- `GLOSSARY.md` gains *Segment* and *Locate*, and *Attention readout* stops
   saying "an image's placeholders". The OpenAPI document gains `locate`,
   `within` and the answer's fields (ADR 0036).
 
@@ -518,7 +518,7 @@ the refusals, the rounds that did not run — and holds the device path to an
    top-1 at or above rule 4's floor for each family. Reported beside it:
    top-3, the present/absent AUC, and the wall time against the labelled
    route. Recorded as a finding.
-9. ADR 0041, `CONTEXT.md` (*Segment*, *Locate*, *Attention readout*), ADR
+9. ADR 0041, `GLOSSARY.md` (*Segment*, *Locate*, *Attention readout*), ADR
    0017's contract table and the OpenAPI document are updated.
 10. `cargo test` passes workspace-wide.
 

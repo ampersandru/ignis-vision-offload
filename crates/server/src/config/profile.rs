@@ -239,7 +239,7 @@ const BUILT_IN: &str = r#"{
     }
 }"#;
 
-/// A **card class** (ADR 0063, ADR 0064, `CONTEXT.md`): the cards one
+/// A **card class** (ADR 0063, ADR 0064, `GLOSSARY.md`): the cards one
 /// built-in profile serves, named by their memory, and the smallest a
 /// catalog entry loads on. Ordered by size, so `entry > card` reads "the
 /// entry needs a larger card than this one".

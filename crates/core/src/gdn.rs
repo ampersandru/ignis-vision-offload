@@ -1,7 +1,7 @@
 //! GDN (linear-attention) state management — `core-02`.
 //!
 //! The recurrent state of the linear-attention (GDN) layers is resumable
-//! **only** at checkpoint / frontier boundaries (`CONTEXT.md` "GDN state").
+//! **only** at checkpoint / frontier boundaries (`GLOSSARY.md` "GDN state").
 //! The actual state matrices live in the GPU kernel leaf; this module tracks
 //! the CPU-side invariant: which positions are resumable boundaries. The
 //! KV-RAM host tier (core-06) must honor it — a snapshot taken mid-prefill is

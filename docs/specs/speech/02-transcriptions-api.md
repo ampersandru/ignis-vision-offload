@@ -187,7 +187,7 @@ stereo 16-bit WAV is ~230 MB. That adds no new threshold (owner,
   - it carries the `language` warning (Q51).
 - `docs/user/README.md` gets the same section. `server/09` gets this route's
   rows and the new not-served list (`:181-182`).
-- `CONTEXT.md`'s **Servable model** says the speech model is listed without
+- `GLOSSARY.md`'s **Servable model** says the speech model is listed without
   being switched to.
 
 ## Acceptance

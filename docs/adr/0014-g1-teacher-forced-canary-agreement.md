@@ -103,7 +103,7 @@ Three mismatches remain, and none is waived:
 ## Consequences
 
 - The G1 spec's user story 5 and its testing decisions, `ROADMAP.md`'s G1 row,
-  `CONTEXT.md`'s "Canary oracle" entry and the PENDING/REVIEW references are
+  `GLOSSARY.md`'s "Canary oracle" entry and the PENDING/REVIEW references are
   reworded to the teacher-forced definition. ADR 0007 is **not** weakened: this
   ADR moves G1 *toward* it, not away.
 - The executable gate is `crates/server/tests/oracle_teacher_forced_gpu.rs`,

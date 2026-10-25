@@ -716,7 +716,7 @@ time — check `make gpu-status` before starting anything on it.
 | [`docs/adr/`](docs/adr/) | Every architectural decision, and why it was taken. |
 | [`docs/findings/`](docs/findings/README.md) | Durable, evidence-backed measurements. |
 | [`docs/agents/`](docs/agents/) | Conventions for agents working in this repo. |
-| [`CONTEXT.md`](CONTEXT.md) | The glossary. One vocabulary, one meaning per term. |
+| [`GLOSSARY.md`](GLOSSARY.md) | The glossary. One vocabulary, one meaning per term. |
 
 The OpenAPI description of the HTTP surface is served at `/v1/openapi.json`,
 with a browsable reference at `/v1/docs/`.

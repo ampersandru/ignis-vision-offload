@@ -13,7 +13,7 @@ import { AUTO_SIZE } from "./studio.ts";
 // inputs from the pool. A marked picture is a new pool entry beside the one it
 // marks, so a step records the version it sent.
 //
-// Image input vs condition image (CONTEXT.md): an input is a pool picture the
+// Image input vs condition image (GLOSSARY.md): an input is a pool picture the
 // next step uses; what reaches the server are its condition images — one per
 // input, two for one marked as a mask (the picture, then its mask).
 //

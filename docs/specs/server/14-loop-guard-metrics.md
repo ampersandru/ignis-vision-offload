@@ -171,7 +171,7 @@ Two more gaps show up next to it:
 9. **Per-turn readout** of `rewoundTokens` on chat and Responses turns.
 10. **Docs.** ADR 0017's table gains the five rows and the note that a rewind
     is one cancel plus one admission; ADR 0052's consequences point to the
-    counters; CONTEXT.md's **Loop guard** entry names them.
+    counters; GLOSSARY.md's **Loop guard** entry names them.
 11. `cargo test` passes workspace-wide; in `web/`, `npm run typecheck` and
     `npm test` pass.
 

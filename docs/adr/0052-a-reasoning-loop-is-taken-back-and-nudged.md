@@ -309,4 +309,4 @@ live `PATCH`) rewinds, so no test meets a rewind it did not ask for.
   - wiring the `rewound_tokens` field;
   - the hashed tag, history repair on both surfaces, and `loop_guard_holdback`;
   - the glossary terms (**Loop guard**, **Rewind**, **Continuation**, **Nudge**,
-    **History repair**, **Holdback**) in `CONTEXT.md`.
+    **History repair**, **Holdback**) in `GLOSSARY.md`.

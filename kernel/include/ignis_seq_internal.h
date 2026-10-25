@@ -585,7 +585,7 @@ inline std::int32_t ignis_kv_quant_group(std::int32_t kv_format) {
 
 /* The operator-facing spelling of a format, for a message a human reads.
  * The same two names `ignis_core::KvFormat::as_str`, the `--kv-format` flag
- * and `CONTEXT.md` use -- a leaf error that printed the raw enum ordinal
+ * and `GLOSSARY.md` use -- a leaf error that printed the raw enum ordinal
  * would make the reader translate it back. `"unknown"` covers a value the
  * ABI rejected, which is the only way one gets this far. */
 inline const char *ignis_kv_format_name(std::int32_t kv_format) {

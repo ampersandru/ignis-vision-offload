@@ -261,7 +261,7 @@ told to: the request names the image model; see "As built (324 item 1)".)
     - no message from the view ever switches implicitly.
 13. OpenAPI documents both routes, their extensions, the events and the
     errors. `docs/user/README.md` gains an image section (routes, sizes, the
-    knobs, the licence's non-commercial terms). `CONTEXT.md` already has the
+    knobs, the licence's non-commercial terms). `GLOSSARY.md` already has the
     terms.
 14. With spec 04's leaf: one live run on the 5090 serves a 2048² generation
     and a 2-image edit from the Playground, switching from the 27B and back.

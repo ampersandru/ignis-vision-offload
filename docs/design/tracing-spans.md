@@ -74,7 +74,7 @@ by construction, and that is deliberate rather than an oversight:
 ## Granularity: round, not token
 
 `ignis.decode.round` is opened once per request per `Compute::decode_step`
-call — the same unit a decode CUDA graph is captured over (`CONTEXT.md`,
+call — the same unit a decode CUDA graph is captured over (`GLOSSARY.md`,
 **Decode round**). A round can only ever advance a sequence by one token
 today (the leaf has no host-visible sub-round hook — "device-resident, no
 host activation pointer crosses it," ADR 0009), so for the current

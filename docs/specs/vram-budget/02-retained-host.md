@@ -93,7 +93,7 @@ refuses the start with a message naming the two new flags.
     total the scheduler hands out.
 11. The Makefile's `RETAINED_SLOTS` knob becomes `RETAINED_DEVICE` and
     `RETAINED_HOST`, and `make config` prints both.
-12. ADR 0030, `CONTEXT.md` and `docs/user/README.md` describe the two kinds.
+12. ADR 0030, `GLOSSARY.md` and `docs/user/README.md` describe the two kinds.
 13. The prototype's `IGNIS_RETAINED_ON_HOST` switch is gone.
 
 ## Implementation Decisions

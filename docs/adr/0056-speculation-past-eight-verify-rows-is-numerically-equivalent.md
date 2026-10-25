@@ -76,7 +76,7 @@ text.** The tests (`crates/core/tests/flash_next_speculative_gpu.rs`, rules in
     the default's own 4-lane cells 0.046).
 - The rows come from a measurement's copy of the round's logits,
   `ignis_decode_options::out_logits`: a Flash-Next round's head rows, host BF16, before the
-  draw or the accept reads them. Not a **readout** (CONTEXT.md: named tokens, no draw): the
+  draw or the accept reads them. Not a **readout** (GLOSSARY.md: named tokens, no draw): the
   round still samples. No serving path sets it; the 27B and a round with a permitted set
   refuse it, each by name and each tested.
 

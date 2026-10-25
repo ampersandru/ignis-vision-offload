@@ -1,7 +1,7 @@
 //! The admission state machine policy — `core-05` (ADR 0004).
 //!
 //! The fairness machinery that decides which request gets which lane
-//! (`CONTEXT.md`: "the fairness machinery (protection, backfill class,
+//! (`GLOSSARY.md`: "the fairness machinery (protection, backfill class,
 //! temporal credit, frontier distance) deciding which request gets which
 //! lane"). This module is a faithful port of the reference stack's
 //! admission policy (ADR 0004: "the port must preserve invariant behavior

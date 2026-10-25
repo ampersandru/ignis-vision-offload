@@ -30,7 +30,7 @@ and a prefill call returns only when the whole span is done. At the measured
 G2 numbers — a 1,024-token chunk costs ~110 ms (94–119 ms across runs), a
 32K span is 32 of them, a reference decode step is 13.2 ms — a 32K prompt
 inserts a ~3,820 ms gap into every decoding lane's token stream. The
-glossary already promised otherwise: `CONTEXT.md` said decoding on other
+glossary already promised otherwise: `GLOSSARY.md` said decoding on other
 lanes continues while the prefill lane runs, and it did not.
 
 **Decode is eager and greedy.** `ignis_program_decode` walks its batch one

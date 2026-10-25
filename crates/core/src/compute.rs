@@ -50,7 +50,7 @@ pub enum ModelFamily {
     QwenImage21,
 }
 
-/// What a model produces (ADR 0050, `CONTEXT.md`): a **text model** tokens,
+/// What a model produces (ADR 0050, `GLOSSARY.md`): a **text model** tokens,
 /// an **image model** pixels. Above the [`ModelFamily`]: every family is of
 /// one kind, and a server route serves one kind — a request of the other is
 /// refused, or switches models (spec image-model/05).
@@ -470,7 +470,7 @@ impl ModelConfig {
         }
     }
 
-    /// The real Qwen 3.8-27B topology (the v1 specialization, CONTEXT.md: one
+    /// The real Qwen 3.8-27B topology (the v1 specialization, GLOSSARY.md: one
     /// model family, one GPU class). The layer pattern + head geometry are
     /// the model constants (ignis is specialized for Qwen 3.8-27B).
     pub fn qwen38_27b() -> Self {

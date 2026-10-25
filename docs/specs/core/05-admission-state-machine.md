@@ -3,7 +3,7 @@
 GitHub: #16
 
 The full **admission state machine** (`docs/design/ignis-v1.md` §2,
-`CONTEXT.md` "Admission state machine") — the fairness machinery that
+`GLOSSARY.md` "Admission state machine") — the fairness machinery that
 decides which request gets which lane:
 
 - **protection** (resident lanes are not evicted),

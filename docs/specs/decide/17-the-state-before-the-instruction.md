@@ -133,7 +133,7 @@ cost measurement.
      question, pinned by a test that names the page floor as the reason (the
      limit stays visible until the engine work above lands).
 3. If it does not, nothing in the rendering changes.
-4. ADR 0034 (and `CONTEXT.md` if a term moves) record the outcome.
+4. ADR 0034 (and `GLOSSARY.md` if a term moves) record the outcome.
 5. `cargo test` passes workspace-wide.
 
 ## Out of Scope

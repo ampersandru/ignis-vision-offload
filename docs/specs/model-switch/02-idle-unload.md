@@ -122,7 +122,7 @@ that load wait for it. Decisions and trade-offs: ADR 0049.
     `unloaded` does not keep polling fast; a message sent while unloaded is
     answered once the model has loaded.
 16. Docs: `docs/user/README.md` (what idle unload does, the knob, 0),
-    `CONTEXT.md` (Idle unload), the config reference if generated.
+    `GLOSSARY.md` (Idle unload), the config reference if generated.
 17. Tests use a fake loader and an idle value of 1–2 s; no test waits
     minutes. One live check on the 5090 with a few seconds' value after
     the merge (VRAM freed after N s, the next request served).

@@ -86,7 +86,7 @@ codes, the image's tokens counted in `usage.prompt_tokens`.
 33. As the owner, I want a vision canary with a teacher-forced floor against the reference's greedy recording, so that a wrong layout, wrong merge order or wrong MRoPE axis is caught as a gross error on the GPU.
 34. As the owner, I want one live/live multimodal TTFT measurement against the reference, so that a large vision performance error is detected (an error detector, not a gate).
 35. As the owner, I want the snapshot blob to carry the sequence's `rope_delta`, versioned, so that a stale blob from a text-only build is refused rather than restored at wrong positions.
-36. As a maintainer, I want vision vocabulary (media item, vision tokens, rope delta, vision encoder) in `CONTEXT.md`, so that later tickets speak one language.
+36. As a maintainer, I want vision vocabulary (media item, vision tokens, rope delta, vision encoder) in `GLOSSARY.md`, so that later tickets speak one language.
 
 ## Implementation Decisions
 

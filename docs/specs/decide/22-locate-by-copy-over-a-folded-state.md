@@ -499,7 +499,7 @@ without a measured rule answers without `found`: `log` + `none`, `records` +
   `pointers`, `found` (what it is, its threshold, which routes carry it, the
   ranking kept below it), the first-of-identical rule, what `confidence`
   means, windows, the fold's limits, prose's and records' first-read cost.
-- **`CONTEXT.md`**: *Shortlist*, *End reading*, *Sum reading*, *End heads*,
+- **`GLOSSARY.md`**: *Shortlist*, *End reading*, *Sum reading*, *End heads*,
   *Template fold*, *Level 1*, *Level 2*, *Window*, *Pointer*, *Records
   array*, *Found*; *Locate* amended.
 - **ADR 0042** accepted with the acceptance's numbers; ADR 0041's status
@@ -696,7 +696,7 @@ submitted — and holds the host arithmetic to the Python that measured it.
 5. **End to end on the GPU** the fixtures' targets are named and their absent
    questions flagged by the defaults, including one past a window.
 6. **Documented**: OpenAPI, the user README's "Finding a line or an item",
-   `CONTEXT.md`, ADR 0017's amendment and ADR 0041's status; the load event;
+   `GLOSSARY.md`, ADR 0017's amendment and ADR 0041's status; the load event;
    the Playground's selectors, pointers and `found` with their tests.
 7. **Sets R3, P3 and J3 are registered** before any route is asked on them:
    the builders and the judge committed, every manifest hash in this banner.

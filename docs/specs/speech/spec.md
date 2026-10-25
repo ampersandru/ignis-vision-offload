@@ -266,8 +266,8 @@ Read at `711b1d85`; every line checked in this worktree.
 | `crates/server/src/api.rs:1818` *(found)* | `GET /v1/models`: `kind` is "`text` or `image`"; "A server serves one model at a time" | `speech`; the speech model listed beside the loaded one | 02 |
 | `crates/server/src/api.rs:2054` *(found)* | a switch: "every other `/v1` route answers `503 model_switching`" | the speech routes keep serving on the CPU during a switch (Q40) | 02 |
 | `crates/core/src/compute.rs:58-63` *(found)* | `ModelKind { Text, Image }` | a third kind | 02 |
-| `CONTEXT.md` **Servable model** *(found)* | "What `GET /v1/models` lists" | the speech model is listed without being switched to | 02 |
-| `CONTEXT.md` **Idle unload** *(found)* | use is "a request in flight on a model route" | a transcription is not use of the text model (Q40) | 02 |
+| `GLOSSARY.md` **Servable model** *(found)* | "What `GET /v1/models` lists" | the speech model is listed without being switched to | 02 |
+| `GLOSSARY.md` **Idle unload** *(found)* | use is "a request in flight on a model route" | a transcription is not use of the text model (Q40) | 02 |
 
 ## Environment
 

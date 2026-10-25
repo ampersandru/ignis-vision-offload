@@ -180,7 +180,7 @@ struct RequestTelemetry {
     /// submit time, since a `Request`'s own history is not reachable from
     /// the telemetry consumer).
     prompt_tokens: u32,
-    /// The request's Lane tag (GitHub #120, `CONTEXT.md`), read off
+    /// The request's Lane tag (GitHub #120, `GLOSSARY.md`), read off
     /// `submit`'s own argument at submit time — same reason `prompt_tokens`
     /// is captured here rather than read back off the scheduler's `Request`.
     class: RequestClass,

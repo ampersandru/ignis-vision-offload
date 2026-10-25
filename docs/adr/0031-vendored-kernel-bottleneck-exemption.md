@@ -179,7 +179,7 @@ specific vendored kernel as the bottleneck lifts that default for that kernel.**
   the manifest exists to detect, and the manifest is unaffected.
 - More of the leaf becomes ours, so the "no port claim for anything hand-written"
   rule carries more weight than it did under 0010, not less. The glossary entry
-  for **vendored op** (`CONTEXT.md`) is the definition that decides.
+  for **vendored op** (`GLOSSARY.md`) is the definition that decides.
 - The review question for a patched or replaced kernel is answerable from the
   repo: *which measurement opened this?* — from the manifest entry's `reason`,
   or from the ticket the replacement landed under.

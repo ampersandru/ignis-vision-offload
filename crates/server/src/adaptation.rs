@@ -1,4 +1,4 @@
-//! **Adaptation** (ADR 0063 §3, spec 27b-16gb/04 solution 4, `CONTEXT.md`):
+//! **Adaptation** (ADR 0063 §3, spec 27b-16gb/04 solution 4, `GLOSSARY.md`):
 //! a 27B load whose VRAM plan refuses its profile's values lowers the ones
 //! the operator left to the profile or the hardcoded default, in a fixed
 //! order, until the plan fits -- and says which it lowered.

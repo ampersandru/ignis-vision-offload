@@ -15,7 +15,7 @@ never enters `Running`, generates nothing, and finishes with its readout.
   pass and therefore no logits. A readout job's final chunk must carry at least
   one token: trim any prefix or checkpoint claim to `len - 1`.
 - Class: inherited from the request, defaulting to `Agent` rather than
-  `Interactive` (`CONTEXT.md`, **lane tag**, and its stated reasons).
+  `Interactive` (`GLOSSARY.md`, **lane tag**, and its stated reasons).
 
 ## Acceptance
 

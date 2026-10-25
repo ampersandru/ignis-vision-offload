@@ -29,7 +29,7 @@ Its header states the property that makes this arithmetic valid at all: "every
 kHqMetaBytes of metadata plane, so capacity math, page addressing, and CUDA
 Graph address stability are unchanged from the fixed-width formats."
 
-Model geometry from `CONTEXT.md`: 16 GQA layers, 4 KV heads of 256, K and V
+Model geometry from `GLOSSARY.md`: 16 GQA layers, 4 KV heads of 256, K and V
 both stored.
 
 BF16 per sequence-token: `16 × 4 × 256 × 2 roles × 2 bytes = 65,536`. This

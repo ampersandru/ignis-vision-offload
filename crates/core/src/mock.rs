@@ -255,7 +255,7 @@ impl MockSections {
 }
 
 /// Which blob a span of [`MockHostArena`] holds: the three kinds the host
-/// tier places there (`CONTEXT.md`: "Snapshot blob").
+/// tier places there (`GLOSSARY.md`: "Snapshot blob").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MockBlob {
     /// An evicted live sequence, named by the request it suspends.
