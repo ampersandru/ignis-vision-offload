@@ -67,10 +67,10 @@ run one at a time on a free card. Resolving a conflict reformats nothing.
   a file can carry a partner's internal names, and those reach no commit.
 - `/teach` runs in a workspace outside the repo: in the repo it would write its
   own `GLOSSARY.md`, mission file and lessons beside the project's.
-- A prototype lives on a throwaway `prototype/<name>` branch that is never
-  merged, exempt from the test and user-guide rules. The issue it answers links
-  the branch and records the verdict; the decision it validates reaches `main`
-  as ordinary work, with its test and its guide update.
+- A prototype lives on a throwaway `prototype/<name>` branch, pushed and never
+  merged (ADR 0070), exempt from the test and user-guide rules. The issue it
+  answers links the branch and records the verdict; the decision it validates
+  reaches `main` as ordinary work, with its test and its guide update.
 
 ## What the review leaves out
 
