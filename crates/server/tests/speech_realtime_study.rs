@@ -91,10 +91,12 @@ impl SpeechSession for TimedSession {
         self.calls.lock().unwrap().push(("push", began.elapsed()));
         out
     }
-    fn partial(&mut self) -> Result<Partial, SpeechError> {
+    fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError> {
         let began = Instant::now();
-        let out = self.inner.partial();
-        self.calls.lock().unwrap().push(("partial", began.elapsed()));
+        let out = self.inner.partial(stop);
+        // A refresh a commit stopped (Q79) is a `stop`, timed apart from the ones that ran.
+        let name = if matches!(out, Ok(None)) { "stop" } else { "partial" };
+        self.calls.lock().unwrap().push((name, began.elapsed()));
         out
     }
     fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
@@ -245,7 +247,7 @@ async fn the_eleven_dictations_through_the_real_route_at_real_time_pace() {
             let of: Vec<_> = all.iter().filter(|(k, _)| *k == kind).map(|(_, d)| d.as_millis()).collect();
             format!("{} {kind}s {} ms", of.len(), of.iter().sum::<u128>())
         };
-        println!("      in the executor: {}, {}, {}", summary("push"), summary("partial"), summary("commit"));
+        println!("      in the executor: {}, {}, {}, {}", summary("push"), summary("partial"), summary("stop"), summary("commit"));
         commits.push(heard.commit_to_completed);
         if seconds >= 60.0 && heard.commit_to_completed > slowest.0 {
             slowest = (heard.commit_to_completed, d.id.clone());

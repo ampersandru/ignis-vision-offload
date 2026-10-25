@@ -104,8 +104,10 @@ impl std::error::Error for SpeechError {}
 pub trait SpeechSession: Send {
     /// 16 kHz mono f32 samples, in order.
     fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError>;
-    /// The transcript so far.
-    fn partial(&mut self) -> Result<Partial, SpeechError>;
+    /// The transcript so far, or `None` when `stop` said so at one of the
+    /// points it checks: a refresh a commit, a clear or the session's end
+    /// stopped (Q79), which leaves the session as it was before the call.
+    fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError>;
     /// The last window, then the transcript to its end.
     fn commit(self: Box<Self>) -> Result<Transcript, SpeechError>;
 }
@@ -158,8 +160,9 @@ impl SpeechExecutor for NoExecutor {
 /// is stable per 8 s window pushed (128,000 samples), the last arriving only
 /// at the commit. It records what it was opened with, the samples it was
 /// pushed, what it was loaded with, every call its sessions took, in order
-/// ([`FakeExecutor::calls`]), when each refresh began, and the silence each
-/// session was fed first.
+/// ([`FakeExecutor::calls`]), when each refresh began, how many stopped, and
+/// the silence each session was fed first. A refresh checks its stop every
+/// millisecond it takes.
 #[derive(Debug)]
 pub struct FakeExecutor {
     pub words: Vec<String>,
@@ -174,6 +177,11 @@ pub struct FakeExecutor {
     pub fail_commit: Arc<AtomicBool>,
     /// How long each call to `push`, `partial` and `commit` takes.
     pub step_delay: Mutex<Duration>,
+    /// How long each `partial` takes beyond `step_delay`, read at each:
+    /// a refresh long beside the windows and the commit.
+    pub partial_delay: Arc<Mutex<Duration>>,
+    /// The refreshes stopped before their end (Q79).
+    pub stopped: Arc<AtomicUsize>,
     pub opened: Mutex<Vec<SessionOpen>>,
     /// The length of every `push`, in order, over every session.
     pub pushed: Arc<Mutex<Vec<usize>>>,
@@ -203,6 +211,8 @@ impl FakeExecutor {
             fail_load: AtomicBool::new(false),
             fail_commit: Arc::new(AtomicBool::new(false)),
             step_delay: Mutex::new(Duration::ZERO),
+            partial_delay: Arc::new(Mutex::new(Duration::ZERO)),
+            stopped: Arc::new(AtomicUsize::new(0)),
             opened: Mutex::new(Vec::new()),
             pushed: Arc::new(Mutex::new(Vec::new())),
             load_settings: Mutex::new(Vec::new()),
@@ -219,6 +229,11 @@ impl FakeExecutor {
 
     pub fn set_step_delay(&self, delay: Duration) {
         *self.step_delay.lock().unwrap() = delay;
+    }
+
+    /// Every `partial` from now, of every session, takes `delay` more.
+    pub fn set_partial_delay(&self, delay: Duration) {
+        *self.partial_delay.lock().unwrap() = delay;
     }
 
     /// Every sample pushed to any session, in total.
@@ -250,6 +265,8 @@ struct FakeSession {
     words: Vec<String>,
     language: Option<String>,
     delay: Duration,
+    partial_delay: Arc<Mutex<Duration>>,
+    stopped: Arc<AtomicUsize>,
     fail_commit: Arc<AtomicBool>,
     pushed: usize,
     stable_words: usize,
@@ -280,13 +297,24 @@ impl SpeechSession for FakeSession {
         Ok(())
     }
 
-    fn partial(&mut self) -> Result<Partial, SpeechError> {
+    fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError> {
         self.calls.lock().unwrap().push(format!("partial {}", self.index));
         self.partials_at.lock().unwrap().push(Instant::now());
-        std::thread::sleep(self.delay);
+        let end = Instant::now() + self.delay + *self.partial_delay.lock().unwrap();
+        loop {
+            if stop() {
+                self.stopped.fetch_add(1, Ordering::SeqCst);
+                return Ok(None);
+            }
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            std::thread::sleep(left.min(Duration::from_millis(1)));
+        }
         let (stable, tail) = self.words.split_at(self.stable_words);
         let tail = tail.first().map(|word| format!(" {word}")).unwrap_or_default();
-        Ok(Partial { stable: stable.join(" "), tail })
+        Ok(Some(Partial { stable: stable.join(" "), tail }))
     }
 
     fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
@@ -350,6 +378,8 @@ impl SpeechExecutor for FakeExecutor {
             words: self.words.clone(),
             language,
             delay: *self.step_delay.lock().unwrap(),
+            partial_delay: Arc::clone(&self.partial_delay),
+            stopped: Arc::clone(&self.stopped),
             fail_commit: Arc::clone(&self.fail_commit),
             pushed: 0,
             stable_words: 0,

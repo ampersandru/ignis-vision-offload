@@ -35,6 +35,11 @@
 //!   The next refresh also waits `speech.partial_cost_factor` times the last
 //!   one's compute time (Q76), so the refreshes keep to about that share of
 //!   the worker as the item grows and each costs more.
+//! - **A commit stops the refresh in flight** (Q79). An item's commit, its
+//!   clear or the socket's end stops a refresh of its still in the worker at
+//!   the next point the executor checks (spec speech/01 §4): the refresh
+//!   sends nothing and leaves the executor's session as it was, so the commit
+//!   runs next, from the stable text already sent. A window never stops one.
 //! - **Text.** `delta` carries stable text only, so the deltas joined are the
 //!   transcript `completed` carries (Q43). A session that opted in with
 //!   `session.ignis.provisional_tail` also gets the tail, the text still
@@ -103,7 +108,7 @@ Client events, each a text frame of one JSON object:
 - `input_audio_buffer.clear`: discards the buffer and the item's partial state (under `server_vad`, the speech and the padding the VAD holds); answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
 
-Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed, and the next waits at least `speech.partial_cost_factor` times the last one's compute time), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
+Server events, each with an `event_id`: under `server_vad`, `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` and `input_audio_buffer.timeout_triggered`, as above; `conversation.item.input_audio_transcription.delta` `{item_id, content_index: 0, delta}` carries stable text only, while the audio arrives (the live transcript is refreshed at most every `speech.partial_interval_ms`, best effort: a refresh is skipped while the session's audio is still being computed, and the next waits at least `speech.partial_cost_factor` times the last one's compute time; a commit or a clear stops a refresh in flight at its next check, and a stopped refresh sends nothing), so the deltas of an item joined equal its `completed.transcript`; `conversation.item.input_audio_transcription.completed` `{item_id, content_index, transcript, usage: {type: \"duration\", seconds}}`; `conversation.item.input_audio_transcription.failed` `{item_id, content_index, error}` for an item over `speech.max_clip_seconds`, one past `--server-stream-timeout` from its first append (`request_timeout`), or one the speech model failed; `error` `{error: {type, code, message, param, event_id}}` for every refused event or field, which never closes the socket. With `session.ignis.provisional_tail: true` the session also gets `ignis.input_audio_transcription.provisional` `{item_id, content_index, text}`: the whole current tail, the text the next refresh may still revise, which replaces the previous one, and `\"\"` when the item ends. A session that does not opt in never receives it.
 
 A socket idle for `server.socket_idle_close` seconds (default 300; 0 never) -- no item committed and still being transcribed, and no text or binary frame from the client -- is closed with a normal close frame (1000) whose reason says so.",
     params(("intent" = String, Query, description = "`transcription`: the only session this route serves.")),
@@ -253,6 +258,9 @@ struct Item {
     /// Set when the item is cleared, failed or the socket closes: its units
     /// still queued do nothing.
     cancel: Arc<AtomicBool>,
+    /// Set at its commit, its clear or the socket's end: a refresh of its in
+    /// the worker stops, and one queued stops before it begins (Q79).
+    stop_refresh: Arc<AtomicBool>,
     /// What its executor session was opened with.
     opened_with: SessionOpen,
     /// Samples appended, at whatever rate, and the seconds they make.
@@ -399,6 +407,7 @@ impl Connection {
         // counts as cancelled (its `Ending`, dropped).
         for item in &self.items {
             item.cancel.store(true, Ordering::SeqCst);
+            item.stop_refresh.store(true, Ordering::SeqCst);
         }
     }
 
@@ -445,6 +454,7 @@ impl Connection {
             seq: self.next_seq,
             id: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            stop_refresh: Arc::new(AtomicBool::new(false)),
             opened_with: open.clone(),
             samples_in: 0,
             seconds: 0.0,
@@ -484,7 +494,7 @@ impl Connection {
     /// what it still has in it.
     fn queue(&mut self, unit: Unit) {
         let item = self.items.back().expect("a current item");
-        let (seq, cancel) = (item.seq, Arc::clone(&item.cancel));
+        let (seq, cancel, stop) = (item.seq, Arc::clone(&item.cancel), Arc::clone(&item.stop_refresh));
         let slot = Arc::clone(&self.slot);
         let executor = Arc::clone(self.server.speech.executor());
         let files = self.files.clone();
@@ -492,7 +502,7 @@ impl Connection {
         let task = Box::new(move || {
             let outcome = match cancel.load(Ordering::SeqCst) {
                 true => None,
-                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(unit, &slot, executor.as_ref(), &files))).unwrap_or_else(|_| {
+                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(unit, &slot, executor.as_ref(), &files, &stop))).unwrap_or_else(|_| {
                     // A unit that panicked leaves no session to go on with.
                     slot.lock().unwrap_or_else(PoisonError::into_inner).session = None;
                     Some(Outcome::Failed(Failure::Executor("the speech executor panicked".to_owned())))
@@ -735,9 +745,11 @@ impl Connection {
         self.end_item();
     }
 
-    /// The current item ends: `committed`, its transcription queued (or its
-    /// `failed`), and the next item opened.
+    /// The current item ends: `committed`, a refresh of its in the worker
+    /// stopped, its transcription queued (or its `failed`), and the next item
+    /// opened.
     fn end_item(&mut self) {
+        self.current().stop_refresh.store(true, Ordering::SeqCst);
         let previous = self.previous_item_id.take();
         let ending = Ending::new(
             Arc::clone(&self.server),
@@ -771,6 +783,7 @@ impl Connection {
         let current = self.current();
         if current.samples_in > 0 || current.id.is_some() {
             current.cancel.store(true, Ordering::SeqCst);
+            current.stop_refresh.store(true, Ordering::SeqCst);
             let mut cleared = self.items.pop_back().expect("a current item");
             self.end_tail(&mut cleared);
             if !vad {
@@ -992,9 +1005,9 @@ fn extension<'a>(sent: &str, text: &'a str) -> Option<&'a str> {
 }
 
 /// Run one unit on the worker thread. `None` when it has nothing to say: an
-/// open or a push that went through, or a unit after a failure that left no
-/// session (the failure already answered).
-fn run(unit: Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &SpeechFiles) -> Option<Outcome> {
+/// open or a push that went through, a refresh `stop` stopped (Q79), or a
+/// unit after a failure that left no session (the failure already answered).
+fn run(unit: Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Option<Outcome> {
     let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
     let failed = |slot: &mut Slot, why: String| {
         slot.session = None;
@@ -1026,11 +1039,12 @@ fn run(unit: Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &Sp
         Unit::Partial(samples) => {
             let began = std::time::Instant::now();
             let session = slot.session.as_mut()?;
-            let partial = push(session.as_mut(), &samples).and_then(|()| session.partial());
+            // The audio goes in whatever happens: the commit has the rest.
+            let partial = push(session.as_mut(), &samples).and_then(|()| session.partial(&|| stop.load(Ordering::SeqCst)));
             let cost = began.elapsed();
             slot.computed += cost;
             match partial {
-                Ok(partial) => Some(Outcome::Partial(partial, cost)),
+                Ok(partial) => partial.map(|partial| Outcome::Partial(partial, cost)),
                 Err(error) => failed(&mut *slot, error.0),
             }
         }

@@ -187,7 +187,9 @@ in the group's style.
   pushes took about 60% longer, gave 6.7 s and 11.8 s. Not met; the levers
   left are in spec 03, As built. The owner chose the next one (Q79,
   2026-10-25): a commit stops the refresh in flight at its next yield, so it
-  waits for no refresh; measured after it is built.
+  waits for no refresh. Built; measurement deferred to #359 (owner,
+  2026-10-25). From the parts measured it is expected, as an estimate, at
+  about 2-3 s on the i9 and 4-4.7 s on the container.
 - **WER gates are judged on the i9** (Q78, owner, 2026-10-25), as every WER
   criterion of these specs was measured there. The 4-core container's WER is
   reported beside it and does not gate: there the refreshes come less often

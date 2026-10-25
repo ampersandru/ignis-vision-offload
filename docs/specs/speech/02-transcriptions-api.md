@@ -333,4 +333,5 @@ decided something the spec left open, or differs from it:
   is a `503 engine_full` and costs no decode; the submit checks again, as the
   room can go in between.
 - **Open:** AC 16 (the 5090's decode while a 60 s transcription runs) needs the
-  real executor and the GPU; AC 9's cap against the real tokenizer; Opus.
+  real executor and the GPU: measurement deferred to #359 (owner,
+  2026-10-25); AC 9's cap against the real tokenizer; Opus.

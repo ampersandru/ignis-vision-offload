@@ -515,8 +515,10 @@ impl Transcription {
             session.push(&self.samples[self.cursor..end]).map_err(|error| Failure::Executor(error.0))?;
             self.cursor = end;
             if self.deltas.is_some() {
-                let stable = session.partial().map_err(|error| Failure::Executor(error.0))?.stable;
-                self.emit(&stable);
+                // Nothing stops a batch job's partial.
+                if let Some(partial) = session.partial(&|| false).map_err(|error| Failure::Executor(error.0))? {
+                    self.emit(&partial.stable);
+                }
             }
             return Ok(None);
         }

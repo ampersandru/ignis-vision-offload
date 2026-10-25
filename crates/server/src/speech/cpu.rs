@@ -123,9 +123,9 @@ impl SpeechSession for CpuSession {
         self.0.push(samples).map_err(err)
     }
 
-    fn partial(&mut self) -> Result<Partial, SpeechError> {
-        let p = self.0.partial().map_err(err)?;
-        Ok(Partial { stable: p.stable, tail: p.provisional })
+    fn partial(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SpeechError> {
+        let p = self.0.partial_unless(stop).map_err(err)?;
+        Ok(p.map(|p| Partial { stable: p.stable, tail: p.provisional }))
     }
 
     fn commit(self: Box<Self>) -> Result<Transcript, SpeechError> {
@@ -196,5 +196,37 @@ mod tests {
         let r = e.load(&files(&dir, true), LoadSettings { threads: Some(2), pinned_weights: false });
         assert!(matches!(&r, Err(SpeechError(m)) if m.contains("Qwen3-ASR-1.7B-Q4_K_M.gguf")), "{r:?}");
         assert!(!e.is_loaded());
+    }
+
+    #[allow(dead_code)]
+    #[path = "../../../../../speech/tests/common/synthetic.rs"]
+    mod synthetic;
+
+    /// Q79: the adapter hands the server's stop to the crate's session. On the crate's synthetic
+    /// pair (its encoder under the fixed `mmproj-` name), a refresh whose stop says so answers
+    /// `None` and leaves the session as it was: its commit is the one with no refresh tried.
+    #[test]
+    fn a_refresh_the_server_stops_answers_none_and_changes_nothing() {
+        let e = CpuExecutor::new();
+        if e.availability().is_err() {
+            eprintln!("SKIP: this CPU lacks AVX2; the model is not loaded");
+            return;
+        }
+        let pair = synthetic::pair("adapter-stop");
+        let encoder = pair.encoder.with_file_name("mmproj-synthetic.gguf");
+        std::fs::rename(&pair.encoder, &encoder).unwrap();
+        let files = SpeechFiles { id: "synthetic".into(), decoder: pair.decoder.clone(), files: vec![pair.decoder.clone(), encoder] };
+        e.load(&files, LoadSettings { threads: Some(2), pinned_weights: false }).unwrap();
+        let open = SessionOpen { context_max_tokens: 512, rollback_tokens: 10, unfixed_partials: 2, ..SessionOpen::default() };
+        let session = || {
+            let mut s = e.open(open.clone()).unwrap();
+            s.push(&synthetic::audio(9.3)).unwrap();
+            s
+        };
+        let untried = session().commit().unwrap();
+        let mut s = session();
+        assert_eq!(s.partial(&|| true).unwrap(), None);
+        assert_eq!(s.commit().unwrap(), untried);
+        assert!(session().partial(&|| false).unwrap().is_some(), "a refresh nothing stops answers");
     }
 }

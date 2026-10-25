@@ -10,7 +10,9 @@
 //!    text, decodes greedily, keeps the last `rollback_tokens` of what it decoded as the
 //!    provisional tail (the rest joins the stable text, never revised), and rolls the cache
 //!    back to the audio prefix. The first `unfixed_partials` fix nothing, as the official
-//!    streaming's first chunks do.
+//!    streaming's first chunks do. `partial_unless` is a partial its caller can stop (Q79):
+//!    it checks before each step of its work and where its decode yields the unit, and a
+//!    partial stopped leaves the session as it was.
 //! 4. `commit` encodes the last window and decodes from the stable text to EOS, so the
 //!    transcript begins with every stable text reported (Q43).
 //!
@@ -266,30 +268,40 @@ impl Session {
     }
 
     /// Greedy decoding after the audio: the prompt's tail and the stable text, then up to EOS
-    /// or the cache's end (§2), a unit of compute per `DECODE_UNIT` steps.
-    fn decode_after_audio(&mut self) -> Result<Vec<u32>, SessionError> {
+    /// or the cache's end (§2), a unit of compute per `DECODE_UNIT` steps. `None` once `stop`
+    /// says so, before the prefill, after it or where it yields the unit (Q79).
+    fn decode_after_audio(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Vec<u32>>, SessionError> {
         let core = self.core.clone();
         let loaded = self.loaded.clone();
         let dec = &loaded.model.decoder;
         let mut ids = self.prompt.tail.clone();
         ids.extend(&self.stable);
+        if stop() {
+            return Ok(None);
+        }
         if !self.cache.reserve(self.cache.len + ids.len() + 1) {
             return Err(SessionError::CacheFull);
         }
         let mut unit = core.unit();
         let mut logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &ids), Logits::Last, None);
+        if stop() {
+            return Ok(None);
+        }
         let mut out = Vec::new();
         loop {
             let t = argmax(&logits);
             if loaded.model.text.eos.contains(&t) {
-                return Ok(out);
+                return Ok(Some(out));
             }
             out.push(t);
             if !self.cache.reserve(self.cache.len + 1) {
-                return Ok(out);
+                return Ok(Some(out));
             }
             if out.len() % DECODE_UNIT == 0 {
                 drop(unit);
+                if stop() {
+                    return Ok(None);
+                }
                 unit = core.unit();
             }
             logits = decoder::forward(dec, &loaded.pool, loaded.isa, &mut self.cache, decoder::embed(dec, &[t]), Logits::Last, None);
@@ -307,32 +319,57 @@ impl Session {
         (p.text, p.language)
     }
 
+    /// A partial's incomplete window: encoded and prefilled after the audio prefix. `None`
+    /// when `stop` says so between the encode and the prefill (Q79).
+    fn prefill_incomplete(&mut self, stop: &dyn Fn() -> bool) -> Option<()> {
+        let core = self.core.clone();
+        let _unit = core.unit();
+        let (tail, total) = self.tail_frames();
+        let first = self.windows * WINDOW_FRAMES;
+        if total > first {
+            let mel = self.window_mel(first, total - first, &tail);
+            let l = &self.loaded;
+            let x = encode_window(&l.model.encoder, &l.pool, l.isa, &mel, total - first, None);
+            if stop() {
+                return None;
+            }
+            if self.cache.reserve(self.cache.len + x.len() / l.model.decoder.hidden) {
+                decoder::forward(&l.model.decoder, &l.pool, l.isa, &mut self.cache, x, Logits::None, None);
+            }
+        }
+        Some(())
+    }
+
     /// Re-encodes the incomplete window, decodes, and moves all but the last `rollback_tokens`
     /// of what it decoded into the stable text. The cache is rolled back to the audio prefix.
     pub fn partial(&mut self) -> Result<Partial, SessionError> {
+        Ok(self.partial_unless(&|| false)?.expect("a partial nothing stops ends"))
+    }
+
+    /// [`partial`](Self::partial), stopped once `stop` says so (Q79): it asks before the
+    /// encode, before the incomplete window's prefill, before the decode's prefill and after
+    /// it, and where the decode yields the unit of compute. A partial stopped returns `None`
+    /// and leaves the session as it was before the call: the cache rolled back to the audio
+    /// prefix, the stable text and the partials counted unchanged, so a commit next decodes
+    /// from the stable text already reported.
+    pub fn partial_unless(&mut self, stop: &dyn Fn() -> bool) -> Result<Option<Partial>, SessionError> {
         self.core.touch();
+        if self.total_samples == 0 {
+            self.since_partial = 0;
+            self.stats.partials += 1;
+            return Ok(Some(Partial { stable: String::new(), provisional: String::new(), language: self.language.clone() }));
+        }
+        if stop() {
+            return Ok(None);
+        }
+        let decoded = match self.prefill_incomplete(stop) {
+            Some(()) => self.decode_after_audio(stop),
+            None => Ok(None),
+        };
+        self.cache.truncate(self.audio_prefix);
+        let Some(decoded) = decoded? else { return Ok(None) };
         self.since_partial = 0;
         self.stats.partials += 1;
-        if self.total_samples == 0 {
-            return Ok(Partial { stable: String::new(), provisional: String::new(), language: self.language.clone() });
-        }
-        let core = self.core.clone();
-        {
-            let _unit = core.unit();
-            let (tail, total) = self.tail_frames();
-            let first = self.windows * WINDOW_FRAMES;
-            if total > first {
-                let mel = self.window_mel(first, total - first, &tail);
-                let l = &self.loaded;
-                let x = encode_window(&l.model.encoder, &l.pool, l.isa, &mel, total - first, None);
-                if self.cache.reserve(self.cache.len + x.len() / l.model.decoder.hidden) {
-                    decoder::forward(&l.model.decoder, &l.pool, l.isa, &mut self.cache, x, Logits::None, None);
-                }
-            }
-        }
-        let decoded = self.decode_after_audio();
-        self.cache.truncate(self.audio_prefix);
-        let decoded = decoded?;
         let r = self.tuning.rollback_tokens;
         let mut cut = if self.stats.partials <= self.tuning.unfixed_partials { 0 } else { decoded.len().saturating_sub(r) };
         // The stable text ends on a whole word: the provisional tail starts where a word does
@@ -351,7 +388,7 @@ impl Session {
         let all: Vec<u32> = [&self.stable[..], &decoded[cut..]].concat();
         let (full, _) = self.body(&all);
         let provisional = full.strip_prefix(stable.as_str()).unwrap_or(&full).to_string();
-        Ok(Partial { stable, provisional, language: language.or_else(|| self.language.clone()) })
+        Ok(Some(Partial { stable, provisional, language: language.or_else(|| self.language.clone()) }))
     }
 
     /// Encodes the rest of the audio and decodes to EOS from the stable text.
@@ -374,7 +411,7 @@ impl Session {
             let mel = self.window_mel(first, n, &[]);
             self.prefill_window(&mel, n);
         }
-        let out = self.decode_after_audio()?;
+        let out = self.decode_after_audio(&|| false)?.expect("a commit is never stopped");
         let all: Vec<u32> = [&self.stable[..], &out[..]].concat();
         let text = &self.loaded.model.text;
         let p = parse(&text.decode(&all), self.language.as_deref());
