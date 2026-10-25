@@ -7,8 +7,9 @@ fixture (record_indexer.py) states that rule explicitly; this script confirms to
 it on the fixture's own score rows (exact-zero ties by the hundred) and on synthetic tie vectors
 at the sizes the indexer meets (up to 65536 blocks). Writes nothing.
 
-It runs on the GPU, so it refuses to start unless the caller holds the swarm's GPU lock under the
-name it passes (AGENTS.md, Testing): take the lock first, then
+It runs on the GPU, one run at a time (AGENTS.md, Testing: `make gpu-status` first), so it
+refuses to start unless the caller holds the swarm's GPU lock under the name it passes; the lock
+lives outside the repo, in ../.inference-qwen-worktrees/.swarm/gpu-lock.sh. Take it first, then
 
     F:/ai/ngram-venv/Scripts/python.exe kernel/tests/fixtures/flash_next_indexer/check_topk_ties_cuda.py --lock-owner <name>
 """

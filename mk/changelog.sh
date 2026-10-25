@@ -17,8 +17,8 @@
 # range mixes what an operator reads a release for ("The Playground is served
 # unless you say otherwise") with what only the next contributor cares about
 # ("The GPU harnesses catch up with two signatures they never recompiled").
-# A closed issue is already the user-facing half, written as one line by the
-# convention in docs/agents/issue-tracker.md. GitHub's own
+# A closed issue is already the user-facing half, written as one line: its
+# title. GitHub's own
 # `generate_release_notes` cannot do this: it lists merged PRs and this repo
 # merges locally, so it produces exactly one line, the compare link.
 #
