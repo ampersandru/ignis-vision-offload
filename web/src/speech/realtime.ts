@@ -156,7 +156,10 @@ type ServerEvent = {
   delta?: string;
   text?: string;
   transcript?: string;
-  error?: { message?: string; code?: string };
+  audio_start_ms?: number;
+  audio_end_ms?: number;
+  speaker?: number;
+  error?: { message?: string; code?: string; event_id?: string | null };
 };
 
 export function openTranscription(
@@ -279,5 +282,178 @@ export function openTranscription(
       close();
     },
     close,
+  };
+}
+
+/** The speakers' geometry a listening asks for (spec speech/08): `"live"` for audio at real time, `"file"` for a file. */
+export type Diarization = "live" | "file";
+
+export type ListeningOptions = {
+  context: string;
+  /** `null`: no speakers (Speakers off, or a call's microphone, which is "Me"). */
+  diarization: Diarization | null;
+};
+
+/** What a listening's session hears, each item by its id: items overlap, an item's `completed` coming after the next one starts. */
+export type ListeningEvent =
+  | { type: "started"; item: string; atMs: number }
+  | { type: "stopped"; item: string; atMs: number }
+  | { type: "committed"; item: string }
+  | { type: "delta"; item: string; text: string }
+  | { type: "tail"; item: string; text: string }
+  | { type: "speaker"; item: string; speaker: number }
+  | { type: "completed"; item: string; transcript: string }
+  | { type: "item_failed"; item: string; message: string }
+  /** The server refused an event of ours; `eventId` is the one the page gave it. The session goes on. */
+  | { type: "error"; code: string | null; message: string; eventId: string | null }
+  | { type: "refused"; refusal: Refusal }
+  /** The connection closed under the session. */
+  | { type: "closed" };
+
+export type Listening = {
+  /** `eventId` comes back on the `error` that refuses this append (spec speech/08's queue limit). */
+  append: (pcm: Int16Array, eventId?: string) => void;
+  /** The context from the next utterance on (Q87). */
+  setContext: (context: string) => void;
+  /** Ends the utterance under way: its transcript follows. */
+  commit: () => void;
+  close: () => void;
+};
+
+/** A listening's configuration (spec speech/07, "The session"). */
+function listeningConfiguration({ context, diarization }: ListeningOptions) {
+  return {
+    type: "session.update",
+    session: {
+      type: "transcription",
+      audio: {
+        input: {
+          format: { type: "audio/pcm", rate: TARGET_RATE },
+          transcription: context === "" ? {} : { prompt: context },
+          // No lengths: the server's `speech.vad_*` fields hold, never the viewer's dictation silence (Q80).
+          turn_detection: { type: "server_vad" },
+        },
+      },
+      // No `max_utterance_seconds`: the server's length guard holds (spec speech/08).
+      ignis: diarization === null ? { provisional_tail: true } : { provisional_tail: true, diarization },
+    },
+  };
+}
+
+/**
+ * One listening's session on the Realtime route (spec speech/07): a sibling of
+ * a dictation's, not one. It asks for the server's turn detection at the
+ * server's lengths and hears every commit as an utterance of its own, never
+ * ending at the first; the speakers come when the options ask for them. The
+ * audio waits, as a dictation's does, until the server has taken the
+ * configuration. A refused upgrade is asked about as a dictation's is.
+ */
+export function openListening(options: ListeningOptions, onEvent: (event: ListeningEvent) => void, deps: RealtimeDeps = {}): Listening {
+  const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
+  const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
+  let context = options.context;
+  /** The page closed it: nothing more is said, a refusal still being asked about included. */
+  let closedByPage = false;
+  /** The connection is over, by the page or under it. */
+  let ended = false;
+  let opened = false;
+  let greeted = false;
+  let configured = false;
+  const waiting: object[] = [];
+  let socket: SocketLike | null = null;
+  const send = (event: object) => socket?.send(JSON.stringify(event));
+  const say = (event: ListeningEvent) => closedByPage || onEvent(event);
+
+  function onMessage(event: ServerEvent) {
+    const item = event.item_id ?? "";
+    switch (event.type) {
+      case "session.created":
+        greeted = true;
+        send(listeningConfiguration({ ...options, context }));
+        return;
+      case "session.updated":
+        if (configured) return;
+        configured = true;
+        for (const queued of waiting.splice(0)) send(queued);
+        return;
+      case "input_audio_buffer.speech_started":
+        return say({ type: "started", item, atMs: event.audio_start_ms ?? 0 });
+      case "input_audio_buffer.speech_stopped":
+        return say({ type: "stopped", item, atMs: event.audio_end_ms ?? 0 });
+      case "input_audio_buffer.committed":
+        return say({ type: "committed", item });
+      case "conversation.item.input_audio_transcription.delta":
+        return say({ type: "delta", item, text: event.delta ?? "" });
+      case "ignis.input_audio_transcription.provisional":
+        return say({ type: "tail", item, text: event.text ?? "" });
+      case "ignis.input_audio_transcription.speaker":
+        if (typeof event.speaker === "number") say({ type: "speaker", item, speaker: event.speaker });
+        return;
+      case "conversation.item.input_audio_transcription.completed":
+        return say({ type: "completed", item, transcript: event.transcript ?? "" });
+      case "conversation.item.input_audio_transcription.failed":
+        return say({ type: "item_failed", item, message: event.error?.message ?? "the server could not transcribe it" });
+      case "error":
+        return say({
+          type: "error",
+          code: event.error?.code ?? null,
+          message: event.error?.message ?? "the server refused an event",
+          eventId: event.error?.event_id ?? null,
+        });
+    }
+  }
+
+  /** Sent once the configuration is taken; held until then, in order. */
+  const sendConfigured = (event: object) => (configured ? send(event) : waiting.push(event));
+  const refused = () => void probe(doFetch).then((refusal) => say({ type: "refused", refusal }));
+
+  try {
+    socket = open(deps.url?.() ?? pageUrl(), protocols());
+  } catch {
+    // A key that is not a valid subprotocol token throws: a refused upgrade like any other.
+    ended = true;
+    refused();
+  }
+  if (socket) {
+    socket.onopen = () => {
+      opened = true;
+    };
+    socket.onerror = () => {};
+    socket.onmessage = (message) => {
+      if (ended) return;
+      try {
+        onMessage(JSON.parse(String(message.data)) as ServerEvent);
+      } catch {
+        // Not JSON: nothing this session reads.
+      }
+    };
+    socket.onclose = () => {
+      if (ended) return;
+      ended = true;
+      if (opened) say({ type: "closed" });
+      else refused();
+    };
+  }
+
+  return {
+    append(pcm, eventId) {
+      if (ended) return;
+      sendConfigured({ type: "input_audio_buffer.append", audio: pcmBase64(pcm), ...(eventId === undefined ? {} : { event_id: eventId }) });
+    },
+    setContext(next) {
+      if (ended || next === context) return;
+      context = next;
+      // Not greeted yet: the configuration carries it.
+      if (!greeted) return;
+      sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: next === "" ? null : next } } } } });
+    },
+    commit() {
+      if (!ended) sendConfigured({ type: "input_audio_buffer.commit" });
+    },
+    close() {
+      closedByPage = true;
+      ended = true;
+      socket?.close();
+    },
   };
 }

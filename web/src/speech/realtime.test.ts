@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { forgetKey, saveKey } from "../api/auth.ts";
 import type { SocketLike } from "../api/socket.ts";
-import { openTranscription, type Refusal, type TranscriptionHandlers } from "./realtime.ts";
+import { type ListeningEvent, openListening, openTranscription, type Refusal, type TranscriptionHandlers } from "./realtime.ts";
 
 // One dictation's Realtime transcription session (spec speech/04, spec
 // speech/03 for the wire) through its public contract: a fake WebSocket plays
@@ -347,5 +347,154 @@ describe("openTranscription", () => {
       await settle();
       expect(during.calls).toEqual([]);
     });
+  });
+});
+
+// A listening's session (spec speech/07, AC 2): not a dictation's. Every commit is an utterance, the server's
+// turn detection holds at its own lengths, and the speakers are asked for as the source says (spec speech/08).
+describe("openListening", () => {
+  function listen(options: Parameters<typeof openListening>[0], fetcher: typeof fetch = upgradeRequired) {
+    const { sockets, deps } = setup(fetcher);
+    const heard: ListeningEvent[] = [];
+    const session = openListening(options, (event) => heard.push(event), deps);
+    return { socket: () => sockets[0], heard, session };
+  }
+
+  it("asks for server_vad at the server's lengths, PCM16 at 16 kHz, the context, the provisional tail and the live speakers; no language, no length guard of its own", () => {
+    const { socket } = listen({ context: "Standup: Ada, Linus, the vram planner.", diarization: "live" });
+    socket().accept();
+    expect(socket().sent).toEqual([
+      {
+        type: "session.update",
+        session: {
+          type: "transcription",
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 16000 },
+              transcription: { prompt: "Standup: Ada, Linus, the vram planner." },
+              turn_detection: { type: "server_vad" },
+            },
+          },
+          ignis: { provisional_tail: true, diarization: "live" },
+        },
+      },
+    ]);
+    expect(JSON.stringify(socket().sent)).not.toContain("language");
+    expect(JSON.stringify(socket().sent)).not.toContain("max_utterance_seconds");
+  });
+
+  it("asks for no speakers with Speakers off or on a call's microphone, and for the file geometry on a file", () => {
+    const off = listen({ context: "", diarization: null });
+    off.socket().accept();
+    expect(off.socket().sent[0]).toMatchObject({ session: { ignis: { provisional_tail: true }, audio: { input: { transcription: {} } } } });
+    expect(JSON.stringify(off.socket().sent[0])).not.toContain("diarization");
+    const file = listen({ context: "", diarization: "file" });
+    file.socket().accept();
+    expect(file.socket().sent[0]).toMatchObject({ session: { ignis: { diarization: "file" } } });
+  });
+
+  it("hears every commit as an utterance of its own, each item's events by its id, the next starting before the last completes", () => {
+    const { socket, heard } = listen({ context: "", diarization: "live" });
+    socket().accept();
+    socket().emit({ type: "session.updated", session: {} });
+    const s = socket();
+    s.emit({ type: "input_audio_buffer.speech_started", audio_start_ms: 480, item_id: "item_1" });
+    s.emit({ type: "ignis.input_audio_transcription.provisional", item_id: "item_1", content_index: 0, text: "Buongiorno a" });
+    s.emit({ type: "input_audio_buffer.speech_stopped", audio_end_ms: 3_040, item_id: "item_1" });
+    s.emit({ type: "input_audio_buffer.committed", item_id: "item_1", previous_item_id: null });
+    s.emit({ type: "input_audio_buffer.speech_started", audio_start_ms: 3_040, item_id: "item_2" });
+    s.emit({ type: "conversation.item.input_audio_transcription.delta", item_id: "item_1", content_index: 0, delta: "Buongiorno a tutti." });
+    s.emit({ type: "ignis.input_audio_transcription.provisional", item_id: "item_1", content_index: 0, text: "" });
+    s.emit({ type: "ignis.input_audio_transcription.speaker", item_id: "item_1", content_index: 0, speaker: 0 });
+    s.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", content_index: 0, transcript: "Buongiorno a tutti." });
+    s.emit({ type: "input_audio_buffer.speech_stopped", audio_end_ms: 5_120, item_id: "item_2" });
+    s.emit({ type: "input_audio_buffer.committed", item_id: "item_2", previous_item_id: "item_1" });
+    s.emit({ type: "ignis.input_audio_transcription.speaker", item_id: "item_2", content_index: 0, speaker: 1 });
+    s.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_2", content_index: 0, transcript: "Grazie." });
+    expect(heard).toEqual([
+      { type: "started", item: "item_1", atMs: 480 },
+      { type: "tail", item: "item_1", text: "Buongiorno a" },
+      { type: "stopped", item: "item_1", atMs: 3_040 },
+      { type: "committed", item: "item_1" },
+      { type: "started", item: "item_2", atMs: 3_040 },
+      { type: "delta", item: "item_1", text: "Buongiorno a tutti." },
+      { type: "tail", item: "item_1", text: "" },
+      { type: "speaker", item: "item_1", speaker: 0 },
+      { type: "completed", item: "item_1", transcript: "Buongiorno a tutti." },
+      { type: "stopped", item: "item_2", atMs: 5_120 },
+      { type: "committed", item: "item_2" },
+      { type: "speaker", item: "item_2", speaker: 1 },
+      { type: "completed", item: "item_2", transcript: "Grazie." },
+    ]);
+  });
+
+  it("reports a failed item by its id, and a refused event with its code and the event id the page gave it", () => {
+    const { socket, heard } = listen({ context: "", diarization: "live" });
+    socket().accept();
+    socket().emit({ type: "conversation.item.input_audio_transcription.failed", item_id: "item_4", content_index: 0, error: { code: "engine_error", message: "the speech model failed" } });
+    socket().emit({ type: "error", error: { type: "invalid_request_error", code: "ignis_audio_queue_full", message: "the session holds 120.0 s", param: "audio", event_id: "audio_37" } });
+    socket().emit({ type: "error", error: { type: "invalid_request_error", code: "ignis_diarizer_unavailable", message: "the diarizer is turned off", param: null, event_id: null } });
+    expect(heard).toEqual([
+      { type: "item_failed", item: "item_4", message: "the speech model failed" },
+      { type: "error", code: "ignis_audio_queue_full", message: "the session holds 120.0 s", eventId: "audio_37" },
+      { type: "error", code: "ignis_diarizer_unavailable", message: "the diarizer is turned off", eventId: null },
+    ]);
+  });
+
+  it("holds the audio until the configuration is taken, then sends it in order, each append with the page's event id", () => {
+    const { socket, session } = listen({ context: "", diarization: null });
+    session.append(new Int16Array([1, -2, 256]), "audio_1");
+    socket().accept();
+    session.append(new Int16Array([3]), "audio_2");
+    expect(socket().types()).toEqual(["session.update"]);
+    socket().emit({ type: "session.updated", session: {} });
+    session.append(new Int16Array([4]));
+    session.commit();
+    expect(socket().sent.slice(1)).toEqual([
+      { type: "input_audio_buffer.append", audio: "AQD+/wAB", event_id: "audio_1" },
+      { type: "input_audio_buffer.append", audio: "AwA=", event_id: "audio_2" },
+      { type: "input_audio_buffer.append", audio: "BAA=" },
+      { type: "input_audio_buffer.commit" },
+    ]);
+  });
+
+  it("sends a changed context in a session.update of the prompt alone, null once cleared; changed before the greeting, it is in the configuration", () => {
+    const { socket, session } = listen({ context: "first", diarization: "live" });
+    session.setContext("second");
+    socket().accept();
+    expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { transcription: { prompt: "second" } } } } });
+    socket().emit({ type: "session.updated", session: {} });
+    session.setContext("Names: Ada.");
+    session.setContext("");
+    expect(socket().sent.slice(1)).toEqual([
+      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: "Names: Ada." } } } } },
+      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: null } } } } },
+    ]);
+    // The answer to a context's update is not the configuration's: nothing waits on it.
+    socket().emit({ type: "session.updated", session: {} });
+    expect(socket().sent).toHaveLength(3);
+  });
+
+  it("says when the connection closes under it, and nothing once the page has closed it", () => {
+    const dropped = listen({ context: "", diarization: null });
+    dropped.socket().accept();
+    dropped.socket().drop();
+    expect(dropped.heard).toEqual([{ type: "closed" }]);
+
+    const closed = listen({ context: "", diarization: null });
+    closed.socket().accept();
+    closed.session.close();
+    closed.socket().emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", transcript: "late" });
+    closed.session.append(new Int16Array([1]));
+    expect(closed.socket().closedByPage).toBe(true);
+    expect(closed.heard).toEqual([]);
+    expect(closed.socket().types()).toEqual(["session.update"]);
+  });
+
+  it("asks the route why a refused upgrade was refused, as a dictation does", async () => {
+    const { socket, heard } = listen({ context: "", diarization: null }, answering(503, { error: { code: "engine_full", message: "full" } }));
+    socket().refuse();
+    await settle();
+    expect(heard).toEqual([{ type: "refused", refusal: { kind: "busy" } }]);
   });
 });
