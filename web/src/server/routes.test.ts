@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAuth, saveKey } from "../api/auth.ts";
-import { patchConfig, readCatalog, readConfigFile, readFields, readOrigins, refusalOf, switchTo } from "./routes.ts";
+import { cancelDownload, patchConfig, readCatalog, readConfigFile, readFields, readOrigins, refusalOf, removeModel, startDownload, switchTo } from "./routes.ts";
 
 // The Server view's requests (spec playground/05): what each sends, and how
 // each answer is read.
@@ -68,6 +68,47 @@ describe("switchTo", () => {
   });
 });
 
+describe("startDownload", () => {
+  it("sends POST /v1/models/download with the catalog id alone, never a token, and the key", async () => {
+    saveKey("sk-test");
+    const sent: Sent[] = [];
+    const accepted = { status: "downloading", model: "qwen3.8-27b-abliterated", bytes: 19406984175, bytes_on_disk: 0 };
+    const answer = await startDownload("qwen3.8-27b-abliterated", answering(202, accepted, sent));
+    expect(answer).toEqual({ ok: true, status: 202, value: accepted });
+    expect(sent[0].url).toBe("/v1/models/download");
+    expect(sent[0].init.method).toBe("POST");
+    expect(JSON.parse(sent[0].init.body as string)).toEqual({ model: "qwen3.8-27b-abliterated" });
+    expect(sent[0].init.headers).toMatchObject({ Authorization: "Bearer sk-test", "Content-Type": "application/json" });
+  });
+
+  it("reads a refusal as the server's message and code", async () => {
+    saveKey("sk-test");
+    const body = { error: { message: "a download of qwen3.8-flash-next is already running; downloads are one at a time, never queued", code: "download_in_progress" } };
+    expect(await startDownload("x", answering(409, body))).toEqual({ ok: false, status: 409, message: body.error.message, code: "download_in_progress" });
+  });
+});
+
+// GitHub #377: the running download stopped, its partial files kept.
+describe("cancelDownload", () => {
+  it("sends POST /v1/models/download/cancel with no body, and the key", async () => {
+    saveKey("sk-test");
+    const sent: Sent[] = [];
+    const cancelled = { status: "cancelled", model: "qwen3.8-27b-abliterated", bytes: 19406984175, bytes_on_disk: 6442450944 };
+    const answer = await cancelDownload(answering(200, cancelled, sent));
+    expect(answer).toEqual({ ok: true, status: 200, value: cancelled });
+    expect(sent[0].url).toBe("/v1/models/download/cancel");
+    expect(sent[0].init.method).toBe("POST");
+    expect(sent[0].init.body).toBeUndefined();
+    expect(sent[0].init.headers).toMatchObject({ Authorization: "Bearer sk-test" });
+  });
+
+  it("reads a refusal as the server's message and code", async () => {
+    saveKey("sk-test");
+    const body = { error: { message: "no download is running; GET /v1/models/catalog shows each entry's state", code: "download_not_running" } };
+    expect(await cancelDownload(answering(409, body))).toEqual({ ok: false, status: 409, message: body.error.message, code: "download_not_running" });
+  });
+});
+
 describe("patchConfig", () => {
   it("sends PATCH /v1/config with the body as given", async () => {
     saveKey("sk-test");
@@ -107,5 +148,26 @@ describe("refusalOf", () => {
     expect(refusalOf(400, JSON.stringify({ error: { message: "m", code: "c" } }))).toEqual({ status: 400, message: "m", code: "c" });
     expect(refusalOf(502, "Bad gateway")).toEqual({ status: 502, message: "Bad gateway" });
     expect(refusalOf(503, "")).toEqual({ status: 503, message: "503" });
+  });
+});
+
+// GitHub #380: a catalog entry's files removed from the server's models folder.
+describe("removeModel", () => {
+  it("sends POST /v1/models/remove with the catalog id alone, and the key", async () => {
+    saveKey("sk-test");
+    const sent: Sent[] = [];
+    const removed = { status: "removed", model: "qwen3.8-flash-next", bytes_freed: 72799980571, files_removed: ["qwen3_8_flash_next.ninfer"], files_kept: [] };
+    const answer = await removeModel("qwen3.8-flash-next", answering(200, removed, sent));
+    expect(answer).toEqual({ ok: true, status: 200, value: removed });
+    expect(sent[0].url).toBe("/v1/models/remove");
+    expect(sent[0].init.method).toBe("POST");
+    expect(JSON.parse(sent[0].init.body as string)).toEqual({ model: "qwen3.8-flash-next" });
+    expect(sent[0].init.headers).toMatchObject({ Authorization: "Bearer sk-test", "Content-Type": "application/json" });
+  });
+
+  it("reads a refusal as the server's message and code", async () => {
+    saveKey("sk-test");
+    const body = { error: { message: "qwen3.8-27b is the model loaded (qwen3.8-27b), which serves from its files; load another model before removing it", code: "model_in_use" } };
+    expect(await removeModel("qwen3.8-27b", answering(409, body))).toEqual({ ok: false, status: 409, message: body.error.message, code: "model_in_use" });
   });
 });

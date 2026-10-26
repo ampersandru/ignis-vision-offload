@@ -146,6 +146,94 @@ missing, or an artifact that does not verify against its provenance sidecar
 (`.graft.json` or `.conversion.json`), refuses the start
 ([Get a model](guides/models.md)).
 
+### `… is already being downloaded into …, by … (process …)`
+
+Another fetch of the same entry into the same folder holds its lock, and the
+message names it with its process id: `a server`, downloading it from its
+Server view or at its start (or removing it), or `ignis-server model download`.
+`model download` then fails that entry and exits 1, and a start that would
+fetch it is refused; nothing was fetched or written. Wait for the other fetch
+to end, or stop that process, and run again: a partial download resumes from
+its `.part`. A killed or crashed fetch leaves no lock behind, and the
+`<artifact>.lock` file it names stays for the next fetch
+([one writer per entry](guides/models.md#one-writer-per-entry)).
+
+### The Server view's Download is refused, or fails
+
+**Download** (`POST /v1/models/download`) answers with the server's reason,
+shown in the model band
+([Downloading from the Server view](guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)):
+
+- `403 download_disabled`: `--download-enabled false` or
+  `--download-from-ui false`, named in the message; the row then offers the
+  `model download` command to copy. Turn the field on and restart the server,
+  or run the command on the server's machine.
+- `409 download_in_progress`: one download runs at a time; its row shows its
+  progress. Download the next one once it ends.
+- `409 download_locked`: `ignis-server model download`, or another server on
+  the same `--download-path`, is fetching the entry. Download it once that
+  ends, or let the command land it.
+- `409 model_already_downloaded`: the entry is on disk; **Load** switches to it.
+- `409 model_above_card_class`: the card cannot load the entry (**Not for this
+  card**).
+- `500 download_failed`: the download could not begin, the message says why:
+  most often the entry's `<artifact>.lock` cannot be opened, because the
+  server cannot create or write to `--download-path`. Give the server's user
+  write access to that folder, or point `--download-path` at one it can write.
+- `507 download_no_room`: the models folder has no room for the entry; the
+  reason shows under its row instead of the band
+  ([`not enough room for … under …`](#not-enough-room-for--under-)).
+
+A download that began and failed keeps its reason under its row,
+`Download failed: …`, until its next download or a restart, or until the entry
+is complete on disk another way (`ignis-server model download`). `GET …: 401
+Unauthorized: the endpoint wants a token and none was sent`, or `403 Forbidden:
+the endpoint refused the token sent`, is a gated or private repository: set
+`IGNIS_DOWNLOAD_TOKEN` (`download.token`), or `HF_TOKEN` for huggingface.co,
+where the server starts, restart it, and press **Download** again; the page
+never takes a token. Any other reason is the transfer's, as `model download`
+prints it, and the row's **Resume** (its **Download**, when nothing landed)
+continues from what is on disk.
+
+### The Server view's Remove is refused
+
+**Remove** (`POST /v1/models/remove`) answers with the server's reason, shown in
+the model band
+([Removing a model](guides/models.md#removing-a-model-post-v1modelsremove)):
+
+- `409 model_in_use`: the entry is the model loaded (also unloaded while idle,
+  or served from its files under another id), the one a load is loading, the
+  speech model the speech worker has loaded, or the one the server is
+  downloading. Load another model first, **Cancel** its download, or wait for
+  the speech worker to unload it (`--speech-idle-unload` seconds after its last
+  transcription).
+- `409 download_locked`: `ignis-server model download`, or another server on
+  the same `--download-path`, is fetching the entry. Remove it once that ends.
+- `409 model_not_downloaded`: nothing of it is under `--download-path`; a row
+  that still reads `On disk` is a known model's path, which is never removed.
+- `403 removal_disabled`: `--download-from-ui false`; delete the files on the
+  server's machine, or turn the field on and restart the server.
+- `500 removal_failed`: a file could not be deleted, named in the message with
+  what was deleted before it: on Windows, a process holding it open. Close it
+  and press **Remove** again.
+
+After a removal the band names any file kept because another entry also lists
+it: that entry is on disk or being downloaded, and the entry removed reads
+partly downloaded until the other one goes too.
+
+### `not enough room for … under …`
+
+A download, from the Server view, `ignis-server model download` or the start's
+own fetch, checks before it writes a byte that the volume holding
+`--download-path` has room for the entry's bytes still missing plus
+`--download-free-margin` (`1G` by default), and is refused when it has not:
+`<n> bytes needed (<missing> still missing plus download.free_margin <margin>),
+<free> bytes free`. Nothing was written. Free that much space on the volume, or
+point `--download-path` at a larger one, or lower `--download-free-margin` and
+restart the server (it is read at start), then download again: what is already
+on disk counts, so a partial entry needs only the rest
+([Room on the disk](guides/models.md#room-on-the-disk---download-free-margin)).
+
 ### `not enough RAM: the load holds … and keeps 4 GiB free for the system, so it needs … available`
 
 The host plan refused the load, before anything was pinned. Flash-Next needs

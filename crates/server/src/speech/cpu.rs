@@ -117,6 +117,10 @@ impl SpeechExecutor for CpuExecutor {
         self.slot().as_ref().is_some_and(|l| l.exec.is_loaded())
     }
 
+    fn loaded_files(&self) -> Option<SpeechFiles> {
+        self.slot().as_ref().filter(|l| l.exec.is_loaded()).map(|l| l.files.clone())
+    }
+
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {
         let slot = self.slot();
         let l = slot.as_ref().ok_or_else(|| SpeechError("the speech model is not loaded".into()))?;

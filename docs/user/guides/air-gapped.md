@@ -16,3 +16,12 @@ sidebar:
   bytes are the owner's.
 - **Your own models.** An operator catalog (above), with the endpoint that
   serves them.
+- **Nothing on the network at all.** `--download-enabled false` keeps the
+  server from fetching at start and refuses the Server view's **Download**
+  (`POST /v1/models/download`, `403 download_disabled`) as well, so the server
+  never opens a connection to an endpoint; the page then offers the
+  `model download` command to copy instead. With a mirror,
+  **Download** fetches from it like a start does
+  ([Downloading from the Server view](models.md#downloading-from-the-server-view-post-v1modelsdownload)).
+  **Remove** still frees the disk: a removal uses no network
+  ([Removing a model](models.md#removing-a-model-post-v1modelsremove)).

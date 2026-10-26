@@ -878,7 +878,8 @@ config_group! {
     DownloadGroup = "download" {
         /// Fetch the model when no artifact is on disk — asked first when
         /// stdin is a terminal, downloaded straight away when it is not. Off
-        /// keeps the placeholder template.
+        /// keeps the placeholder template, and refuses POST
+        /// /v1/models/download too: the server never uses the network.
         enabled: Bool = super::DEFAULT_MODEL_DOWNLOAD, NO_RULE, ALL, [Visible];
         /// Where a fetched model lands, and where one fetched earlier is
         /// found.
@@ -898,6 +899,17 @@ config_group! {
         /// has is refused. A relative path is read from the directory of the
         /// config file that names it.
         catalog: Opt<Path> = None, NO_RULE, ALL, [Visible];
+        /// Let POST /v1/models/download, the Server view's Download, fetch a
+        /// catalog entry while the server runs, under the same API key as
+        /// PATCH /v1/config; it needs `enabled` too. Off refuses it, and
+        /// `model download` on the server's machine still fetches. Off
+        /// refuses POST /v1/models/remove too, the Server view's Remove.
+        from_ui: Bool = true, NO_RULE, ALL, [Visible];
+        /// What a download must leave free on the volume of `path` beyond
+        /// the bytes it still misses: the Server view's Download, `model
+        /// download` and the start's own fetch are refused, before any byte
+        /// is written, when the free space is below the two together.
+        free_margin: Bytes = super::DEFAULT_DOWNLOAD_FREE_MARGIN, NO_RULE, ALL, [Visible];
     }
 }
 

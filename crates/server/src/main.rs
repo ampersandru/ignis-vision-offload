@@ -357,28 +357,15 @@ async fn main() {
             // end in a verified artifact refuses the start: coming up on the
             // mock instead would be exactly the silent degradation the loader
             // path below refuses for an unclean checksum.
+            // GitHub #378: so does a models folder without room for what is
+            // still missing plus download.free_margin, before a byte is
+            // written, as the Server view's Download and `model download`.
+            // `fetch_at_start` logs every refusal; the exit is ours.
             let token = download::bearer_token(&download_endpoint, download_token.as_ref(), std::env::var("HF_TOKEN").ok().as_deref());
-            let downloader = match download::Downloader::new(&download_endpoint, token) {
-                Ok(downloader) => downloader,
-                Err(err) => {
-                    tracing::error!(name: "ignis.model.download_failed", error = %err, "refusing to start");
-                    exit_after_flush(&logging_handle, 1);
-                }
-            };
             stop.starting("downloading");
-            match downloader.fetch(&entry, &dir).await {
+            match download::fetch_at_start(&entry, &dir, &download_endpoint, token, start_options.settings().download.free_margin).await {
                 Ok(path) => Some(path),
-                Err(err) => {
-                    tracing::error!(
-                        name: "ignis.model.download_failed",
-                        model = %entry.id,
-                        repo = %entry.repo,
-                        endpoint = %download_endpoint,
-                        error = %err,
-                        "refusing to start"
-                    );
-                    exit_after_flush(&logging_handle, 1);
-                }
+                Err(_) => exit_after_flush(&logging_handle, 1),
             }
         }
     };
@@ -497,6 +484,10 @@ async fn main() {
     // under `--download-path` when a request names it is switchable too, so
     // a `model download` into this directory needs no restart.
     let catalog_models = ignis_server::model_switch::CatalogModels { catalog, dir: model_download_path.clone() };
+    // GitHub #376 (ADR 0071): a catalog entry downloaded in the background
+    // through `POST /v1/models/download`, from the endpoint and with the
+    // token the start-time fetch uses, `HF_TOKEN` read now as it reads it.
+    let downloads = ignis_server::download_http::Downloads::of(&config_state.current(), std::env::var("HF_TOKEN").ok().as_deref());
     let server = server
         .with_switcher(
             switcher
@@ -506,6 +497,7 @@ async fn main() {
                 .with_card_class(card_class),
         )
         .with_config(config_state)
+        .with_downloads(downloads)
         .with_speech(Arc::new(speech));
 
     // Spec image-model/05 §Prompt enhancement: an enhancer no switch reaches

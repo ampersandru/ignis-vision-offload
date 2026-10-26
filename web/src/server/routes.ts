@@ -69,6 +69,16 @@ export type CatalogRow = {
   available?: boolean;
   /** Why it is not available, naming both classes; only with `available: false`. */
   reason?: string;
+  /** Its download through `POST /v1/models/download`: running now, or the last one failed. An older server sends none of the three. */
+  download?: "none" | "running" | "failed";
+  /** Why the last download failed; only with `download: "failed"`. */
+  download_reason?: string;
+  /** What of it is on disk now, partial files included. */
+  bytes_on_disk?: number;
+  /** The id the server started on, loaded from this entry's files under download.path whatever id serves it (GitHub #380): removed, the next start looks for it again. */
+  start_model?: string;
+  /** The ids `switch.known_models` names at this entry's files, the start model's apart: removed, a switch to any of them is refused until it is downloaded again. */
+  known_models?: string[];
 };
 
 /** Why the card cannot load a row (ADR 0064), as the server words it; null when it can. The one wording every view shows. */
@@ -145,10 +155,46 @@ export const switchTo = (id: string, fetcher: typeof fetch = fetch) =>
     fetcher,
   );
 
+/** Download the catalog entry `id` onto the server, in the background: GET /v1/models/catalog follows it. */
+export const startDownload = (id: string, fetcher: typeof fetch = fetch) =>
+  call(
+    "/v1/models/download",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: id }) },
+    (body) => body as { model: string; bytes: number; bytes_on_disk: number },
+    fetcher,
+  );
+
+/** Stop the running download (GitHub #377); what it fetched stays, for its Resume. */
+export const cancelDownload = (fetcher: typeof fetch = fetch) =>
+  call(
+    "/v1/models/download/cancel",
+    { method: "POST" },
+    (body) => body as { model: string; bytes: number; bytes_on_disk: number },
+    fetcher,
+  );
+
 export const patchConfig = (body: object, fetcher: typeof fetch = fetch) =>
   call(
     "/v1/config",
     { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     (answer) => answer as PatchApplied,
+    fetcher,
+  );
+
+/** A removal that took place (GitHub #380): what went, what it freed, and the files left because another entry lists them. */
+export type ModelRemoved = {
+  status: string;
+  model: string;
+  bytes_freed: number;
+  files_removed: string[];
+  files_kept: { file: string; by: string }[];
+};
+
+/** Delete the catalog entry `id`'s files, finished or partial, from the server's models folder; the server answers once they are gone. */
+export const removeModel = (id: string, fetcher: typeof fetch = fetch) =>
+  call(
+    "/v1/models/remove",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: id }) },
+    (body) => body as ModelRemoved,
     fetcher,
   );

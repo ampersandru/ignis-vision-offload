@@ -14,7 +14,7 @@ once; a second switch while one runs is a `409 switch_in_progress`.
 A switch is a full reload: the old model is unloaded before the new one loads,
 so the two are never on the card together. While it runs, every other `/v1`
 route answers `503 model_switching` with `Retry-After: 5` (but
-`POST /v1/audio/transcriptions` and `GET /v1/realtime`, which the [speech model](transcriptions.md) serves on the CPU through a switch), and `GET /v1/models`
+`POST /v1/audio/transcriptions` and `GET /v1/realtime`, which the [speech model](transcriptions.md) serves on the CPU through a switch, and `POST /v1/models/download/cancel`, which [stops a download](../guides/models.md#cancelling-and-resuming-post-v1modelsdownloadcancel) without touching the loaded model), and `GET /v1/models`
 reports `status: "switching"` with `switching: {from, to}`. Requests already
 running on the old model get `--switch-drain-timeout` (30 s) to finish; one
 still running then ends with an `engine_error`. The new model loads on the
@@ -39,7 +39,26 @@ model download <id>` that fetches it; a switch never starts a download.
 `GET /v1/models/catalog` lists the models a switch can go to, one row each:
 `id`, `source` (`built-in`, `operator` or `known`), `on_disk` (`complete`,
 `partial` or `absent`), `bytes`, `family`, `loaded` and `switchable`. It
-answers during a switch and while one has failed, and carries no path.
+answers during a switch and while one has failed, and carries no path. Each
+row also carries `bytes_on_disk`, what of it is there now, partial files
+included, and `download`: `running` while a
+[download through the API](../guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)
+fetches it, `failed` with a `download_reason` once one failed, else `none`.
+A download refused for want of room on the disk (`507 download_no_room`) is
+kept the same way, as the entry's `failed` with its reason. A complete row
+reads no failure: one kept from before the entry was completed another way
+(`ignis-server model download`) is forgotten.
+An entry that `ignis-server model download` is fetching into `--download-path`
+reads `download: none`, with its `bytes_on_disk` growing: the command's fetch
+is not the server's, and a download of the entry through the API is refused
+with `409 download_locked` until it ends
+([one writer per entry](../guides/models.md#one-writer-per-entry)).
+The row of an entry the server started on, from one of its files under
+`--download-path`, names that model in `start_model`, and the row of an entry
+`--switch-known-models` names at one of its files lists those ids in
+`known_models`, whatever id each is served under: what
+[removing it](../guides/models.md#removing-a-model-post-v1modelsremove) takes
+away.
 
 **How the last one ended.** After the first switch or reload since start,
 `GET /v1/models` carries `last_switch: {from, to, outcome, reason?, host_plan?}`:

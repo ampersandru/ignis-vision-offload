@@ -145,6 +145,9 @@ pub trait SpeechExecutor: Send + Sync {
     /// Give the model's host memory back.
     fn unload(&self);
     fn is_loaded(&self) -> bool;
+    /// The files of the model loaded now, `None` while none is: what a
+    /// removal of their catalog entry must leave alone (GitHub #380).
+    fn loaded_files(&self) -> Option<SpeechFiles>;
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError>;
 }
 
@@ -449,6 +452,9 @@ impl SpeechExecutor for NoExecutor {
     fn is_loaded(&self) -> bool {
         false
     }
+    fn loaded_files(&self) -> Option<SpeechFiles> {
+        None
+    }
     fn open(&self, _: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {
         Err(SpeechError(NO_EXECUTOR.to_owned()))
     }
@@ -686,6 +692,11 @@ impl SpeechExecutor for FakeExecutor {
 
     fn is_loaded(&self) -> bool {
         self.loaded.load(Ordering::SeqCst)
+    }
+
+    /// The files of its last load while it is loaded.
+    fn loaded_files(&self) -> Option<SpeechFiles> {
+        self.is_loaded().then(|| self.load_files.lock().unwrap().last().cloned()).flatten()
     }
 
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {

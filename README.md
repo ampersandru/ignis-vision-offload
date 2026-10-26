@@ -502,7 +502,7 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 
 - **The Playground** at `/ui/` — chat with tools and subagents, parallel
   sessions, image input, dictation, an Image studio, a Decide tab, a live Monitor and a
-  Server view that loads models and edits the running configuration. Built
+  Server view that downloads, loads and removes models and edits the running configuration. Built
   into the server, not a separate service.
 - **One declaration per setting**: every option is a flag, an `IGNIS_*`
   variable and a key in a YAML or JSON config file, with per-model values and
@@ -558,7 +558,7 @@ edited again:
 ![An image session in the Image view](docs/user/images/image_generation.png)
 
 The Server view: the model serving and the switch that brought it, every model
-the catalog knows with what is on disk and a **Load** button, and the running
+the catalog knows with what is on disk and a **Download** or **Load** button, and the running
 configuration, for all models or one family, field by field with where each
 value comes from ([the Playground](docs/user/playground/index.md)):
 

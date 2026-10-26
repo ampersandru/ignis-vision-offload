@@ -123,6 +123,79 @@ describe("createServerSim", () => {
   });
 });
 
+describe("createServerSim: downloads (GitHub #376)", () => {
+  const rowOf = (sim: ReturnType<typeof createServerSim>, id: string, now: number) => (sim.catalog(now).data as CatalogRow[]).find((row) => row.id === id)!;
+
+  it("downloads in the background for about ten seconds, then the entry is on disk and switchable", () => {
+    const sim = createServerSim();
+    const accepted = sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T);
+    expect(accepted).toMatchObject({ status: 202, body: { status: "downloading", model: "qwen3.8-27b-abliterated", bytes: 19406984175, bytes_on_disk: 6442450944 } });
+    const halfway = rowOf(sim, "qwen3.8-27b-abliterated", T + 5_000);
+    expect(halfway).toMatchObject({ download: "running", on_disk: "partial", switchable: false });
+    expect(halfway.bytes_on_disk).toBeGreaterThan(6442450944);
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T + 5_000)).toMatchObject({ status: 409, body: { error: { code: "download_in_progress" } } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 10_000)).toMatchObject({ download: "none", on_disk: "complete", switchable: true, bytes_on_disk: 19406984175 });
+    expect((sim.models(T + 10_000).data as { id: string }[]).map((entry) => entry.id)).toContain("qwen3.8-27b-abliterated");
+    expect(sim.switchTo({ model: "qwen3.8-27b-abliterated" }, T + 10_000)).toMatchObject({ status: 202 });
+  });
+
+  it("fails an operator entry with a 401's reason, kept until its next download, and refuses what it cannot download", () => {
+    const sim = createServerSim();
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T)).toMatchObject({ status: 202 });
+    const failed = rowOf(sim, "qwen3.8-27b-custom", T + 1_000);
+    expect(failed).toMatchObject({ download: "failed", on_disk: "absent" });
+    expect(failed.download_reason).toContain("401 Unauthorized");
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T + 1_000)).toMatchObject({ status: 202 });
+    expect(rowOf(sim, "qwen3.8-27b-custom", T + 1_500)).toMatchObject({ download: "running" });
+    expect(sim.downloadModel({ model: "qwen3.8-flash-next" }, T + 2_000)).toMatchObject({ status: 409, body: { error: { code: "model_already_downloaded" } } });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-fail" }, T + 2_000)).toMatchObject({ status: 404, body: { error: { code: "model_not_found" } } });
+  });
+
+  // GitHub #377: a cancel keeps what landed, and the entry's Resume continues from it.
+  it("cancels the running download, keeps what landed as a partial entry, and resumes from it", () => {
+    const sim = createServerSim();
+    expect(sim.cancelDownload(T)).toMatchObject({ status: 409, body: { error: { code: "download_not_running" } } });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T)).toMatchObject({ status: 202 });
+    const cancelled = sim.cancelDownload(T + 5_000);
+    expect(cancelled).toMatchObject({ status: 200, body: { status: "cancelled", model: "qwen3.8-27b-abliterated", bytes: 19406984175 } });
+    const kept = (cancelled.body as { bytes_on_disk: number }).bytes_on_disk;
+    expect(kept).toBeGreaterThan(6442450944);
+    expect(kept).toBeLessThan(19406984175);
+    // Long after: still partial, with what landed, and nothing runs.
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 60_000)).toMatchObject({ download: "none", on_disk: "partial", bytes_on_disk: kept, switchable: false });
+    expect(sim.cancelDownload(T + 60_000)).toMatchObject({ status: 409 });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T + 60_000)).toMatchObject({ status: 202, body: { bytes_on_disk: kept } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 70_000)).toMatchObject({ download: "none", on_disk: "complete", bytes_on_disk: 19406984175 });
+  });
+
+  it("cancels a download during a switch, which a new download waits for", () => {
+    const sim = createServerSim();
+    expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T)).toMatchObject({ status: 202 });
+    expect(sim.switchTo({ model: "qwen3.8-flash-next" }, T + 1_000)).toMatchObject({ status: 202 });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T + 1_500)).toMatchObject({ status: 503, body: { error: { code: "model_switching" } } });
+    expect(sim.cancelDownload(T + 2_000)).toMatchObject({ status: 200, body: { status: "cancelled", model: "qwen3.8-27b-abliterated" } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 2_000)).toMatchObject({ download: "none", on_disk: "partial" });
+  });
+
+  // GitHub #380: a removal takes an entry's files, finished or partial, but never the model loaded or the one downloading.
+  it("removes an entry on disk or partly downloaded, refuses the loaded and the downloading one, and downloads a removed one again", () => {
+    const sim = createServerSim();
+    expect(sim.removeModel({ model: "qwen3.8-27b" }, T)).toMatchObject({ status: 409, body: { error: { code: "model_in_use" } } });
+    expect(sim.removeModel({ model: "qwen3.8-27b-custom" }, T)).toMatchObject({ status: 409, body: { error: { code: "model_not_downloaded" } } });
+    expect(sim.removeModel({ model: "qwen3.8-27b-dead" }, T)).toMatchObject({ status: 404 });
+    const removed = sim.removeModel({ model: "qwen3.8-flash-next" }, T);
+    expect(removed).toMatchObject({ status: 200, body: { status: "removed", model: "qwen3.8-flash-next", bytes_freed: 72799980571, files_kept: [] } });
+    expect(rowOf(sim, "qwen3.8-flash-next", T)).toMatchObject({ on_disk: "absent", bytes_on_disk: 0, switchable: false });
+    expect((sim.models(T).data as { id: string }[]).some((model) => model.id === "qwen3.8-flash-next")).toBe(false);
+    expect(sim.removeModel({ model: "qwen3.8-27b-abliterated" }, T)).toMatchObject({ status: 200, body: { bytes_freed: 6442450944 } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T)).toMatchObject({ on_disk: "absent", bytes_on_disk: 0 });
+
+    expect(sim.downloadModel({ model: "qwen3.8-flash-next" }, T)).toMatchObject({ status: 202, body: { bytes_on_disk: 0 } });
+    expect(sim.removeModel({ model: "qwen3.8-flash-next" }, T + 1_000)).toMatchObject({ status: 409, body: { error: { code: "model_in_use" } } });
+    expect(rowOf(sim, "qwen3.8-flash-next", T + 11_000)).toMatchObject({ on_disk: "complete", download: "none" });
+  });
+});
+
 describe("createServerSim: per-model values", () => {
   const model = (sim: ReturnType<typeof createServerSim>, now = T) => sim.config(now).body.model as Record<string, any>;
 

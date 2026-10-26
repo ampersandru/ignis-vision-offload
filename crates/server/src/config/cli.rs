@@ -281,6 +281,7 @@ fn model_download(args: &mut Vec<String>, env: &dyn Fn(&str) -> Option<String>, 
         dir: out.unwrap_or_else(|| config.model_download_path.clone()),
         endpoint: config.download_endpoint.clone(),
         token,
+        free_margin: config.settings().download.free_margin,
     }))
 }
 
@@ -570,7 +571,7 @@ mod tests {
     /// endpoint and the token.
     fn download_of(outcome: ConfigOutcome) -> (Vec<String>, PathBuf, String, Option<String>) {
         match outcome {
-            ConfigOutcome::Model(ModelCommand::Download { entries, dir, endpoint, token }) => {
+            ConfigOutcome::Model(ModelCommand::Download { entries, dir, endpoint, token, .. }) => {
                 (entries.into_iter().map(|entry| entry.id).collect(), dir, endpoint, token.map(|token| token.as_str().to_owned()))
             }
             other => panic!("expected model download, got {other:?}"),

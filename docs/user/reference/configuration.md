@@ -1752,7 +1752,7 @@ The silence frames the speaker cache keeps for every speaker. `auto` is the chec
 | Models | all |
 | `/v1/config` | shown by `GET`, not patchable |
 
-Fetch the model when no artifact is on disk — asked first when stdin is a terminal, downloaded straight away when it is not. Off keeps the placeholder template.
+Fetch the model when no artifact is on disk — asked first when stdin is a terminal, downloaded straight away when it is not. Off keeps the placeholder template, and refuses POST /v1/models/download too: the server never uses the network.
 
 ### `download.path`
 
@@ -1805,6 +1805,32 @@ Sent as `Authorization: Bearer` to the endpoint, never across a redirect to anot
 | `/v1/config` | shown by `GET`, not patchable |
 
 An operator catalog: a YAML or JSON file of models fetched beside the built-in ones, in the same format; an id the built-in catalog has is refused. A relative path is read from the directory of the config file that names it.
+
+### `download.from_ui`
+
+| | |
+|---|---|
+| Flag | `--download-from-ui` (may stand bare: `true`) |
+| Env var | `IGNIS_DOWNLOAD_FROM_UI` |
+| Kind | `bool` |
+| Default | `true` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+Let POST /v1/models/download, the Server view's Download, fetch a catalog entry while the server runs, under the same API key as PATCH /v1/config; it needs `enabled` too. Off refuses it, and `model download` on the server's machine still fetches. Off refuses POST /v1/models/remove too, the Server view's Remove.
+
+### `download.free_margin`
+
+| | |
+|---|---|
+| Flag | `--download-free-margin` |
+| Env var | `IGNIS_DOWNLOAD_FREE_MARGIN` |
+| Kind | `bytes` |
+| Default | `1G` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+What a download must leave free on the volume of `path` beyond the bytes it still misses: the Server view's Download, `model download` and the start's own fetch are refused, before any byte is written, when the free space is below the two together.
 
 ## ngram
 

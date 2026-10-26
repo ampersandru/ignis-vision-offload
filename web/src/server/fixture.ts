@@ -146,13 +146,17 @@ export const FIELDS: FieldDecl[] = [
   decl("media", "cache_mib", "MiB", 1024, { rule: { min: 0, max: 65536 }, families: ["qwen38"], patchable: true, reload_required: true },
     "Prepared images kept for reuse, in MiB; 0 keeps none. Needs vision on."),
   decl("download", "enabled", "bool", true, {},
-    "Fetch the model when no artifact is on disk — asked first when stdin is a terminal, downloaded straight away when it is not. Off keeps the placeholder template."),
+    "Fetch the model when no artifact is on disk — asked first when stdin is a terminal, downloaded straight away when it is not. Off keeps the placeholder template, and refuses POST /v1/models/download too: the server never uses the network."),
   decl("download", "path", "path", "./models", {},
     "Where a fetched model lands, and where one fetched earlier is found."),
   decl("download", "endpoint", "text", "https://huggingface.co", {},
     "Where a fetched model's files come from: Hugging Face, or a mirror answering its {repo}/resolve/{revision}/{file} route (an Artifactory or Nexus proxy, a static server laid out the same way). The pins still say whether the bytes are the published ones."),
   decl("download", "catalog", "path", null, {},
     "An operator catalog: a YAML or JSON file of models fetched beside the built-in ones, in the same format; an id the built-in catalog has is refused. A relative path is read from the directory of the config file that names it."),
+  decl("download", "from_ui", "bool", true, {},
+    "Let POST /v1/models/download, the Server view's Download, fetch a catalog entry while the server runs, under the same API key as PATCH /v1/config; it needs `enabled` too. Off refuses it, and `model download` on the server's machine still fetches."),
+  decl("download", "free_margin", "bytes", "1G", {},
+    "What a download must leave free on the volume of `path` beyond the bytes it still misses: the Server view's Download, `model download` and the start's own fetch are refused, before any byte is written, when the free space is below the two together."),
   decl("ngram", "persist", "bool", true, { patchable: true, reload_required: true },
     "Persist Flash-Next's n-gram hot rows between loads."),
   decl("ngram", "persist_path", "model|auto|dir", "model", { patchable: true, reload_required: true },
@@ -223,7 +227,7 @@ export const CONFIG: ConfigDocument = {
   },
   vision: { qwen38: { enabled: true, max_tokens: 32768, embedding_pool_mib: null } },
   media: { qwen38: { allow_private_network: false, cache_mib: 1024 } },
-  download: { enabled: true, path: "./models", endpoint: "https://huggingface.co", catalog: "./catalog.yaml" },
+  download: { enabled: true, path: "./models", endpoint: "https://huggingface.co", catalog: "./catalog.yaml", from_ui: true, free_margin: "1G" },
   ngram: { persist: true, persist_path: "model", qwen38flashnext: { hot_bytes: null } },
   kv_disk: { bytes: null, path: "model" },
 };
@@ -234,12 +238,12 @@ export const CONFIG: ConfigDocument = {
  * fetched, and a known model that is no catalog entry.
  */
 export const CATALOG: CatalogRow[] = [
-  { id: "qwen3.8-27b", source: "built-in", on_disk: "complete", bytes: 19406949449, family: "qwen38", loaded: true, switchable: false },
-  { id: "qwen3.8-27b-abliterated", source: "built-in", on_disk: "partial", bytes: 19406984175, loaded: false, switchable: false },
-  { id: "qwen3.8-flash-next", source: "built-in", on_disk: "complete", bytes: 72799980571, family: "qwen38flashnext", loaded: false, switchable: true },
-  { id: "qwen3.8-27b-custom", source: "operator", on_disk: "absent", bytes: 19406949449, loaded: false, switchable: false },
-  { id: "qwen3.8-27b-dead", source: "known", on_disk: "complete", bytes: 19406942468, family: "qwen38", loaded: false, switchable: true },
-  { id: "qwen3.8-27b-fail", source: "known", on_disk: "complete", bytes: 19406942468, family: "qwen38", loaded: false, switchable: true },
+  { id: "qwen3.8-27b", source: "built-in", on_disk: "complete", bytes: 19406949449, family: "qwen38", loaded: true, switchable: false, download: "none", bytes_on_disk: 19406949449 },
+  { id: "qwen3.8-27b-abliterated", source: "built-in", on_disk: "partial", bytes: 19406984175, loaded: false, switchable: false, download: "none", bytes_on_disk: 6442450944 },
+  { id: "qwen3.8-flash-next", source: "built-in", on_disk: "complete", bytes: 72799980571, family: "qwen38flashnext", loaded: false, switchable: true, download: "none", bytes_on_disk: 72799980571 },
+  { id: "qwen3.8-27b-custom", source: "operator", on_disk: "absent", bytes: 19406949449, loaded: false, switchable: false, download: "none", bytes_on_disk: 0 },
+  { id: "qwen3.8-27b-dead", source: "known", on_disk: "complete", bytes: 19406942468, family: "qwen38", loaded: false, switchable: true, download: "none", bytes_on_disk: 19406942468 },
+  { id: "qwen3.8-27b-fail", source: "known", on_disk: "complete", bytes: 19406942468, family: "qwen38", loaded: false, switchable: true, download: "none", bytes_on_disk: 19406942468 },
 ];
 
 /** The families the fixture's server declares, read from its declarations and catalog as the page reads them. */
