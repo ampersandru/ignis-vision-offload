@@ -442,18 +442,14 @@ struct Diarized {
     steps: u32,
     step_total: Duration,
     step_max: Duration,
-    /// When the session had heard so many samples, the latest minute of it,
-    /// and the most a frame waited from its first sample's arrival to its
-    /// step's probabilities: the diarizer's pace (spec speech/08, AC 11).
-    heard_at: VecDeque<(u64, Instant)>,
+    /// When the audio arrived, and the most a frame waited from its first
+    /// sample's arrival to its step's probabilities: the diarizer's pace
+    /// (spec speech/08, AC 11).
+    arrivals: Arrivals,
     lag_max: Duration,
     /// The items given a speaker.
     items: u32,
 }
-
-/// How far back [`Diarized::heard_at`] reaches, in samples: a minute, past the
-/// file geometry's latency.
-const HEARD_AT_SAMPLES: u64 = 60 * TARGET_RATE as u64;
 
 impl Diarized {
     /// The session's one log line about its speakers (spec speech/08, Out of
@@ -475,11 +471,6 @@ impl Diarized {
         );
     }
 
-    /// When the session's sample `sample` had arrived, while it is recent.
-    fn arrived(&self, sample: u64) -> Option<Instant> {
-        self.heard_at.iter().find(|(heard, _)| *heard >= sample).map(|(_, at)| *at)
-    }
-
     /// The frame a session sample is in, from the stream's first: the first
     /// whole frame at or after it, for an item's start; the first after it,
     /// for an end.
@@ -490,6 +481,33 @@ impl Diarized {
     /// The session sample frame `frame` starts at.
     fn sample(&self, frame: usize) -> u64 {
         self.origin + (frame * FRAME_SAMPLES) as u64
+    }
+}
+
+/// When the session had heard so many samples, an entry per piece of audio
+/// heard: when a frame's first sample arrived, for the diarizer's pace (spec
+/// speech/08, AC 11). It keeps what no step has scored yet, at any geometry's
+/// latency: audio the queue limit bounds, with a step.
+#[derive(Default)]
+struct Arrivals(VecDeque<(u64, Instant)>);
+
+impl Arrivals {
+    /// The session had heard `heard` samples at `at`.
+    fn heard(&mut self, heard: u64, at: Instant) {
+        self.0.push_back((heard, at));
+    }
+
+    /// When the session's sample `sample` had arrived, while it is kept.
+    fn arrived(&self, sample: u64) -> Option<Instant> {
+        self.0.iter().find(|(heard, _)| *heard >= sample).map(|(_, at)| *at)
+    }
+
+    /// The steps scored the session's samples before `sample`: the entries
+    /// before the one at or just before it go.
+    fn scored(&mut self, sample: u64) {
+        while self.0.get(1).is_some_and(|(heard, _)| *heard <= sample) {
+            self.0.pop_front();
+        }
     }
 }
 
@@ -961,10 +979,7 @@ impl Connection {
         // The diarizer reads what the VAD reads (spec speech/08).
         if let Some(speakers) = self.speakers.as_mut().filter(|speakers| !speakers.failed) {
             speakers.pending.extend_from_slice(&samples);
-            speakers.heard_at.push_back((self.heard, Instant::now()));
-            while speakers.heard_at.front().is_some_and(|(heard, _)| heard + HEARD_AT_SAMPLES < self.heard) {
-                speakers.heard_at.pop_front();
-            }
+            speakers.arrivals.heard(self.heard, Instant::now());
         }
         for event in events {
             self.turn(event);
@@ -1403,7 +1418,7 @@ impl Connection {
             steps: 0,
             step_total: Duration::ZERO,
             step_max: Duration::ZERO,
-            heard_at: VecDeque::new(),
+            arrivals: Arrivals::default(),
             lag_max: Duration::ZERO,
             items: 0,
         });
@@ -1485,11 +1500,13 @@ impl Connection {
         speakers.due = Some(due as u64);
         if !frames.probs.is_empty() {
             let first = speakers.sample(speakers.frames.len()) + 1;
-            if let Some(at) = speakers.arrived(first) {
+            if let Some(at) = speakers.arrivals.arrived(first) {
                 speakers.lag_max = speakers.lag_max.max(at.elapsed());
             }
         }
         speakers.frames.push(&frames.probs);
+        let scored = speakers.sample(speakers.frames.len());
+        speakers.arrivals.scored(scored);
         self.speaker_change();
         self.assign_speakers(None);
         self.complete_ready();
@@ -1770,7 +1787,32 @@ fn push(session: &mut dyn SpeechSession, samples: &[f32]) -> Result<(), super::e
 
 #[cfg(test)]
 mod tests {
-    use super::SinceItem;
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::{Arrivals, SinceItem};
+
+    /// A frame's first sample keeps its arrival until a step scores it,
+    /// however long its geometry makes it wait (the file geometry's latency
+    /// can be set past a minute): 90 s of audio heard, 100 ms a piece, the
+    /// first piece's arrival is still there. Once the steps scored the samples
+    /// before 800,000 (50 s), the entries before the one at it go: the
+    /// earliest kept is that one.
+    #[test]
+    fn a_frames_arrival_is_kept_until_a_step_scores_it() {
+        let start = Instant::now();
+        let at = |piece: u64| start + Duration::from_millis(100 * piece);
+        let mut arrivals = Arrivals::default();
+        for piece in 1..=900 {
+            arrivals.heard(piece * 1_600, at(piece));
+        }
+        assert_eq!(arrivals.arrived(1), Some(at(1)), "the first sample, 90 s on");
+        assert_eq!(arrivals.arrived(800_001), Some(at(501)));
+        arrivals.scored(800_000);
+        assert_eq!(arrivals.arrived(800_001), Some(at(501)), "what no step scored is kept");
+        assert_eq!(arrivals.arrived(1), Some(at(500)), "the entries before the one at the scored sample went");
+    }
 
     /// The audio heard since the last item stays on the VAD's clock: one
     /// started at a later sample (`server_vad` switched on mid-session), an
