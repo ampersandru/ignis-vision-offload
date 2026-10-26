@@ -473,9 +473,9 @@ async fn main() {
     // files are looked for in the same catalog and directory; its executor is
     // `ignis-speech` on the CPU (spec speech/01), unavailable with its reason
     // on a CPU without AVX2.
-    // The diarizer (spec speech/08) is the catalog's too, computed on the
-    // same executor's pool: loaded by the first session that asks for
-    // speakers, unloaded with the speech model.
+    // The diarizer (spec speech/08) is the catalog's too, computed on a pool
+    // of its own with the same executor's ISA: loaded by the first session
+    // that asks for speakers, unloaded with the speech model.
     let speech_cpu = Arc::new(ignis_server::speech::cpu::CpuExecutor::new());
     let speech_models = ignis_server::speech::SpeechModels { catalog: Arc::clone(&catalog), dir: model_download_path.clone() };
     let speech = ignis_server::speech::Speech::new(speech_cpu.clone(), Some(speech_models.clone()))

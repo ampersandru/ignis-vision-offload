@@ -474,5 +474,9 @@ the other sessions; built on branch `speech-diarizer-thread` and confirmed by th
 - The override ranges: threshold 0.001-1, boost 0-10, rates 0-4, positive rate 0-1, silence frames 0-125,
   `min_speaker_seconds` 0-60, `max_queued_audio_seconds` 1-3600 (no 0-off).
 - `diarizer.model`: `auto` takes the first diarizer entry in catalog order (built-in before the operator's). The
-  catalog has no built-in diarizer entry yet: the Hugging Face repo of the F16 GGUF waits for the owner's OK and the
-  licence check (Q115).
+  built-in entry is `nemotron-3-diarization`, the F16 GGUF on `gpillon/Nemotron-3-Diarization-GGUF-ignis` (public,
+  OpenMDW-1.1's licence beside it), uploaded with the owner's OK after the licence check (Q115, decision D5).
+- A live change of `diarizer.model` takes the next session's load; a session open with speakers keeps its stream,
+  and with it the old weights and their pool, until it ends. Meanwhile `GET /v1/models` reads the new diarizer, not
+  loaded, and the old one's file is not refused by a removal (on Windows the removal fails while the file is mapped).
+  The owner chose (2026-10-26) to document this rare case rather than track the weights an open stream still holds.

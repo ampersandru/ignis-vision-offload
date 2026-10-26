@@ -104,8 +104,8 @@ on its own pool, against the crate's stream, step by step, its tail and its
 `scripts/gpu-profile.ps1` skips it by name (`$NotGpuLegs`).
 
 Its catalog side is `crates/server/tests/speech_diarizer_models.rs`: a diarizer
-entry of the test's own (`kind: diarizer`; the built-in catalog has none until
-its repo exists), `diarizer.model` resolved by the real `CatalogDiarizer` on
+entry of the test's own (`kind: diarizer`, `acme-diarizer`, in the speech
+fixtures' catalog, not the built-in one), `diarizer.model` resolved by the real `CatalogDiarizer` on
 the host's CPU (skipped without AVX2), the `speech.diarizer` member of `GET
 /v1/models`, the `PATCH` refusals, and the load at the first session that asks
 and the unload with the speech model, on a `FakeDiarizer`. The session's end

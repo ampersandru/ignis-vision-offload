@@ -61,7 +61,7 @@ pub fn resolve(models: &SpeechModels, host: Result<(), String>, model: &str) -> 
 }
 
 /// The diarizer a server serves from its catalog: `diarizer.model`'s entry,
-/// on the speech model's CPU executor and its pool.
+/// with the speech model's CPU executor's ISA, on a pool of its own.
 pub struct CatalogDiarizer {
     models: SpeechModels,
     speech: Arc<CpuExecutor>,
@@ -141,8 +141,7 @@ mod tests {
     use ignis_core::compute::ModelKind;
 
     /// The speech fixtures' catalog with a diarizer entry of our own beside
-    /// them (the built-in one waits for its repo, Q115), its GGUF named
-    /// `<id>.gguf`.
+    /// them, not the built-in one, its GGUF named `<id>.gguf`.
     fn models(dir: &std::path::Path, ids: &[&str]) -> SpeechModels {
         let mut models = fixture_models(dir);
         let mut entries = models.catalog.entries().to_vec();

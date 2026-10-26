@@ -210,7 +210,7 @@ silent would hold one open until `speech.max_clip_seconds` fails all of it.
 **The length guard** ends it sooner: once an item holds
 `speech.max_utterance_seconds` (120) of audio, the server ends it at the next
 32 ms the VAD hears under `threshold`, a pause too short to end the item, or
-`speech.utterance_cut_search_ms` (2000) later at the latest, where the audio
+`speech.utterance_cut_search_ms` (10000) later at the latest, where the audio
 is. The search looks forward only, so no text already sent is past the cut.
 The events are those of an utterance that ended and one that began at once:
 `speech_stopped` with `audio_end_ms` at the cut, `committed`, then
