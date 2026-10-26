@@ -70,6 +70,13 @@ for a token nor shows one. A refused **Download** (another one running, the
 entry already on disk, downloading turned off) shows the server's reason in the
 band.
 
+An entry that `ignis-server model download` is fetching into the server's
+`download.path` is refused too, with `409 download_locked`, until the command
+ends: each fetch of an entry holds its lock, the server's and the command's
+alike, so two never write the same file
+([one writer per entry](../guides/models.md#one-writer-per-entry)). Its row
+shows no download of the server's, and any other entry downloads meanwhile.
+
 Downloading takes the same API key as **Apply**
 ([ADR 0071](../../adr/0071-the-server-downloads-and-removes-models-from-the-server-view.md)).
 `download.from_ui` false turns it off for the page and the API, and

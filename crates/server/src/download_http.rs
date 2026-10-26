@@ -25,7 +25,7 @@ use utoipa::ToSchema;
 use crate::api::{error_response, error_response_naming, ApiError};
 use crate::config::{ApiKey, Config};
 use crate::download::command::{on_disk, OnDisk};
-use crate::download::{CatalogEntry, Download, Downloader, Ended};
+use crate::download::{CatalogEntry, Download, Downloader, Ended, NotLocked};
 use crate::Server;
 
 /// The downloads a server runs through the API, and how they are fetched:
@@ -93,17 +93,19 @@ impl Downloads {
         lock(&self.failures).get(id).map_or(DownloadStatus::None, |reason| DownloadStatus::Failed(reason.clone()))
     }
 
-    /// Fetch `entry` into `dir` in the background, unless a download runs:
-    /// then that one, which is refused. The entry's last failure is
-    /// forgotten as this one begins.
-    fn begin(self: &Arc<Self>, downloader: Downloader, entry: CatalogEntry, dir: PathBuf) -> Result<Download, Download> {
+    /// Fetch `entry` into `dir` in the background, unless a download runs —
+    /// then that one, which is refused — or another fetch of the entry holds
+    /// its lock: `model download`, or another server on the same folder. The
+    /// entry's last failure is forgotten as this one begins.
+    fn begin(self: &Arc<Self>, downloader: Downloader, entry: CatalogEntry, dir: PathBuf) -> Result<Download, NotBegun> {
         let mut running = lock(&self.running);
         self.settle(&mut running);
         if let Some(busy) = running.as_ref() {
-            return Err(busy.clone());
+            return Err(NotBegun::Busy(busy.clone()));
         }
-        lock(&self.failures).remove(&entry.id);
-        let download = downloader.start(entry, dir);
+        let id = entry.id.clone();
+        let download = downloader.start(entry, dir).map_err(NotBegun::Locked)?;
+        lock(&self.failures).remove(&id);
         *running = Some(download.clone());
         drop(running);
         // What becomes of it is recorded as soon as it ends, whether or not
@@ -136,6 +138,15 @@ impl Downloads {
             lock(&self.failures).insert(download.entry().id.clone(), err.to_string());
         }
     }
+}
+
+/// Why [`Downloads::begin`] began nothing.
+enum NotBegun {
+    /// A download runs: this one.
+    Busy(Download),
+    /// The entry's lock was not taken: another fetch holds it, or it could
+    /// not be opened.
+    Locked(NotLocked),
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -171,7 +182,7 @@ pub(crate) struct DownloadAccepted {
     tag = "models",
     operation_id = "download_model",
     summary = "Download a catalog entry in the background",
-    description = "Fetches every file of the catalog entry `model` names (`GET /v1/models/catalog` lists them: the built-in entries and the operator's `download.catalog`) into `download.path`, from `download.endpoint`, with the same transfer as `ignis-server model download`: each file resumed from its `.part`, checked against its pinned size and SHA-256 before it is renamed into place, the token (`download.token`, else `HF_TOKEN` for huggingface.co, as the server read them at start) sent to the endpoint only. Nothing but a catalog entry is downloaded, and the request never carries a token.\n\nAnswers `202` at once; the download runs in the background while the loaded model keeps serving. `GET /v1/models/catalog` follows it: the entry's row says `download: running` with its `bytes_on_disk`, then, once every file verified, `on_disk: complete` and `download: none` — a servable model, which `POST /v1/models/switch` loads; the server never switches to it by itself. A download that fails leaves `download: failed` and its `download_reason` on the row until the entry's next download or a restart; a `401` or `403` from the endpoint names the token and where the server reads it. One download runs at a time. A partial entry's download resumes it. Under the same API key as `PATCH /v1/config` (ADR 0071); `download.enabled` false or `download.from_ui` false refuses it.",
+    description = "Fetches every file of the catalog entry `model` names (`GET /v1/models/catalog` lists them: the built-in entries and the operator's `download.catalog`) into `download.path`, from `download.endpoint`, with the same transfer as `ignis-server model download`: each file resumed from its `.part`, checked against its pinned size and SHA-256 before it is renamed into place, the token (`download.token`, else `HF_TOKEN` for huggingface.co, as the server read them at start) sent to the endpoint only. Nothing but a catalog entry is downloaded, and the request never carries a token.\n\nAnswers `202` at once; the download runs in the background while the loaded model keeps serving. `GET /v1/models/catalog` follows it: the entry's row says `download: running` with its `bytes_on_disk`, then, once every file verified, `on_disk: complete` and `download: none` — a servable model, which `POST /v1/models/switch` loads; the server never switches to it by itself. A download that fails leaves `download: failed` and its `download_reason` on the row until the entry's next download or a restart; a `401` or `403` from the endpoint names the token and where the server reads it. One download runs at a time. A partial entry's download resumes it. An entry `ignis-server model download` is fetching into the same folder is refused until it ends: each fetch holds the entry's lock, `<artifact>.lock` in `download.path`, for as long as it runs. Under the same API key as `PATCH /v1/config` (ADR 0071); `download.enabled` false or `download.from_ui` false refuses it.",
     request_body = DownloadRequest,
     responses(
         (status = 202, description = "The download began.", body = DownloadAccepted),
@@ -179,7 +190,7 @@ pub(crate) struct DownloadAccepted {
         (status = 401, description = "The server was started with an API key and the request carried no matching bearer token.", body = ApiError),
         (status = 403, description = "Downloading through the API is off (`download_disabled`): `download.enabled` is false, so the server never uses the network, or `download.from_ui` is false; the message names which.", body = ApiError),
         (status = 404, description = "`model` is not a catalog entry (`model_not_found`): a known model is a path, and nothing but a catalog entry is downloaded.", body = ApiError),
-        (status = 409, description = "A download already runs (`download_in_progress`, naming it): downloads are one at a time, never queued. Or the entry's `card_class` is above this card's (`model_above_card_class`, ADR 0064), or every file of it is already on disk (`model_already_downloaded`).", body = ApiError),
+        (status = 409, description = "A download already runs (`download_in_progress`, naming it): downloads are one at a time, never queued. Or the entry's `card_class` is above this card's (`model_above_card_class`, ADR 0064), or every file of it is already on disk (`model_already_downloaded`). Or another fetch of the entry into `download.path` holds its lock (`download_locked`): `ignis-server model download`, or another server on the same folder; one writer per entry.", body = ApiError),
         (status = 501, description = "This server has no catalog to download from (`download_unavailable`).", body = ApiError),
         (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`), or a model switch is under way (`model_switching`).", body = ApiError),
     ),
@@ -235,13 +246,19 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
     };
     let download = match downloads.begin(downloader, entry.clone(), catalog.dir.clone()) {
         Ok(download) => download,
-        Err(busy) => {
+        Err(NotBegun::Busy(busy)) => {
             return error_response(
                 StatusCode::CONFLICT,
                 "invalid_request_error",
                 "download_in_progress",
                 format!("a download of {} is already running; downloads are one at a time, never queued", busy.entry().id),
             )
+        }
+        Err(NotBegun::Locked(NotLocked::Held(err))) => {
+            return error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model"))
+        }
+        Err(NotBegun::Locked(NotLocked::Failed(err))) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "download_failed", err.to_string())
         }
     };
     (

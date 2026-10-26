@@ -32,6 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 use super::catalog::{CatalogEntry, CatalogFile};
+use super::lock::{EntryLock, NotLocked};
 use crate::config::ApiKey;
 
 /// How long the connection alone may take. The transfer as a whole is
@@ -248,7 +249,11 @@ impl Downloader {
     /// name and left alone — checked for every file before any byte is
     /// fetched. The rest are fetched in ascending byte order, so a repo that
     /// cannot serve its small files fails in a second instead of an hour.
+    ///
+    /// It holds the entry's lock in `dir` until it returns ([`EntryLock`]),
+    /// and is refused before anything is fetched when another fetch holds it.
     pub async fn fetch(&self, entry: &CatalogEntry, dir: &Path) -> Result<PathBuf, DownloadError> {
+        let _lock = EntryLock::take(entry, dir)?;
         match self.fetch_until(entry, dir, &mut Cancel::never()).await? {
             Landed::Verified => Ok(entry.artifact_path(dir)),
             // Nothing raises a cancel nobody holds.
@@ -260,7 +265,13 @@ impl Downloader {
     /// the tokio runtime this is called on, returning at once: the
     /// [`Download`] reads what is on disk, cancels it, and says how it ended.
     /// It reports as this downloader reports.
-    pub fn start(self, entry: CatalogEntry, dir: PathBuf) -> Download {
+    ///
+    /// It takes the entry's lock in `dir` before it returns, refused when
+    /// another fetch holds it, and holds it until the download ends: released
+    /// before [`Download::ended`] says how, so whoever reads that the download
+    /// ended finds the entry free.
+    pub fn start(self, entry: CatalogEntry, dir: PathBuf) -> Result<Download, NotLocked> {
+        let lock = EntryLock::take(&entry, &dir)?;
         let (cancel, watched) = watch::channel(false);
         let (end, ended) = watch::channel(None);
         let entry = Arc::new(entry);
@@ -271,9 +282,10 @@ impl Downloader {
                 Ok(Landed::Cancelled) => Ended::Cancelled,
                 Err(err) => Ended::Failed(err),
             };
+            drop(lock);
             end.send_replace(Some(ended));
         });
-        download
+        Ok(download)
     }
 
     /// [`Downloader::fetch`]'s transfer, watching `cancel`.

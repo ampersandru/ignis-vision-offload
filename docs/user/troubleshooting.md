@@ -146,6 +146,17 @@ missing, or an artifact that does not verify against its provenance sidecar
 (`.graft.json` or `.conversion.json`), refuses the start
 ([Get a model](guides/models.md)).
 
+### `… is already being downloaded into …, by a server or by ignis-server model download`
+
+Another fetch of the same entry into the same folder holds its lock: a server
+downloading it from its Server view or at its start, or another `ignis-server
+model download`. `model download` then fails that entry and exits 1, and a
+start that would fetch it is refused; nothing was fetched or written. Wait for
+the other fetch to end, or stop it, and run again: a partial download resumes
+from its `.part`. A killed or crashed fetch leaves no lock behind, and the
+empty `<artifact>.lock` file it names stays for the next fetch
+([one writer per entry](guides/models.md#one-writer-per-entry)).
+
 ### The Server view's Download is refused, or fails
 
 **Download** (`POST /v1/models/download`) answers with the server's reason,
@@ -158,6 +169,9 @@ shown in the model band
   or run the command on the server's machine.
 - `409 download_in_progress`: one download runs at a time; its row shows its
   progress. Download the next one once it ends.
+- `409 download_locked`: `ignis-server model download`, or another server on
+  the same `--download-path`, is fetching the entry. Download it once that
+  ends, or let the command land it.
 - `409 model_already_downloaded`: the entry is on disk; **Load** switches to it.
 - `409 model_above_card_class`: the card cannot load the entry (**Not for this
   card**).

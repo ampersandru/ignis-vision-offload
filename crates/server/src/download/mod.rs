@@ -22,6 +22,8 @@
 //! - `transfer.rs` — the [`Downloader`], and the [`Download`] it runs in the
 //!   background, driven against loopback `axum` servers
 //!   (`tests/model_download.rs`);
+//! - `lock.rs` — the [`EntryLock`] every fetch holds: one writer per entry
+//!   in a folder, the server's and `model download`'s alike;
 //! - `command.rs` — `model download` and `model list`.
 
 use std::path::{Path, PathBuf};
@@ -30,10 +32,12 @@ use crate::config::ApiKey;
 
 pub mod catalog;
 pub mod command;
+mod lock;
 mod transfer;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
+pub use lock::{EntryLock, NotLocked};
 pub use transfer::{Download, DownloadError, Downloader, Ended, Report};
 
 /// The host whose own credential `HF_TOKEN` is.
