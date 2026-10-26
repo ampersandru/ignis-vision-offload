@@ -52,6 +52,7 @@ pub mod playground;
 pub mod numbers;
 pub mod openai_fields;
 pub mod openapi;
+pub mod removal_http;
 pub mod responses;
 pub mod reuse;
 pub mod runtime;

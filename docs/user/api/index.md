@@ -16,6 +16,7 @@ not.
 | `/v1/models/catalog` | GET | Every model the server can switch to or fetch, with its state on disk ([Switching models](model-switching.md)). |
 | `/v1/models/download` | POST | Download a catalog entry in the background while the server serves; the catalog's rows follow it ([Downloading from the Server view](../guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)). |
 | `/v1/models/download/cancel` | POST | Stop the running download, keeping its partial files for the entry's next download to resume ([Cancelling and resuming](../guides/models.md#cancelling-and-resuming-post-v1modelsdownloadcancel)). |
+| `/v1/models/remove` | POST | Delete a catalog entry's files, finished or partial, from the models folder; never the model loaded, loading or being downloaded ([Removing a model](../guides/models.md#removing-a-model-post-v1modelsremove)). |
 | `/v1/images/generations` | POST | Generate images with the image model ([Image generation](images.md)). |
 | `/v1/images/edits` | POST | Edit images from 1 to 10 condition images, multipart ([Image generation](images.md)). |
 | `/v1/audio/transcriptions` | POST | Transcribe audio with the speech model, multipart ([Speech to text](transcriptions.md)). Served on the CPU through a model switch. |

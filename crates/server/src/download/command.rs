@@ -143,6 +143,92 @@ fn free_under(dir: &Path) -> Result<u64, String> {
     ignis_artifact::volume_free_bytes(existing).map_err(|err| format!("{err}, which a download checks before it begins"))
 }
 
+/// Whether `path` is one of `entry`'s files under `dir`: the same file,
+/// however each was spelled (GitHub #380) — the file a loaded, start or
+/// known model is loaded from, which removing the entry takes away.
+pub fn lists_file(entry: &CatalogEntry, dir: &Path, path: &Path) -> bool {
+    let same = |a: &Path, b: &Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => std::path::absolute(a).ok() == std::path::absolute(b).ok(),
+    };
+    entry.files.iter().any(|file| same(&dir.join(&file.name), path))
+}
+
+/// What a **Removal** of an entry did (GitHub #380): the files it deleted,
+/// by name, with their bytes, and the files it left because another entry
+/// lists them too.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Removed {
+    /// The names deleted under the models folder, a `.part` under its own.
+    pub files: Vec<String>,
+    /// The bytes they held.
+    pub bytes: u64,
+    /// Each file left in place, with the entry that also lists it.
+    pub kept: Vec<(String, String)>,
+}
+
+/// Delete `entry`'s files under `dir`, finished or partial — each file at
+/// its name and its `.part` — as a removal from the Server view does (GitHub
+/// #380). The caller holds `entry`'s lock ([`super::EntryLock`]). A file
+/// another entry of `catalog` also lists stays, with its `.part`, while that
+/// entry is on disk — every file of it at its name — or being downloaded —
+/// its lock held by a fetch, which may be writing that file or have verified
+/// it already — so removing one entry never breaks another. Whether an
+/// entry only partly there holds a shared file does not count: it holds
+/// nothing a removal breaks, and two entries sharing a file would otherwise
+/// each keep it for the other. The other entries' locks are held while the
+/// files go, so none of them begins a fetch meanwhile. Nothing but the
+/// entry's own files is touched, its `.lock` file included. A file that
+/// cannot be deleted stops the removal, naming it and what was deleted
+/// before it.
+pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Removed, String> {
+    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
+    let mut removed = Removed::default();
+    // Each entry sharing a file, once: whether it keeps its shared files,
+    // and its lock while it does not.
+    let mut others: Vec<(&str, bool, Option<super::EntryLock>)> = Vec::new();
+    for file in &entry.files {
+        let mut kept_by = None;
+        for other in catalog.entries().iter().filter(|other| other.id != entry.id && other.files.iter().any(|theirs| theirs.name == file.name)) {
+            let keeps = match others.iter().find(|(id, ..)| *id == other.id) {
+                Some((_, keeps, _)) => *keeps,
+                None => {
+                    let (keeps, lock) = if on_disk(other, dir, &size_of) == OnDisk::Complete {
+                        (true, None)
+                    } else {
+                        // Held, or not to be opened: that entry may be being
+                        // downloaded, and its file stays.
+                        match super::EntryLock::take(other, dir) {
+                            Ok(lock) => (false, Some(lock)),
+                            Err(_) => (true, None),
+                        }
+                    };
+                    others.push((other.id.as_str(), keeps, lock));
+                    keeps
+                }
+            };
+            if keeps && kept_by.is_none() {
+                kept_by = Some(other.id.clone());
+            }
+        }
+        if let Some(other) = kept_by {
+            removed.kept.push((file.name.clone(), other));
+            continue;
+        }
+        let path = dir.join(&file.name);
+        for path in [part_path(&path), path] {
+            let Some(bytes) = size_of(&path) else { continue };
+            if let Err(err) = std::fs::remove_file(&path) {
+                let before = if removed.files.is_empty() { "nothing".to_owned() } else { removed.files.join(", ") };
+                return Err(format!("{} could not be deleted: {err}; deleted before it: {before}", path.display()));
+            }
+            removed.files.push(path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()));
+            removed.bytes += bytes;
+        }
+    }
+    Ok(removed)
+}
+
 /// One row of `model list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListRow {

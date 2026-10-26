@@ -220,6 +220,63 @@ The log has `ignis.model.download_cancelled` at INFO, with the entry's `model`,
 resume. A cancel is no failure: it logs no `ignis.model.download_failed`, and
 the row carries no `download_reason` for it.
 
+## Removing a model: `POST /v1/models/remove`
+
+A running server removes a catalog entry's files from its models folder, to
+free the disk: **Remove** on the [Server view](../playground/server.md#removing-a-model)'s
+row, after a confirmation, or the same request from any client
+([ADR 0071](../../adr/0071-the-server-downloads-and-removes-models-from-the-server-view.md)):
+
+```
+curl -X POST http://127.0.0.1:8000/v1/models/remove \
+  -H "Authorization: Bearer $IGNIS_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "qwen3.8-flash-next"}'
+```
+
+It deletes every file of the entry under `--download-path`, finished or
+partial, each at its name and its `.part`, so a partly downloaded entry's
+unfinished download goes too, and answers once they are gone:
+`200 {"status": "removed", "model", "bytes_freed", "files_removed",
+"files_kept"}`. Nothing else is touched: not a known model's own path, and not
+the entry's `<artifact>.lock`, which stays empty for the next fetch
+([one writer per entry](#one-writer-per-entry)). A file another entry also
+lists stays while that entry is on disk, every file of it at its name, or being
+downloaded, by the server or by `model download`: `files_kept` names it with
+that entry (`{"file", "by"}`), and the entry removed then reads `partial`. The
+entry's lock is held while its files go, so no fetch of it begins meanwhile.
+Its `GET /v1/models/catalog` row then reads `on_disk: absent` (or `partial`),
+`bytes_on_disk` what is left, and `download: none`, its last failure
+forgotten, and `GET /v1/models` no longer lists it; its next download fetches
+it again.
+
+The start model may go. Its catalog row carries `start: true` while the
+server's start loaded it from these files, and the next start looks for it under
+`--download-path` again: it fetches it, asking first on a terminal, as
+[below](#letting-the-server-fetch-it); with `--download-enabled false` it comes
+up on the placeholder template; and a start whose `--model-artifact` names the
+removed file refuses to start. A row carries `known: true` when
+`--switch-known-models` names its id at one of its files: removed, a switch to
+it is refused until it is downloaded again.
+
+| Answer | When |
+|---|---|
+| `200` | The files were deleted. |
+| `400` | `model` is empty. |
+| `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
+| `403 removal_disabled` | `--download-from-ui false`. |
+| `404 model_not_found` | `model` is not a catalog entry: a known model is a path the operator gave, and only a catalog entry's files are removed. |
+| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading, or the entry the server is downloading; the message says which. Cancel the download, or load another model, first. |
+| `409 download_locked` | `model download`, or another server on the same folder, is fetching the entry. |
+| `409 model_not_downloaded` | Nothing of the entry is under `--download-path`. |
+| `500 removal_failed` | A file could not be deleted; the message names it, and what was deleted before it. |
+| `503 model_switching` | A switch is under way, which may be loading this entry; retry once it lands. |
+
+The log has `ignis.model.removed` at INFO, with the entry's `model`, `repo`,
+the `dir`, the `bytes` freed, the `files` deleted and the files `kept`. A
+refused removal logs nothing. `--download-from-ui false` turns this route off
+with the download routes; `--download-enabled false` does not, since a removal
+uses no network.
+
 ## Letting the server fetch it
 
 A GPU build started **without** `--model-artifact` / `IGNIS_MODEL_ARTIFACT`

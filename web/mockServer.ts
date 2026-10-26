@@ -43,7 +43,9 @@ import type { CatalogRow, ConfigDocument, FieldDecl } from "./src/server/routes.
 // a time. An operator entry fails after a second with a 401's reason, as a
 // private repository does without its token. POST /v1/models/download/cancel
 // stops it (GitHub #377): what landed stays as a partial entry, the next
-// download's starting point.
+// download's starting point. POST /v1/models/remove (GitHub #380) takes an
+// entry's files, finished or partial, and refuses the loaded model and the one
+// downloading.
 
 const SWITCH_MS = 3_000;
 const RESTORE_MS = 1_000;
@@ -132,7 +134,9 @@ export function createServerSim() {
   const failures = new Map<string, string>();
   // What a cancelled download left on disk, by entry (GitHub #377).
   const partials = new Map<string, number>();
-  const onDisk = (row: CatalogRow) => row.on_disk === "complete" || landed.has(row.id);
+  // The entries a removal took, until a download lands them again (GitHub #380).
+  const removed = new Set<string>();
+  const onDisk = (row: CatalogRow) => (row.on_disk === "complete" && !removed.has(row.id)) || landed.has(row.id);
 
   const familyOf = (id: string) => CATALOG.find((row) => row.id === id)?.family ?? "qwen38";
 
@@ -143,7 +147,11 @@ export function createServerSim() {
       return { download: "running", bytes_on_disk: Math.round(download.from + (download.total - download.from) * done) };
     }
     if (landed.has(row.id)) return { on_disk: "complete", bytes_on_disk: row.bytes };
-    const kept: Partial<CatalogRow> = partials.has(row.id) ? { on_disk: "partial", bytes_on_disk: partials.get(row.id) } : {};
+    const kept: Partial<CatalogRow> = partials.has(row.id)
+      ? { on_disk: "partial", bytes_on_disk: partials.get(row.id) }
+      : removed.has(row.id)
+        ? { on_disk: "absent", bytes_on_disk: 0 }
+        : {};
     const reason = failures.get(row.id);
     return reason ? { ...kept, download: "failed", download_reason: reason } : kept;
   }
@@ -407,7 +415,7 @@ export function createServerSim() {
         return refuse(409, "invalid_request_error", "download_in_progress", `a download of ${download.id} is already running; downloads are one at a time, never queued`);
       }
       const fails = row.source === "operator";
-      const from = partials.get(id) ?? row.bytes_on_disk ?? 0;
+      const from = partials.get(id) ?? (removed.has(id) ? 0 : (row.bytes_on_disk ?? 0));
       failures.delete(id);
       download = { id, from, total: row.bytes ?? 0, since: now, until: now + (fails ? REFUSED_MS : DOWNLOAD_MS), fails };
       return { status: 202, body: { status: "downloading", model: id, bytes: row.bytes ?? 0, bytes_on_disk: from } };
@@ -427,6 +435,35 @@ export function createServerSim() {
       partials.set(row.id, kept);
       download = null;
       return { status: 200, body: { status: "cancelled", model: row.id, bytes: row.bytes ?? 0, bytes_on_disk: kept } };
+    },
+
+    /** POST /v1/models/remove (GitHub #380): an entry's files, finished or partial, never the model loaded or the one downloading. */
+    removeModel(body: unknown, now: number): MockAnswer {
+      advance(now);
+      if (running) {
+        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
+      }
+      const id = isObject(body) && typeof body.model === "string" ? body.model.trim() : "";
+      if (!id) return refuse(400, "invalid_request_error", "invalid_request_error", "`model` must name the catalog entry to remove");
+      const row = CATALOG.find((r) => r.id === id && r.source !== "known");
+      if (!row) {
+        return refuse(404, "model_not_found", "model_not_found", `unknown model: ${id} is not a catalog entry, and only a catalog entry's files are removed; GET /v1/models/catalog lists them`);
+      }
+      if (id === loaded && !dead) {
+        return refuse(409, "invalid_request_error", "model_in_use", `${id} is the model loaded (${loaded}), which serves from its files; load another model before removing it`);
+      }
+      if (download?.id === id) {
+        return refuse(409, "invalid_request_error", "model_in_use", `${id} is being downloaded; cancel its download (POST /v1/models/download/cancel), or let it end, before removing it`);
+      }
+      const there = downloadOf(row, now).bytes_on_disk ?? row.bytes_on_disk ?? 0;
+      if (there === 0) {
+        return refuse(409, "invalid_request_error", "model_not_downloaded", `nothing of ${id} is under download.path (./models): there is nothing to remove`);
+      }
+      removed.add(id);
+      landed.delete(id);
+      partials.delete(id);
+      failures.delete(id);
+      return { status: 200, body: { status: "removed", model: id, bytes_freed: there, files_removed: [`${id}.ninfer`], files_kept: [] } };
     },
   };
 }

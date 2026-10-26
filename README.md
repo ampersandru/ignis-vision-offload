@@ -502,7 +502,7 @@ guide's [Why ignis](https://gpillon.github.io/ignis/why-ignis/) section.
 
 - **The Playground** at `/ui/` — chat with tools and subagents, parallel
   sessions, image input, dictation, an Image studio, a Decide tab, a live Monitor and a
-  Server view that downloads and loads models and edits the running configuration. Built
+  Server view that downloads, loads and removes models and edits the running configuration. Built
   into the server, not a separate service.
 - **One declaration per setting**: every option is a flag, an `IGNIS_*`
   variable and a key in a YAML or JSON config file, with per-model values and

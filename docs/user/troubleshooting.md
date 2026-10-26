@@ -189,6 +189,30 @@ never takes a token. Any other reason is the transfer's, as `model download`
 prints it, and the row's **Resume** (its **Download**, when nothing landed)
 continues from what is on disk.
 
+### The Server view's Remove is refused
+
+**Remove** (`POST /v1/models/remove`) answers with the server's reason, shown in
+the model band
+([Removing a model](guides/models.md#removing-a-model-post-v1modelsremove)):
+
+- `409 model_in_use`: the entry is the model loaded (also unloaded while idle,
+  or served from its files under another id), the one a load is loading, or the
+  one the server is downloading. Load another model first, or **Cancel** its
+  download.
+- `409 download_locked`: `ignis-server model download`, or another server on
+  the same `--download-path`, is fetching the entry. Remove it once that ends.
+- `409 model_not_downloaded`: nothing of it is under `--download-path`; a row
+  that still reads `On disk` is a known model's path, which is never removed.
+- `403 removal_disabled`: `--download-from-ui false`; delete the files on the
+  server's machine, or turn the field on and restart the server.
+- `500 removal_failed`: a file could not be deleted, named in the message with
+  what was deleted before it: on Windows, a process holding it open. Close it
+  and press **Remove** again.
+
+After a removal the band names any file kept because another entry also lists
+it: that entry is on disk or being downloaded, and the entry removed reads
+partly downloaded until the other one goes too.
+
 ### `not enough room for … under …`
 
 A download, from the Server view, `ignis-server model download` or the start's

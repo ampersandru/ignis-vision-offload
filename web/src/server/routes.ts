@@ -75,6 +75,10 @@ export type CatalogRow = {
   download_reason?: string;
   /** What of it is on disk now, partial files included. */
   bytes_on_disk?: number;
+  /** The server started on this entry, from its files under download.path (GitHub #380): removed, the next start looks for it again. */
+  start?: boolean;
+  /** `switch.known_models` names this entry's id at one of its files: removed, a switch to it is refused until it is downloaded again. */
+  known?: boolean;
 };
 
 /** Why the card cannot load a row (ADR 0064), as the server words it; null when it can. The one wording every view shows. */
@@ -174,5 +178,23 @@ export const patchConfig = (body: object, fetcher: typeof fetch = fetch) =>
     "/v1/config",
     { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     (answer) => answer as PatchApplied,
+    fetcher,
+  );
+
+/** A removal that took place (GitHub #380): what went, what it freed, and the files left because another entry lists them. */
+export type ModelRemoved = {
+  status: string;
+  model: string;
+  bytes_freed: number;
+  files_removed: string[];
+  files_kept: { file: string; by: string }[];
+};
+
+/** Delete the catalog entry `id`'s files, finished or partial, from the server's models folder; the server answers once they are gone. */
+export const removeModel = (id: string, fetcher: typeof fetch = fetch) =>
+  call(
+    "/v1/models/remove",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: id }) },
+    (body) => body as ModelRemoved,
     fetcher,
   );

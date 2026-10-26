@@ -15,10 +15,12 @@ import {
   readFields,
   readOrigins,
   type Refusal,
+  removeModel,
   startDownload,
   switchTo,
 } from "./routes.ts";
 import { afterDownload, followDownloads, nextProgress, type Progress, runningDownload, speedOf } from "./download.ts";
+import { afterRemoval } from "./removal.ts";
 
 // The Server view's state (spec playground/05): the declarations, the
 // running configuration, where its values come from and the catalog as read, the draft of changes, and
@@ -60,6 +62,12 @@ export type ServerState = {
   downloadSpeed: number | null;
   /** A "Cancel" of the running download is being sent (GitHub #377). */
   cancelling: boolean;
+  /** The id whose "Remove" waits for its confirmation (GitHub #380). */
+  confirmingRemoval: string | null;
+  /** The id whose removal is being sent. */
+  removingId: string | null;
+  /** The band's line after the last removal: what it freed, or why the server refused it. */
+  removal: Line | null;
 };
 
 export type ServerActions = {
@@ -68,6 +76,12 @@ export type ServerActions = {
   download: (id: string) => void;
   /** Stop the running download, keeping what it fetched (GitHub #377). */
   cancel: () => void;
+  /** Ask to confirm the removal of the catalog entry `id`'s files (GitHub #380). */
+  askRemoval: (id: string) => void;
+  /** Remove them, confirmed: the server deletes them, and the catalog is read again. */
+  confirmRemoval: (id: string) => void;
+  /** Leave the entry as it is. */
+  keepModel: () => void;
   /** Set `decl` where `inForce` says: a family's section, or the group. */
   edit: (decl: FieldDecl, inForce: InForce, value: string | boolean) => void;
   /** Take the family's own value of `decl` away, so the shared one applies to it again. */
@@ -98,6 +112,9 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadRefusal, setDownloadRefusal] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<Line | null>(null);
   // A download runs: the catalog is read each second, the speed taken from the reads.
   const [following, setFollowing] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -234,6 +251,26 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
           void readCatalog().then(acceptCatalog);
         });
       },
+      askRemoval(id) {
+        setRemoval(null);
+        setConfirmingRemoval(id);
+      },
+      confirmRemoval(id) {
+        setConfirmingRemoval(null);
+        setRemoval(null);
+        setRemovingId(id);
+        void removeModel(id).then((answer) => {
+          setRemovingId(null);
+          setRemoval(afterRemoval(answer));
+          // The server answers once the files are gone: the row reads as it now is,
+          // and GET /v1/models no longer lists the entry.
+          void readCatalog().then(acceptCatalog);
+          if (answer.ok) refreshModel();
+        });
+      },
+      keepModel() {
+        setConfirmingRemoval(null);
+      },
       edit(decl, inForce, value) {
         setDraft((current) => editDraft(current, decl, inForce, value));
         setMarked((current) => current.filter((key) => key !== decl.file_key));
@@ -283,7 +320,7 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
   );
 
   return [
-    { fields, config, origins, catalog, draft, marked, result, pending, applying, loadingId, loadRefusal, downloadingId, downloadRefusal, downloadSpeed: speedOf(progress), cancelling },
+    { fields, config, origins, catalog, draft, marked, result, pending, applying, loadingId, loadRefusal, downloadingId, downloadRefusal, downloadSpeed: speedOf(progress), cancelling, confirmingRemoval, removingId, removal },
     actions,
   ];
 }

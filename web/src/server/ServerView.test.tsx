@@ -16,7 +16,7 @@ import type { ServerActions, ServerState } from "./useServer.ts";
 
 const ready: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786432 };
 
-const actions: ServerActions = { load: () => {}, download: () => {}, cancel: () => {}, edit: () => {}, remove: () => {}, undo: () => {}, discard: () => {}, apply: () => {}, dismiss: () => {} };
+const actions: ServerActions = { load: () => {}, download: () => {}, cancel: () => {}, askRemoval: () => {}, confirmRemoval: () => {}, keepModel: () => {}, edit: () => {}, remove: () => {}, undo: () => {}, discard: () => {}, apply: () => {}, dismiss: () => {} };
 
 const base: ServerState = {
   fields: { state: "ok", value: FIELDS },
@@ -34,6 +34,9 @@ const base: ServerState = {
   downloadRefusal: null,
   downloadSpeed: null,
   cancelling: false,
+  confirmingRemoval: null,
+  removingId: null,
+  removal: null,
 };
 
 const render = (state: Partial<ServerState> = {}, model: ModelState = ready, streaming = false, now = 0) =>
@@ -195,6 +198,46 @@ describe("ServerView: the model band", () => {
   it("says what a switch does to a reply streaming now, only while one streams", () => {
     expect(render({}, ready, true)).toContain("A reply is streaming: a switch gives it 30 seconds to finish, then cancels it.");
     expect(render()).not.toContain("A reply is streaming");
+  });
+
+  // GitHub #380: Remove beside Load on an entry on disk, beside Resume on a partial one.
+  it("offers Remove beside Load on an entry on disk and beside Resume on a partial one, and on no row a removal cannot take", () => {
+    const html = render();
+    const rowOfModel = (id: string) => html.split("<li").find((li) => li.includes(`>${id}<`))!;
+    expect(rowOfModel("qwen3.8-flash-next")).toContain('aria-label="Load qwen3.8-flash-next"');
+    expect(rowOfModel("qwen3.8-flash-next")).toContain('aria-label="Remove qwen3.8-flash-next"');
+    expect(rowOfModel("qwen3.8-27b-abliterated")).toContain('aria-label="Resume qwen3.8-27b-abliterated"');
+    expect(rowOfModel("qwen3.8-27b-abliterated")).toContain('aria-label="Remove qwen3.8-27b-abliterated"');
+    for (const id of ["qwen3.8-27b", "qwen3.8-27b-custom", "qwen3.8-27b-dead", "qwen3.8-27b-fail"]) {
+      expect(html, id).not.toContain(`aria-label="Remove ${id}"`);
+    }
+    const off = { ...CONFIG, download: { ...CONFIG.download, from_ui: false } };
+    expect(render({ config: { state: "ok", value: off } })).not.toContain('aria-label="Remove');
+  });
+
+  it("asks before it removes, saying when the entry is the model the server started on, and holds every Remove while one is sent", () => {
+    const rows = CATALOG.map((r) => (r.id === "qwen3.8-flash-next" ? { ...r, start: true } : r));
+    const asking = render({ catalog: { state: "ok", value: rows }, confirmingRemoval: "qwen3.8-flash-next" });
+    const row = asking.split("<li").find((li) => li.includes(">qwen3.8-flash-next<"))!;
+    expect(row).toContain('aria-label="Confirm the removal of qwen3.8-flash-next"');
+    expect(row).toContain("Remove qwen3.8-flash-next? Its files under download.path go, 67.8 GiB; it can be downloaded again.");
+    expect(row).toContain("The server started on it: the next start downloads it again");
+    expect(row).toMatch(/aria-label="Remove qwen3\.8-flash-next for good"[^>]*>Remove</);
+    expect(row).toContain(">Keep it<");
+    expect(asking.split("<li").filter((li) => li.includes("Confirm the removal"))).toHaveLength(1);
+    expect(render()).not.toContain("Confirm the removal");
+
+    const sending = render({ removingId: "qwen3.8-flash-next" });
+    expect(sending).toMatch(/aria-label="Remove qwen3\.8-flash-next" disabled=""[^>]*>Removing…</);
+    expect(sending).toMatch(/aria-label="Remove qwen3\.8-27b-abliterated" disabled=""/);
+  });
+
+  it("says in the band what a removal freed, or why the server refused it", () => {
+    expect(render({ removal: { tone: "done", text: "Removed qwen3.8-flash-next: 67.8 GiB freed." } })).toContain(
+      'class="text-good [overflow-wrap:anywhere]">Removed qwen3.8-flash-next: 67.8 GiB freed.<',
+    );
+    const refused = "qwen3.8-27b-abliterated is being downloaded; cancel its download (POST /v1/models/download/cancel), or let it end, before removing it";
+    expect(render({ removal: { tone: "fault", text: refused } })).toContain(`class="text-fault [overflow-wrap:anywhere]">${refused}<`);
   });
 });
 

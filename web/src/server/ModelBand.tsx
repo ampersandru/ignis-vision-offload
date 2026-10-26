@@ -4,7 +4,8 @@ import { diskLabel, downloadCommand, type DownloadGate, elapsed, rowAction, runn
 import { downloadFailure, progressLabel } from "./download.ts";
 import { familyName } from "./form.ts";
 import { drainNote, lastSwitchLine, type Line } from "./outcome.ts";
-import type { CatalogRow } from "./routes.ts";
+import { type RemovalGate, removalPrompt, removeAction } from "./removal.ts";
+import type { CatalogRow, ConfigDocument } from "./routes.ts";
 import type { Loaded } from "./useServer.ts";
 
 // The model band (spec playground/05 §Model band): the loaded model on the
@@ -30,6 +31,8 @@ export function ModelBand({
   onDownload,
   cancelling,
   onCancel,
+  removals,
+  removal,
 }: {
   model: ModelState;
   catalog: Loaded<CatalogRow[]>;
@@ -51,6 +54,10 @@ export function ModelBand({
   /** A "Cancel" of the running download is being sent. */
   cancelling: boolean;
   onCancel: () => void;
+  /** What a row needs to offer Remove and confirm it (GitHub #380). */
+  removals: RowRemovals;
+  /** The last removal's line: what it freed, or why the server refused it. */
+  removal: Line | null;
 }) {
   const rows = catalog.state === "ok" ? catalog.value : null;
   const family = runningFamily(rows);
@@ -69,7 +76,7 @@ export function ModelBand({
           {model.state === "ready" && family && <Figure label="Family" value={familyName(family)} />}
           {loadUnderWay(model) && <Figure label="Elapsed" value={elapsed(model.since, now)} />}
         </dl>
-        {(last || refusal || streaming || model.state === "error" || model.state === "unloaded") && (
+        {(last || refusal || removal || streaming || model.state === "error" || model.state === "unloaded") && (
           <div className="flex flex-col gap-1 text-sm" aria-live="polite">
             {model.state === "error" && <p className="text-fault [overflow-wrap:anywhere]">{model.message}</p>}
             {model.state === "unloaded" && (
@@ -77,6 +84,7 @@ export function ModelBand({
             )}
             {last && <p className={`${TONE[last.tone]} [overflow-wrap:anywhere]`}>{last.text}</p>}
             {refusal && <p className="text-fault [overflow-wrap:anywhere]">{refusal}</p>}
+            {removal && <p className={`${TONE[removal.tone]} [overflow-wrap:anywhere]`}>{removal.text}</p>}
             {streaming && <p className="text-[#b9bec4]">{drainNote(drain, model.state === "switching" ? "The switch" : "A switch")}</p>}
           </div>
         )}
@@ -87,6 +95,7 @@ export function ModelBand({
         loadingId={loadingId}
         onLoad={onLoad}
         downloads={{ gate: downloads, sendingId: downloadingId, speed: downloadSpeed, onDownload, cancelling, onCancel }}
+        removals={removals}
       />
     </section>
   );
@@ -165,18 +174,34 @@ type RowDownloads = {
   onCancel: () => void;
 };
 
+/** What a row needs to offer Remove and confirm it (GitHub #380). */
+type RowRemovals = {
+  gate: RemovalGate;
+  /** The id whose removal is being sent. */
+  removingId: string | null;
+  /** The id whose Remove waits for its confirmation. */
+  confirming: string | null;
+  /** The running configuration, which the confirmation reads `download.enabled` from. */
+  config: ConfigDocument | null;
+  onAsk: (id: string) => void;
+  onConfirm: (id: string) => void;
+  onKeep: () => void;
+};
+
 function Catalog({
   catalog,
   model,
   loadingId,
   onLoad,
   downloads,
+  removals,
 }: {
   catalog: Loaded<CatalogRow[]>;
   model: ModelState;
   loadingId: string | null;
   onLoad: (id: string) => void;
   downloads: RowDownloads;
+  removals: RowRemovals;
 }) {
   if (catalog.state !== "ok") {
     return (
@@ -197,12 +222,14 @@ function Catalog({
           <span className="col-start-1 text-xs text-[#939ba4] sm:col-start-auto sm:text-sm">
             {row.download === "running" ? progressLabel(row, downloads.speed) : diskLabel(row)}
           </span>
-          <div className="col-start-2 row-span-3 row-start-1 justify-self-end sm:col-start-auto sm:row-span-1 sm:row-start-auto">
+          <div className="col-start-2 row-span-3 row-start-1 flex flex-wrap items-center justify-end gap-x-1 gap-y-1 justify-self-end sm:col-start-auto sm:row-span-1 sm:row-start-auto">
             <RowActionView row={row} model={model} loadingId={loadingId} onLoad={onLoad} downloads={downloads} />
+            <RemoveButton row={row} model={model} removals={removals} />
           </div>
           {downloadFailure(row) !== null && (
             <p className="col-span-full pt-1 text-xs text-fault [overflow-wrap:anywhere]">Download failed: {downloadFailure(row)}</p>
           )}
+          {removals.confirming === row.id && <RemovalConfirmation row={row} model={model} removals={removals} />}
         </li>
       ))}
     </ul>
@@ -280,6 +307,52 @@ function RowActionView({
         </span>
       );
   }
+}
+
+/** Remove beside the row's own action (GitHub #380): it asks first, in the row. */
+function RemoveButton({ row, model, removals }: { row: CatalogRow; model: ModelState; removals: RowRemovals }) {
+  const action = removeAction(row, model, removals.gate);
+  if (action === null) return null;
+  return (
+    <button
+      type="button"
+      aria-label={`Remove ${row.id}`}
+      disabled={!action.enabled}
+      onClick={() => removals.onAsk(row.id)}
+      className="px-3 py-1.5 font-display text-[13px] font-semibold text-[#b9bec4] hover:bg-kiln-line hover:text-[#ff7b6b] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[#b9bec4]"
+    >
+      {removals.removingId === row.id ? "Removing…" : "Remove"}
+    </button>
+  );
+}
+
+/** The confirmation under the row: what goes, what the entry is to this server, and the two answers. */
+function RemovalConfirmation({ row, model, removals }: { row: CatalogRow; model: ModelState; removals: RowRemovals }) {
+  const action = removeAction(row, model, removals.gate);
+  if (action === null) return null;
+  return (
+    <div role="group" aria-label={`Confirm the removal of ${row.id}`} className="col-span-full mt-2 flex flex-col gap-1.5 border-l-2 border-[#ff7b6b] pl-3 text-xs sm:text-sm">
+      {removalPrompt(row, removals.config).map((line) => (
+        <p key={line} className="text-[#eae8e4] [overflow-wrap:anywhere]">
+          {line}
+        </p>
+      ))}
+      <div className="flex items-center gap-4 font-display text-[13px]">
+        <button
+          type="button"
+          aria-label={`Remove ${row.id} for good`}
+          disabled={!action.enabled}
+          onClick={() => removals.onConfirm(row.id)}
+          className="font-semibold text-[#ff7b6b] hover:text-[#ffa196] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Remove
+        </button>
+        <button type="button" onClick={removals.onKeep} className="text-[#939ba4] hover:text-[#eae8e4]">
+          Keep it
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** Copies `model download <id>`; where the clipboard is out of reach (a page not on https or localhost) it shows the command to select instead. */

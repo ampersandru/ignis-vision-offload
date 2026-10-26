@@ -7,6 +7,7 @@ import { ModelBand } from "./ModelBand.tsx";
 import { drainNote, type Line } from "./outcome.ts";
 import { runningFamily } from "./band.ts";
 import { downloadsFromPage, runningDownload } from "./download.ts";
+import { removalsFromPage } from "./removal.ts";
 import type { ServerActions, ServerState } from "./useServer.ts";
 
 // The Server view (spec playground/05, GitHub #316): the loaded model and the
@@ -52,6 +53,16 @@ export function ServerView({
           onDownload={actions.download}
           cancelling={state.cancelling}
           onCancel={actions.cancel}
+          removals={{
+            gate: { fromPage: removalsFromPage(config), busy: state.removingId !== null },
+            removingId: state.removingId,
+            confirming: state.confirmingRemoval,
+            config,
+            onAsk: actions.askRemoval,
+            onConfirm: actions.confirmRemoval,
+            onKeep: actions.keepModel,
+          }}
+          removal={state.removal}
         />
         <ConfigForm
           fields={state.fields}
