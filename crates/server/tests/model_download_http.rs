@@ -237,6 +237,37 @@ async fn a_download_the_models_folder_has_no_room_for_is_refused_and_its_row_say
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// GitHub #378, #376: a refusal or failure kept on a row does not outlive the
+/// entry it was about. Refused for want of room, the entry is then fetched
+/// another way, by `model download` into the same folder: its row reads
+/// complete with no failure, and the failure is forgotten, not hidden — the
+/// entry made partial again reads partial with none.
+#[tokio::test]
+async fn a_kept_failure_goes_once_the_entry_is_complete_another_way() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "stale-failure", &[("acme-later", 32)]);
+    let (catalog, dir) = (Arc::clone(&models.catalog), models.dir.clone());
+    let files = files_of("acme-later");
+    std::fs::write(dir.join(&files.sidecar.0), &files.sidecar.1).unwrap();
+    let app = server_with(&loader, models, &config(&repo, &["--download-free-margin", "1000000G"])).app();
+    let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
+    assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
+    let refused = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+    assert_eq!(refused["download"], "failed", "{refused}");
+
+    let (code, lines) = model_download(&repo, &catalog, &["acme-later"], &dir).await;
+    assert_eq!(code, 0, "{lines:?}");
+    let landed = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+    assert_eq!((landed["on_disk"].clone(), landed["download"].clone()), (json!("complete"), json!("none")), "{landed}");
+    assert!(landed.get("download_reason").is_none(), "a complete row reads no failure: {landed}");
+
+    std::fs::remove_file(dir.join(&files.artifact.0)).unwrap();
+    let partial = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+    assert_eq!((partial["on_disk"].clone(), partial["download"].clone()), (json!("partial"), json!("none")), "forgotten, not hidden: {partial}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// AC 8: a failed download keeps its reason on the row, in memory, until the
 /// next attempt; a 401 or 403 from the endpoint names the token and where
 /// the server reads it, and never the token itself.

@@ -68,7 +68,9 @@ switch, or while no model serves.
 Once every file verified, the row reads `On disk` and offers **Load**: the
 server never switches to a model by itself. A partly downloaded entry offers
 **Resume** instead. A download that fails keeps its reason under the row,
-`Download failed: …`, until the entry's next download or a restart; a gated
+`Download failed: …`, until the entry's next download or a restart, or until
+the entry is on disk whole by another way (`ignis-server model download`): a row
+that reads `On disk` shows no failure. A gated
 repository fails naming the token the server reads from its environment
 (`IGNIS_DOWNLOAD_TOKEN`, or `HF_TOKEN` for huggingface.co). The page never asks
 for a token nor shows one. A refused **Download** (another one running, the
@@ -81,7 +83,7 @@ Before a byte is written, the server checks that the volume of its
 partial entry's **Resume**) is refused, and the reason, naming the bytes needed
 and the bytes free, shows under
 the row rather than in the band, `Download failed: not enough room for …`,
-until the entry's next download or a restart
+until the entry's next download, a restart, or the entry on disk whole
 ([Room on the disk](../guides/models.md#room-on-the-disk---download-free-margin)).
 Free some space there and press it again. `download.free_margin` is
 shown read-only, `Set at start`, in the Download group.

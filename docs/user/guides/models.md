@@ -154,7 +154,9 @@ verified, the row is `on_disk: complete` and `switchable`, `GET /v1/models`
 lists it, and `POST /v1/models/switch` loads it: the server never switches to
 it by itself, and a switch still never starts a download. A failed download's
 reason stays on the row, in memory, until the entry's next download or a
-restart; nothing about a download is written down, and nothing resumes by
+restart, or until the entry is complete on disk another way (`model download`
+fetched it): a complete row reads no failure. Nothing about a download is
+written down, and nothing resumes by
 itself at the next start: a partial entry's next download, the Server view's
 **Resume**, resumes it ([Cancelling and resuming](#cancelling-and-resuming-post-v1modelsdownloadcancel)).
 
@@ -330,8 +332,9 @@ GiB free)`. `model download` prints it as the entry's failure and fetches the
 next entry named, exiting nonzero; the start logs it on
 `ignis.model.download_failed` and refuses to start; `POST /v1/models/download`
 answers `507 download_no_room`, and the entry's row in `GET /v1/models/catalog`
-keeps it as its `download_reason`, `download: failed`, until its next download or
-a restart. Free some space on that volume, or lower the margin and restart: the
+keeps it as its `download_reason`, `download: failed`, until its next download,
+a restart, or the entry complete on disk another way. Free some space on that
+volume, or lower the margin and restart: the
 field cannot be changed by `PATCH /v1/config`.
 
 ## Where the bytes come from: endpoint and token

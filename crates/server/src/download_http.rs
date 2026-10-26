@@ -51,7 +51,8 @@ pub struct Downloads {
     /// ([`Downloads::settle`]).
     running: Mutex<Option<Download>>,
     /// Why each entry's last download failed, by id: kept until the entry's
-    /// next download begins, or the server restarts.
+    /// next download begins, the entry is complete on disk another way
+    /// (`model download`), or the server restarts.
     failures: Mutex<BTreeMap<String, String>>,
 }
 
@@ -87,19 +88,28 @@ impl Downloads {
         lock(&self.running).as_ref().filter(|download| download.ended().is_none()).cloned()
     }
 
-    /// Where the downloads of the entry `id` stand: running, failed with
-    /// the reason of the last one, or neither. A download that has ended
-    /// reads as it ended, whether or not it has been settled yet.
-    pub fn status(&self, id: &str) -> DownloadStatus {
+    /// Where the downloads of the entry `id` stand, `on_disk` as its row
+    /// reads it: running, failed with the reason of the last one, or
+    /// neither. A download that has ended reads as it ended, whether or not
+    /// it has been settled yet. An entry complete on disk reads no failure: one
+    /// kept from before it was completed another way (`model download`, a
+    /// copy) is forgotten, so it never outlives the entry it was about.
+    pub fn status(&self, id: &str, on_disk: OnDisk) -> DownloadStatus {
+        let complete = on_disk == OnDisk::Complete;
         let running = lock(&self.running);
         if let Some(download) = running.as_ref().filter(|download| download.entry().id == id) {
             match download.ended() {
                 None => return DownloadStatus::Running,
-                Some(Ended::Failed(err)) => return DownloadStatus::Failed(err.to_string()),
-                Some(Ended::Fetched(_) | Ended::Cancelled) => return DownloadStatus::None,
+                Some(Ended::Failed(err)) if !complete => return DownloadStatus::Failed(err.to_string()),
+                Some(_) => return DownloadStatus::None,
             }
         }
-        lock(&self.failures).get(id).map_or(DownloadStatus::None, |reason| DownloadStatus::Failed(reason.clone()))
+        let mut failures = lock(&self.failures);
+        if complete {
+            failures.remove(id);
+            return DownloadStatus::None;
+        }
+        failures.get(id).map_or(DownloadStatus::None, |reason| DownloadStatus::Failed(reason.clone()))
     }
 
     /// Fetch `entry` into `dir` in the background, unless a download runs —
@@ -223,7 +233,7 @@ pub(crate) struct DownloadAccepted {
     tag = "models",
     operation_id = "download_model",
     summary = "Download a catalog entry in the background",
-    description = "Fetches every file of the catalog entry `model` names (`GET /v1/models/catalog` lists them: the built-in entries and the operator's `download.catalog`) into `download.path`, from `download.endpoint`, with the same transfer as `ignis-server model download`: each file resumed from its `.part`, checked against its pinned size and SHA-256 before it is renamed into place, the token (`download.token`, else `HF_TOKEN` for huggingface.co, as the server read them at start) sent to the endpoint only. Nothing but a catalog entry is downloaded, and the request never carries a token.\n\nAnswers `202` at once; the download runs in the background while the loaded model keeps serving. `GET /v1/models/catalog` follows it: the entry's row says `download: running` with its `bytes_on_disk`, then, once every file verified, `on_disk: complete` and `download: none` — a servable model, which `POST /v1/models/switch` loads; the server never switches to it by itself. A download that fails leaves `download: failed` and its `download_reason` on the row until the entry's next download or a restart; a `401` or `403` from the endpoint names the token and where the server reads it. One download runs at a time. A partial entry's download resumes it. An entry `ignis-server model download` is fetching into the same folder is refused until it ends: each fetch holds the entry's lock, `<artifact>.lock` in `download.path`, for as long as it runs. Under the same API key as `PATCH /v1/config` (ADR 0071); `download.enabled` false or `download.from_ui` false refuses it.",
+    description = "Fetches every file of the catalog entry `model` names (`GET /v1/models/catalog` lists them: the built-in entries and the operator's `download.catalog`) into `download.path`, from `download.endpoint`, with the same transfer as `ignis-server model download`: each file resumed from its `.part`, checked against its pinned size and SHA-256 before it is renamed into place, the token (`download.token`, else `HF_TOKEN` for huggingface.co, as the server read them at start) sent to the endpoint only. Nothing but a catalog entry is downloaded, and the request never carries a token.\n\nAnswers `202` at once; the download runs in the background while the loaded model keeps serving. `GET /v1/models/catalog` follows it: the entry's row says `download: running` with its `bytes_on_disk`, then, once every file verified, `on_disk: complete` and `download: none` — a servable model, which `POST /v1/models/switch` loads; the server never switches to it by itself. A download that fails leaves `download: failed` and its `download_reason` on the row until the entry's next download, the entry complete on disk another way (`ignis-server model download`), or a restart; a `401` or `403` from the endpoint names the token and where the server reads it. One download runs at a time. A partial entry's download resumes it. An entry `ignis-server model download` is fetching into the same folder is refused until it ends: each fetch holds the entry's lock, `<artifact>.lock` in `download.path`, for as long as it runs. Under the same API key as `PATCH /v1/config` (ADR 0071); `download.enabled` false or `download.from_ui` false refuses it.",
     request_body = DownloadRequest,
     responses(
         (status = 202, description = "The download began.", body = DownloadAccepted),
@@ -234,7 +244,7 @@ pub(crate) struct DownloadAccepted {
         (status = 409, description = "A download already runs (`download_in_progress`, naming it): downloads are one at a time, never queued. Or the entry's `card_class` is above this card's (`model_above_card_class`, ADR 0064), or every file of it is already on disk (`model_already_downloaded`). Or another fetch of the entry into `download.path` holds its lock (`download_locked`): `ignis-server model download`, or another server on the same folder; one writer per entry.", body = ApiError),
         (status = 501, description = "This server has no catalog to download from (`download_unavailable`).", body = ApiError),
         (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`), or a model switch is under way (`model_switching`).", body = ApiError),
-        (status = 507, description = "The volume of `download.path` has less free space than the entry's bytes still missing plus `download.free_margin` (`download_no_room`): nothing was written, and the message names the bytes needed and the bytes free. The entry's row keeps it as its `download_reason`, `download: failed`, until its next download or a restart.", body = ApiError),
+        (status = 507, description = "The volume of `download.path` has less free space than the entry's bytes still missing plus `download.free_margin` (`download_no_room`): nothing was written, and the message names the bytes needed and the bytes free. The entry's row keeps it as its `download_reason`, `download: failed`, until its next download, the entry complete on disk another way, or a restart.", body = ApiError),
     ),
 )]
 pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(req): Json<DownloadRequest>) -> Response {

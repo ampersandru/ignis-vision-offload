@@ -180,7 +180,8 @@ shown in the model band
   ([`not enough room for … under …`](#not-enough-room-for--under-)).
 
 A download that began and failed keeps its reason under its row,
-`Download failed: …`, until its next download or a restart. `GET …: 401
+`Download failed: …`, until its next download or a restart, or until the entry
+is complete on disk another way (`ignis-server model download`). `GET …: 401
 Unauthorized: the endpoint wants a token and none was sent`, or `403 Forbidden:
 the endpoint refused the token sent`, is a gated or private repository: set
 `IGNIS_DOWNLOAD_TOKEN` (`download.token`), or `HF_TOKEN` for huggingface.co,

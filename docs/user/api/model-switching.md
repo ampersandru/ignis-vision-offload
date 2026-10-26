@@ -45,7 +45,9 @@ included, and `download`: `running` while a
 [download through the API](../guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)
 fetches it, `failed` with a `download_reason` once one failed, else `none`.
 A download refused for want of room on the disk (`507 download_no_room`) is
-kept the same way, as the entry's `failed` with its reason.
+kept the same way, as the entry's `failed` with its reason. A complete row
+reads no failure: one kept from before the entry was completed another way
+(`ignis-server model download`) is forgotten.
 An entry that `ignis-server model download` is fetching into `--download-path`
 reads `download: none`, with its `bytes_on_disk` growing: the command's fetch
 is not the server's, and a download of the entry through the API is refused
