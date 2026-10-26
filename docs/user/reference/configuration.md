@@ -1508,12 +1508,12 @@ The diarizer: `auto` (the catalog's diarizer entry), a catalog entry's id, or `o
 | Flag | `--diarizer-min-speaker-seconds` |
 | Env var | `IGNIS_DIARIZER_MIN_SPEAKER_SECONDS` |
 | Kind | `number` |
-| Default | `5.0` |
+| Default | `2.0` |
 | Rule | 0..=60 |
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The ghost rule, in seconds of speech: a voice the diarizer hears is a speaker of its own once it has spoken this long, and until then its speech counts for the speaker it sounds most like, so a short mistaken voice splits no utterance. The session's first voice is a speaker at once. 0 makes every voice a speaker at its first frame. At 5 s the count of speakers was right in 19 of the twenty conversations, against 15 with 0 (spec speech/08, As built).
+The ghost rule, in seconds of speech: a voice the diarizer hears is a speaker of its own once it has spoken this long, and until then its speech counts for the speaker it sounds most like, so a short mistaken voice splits no utterance. The session's first voice is a speaker at once. 0 makes every voice a speaker at its first frame. At 2 s a ghost voice of the synthetic conversations goes, and no real meeting's quiet participant is lost (spec speech/08, As built).
 
 ### `diarizer.live_speaker_cache_frames`
 

@@ -821,9 +821,9 @@ config_group! {
         /// its speech counts for the speaker it sounds most like, so a short
         /// mistaken voice splits no utterance. The session's first voice is a
         /// speaker at once. 0 makes every voice a speaker at its first frame.
-        /// At 5 s the count of speakers was right in 19 of the twenty
-        /// conversations, against 15 with 0 (spec speech/08, As built).
-        min_speaker_seconds: Decimal = 5_000, decimal(0.0, 60.0), ALL, [Visible, Patchable];
+        /// At 2 s a ghost voice of the synthetic conversations goes, and no
+        /// real meeting's quiet participant is lost (spec speech/08, As built).
+        min_speaker_seconds: Decimal = 2_000, decimal(0.0, 60.0), ALL, [Visible, Patchable];
         /// The live geometry's speaker cache, in 80 ms frames: what the
         /// diarizer keeps of every speaker heard so far.
         live_speaker_cache_frames: Frames = 264, between(8, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
@@ -1081,7 +1081,7 @@ mod tests {
             group.speaker_cache_silence_frames_per_speaker,
         ];
         assert_eq!(constants, [None; 6], "auto: the checkpoint's own");
-        assert_eq!((group.model.as_str(), group.min_speaker_seconds), ("auto", 5_000));
+        assert_eq!((group.model.as_str(), group.min_speaker_seconds), ("auto", 2_000));
         assert_eq!(field("diarizer", "weak_boost_rate").unwrap().validator.describe(), "0..=4");
     }
 

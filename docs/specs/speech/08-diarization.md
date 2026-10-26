@@ -192,10 +192,11 @@ The constants' names are the checkpoint's own keys.
    `--ignored` leg), the port's DER at collar 0.25 is within +0.5 pt of NeMo-Speech.cpp's at the same geometry, at
    the live and the file geometries (Q114).
 4. A small public real-meeting set (AMI, English) is scored and reported in "As built"; it does not gate (Q114).
-5. `diarizer.min_speaker_seconds`'s default is the value that makes the count of speakers right in the most of the
-   twenty conversations, its DER within +0.5 pt of `0`'s, with no conversation's count worse than with `0`. `0` turns
-   the rule off (Q108, Q116). (Amended by the owner, 2026-10-26: the first wording, the value that minimizes DER,
-   picked `0`, since the rule only adds confusion; the rule is for the ghost labels.)
+5. `diarizer.min_speaker_seconds`'s default removes the synthetic conversations' ghost labels it can without losing a
+   real meeting's participant (AMI, AC 4) or more than +0.5 pt of DER against `0`. `0` turns the rule off (Q108, Q116).
+   (Amended by the owner, 2026-10-26, twice: the first wording, the value that minimizes DER, picked `0`, since the
+   rule only adds confusion; the second, the most speaker counts right on the twenty conversations, picked 5 s, which
+   lost quiet participants of real meetings.)
 6. A speaker change inside an item ends it at the change. The events are `speech_stopped`, `committed` and
    `speech_started`, with the times at the change. The new item has no prefix padding and has the leading silence
    (Q107, spec 08).
@@ -313,11 +314,20 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
   pooled 30.2 % (missed 27.7, false alarm 0.5, confusion 2.0); per meeting 14.1 %, 16.5 % and 51.0 %. TS3003a's speech
   is mostly missed (50.8 %), and not for its level: brought from -45.7 to -25 dBFS it scores the same. Speaker
   confusion stays low (0.1-7.5 %); what real meetings cost this model is detection, as the finding expected.
+  - **No fallback for speech under 0.5 (scenario A, owner, 2026-10-26).** Of the 457 items `server_vad` makes of the
+    three meetings with reference speech, 9 (about 1 s) have no frame a channel holds at 0.5 and get no speaker: the
+    speech the diarizer misses, the VAD misses too, so no item is made of it. A fallback to the most active channel
+    would label those 9 (8 right); it was not built.
+  - **The ghost rule on real meetings** (F16, the speakers' timeline, four speakers in each): no ghost voice appeared
+    with the rule off (speakers found 4, 4, 3 for ES2004a, IS1009a, TS3003a); the rule only took away. Items labelled
+    right (ES2004a / IS1009a): 0 s 95.1 / 91.9 %, 1 s 94.4 / 91.9 %, 2 s 93.8 / 90.7 %, 3 s 92.6 / 90.7 %, 5 s 90.7 /
+    90.7 %; at 4-5 s TS3003a's count fell to 2 and at 5 s IS1009a's to 3, a quiet participant (4 s of speech) merged
+    into another. DER 40.7 % (0 s) to 40.9 % (5 s).
 - **AC 5.** The ghost rule scored on the speakers' timeline (spec 08's rules over the 80 ms frames, no padding), live:
   0 s 4.70 % (speaker count right in 75 % of the conversations), 1-2 s 4.71 % (80 %), 3 s 4.91 % (85 %), 5 s 5.06 %
   (95 %), 6 s 5.44 % (95 %), 8 s 6.10 % (90 %, conv17's count worse than with 0); file 0 s 5.29 % (80 %) to 6 s 6.05 %
   (90 %). The rule only adds confusion (a channel's frames before it is established count for another), so the
-  letter of AC 5 picks 0; **the default is 5 s** (the owner, 2026-10-26, with AC 5 amended: 95 % of the counts right, +0.36 pt of DER).
+  letter of AC 5 picks 0; **the default is 2 s** (the owner, 2026-10-26, with AC 5 amended after the AMI check below: 5 s was chosen first, for 95 % of the synthetic counts right, then dropped).
 
 ### Cost (AC 2, 11)
 
@@ -337,7 +347,10 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
   - As first built it failed (5.6 s): a step waited behind a refresh already running, seconds of decode on a long
     item; with refreshes nearly off it was 3.7 s. So the speakers' units go in a lane of their own, taking turns with
     the session's speech units a unit each, and a step that falls due stops the refresh under way at its next unit of
-    compute, as a commit does (Q79). The refreshes thin out on long items. (Decision D6.)
+    compute, as a commit does (Q79). The refreshes thin out on long items. (Decision D6.) **Superseded, see below:**
+    measured on the idle i9 with a long monologue (`speech_diarizer_refreshes`), the refreshes did not thin out but
+    stopped: 0 in items of 137 and 147 s with speakers, against 26-32 without (the live text still for the whole
+    item); the owner chose a diarizer thread of its own (2026-10-26).
   - An item's speaker can come later than the bound by design: a cut at a change reaches back to where the new
     speaker's run began, up to `diarizer.min_speaker_seconds` before. The session's log line's `lag_max_ms` is the
     diarizer's pace, not that.

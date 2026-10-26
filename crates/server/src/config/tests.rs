@@ -2905,7 +2905,7 @@ fn every_diarizer_field_resolves_from_flag_env_and_file_by_precedence() {
     let diarizer = crate::Live::of(&config(&["--diarizer-min-speaker-seconds", "2.5", "--diarizer-strong-boost-rate", "0.5"])).diarizer;
     assert_eq!((diarizer.min_speaker_seconds, diarizer.strong_boost_rate), (2_500, Some(500)));
     let shown = config(&[]).settings().render();
-    assert_eq!((shown["diarizer"]["min_speaker_seconds"].clone(), shown["diarizer"]["weak_boost_rate"].clone()), (serde_json::json!(5.0), serde_json::json!("auto")));
+    assert_eq!((shown["diarizer"]["min_speaker_seconds"].clone(), shown["diarizer"]["weak_boost_rate"].clone()), (serde_json::json!(2.0), serde_json::json!("auto")));
 }
 
 /// Spec speech/08, AC 14: an override of a speaker cache constant is
