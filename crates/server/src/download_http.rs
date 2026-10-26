@@ -25,7 +25,7 @@ use utoipa::ToSchema;
 use crate::api::{error_response, error_response_naming, ApiError};
 use crate::config::{ApiKey, Config};
 use crate::download::command::{on_disk, room_for, OnDisk};
-use crate::download::{CatalogEntry, Download, Downloader, Ended, NotLocked};
+use crate::download::{CatalogEntry, Download, DownloadError, Downloader, Ended, EntryLock, NotLocked};
 use crate::Server;
 
 /// The downloads a server runs through the API, and how they are fetched:
@@ -261,6 +261,12 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
     if downloads.running().is_none()
         && let Err(reason) = room_for(entry, &catalog.dir, downloads.free_margin)
     {
+        // GitHub #379: so does another fetch writing the entry, `model
+        // download` or another server: it is refused for that instead, and
+        // leaves no refusal for room behind on the row it then completes.
+        if let Err(NotLocked::Held(err)) = EntryLock::take(entry, &catalog.dir) {
+            return locked(err);
+        }
         downloads.refused(&entry.id, &reason);
         return error_response(StatusCode::INSUFFICIENT_STORAGE, "server_error", "download_no_room", reason);
     }
@@ -278,9 +284,7 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
                 format!("a download of {} is already running; downloads are one at a time, never queued", busy.entry().id),
             )
         }
-        Err(NotBegun::Locked(NotLocked::Held(err))) => {
-            return error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model"))
-        }
+        Err(NotBegun::Locked(NotLocked::Held(err))) => return locked(err),
         Err(NotBegun::Locked(NotLocked::Failed(err))) => {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "download_failed", err.to_string())
         }
@@ -295,4 +299,10 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
 /// `403 download_disabled`, saying which switch is off.
 fn disabled(message: &str) -> Response {
     error_response(StatusCode::FORBIDDEN, "invalid_request_error", "download_disabled", message)
+}
+
+/// `409 download_locked`: another fetch of the entry holds its lock (GitHub
+/// #379), as `err` says.
+fn locked(err: DownloadError) -> Response {
+    error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model"))
 }

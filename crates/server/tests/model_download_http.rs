@@ -410,6 +410,14 @@ async fn the_page_refuses_an_entry_model_download_is_downloading_and_starts_anot
         assert!(message.contains("acme-a is already being downloaded") && message.contains("model download"), "{message}");
         let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
         assert!(row(&rows, "acme-a").get("download_reason").is_none(), "a refusal is no failure: {rows}");
+        // Short of room too, it is refused for the lock: a refusal for room
+        // kept on the row would outlive the command that lands the entry.
+        let short = CatalogModels { catalog: Arc::clone(&catalog), dir: dir.clone() };
+        let short = server_with(&loader, short, &config(&repo, &["--download-free-margin", "1000000G"])).app();
+        let (status, refused) = send(&short, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-a" }))).await;
+        assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
+        let (_, rows) = send(&short, Method::GET, "/v1/models/catalog", None).await;
+        assert!(row(&rows, "acme-a").get("download_reason").is_none(), "no refusal for room left behind: {rows}");
 
         let (status, accepted) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-b" }))).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");

@@ -117,7 +117,10 @@ qwen3.8-27b: failed: qwen3.8-27b is already being downloaded into ./models, by a
 ```
 
 The command exits 1, the start is refused, and the Server view's **Download**
-answers `409 download_locked`; try again once the other fetch ends. Two
+answers `409 download_locked`; try again once the other fetch ends. The
+**Download** answers it even on a disk short of
+[room](#room-on-the-disk---download-free-margin), so no refusal for room stays
+on the row of an entry the other fetch then lands. Two
 different entries are fetched at the same time. The lock is the operating
 system's, `flock` on Linux and `LockFileEx` on Windows: it ends with the
 fetch, whether the fetch verified, failed or was cancelled, and with the
