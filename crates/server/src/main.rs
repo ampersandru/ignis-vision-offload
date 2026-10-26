@@ -352,6 +352,20 @@ async fn main() {
             // end in a verified artifact refuses the start: coming up on the
             // mock instead would be exactly the silent degradation the loader
             // path below refuses for an unclean checksum.
+            // GitHub #378: so does a models folder without room for what is
+            // still missing plus download.free_margin, before a byte is
+            // written, as the Server view's Download and `model download`.
+            if let Err(err) = download::command::room_for(&entry, &dir, start_options.settings().download.free_margin) {
+                tracing::error!(
+                    name: "ignis.model.download_failed",
+                    model = %entry.id,
+                    repo = %entry.repo,
+                    endpoint = %download_endpoint,
+                    error = %err,
+                    "refusing to start"
+                );
+                exit_after_flush(&logging_handle, 1);
+            }
             let token = download::bearer_token(&download_endpoint, download_token.as_ref(), std::env::var("HF_TOKEN").ok().as_deref());
             let downloader = match download::Downloader::new(&download_endpoint, token) {
                 Ok(downloader) => downloader,

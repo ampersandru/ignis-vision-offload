@@ -70,6 +70,16 @@ for a token nor shows one. A refused **Download** (another one running, the
 entry already on disk, downloading turned off) shows the server's reason in the
 band.
 
+Before a byte is written, the server checks that the volume of its
+`download.path` has room for the entry's bytes still missing plus
+`download.free_margin` (`1G` by default). Short of room, **Download** is
+refused, and the reason, naming the bytes needed and the bytes free, shows under
+the row rather than in the band, `Download failed: not enough room for …`,
+until the entry's next download or a restart
+([Room on the disk](../guides/models.md#room-on-the-disk---download-free-margin)).
+Free some space there and press **Download** again. `download.free_margin` is
+shown read-only, `Set at start`, in the Download group.
+
 An entry that `ignis-server model download` is fetching into the server's
 `download.path` is refused too, with `409 download_locked`, until the command
 ends: each fetch of an entry holds its lock, the server's and the command's
