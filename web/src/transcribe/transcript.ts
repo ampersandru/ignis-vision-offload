@@ -38,8 +38,10 @@ export type Utterance = {
 
 export type Transcript = {
   id: number;
+  /** "" until its first listening titles it, unless the user named it first. */
   title: string;
-  source: SourceKind;
+  /** Its first listening's source; `null` before one. */
+  source: SourceKind | null;
   /** The wall-clock start of its first live listening, in epoch ms; `null` for a file's. */
   startedAt: number | null;
   /** The listened time so far: where the next listening's clock starts (a Continue, Q97). */
@@ -72,17 +74,26 @@ export function titleFor(source: SourceKind, at: Date, fileName?: string): strin
   return `${day} ${time} · ${what}`;
 }
 
-export function createTranscript(id: number, { source, at, fileName }: { source: SourceKind; at: Date; fileName?: string }): Transcript {
+/** What a listening starting says of itself. */
+export type ListeningStart = { source: SourceKind; at: Date; fileName?: string };
+
+/** A Transcript with nothing heard in it; begun by a listening when one is given. */
+export function createTranscript(id: number, start?: ListeningStart): Transcript {
+  const empty: Transcript = { id, title: "", source: null, startedAt: null, clockMs: 0, utterances: [], speakers: [], channels: {}, voices: 0 };
+  return start ? beginListening(empty, start) : empty;
+}
+
+/**
+ * A listening starts on `t`. The first titles it "date time · source", unless the user named it already
+ * (Q101); a live one keeps its wall-clock start (Q100). A Continue keeps the title and the start it has.
+ */
+export function beginListening(t: Transcript, { source, at, fileName }: ListeningStart): Transcript {
+  const first = t.source === null;
   return {
-    id,
-    title: titleFor(source, at, fileName),
-    source,
-    startedAt: source === "file" ? null : at.getTime(),
-    clockMs: 0,
-    utterances: [],
-    speakers: [],
-    channels: {},
-    voices: 0,
+    ...t,
+    title: first && t.title === "" ? titleFor(source, at, fileName) : t.title,
+    source: t.source ?? source,
+    startedAt: t.startedAt ?? (source === "file" ? null : at.getTime()),
   };
 }
 
