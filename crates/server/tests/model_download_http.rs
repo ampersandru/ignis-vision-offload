@@ -205,6 +205,36 @@ async fn a_download_is_refused_with_a_reason_and_fetches_nothing() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// GitHub #378: a download the models folder has no room for — its bytes
+/// still missing plus `download.free_margin` above the volume's free space —
+/// is refused before any byte is written, naming both numbers, and its row
+/// keeps the reason. The short disk is the margin itself, set larger than
+/// any disk; a partial entry counts only what it still misses.
+#[tokio::test]
+async fn a_download_the_models_folder_has_no_room_for_is_refused_and_its_row_says_why() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "no-room", &[("acme-huge", 32)]);
+    let dir = models.dir.clone();
+    let files = files_of("acme-huge");
+    // A partial entry: its sidecar (1 byte) is there, its 65,536-byte artifact is not.
+    std::fs::write(dir.join(&files.sidecar.0), &files.sidecar.1).unwrap();
+    let app = server_with(&loader, models, &config(&repo, &["--download-free-margin", "1000000G"])).app();
+
+    let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-huge" }))).await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::INSUFFICIENT_STORAGE, json!("download_no_room")), "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap().to_owned();
+    // 1,000,000 GiB of margin plus the 65,536 bytes still missing.
+    assert!(message.contains("1073741824065536 bytes needed"), "the bytes still missing plus the margin: {message}");
+    assert!(message.contains("bytes free") && message.contains("download.free_margin"), "the free space, and the field to lower: {message}");
+    assert_eq!(files_in(&dir), [files.sidecar.0.clone()], "nothing written");
+    assert!(repo.seen().is_empty(), "nothing fetched: {:?}", repo.seen());
+    let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
+    let refused_row = row(&rows, "acme-huge");
+    assert_eq!((refused_row["download"].clone(), refused_row["download_reason"].clone()), (json!("failed"), json!(message)), "{refused_row}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// AC 8: a failed download keeps its reason on the row, in memory, until the
 /// next attempt; a 401 or 403 from the endpoint names the token and where
 /// the server reads it, and never the token itself.

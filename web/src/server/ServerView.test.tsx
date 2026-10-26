@@ -138,6 +138,17 @@ describe("ServerView: the model band", () => {
     expect(render({ downloadingId: "qwen3.8-27b-custom" })).toMatch(/aria-label="Download qwen3\.8-27b-custom" disabled=""[^>]*>Sending…</);
   });
 
+  // GitHub #378: the server keeps a Download refused for want of room as the row's failure.
+  it("shows a Download refused for want of room on its own row, both numbers in it", () => {
+    const reason =
+      "not enough room for qwen3.8-27b-custom under ./models: 20475314176 bytes needed (19401572352 still missing plus download.free_margin 1073741824), 5368709120 bytes free (19.07 GiB needed, 5.00 GiB free); free some space there or lower download.free_margin";
+    const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, download: "failed" as const, download_reason: reason } : r));
+    const html = render({ catalog: { state: "ok", value: rows } });
+    const row = html.split("<li").find((li) => li.includes(">qwen3.8-27b-custom<"));
+    expect(row).toContain(`Download failed: ${reason}`);
+    expect(html.split("<li").filter((li) => li.includes(reason))).toHaveLength(1);
+  });
+
   it("offers Not for this card and no Download above the card's class, and the command where the page downloads nothing", () => {
     const reason = "qwen3.8-27b-custom needs a 32 GB card or larger (its catalog entry's card_class), and this card is of the 16 GB class";
     const above = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, available: false, reason } : r));
@@ -230,6 +241,13 @@ describe("ServerView: the configuration", () => {
     const fromUi = rowOf(render(), "download.from_ui");
     expect(fromUi).toContain("Set at start");
     expect(fromUi).not.toMatch(/<input|<select|role="switch"/);
+  });
+
+  it("shows download.free_margin read-only, set at start like the rest of download", () => {
+    const margin = rowOf(render(), "download.free_margin");
+    expect(margin).toContain("1G");
+    expect(margin).toContain("Set at start");
+    expect(margin).not.toMatch(/<input|<select|role="switch"/);
   });
 
   it("reads a scoped field from the running family's section and says so", () => {

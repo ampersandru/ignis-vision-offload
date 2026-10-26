@@ -1524,6 +1524,19 @@ An operator catalog: a YAML or JSON file of models fetched beside the built-in o
 
 Let POST /v1/models/download, the Server view's Download, fetch a catalog entry while the server runs, under the same API key as PATCH /v1/config; it needs `enabled` too. Off refuses it, and `model download` on the server's machine still fetches.
 
+### `download.free_margin`
+
+| | |
+|---|---|
+| Flag | `--download-free-margin` |
+| Env var | `IGNIS_DOWNLOAD_FREE_MARGIN` |
+| Kind | `bytes` |
+| Default | `1G` |
+| Models | all |
+| `/v1/config` | shown by `GET`, not patchable |
+
+What a download must leave free on the volume of `path` beyond the bytes it still misses: the Server view's Download, `model download` and the start's own fetch are refused, before any byte is written, when the free space is below the two together.
+
 ## ngram
 
 ### `ngram.persist`

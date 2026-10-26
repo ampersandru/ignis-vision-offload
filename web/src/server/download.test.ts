@@ -72,6 +72,13 @@ describe("afterDownload", () => {
     const off = { ok: false as const, status: 403, message: "download.from_ui is false", code: "download_disabled" };
     expect(afterDownload(off)).toEqual({ refusal: off.message, follow: false });
   });
+
+  // GitHub #378: the server keeps a refusal for want of room on the entry's row,
+  // so the view reads the catalog to show it there, not in the band.
+  it("reads the row that keeps a refusal for want of room, instead of showing it in the band", () => {
+    const short = { ok: false as const, status: 507, message: "not enough room for x under ./models: 2147483648 bytes needed", code: "download_no_room" };
+    expect(afterDownload(short)).toEqual({ refusal: null, follow: true });
+  });
 });
 
 describe("followDownloads", () => {

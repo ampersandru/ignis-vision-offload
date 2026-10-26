@@ -804,6 +804,11 @@ config_group! {
         /// PATCH /v1/config; it needs `enabled` too. Off refuses it, and
         /// `model download` on the server's machine still fetches.
         from_ui: Bool = true, NO_RULE, ALL, [Visible];
+        /// What a download must leave free on the volume of `path` beyond
+        /// the bytes it still misses: the Server view's Download, `model
+        /// download` and the start's own fetch are refused, before any byte
+        /// is written, when the free space is below the two together.
+        free_margin: Bytes = super::DEFAULT_DOWNLOAD_FREE_MARGIN, NO_RULE, ALL, [Visible];
     }
 }
 

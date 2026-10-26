@@ -111,6 +111,12 @@ pub const DEFAULT_MODEL_DOWNLOAD_PATH: &str = "./models";
 /// `{repo}/resolve/{revision}/{file}` route every mirror also answers.
 pub const DEFAULT_DOWNLOAD_ENDPOINT: &str = "https://huggingface.co";
 
+/// What a download must leave free on the models folder's volume beyond the
+/// bytes it still misses (`--download-free-margin`, GitHub #378): 1 GiB, so
+/// a download never fills the disk the server, its logs and its caches
+/// write to.
+pub const DEFAULT_DOWNLOAD_FREE_MARGIN: u64 = 1 << 30;
+
 /// How long a model switch waits for the requests already running on the
 /// old model before it cuts them, in seconds (`--switch-drain-timeout`,
 /// spec model-switch/01): the grace window that gives a switch a finite

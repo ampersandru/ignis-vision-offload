@@ -788,6 +788,43 @@ async fn model_download_out_puts_it_elsewhere_and_no_id_fetches_the_configured_m
 }
 
 #[tokio::test]
+async fn model_download_refuses_an_entry_the_folder_has_no_room_for_before_any_byte() {
+    // GitHub #378: the command checks the room as the server does, before
+    // each entry: its bytes still missing plus `download.free_margin` above
+    // the free space refuse it, both numbers named, nonzero exit. Nothing is
+    // requested, and the folder, which did not exist, is not even created.
+    // The short disk is the margin itself, set larger than any disk.
+    let (addr, state) = repo_server().await;
+    let dir = temp_dir("cli-no-room");
+    let endpoint = format!("http://{addr}");
+    let files = operator_catalog();
+    let dir_text = dir.display().to_string();
+    let argv = ["model", "download", "test-model", "--download-catalog", "ops.catalog.yaml", "--download-endpoint", &endpoint, "--download-path", &dir_text, "--download-free-margin", "1000000G"];
+
+    let (stdout, progress, code) = ran(command(&argv, &files)).await;
+
+    assert_ne!(code, 0, "{progress:?}");
+    assert!(stdout.is_empty(), "{stdout}");
+    let needed = format!("{} bytes needed", 1_000_000u64 * (1 << 30) + entry_bytes());
+    assert!(
+        progress.iter().any(|line| line.starts_with("test-model: failed") && line.contains(&needed) && line.contains("bytes free") && line.contains("download.free_margin")),
+        "{progress:?}"
+    );
+    assert!(state.requested().is_empty(), "{:?}", state.requested());
+    assert!(!dir.exists(), "nothing written");
+
+    // An entry with nothing missing writes nothing: never refused for room.
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(SIDECAR), SIDECAR_BODY).unwrap();
+    std::fs::write(dir.join(ARTIFACT), artifact_bytes()).unwrap();
+    let (stdout, progress, code) = ran(command(&argv, &files)).await;
+    assert_eq!(code, 0, "{progress:?}");
+    assert_eq!(stdout.trim(), dir.join(ARTIFACT).display().to_string());
+    assert!(state.requested().is_empty(), "{:?}", state.requested());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn model_download_exits_nonzero_when_an_entry_does_not_verify() {
     // 02 AC 12: a failure is a nonzero exit, its reason on the progress
     // stream; nothing unverified is printed as fetched.

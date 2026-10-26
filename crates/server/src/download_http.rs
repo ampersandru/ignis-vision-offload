@@ -29,7 +29,7 @@ use utoipa::ToSchema;
 
 use crate::api::{error_response, error_response_naming, ApiError};
 use crate::config::{ApiKey, Config};
-use crate::download::command::{on_disk, OnDisk};
+use crate::download::command::{on_disk, room_for, OnDisk};
 use crate::download::{CatalogEntry, Download, Downloader, Ended};
 use crate::Server;
 
@@ -44,6 +44,9 @@ pub struct Downloads {
     enabled: bool,
     /// `download.from_ui`: off, the API downloads nothing.
     from_ui: bool,
+    /// `download.free_margin`: what a download must leave free beyond the
+    /// bytes it still misses (GitHub #378).
+    free_margin: u64,
     /// The download under way, or the last one until something settles it
     /// ([`Downloads::settle`]).
     running: Mutex<Option<Download>>,
@@ -73,6 +76,7 @@ impl Downloads {
             token: crate::download::bearer_token(&config.download_endpoint, config.download_token.as_ref(), hf_token),
             enabled: config.model_download,
             from_ui: config.settings().download.from_ui,
+            free_margin: config.settings().download.free_margin,
             running: Mutex::new(None),
             failures: Mutex::new(BTreeMap::new()),
         }
@@ -153,6 +157,14 @@ impl Downloads {
             lock(&self.failures).insert(download.entry().id.clone(), err.to_string());
         }
     }
+
+    /// Keep `reason` as the entry `id`'s last failure: a download refused
+    /// for want of room before it began (GitHub #378), which its catalog row
+    /// then shows as a failed one's, until the entry's next download or a
+    /// restart.
+    fn refused(&self, id: &str, reason: &str) {
+        lock(&self.failures).insert(id.to_owned(), reason.to_owned());
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -199,6 +211,7 @@ pub(crate) struct DownloadAccepted {
         (status = 409, description = "A download already runs (`download_in_progress`, naming it): downloads are one at a time, never queued. Or the entry's `card_class` is above this card's (`model_above_card_class`, ADR 0064), or every file of it is already on disk (`model_already_downloaded`).", body = ApiError),
         (status = 501, description = "This server has no catalog to download from (`download_unavailable`).", body = ApiError),
         (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`), or a model switch is under way (`model_switching`).", body = ApiError),
+        (status = 507, description = "The volume of `download.path` has less free space than the entry's bytes still missing plus `download.free_margin` (`download_no_room`): nothing was written, and the message names the bytes needed and the bytes free. The entry's row keeps it as its `download_reason`, `download: failed`, until its next download or a restart.", body = ApiError),
     ),
 )]
 pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(req): Json<DownloadRequest>) -> Response {
@@ -245,6 +258,17 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
             format!("{} is already on disk under download.path; POST /v1/models/switch with it loads it", entry.id),
             Some("model"),
         );
+    }
+    // GitHub #378: room for what is still missing plus download.free_margin,
+    // read before a byte is written. The row keeps the refusal as the entry's
+    // failure, so whoever asked sees it where they asked. While a download
+    // runs, `begin` refuses first: one of the entry itself must not leave a
+    // refusal behind on a row it then completes.
+    if downloads.running().is_none()
+        && let Err(reason) = room_for(entry, &catalog.dir, downloads.free_margin)
+    {
+        downloads.refused(&entry.id, &reason);
+        return error_response(StatusCode::INSUFFICIENT_STORAGE, "server_error", "download_no_room", reason);
     }
     let downloader = match Downloader::new(&downloads.endpoint, downloads.token.clone()) {
         Ok(downloader) => downloader,

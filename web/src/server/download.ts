@@ -61,6 +61,8 @@ export const downloadFailure = (row: CatalogRow): string | null => (row.download
 /** What the view does with the answer to "Download": a refusal to show, and whether to follow a download (the one begun, or the one already running). */
 export function afterDownload(answer: Answer<unknown>): { refusal: string | null; follow: boolean } {
   if (answer.ok) return { refusal: null, follow: true };
+  // GitHub #378: a refusal for want of room is kept on the entry's row: read it there.
+  if (answer.code === "download_no_room") return { refusal: null, follow: true };
   return { refusal: answer.message, follow: answer.code === "download_in_progress" };
 }
 
