@@ -28,12 +28,12 @@ run, a gate leg) itself, one at a time, after `make gpu-status` shows that
 nothing else holds the card, another worktree's run included
 (`docs/agents/testing.md`, the GPU test profile).
 
-Every local check runs on Windows, so code behind `cfg(unix)` compiles
-nowhere before `main`. Before the owner merges the integration branch, the
-coordinator pushes its tip as `ci/<spec>`, with the owner's OK since it is a
-push: the release workflow runs its Linux and Windows test jobs on `ci/**`
-without touching `main`. The coordinator reports both results with the branch
-and deletes `ci/<spec>` once the owner has merged.
+The local checks run on one host, so code behind the other host's `cfg`
+compiles nowhere before `main`. Before the owner merges the integration
+branch, the coordinator pushes its tip as `ci/<spec>`, with the owner's OK
+since it is a push: the release workflow runs its Linux and Windows test jobs
+on `ci/**` without touching `main`. The coordinator reports both results with
+the branch and deletes `ci/<spec>` once the owner has merged.
 
 ## The end of a build
 
