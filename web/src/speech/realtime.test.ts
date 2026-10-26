@@ -360,8 +360,8 @@ describe("openListening", () => {
     return { socket: () => sockets[0], heard, session };
   }
 
-  it("asks for server_vad at the server's lengths, PCM16 at 16 kHz, the context, the provisional tail and the live speakers; no language, no length guard of its own", () => {
-    const { socket } = listen({ context: "Standup: Ada, Linus, the vram planner.", diarization: "live" });
+  it("asks for server_vad with the view's silence and the server's other lengths, PCM16 at 16 kHz, the context, the provisional tail and the live speakers; no language, no length guard of its own", () => {
+    const { socket } = listen({ context: "Standup: Ada, Linus, the vram planner.", diarization: "live", silenceMs: 1_500 });
     socket().accept();
     expect(socket().sent).toEqual([
       {
@@ -373,7 +373,8 @@ describe("openListening", () => {
             input: {
               format: { type: "audio/pcm", rate: 16000 },
               transcription: { prompt: "Standup: Ada, Linus, the vram planner." },
-              turn_detection: { type: "server_vad" },
+              // The silence that ends an utterance is the view's (Q122); the threshold and the padding are the server's.
+              turn_detection: { type: "server_vad", silence_duration_ms: 1_500 },
             },
           },
           ignis: { provisional_tail: true, diarization: "live" },
@@ -382,6 +383,29 @@ describe("openListening", () => {
     ]);
     expect(JSON.stringify(socket().sent)).not.toContain("language");
     expect(JSON.stringify(socket().sent)).not.toContain("max_utterance_seconds");
+  });
+
+  it("leaves the silence to the server when the view names none", () => {
+    const { socket } = listen({ context: "", diarization: null, silenceMs: null });
+    socket().accept();
+    expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { turn_detection: { type: "server_vad" } } } } });
+    expect(JSON.stringify(socket().sent[0])).not.toContain("silence_duration_ms");
+  });
+
+  it("sends a changed silence in a session.update of the turn detection alone, which holds at once", () => {
+    const { socket, heard, session } = listen({ context: "", diarization: null, silenceMs: 1_500 });
+    socket().accept();
+    socket().emit({ type: "session.updated", session: {} });
+    session.setSilence(2_000);
+    session.setSilence(2_000);
+    session.flush();
+    expect(socket().sent.slice(1)).toEqual([
+      { type: "session.update", session: { type: "transcription", audio: { input: { turn_detection: { type: "server_vad", silence_duration_ms: 2_000 } } } } },
+      { type: "session.update", event_id: "listening_flush", session: { type: "transcription" } },
+    ]);
+    socket().emit({ type: "session.updated", session: {} });
+    socket().emit({ type: "session.updated", session: {} });
+    expect(heard).toEqual([{ type: "flushed" }]);
   });
 
   it("asks for no speakers with Speakers off or on a call's microphone, and for the file geometry on a file", () => {

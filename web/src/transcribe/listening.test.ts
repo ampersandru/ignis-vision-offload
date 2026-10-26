@@ -4,15 +4,24 @@ import { MIC_BLOCKED, TURNED_OFF } from "../speech/availability.ts";
 import { BUSY_RETRY_SECONDS } from "../speech/dictation.ts";
 import { listening } from "../speech/listening.ts";
 import type { Listening, ListeningEvent, ListeningOptions } from "../speech/realtime.ts";
-import { busyRetry, CALL_NOT_SHARED, fileDone, CONNECTION_LOST, itemFailed, NO_WEBSOCKET, speakersOff, STILL_BUSY, ListeningController, type ListeningDeps, type ListeningState, cannotStart, NO_SHARED_AUDIO, SHARING_ENDED } from "./listening.ts";
+import { busyRetry, CALL_NOT_SHARED, HOLD_AFTER_MS, fileDone, CONNECTION_LOST, itemFailed, NO_WEBSOCKET, speakersOff, STILL_BUSY, ListeningController, type ListeningDeps, type ListeningState, cannotStart, NO_SHARED_AUDIO, SHARING_ENDED } from "./listening.ts";
 import type { Heard } from "./transcript.ts";
 
 // A listening in the Transcribe view (spec speech/07) through the controller
 // the view reads: the Realtime sessions, the captures, the file's decoder and
 // the clock are fakes the test drives.
 
-type FakeSession = { options: ListeningOptions; emit: (event: ListeningEvent) => void; calls: string[]; appended: { samples: number; eventId?: string }[]; contexts: string[] };
-type FakeCapture = { chunk: (samples: number) => void; stopped: boolean };
+type FakeSession = {
+  options: ListeningOptions;
+  emit: (event: ListeningEvent) => void;
+  calls: string[];
+  appended: { samples: number; eventId?: string }[];
+  /** Every append's audio, to tell sound from silence. */
+  pcm: Int16Array[];
+  contexts: string[];
+  silences: number[];
+};
+type FakeCapture = { chunk: (samples: number, value?: number) => void; stopped: boolean };
 
 const made: ListeningController[] = [];
 
@@ -25,17 +34,21 @@ function harness(options: { pace?: number; decoded?: number; refuseMic?: Error; 
   const events: string[] = [];
   let sharingEnded: (() => void) | null = null;
   const capture = (list: FakeCapture[]) => (onChunk: (pcm: Int16Array) => void): Capture => {
-    const fake: FakeCapture = { chunk: (samples) => onChunk(new Int16Array(samples)), stopped: false };
+    const fake: FakeCapture = { chunk: (samples, value = 0) => onChunk(new Int16Array(samples).fill(value)), stopped: false };
     list.push(fake);
     return { flush: async () => {}, stop: () => (fake.stopped = true) };
   };
   const deps: ListeningDeps = {
     open: (opts, onEvent) => {
-      const session: FakeSession = { options: opts, emit: onEvent, calls: [], appended: [], contexts: [] };
+      const session: FakeSession = { options: opts, emit: onEvent, calls: [], appended: [], pcm: [], contexts: [], silences: [] };
       sessions.push(session);
       const handle: Listening = {
-        append: (pcm, eventId) => session.appended.push({ samples: pcm.length, ...(eventId === undefined ? {} : { eventId }) }),
+        append: (pcm, eventId) => {
+          session.pcm.push(pcm);
+          session.appended.push({ samples: pcm.length, ...(eventId === undefined ? {} : { eventId }) });
+        },
         setContext: (context) => session.contexts.push(context),
+        setSilence: (ms) => session.silences.push(ms),
         commit: () => session.calls.push("commit"),
         flush: () => session.calls.push("flush"),
         close: () => session.calls.push("close"),
@@ -92,7 +105,7 @@ describe("a listening on the microphone", () => {
     expect(h.state().phase).toBe("listening");
     expect(listening()).toBe(true);
     expect(h.sessions).toHaveLength(1);
-    expect(h.session().options).toEqual({ context: "Standup.", diarization: "live" });
+    expect(h.session().options).toEqual({ context: "Standup.", diarization: "live", silenceMs: null });
     await settle();
     h.mics[0].chunk(1_600);
     expect(h.session().appended).toEqual([{ samples: 1_600 }]);
@@ -273,8 +286,8 @@ describe("a call (Q93, Q112)", () => {
     h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "Weekly." });
     expect(h.events).toEqual(["pick", "mic"]);
     expect(h.sessions.map((s) => s.options)).toEqual([
-      { context: "Weekly.", diarization: null },
-      { context: "Weekly.", diarization: "live" },
+      { context: "Weekly.", diarization: null, silenceMs: null },
+      { context: "Weekly.", diarization: "live", silenceMs: null },
     ]);
     await settle();
     h.mics[0].chunk(1_600);
@@ -622,5 +635,68 @@ describe("a file (Q94, Q99)", () => {
     await settle();
     expect(h.state()).toMatchObject({ phase: "idle", notice: { text: cannotStart("The browser could not decode this file as audio."), tone: "fault" } });
     expect(h.session().calls).toEqual(["close"]);
+  });
+});
+
+describe("the silence that ends an utterance (Q122)", () => {
+  it("goes to every session at the start, and to every session when it changes", () => {
+    const h = harness();
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "", silenceMs: 1_500 });
+    expect(h.sessions.map((s) => s.options.silenceMs)).toEqual([1_500, 1_500]);
+    h.controller.setSilence(2_000);
+    expect(h.sessions.map((s) => s.silences)).toEqual([[2_000], [2_000]]);
+  });
+});
+
+describe("a call holds the mic while the far side speaks (Q121)", () => {
+  const silent = (pcm: Int16Array) => pcm.every((sample) => sample === 0);
+
+  async function call(holdMic: boolean) {
+    const h = harness();
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "", holdMic });
+    await settle();
+    return h;
+  }
+
+  it("sends the mic's session silence while the shared audio is loud, and the mic again once it has been quiet a moment", async () => {
+    const h = await call(true);
+    const [mic] = h.sessions;
+    h.shared[0].chunk(1_600, 8_000);
+    h.mics[0].chunk(1_600, 3_000);
+    expect(silent(mic.pcm[0])).toBe(true);
+    expect(h.state().held).toBe(true);
+    // The echo comes back late: still held just after the far side falls quiet.
+    await vi.advanceTimersByTimeAsync(HOLD_AFTER_MS - 100);
+    h.shared[0].chunk(1_600, 0);
+    h.mics[0].chunk(1_600, 3_000);
+    expect(silent(mic.pcm[1])).toBe(true);
+    await vi.advanceTimersByTimeAsync(200);
+    h.mics[0].chunk(1_600, 3_000);
+    expect(silent(mic.pcm[2])).toBe(false);
+    expect(h.state().held).toBe(false);
+    // The far side is sent as it is, always.
+    expect(silent(h.sessions[1].pcm[0])).toBe(false);
+  });
+
+  it("sends the mic as it is with the switch off, and lets it go when the switch is turned off mid-call", async () => {
+    const off = await call(false);
+    off.shared[0].chunk(1_600, 8_000);
+    off.mics[0].chunk(1_600, 3_000);
+    expect(silent(off.sessions[0].pcm[0])).toBe(false);
+
+    const on = await call(true);
+    on.shared[0].chunk(1_600, 8_000);
+    on.controller.setHoldMic(false);
+    expect(on.state().held).toBe(false);
+    on.mics[0].chunk(1_600, 3_000);
+    expect(silent(on.sessions[0].pcm[0])).toBe(false);
+  });
+
+  it("never holds a room's mic", async () => {
+    const h = harness();
+    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "", holdMic: true });
+    await settle();
+    h.mics[0].chunk(1_600, 3_000);
+    expect(silent(h.session().pcm[0])).toBe(false);
   });
 });

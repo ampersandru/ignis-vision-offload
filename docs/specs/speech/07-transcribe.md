@@ -245,6 +245,24 @@ its listening) and `web/src/speech/` (the session, the capture, the strike of th
 - **Corrections use native menus** (the utterance's speaker, Split at the cursor, Merge into), which open over a
   clipped `.cut` box and on a phone.
 
+### The owner's live check (2026-10-27)
+
+The first try on a call (grill Q121-Q123):
+- The server's log showed items of 1 to 2.5 s, each in a language of its own (Thai, Chinese, Portuguese, Hindi;
+  the 3.7 and 5.5 s ones Italian), and the far side cut often with one speaker heard: the server's VAD silence,
+  500 ms, not speaker changes.
+- **Q121: a call holds the mic while the far side speaks.** The page reads the shared audio's level (`HOLD_LEVEL`,
+  about -34 dBFS) and sends the microphone's session silence of the same length while it is loud and for
+  `HOLD_AFTER_MS` (500 ms) after, so its times stay the clock's and the voices that come back through the speakers
+  are not transcribed as Me. On by default, with a switch in the deck (headphones need none); speech over the far
+  side is lost while it holds.
+- **Q122: the view asks for its own silence** (`silence_duration_ms`), a per-viewer setting of 0.5, 1, 1.5 or 2 s,
+  1.5 s by default; it amends "server_vad at the server's defaults" above. A change holds at once.
+- **Q123, the language, is open.** Q88 stands: the owner first tries the Context field (an Italian context biases
+  the model's guess) before choosing among a language field, a language held after the first long utterance (a
+  server change), or nothing more. `transcription.languages` with several entries is no help: the server detects
+  among all thirty then.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

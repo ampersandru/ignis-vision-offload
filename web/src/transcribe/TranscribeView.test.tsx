@@ -24,6 +24,8 @@ const actions: TranscribeActions = {
   stop: none,
   setContext: none,
   setSpeakers: none,
+  setHoldMic: none,
+  setSilence: none,
   renameSpeaker: none,
   moveUtterance: none,
   mergeSpeakers: none,
@@ -91,7 +93,7 @@ describe("the speakers' hues", () => {
 describe("the deck", () => {
   const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
     const list = startList();
-    return { list, active: list.transcripts[0], context: "", speakers: true, speakersUnavailable: null, storeError: null, ...patch };
+    return { list, active: list.transcripts[0], context: "", speakers: true, speakersUnavailable: null, holdMic: true, storeError: null, ...patch };
   };
   const deck = (s: TranscribeState, listening: ListeningState = IDLE) =>
     renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here />);
@@ -110,6 +112,13 @@ describe("the deck", () => {
     expect(html).toContain("line-through");
     expect(html).toContain('aria-disabled="true"');
     expect(html).toContain("Speakers are turned off on this server");
+  });
+
+  it("offers to hold the mic on a call (Q121), and says when it is held", () => {
+    const call = deck(state(), at({ phase: "listening", source: "call", transcript: 1, held: true, levels: { mic: [0], shared: [0.6] } }));
+    expect(call).toMatch(/role="switch" aria-checked="true"[^>]*>.*Hold my mic while they speak/);
+    expect(call).toMatch(/Mic<span class="ml-1 text-\[#ff8a4c\]">held<\/span>/);
+    expect(deck(state())).not.toContain("Hold my mic");
   });
 
   it("is the kiln strip while a listening runs", () => {

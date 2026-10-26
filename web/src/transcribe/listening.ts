@@ -65,6 +65,14 @@ const QUEUE_FULL_BACKOFF_MS = 1_000;
 /** Bars in a lane's level meter. */
 export const METER_BARS = 20;
 
+/**
+ * A call holds the mic while the far side speaks (Q121): a shared chunk at this level or over (`levelOf`'s scale,
+ * about -34 dBFS) holds it, and it stays held this long after the last one, since the far voice comes back into the
+ * mic late, through the speakers and the room.
+ */
+export const HOLD_LEVEL = 0.1;
+export const HOLD_AFTER_MS = 500;
+
 const msOf = (samples: number) => (samples / TARGET_RATE) * 1_000;
 
 export type ListeningSource = { kind: "microphone" } | { kind: "call" } | { kind: "file"; file: File };
@@ -90,6 +98,8 @@ export type ListeningState = {
   notice: { text: string; tone: Tone } | null;
   /** Seconds left before the retry of a busy refusal. */
   retryIn: number;
+  /** On a call, the mic is held: its session is sent silence while the far side speaks (Q121). */
+  held: boolean;
   /** A file's progress: the share transcribed and the time left, none before there is a pace to read. */
   file: { name: string; fraction: number; leftMs: number | null } | null;
 };
@@ -104,6 +114,7 @@ export const IDLE: ListeningState = {
   levels: {},
   notice: null,
   retryIn: 0,
+  held: false,
   file: null,
 };
 
@@ -133,6 +144,10 @@ export type StartOptions = {
   source: ListeningSource;
   speakers: boolean;
   context: string;
+  /** The silence that ends an utterance, in ms (Q122); absent or `null`, the server's. */
+  silenceMs?: number | null;
+  /** On a call, hold the mic while the far side speaks (Q121). */
+  holdMic?: boolean;
 };
 
 /** How a lane's utterances are labelled: a room's by its speakers, a call's Me, a call's far side by its speakers or as Others. */
@@ -205,6 +220,10 @@ export class ListeningController {
   /** Bumped by every start and every end, so a late answer from an earlier one is dropped. */
   private attempt = 0;
   private context = "";
+  private silenceMs: number | null = null;
+  private holdMic = false;
+  /** Until when the far side's last loud chunk holds the mic. */
+  private farUntil = 0;
   /** The clock when it last started running, and what it held then. */
   private runningSince = 0;
   private clockAtRun = 0;
@@ -226,6 +245,9 @@ export class ListeningController {
     if (this.state.phase !== "idle") return;
     this.attempt++;
     this.context = options.context;
+    this.silenceMs = options.silenceMs ?? null;
+    this.holdMic = options.holdMic ?? false;
+    this.farUntil = 0;
     this.clockAtRun = options.clockMs;
     this.runningSince = this.now();
     const diarization: Diarization | null = options.speakers ? "live" : null;
@@ -275,6 +297,18 @@ export class ListeningController {
   setContext(context: string) {
     this.context = context;
     for (const lane of this.lanes) lane.session?.setContext(context);
+  }
+
+  /** The silence that ends an utterance, in every session, at once (Q122). */
+  setSilence(silenceMs: number) {
+    this.silenceMs = silenceMs;
+    for (const lane of this.lanes) lane.session?.setSilence(silenceMs);
+  }
+
+  /** Whether a call holds the mic while the far side speaks (Q121); turned off, the mic goes at once. */
+  setHoldMic(on: boolean) {
+    this.holdMic = on;
+    if (!on && this.state.held) this.update({ held: false });
   }
 
   /** Pause: the capture stops and the utterance under way is committed; the sessions stay open, the clock still. */
@@ -359,7 +393,7 @@ export class ListeningController {
     lane.items = new Map();
     lane.flushes = 0;
     lane.ending = false;
-    lane.session = this.deps.open({ context: this.context, diarization: lane.diarization }, (event) => attempt === this.attempt && this.heard(lane, event));
+    lane.session = this.deps.open({ context: this.context, diarization: lane.diarization, silenceMs: this.silenceMs }, (event) => attempt === this.attempt && this.heard(lane, event));
   }
 
   /** The clock runs, and every lane's capture with it; a file's sending instead. */
@@ -500,16 +534,28 @@ export class ListeningController {
     this.update({ ...IDLE, notice });
   }
 
-  /** A chunk of the lane's audio: to its session, on the clock. */
+  /**
+   * A chunk of the lane's audio: to its session, on the clock. On a call that holds the mic, a loud far side holds
+   * it, and the mic's session gets silence of the same length in its place: its times stay the clock's, and the far
+   * voice that comes back through the speakers is never transcribed as Me (Q121).
+   */
   private append(lane: Lane, pcm: Int16Array) {
     if (!lane.session) return;
     const ms = (pcm.length / TARGET_RATE) * 1_000;
     // The chunk's first sample, but never before the clock last started running.
     lane.origin ??= Math.max(this.clockAtRun, this.clock() - ms);
-    lane.session.append(pcm);
+    const call = this.state.source === "call";
+    if (call && lane.name === "shared" && levelOf(pcm) >= HOLD_LEVEL) this.farUntil = this.now() + HOLD_AFTER_MS;
+    const held = call && lane.name === "mic" && this.holdMic && this.now() < this.farUntil;
+    const sent = held ? new Int16Array(pcm.length) : pcm;
+    lane.session.append(sent);
     lane.sentMs += ms;
     const levels = this.state.levels[lane.name] ?? quiet();
-    this.update({ levels: { ...this.state.levels, [lane.name]: [...levels.slice(1), levelOf(pcm)] }, clockMs: this.clock() });
+    this.update({
+      levels: { ...this.state.levels, [lane.name]: [...levels.slice(1), levelOf(sent)] },
+      clockMs: this.clock(),
+      ...(lane.name === "mic" ? { held } : {}),
+    });
   }
 
   /** The lane's item by its id, made at its first event. */

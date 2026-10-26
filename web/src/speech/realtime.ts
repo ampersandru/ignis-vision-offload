@@ -292,6 +292,8 @@ export type ListeningOptions = {
   context: string;
   /** `null`: no speakers (Speakers off, or a call's microphone, which is "Me"). */
   diarization: Diarization | null;
+  /** The silence that ends an utterance, in ms (Q122); absent or `null`, the server's `speech.vad_silence_duration_ms`. */
+  silenceMs?: number | null;
 };
 
 /** What a listening's session hears, each item by its id: items overlap, an item's `completed` coming after the next one starts. */
@@ -317,6 +319,8 @@ export type Listening = {
   append: (pcm: Int16Array, eventId?: string) => void;
   /** The context from the next utterance on (Q87). */
   setContext: (context: string) => void;
+  /** The silence that ends an utterance, at once (`server_vad`'s fields hold at once: spec speech/05). */
+  setSilence: (silenceMs: number) => void;
   /** Ends the utterance under way: its transcript follows. */
   commit: () => void;
   /**
@@ -342,8 +346,11 @@ export const DIARIZER_FAILED = "ignis_diarizer_failed";
 /** An append past the audio a session may hold not computed yet (spec speech/08): it is refused, not read. */
 export const QUEUE_FULL = "ignis_audio_queue_full";
 
+/** `server_vad` with the view's silence, the server's threshold and padding. */
+const vad = (silenceMs: number | null | undefined) => (silenceMs == null ? { type: "server_vad" } : { type: "server_vad", silence_duration_ms: silenceMs });
+
 /** A listening's configuration (spec speech/07, "The session"). */
-function listeningConfiguration({ context, diarization }: ListeningOptions) {
+function listeningConfiguration({ context, diarization, silenceMs }: ListeningOptions) {
   return {
     type: "session.update",
     event_id: CONFIGURATION_EVENT,
@@ -353,8 +360,8 @@ function listeningConfiguration({ context, diarization }: ListeningOptions) {
         input: {
           format: { type: "audio/pcm", rate: TARGET_RATE },
           transcription: context === "" ? {} : { prompt: context },
-          // No lengths: the server's `speech.vad_*` fields hold, never the viewer's dictation silence (Q80).
-          turn_detection: { type: "server_vad" },
+          // The server's `speech.vad_*` fields, but for the silence the view sets (Q122), never the dictation's (Q80).
+          turn_detection: vad(silenceMs),
         },
       },
       // No `max_utterance_seconds`: the server's length guard holds (spec speech/08).
@@ -373,6 +380,7 @@ function listeningConfiguration({ context, diarization }: ListeningOptions) {
  */
 export function openListening(asked: ListeningOptions, onEvent: (event: ListeningEvent) => void, deps: RealtimeDeps = {}): Listening {
   let options = asked;
+  let silenceMs = asked.silenceMs ?? null;
   const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
   const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
   let context = options.context;
@@ -385,7 +393,7 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
   let configured = false;
   const waiting: object[] = [];
   /** The page's updates after the configuration, in the order sent: each is answered by one `session.updated`. */
-  const updates: ("context" | "flush")[] = [];
+  const updates: ("setting" | "flush")[] = [];
   let socket: SocketLike | null = null;
   const send = (event: object) => socket?.send(JSON.stringify(event));
   const say = (event: ListeningEvent) => closedByPage || onEvent(event);
@@ -395,7 +403,7 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
     switch (event.type) {
       case "session.created":
         greeted = true;
-        send(listeningConfiguration({ ...options, context }));
+        send(listeningConfiguration({ ...options, context, silenceMs }));
         return;
       case "session.updated":
         if (configured) {
@@ -426,7 +434,7 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
         // The diarizer refuses the whole update: configured again without speakers, the session goes on.
         if (!configured && event.error?.event_id === CONFIGURATION_EVENT && event.error.code === DIARIZER_UNAVAILABLE && options.diarization !== null) {
           options = { ...options, diarization: null };
-          send(listeningConfiguration({ ...options, context }));
+          send(listeningConfiguration({ ...options, context, silenceMs }));
         }
         return say({
           type: "error",
@@ -479,8 +487,16 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
       context = next;
       // Not greeted yet: the configuration carries it.
       if (!greeted) return;
-      updates.push("context");
+      updates.push("setting");
       sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: next === "" ? null : next } } } } });
+    },
+    setSilence(next) {
+      if (ended || next === silenceMs) return;
+      silenceMs = next;
+      // Not greeted yet: the configuration carries it.
+      if (!greeted) return;
+      updates.push("setting");
+      sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { turn_detection: vad(next) } } } });
     },
     flush() {
       if (ended) return;

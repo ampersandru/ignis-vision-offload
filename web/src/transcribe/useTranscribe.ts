@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keyRequired } from "../api/auth.ts";
+import { STORED_FLAGS, useStoredFlag } from "../app/storedFlag.ts";
 import type { SpeechStatus } from "../api/model.ts";
 import { speakersUnavailable } from "../speech/availability.ts";
 import { captureStream, pickSharedAudio, startCapture } from "../speech/capture.ts";
@@ -9,6 +10,7 @@ import { pageStore } from "../store/index.ts";
 import { useStoredSessions } from "../store/useStoredSessions.ts";
 import { decodeFile } from "./file.ts";
 import { filePace } from "./filePace.ts";
+import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
@@ -30,6 +32,8 @@ export type TranscribeState = {
   speakers: boolean;
   /** Why the Speakers toggle is struck, when it is: the diarizer the server reports. */
   speakersUnavailable: string | null;
+  /** On a call, hold the mic while the far side speaks (Q121): this browser's, on at first. */
+  holdMic: boolean;
   /** What keeping the Transcripts in this browser ran into. */
   storeError: string | null;
 };
@@ -46,6 +50,9 @@ export type TranscribeActions = {
   stop: () => void;
   setContext: (context: string) => void;
   setSpeakers: (on: boolean) => void;
+  setHoldMic: (on: boolean) => void;
+  /** The silence that ends an utterance (Q122): the viewer's, and every session's at once. */
+  setSilence: (silenceMs: number) => void;
   renameSpeaker: (speaker: number, name: string) => void;
   moveUtterance: (utterance: number, to: number | "new") => void;
   mergeSpeakers: (from: number, into: number) => void;
@@ -57,6 +64,9 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
   const [list, setList] = useState<TranscriptList>(() => startList());
   const [context, setContextText] = useState("");
   const [speakers, setSpeakers] = useState(true);
+  const [holdMic, storeHoldMic] = useStoredFlag(STORED_FLAGS.transcribeHoldMic, true);
+  const holdMicRef = useRef(holdMic);
+  holdMicRef.current = holdMic;
   const listNow = useRef(list);
   listNow.current = list;
   const latest = useRef({ onUnavailable });
@@ -123,7 +133,15 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
         const t = activeOf(listNow.current);
         const start = { source: source.kind, at: new Date(), ...(source.kind === "file" ? { fileName: source.file.name } : {}) };
         setList((l) => updateTranscript(l, t.id, (current) => beginListening(current, start)));
-        controller.start({ transcript: t.id, clockMs: clockOf(t), source, speakers: speakersRef.current, context: contextRef.current });
+        controller.start({
+          transcript: t.id,
+          clockMs: clockOf(t),
+          source,
+          speakers: speakersRef.current,
+          context: contextRef.current,
+          silenceMs: utteranceSilence(),
+          holdMic: holdMicRef.current,
+        });
       },
       pause: () => controller.pause(),
       resume: () => controller.resume(),
@@ -134,14 +152,24 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
         controller.setContext(text);
       },
       setSpeakers: (on) => setSpeakers(on),
+      setHoldMic: (on) => {
+        holdMicRef.current = on;
+        storeHoldMic(on);
+        controller.setHoldMic(on);
+      },
+      setSilence: (silenceMs) => {
+        chooseUtteranceSilence(silenceMs);
+        controller.setSilence(silenceMs);
+      },
       renameSpeaker: (speaker, name) => correct((t) => renameSpeaker(t, speaker, name)),
       moveUtterance: (utterance, to) => correct((t) => moveUtterance(t, utterance, to)),
       mergeSpeakers: (from, into) => correct((t) => mergeSpeakers(t, from, into)),
       splitUtterance: (utterance, at, to) => correct((t) => splitUtterance(t, utterance, at, to)),
       editText: (utterance, text) => correct((t) => editText(t, utterance, text)),
     }),
-    [controller],
+    // `storeHoldMic` is stable for its key.
+    [controller, storeHoldMic],
   );
 
-  return [{ list, active, context, speakers: speakers && struck === null, speakersUnavailable: struck, storeError: kept.error }, actions, controller];
+  return [{ list, active, context, speakers: speakers && struck === null, speakersUnavailable: struck, holdMic, storeError: kept.error }, actions, controller];
 }

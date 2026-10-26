@@ -5,6 +5,7 @@ import { IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Deck } from "./Deck.tsx";
 import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
+import { SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
 import { type ListeningHandle, type ListeningState, type LiveUtterance, useListening } from "./listening.ts";
 import { Sheet, speakerColor } from "./Sheet.tsx";
 import { titleOf, type TranscriptList } from "./sessions.ts";
@@ -186,6 +187,7 @@ function Tools({
 }) {
   const [copied, setCopied] = useState(false);
   const pace = useFilePace();
+  const silence = useUtteranceSilence();
   const nothing = t.utterances.every((u) => u.text.trim() === "");
   const counts = new Map<number, number>();
   for (const u of t.utterances) if (u.speaker !== null) counts.set(u.speaker, (counts.get(u.speaker) ?? 0) + 1);
@@ -286,6 +288,27 @@ function Tools({
           Open in chat
         </button>
         <p className="text-xs leading-snug text-ash">A new chat opens with the transcript in its prompt box. Nothing is sent until you press Send.</p>
+      </section>
+
+      <section aria-labelledby="transcribe-silence" className="flex flex-col gap-2">
+        <h2 id="transcribe-silence" className={caption}>
+          Utterance ends after
+        </h2>
+        <div role="radiogroup" aria-labelledby="transcribe-silence" className="flex">
+          {SILENCE_CHOICES.map((ms) => (
+            <button
+              key={ms}
+              type="button"
+              role="radio"
+              aria-checked={silence === ms}
+              onClick={() => actions.setSilence(ms)}
+              className={`border border-line px-3 py-1 font-display text-[13px] not-first:-ml-px ${silence === ms ? "relative z-10 border-ember bg-surface text-ink" : "text-ash hover:text-ink"}`}
+            >
+              {ms / 1_000} s
+            </button>
+          ))}
+        </div>
+        <p className="text-xs leading-snug text-ash">The silence that ends an utterance. Shorter cuts a speaker at every breath, and the model guesses the language of each piece on its own.</p>
       </section>
 
       <section aria-labelledby="transcribe-file-pace" className="flex flex-col gap-2">

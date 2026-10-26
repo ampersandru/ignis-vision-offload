@@ -67,6 +67,7 @@ export function Deck({
   const picker = useRef<HTMLInputElement>(null);
   const contextId = useId();
   const speakersId = useId();
+  const holdId = useId();
   const idle = listening.phase === "idle";
   const blocked = startBlocked(source, { secure, speech });
   const continuing = state.active.utterances.length > 0;
@@ -146,6 +147,16 @@ export function Deck({
           <Strip listening={listening} here={here} actions={actions} />
         )}
 
+        {(idle ? source === "call" : listening.source === "call") && (
+          <div className="flex items-center gap-2.5">
+            <Switch on={state.holdMic} onChange={actions.setHoldMic} labelledBy={holdId} />
+            <span id={holdId} className="font-display text-[13px] font-medium text-ink">
+              Hold my mic while they speak
+            </span>
+            <span className="text-xs text-ash">{state.holdMic ? "The call's voices coming back into the mic are not transcribed as you." : "With headphones, nothing comes back: you can speak over them."}</span>
+          </div>
+        )}
+
         {(hint || (idle && state.speakersUnavailable)) && (
           <div className="flex flex-col gap-0.5 text-xs leading-snug">
             {hint && (
@@ -213,7 +224,10 @@ export function Strip({ listening, here, actions }: { listening: ListeningState;
         <div className="flex items-center gap-4">
           {Object.entries(listening.levels).map(([lane, levels]) => (
             <div key={lane} className="flex items-center gap-1.5">
-              <span className="font-display text-xs text-[#939ba4]">{LANE_LABELS[lane as LaneName]}</span>
+              <span className="font-display text-xs text-[#939ba4]">
+                {LANE_LABELS[lane as LaneName]}
+                {lane === "mic" && listening.held && <span className="ml-1 text-[#ff8a4c]">held</span>}
+              </span>
               <div aria-hidden="true" className="flex h-6 items-center gap-0.5">
                 {levels.map((level, i) => (
                   <div

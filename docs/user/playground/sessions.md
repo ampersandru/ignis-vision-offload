@@ -37,7 +37,7 @@ nothing is sent to the server for safekeeping.
 | The API key | `localStorage` `ignis.apiKey` | yes |
 | Parallel sessions, the HTTP transport | `localStorage` `ignis.parallelSessions`, `ignis.httpTransport` | yes |
 | The Tavily key, memory notes, the image view's "Enhance the prompt" | `localStorage` `ignis.tavilyKey`, `ignis.memory`, `ignis.imageEnhance` | yes |
-| The Transcribe view's file pace | `localStorage` `ignis.transcribeFilePace` | yes |
+| The Transcribe view's file pace, its silence, its Hold my mic | `localStorage` `ignis.transcribeFilePace`, `ignis.transcribeSilence`, `ignis.transcribeHoldMic` | yes |
 | Settings, tool switches, the prompt box, the Server view's draft, the Monitor's history | memory only | no |
 
 A reply that was streaming when the page closed comes back stopped, with the

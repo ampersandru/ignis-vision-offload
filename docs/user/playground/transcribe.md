@@ -31,9 +31,13 @@ Pick a source in the deck, then **Start**:
   mixed); a window shares its own where the browser can (Chrome 141 and
   later). The microphone and the shared audio are **two sessions, never
   mixed**: the microphone's voice is **Me**, and the shared audio's voices are
-  its speakers. Use headphones: through speakers, the far voices reach the
-  microphone and are transcribed twice. The browser's own *Stop sharing* stops
-  the listening.
+  its speakers. Through speakers, the far voices reach the microphone too:
+  **Hold my mic while they speak**, on unless you turn it off (this browser
+  keeps the choice), sends the microphone's session silence while the shared
+  audio is loud and for half a second after, so those voices are never
+  transcribed as Me; the strip marks the mic **held** meanwhile. What you say
+  over the other side is lost then, so with headphones turn it off. The
+  browser's own *Stop sharing* stops the listening.
 - **File**: a recording you pick (wav, mp3, ogg, m4a, webm, an mp4's audio:
   whatever the browser decodes). The browser decodes it to 16 kHz mono and
   sends it faster than real time, with a progress bar and the time left. It
@@ -60,6 +64,15 @@ and closes; **Stop now** closes at once.
 A transcript that already holds utterances shows **Continue** in place of
 Start: the new listening appends to it, and its times go on from where it
 stopped.
+
+## Where an utterance ends
+
+An utterance ends at a silence of **Utterance ends after** on the right: 0.5,
+1, 1.5 or 2 s, 1.5 s unless you pick another (this browser keeps it). A change
+holds at once, in a listening too. The server's own default, 0.5 s, cuts a
+speaker at every breath into pieces of a second or two, and the model guesses
+the language of each piece on its own; a longer silence keeps a phrase whole.
+With Speakers on, a change of voice ends an utterance whatever the silence.
 
 ## The text
 
@@ -174,9 +187,10 @@ Each source is one session on `GET /v1/realtime?intent=transcription`
 and closed at Stop; a call takes two of the server's `speech.max_sessions` (4).
 Each asks for:
 
-- **the server's turn detection at its own lengths**: `turn_detection:
-  {type: "server_vad"}`, so the `speech.vad_*` fields hold, and every commit is
-  an utterance;
+- **the server's turn detection with the view's silence**: `turn_detection:
+  {type: "server_vad", silence_duration_ms: <the setting>}`, the threshold and
+  the padding the server's (`speech.vad_*`), and every commit is an utterance;
+  a change of the setting is a `session.update` of the turn detection;
 - **16-bit PCM at 16 kHz**, 100 ms of audio at a time (a file's faster);
 - **the provisional tail** (`session.ignis.provisional_tail: true`);
 - **the speakers**, with Speakers on: `session.ignis.diarization: "live"`, or
