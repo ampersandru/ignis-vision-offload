@@ -4,6 +4,7 @@ import { dropDraft, type Draft, editDraft, type InForce, patchBody, removeDraft 
 import { afterPatch, afterSwitch, type Line, type PendingReload, settleReload } from "./outcome.ts";
 import {
   type Answer,
+  cancelDownload,
   type CatalogRow,
   type ConfigDocument,
   type FieldDecl,
@@ -53,16 +54,20 @@ export type ServerState = {
   loadRefusal: string | null;
   /** The id whose "Download" is being sent. */
   downloadingId: string | null;
-  /** Why the server refused the last "Download". */
+  /** Why the server refused the last "Download", "Resume" or "Cancel". */
   downloadRefusal: string | null;
   /** The running download's speed, in bytes per second, once two catalog reads gave one. */
   downloadSpeed: number | null;
+  /** A "Cancel" of the running download is being sent (GitHub #377). */
+  cancelling: boolean;
 };
 
 export type ServerActions = {
   load: (id: string) => void;
-  /** Download the catalog entry `id` onto the server, and follow it. */
+  /** Download the catalog entry `id` onto the server, and follow it; on a partial entry, its Resume. */
   download: (id: string) => void;
+  /** Stop the running download, keeping what it fetched (GitHub #377). */
+  cancel: () => void;
   /** Set `decl` where `inForce` says: a family's section, or the group. */
   edit: (decl: FieldDecl, inForce: InForce, value: string | boolean) => void;
   /** Take the family's own value of `decl` away, so the shared one applies to it again. */
@@ -92,6 +97,7 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
   const [loadRefusal, setLoadRefusal] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadRefusal, setDownloadRefusal] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   // A download runs: the catalog is read each second, the speed taken from the reads.
   const [following, setFollowing] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -217,6 +223,17 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
           if (after.follow) void readCatalog().then(acceptCatalog);
         });
       },
+      cancel() {
+        setDownloadRefusal(null);
+        setLoadRefusal(null);
+        setCancelling(true);
+        void cancelDownload().then((answer) => {
+          setCancelling(false);
+          if (!answer.ok) setDownloadRefusal(answer.message);
+          // The server answers once it stopped: the row reads partial, with Resume, at once.
+          void readCatalog().then(acceptCatalog);
+        });
+      },
       edit(decl, inForce, value) {
         setDraft((current) => editDraft(current, decl, inForce, value));
         setMarked((current) => current.filter((key) => key !== decl.file_key));
@@ -266,7 +283,7 @@ export function useServer(model: ModelState, refreshModel: () => void, visible: 
   );
 
   return [
-    { fields, config, origins, catalog, draft, marked, result, pending, applying, loadingId, loadRefusal, downloadingId, downloadRefusal, downloadSpeed: speedOf(progress) },
+    { fields, config, origins, catalog, draft, marked, result, pending, applying, loadingId, loadRefusal, downloadingId, downloadRefusal, downloadSpeed: speedOf(progress), cancelling },
     actions,
   ];
 }

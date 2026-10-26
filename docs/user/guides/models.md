@@ -132,7 +132,8 @@ lists it, and `POST /v1/models/switch` loads it: the server never switches to
 it by itself, and a switch still never starts a download. A failed download's
 reason stays on the row, in memory, until the entry's next download or a
 restart; nothing about a download is written down, and nothing resumes by
-itself at the next start: a partial entry's next download resumes it.
+itself at the next start: a partial entry's next download, the Server view's
+**Resume**, resumes it ([Cancelling and resuming](#cancelling-and-resuming-post-v1modelsdownloadcancel)).
 
 | Answer | When |
 |---|---|
@@ -159,6 +160,40 @@ logged or sent by the page. The log has the transfer's own
 off, so the Server view can be exposed without exposing downloads; `model
 download` on the server's machine still fetches. Neither switch can be changed
 by `PATCH /v1/config`.
+
+### Cancelling and resuming: `POST /v1/models/download/cancel`
+
+```
+curl -X POST http://127.0.0.1:8000/v1/models/download/cancel \
+  -H "Authorization: Bearer $IGNIS_API_KEY"
+```
+
+stops the running download, the one at a time, with no body to send, and
+answers once it has stopped: `200 {"status": "cancelled", "model", "bytes",
+"bytes_on_disk"}`. What it fetched stays under `--download-path`: every file it
+verified at its name, and the `.part` of the file it was writing, with every
+byte that arrived. The entry's row then reads `on_disk: partial` and
+`download: none`, with those `bytes_on_disk`, and its next
+`POST /v1/models/download` (the Server view's **Resume**) resumes it: it
+fetches no verified file again, asks for the rest of the `.part` with `Range`,
+and checks every file against its pins before renaming it into place. A
+download cut short by a dropped connection or a restart leaves a partial entry
+too. Nothing resumes it by itself, at a restart either: it stays partial until
+a download of it, through the API or `model download`, continues it. The one
+exception is the model the server is started to serve, which a start fetches
+when it is missing, as [below](#letting-the-server-fetch-it).
+
+| Answer | When |
+|---|---|
+| `200` | The download stopped; its partial files stay. |
+| `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
+| `409 download_not_running` | No download runs: none began, or the one that ran had already landed or failed, which the message says. |
+| `503 model_switching` | A switch is under way; retry once it lands. |
+
+The log has `ignis.model.download_cancelled` at INFO, with the entry's `model`,
+`repo` and `endpoint`, its `bytes` and the `bytes_on_disk` it keeps for the
+resume. A cancel is no failure: it logs no `ignis.model.download_failed`, and
+the row carries no `download_reason` for it.
 
 ## Letting the server fetch it
 

@@ -41,7 +41,9 @@ import type { CatalogRow, ConfigDocument, FieldDecl } from "./src/server/routes.
 // Downloads (GitHub #376): POST /v1/models/download runs for ten seconds, its
 // row's `bytes_on_disk` growing from what is on disk to the whole entry, one at
 // a time. An operator entry fails after a second with a 401's reason, as a
-// private repository does without its token.
+// private repository does without its token. POST /v1/models/download/cancel
+// stops it (GitHub #377): what landed stays as a partial entry, the next
+// download's starting point.
 
 const SWITCH_MS = 3_000;
 const RESTORE_MS = 1_000;
@@ -128,6 +130,8 @@ export function createServerSim() {
   let download: { id: string; from: number; total: number; since: number; until: number; fails: boolean } | null = null;
   const landed = new Set<string>();
   const failures = new Map<string, string>();
+  // What a cancelled download left on disk, by entry (GitHub #377).
+  const partials = new Map<string, number>();
   const onDisk = (row: CatalogRow) => row.on_disk === "complete" || landed.has(row.id);
 
   const familyOf = (id: string) => CATALOG.find((row) => row.id === id)?.family ?? "qwen38";
@@ -139,8 +143,9 @@ export function createServerSim() {
       return { download: "running", bytes_on_disk: Math.round(download.from + (download.total - download.from) * done) };
     }
     if (landed.has(row.id)) return { on_disk: "complete", bytes_on_disk: row.bytes };
+    const kept: Partial<CatalogRow> = partials.has(row.id) ? { on_disk: "partial", bytes_on_disk: partials.get(row.id) } : {};
     const reason = failures.get(row.id);
-    return reason ? { download: "failed", download_reason: reason } : {};
+    return reason ? { ...kept, download: "failed", download_reason: reason } : kept;
   }
 
   function advance(now: number) {
@@ -402,10 +407,26 @@ export function createServerSim() {
         return refuse(409, "invalid_request_error", "download_in_progress", `a download of ${download.id} is already running; downloads are one at a time, never queued`);
       }
       const fails = row.source === "operator";
-      const from = row.bytes_on_disk ?? 0;
+      const from = partials.get(id) ?? row.bytes_on_disk ?? 0;
       failures.delete(id);
       download = { id, from, total: row.bytes ?? 0, since: now, until: now + (fails ? REFUSED_MS : DOWNLOAD_MS), fails };
       return { status: 202, body: { status: "downloading", model: id, bytes: row.bytes ?? 0, bytes_on_disk: from } };
+    },
+
+    /** POST /v1/models/download/cancel (GitHub #377): stop the running download; what landed stays, partial. */
+    cancelDownload(now: number): MockAnswer {
+      advance(now);
+      if (running) {
+        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
+      }
+      const row = download && CATALOG.find((r) => r.id === download!.id);
+      if (!download || !row) {
+        return refuse(409, "invalid_request_error", "download_not_running", "no download is running; GET /v1/models/catalog shows each entry's state");
+      }
+      const kept = downloadOf(row, now).bytes_on_disk ?? download.from;
+      partials.set(row.id, kept);
+      download = null;
+      return { status: 200, body: { status: "cancelled", model: row.id, bytes: row.bytes ?? 0, bytes_on_disk: kept } };
     },
   };
 }

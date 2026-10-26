@@ -6,7 +6,8 @@ import { type CatalogRow, unavailableReason } from "./routes.ts";
 // GET /v1/models/catalog row, switched to by id alone. A catalog entry not on
 // disk is downloaded onto the server from its row (GitHub #376); where the
 // server downloads nothing from the page, the row copies the command that
-// fetches it.
+// fetches it. A running download is cancelled from its row, and a partial
+// entry resumed from it (GitHub #377).
 
 const SOURCES: Record<CatalogRow["source"], string> = {
   "built-in": "Built-in catalog",
@@ -22,6 +23,11 @@ export function sourceLabel(source: CatalogRow["source"]): string {
 export function diskLabel(row: CatalogRow): string {
   const size = row.bytes === undefined ? "" : formatBytes(row.bytes);
   if (row.on_disk === "complete") return size ? `On disk, ${size}` : "On disk";
+  // GitHub #377: what of a partial entry is there already, beside its total.
+  if (row.on_disk === "partial" && row.bytes_on_disk !== undefined) {
+    const there = formatBytes(row.bytes_on_disk);
+    return size ? `Partly downloaded, ${there} of ${size}` : `Partly downloaded, ${there}`;
+  }
   if (row.on_disk === "partial") return size ? `Partly downloaded, ${size} in all` : "Partly downloaded";
   // A known model is a path, not a catalog entry: there is nothing to download.
   if (row.source === "known") return "Artifact not found";
@@ -37,8 +43,10 @@ export type RowAction =
   /** The model the switch under way is loading. */
   | { kind: "loading" }
   | { kind: "load"; enabled: boolean }
-  /** A catalog entry not (wholly) on disk: download it onto the server, resuming what is there. */
+  /** A catalog entry not on disk: download it onto the server. */
   | { kind: "download"; enabled: boolean }
+  /** A catalog entry partly on disk, a cancelled download's included: download the rest, resuming what is there (GitHub #377). */
+  | { kind: "resume"; enabled: boolean }
   /** The same where the server downloads nothing from the page: copy `model download`. */
   | { kind: "copy" }
   /** Its download runs now. */
@@ -58,7 +66,8 @@ export type DownloadGate = { fromPage: boolean; busy: boolean };
  * so does an unloaded model (spec model-switch/02), which "Load" loads.
  * "Download" is out of reach while any download runs, and wherever the
  * server would refuse it for its model's state: no model serving, or one on
- * its way.
+ * its way. "Resume" is the same request, on a partial entry, and is out of
+ * reach where "Download" is.
  */
 export function rowAction(row: CatalogRow, model: ModelState, gate: DownloadGate = { fromPage: true, busy: false }): RowAction {
   const loading = loadUnderWay(model);
@@ -76,6 +85,7 @@ export function rowAction(row: CatalogRow, model: ModelState, gate: DownloadGate
     return { kind: "load", enabled: row.switchable && !loading && model.state !== "reading" };
   }
   if (row.source === "known") return { kind: "missing" };
+  if (row.on_disk === "partial" && gate.fromPage) return { kind: "resume", enabled: !gate.busy && canSend(model) };
   return gate.fromPage ? { kind: "download", enabled: !gate.busy && canSend(model) } : { kind: "copy" };
 }
 

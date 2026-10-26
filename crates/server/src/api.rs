@@ -166,6 +166,8 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .routes(routes!(crate::catalog_http::get_models_catalog))
         // GitHub #376: download a catalog entry in the background.
         .routes(routes!(crate::download_http::post_model_download))
+        // GitHub #377: stop it, keeping its partial files.
+        .routes(routes!(crate::download_http::post_model_download_cancel))
         // Spec config-v2/02: the running configuration, read and changed.
         .routes(routes!(crate::config_http::get_config, crate::config_http::patch_config))
         // Spec playground/05: what each of those fields is, and where each
@@ -213,6 +215,7 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .route("/v1/models/switch", options(cors_preflight))
         .route("/v1/models/catalog", options(cors_preflight))
         .route("/v1/models/download", options(cors_preflight))
+        .route("/v1/models/download/cancel", options(cors_preflight))
         .route("/v1/config", options(cors_preflight))
         .route("/v1/config/fields", options(cors_preflight))
         .route("/v1/config/origins", options(cors_preflight))
@@ -3652,6 +3655,8 @@ mod tests {
             ("PATCH", "/v1/config"),
             // A download fetches files beside the model (GitHub #376).
             ("POST", "/v1/models/download"),
+            // Stopping it (GitHub #377).
+            ("POST", "/v1/models/download/cancel"),
             // The Responses socket's upgrade: its jobs count, one by one.
             ("GET", "/v1/responses"),
             // The speech model runs beside the text model on the CPU, and a

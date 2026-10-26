@@ -26,13 +26,15 @@ much of it is on disk, and one action:
 - **Loaded** for the model that serves;
 - **Load** for one on disk: it switches to it by id (`POST /v1/models/switch`),
   whatever `switch.allow_implicit` says;
-- **Download** for a catalog entry not on disk, or only partly: the server
-  downloads it ([Downloading a model](#downloading-a-model));
-- **Downloading…** while its download runs;
+- **Download** for a catalog entry not on disk: the server downloads it
+  ([Downloading a model](#downloading-a-model));
+- **Resume** for one partly downloaded, a cancelled download's included: the
+  server downloads the rest ([Cancelling and resuming](#cancelling-and-resuming));
+- **Cancel** while its download runs: it stops it, keeping what it fetched;
 - **Not for this card** for an entry above the card's class
   ([the catalog](../guides/models.md#the-catalog)), with the server's reason as
   its tooltip: neither loaded nor downloaded;
-- **Copy download command** in place of **Download** when the server does not
+- **Copy download command** in place of **Download** or **Resume** when the server does not
   download from the page (`download.enabled` or `download.from_ui` false): it
   copies `ignis-server model download <id>`.
 
@@ -57,12 +59,12 @@ It runs in the background while the loaded model keeps serving. The row then
 reads `Downloading, <on disk> of <total>, <speed>/s`: the page reads
 `GET /v1/models/catalog` every second while a download runs, and the speed is
 the bytes landed between those reads. One download runs at a time, so every
-other **Download** is out of reach until it ends; so is every one during a
+other **Download** and **Resume** is out of reach until it ends; so is every one during a
 switch, or while no model serves.
 
 Once every file verified, the row reads `On disk` and offers **Load**: the
-server never switches to a model by itself. A partly downloaded entry's
-**Download** resumes it. A download that fails keeps its reason under the row,
+server never switches to a model by itself. A partly downloaded entry offers
+**Resume** instead. A download that fails keeps its reason under the row,
 `Download failed: …`, until the entry's next download or a restart; a gated
 repository fails naming the token the server reads from its environment
 (`IGNIS_DOWNLOAD_TOKEN`, or `HF_TOKEN` for huggingface.co). The page never asks
@@ -75,6 +77,26 @@ Downloading takes the same API key as **Apply**
 `download.from_ui` false turns it off for the page and the API, and
 `download.enabled` false keeps the server off the network altogether; both are
 shown read-only, `Set at start`, in the Download group.
+
+### Cancelling and resuming
+
+**Cancel** on the running row sends `POST /v1/models/download/cancel`, and the
+server stops the download before it answers: the files it verified stay at
+their names, and the file it was writing stays as its `.part`, with every byte
+that arrived. The row then reads `Partly downloaded, <on disk> of <total>` and
+offers **Resume**, which sends `POST /v1/models/download` again: the server
+fetches only what is missing, from the `.part` on, and checks each file against
+its pinned size and SHA-256 before it renames it into place, as for any
+download ([Get a model](../guides/models.md#cancelling-and-resuming-post-v1modelsdownloadcancel)).
+**Cancel** is out of reach while it is being sent, during a switch, or while
+no model serves, and takes the same API key as **Download**.
+
+A download cut short by a dropped connection or a restart of the server leaves
+a partial entry too, shown the same way. Nothing resumes by itself: after a
+restart the entry stays partial until **Resume**, or `ignis-server model
+download <id>` on the server's machine, continues it. The one exception is the
+model the server is started to serve, which a start fetches when it is missing,
+as before ([Letting the server fetch it](../guides/models.md#letting-the-server-fetch-it)).
 
 ## The configuration
 

@@ -50,6 +50,8 @@ export function ServerView({
           downloadingId={state.downloadingId}
           downloadSpeed={state.downloadSpeed}
           onDownload={actions.download}
+          cancelling={state.cancelling}
+          onCancel={actions.cancel}
         />
         <ConfigForm
           fields={state.fields}

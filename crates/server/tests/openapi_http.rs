@@ -89,6 +89,8 @@ fn the_document_lists_exactly_the_v1_surface() {
         "get /v1/models/catalog",
         // GitHub #376: download a catalog entry in the background.
         "post /v1/models/download",
+        // GitHub #377: stop it, keeping its partial files.
+        "post /v1/models/download/cancel",
         "get /v1/config/fields",
         // Spec playground/05 follow-up 2: where each of those values comes
         // from.

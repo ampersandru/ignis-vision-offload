@@ -306,3 +306,114 @@ async fn a_server_without_downloads_answers_501() {
     let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "qwen3.8-27b" }))).await;
     assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("download_unavailable")));
 }
+
+/// GitHub #377 AC 1, 3: `POST /v1/models/download/cancel` stops the running
+/// download and keeps what it fetched — the sidecar verified at its name, the
+/// artifact's `.part` with every byte that arrived — and the row reads
+/// partial with those bytes; the entry's next download resumes from them
+/// with `Range`, fetches nothing twice, and ends verified against the pins.
+#[tokio::test]
+async fn a_cancelled_download_keeps_its_partial_files_and_resume_continues_from_them() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "cancel-resume", &[("acme-stop", 32)]);
+    let dir = models.dir.clone();
+    let files = files_of("acme-stop");
+    repo.hold(&files.artifact.0, 4096);
+    let app = server_with(&loader, models, &config(&repo, &[])).app();
+
+    let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-stop" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_row(&app, "acme-stop", |row| row["bytes_on_disk"] == json!(1 + 4096)).await;
+
+    let (status, cancelled) = send(&app, Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+    assert_eq!(cancelled, json!({ "status": "cancelled", "model": "acme-stop", "bytes": files.total(), "bytes_on_disk": 1 + 4096 }));
+    // Stopped, not ended: what arrived stays, nothing is at the artifact's name.
+    let part = format!("{}.part", files.artifact.0);
+    assert_eq!(files_in(&dir), [files.sidecar.0.clone(), part.clone()]);
+    assert_eq!(std::fs::read(dir.join(&part)).unwrap(), files.artifact.1[..4096]);
+    let stopped = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-stop").clone();
+    assert_eq!((stopped["download"].clone(), stopped["on_disk"].clone(), stopped["bytes_on_disk"].clone()), (json!("none"), json!("partial"), json!(1 + 4096)), "{stopped}");
+    assert!(stopped.get("download_reason").is_none(), "a cancel is no failure: {stopped}");
+    let (status, refused) = send(&app, Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_not_running")), "nothing left to cancel: {refused}");
+
+    // Resume: the same request, from the bytes on disk.
+    repo.release();
+    let requests = repo.seen().len();
+    let (status, accepted) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-stop" }))).await;
+    assert_eq!((status, accepted["bytes_on_disk"].clone()), (StatusCode::ACCEPTED, json!(1 + 4096)), "{accepted}");
+    let landed = until_row(&app, "acme-stop", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
+    assert_eq!((landed["download"].clone(), landed["bytes_on_disk"].clone(), landed["switchable"].clone()), (json!("none"), json!(files.total()), json!(true)), "{landed}");
+    let resumed: Vec<(String, Option<String>)> = repo.seen()[requests..].iter().map(|seen| (seen.file.clone(), seen.range.clone())).collect();
+    assert_eq!(resumed, [(files.artifact.0.clone(), Some("bytes=4096-".to_owned()))], "only the rest of the artifact");
+    assert_eq!(files_in(&dir), [files.artifact.0.clone(), files.sidecar.0.clone()], "no .part left");
+    assert_eq!(std::fs::read(dir.join(&files.artifact.0)).unwrap(), files.artifact.1, "the pinned bytes");
+    assert_eq!(std::fs::read(dir.join(&files.sidecar.0)).unwrap(), files.sidecar.1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// GitHub #377 AC 1: with no download running there is nothing to cancel
+/// (`409`); a server with no downloads answers `501`; the route takes the
+/// server's one API key, as `POST /v1/models/download` does, and answers the
+/// browser's preflight.
+#[tokio::test]
+async fn a_cancel_with_nothing_running_is_refused_and_sits_behind_the_api_key() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "cancel-none", &[("acme-idle", 32)]);
+    let dir = models.dir.clone();
+    let server = server_with(&loader, models, &config(&repo, &[]));
+    let (status, refused) = send(&server.clone().app(), Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_not_running")), "{refused}");
+    let (status, refused) = send(&Server::from_active(loader.model("mock-a")).app(), Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("download_unavailable")));
+
+    let keyed = server.with_api_key(ignis_server::config::ApiKey::new("sk-test")).app();
+    let (status, _) = send(&keyed, Method::OPTIONS, "/v1/models/download/cancel", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let response = keyed.clone().oneshot(Request::builder().method(Method::POST).uri("/v1/models/download/cancel").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers().get(header::WWW_AUTHENTICATE).unwrap(), "Bearer");
+    let request = Request::builder().method(Method::POST).uri("/v1/models/download/cancel").header(header::AUTHORIZATION, "Bearer sk-test");
+    let response = keyed.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT, "past the key: nothing runs");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// GitHub #377 AC 5: after a restart a partial entry stays partial. A server
+/// started over the `.part` an earlier one left (a fresh `Downloads`, the
+/// same `download.path`) shows the entry partial with its bytes and no
+/// download, and fetches nothing until asked.
+#[tokio::test]
+async fn a_partial_entry_stays_partial_after_a_restart_until_its_resume() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "restart", &[("acme-later", 32)]);
+    let (dir, again) = (models.dir.clone(), models.clone());
+    let files = files_of("acme-later");
+    repo.hold(&files.artifact.0, 4096);
+    let before = server_with(&loader, models, &config(&repo, &[])).app();
+    let (status, _) = send(&before, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_row(&before, "acme-later", |row| row["bytes_on_disk"] == json!(1 + 4096)).await;
+    let (status, _) = send(&before, Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!(status, StatusCode::OK);
+    drop(before);
+    repo.release();
+
+    let requests = repo.seen().len();
+    let after = server_with(&loader, again, &config(&repo, &[])).app();
+    for _ in 0..3 {
+        let read = row(&send(&after, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+        assert_eq!((read["on_disk"].clone(), read["download"].clone(), read["bytes_on_disk"].clone()), (json!("partial"), json!("none"), json!(1 + 4096)), "{read}");
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(repo.seen().len(), requests, "nothing resumed by itself");
+    let (status, accepted) = send(&after, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
+    assert_eq!((status, accepted["bytes_on_disk"].clone()), (StatusCode::ACCEPTED, json!(1 + 4096)), "{accepted}");
+    until_row(&after, "acme-later", |row| row["on_disk"] == "complete").await;
+    assert_eq!(std::fs::read(dir.join(&files.artifact.0)).unwrap(), files.artifact.1);
+    let _ = std::fs::remove_dir_all(dir);
+}
