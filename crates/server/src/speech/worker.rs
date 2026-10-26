@@ -637,8 +637,9 @@ mod tests {
         worker.touch();
         std::thread::sleep(Duration::from_millis(300));
         assert!(executor.is_loaded() && diarizer.is_loaded(), "not yet idle for a second");
+        // The worker unloads one, then the other: wait for both.
         let until = Instant::now() + Duration::from_secs(10);
-        while executor.is_loaded() && Instant::now() < until {
+        while (executor.is_loaded() || diarizer.is_loaded()) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(!executor.is_loaded() && !diarizer.is_loaded(), "both go together");
