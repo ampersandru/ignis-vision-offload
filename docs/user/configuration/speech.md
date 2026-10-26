@@ -47,9 +47,18 @@ read live, when a session's speakers start. The diarizer is a
 (one GGUF, no sidecar), fetched with `ignis-server model download <id>` like any
 entry; the built-in catalog has none yet, so until it has one the entry is the
 operator's own ([the operator catalog](../guides/operator-catalog.md)). It is
-loaded by the first session that asks for speakers, about 0.2 to 0.4 GB of RAM,
-never VRAM, and unloaded with the speech model, after `speech.idle_unload`
-seconds with no session open. `GET /v1/models` says whether it can serve and
+loaded by the first session that asks for speakers, about 0.2 GB of RAM for
+its F16 weights, never VRAM, and unloaded with the speech model, after
+`speech.idle_unload` seconds with no session open.
+
+What it costs, measured on a 297 s conversation at the live geometry: on a
+10-core i9-10900K with 9 threads a 2 s step takes about 0.33 s (0.45 s with
+its speaker cache full), and beside `qwen3-asr-1.7b` transcribing the same
+session at real time the speakers stayed within 3.6 s of the audio; on 4
+cores of a Linux container, the diarizer alone took 23 to 24 % of the four
+cores (3.2 to 4.1 times faster than real time), where the speech model's
+refreshes alone already fall behind. A file, at the file geometry, costs 25 to
+47 times less than its length. `GET /v1/models` says whether it can serve and
 whether it is loaded ([the `speech.diarizer` member](../api/transcriptions.md#turning-it-on)).
 The geometries and the speaker
 cache's constants are Sortformer's, Nemotron 3 Diarization's own: a diarizer

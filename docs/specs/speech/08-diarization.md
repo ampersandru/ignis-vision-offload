@@ -254,3 +254,131 @@ The constants' names are the checkpoint's own keys.
 - `web/src/server/`: the diarizer in the Server view.
 - The tool that converts the weights, beside `tools/speech-vad/`; it writes the checkpoint's `streaming_config` into
   the GGUF's metadata.
+
+## As built
+
+Built 2026-10-26 on branch `speech-diarizer` (#361). The port is `crates/speech/src/diarizer/`; its oracle and tools are
+`tools/speech-diarizer/` (`record.py`, `convert.py`, `der.py`, `long_items.py`); its measurements' data are on the study
+disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-study\length-guard-361\`, `H:\speech-study\ami\`).
+
+### The port (AC 1, 17)
+
+- **Source.** Ported from the checkpoint's Transformers code, `nemotron3_diarization` in transformers 5.20.2, which
+  restates NeMo's streaming Sortformer (both Apache-2.0); the header of `diarizer/mod.rs` and `NOTICE` name both.
+  ADR 0069 said "restated from NeMo"; the Transformers code is the one read and run as the oracle.
+- **The graph, as read from that code:** the embedder stacks 8 log-mel frames and projects them (no convolutional
+  subsampling); the speaker cache and the FIFO hold the embedder's output, so each step encodes cache, FIFO, chunk
+  and look-ahead again through the 31 layers; a kernel-3 convolution upsamples each 80 ms row to 8 rows of 10 ms;
+  the cache scores 80 ms frames by the mean of their 8 rows' sigmoids. A frame is speech when a channel reaches 0.5,
+  the line the checkpoint's own cache draws (`probs > 0.5`).
+- **A step waits for the samples the checkpoint's processor would give it** (the first chunk centred, the later ones
+  from half a transform before their first frame), 104 samples (6.5 ms) more than the log-mel needs, so that a
+  stream's last steps are the processor's.
+- **AC 1, the oracle.** The reference runs in fp64 with its speaker cache and FIFO forced, at every step, to the fp32
+  run's frames: unforced, a tie at the boundary of the cache's top-k (whose order torch leaves undefined) sent the fp64
+  twin down another path (conv15, live: 0.19). Bound = 10 x the reference's distance from fp64, at least 1e-5:
+  live 5.5e-5, file 1.2e-4, small 2.8e-5; the log-mel 1.6e-3 (natural log).
+  - The forward pass, tensor by tensor on the live geometry's first step: 0.5-1.5e-6 relative L2 per row.
+  - Every 10 ms probability, with the reference's state: fixture 3.6-5.1e-6; conv03, conv08, conv15 at live and file
+    2.5-5.9e-6. A stream that forgets its state between steps: 0.96-0.99.
+  - The streaming state replayed on the recorded probabilities keeps the reference's frames at every step (33 steps of
+    the small geometry with many compressions, and 359 of the conversations), except the two steps where torch's top-k
+    met a tie at its boundary (conv03 file step 1, conv15 live step 54): the port takes equal scores by the lower index.
+  - Free-running, the port's own state follows the reference's on the fixture and on 3 of the 6 conversation runs;
+    on the others a near-tie made it keep other frames from there on (0.01-0.19), which is AC 3's to judge.
+- **AC 17.** The forward pass needs the weights (107-397 MB), which are not in the tree, so every `cargo test` checks
+  the log-mel and replays the speaker cache on the committed VoxPopuli fixture (16 s of conv04, CC0), and the forward
+  legs are `--ignored` on the study disk.
+
+### Quality (AC 3, 4, 5)
+
+- **AC 3, passed.** The port's 10 ms probabilities segmented as NeMo-Speech.cpp segments its own (`der.py nsc`: its
+  defaults, onset 0.641 / offset 0.561 / pads 0.229 / 0.079 s / gaps under 0.296 s filled / segments under 0.511 s
+  dropped), scored by the finding's scorer at collar 0.25 on the twenty conversations: live 3.57 % against
+  NeMo-Speech.cpp's chunk25 3.60 % (-0.03 pt), file 3.77 % against its offline 3.56 % (+0.21 pt). Without the same
+  segmentation the comparison would measure the post-processing: the spike's Transformers rows (sigmoid > 0.5, no
+  padding) differ from NeMo-Speech.cpp's by about 1.4 pt on the same 5 conversations.
+- **AC 4, reported (does not gate).** AMI test meetings ES2004a, IS1009a and TS3003a (Mix-Headset, 46 min, English;
+  pyannote's AMI-diarization-setup `only_words` references), live geometry, the same segmentation, collar 0.25:
+  pooled 30.2 % (missed 27.7, false alarm 0.5, confusion 2.0); per meeting 14.1 %, 16.5 % and 51.0 %. TS3003a's speech
+  is mostly missed (50.8 %), and not for its level: brought from -45.7 to -25 dBFS it scores the same. Speaker
+  confusion stays low (0.1-7.5 %); what real meetings cost this model is detection, as the finding expected.
+- **AC 5.** The ghost rule scored on the speakers' timeline (spec 08's rules over the 80 ms frames, no padding), live:
+  0 s 4.70 % (speaker count right in 75 % of the conversations), 1-2 s 4.71 % (80 %), 3 s 4.91 % (85 %), 5 s 5.06 %
+  (95 %), 6 s 5.44 % (95 %), 8 s 6.10 % (90 %, conv17's count worse than with 0); file 0 s 5.29 % (80 %) to 6 s 6.05 %
+  (90 %). The rule only adds confusion (a channel's frames before it is established count for another), so the
+  letter of AC 5 picks 0; the default awaits the owner (decision D1: the letter of AC 5 gives 0; recommended 5 s).
+
+### Cost (AC 2, 11)
+
+- **AC 2, the stored format: F16.** The DER, live, the same segmentation: F32 3.57 %, F16 3.57 % (the same counts and
+  labels), Q8_0 4.15 % (+0.58 pt, two more counting errors: its matmuls quantize the activations to 8 bits too). The
+  speed, conv01 live, 9 threads, the i9 idle: F32 6.2x real time (333 ms a step), F16 6.4x (322 ms), Q8_0 5.2x
+  (392 ms). F16 is as good and as fast as F32 at half the RAM (199 MB against 397 MB). BF16 was not measured: the
+  executor's kernels have no BF16 path; F16 takes its place (the same size, a finer mantissa).
+- **A step, by part** (`examples/diarizer_profile`, the live geometry's 557 rows, F16, 9 threads): 447 ms, of which
+  the attention 124 ms (a task per head and block of 16 queries, tiled in registers: the decoder's attention op takes
+  2.1x as long on these rows), the MLP's matmuls 112 ms and the q, k, v projections 46 ms. Torch FP32 took about
+  245 ms on the same rows in the spike.
+- **AC 11, passed on the i9.** `crates/server/tests/speech_diarizer_study.rs` (`--ignored`): conv07 (297 s, three
+  speakers) through `/v1/realtime` at real-time pace, `server_vad`, speakers live, Qwen3-ASR `qwen3-asr-1.7b` with
+  refreshes every 2 s, on the one worker: a frame's probabilities came at most 3.6 s after its first sample (bound
+  4.32 s: the live geometry's 2.32 s plus 2 s); 149 steps, 332 ms mean, 474 ms max; 39 items, 3 speakers.
+  - As first built it failed (5.6 s): a step waited behind a refresh already running, seconds of decode on a long
+    item; with refreshes nearly off it was 3.7 s. So the speakers' units go in a lane of their own, taking turns with
+    the session's speech units a unit each, and a step that falls due stops the refresh under way at its next unit of
+    compute, as a commit does (Q79). The refreshes thin out on long items. (Decision D6.)
+  - An item's speaker can come later than the bound by design: a cut at a change reaches back to where the new
+    speaker's run began, up to `diarizer.min_speaker_seconds` before. The session's log line's `lag_max_ms` is the
+    diarizer's pace, not that.
+- **AC 11, the 4-core container** (podman, `--cpuset-cpus 0-3`, a Linux build of `examples/diarize`, F16, conv07 live,
+  the diarizer alone): 3 threads 3.2x real time, 636 ms a step, 275 s of CPU for 297 s of audio, 23 % of the four
+  cores; 4 threads 4.1x, 488 ms, 24 %. The card's low geometry took 54 % there in the spike. The run with Qwen3-ASR
+  beside it was not made there: Qwen3-ASR's live refreshes alone do not keep up on that machine (spec 01).
+- **RAM:** the F16 weights, 199 MB, mapped; a stream holds its speaker cache and FIFO (528 rows of 512, 1 MB) and the
+  samples its next step reads; a diarized item keeps its audio for a cut (64 KB/s, 7.7 MB at the 120 s guard).
+
+### The length guard (AC 12)
+
+- **Items:** continuous Italian from two VoxPopuli speakers (`long_items.py`): their segments concatenated, every run of
+  frames under `server_vad`'s threshold longer than 0.3 s shortened to it, then the first segments reaching 60, 120
+  and 240 s (67-78, 121-131 and 246-251 s); the longest quiet run left is 0.32 s, so the VAD never ends them.
+- **Qwen3-ASR 1.7B (Q4_K_M + Q8_0 encoder)**, partials every 2 s of audio pushed as fast as it goes, the machine
+  shared (times are upper bounds):
+
+  | item | WER 125192 | WER 28429 | commit 125192 | commit 28429 | audio tokens |
+  |---|---|---|---|---|---|
+  | 60 s | 23.0 % | 25.4 % | 5.8 s | 6.6 s | 873-1017 |
+  | 120 s | 21.3 % | 25.2 % | 6.5 s | 9.2 s | 1576-1699 |
+  | 240 s | 15.4 % | 26.1 % | 30.2 s | 26.1 s | 3195-3258 |
+
+  The WER does not grow with the length (its level is VoxPopuli's references: spoken-form numbers, words at the
+  segments' edges missing from them, and one sentence the model dropped in the 60 s item already). The commit grows
+  four-fold from 120 to 240 s, and each partial re-reads the stable text, so a 240 s item's refreshes cost far more
+  than its audio. The decoder's cache holds 112 KB per token (28 layers, 8 KV heads of 128, f16): about 0.24 GB at
+  120 s and 0.49 GB at 240 s per session. **`speech.max_utterance_seconds` stays 120.**
+- **The cut search:** from any point of these speakers' speech the wait to the first frame under the VAD's threshold
+  is p50 1.9-2.8 s, p90 5.0-8.2 s, p95 6.6-10.0 s, max 13-21 s: Silero stays over 0.5 across the gaps between the
+  words of fluent speech. `speech.utterance_cut_search_ms`'s default awaits the owner (decision D2; recommended 10,000 ms, the p95).
+
+### The server (built in slices E-G, decisions the spec left open)
+
+- `session.ignis.diarization` changes apply at once while the current item holds no audio, else from the next item;
+  a new stream numbers its speakers afresh. A diarizer that fails mid-session is an `error`, `ignis_diarizer_failed`,
+  and the session goes on without speakers; an unavailable one refuses the opt-in with `ignis_diarizer_unavailable`.
+- A change found only after its item ended does not split it (the item takes its majority speaker). An item with no
+  speech gets no speaker event. The speaker is the model's channel, so numbers can skip one the ghost rule held back
+  (spec 07 numbers the speakers by first appearance).
+- The length guard's pause cut lands at the end of the quiet VAD frame, its timed cut at the end of the frame where the
+  item reaches N plus the search; idle-timeout items and items a commit makes are not guarded.
+- **The queue limit counts the audio not yet computed** (samples not yet queued, speaker samples not yet sent, samples
+  in units still in the worker), not the audio since the last `completed`: read literally, a dictation longer than the
+  limit (its guard off) would be refused at real time. (Decision D3.)
+- **ADR 0046's applicability is judged per model slot:** a family judges only the fields of its own slot (the active
+  model, or a model loaded beside it, as the speech model and the diarizer are), so a `diarizer.*` value is not
+  refused while a text model is active. (Decision D4.)
+- The override ranges: threshold 0.001-1, boost 0-10, rates 0-4, positive rate 0-1, silence frames 0-125,
+  `min_speaker_seconds` 0-60, `max_queued_audio_seconds` 1-3600 (no 0-off).
+- `diarizer.model`: `auto` takes the first diarizer entry in catalog order (built-in before the operator's). The
+  catalog has no built-in diarizer entry yet: the Hugging Face repo of the F16 GGUF waits for the owner's OK and the
+  licence check (Q115).
