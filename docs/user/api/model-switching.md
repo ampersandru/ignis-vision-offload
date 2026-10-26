@@ -44,6 +44,8 @@ row also carries `bytes_on_disk`, what of it is there now, partial files
 included, and `download`: `running` while a
 [download through the API](../guides/models.md#downloading-from-the-server-view-post-v1modelsdownload)
 fetches it, `failed` with a `download_reason` once one failed, else `none`.
+A download refused for want of room on the disk (`507 download_no_room`) is
+kept the same way, as the entry's `failed` with its reason.
 
 **How the last one ended.** After the first switch or reload since start,
 `GET /v1/models` carries `last_switch: {from, to, outcome, reason?, host_plan?}`:

@@ -155,6 +155,8 @@ export const FIELDS: FieldDecl[] = [
     "An operator catalog: a YAML or JSON file of models fetched beside the built-in ones, in the same format; an id the built-in catalog has is refused. A relative path is read from the directory of the config file that names it."),
   decl("download", "from_ui", "bool", true, {},
     "Let POST /v1/models/download, the Server view's Download, fetch a catalog entry while the server runs, under the same API key as PATCH /v1/config; it needs `enabled` too. Off refuses it, and `model download` on the server's machine still fetches."),
+  decl("download", "free_margin", "bytes", "1G", {},
+    "What a download must leave free on the volume of `path` beyond the bytes it still misses: the Server view's Download, `model download` and the start's own fetch are refused, before any byte is written, when the free space is below the two together."),
   decl("ngram", "persist", "bool", true, { patchable: true, reload_required: true },
     "Persist Flash-Next's n-gram hot rows between loads."),
   decl("ngram", "persist_path", "model|auto|dir", "model", { patchable: true, reload_required: true },
@@ -225,7 +227,7 @@ export const CONFIG: ConfigDocument = {
   },
   vision: { qwen38: { enabled: true, max_tokens: 32768, embedding_pool_mib: null } },
   media: { qwen38: { allow_private_network: false, cache_mib: 1024 } },
-  download: { enabled: true, path: "./models", endpoint: "https://huggingface.co", catalog: "./catalog.yaml", from_ui: true },
+  download: { enabled: true, path: "./models", endpoint: "https://huggingface.co", catalog: "./catalog.yaml", from_ui: true, free_margin: "1G" },
   ngram: { persist: true, persist_path: "model", qwen38flashnext: { hot_bytes: null } },
   kv_disk: { bytes: null, path: "model" },
 };
