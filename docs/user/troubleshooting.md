@@ -161,6 +161,9 @@ shown in the model band
 - `409 model_already_downloaded`: the entry is on disk; **Load** switches to it.
 - `409 model_above_card_class`: the card cannot load the entry (**Not for this
   card**).
+- `507 download_no_room`: the models folder has no room for the entry; the
+  reason shows under its row instead of the band
+  ([`not enough room for … under …`](#not-enough-room-for--under-)).
 
 A download that began and failed keeps its reason under its row,
 `Download failed: …`, until its next download or a restart. `GET …: 401
@@ -170,6 +173,19 @@ the endpoint refused the token sent`, is a gated or private repository: set
 where the server starts, restart it, and press **Download** again; the page
 never takes a token. Any other reason is the transfer's, as `model download`
 prints it, and the next **Download** resumes from what is on disk.
+
+### `not enough room for … under …`
+
+A download, from the Server view, `ignis-server model download` or the start's
+own fetch, checks before it writes a byte that the volume holding
+`--download-path` has room for the entry's bytes still missing plus
+`--download-free-margin` (`1G` by default), and is refused when it has not:
+`<n> bytes needed (<missing> still missing plus download.free_margin <margin>),
+<free> bytes free`. Nothing was written. Free that much space on the volume, or
+point `--download-path` at a larger one, or lower `--download-free-margin` and
+restart the server (it is read at start), then download again: what is already
+on disk counts, so a partial entry needs only the rest
+([Room on the disk](guides/models.md#room-on-the-disk---download-free-margin)).
 
 ### `not enough RAM: the load holds … and keeps 4 GiB free for the system, so it needs … available`
 

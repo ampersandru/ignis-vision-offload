@@ -145,6 +145,7 @@ itself at the next start: a partial entry's next download resumes it.
 | `409 model_above_card_class` | The entry's `card_class` is above this card's. |
 | `409 model_already_downloaded` | Every file of it is already on disk. |
 | `503 model_switching` | A switch is under way; retry once it lands. |
+| `507 download_no_room` | The models folder's volume has less free space than the entry's bytes still missing plus `--download-free-margin`; the row keeps the reason ([Room on the disk](#room-on-the-disk---download-free-margin)). |
 
 A failure is the transfer's own reason, as `model download` prints it. A
 gated repository's `401` or `403` names the token and where it is read from:
@@ -184,6 +185,31 @@ weights it could not run.
 A `model download` and a download the server did land on the same file names —
 as does a `hf download <repo> --revision <rev> --local-dir models` done by
 hand — so any of them satisfies the others.
+
+## Room on the disk: `--download-free-margin`
+
+Before it writes a byte, every download checks that the volume holding
+`--download-path` has room for it: the free space must cover the entry's bytes
+still missing (a partial entry counts only what its `.part` files and finished
+files do not hold yet) plus `--download-free-margin` (`IGNIS_DOWNLOAD_FREE_MARGIN`,
+`download.free_margin`, `1G` by default, a byte count with `K`/`M`/`G`). The
+Server view's **Download**, `model download` and the start's own fetch all make
+the same check, so a transfer never fills the disk halfway through. The free
+space is what the system grants this process on that volume
+(`GetDiskFreeSpaceExW` on Windows, `statvfs` on Linux), read at the folder,
+or at the nearest folder above it when the first download has yet to create it.
+An entry with nothing missing writes nothing and is never refused.
+
+Short of room, the download is refused naming both numbers:
+`not enough room for <id> under <dir>: <n> bytes needed (<missing> still
+missing plus download.free_margin <margin>), <free> bytes free (… GiB needed, …
+GiB free)`. `model download` prints it as the entry's failure and fetches the
+next entry named, exiting nonzero; the start logs it on
+`ignis.model.download_failed` and refuses to start; `POST /v1/models/download`
+answers `507 download_no_room`, and the entry's row in `GET /v1/models/catalog`
+keeps it as its `download_reason`, `download: failed`, until its next download or
+a restart. Free some space on that volume, or lower the margin and restart: the
+field cannot be changed by `PATCH /v1/config`.
 
 ## Where the bytes come from: endpoint and token
 
