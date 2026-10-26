@@ -15,7 +15,7 @@ models:
     repo: acme/qwen-ft-ninfer          # <owner>/<name>
     revision: v1                       # commit, tag or branch; required
     artifact: acme_ft.ninfer           # the file the server loads
-    # kind: speech                     # optional: only "speech" (see below); a text or image model states none
+    # kind: speech                     # optional: "speech" or "diarizer" (see below); a text or image model states none
     card_class: 32                     # optional: the smallest card class it loads on, in GB: 16, 32 or 96
     # aliases: [qwen3.8-27b]           # optional: the family's default id it answers to on a smaller card
     files:                             # every file, all pinned
@@ -44,7 +44,11 @@ VRAM plan says it does not fit.
 [speech model](../api/transcriptions.md) (a Qwen3-ASR decoder and its audio
 encoder), which is never switched to. Such an entry takes no sidecar; instead
 its `artifact` is the decoder, a `.gguf`, and its `files` hold the encoder, a
-`mmproj-*.gguf` beside it — the catalog is refused without one. Any other
+`mmproj-*.gguf` beside it — the catalog is refused without one. `kind: diarizer` makes the entry the
+[diarizer](../configuration/speech.md#the-diarizer) that gives a live session its
+speakers: one GGUF, the `artifact`, and nothing else in `files` (no sidecar,
+no card class), which is never switched to and is loaded beside the speech model.
+`diarizer.model: auto` is the catalog's one diarizer entry. Any other
 `kind` is refused: a text or an image model's kind is read from its artifact.
 
 A built-in id cannot be re-pinned by a file: a mirror of the owner's models is

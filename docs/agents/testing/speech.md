@@ -73,6 +73,15 @@ one `--ignored` leg on the study directory's F32 GGUF, on the CPU: its frames
 against the crate's stream, step by step. `scripts/gpu-profile.ps1` skips it
 by name (`$NotGpuLegs`).
 
+Its catalog side is `crates/server/tests/speech_diarizer_models.rs`: a diarizer
+entry of the test's own (`kind: diarizer`; the built-in catalog has none until
+its repo exists), `diarizer.model` resolved by the real `CatalogDiarizer` on
+the host's CPU (skipped without AVX2), the `speech.diarizer` member of `GET
+/v1/models`, the `PATCH` refusals, and the load at the first session that asks
+and the unload with the speech model, on a `FakeDiarizer`. The session's end
+line is `speech_realtime_speakers_log.rs`, a binary of its own: tracing caches
+a callsite's interest process-wide.
+
 ```sh
 CUDA_VISIBLE_DEVICES= cargo test -p ignis-server --lib speech::cpu::tests::the_diarizer_adapter -- --ignored
 ```

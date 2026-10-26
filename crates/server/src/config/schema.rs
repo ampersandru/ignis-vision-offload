@@ -811,7 +811,9 @@ config_group! {
     DiarizerGroup = "diarizer" {
         /// The diarizer: `auto` (the catalog's diarizer entry), a catalog
         /// entry's id, or `off`. It is enabled when its files are on disk;
-        /// nothing is ever downloaded by itself.
+        /// nothing is ever downloaded by itself. A text, image or speech
+        /// model's id is refused. Loaded by the first session that asks for
+        /// speakers, unloaded with the speech model.
         model: Text = super::DEFAULT_DIARIZER_MODEL.to_owned(), NO_RULE, ALL, [Visible, Patchable];
         /// The ghost rule, in seconds of speech: a voice the diarizer hears is
         /// a speaker of its own once it has spoken this long, and until then

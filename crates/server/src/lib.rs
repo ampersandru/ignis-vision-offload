@@ -368,6 +368,7 @@ impl Server {
         let mut live = Live::clone(&self.live());
         edit(&mut live);
         self.speech.live_changed(&live.speech);
+        self.speech.diarizer_changed(&live.diarizer);
         self.live.store(std::sync::Arc::new(live));
     }
 
@@ -380,6 +381,7 @@ impl Server {
         let live = Live::of(config);
         // The speech worker's idle clock reads `speech.idle_unload` live.
         self.speech.live_changed(&live.speech);
+        self.speech.diarizer_changed(&live.diarizer);
         self.live.store(std::sync::Arc::new(live));
         if let Some(switcher) = &self.switcher {
             // The explicit switch by id (spec playground/05) names these
@@ -610,6 +612,7 @@ impl Server {
     /// speech model that is unavailable, saying so.
     pub fn with_speech(mut self, speech: std::sync::Arc<speech::Speech>) -> Self {
         speech.live_changed(&self.live().speech);
+        speech.diarizer_changed(&self.live().diarizer);
         self.speech = speech;
         self
     }

@@ -112,8 +112,10 @@ pub struct CatalogEntry {
     pub artifact: String,
     /// What the entry is, when the catalog says it: `Some(ModelKind::Speech)`
     /// for a speech model (`kind: speech`; ADR 0067), never switched to,
-    /// whose files are GGUFs with no sidecar. `None` for the rest: a text or
-    /// image model, told apart by its artifact's header.
+    /// whose files are GGUFs with no sidecar; `Some(ModelKind::Diarizer)`
+    /// for the diarizer (`kind: diarizer`; ADR 0069), one GGUF, also never
+    /// switched to. `None` for the rest: a text or image model, told apart
+    /// by its artifact's header.
     pub kind: Option<ModelKind>,
     /// The smallest card class it loads on (`card_class`, in GB; ADR 0064
     /// §1), when it states one. Optional in both layers, by one rule: an
@@ -135,6 +137,11 @@ impl CatalogEntry {
     /// Whether the entry is a speech model (`kind: speech`).
     pub fn is_speech(&self) -> bool {
         self.kind == Some(ModelKind::Speech)
+    }
+
+    /// Whether the entry is a diarizer (`kind: diarizer`, spec speech/08).
+    pub fn is_diarizer(&self) -> bool {
+        self.kind == Some(ModelKind::Diarizer)
     }
 
     /// The model family the entry is of, as far as the catalog tells it:
@@ -475,6 +482,14 @@ fn read_entry(value: &Value, layer: CatalogLayer) -> Result<CatalogEntry, String
                 "a speech model needs its audio encoder among its `files`, exactly one `{SPEECH_ENCODER_PREFIX}*.gguf` file beside `{artifact}`"
             ));
         }
+    } else if kind == Some(ModelKind::Diarizer) {
+        // A diarizer is one GGUF: no sidecar, no encoder beside it.
+        if !artifact.ends_with(".gguf") {
+            return Err(format!("a diarizer's `artifact` is its GGUF, got `{artifact}`"));
+        }
+        if files.len() != 1 {
+            return Err(format!("a diarizer is one GGUF: its `files` list `{artifact}` alone, with no sidecar"));
+        }
     } else {
         let sidecars: Vec<String> = crate::loader::SIDECAR_SUFFIXES.iter().map(|suffix| format!("{artifact}{suffix}")).collect();
         if !files.iter().any(|file| sidecars.contains(&file.name)) {
@@ -487,14 +502,16 @@ fn read_entry(value: &Value, layer: CatalogLayer) -> Result<CatalogEntry, String
     Ok(CatalogEntry { id, repo, revision, artifact, kind, card_class, aliases, files, layer })
 }
 
-/// `kind`, when stated: `speech`, the one kind a catalog says. A text or an
-/// image model is told apart by its artifact's header (ADR 0047), so stating
-/// either here would be a second word that could disagree with the file.
+/// `kind`, when stated: `speech` or `diarizer`, the kinds a catalog says. A
+/// text or an image model is told apart by its artifact's header (ADR 0047),
+/// so stating either here would be a second word that could disagree with
+/// the file.
 fn kind(map: &Map<String, Value>) -> Result<Option<ModelKind>, String> {
     match map.get("kind") {
         None => Ok(None),
         Some(Value::String(kind)) if kind.trim() == "speech" => Ok(Some(ModelKind::Speech)),
-        Some(other) => Err(format!("`kind` must be `speech` when stated (a text or image model's kind is read from its artifact), got {other}")),
+        Some(Value::String(kind)) if kind.trim() == "diarizer" => Ok(Some(ModelKind::Diarizer)),
+        Some(other) => Err(format!("`kind` must be `speech` or `diarizer` when stated (a text or image model's kind is read from its artifact), got {other}")),
     }
 }
 
@@ -887,6 +904,48 @@ mod tests {
         let text = OPERATOR.replace("acme_ft.ninfer.graft.json", "acme_ft.ninfer.notes.json");
         assert!(operator(&text).expect_err("sidecar").to_string().contains("sidecar"));
     }
+    /// A minimal valid diarizer entry, YAML.
+    const DIARIZER_OPERATOR: &str = "models:
+  - id: acme-diarizer
+    repo: acme/diarizer
+    revision: v1
+    artifact: acme-diarizer.gguf
+    kind: diarizer
+    files:
+      - { name: acme-diarizer.gguf, bytes: 20, sha256: abb1000000000000000000000000000000000000000000000000000000000002 }
+";
+
+    /// Spec speech/08 (Q118): `kind: diarizer` is one GGUF with no sidecar
+    /// and no card class; a second file, a sidecar or another artifact is
+    /// refused naming the entry.
+    #[test]
+    fn a_diarizer_entry_is_one_gguf_and_no_sidecar() {
+        let catalog = operator(DIARIZER_OPERATOR).expect("a diarizer entry has no sidecar");
+        let acme = catalog.entry("acme-diarizer").unwrap();
+        assert_eq!(acme.kind, Some(ModelKind::Diarizer));
+        assert!(acme.is_diarizer() && !acme.is_speech());
+        assert_eq!(acme.card_class, None);
+        assert!(!catalog.entry("acme-diarizer").unwrap().is_speech());
+        for (from, to, says) in [
+            ("acme-diarizer.gguf", "acme-diarizer.bin", vec!["acme-diarizer", "diarizer's `artifact`"]),
+            (
+                "      - { name: acme-diarizer.gguf,",
+                "      - { name: acme-diarizer.gguf.graft.json, bytes: 5, sha256: 9c1e000000000000000000000000000000000000000000000000000000000003 }
+      - { name: acme-diarizer.gguf,",
+                vec!["acme-diarizer", "one GGUF"],
+            ),
+        ] {
+            let text = DIARIZER_OPERATOR.replace(from, to);
+            let error = operator(&text).expect_err(to).to_string();
+            for want in says {
+                assert!(error.contains(want), "{to}: {error} lacks {want}");
+            }
+        }
+        let error = operator(&DIARIZER_OPERATOR.replace("kind: diarizer", "kind: image")).expect_err("image").to_string();
+        assert!(error.contains("`speech` or `diarizer`"), "{error}");
+        assert!(Catalog::built_in().entries().iter().all(|entry| !entry.is_diarizer()), "no built-in diarizer until its repo exists (Q115)");
+    }
+
     /// The invariants the rest of the server leans on, stated once more over
     /// the built-in catalog on their own.
     #[test]

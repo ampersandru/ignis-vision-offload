@@ -251,6 +251,14 @@ pub trait DiarizerExecutor: Send + Sync {
     /// Give the weights' host memory back.
     fn unload(&self);
     fn is_loaded(&self) -> bool;
+    /// The id `diarizer.model` names, available or not; `None` when it names
+    /// none (`off`, or `auto` with no diarizer in the catalog).
+    fn id(&self) -> Option<String> {
+        None
+    }
+    /// The live `diarizer.*` settings changed: a diarizer that resolves its
+    /// model from them takes the new one for the next stream.
+    fn follow(&self, _: &crate::config::schema::DiarizerGroup) {}
 }
 
 /// The diarizer of a server that has none configured: unavailable, saying
@@ -413,6 +421,10 @@ impl DiarizerExecutor for FakeDiarizer {
 
     fn is_loaded(&self) -> bool {
         self.loaded.load(Ordering::SeqCst)
+    }
+
+    fn id(&self) -> Option<String> {
+        Some("fake-diarizer".to_owned())
     }
 }
 

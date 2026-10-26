@@ -2973,6 +2973,20 @@ fn a_speech_model_of_another_kind_is_refused() {
     }
 }
 
+/// Spec speech/08 (AC 14): `diarizer.model` naming a text, image or speech
+/// model is refused, a built-in entry of another kind or a model family's
+/// id; `auto`, `off` and an id the catalog lacks are taken.
+#[test]
+fn a_diarizer_model_of_another_kind_is_refused() {
+    for id in ["qwen3.8-27b", "ignis-image-2.1-turbo", "qwen3-asr-1.7b"] {
+        let err = refused(&["--diarizer-model", id]);
+        assert!(err.contains("--diarizer-model") && err.contains(id) && err.contains("not a diarizer"), "{err}");
+    }
+    for id in ["auto", "off", "nemotron-3-diarization", "a-diarizer-of-my-own"] {
+        assert!(resolve(&args(&["--diarizer-model", id]), no_env).is_ok(), "{id}");
+    }
+}
+
 /// A compat name equal to a served id is refused at start (spec speech/02):
 /// a catalog entry's, a model family's, the start model's or the speech
 /// model's own.

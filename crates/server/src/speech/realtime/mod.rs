@@ -255,8 +255,9 @@ enum Outcome {
     Failed(Failure),
     /// The diarizer's stream opened: the samples its first step waits for.
     Opened(usize),
-    /// A step's frames, and the samples the next waits for.
-    Frames(Frames, usize),
+    /// A step's frames, the samples the next waits for, and the step's
+    /// compute time on the worker.
+    Frames(Frames, usize, Duration),
     /// What the stream heard past its last step, scored as if it ended.
     Tail(Frames),
     /// The diarizer failed: the session goes on without speakers.
@@ -433,9 +434,31 @@ struct Diarized {
     cancel: Arc<AtomicBool>,
     /// The diarizer failed: the session goes on without speakers.
     failed: bool,
+    /// What the session's log line says when its speakers end: the channels
+    /// the items were given (a bit each), and the steps' compute times.
+    heard_speakers: u32,
+    steps: u32,
+    step_total: Duration,
+    step_max: Duration,
 }
 
 impl Diarized {
+    /// The session's one log line about its speakers (spec speech/08, Out of
+    /// Scope): how many were heard and what a step cost on the worker, the
+    /// figures a person tunes `diarizer.*` by. Numbers only.
+    fn log(&self, session: &str) {
+        let mean = self.step_total.checked_div(self.steps).unwrap_or_default();
+        tracing::info!(
+            name: "ignis.speech.diarization",
+            session = %session,
+            speakers = self.heard_speakers.count_ones(),
+            steps = self.steps,
+            step_mean_ms = mean.as_secs_f64() * 1000.0,
+            step_max_ms = self.step_max.as_secs_f64() * 1000.0,
+            "a session with speakers ended"
+        );
+    }
+
     /// The frame a session sample is in, from the stream's first: the first
     /// whole frame at or after it, for an item's start; the first after it,
     /// for an end.
@@ -591,8 +614,9 @@ impl Connection {
             item.cancel.store(true, Ordering::SeqCst);
             item.stop_refresh.store(true, Ordering::SeqCst);
         }
-        if let Some(speakers) = &self.speakers {
+        if let Some(speakers) = self.speakers.take() {
             speakers.cancel.store(true, Ordering::SeqCst);
+            speakers.log(&self.session_id);
         }
     }
 
@@ -1133,7 +1157,7 @@ impl Connection {
         let Some(outcome) = done.outcome else { return };
         let outcome = match outcome {
             Outcome::Opened(due) => return self.speakers_opened(due),
-            Outcome::Frames(frames, due) => return self.heard_frames(frames, due),
+            Outcome::Frames(frames, due, cost) => return self.heard_frames(frames, due, cost),
             Outcome::Tail(frames) => return self.heard_tail(frames),
             Outcome::Unheard(why) => return self.speakers_failed(why),
             outcome => outcome,
@@ -1322,6 +1346,7 @@ impl Connection {
         }
         if let Some(gone) = self.speakers.take() {
             gone.cancel.store(true, Ordering::SeqCst);
+            gone.log(&self.session_id);
             self.unheard();
         }
         let Some(mode) = wanted else { return };
@@ -1338,6 +1363,10 @@ impl Connection {
             tail_end: 0,
             cancel: Arc::new(AtomicBool::new(false)),
             failed: false,
+            heard_speakers: 0,
+            steps: 0,
+            step_total: Duration::ZERO,
+            step_max: Duration::ZERO,
         });
         self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode == Diarization::File)));
     }
@@ -1397,9 +1426,14 @@ impl Connection {
 
     /// A step's frames: a speaker change in the current item cuts it, and the
     /// items they cover the end of have their speaker.
-    fn heard_frames(&mut self, frames: Frames, due: usize) {
+    fn heard_frames(&mut self, frames: Frames, due: usize, cost: Duration) {
         let Some(speakers) = self.speakers.as_mut() else { return };
         speakers.stepping = false;
+        if !frames.probs.is_empty() {
+            speakers.steps += 1;
+            speakers.step_total += cost;
+            speakers.step_max = speakers.step_max.max(cost);
+        }
         speakers.due = Some(due as u64);
         speakers.frames.push(&frames.probs);
         self.speaker_change();
@@ -1450,12 +1484,17 @@ impl Connection {
     fn assign_speakers(&mut self, heard: Option<Speakers>) {
         let Some(speakers) = self.speakers.as_ref() else { return };
         let frames = heard.as_ref().unwrap_or(&speakers.frames);
+        let mut given = 0u32;
         for item in self.items.iter_mut().filter(|item| item.diarized && item.speaker.is_none()) {
             let Some(end) = item.end else { continue };
             let (from, to) = (speakers.frame(item.start), speakers.frame(end));
             if frames.len() >= to {
                 item.speaker = Some(frames.speaker_of(from, to));
+                given |= item.speaker.flatten().map_or(0, |speaker| 1 << (speaker as u32));
             }
+        }
+        if let Some(speakers) = self.speakers.as_mut() {
+            speakers.heard_speakers |= given;
         }
     }
 
@@ -1643,7 +1682,7 @@ fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, diari
             stream.push(&std::mem::take(samples));
             let scored = match tail {
                 true => stream.tail().map(Outcome::Tail),
-                false => stream.step().map(|frames| Outcome::Frames(frames.unwrap_or_default(), stream.samples_needed())),
+                false => stream.step().map(|frames| Outcome::Frames(frames.unwrap_or_default(), stream.samples_needed(), began.elapsed())),
             };
             match scored {
                 Ok(outcome) => Progress::Done(Some(outcome)),
