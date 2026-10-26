@@ -18,7 +18,7 @@ use crate::gguf::Value;
 use crate::matmul::{matmul, Weight};
 use crate::mel::N_MELS;
 use crate::model::{LoadError, Linear, Loader};
-use crate::ops::{self, AttnShape, Kv, Mask, Rope};
+use crate::ops::{self, Rope};
 use crate::pool::Pool;
 
 use super::{Constants, Geometry, SPEAKERS};
@@ -176,36 +176,36 @@ impl Weights {
         assert!(x.len() == n * d && keys <= n && keys > 0);
         let hd = d / self.heads;
         let rope = Rope::text(0, n, [hd / 2, 0, 0], self.theta, hd);
-        let shape = AttnShape { hq: self.heads, hkv: self.heads, hd };
+        let norm = |x: &mut [f32], ln: &(Vec<f32>, Vec<f32>)| rows(pool, x, d, &|r| ops::layer_norm(isa, r, &ln.0, &ln.1, self.eps));
         let mut h = x.to_vec();
-        ops::layer_norm(isa, &mut h, &self.input_ln.0, &self.input_ln.1, self.eps);
+        norm(&mut h, &self.input_ln);
         if let Some(f) = tap.as_mut() {
             f("input_ln", &h);
         }
         let mut att = vec![0f32; n * d];
         for (i, l) in self.layers.iter().enumerate() {
             let mut a = h.clone();
-            ops::layer_norm(isa, &mut a, &l.ln1.0, &l.ln1.1, self.eps);
+            norm(&mut a, &l.ln1);
             let (mut q, mut k, mut v) = (vec![0f32; n * d], vec![0f32; n * d], vec![0f32; n * d]);
             matmul(pool, isa, &l.q, &a, n, &mut q);
             matmul(pool, isa, &l.k, &a, n, &mut k);
             matmul(pool, isa, &l.v, &a, n, &mut v);
             rope.apply(isa, &mut q, self.heads);
             rope.apply(isa, &mut k, self.heads);
-            ops::attention(pool, isa, shape, &q, n, Kv::F32 { k: &k, v: &v }, keys, Mask::Full, &mut att);
+            attention(pool, isa, self.heads, &q, &k, &v, n, keys, &mut att);
             let o = linear(pool, isa, &l.o, &att, n);
             ops::add(isa, &mut h, &o);
             let mut a = h.clone();
-            ops::layer_norm(isa, &mut a, &l.ln2.0, &l.ln2.1, self.eps);
+            norm(&mut a, &l.ln2);
             let mut f = linear(pool, isa, &l.fc1, &a, n);
-            ops::gelu(isa, &mut f);
+            rows(pool, &mut f, l.fc1.w.n, &|r| ops::gelu(isa, r));
             let y = linear(pool, isa, &l.fc2, &f, n);
             ops::add(isa, &mut h, &y);
             if let Some(f) = tap.as_mut() {
                 f(&format!("layer.{i}"), &h);
             }
         }
-        ops::layer_norm(isa, &mut h, &self.post_ln.0, &self.post_ln.1, self.eps);
+        norm(&mut h, &self.post_ln);
         if let Some(f) = tap.as_mut() {
             f("final_ln", &h);
         }
@@ -242,5 +242,176 @@ impl Weights {
 fn relu(x: &mut [f32]) {
     for v in x {
         *v = v.max(0.0);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SendPtr(*mut f32);
+// SAFETY: each task of `rows` touches its own rows.
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+
+impl SendPtr {
+    fn get(self) -> *mut f32 {
+        self.0
+    }
+}
+
+/// Rows a task of [`rows`] takes.
+const ROWS_PER_TASK: usize = 16;
+
+/// `f` over `x`'s rows of `width`, a few rows per task on the pool: a step's rows are hundreds.
+#[doc(hidden)]
+pub fn rows(pool: &Pool, x: &mut [f32], width: usize, f: &(dyn Fn(&mut [f32]) + Sync)) {
+    let n = x.len() / width;
+    let p = SendPtr(x.as_mut_ptr());
+    pool.run(n.div_ceil(ROWS_PER_TASK), &|t| {
+        let (a, b) = (t * ROWS_PER_TASK, ((t + 1) * ROWS_PER_TASK).min(n));
+        // SAFETY: rows a..b are this task's alone, inside x.
+        f(unsafe { std::slice::from_raw_parts_mut(p.get().add(a * width), (b - a) * width) });
+    });
+}
+
+/// Query rows an attention task takes.
+const QUERIES_PER_TASK: usize = 16;
+
+/// Bidirectional attention over a step's `n` rows (rows of `heads` heads): each row's scores
+/// against every key, `q·kᵀ / √d`, softmaxed over the first `keys` (the rest weigh 0), then times
+/// `v`. One task per head and block of query rows, on the pool at once: a step has hundreds of
+/// rows, where the decoder's attention op serves a few queries. The keys are transposed per head
+/// first, so that a query's scores over 8 keys are one vector.
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub fn attention(pool: &Pool, isa: Isa, heads: usize, q: &[f32], k: &[f32], v: &[f32], n: usize, keys: usize, out: &mut [f32]) {
+    let d = q.len() / n;
+    let hd = d / heads;
+    let scale = 1.0 / (hd as f32).sqrt();
+    // kt[h][c][j]: key j's element c of head h.
+    let mut kt = vec![0f32; heads * hd * n];
+    for (j, row) in k.chunks_exact(d).enumerate() {
+        for (i, &x) in row.iter().enumerate() {
+            kt[i * n + j] = x;
+        }
+    }
+    let blocks = n.div_ceil(QUERIES_PER_TASK);
+    let o = SendPtr(out.as_mut_ptr());
+    pool.run(heads * blocks, &|t| {
+        let (h, b) = (t / blocks, t % blocks);
+        let (r0, r1) = (b * QUERIES_PER_TASK, ((b + 1) * QUERIES_PER_TASK).min(n));
+        let kth = &kt[h * hd * n..(h + 1) * hd * n];
+        let mut scores = vec![0f32; QROWS * n];
+        let mut acc = vec![0f32; QROWS * hd];
+        for r in (r0..r1).step_by(QROWS) {
+            let m = QROWS.min(r1 - r);
+            head_rows(isa, q, kth, v, d, h * hd, hd, r, m, n, keys, scale, &mut scores, &mut acc);
+            for i in 0..m {
+                // SAFETY: row r + i's head h is this task's alone, inside out.
+                unsafe { std::slice::from_raw_parts_mut(o.get().add((r + i) * d + h * hd), hd) }.copy_from_slice(&acc[i * hd..][..hd]);
+            }
+        }
+    });
+}
+
+/// Query rows the attention's inner loops take together: each key and value they load serves
+/// them all.
+const QROWS: usize = 4;
+/// Keys (in the scores) and value elements (in the sum) per register tile.
+const LANES: usize = 16;
+
+/// `m` (at most [`QROWS`]) query rows of one head from row `r0`: their scores against the keys
+/// (`kt`, the head's keys transposed, rows of `n`), the softmax over the first `keys`, and the
+/// weighted sums of the values (`v`, rows of `d`, the head's from column `at`) into `acc`, rows of
+/// `hd`.
+#[allow(clippy::too_many_arguments)]
+fn head_rows(isa: Isa, q: &[f32], kt: &[f32], v: &[f32], d: usize, at: usize, hd: usize, r0: usize, m: usize, n: usize, keys: usize, scale: f32, scores: &mut [f32], acc: &mut [f32]) {
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn body(isa: Isa, q: &[f32], kt: &[f32], v: &[f32], d: usize, at: usize, hd: usize, r0: usize, m: usize, n: usize, keys: usize, scale: f32, scores: &mut [f32], acc: &mut [f32]) {
+        let qrow = |i: usize| &q[(r0 + i.min(m - 1)) * d + at..][..hd];
+        let qs: [&[f32]; QROWS] = std::array::from_fn(qrow);
+        // Scores: a tile of QROWS rows by LANES keys stays in registers over the head's elements.
+        let full = keys / LANES * LANES;
+        for j in (0..full).step_by(LANES) {
+            let mut t = [[0f32; LANES]; QROWS];
+            for c in 0..hd {
+                let k: &[f32; LANES] = kt[c * n + j..][..LANES].try_into().unwrap();
+                for (i, row) in t.iter_mut().enumerate() {
+                    let x = qs[i][c];
+                    for l in 0..LANES {
+                        row[l] += x * k[l];
+                    }
+                }
+            }
+            for (i, row) in t.iter().enumerate() {
+                scores[i * n + j..][..LANES].copy_from_slice(row);
+            }
+        }
+        for j in full..keys {
+            for (i, qr) in qs.iter().enumerate() {
+                scores[i * n + j] = (0..hd).map(|c| qr[c] * kt[c * n + j]).sum();
+            }
+        }
+        for i in 0..m {
+            let s = &mut scores[i * n..i * n + keys];
+            for a in s.iter_mut() {
+                *a *= scale;
+            }
+            ops::softmax(isa, s);
+        }
+        // Sums: a tile of QROWS rows by LANES elements stays in registers over the keys.
+        for e in (0..hd).step_by(LANES) {
+            let mut t = [[0f32; LANES]; QROWS];
+            for j in 0..keys {
+                let vj: &[f32; LANES] = v[j * d + at + e..][..LANES].try_into().unwrap();
+                for (i, row) in t.iter_mut().enumerate() {
+                    let p = scores[i.min(m - 1) * n + j];
+                    for l in 0..LANES {
+                        row[l] += p * vj[l];
+                    }
+                }
+            }
+            for (i, row) in t.iter().enumerate().take(m) {
+                acc[i * hd + e..][..LANES].copy_from_slice(row);
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2,fma,f16c")]
+    #[allow(clippy::too_many_arguments)]
+    fn avx2(isa: Isa, q: &[f32], kt: &[f32], v: &[f32], d: usize, at: usize, hd: usize, r0: usize, m: usize, n: usize, keys: usize, scale: f32, scores: &mut [f32], acc: &mut [f32]) {
+        body(isa, q, kt, v, d, at, hd, r0, m, n, keys, scale, scores, acc)
+    }
+    assert!(hd % LANES == 0 && m >= 1 && m <= QROWS);
+    #[cfg(target_arch = "x86_64")]
+    if isa.is_avx2() {
+        // SAFETY: an AVX2 Isa exists only after detection.
+        unsafe { avx2(isa, q, kt, v, d, at, hd, r0, m, n, keys, scale, scores, acc) };
+        return;
+    }
+    body(isa, q, kt, v, d, at, hd, r0, m, n, keys, scale, scores, acc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::{AttnShape, Kv, Mask};
+
+    /// The step's attention gives the decoder's op's result, over all keys and over the first ones.
+    #[test]
+    fn the_step_attention_is_the_attention_op() {
+        let mut rng = crate::testutil::Rng::new(7);
+        let (n, heads, hd) = (37, 4, 16);
+        let d = heads * hd;
+        let [q, k, v] = std::array::from_fn(|_| rng.activations(n * d));
+        let pool = Pool::new(3);
+        for isa in [Isa::scalar()].into_iter().chain(crate::cpu::select(crate::cpu::Features::detect()).ok()) {
+            for keys in [n, 20] {
+                let (mut mine, mut theirs) = (vec![0f32; n * d], vec![0f32; n * d]);
+                attention(&pool, isa, heads, &q, &k, &v, n, keys, &mut mine);
+                ops::attention(&pool, isa, AttnShape { hq: heads, hkv: heads, hd }, &q, n, Kv::F32 { k: &k, v: &v }, keys, Mask::Full, &mut theirs);
+                let worst = mine.iter().zip(&theirs).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+                assert!(worst < 1e-5, "{isa:?}, {keys} keys: {worst}");
+            }
+        }
     }
 }
