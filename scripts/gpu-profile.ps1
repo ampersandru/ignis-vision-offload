@@ -62,7 +62,8 @@ $NotGpuLegs = @(
     "the_eleven_dictations_through_the_real_route_at_real_time_pace",
     "the_smallest_speech_entry_downloads_and_verifies_against_its_pins",
     "the_diarizer_adapter_steps_the_crates_stream_on_the_speech_models_pool",
-    "the_diarizer_keeps_up_with_a_conversation_at_real_time_pace"
+    "the_diarizer_keeps_up_with_a_conversation_at_real_time_pace",
+    "every_item_of_the_conversations_sends_its_text_whole_at_its_end"
 )
 
 # Per-stage wall time (GitHub #135): the profile's cost is the point of this
