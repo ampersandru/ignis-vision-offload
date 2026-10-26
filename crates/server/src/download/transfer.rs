@@ -655,4 +655,23 @@ mod tests {
     fn the_part_file_is_the_final_name_plus_part() {
         assert_eq!(part_path(Path::new("models/a.ninfer")), PathBuf::from("models/a.ninfer.part"));
     }
+
+    /// GitHub #376: a `401` or `403` says whether a token was sent and where
+    /// it is read from, in each of the four cells — no token or one, Hugging
+    /// Face or another endpoint — naming `HF_TOKEN` for Hugging Face alone,
+    /// the one host it is sent to, and never the token.
+    #[test]
+    fn a_refusal_for_the_token_says_whether_one_was_sent_and_where_it_is_read() {
+        let hint = |endpoint: &str, token: Option<&str>| Downloader::new(endpoint, token.map(ApiKey::new)).expect("a client").token_hint();
+        let set = "set IGNIS_DOWNLOAD_TOKEN (download.token)";
+        let none = hint("https://huggingface.co", None);
+        assert_eq!(none, format!("the endpoint wants a token and none was sent: {set}, or HF_TOKEN for the server (read at its start) or for `model download`"));
+        let mirror = hint("https://mirror.example/hf", None);
+        assert_eq!(mirror, format!("the endpoint wants a token and none was sent: {set} for the server (read at its start) or for `model download`"));
+        let refused = hint("https://huggingface.co", Some("tok-secret"));
+        assert_eq!(refused, "the endpoint refused the token sent, IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN as the server (at its start) or `model download` read it");
+        let refused_by_mirror = hint("https://mirror.example/hf", Some("tok-secret"));
+        assert_eq!(refused_by_mirror, "the endpoint refused the token sent, IGNIS_DOWNLOAD_TOKEN (download.token) as the server (at its start) or `model download` read it");
+        assert!(![none, mirror, refused, refused_by_mirror].iter().any(|hint| hint.contains("tok-secret")), "never the token");
+    }
 }
