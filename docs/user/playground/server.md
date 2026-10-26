@@ -74,12 +74,13 @@ band.
 
 Before a byte is written, the server checks that the volume of its
 `download.path` has room for the entry's bytes still missing plus
-`download.free_margin` (`1G` by default). Short of room, **Download** is
-refused, and the reason, naming the bytes needed and the bytes free, shows under
+`download.free_margin` (`1G` by default). Short of room, **Download** (or a
+partial entry's **Resume**) is refused, and the reason, naming the bytes needed
+and the bytes free, shows under
 the row rather than in the band, `Download failed: not enough room for …`,
 until the entry's next download or a restart
 ([Room on the disk](../guides/models.md#room-on-the-disk---download-free-margin)).
-Free some space there and press **Download** again. `download.free_margin` is
+Free some space there and press it again. `download.free_margin` is
 shown read-only, `Set at start`, in the Download group.
 
 Downloading takes the same API key as **Apply**
