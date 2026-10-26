@@ -94,7 +94,10 @@ them.
 
 **One at a time.** The page dictates into one field at once. Pressing another
 mic, in the [Image studio](image-studio.md) or [Decide](decide.md), ends the
-dictation under way, and its text still lands in its own field.
+dictation under way, and its text still lands in its own field. While the
+[Transcribe](transcribe.md) view listens, every mic is struck and says
+**Listening in Transcribe.**; a listening that starts ends the dictation under
+way the same way.
 
 ### What a dictation sends
 

@@ -108,6 +108,14 @@
     --series-2: #2a78d6;
     --series-3: #1baf7a;
     --series-4: #4a3aa7;
+    /* A Transcript's speakers (spec speech/07): six hues told apart on the
+       ground, the ember kept for what is live. */
+    --speaker-1: #2a78d6;
+    --speaker-2: #11865d;
+    --speaker-3: #6a4fc9;
+    --speaker-4: #a86500;
+    --speaker-5: #c0336b;
+    --speaker-6: #0f7c8c;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -126,6 +134,12 @@
       --series-2: #3987e5;
       --series-3: #199e70;
       --series-4: #9085e9;
+      --speaker-1: #6aa6ef;
+      --speaker-2: #3ecf8e;
+      --speaker-3: #a99ff0;
+      --speaker-4: #fab219;
+      --speaker-5: #f17fa8;
+      --speaker-6: #4cc3d4;
     }
   }
 
@@ -229,6 +243,23 @@
   }
   .dictation-bar {
     transition: height 90ms linear;
+  }
+  /* The Transcribe view's spine (spec speech/07): an utterance under way
+     burns along it with the dictation's heat, top to bottom. */
+  .spine-live {
+    background: var(--heat);
+    background-size: 100% 200%;
+    animation: spine-heat 1.4s linear infinite;
+  }
+  @keyframes spine-heat {
+    to {
+      background-position: 0 -200%;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spine-live {
+      animation: none;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .dictation-heat,

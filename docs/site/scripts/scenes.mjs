@@ -355,7 +355,76 @@ export const scenes = [
     },
     settle: 1500,
   },
+  {
+    // A call written down (spec speech/07). Neither the mock nor a picture run records one, so the scene puts a
+    // made-up transcript in the page's store, reloads, and opens the view; the server is said to have its speech
+    // model and its diarizer, so the deck can start. No real conversation reaches the guide.
+    name: "transcribe",
+    before: async (page) => {
+      await page.route("**/v1/models", async (route) => {
+        const answer = await route.fetch();
+        const json = await answer.json();
+        await route.fulfill({ response: answer, json: { ...json, speech: { available: true, diarizer: { id: "nemotron-3-diarization", loaded: true, available: true } } } });
+      });
+    },
+    run: async (page) => {
+      await chatReady(page);
+      await page.evaluate(storeTranscript, sceneTranscript());
+      await page.reload();
+      await chatReady(page);
+      await view(page, "Transcribe");
+      await page.getByText("I'll post the notes in the channel.").waitFor();
+    },
+  },
 ];
+
+/** A made-up call: Me and two voices of the shared audio, as the Transcribe view stores it (web/src/transcribe/stored.ts). */
+function sceneTranscript() {
+  const lines = [
+    [2_100, 4_600, 1, "Morning both. Can you hear me all right?"],
+    [5_300, 8_200, 2, "Loud and clear. Shall we start with the release?"],
+    [9_000, 15_400, 3, "Yes. The build passed overnight on both runners, so the tag can go out today."],
+    [16_200, 19_300, 1, "Good. What is still open on the docs side?"],
+    [20_100, 27_000, 2, "Two pages need new screenshots, and the changelog needs a line for the speech view."],
+    [27_800, 30_900, 3, "I can take the screenshots this afternoon."],
+    [31_600, 37_200, 1, "Then let's tag at four and check the download links after."],
+    [38_000, 41_500, 2, "Agreed. I'll post the notes in the channel."],
+  ];
+  return {
+    version: 1,
+    key: "scene-transcript",
+    order: Date.now(),
+    title: "25 Oct 15:42 · Call",
+    source: "call",
+    startedAt: new Date(2026, 9, 25, 15, 42).getTime(),
+    clockMs: 43_000,
+    utterances: lines.map(([startMs, endMs, speaker, text], i) => ({ id: i + 1, startMs, endMs, speaker, text })),
+    speakers: [
+      { id: 1, name: "Me", role: "me" },
+      { id: 2, name: "Speaker 1", role: "voice" },
+      { id: 3, name: "Speaker 2", role: "voice" },
+    ],
+    channels: { me: 1, "shared-2:0": 2, "shared-2:1": 3 },
+    voices: 2,
+  };
+}
+
+/** Runs in the page: writes `doc` into the Playground's store (web/src/store/indexeddb.ts), as the Transcribe view's open one. */
+async function storeTranscript(doc) {
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open("ignis-playground");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("docs", "readwrite");
+    tx.objectStore("docs").put({ collection: "transcribe-sessions", id: doc.key, value: doc });
+    tx.objectStore("docs").put({ collection: "active-session", id: "transcribe", value: doc.key });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
 
 /**
  * Agent-like traffic for the Monitor: waves of concurrent chat requests at

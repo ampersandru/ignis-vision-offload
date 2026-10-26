@@ -1,7 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { PulseChip } from "../monitor/MonitorPulse.tsx";
+import { IDLE, type ListeningHandle, type ListeningState } from "../transcribe/listening.ts";
 import { Header } from "./Header.tsx";
+
+/** A listening fixed in `state`. */
+const fixed = (state: Partial<ListeningState>): ListeningHandle => {
+  const fixedState = { ...IDLE, ...state };
+  return { getState: () => fixedState, subscribe: () => () => {} };
+};
 
 // The header's view switch (GitHub #165, #247) and the engine pulse.
 
@@ -58,9 +65,9 @@ describe("Header on a phone (spec playground/05, AC 10)", () => {
     const html = renderToStaticMarkup(<Header {...base} view="server" onView={() => {}} monitorAvailable />);
     const menu = select(html);
     expect(menu).toContain("sm:hidden");
-    expect(menu.match(/<option/g)).toHaveLength(5);
+    expect(menu.match(/<option/g)).toHaveLength(6);
     expect(menu).toMatch(/<option value="server" selected="">Server<\/option>/);
-    for (const label of ["Playground", "Decide", "Image", "Monitor"]) expect(menu).toContain(`>${label}</option>`);
+    for (const label of ["Playground", "Decide", "Image", "Transcribe", "Monitor"]) expect(menu).toContain(`>${label}</option>`);
     // The tabs are what `sm` and up show.
     expect(html).toMatch(/<nav aria-label="View" class="hidden[^"]*sm:flex/);
   });
@@ -102,6 +109,28 @@ describe("Header and the Server view (spec playground/05)", () => {
 
     const failed = renderToStaticMarkup(<Header {...base} model={{ state: "error", message: "Switch failed: no file", failed: true }} />);
     expect(failed).toContain("Switch failed: no file");
+  });
+});
+
+// The Transcribe view (spec speech/07, AC 1): a tab of its own, and a listening shown from every view.
+describe("Header and the Transcribe view", () => {
+  it("offers the Transcribe view with its drawers, the Transcripts and the Speakers", () => {
+    expect(renderToStaticMarkup(<Header {...base} view="chat" onView={() => {}} />)).toContain(">Transcribe<");
+    const transcribe = renderToStaticMarkup(<Header {...base} view="transcribe" onView={() => {}} />);
+    expect(transcribe).toMatch(/aria-current="page"[^>]*>Transcribe</);
+    expect(transcribe).toContain('aria-label="Transcripts"');
+    expect(transcribe).toContain('aria-label="Speakers"');
+  });
+
+  it("shows a listening under way from every view, its clock and whether it is paused, and opens the view", () => {
+    for (const view of ["chat", "decide", "server", "transcribe"] as const) {
+      const html = renderToStaticMarkup(<Header {...base} view={view} onView={() => {}} listening={fixed({ phase: "listening", clockMs: 754_000 })} />);
+      expect(html).toMatch(/<button[^>]*title="Open the Transcribe view"[^>]*>.*Listening.*12:34/);
+    }
+    const paused = renderToStaticMarkup(<Header {...base} view="chat" onView={() => {}} listening={fixed({ phase: "paused", clockMs: 5_000 })} />);
+    expect(paused).toContain("Paused");
+    expect(paused).not.toContain("dictation-dot");
+    expect(renderToStaticMarkup(<Header {...base} view="chat" onView={() => {}} listening={fixed({ phase: "idle", clockMs: 0 })} />)).not.toContain("Open the Transcribe view");
   });
 });
 

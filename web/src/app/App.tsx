@@ -29,6 +29,8 @@ import { SettingsPanel } from "../settings/SettingsPanel.tsx";
 import { lastReply } from "../sessions/sessions.ts";
 import { dictationContext } from "../speech/dictation.ts";
 import { useDictation } from "../speech/useDictation.ts";
+import { type Drawer as TranscribeDrawer, TranscribeView } from "../transcribe/TranscribeView.tsx";
+import { useTranscribe } from "../transcribe/useTranscribe.ts";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
 import { AGENT_SYSTEM_PROMPT, type AgentRun } from "../tools/agents/agents.ts";
@@ -47,9 +49,10 @@ import { useConversation } from "./useConversation.ts";
 // from the switches this browser stores (`storedFlag.ts`).
 // This is the page's layout; the conversation loop is useConversation.
 // The header switches between the chat, the Decide tab (GitHub #247), —
-// when ignis serves metrics — the Monitor (GitHub #165), and the Server view
-// (GitHub #316). Whichever is showing, the chat stays mounted underneath, so
-// a streaming reply carries on.
+// when ignis serves metrics — the Monitor (GitHub #165), the Server view
+// (GitHub #316), the Image view and the Transcribe view (spec speech/07).
+// Whichever is showing, the chat stays mounted underneath, so a streaming
+// reply carries on, and a listening goes on whichever view shows.
 
 type Drawer = "sessions" | "settings" | null;
 
@@ -103,12 +106,18 @@ export function App() {
   const deciding = view === "decide";
   const serving = view === "server";
   const imaging = view === "image";
+  const transcribing = view === "transcribe";
   // Mounted from its first visit on, like the Decide tab: a draft of changes
   // and a reload being followed survive a look at the chat.
   const [serverOpened, setServerOpened] = useState(false);
   // The Image view the same: its sessions are read once, and a step under way outlives a look at the chat.
   const [imageOpened, setImageOpened] = useState(false);
   const [imageDrawer, setImageDrawer] = useState<StudioDrawer>(null);
+  // The Transcribe view the same, from its first visit (spec speech/07, Q84). Its state is held here: the
+  // header shows a listening from every view.
+  const [transcribeOpened, setTranscribeOpened] = useState(false);
+  const [transcribeDrawer, setTranscribeDrawer] = useState<TranscribeDrawer>(null);
+  const [transcribe, transcribeActions, listening] = useTranscribe({ speech: model.speech, onUnavailable: refreshModel });
   // Held here, not in the view: the chat hands pictures to it.
   // Each keeps the pictures the other names when it deletes a session: the store holds both views' pictures once.
   const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures });
@@ -256,16 +265,18 @@ export function App() {
       <Header
         model={model}
         busy={busy}
-        onOpen={(which) => (deciding ? setDecideDrawer(which) : imaging ? setImageDrawer(which) : setDrawer(which))}
+        onOpen={(which) => (deciding ? setDecideDrawer(which) : imaging ? setImageDrawer(which) : transcribing ? setTranscribeDrawer(which) : setDrawer(which))}
         onForgetKey={auth.key ? forgetKey : undefined}
         onOpenMemory={() => setMemoryOpen(true)}
-        view={monitoring ? "monitor" : deciding ? "decide" : serving ? "server" : imaging ? "image" : "chat"}
+        view={monitoring ? "monitor" : deciding ? "decide" : serving ? "server" : imaging ? "image" : transcribing ? "transcribe" : "chat"}
         onView={(next) => {
           if (next === "server") setServerOpened(true);
           if (next === "image") setImageOpened(true);
+          if (next === "transcribe") setTranscribeOpened(true);
           setView(next);
         }}
         monitorAvailable={monitorVisible}
+        listening={listening}
       />
 
       <TransportNotice />
@@ -291,7 +302,26 @@ export function App() {
         </div>
       )}
 
-      <div className={monitoring || deciding || serving || imaging ? "hidden" : "contents"}>
+      {transcribeOpened && (
+        <div className={transcribing ? "contents" : "hidden"}>
+          <TranscribeView
+            state={transcribe}
+            actions={transcribeActions}
+            listening={listening}
+            speech={model.speech}
+            drawer={transcribeDrawer}
+            onDrawer={setTranscribeDrawer}
+            onOpenInChat={(markdown) => {
+              // A new chat, its prompt box seeded with the Transcript; nothing is sent (Q89).
+              newSession();
+              setInput(markdown);
+              setView("chat");
+            }}
+          />
+        </div>
+      )}
+
+      <div className={monitoring || deciding || serving || imaging || transcribing ? "hidden" : "contents"}>
         <div className="relative flex min-h-0 flex-1">
           {drawer && (
             <div className="fixed inset-0 z-30 bg-[#1c2026]/60 lg:hidden" onClick={() => setDrawer(null)} aria-hidden />

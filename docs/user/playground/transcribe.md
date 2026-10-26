@@ -1,0 +1,199 @@
+---
+title: "Transcribe"
+description: "The Transcribe view: a conversation heard from the microphone, a call or a file, written down utterance by utterance with its speakers, corrected live and exported."
+sidebar:
+  order: 8
+---
+
+The **Transcribe** view writes a whole conversation down: a meeting in the
+room, a call on this computer, or a recording. What it hears becomes a
+**transcript**, its **utterances** in order, each with its time, its
+**speaker** and its text. You can rename and correct the speakers and edit the
+text while it listens, then copy the transcript, download it, or open it in a
+new chat. It uses the server's [speech model](../api/transcriptions.md) and,
+for the speakers, its [diarizer](../api/realtime-transcription.md#speakers).
+
+![The Transcribe view: a call with its speakers on the time spine, the speakers and exports on the right](../images/playground/transcribe.png)
+
+It is laid out like the other views: the **transcripts** on the left, the one
+open in the middle with its deck at the foot, and on the right its
+**speakers**, its **exports** and **Open in chat**. Below 1024 px wide the side
+columns open from the header as drawers.
+
+## Listening
+
+Pick a source in the deck, then **Start**:
+
+- **Microphone**: a conversation in the room, one session on the server.
+- **Call**: the microphone plus one tab, window or screen the browser offers
+  to share. Tick the browser's *Share audio*: a tab shares its own sound; the
+  whole screen shares the system's sound (on Windows, every application's,
+  mixed); a window shares its own where the browser can (Chrome 141 and
+  later). The microphone and the shared audio are **two sessions, never
+  mixed**: the microphone's voice is **Me**, and the shared audio's voices are
+  its speakers. Use headphones: through speakers, the far voices reach the
+  microphone and are transcribed twice. The browser's own *Stop sharing* stops
+  the listening.
+- **File**: a recording you pick (wav, mp3, ogg, m4a, webm, an mp4's audio:
+  whatever the browser decodes). The browser decodes it to 16 kHz mono and
+  sends it faster than real time, with a progress bar and the time left. It
+  stays ahead of its transcript by at most the **File pace** on the right (30,
+  60 or 120 seconds of audio not yet transcribed; 60 unless you pick another,
+  kept by this browser); past that it sends an utterance still under way at
+  real time, since only more audio can end it, and waits while utterances wait
+  for their text. A pause in it longer than the pace is not held against it.
+
+While it listens, the deck is a dark strip with a level meter for each source
+(Mic, and Call on a call), the time, **Pause** and **Stop**; the view's tab
+shows the listening from every view, with its time, and a press on it comes
+back here. **Pause** lets the microphone go (a call keeps its pick, so
+**Resume** needs no new one) and ends the utterance under way; **Resume** goes
+on, on a new session if the server closed the old one while it was paused
+(after `server.socket_idle_close`, 300 s). **Stop** ends the utterance under
+way, waits while its text comes (**Finishing the last words**; with speakers
+the server waits for the diarizer, up to about 2.3 s live and 30 s for a file)
+and closes; **Stop now** closes at once.
+
+A transcript that already holds utterances shows **Continue** in place of
+Start: the new listening appends to it, and its times go on from where it
+stopped.
+
+## The text
+
+Each utterance under way is drawn at the foot of the transcript as it is heard,
+the settled words in full colour and the last ones the model may still change
+light, as a [dictation](chat.md#dictating-a-prompt) draws them; it settles when
+its text is complete. With speakers on, the server fixes no text before an
+utterance ends, so the whole utterance under way stays light until then.
+
+The view follows the newest words. Scroll up to read, and it stays where you
+are; **Jump to live** brings it back.
+
+The **context** field above the deck is sent with every utterance's
+transcription: the topic, the names, the jargon the model should spell right.
+A change while listening holds from the next utterance. No language is ever
+sent: the model detects it per utterance.
+
+## Times and speakers
+
+Times run from the start of the transcript: `mm:ss`, and `h:mm:ss` past an
+hour. An utterance starts where its speech starts and ends at the silence, the
+change of speaker or the length limit that ended it. A live transcript shows
+when it started; a paused listening's time stands still.
+
+With **Speakers** on (the default), the diarizer tells the voices apart and
+the view names them **Speaker 1, 2…** in the order they first speak, each in a
+hue of its own along the time spine. Up to eight voices are told apart. On a
+call the microphone's utterances are **Me**, and the shared audio's are its
+speakers, or **Others** with Speakers off. With Speakers off, the room and a
+file have no labels. When the server has no diarizer to offer, the toggle is
+struck and the line under the deck says why: turned off (`diarizer.model =
+off`), its files missing (with the `ignis-server model download` command), or
+the server's reason. A diarizer the server refuses or loses during a listening
+turns Speakers off for it, with its reason, and the listening goes on.
+
+A new session numbers its voices afresh: after a Resume on a new session or a
+Continue, a voice that comes back is a new speaker until you merge it into the
+one it was. The Speakers panel says so once a transcript holds more than one
+session.
+
+### Correcting them
+
+Every correction is the page's, and nothing goes back to the server:
+
+- **Rename** a speaker in the Speakers panel: every one of their utterances,
+  past and future, takes the name.
+- **Move** an utterance: its speaker is a menu; pick another speaker, or
+  **New speaker**.
+- **Merge** two speakers: **Merge into** on a speaker's row. One name is left,
+  and the future utterances of either take it.
+- **Split** an utterance where the diarizer missed a change: click its text,
+  put the cursor where the second speaker starts, and pick the second half's
+  speaker in **Split at the cursor, the rest to…**. No audio is kept, so the
+  time of the split is guessed from the characters and marked `~`.
+
+The text of every completed utterance is editable: click it, even while
+listening. What you edit is what the exports and Open in chat carry.
+
+## The transcript
+
+Each transcript is kept in this browser as each utterance completes, with its
+text, times, speakers and corrections, and never its audio
+([Sessions and storage](sessions.md)). Its title is the date, the time and the
+source, "25 Oct 15:42 · Call" (a file's name for a file); click it to rename
+it. **New transcript** starts another; the cross on a row deletes one, except
+the one listening. A reload keeps every completed utterance and ends the
+listening; so does a lost connection.
+
+## Out of the view
+
+**Copy** puts it on the clipboard, and the four downloads write it as:
+
+| Format | Each utterance |
+|---|---|
+| `.txt` (and Copy) | `[mm:ss] Speaker: text`, one line each |
+| `.md` | `**Speaker** (mm:ss): text`, after the title and the start |
+| `.srt` | a numbered cue from its start to its end, `Speaker: text` |
+| `.vtt` | a cue from its start to its end, `<v Speaker>text` |
+
+**Open in chat** opens a new chat with the transcript as Markdown in its prompt
+box. Nothing is sent until you press Send: ask for a summary, the decisions,
+the action items.
+
+## While it listens
+
+The microphones of the other views are struck and say **Listening in
+Transcribe.**: they open no second session. A dictation under way when a
+listening starts ends as it does when another mic is pressed, and its text
+lands in its field.
+
+The line under the deck follows along:
+
+| When | It says |
+|---|---|
+| before a call | Use headphones on a call: through speakers, the far voices reach the microphone and are transcribed twice. |
+| every session taken | Speech is busy: every session is taken. Trying again in N s. |
+| refused again | The listening still could not open: speech is busy. Press Start to try again. |
+| the connection closed | Listening stopped: the connection to the server closed. Every completed utterance is kept. |
+| nothing shared, or no audio shared | Nothing was shared: … / The pick shares no audio: … |
+| an utterance failed | An utterance could not be transcribed: *the server's reason*. |
+| a file's end | Transcribed *name*. |
+| the server is up but the socket never opened | Listening could not start: the server is up, but this address does not carry WebSockets. |
+
+An unavailable speech model, a microphone the browser blocks and a page served
+outside https or localhost say what they say for a [dictation](chat.md#dictating-a-prompt);
+a file needs no microphone, so it starts outside https too.
+
+## What a listening sends
+
+Each source is one session on `GET /v1/realtime?intent=transcription`
+([Realtime transcription](../api/realtime-transcription.md)), opened at Start
+and closed at Stop; a call takes two of the server's `speech.max_sessions` (4).
+Each asks for:
+
+- **the server's turn detection at its own lengths**: `turn_detection:
+  {type: "server_vad"}`, so the `speech.vad_*` fields hold, and every commit is
+  an utterance;
+- **16-bit PCM at 16 kHz**, 100 ms of audio at a time (a file's faster);
+- **the provisional tail** (`session.ignis.provisional_tail: true`);
+- **the speakers**, with Speakers on: `session.ignis.diarization: "live"`, or
+  `"file"` for a file, the diarizer's geometry for audio sent faster than real
+  time. A call's microphone never asks: it is Me;
+- **the context**, as the transcription's `prompt`, and a `session.update` of
+  it when it changes.
+
+It sends no `session.ignis.max_utterance_seconds`, so the server's length guard
+(`speech.max_utterance_seconds`, 120 s) cuts a long utterance at its weakest
+pause. A file's append the server refuses for its queue limit
+(`ignis_audio_queue_full`) is sent again from there a moment later.
+
+**Cost.** A microphone left open sends silence, so its session never idles,
+and with speakers the diarizer reads all of it: measured at about a fifth of a
+ten-core desktop CPU, more on four cores. Pause stops it. Listenings of hours
+have not been measured.
+
+## Read more
+
+- [Realtime transcription](../api/realtime-transcription.md): the events behind the view, the speakers and the queue.
+- [Speech configuration](../configuration/speech.md): the speech model, the diarizer, the length guard.
+- [Chat](chat.md#dictating-a-prompt): dictating into a prompt.

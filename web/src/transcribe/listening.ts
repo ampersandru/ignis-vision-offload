@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { MIC_BLOCKED, unavailable } from "../speech/availability.ts";
 import { CallNotShared, type Capture, MicBlocked, NoSharedAudio } from "../speech/capture.ts";
 import { setListening } from "../speech/listening.ts";
@@ -150,6 +151,17 @@ type Lane = {
 
 const quiet = (): number[] => Array(METER_BARS).fill(0);
 
+/** What the view and the header read of a listening: its state, and word of each change. */
+export type ListeningHandle = Pick<ListeningController, "getState" | "subscribe">;
+
+/**
+ * A listening's state, for the component that draws it. The page does not hold it: the levels move ten times a
+ * second, and only what shows them redraws.
+ */
+export function useListening(handle: ListeningHandle): ListeningState {
+  return useSyncExternalStore(handle.subscribe, handle.getState, handle.getState);
+}
+
 export class ListeningController {
   private state: ListeningState = IDLE;
   private readonly listeners = new Set<() => void>();
@@ -282,7 +294,8 @@ export class ListeningController {
    */
   async stop() {
     const { phase } = this.state;
-    if (phase === "finishing") return this.finish();
+    // Pressed again while finishing, or while a busy server is waited on: over at once.
+    if (phase === "finishing" || phase === "waiting") return this.finish();
     if (phase !== "listening" && phase !== "paused") return;
     const attempt = this.attempt;
     this.clockAtRun = this.clock();

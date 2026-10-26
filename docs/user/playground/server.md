@@ -2,7 +2,7 @@
 title: "Server"
 description: "The Server view: the loaded model, the models a switch can go to, and the running configuration as a form you can apply."
 sidebar:
-  order: 9
+  order: 10
 ---
 
 The **Server** view changes the running server from the page. At the top, the

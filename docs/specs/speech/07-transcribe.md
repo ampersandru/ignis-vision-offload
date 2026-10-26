@@ -186,3 +186,56 @@ The owner's third scenario, two people working together for a whole day, raised 
   a user stops it.
 - **Hours are not measured.** Nothing has run for hours; the owner's live check of a long session is the test of its
   memory and stability.
+
+## As built
+
+Built 2026-10-26 on branch `speech-transcribe` (#362), web only, in `web/src/transcribe/` (the view, its model and
+its listening) and `web/src/speech/` (the session, the capture, the strike of the other mics). The guide's page is
+`docs/user/playground/transcribe.md`; its picture is the scene `transcribe` of `docs/site/scripts/scenes.mjs`.
+
+### The pieces
+
+- **The session** is `openListening` in `speech/realtime.ts`, the dictation's sibling (AC 2): `server_vad` with no
+  lengths, the provisional tail, `diarization` `live` or `file` when Speakers is on (omitted otherwise, and always on
+  a call's microphone), the context as `prompt`, no `language`, no `max_utterance_seconds`. Its tests drive a fake
+  socket with spec 08's events.
+- **The listening** is `ListeningController` (`transcribe/listening.ts`), one lane per source, each lane a session; a
+  lane's session is a stream of its own for the speakers. The clock starts at the Transcript's (a Continue) and
+  stands still while paused; a lane's origin on it is its first audio. Its tests drive fake sessions, captures, a
+  fake decoder and fake timers.
+- **The Transcript** (`transcribe/transcript.ts`) maps a stream's channel to the page's label the first time it
+  speaks; rename, move, merge and split are functions of it; it is stored as `transcribe-sessions`
+  (`transcribe/stored.ts`), round-tripped on the memory and IndexedDB adapters.
+- **The state** is the page's (`transcribe/useTranscribe.ts`), as the Image view's is: the header's badge and the view
+  each subscribe to the listening themselves, so its level meters redraw them and not the page.
+
+### Decisions taken while building
+
+- **The file's pace** (Q99). The audio not yet transcribed runs from the start of the oldest utterance whose text has
+  not come to the audio sent, and is none when no utterance is under way or waiting. The spec's words ("past the end
+  of the last utterance whose completed came") stall on a silence in a file longer than N (nothing completes, nothing
+  more is sent) and on an utterance under way longer than N (only more audio ends it). Past N the page still sends an
+  utterance under way at real time, and stops only while utterances wait for their text. With the file geometry
+  `completed` lags an item's end by up to 30.4 s of audio, so items over about 30 s go stop-and-go at N = 60. An
+  append refused for the queue limit (`ignis_audio_queue_full`, its `event_id` echoed) is sent again from there after
+  1 s. N's choices are 30, 60 and 120 s, none past the server's default limit.
+- **A file's Pause** stops the sending and commits nothing: a commit would cut the utterance under way in two. A live
+  source's Pause commits it, as the spec says ("Stop commits the last item"), and only when one is under way: a
+  commit with no speech since the last item would make an item of the silence.
+- **A call's Pause** lets the microphone go and keeps the shared tab, window or screen picked (not sent), so Resume
+  asks for no new pick; the browser's own Stop sharing stops the listening as Stop does.
+- **A file's title** is its name ("25 Oct 15:42 · standup.m4a"), not "· File": the list tells files apart.
+- **The page-wide flag** that strikes the other mics (AC 13) is up while the listening captures, not while it is
+  paused: a paused listening holds no microphone, and a dictation then works; Resume ends it as Start does.
+- **An unavailable diarizer refuses the whole `session.update`** that asks for speakers (spec 08's server), so the
+  session's audio would wait for a configuration that never comes: `openListening` sends the configuration again
+  without `diarization`, and the view turns Speakers off with the server's reason. A server whose `/v1/models` says
+  nothing of a diarizer is taken as one without: it would refuse the field.
+- **Corrections use native menus** (the utterance's speaker, Split at the cursor, Merge into), which open over a
+  clipped `.cut` box and on a phone.
+
+### Not done here
+
+- No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live
+  check (a room, a call, a file; a long session) is the test of the whole.
+- The picture of the guide shows a made-up call the scene puts in the page's store; no recording reaches the guide.
