@@ -20,6 +20,11 @@
 //!    worker runs other sessions' units between two and a long clip's decode never holds it
 //!    for its whole length.
 //!
+//! 5. `cut` ends a transcription early (spec speech/08): the audio from a sample on and the stable
+//!    text go, the windows past the cut leave the audio prefix and the one holding it is encoded
+//!    again from its audio before the cut, so the commit decodes that audio afresh. A cut reaches
+//!    into the windows already encoded only on a session that keeps its audio (`keep_audio`).
+//!
 //! The KV cache holds the head, the longest clip's audio and the tail, then a text room of
 //! half as many tokens as the audio's (speech gives about a third) and 64 more. The stable
 //! text never outgrows that room, so a commit always has the room its prefill needs, and a
@@ -84,6 +89,9 @@ pub enum SessionError {
     TooLong { seconds: u32 },
     /// A commit was asked for another step after it ended.
     Committed,
+    /// A cut reaches back into audio the session no longer keeps: it was opened without
+    /// [`Session::keep_audio`].
+    CutTooFar { at: usize },
 }
 
 impl std::fmt::Display for SessionError {
@@ -91,6 +99,7 @@ impl std::fmt::Display for SessionError {
         match self {
             SessionError::TooLong { seconds } => write!(f, "the audio is longer than {seconds} s"),
             SessionError::Committed => write!(f, "the transcription was already committed"),
+            SessionError::CutTooFar { at } => write!(f, "a cut at sample {at} reaches audio the session no longer keeps"),
         }
     }
 }
@@ -115,6 +124,14 @@ pub struct Session {
     cache: Cache,
     /// Cache positions after the head and every encoded window.
     audio_prefix: usize,
+    /// The cache's length after the head, then after each encoded window: where a cut takes the
+    /// audio prefix back to.
+    window_ends: Vec<usize>,
+    /// The largest log-mel value of each encoded window's frames: the floor a cut starts again
+    /// from.
+    window_max: Vec<f32>,
+    /// Every pushed sample is kept, so a cut can reach any of them.
+    keep_audio: bool,
     /// The positions the cache keeps for text after the longest clip's audio and the tail:
     /// the stable text stays shorter, so a commit's prefill always fits.
     text_room: usize,
@@ -170,6 +187,9 @@ impl Session {
             windows: 0,
             cache,
             audio_prefix,
+            window_ends: vec![audio_prefix],
+            window_max: Vec::new(),
+            keep_audio: false,
             text_room,
             stable: Vec::new(),
             since_partial: 0,
@@ -240,11 +260,15 @@ impl Session {
 
     /// Encodes a window into the audio prefix and drops what no later frame needs.
     fn prefill_window(&mut self, mel: &[f32], frames: usize) {
+        let from = (self.windows * WINDOW_FRAMES - self.frame_base) * N_MELS;
+        let top = self.frames[from..from + frames * N_MELS].iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
+        self.window_max.push(top);
         let l = &self.loaded;
         let x = encode_window(&l.model.encoder, &l.pool, l.isa, mel, frames, None);
         let n = x.len() / l.model.decoder.hidden;
         decoder::forward(&l.model.decoder, &l.pool, l.isa, &mut self.cache, x, Logits::None, None);
         self.audio_prefix = self.cache.len;
+        self.window_ends.push(self.audio_prefix);
         self.windows += 1;
         self.stats.windows += 1;
         self.stats.audio_prefilled += n;
@@ -256,7 +280,7 @@ impl Session {
         // Keep from the first sample a frame not yet computed needs (frames past the clip
         // start never reflect there), at a multiple of the hop; short clips keep everything.
         let need = (self.next_frame * HOP).saturating_sub(2 * HOP);
-        if self.total_samples > MIN_SAMPLES && need > self.sample_base {
+        if !self.keep_audio && self.total_samples > MIN_SAMPLES && need > self.sample_base {
             self.samples.drain(..need - self.sample_base);
             self.sample_base = need;
         }
@@ -416,6 +440,58 @@ impl Session {
         let (full, _) = self.body(&all);
         let provisional = full.strip_prefix(stable.as_str()).unwrap_or(&full).to_string();
         Ok(Some(Partial { stable, provisional, language: language.or_else(|| self.language.clone()) }))
+    }
+
+    /// Keeps every sample pushed from now on, so a [`cut`](Self::cut) can reach any of them, the
+    /// windows already encoded included: 4 bytes a sample, 64 KB a second.
+    pub fn keep_audio(&mut self) {
+        self.keep_audio = true;
+    }
+
+    /// Ends the transcription at sample `at` (16 kHz, from the first pushed): the audio from it
+    /// on goes, and so does the stable text, which may hold words past it, so a commit decodes
+    /// the audio before `at` afresh. The windows past the cut leave the audio prefix; the one
+    /// holding it is encoded again, from its audio before the cut, when it completes or at the
+    /// commit. The mel floor starts again from the windows kept and the frames recomputed. A
+    /// cut at or past the audio pushed drops only the stable text.
+    pub fn cut(&mut self, at: usize) -> Result<(), SessionError> {
+        if at < self.total_samples {
+            // The frames final with the audio before `at` alone: frame t reads up to 160·t + 200.
+            let ready = if at > N_FFT / 2 { (at - N_FFT / 2) / HOP + 1 } else { 0 };
+            let windows = (ready / WINDOW_FRAMES).min(self.windows);
+            if windows < self.windows {
+                // The windows from the cut's on leave the audio prefix, and their frames are
+                // computed again: the first reads from two hops before its own (the start
+                // reflects).
+                let first = windows * WINDOW_FRAMES;
+                if self.sample_base > 0 && self.sample_base + 2 * HOP > first * HOP {
+                    return Err(SessionError::CutTooFar { at });
+                }
+                self.cache.truncate(self.window_ends[windows]);
+                self.audio_prefix = self.cache.len;
+                self.window_ends.truncate(windows + 1);
+                self.window_max.truncate(windows);
+                self.windows = windows;
+                self.frames.clear();
+                self.frame_base = first;
+                self.next_frame = first;
+            } else {
+                // The frames computed before `ready` stand; the ones after it read past the cut.
+                let keep = ready.min(self.next_frame);
+                self.frames.truncate((keep - self.frame_base) * N_MELS);
+                self.next_frame = keep;
+            }
+            self.samples.truncate(at - self.sample_base);
+            self.total_samples = at;
+            let kept = self.window_max.iter().chain(&self.frames);
+            self.max_log = kept.fold(f32::NEG_INFINITY, |m, &v| m.max(v));
+            if ready > self.next_frame {
+                self.compute_frames(ready - self.next_frame);
+            }
+        }
+        self.stable.clear();
+        self.stats.stable_tokens = 0;
+        Ok(())
     }
 
     /// Encodes the rest of the audio and decodes to EOS from the stable text: a [`Commit`]

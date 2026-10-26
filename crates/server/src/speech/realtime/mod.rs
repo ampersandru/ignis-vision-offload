@@ -46,6 +46,22 @@
 //!   transcript `completed` carries (Q43). A session that opted in with
 //!   `session.ignis.provisional_tail` also gets the tail, the text still
 //!   inside the rollback zone, as `ignis.input_audio_transcription.provisional`.
+//! - **Speakers** (spec speech/08). Under `server_vad`, a session that asks
+//!   with `session.ignis.diarization` feeds the diarizer the audio the VAD
+//!   reads, a step of its geometry a unit in this socket's lane; a refresh is
+//!   skipped while a step is in the worker, as while a window is. A change of
+//!   speaker inside an item cuts it there, the audio past the change heard
+//!   already moved to the next item and the item decoded again up to it. No
+//!   text is fixed before an item ends; its end sends one delta, its speaker
+//!   and `completed`, once the frames cover it, which a copy of the stream
+//!   finished gives when no more audio comes.
+//! - **The length guard** (spec speech/08). An item past
+//!   `speech.max_utterance_seconds` (the session's
+//!   `session.ignis.max_utterance_seconds` first) ends at the VAD's next pause
+//!   or `speech.utterance_cut_search_ms` later, where the audio is.
+//! - **The queue limit** (spec speech/08). An append that would take the
+//!   audio not computed yet past `speech.max_queued_audio_seconds` is refused,
+//!   `ignis_audio_queue_full`.
 //! - **Limits.** An item past `speech.max_clip_seconds`, past
 //!   `server.stream_timeout` from its first append, or whose transcription
 //!   fails, gets `failed`: at its commit, after an `error` saying why at
@@ -68,13 +84,17 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use ignis_speech::diarizer::speakers::Speakers;
+use ignis_speech::diarizer::FRAME_SAMPLES;
 use ignis_speech::vad::{TurnEvent, Turns, Vad};
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
 
 use super::audio::TARGET_RATE;
-use super::executor::{LoadSettings, Partial, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession, Transcript, WINDOW_SAMPLES};
+use super::executor::{
+    DiarizerExecutor, DiarizerStream, Frames, LoadSettings, Partial, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession, StreamOpen, Transcript, WINDOW_SAMPLES,
+};
 use super::route::{self, Ending};
 use super::worker::{Full, Step};
 use super::{extension, open_loaded, Fault, SessionGuard};
@@ -84,7 +104,7 @@ use crate::metrics::SpeechOutcome;
 use crate::responses::ids::random_suffix;
 use crate::responses::socket::{close_idle, offered, CREDENTIAL_PREFIX};
 use crate::Server;
-use config::{Refusal, SessionConfig, VadDefaults};
+use config::{Diarization, Refusal, SessionConfig, VadDefaults};
 use pcm::Pcm;
 
 /// The most base64 `audio` one append carries: OpenAI's limit, 15 MiB.
@@ -99,13 +119,17 @@ pub(crate) const MAX_APPEND_BYTES: usize = 15 << 20;
     summary = "A Realtime transcription session",
     description = "Upgrades to a WebSocket carrying OpenAI's Realtime GA transcription session (`session.type: \"transcription\"`) on the speech model (Qwen3-ASR, ADR 0067). Open it with `?intent=transcription` and no `model` in the URL; a conversation session (no `intent=transcription`, or a `model` in the URL) is refused `400` naming `intent`. Authenticate with `Authorization: Bearer <key>` on the upgrade or, from a browser, with a `Sec-WebSocket-Protocol` entry `openai-insecure-api-key.<key>`; the server selects the first offered entry that is not a credential (`realtime`, for OpenAI's browser clients). The socket serves through a model switch and with the text model unloaded, and opening it starts loading a text model the idle clock unloaded, while the session is served on the CPU. At most `speech.max_sessions` (4) sessions are open at once.
 
-On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection` `{type: \"server_vad\", threshold, prefix_padding_ms, silence_duration_ms, idle_timeout_ms: null}` at the server's `speech.vad_threshold`, `speech.vad_prefix_padding_ms` and `speech.vad_silence_duration_ms` (0.5, 300, 500, OpenAI's), `noise_reduction: null`, `include: []` and `ignis.provisional_tail: false`. The speech model is loaded if it is not, and the context prefilled.
+On open the server sends `session.created` with the effective configuration: `audio.input.format` `{type: \"audio/pcm\", rate: 24000}`, `transcription.model` the speech model's served id, `turn_detection` `{type: \"server_vad\", threshold, prefix_padding_ms, silence_duration_ms, idle_timeout_ms: null}` at the server's `speech.vad_threshold`, `speech.vad_prefix_padding_ms` and `speech.vad_silence_duration_ms` (0.5, 300, 500, OpenAI's), `noise_reduction: null`, `include: []` and `ignis` `{provisional_tail: false, diarization: null, max_utterance_seconds: null}`. The speech model is loaded if it is not, and the context prefilled.
 
 Turn detection. Under `server_vad` (the default) the server finds the speech itself, with Silero VAD on the CPU, one speech probability per 32 ms of audio: the first 32 ms at or over `threshold` start an item, `input_audio_buffer.speech_started` `{audio_start_ms, item_id}`, and the item keeps `prefix_padding_ms` of the audio before it (silence, even the silence that ended the item before, never an earlier item's speech); once the speech has been silent (under `threshold`) for `silence_duration_ms`, `input_audio_buffer.speech_stopped` `{audio_end_ms, item_id}`, and the server commits the item, that silence included: `committed`, then its transcription. Audio outside an item goes nowhere. With `idle_timeout_ms`, that much audio with no speech, since the session opened, the last item or the field's change, is committed as an item of its own after `input_audio_buffer.timeout_triggered` `{audio_start_ms, audio_end_ms, item_id}`. Every time is in milliseconds of the audio the session has received. The speech model reads each of these items after `speech.vad_leading_silence_ms` of digital silence, since its transcript depends on the audio before the speech; no time and no `usage` counts it. With `turn_detection: null` the client commits (manual commit), as OpenAI's Realtime clients that set it, the Playground among them, do.
 
+The length guard. Under `server_vad`, once an item holds `speech.max_utterance_seconds` (120; `session.ignis.max_utterance_seconds` overrides it, `0` off) of audio, the server ends it at the next 32 ms the VAD hears under `threshold`, or `speech.utterance_cut_search_ms` (2000) later at the latest, where the audio is: `speech_stopped` with `audio_end_ms` at the cut, `committed`, then `speech_started` for a new item with `audio_start_ms` at the cut, which takes no prefix padding and is fed after the leading silence. The search looks forward only.
+
+Speakers. With `session.ignis.diarization` (`\"live\"` or `\"file\"`, the diarizer's geometry; only under `server_vad`) the diarizer, Nemotron 3 Diarization on the CPU, reads the session's audio as the VAD does and tells up to 8 speakers apart, numbered 0 to 7 in the order they first spoke. A change of speaker inside an item ends it at the change, with the events of the length guard's cut at the new speaker's first 80 ms: the item ended is decoded again from its audio up to the change, and the audio from the change on is the new item's. In such a session no text is fixed before an item ends: the provisional tail carries all of it, and the item's end sends one `delta` with the whole transcript, then `ignis.input_audio_transcription.speaker` `{item_id, content_index, speaker}`, then `completed`, once the diarizer's frames cover the item's end (with no more audio, it scores what it heard past its last step at once). An item with no speech gets no speaker. A diarizer that fails is an `error`, `ignis_diarizer_failed`, and the session goes on without speakers.
+
 Client events, each a text frame of one JSON object:
-- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail; any other key under `session.ignis` is an `error` naming it.
-- `input_audio_buffer.append` `{audio}`: base64 16-bit little-endian mono PCM at the session's rate, up to 15 MiB of base64 an event. No reply.
+- `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail; `session.ignis.diarization` asks for speakers (above), refused on manual commit naming `turn_detection`, and with the diarizer unavailable refused with the reason (`ignis_diarizer_unavailable`), the session going on without speakers; `session.ignis.max_utterance_seconds` is the length guard's limit (`null` the server's, `0` off); any other key under `session.ignis` is an `error` naming it and the three.
+- `input_audio_buffer.append` `{audio}`: base64 16-bit little-endian mono PCM at the session's rate, up to 15 MiB of base64 an event. No reply. An append that would take the audio the session holds not computed yet (waiting for the speech model's windows or the diarizer's steps) past `speech.max_queued_audio_seconds` (120) is refused with an `error`, `ignis_audio_queue_full`, and the session stays open.
 - `input_audio_buffer.commit`: ends the item. `input_audio_buffer.committed` `{item_id, previous_item_id}`, then the last stable text as a `delta`, then `completed`. An empty buffer is an `error` (`input_audio_buffer_commit_empty`). Under `server_vad` the buffer holds the audio appended since the last item ended, as OpenAI's does: a commit during speech ends that item at once, with no `speech_stopped`, and one with no speech heard makes an item of that audio (at most `speech.max_clip_seconds` of it, the leading silence included); a clear discards it.
 - `input_audio_buffer.clear`: discards the buffer and the item's partial state (under `server_vad`, the speech and the padding the VAD holds); answered `input_audio_buffer.cleared`.
 - `transcription_session.update` (the retired beta) is an `error` naming `session.update`; conversation events (`response.*`, `conversation.*`, `output_audio_buffer.*`) are an `error`.
@@ -173,11 +197,13 @@ pub(crate) async fn connect(
 }
 
 /// The executor's session the units of one socket take turns at, and what
-/// the item's units have computed so far.
+/// the item's units have computed so far; and the diarizer's stream, which
+/// outlives the items (spec speech/08).
 #[derive(Default)]
 struct Slot {
     session: Option<Box<dyn SpeechSession>>,
     computed: Duration,
+    stream: Option<Box<dyn DiarizerStream>>,
 }
 
 /// One call to the executor, a window or less of work.
@@ -192,6 +218,26 @@ enum Unit {
     /// Push the rest, then the commit, a step of it a unit: the task's
     /// samples are taken by its first step.
     Commit(Vec<f32>),
+    /// End the item at sample `at` of what its session was pushed: the audio
+    /// from it on and the stable text go (spec speech/08).
+    Cut(usize),
+    /// Open the diarizer's stream, loading the diarizer if it is not.
+    Speakers(StreamOpen),
+    /// Push the stream's next samples, then score its next step.
+    Diarize(Vec<f32>),
+    /// Push the stream's next samples, then score what it heard past its
+    /// last step on a copy of it, as if it ended now.
+    Tail(Vec<f32>),
+}
+
+impl Unit {
+    /// The 16 kHz samples it carries: audio not computed while it waits.
+    fn samples(&self) -> usize {
+        match self {
+            Unit::Push(samples) | Unit::Partial(samples) | Unit::Commit(samples) | Unit::Diarize(samples) | Unit::Tail(samples) => samples.len(),
+            Unit::Open(..) | Unit::Cut(_) | Unit::Speakers(_) => 0,
+        }
+    }
 }
 
 /// Where a unit is: steps left (a commit), or out of the worker with what it
@@ -207,12 +253,22 @@ enum Outcome {
     Partial(Partial, Duration),
     Transcript(Transcript, Duration),
     Failed(Failure),
+    /// The diarizer's stream opened: the samples its first step waits for.
+    Opened(usize),
+    /// A step's frames, and the samples the next waits for.
+    Frames(Frames, usize),
+    /// What the stream heard past its last step, scored as if it ended.
+    Tail(Frames),
+    /// The diarizer failed: the session goes on without speakers.
+    Unheard(String),
 }
 
-/// A unit is out of the worker: what it says, if anything.
+/// A unit is out of the worker: what it says, if anything, and the samples
+/// it carried.
 struct Done {
     item: u64,
     outcome: Option<Outcome>,
+    samples: usize,
 }
 
 /// Why an item failed.
@@ -290,6 +346,18 @@ struct Item {
     ending: Option<Ending>,
     /// Audio was queued since the last partial.
     fresh_audio: bool,
+    /// Under `server_vad`, its first sample on the session's clock (the
+    /// VAD's), and its end once it ended.
+    start: u64,
+    end: Option<u64>,
+    /// It has a speaker (spec speech/08): the session's speakers were on when
+    /// its audio began. Its text is sent only at its end, with its speaker.
+    diarized: bool,
+    /// Its speaker, once the diarizer's frames cover its end: `Some(None)`
+    /// when none of them is speech, or the speakers stopped.
+    speaker: Option<Option<u8>>,
+    /// Its transcript, until its speaker is known.
+    transcript: Option<(Transcript, Duration)>,
 }
 
 struct Connection {
@@ -318,8 +386,10 @@ struct Connection {
     /// may be: `speech.partial_cost_factor` times its compute time later.
     refresh_queued: Instant,
     refresh_hold: Instant,
-    /// This socket's units queued on the worker and not yet out of it.
+    /// This socket's units queued on the worker and not yet out of it, and
+    /// the 16 kHz samples they carry.
     in_worker: usize,
+    in_worker_samples: usize,
     outbox: Vec<Value>,
     next_event: u64,
     /// The client's latest text or binary frame, or the end of the latest
@@ -332,6 +402,51 @@ struct Connection {
     turns: Option<Turns<Vad>>,
     /// Under `server_vad`, the audio heard since the last item ended.
     since_item: SinceItem,
+    /// Under `server_vad`, with `session.ignis.diarization`, the speakers.
+    speakers: Option<Diarized>,
+}
+
+/// A session's speakers (spec speech/08): the diarizer's stream, on the
+/// worker, fed the 16 kHz audio the VAD reads from sample `origin` on, a step
+/// of its geometry at a time; and the frames it scored, by the ghost rule.
+/// The audio is read from where the speakers start, never from before: the
+/// leading silence only the speech model is fed is no audio of the stream's.
+struct Diarized {
+    mode: Diarization,
+    /// The session's sample the stream's first is.
+    origin: u64,
+    /// The samples heard since `origin` that the stream has been sent, and
+    /// the ones still to send.
+    sent: u64,
+    pending: Vec<f32>,
+    /// The samples heard, from `origin`, its next step waits for; `None` until
+    /// the stream is open.
+    due: Option<u64>,
+    /// A step is in the worker; a tail is.
+    stepping: bool,
+    tailing: bool,
+    /// The frames scored, and the frames the latest tail covered.
+    frames: Speakers,
+    tail_end: usize,
+    /// Set when the speakers stop or the socket ends: its units still queued
+    /// do nothing.
+    cancel: Arc<AtomicBool>,
+    /// The diarizer failed: the session goes on without speakers.
+    failed: bool,
+}
+
+impl Diarized {
+    /// The frame a session sample is in, from the stream's first: the first
+    /// whole frame at or after it, for an item's start; the first after it,
+    /// for an end.
+    fn frame(&self, sample: u64) -> usize {
+        sample.saturating_sub(self.origin).div_ceil(FRAME_SAMPLES as u64) as usize
+    }
+
+    /// The session sample frame `frame` starts at.
+    fn sample(&self, frame: usize) -> u64 {
+        self.origin + (frame * FRAME_SAMPLES) as u64
+    }
 }
 
 /// Under `server_vad`, the 16 kHz audio heard since the last item ended: what
@@ -367,6 +482,12 @@ impl SinceItem {
         let gone = end.saturating_sub(self.from).min(self.samples.len() as u64);
         self.samples.drain(..gone as usize);
         self.from += gone;
+    }
+
+    /// The samples `from..to` of the clock heard, as far as they are kept.
+    fn range(&self, from: u64, to: u64) -> Vec<f32> {
+        let at = |sample: u64| (sample.saturating_sub(self.from) as usize).min(self.samples.len());
+        self.samples.range(at(from)..at(to).max(at(from))).copied().collect()
     }
 
     /// The last `room` samples, for the item a commit makes of them; nothing
@@ -405,12 +526,14 @@ impl Connection {
             refresh_queued: Instant::now(),
             refresh_hold: Instant::now(),
             in_worker: 0,
+            in_worker_samples: 0,
             outbox: Vec::new(),
             next_event: 0,
             quiet_since: Instant::now(),
             heard: 0,
             turns: None,
             since_item: SinceItem::default(),
+            speakers: None,
         }
     }
 
@@ -468,6 +591,9 @@ impl Connection {
             item.cancel.store(true, Ordering::SeqCst);
             item.stop_refresh.store(true, Ordering::SeqCst);
         }
+        if let Some(speakers) = &self.speakers {
+            speakers.cancel.store(true, Ordering::SeqCst);
+        }
     }
 
     /// Queue a server event, with its `event_id`.
@@ -498,11 +624,14 @@ impl Connection {
         self.items.back_mut().expect("a socket always has a current item")
     }
 
-    /// The `speech.context_max_tokens` and load settings in effect now.
+    /// The `speech.context_max_tokens` and load settings in effect now. An
+    /// item with speakers keeps its audio, so a speaker change found after it
+    /// was heard can still cut it (spec speech/08).
     fn open_settings(&self) -> (SessionOpen, LoadSettings) {
         let live = self.server.live();
         let group = &live.speech;
-        (self.config.open(group), LoadSettings { threads: group.threads, pinned_weights: group.pinned_weights })
+        let open = SessionOpen { keep_audio: self.config.diarization.is_some(), ..self.config.open(group) };
+        (open, LoadSettings { threads: group.threads, pinned_weights: group.pinned_weights })
     }
 
     /// Start the next item: its executor session opens now, so its context
@@ -525,6 +654,11 @@ impl Connection {
             failure: None,
             ending: None,
             fresh_audio: false,
+            start: self.heard,
+            end: None,
+            diarized: false,
+            speaker: None,
+            transcript: None,
         };
         self.next_seq += 1;
         self.items.push_back(item);
@@ -532,6 +666,7 @@ impl Connection {
         self.pending.clear();
         self.next_partial = None;
         self.sync_turns();
+        self.sync_speakers();
     }
 
     /// The turn detection `session.update` set, from now while the current
@@ -554,31 +689,57 @@ impl Connection {
     /// Queue `unit` of the current item on the worker, in this socket's lane.
     /// Every unit answers when it is out of the worker, so the socket knows
     /// what it still has in it.
-    fn queue(&mut self, mut unit: Unit) {
+    fn queue(&mut self, unit: Unit) {
         let item = self.items.back().expect("a current item");
         let (seq, cancel, stop) = (item.seq, Arc::clone(&item.cancel), Arc::clone(&item.stop_refresh));
+        self.queue_for(unit, seq, cancel, stop, false);
+    }
+
+    /// Queue a unit of the speakers' (spec speech/08): one more interactive
+    /// unit in this socket's lane, of no item, after what the socket queued
+    /// before it.
+    fn queue_speakers(&mut self, unit: Unit) {
+        let cancel = Arc::clone(&self.speakers.as_ref().expect("the speakers are on").cancel);
+        self.queue_for(unit, u64::MAX, cancel, Arc::default(), true);
+    }
+
+    fn queue_for(&mut self, mut unit: Unit, seq: u64, cancel: Arc<AtomicBool>, stop: Arc<AtomicBool>, speakers: bool) {
+        let samples = unit.samples();
         let slot = Arc::clone(&self.slot);
         let executor = Arc::clone(self.server.speech.executor());
+        let diarizer = Arc::clone(self.server.speech.diarizer());
         let files = self.files.clone();
         let results = self.results_tx.clone();
         let task = Box::new(move || {
             let progress = match cancel.load(Ordering::SeqCst) {
                 true => Progress::Done(None),
-                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut unit, &slot, executor.as_ref(), &files, &stop))).unwrap_or_else(|_| {
-                    // A unit that panicked leaves no session to go on with.
-                    slot.lock().unwrap_or_else(PoisonError::into_inner).session = None;
-                    Progress::Done(Some(Outcome::Failed(Failure::Fault(Fault::Executor("the speech executor panicked".to_owned())))))
-                }),
+                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut unit, &slot, executor.as_ref(), diarizer.as_ref(), &files, &stop)))
+                    .unwrap_or_else(|_| {
+                        // A unit that panicked leaves no session, or no stream, to go on with.
+                        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
+                        let outcome = match speakers {
+                            true => {
+                                slot.stream = None;
+                                Outcome::Unheard("the diarizer panicked".to_owned())
+                            }
+                            false => {
+                                slot.session = None;
+                                Outcome::Failed(Failure::Fault(Fault::Executor("the speech executor panicked".to_owned())))
+                            }
+                        };
+                        Progress::Done(Some(outcome))
+                    }),
             };
             match progress {
                 Progress::More => Step::More,
                 Progress::Done(outcome) => {
-                    let _ = results.send(Done { item: seq, outcome });
+                    let _ = results.send(Done { item: seq, outcome, samples });
                     Step::Done
                 }
             }
         });
         self.in_worker += 1;
+        self.in_worker_samples += samples;
         self.server.speech.submit_interactive(&self.guard, task);
     }
 
@@ -624,7 +785,8 @@ impl Connection {
         let model = |named: &str| {
             route::model_named(&self.server, &live.speech, Some(named), "session.audio.input.transcription.model").map(|()| served.clone())
         };
-        let next = match self.config.updated(event.get("session").unwrap_or(&Value::Null), model) {
+        let diarizer = || self.server.speech.diarizer().availability();
+        let next = match self.config.updated(event.get("session").unwrap_or(&Value::Null), model, diarizer) {
             Ok(next) => next,
             Err(refusal) => return self.refuse(refusal, event_id),
         };
@@ -645,6 +807,7 @@ impl Connection {
             self.open_next();
         }
         self.sync_turns();
+        self.sync_speakers();
         let session = self.config.effective(&self.session_id);
         self.send(json!({ "type": "session.updated", "session": session }));
     }
@@ -657,6 +820,17 @@ impl Connection {
             return self.refuse(Refusal::invalid("`audio` carries more than 15 MiB of base64; send it over several appends", "audio"), event_id);
         }
         let rate = self.pcm.rate();
+        // Spec speech/08: past the audio a session may hold not computed yet,
+        // the append is refused before the resampler reads any of it.
+        let limit = self.server.live().speech.max_queued_audio_seconds;
+        let held = self.uncomputed();
+        if held + samples_of(audio, rate) > limit as usize * TARGET_RATE as usize {
+            let message = format!(
+                "the session holds {:.1} s of audio not computed yet, and this append takes it past speech.max_queued_audio_seconds ({limit} s): it is refused; send it again once the session catches up, or pace the audio nearer real time",
+                held as f64 / f64::from(TARGET_RATE)
+            );
+            return self.refuse(Refusal { code: "ignis_audio_queue_full", message, param: Some("audio".to_owned()) }, event_id);
+        }
         let mut samples = Vec::new();
         let Ok(carried) = self.pcm.append(audio, &mut samples) else {
             return self.refuse(Refusal::invalid("`audio` is not base64", "audio"), event_id);
@@ -698,8 +872,10 @@ impl Connection {
         let live = self.server.live();
         let interval = Duration::from_millis(u64::from(live.speech.partial_interval_ms));
         let hold = self.refresh_hold;
+        let diarized = self.speakers.as_ref().is_some_and(|speakers| !speakers.failed);
         let item = self.current();
         if item.id.is_none() {
+            item.diarized = diarized;
             item.id = Some(format!("item_{}", random_suffix()));
             item.timeout = Timeout::of(&live, true);
             item.deadline = Some(item.timeout.from_now());
@@ -729,9 +905,14 @@ impl Connection {
         let mut events = Vec::new();
         turns.push(&samples, &mut events);
         self.since_item.heard(&samples, self.server.live().speech.max_clip_seconds as usize * TARGET_RATE as usize);
+        // The diarizer reads what the VAD reads (spec speech/08).
+        if let Some(speakers) = self.speakers.as_mut().filter(|speakers| !speakers.failed) {
+            speakers.pending.extend_from_slice(&samples);
+        }
         for event in events {
             self.turn(event);
         }
+        self.diarize();
     }
 
     /// What the VAD found, as the Realtime events and the item's audio: an
@@ -742,11 +923,16 @@ impl Connection {
         match event {
             TurnEvent::Started { start } => {
                 self.begin_item();
+                self.current().start = start;
                 let id = self.current().id.clone();
                 self.send(json!({ "type": "input_audio_buffer.speech_started", "audio_start_ms": millis(start), "item_id": id }));
                 self.lead_in();
             }
-            TurnEvent::Audio(samples) => self.give(samples),
+            TurnEvent::Audio(samples) => {
+                self.give(samples);
+                self.guard(false);
+            }
+            TurnEvent::Pause { .. } => self.guard(true),
             TurnEvent::Stopped { end } => {
                 let id = self.current().id.clone();
                 self.send(json!({ "type": "input_audio_buffer.speech_stopped", "audio_end_ms": millis(end), "item_id": id }));
@@ -755,6 +941,7 @@ impl Connection {
             }
             TurnEvent::TimedOut { start, end, audio } => {
                 self.begin_item();
+                self.current().start = start;
                 let id = self.current().id.clone();
                 self.send(json!({
                     "type": "input_audio_buffer.timeout_triggered",
@@ -819,6 +1006,7 @@ impl Connection {
             let limit = live.speech.max_clip_seconds as usize * TARGET_RATE as usize;
             let audio = self.since_item.take(limit.saturating_sub(ignis_speech::vad::ms_samples(live.speech.vad_leading_silence_ms) as usize));
             self.begin_item();
+            self.current().start = self.heard - audio.len() as u64;
             self.lead_in();
             self.give(audio);
             return self.end_item();
@@ -849,6 +1037,7 @@ impl Connection {
         );
         let item = self.current();
         item.ending = Some(ending);
+        item.end = Some(item.start + item.samples_in);
         let id = item.id.clone().expect("an item with audio has its id");
         self.previous_item_id = Some(id.clone());
         self.send(json!({ "type": "input_audio_buffer.committed", "item_id": id, "previous_item_id": previous }));
@@ -859,6 +1048,7 @@ impl Connection {
             let rest = std::mem::take(&mut self.pending);
             self.queue(Unit::Commit(rest));
         }
+        self.assign_speakers(None);
         self.open_next();
     }
 
@@ -939,7 +1129,15 @@ impl Connection {
     /// A unit is out of the worker.
     fn done(&mut self, done: Done) {
         self.in_worker -= 1;
+        self.in_worker_samples -= done.samples;
         let Some(outcome) = done.outcome else { return };
+        let outcome = match outcome {
+            Outcome::Opened(due) => return self.speakers_opened(due),
+            Outcome::Frames(frames, due) => return self.heard_frames(frames, due),
+            Outcome::Tail(frames) => return self.heard_tail(frames),
+            Outcome::Unheard(why) => return self.speakers_failed(why),
+            outcome => outcome,
+        };
         if let Outcome::Partial(_, cost) = &outcome {
             self.hold_refreshes(*cost);
         }
@@ -952,53 +1150,38 @@ impl Connection {
                 if item.failure.is_some() {
                     return;
                 }
-                let delta = extension(&item.emitted, &partial.stable);
+                // With speakers, no text is fixed before the item ends, which a
+                // speaker change can move (spec speech/08): the tail carries
+                // all of it.
+                let (stable, tail) = match item.diarized {
+                    true => (String::new(), format!("{}{}", partial.stable, partial.tail)),
+                    false => (partial.stable, partial.tail),
+                };
+                let delta = extension(&item.emitted, &stable).map(str::to_owned);
                 let id = item.id.clone();
                 if let Some(delta) = delta {
-                    item.emitted = partial.stable.clone();
+                    item.emitted = stable;
                     self.send(json!({ "type": "conversation.item.input_audio_transcription.delta", "item_id": id, "content_index": 0, "delta": delta }));
                 }
                 let item = &mut self.items[index];
-                if opted_in && item.tail != partial.tail {
-                    item.tail = partial.tail.clone();
-                    self.send(json!({ "type": "ignis.input_audio_transcription.provisional", "item_id": id, "content_index": 0, "text": partial.tail }));
+                if opted_in && item.tail != tail {
+                    item.tail = tail.clone();
+                    self.send(json!({ "type": "ignis.input_audio_transcription.provisional", "item_id": id, "content_index": 0, "text": tail }));
                 }
             }
             Outcome::Transcript(transcript, computed) => {
-                let mut item = self.items.remove(index).expect("an item at the index");
+                let item = &mut self.items[index];
                 if item.failure.is_some() {
+                    self.items.remove(index);
                     return;
                 }
-                match extension(&item.emitted, &transcript.text) {
-                    Some(delta) => self.send(json!({
-                        "type": "conversation.item.input_audio_transcription.delta",
-                        "item_id": item.id,
-                        "content_index": 0,
-                        "delta": delta,
-                    })),
-                    None if !transcript.text.starts_with(item.emitted.as_str()) => {
-                        // The executor revised stable text, which spec 01 §4
-                        // says it never does: the transcript is still its own.
-                        tracing::warn!(
-                            name: "ignis.speech.stable_text_revised",
-                            variant = %self.files.id,
-                            "a transcript does not begin with the stable text its deltas sent, so they do not join to it"
-                        );
-                    }
-                    None => {}
+                item.transcript = Some((transcript, computed));
+                // Its speaker comes from the diarizer's frames over its end,
+                // which no more audio may bring.
+                if item.diarized && item.speaker.is_none() {
+                    self.want_tail();
                 }
-                self.end_tail(&mut item);
-                self.send(json!({
-                    "type": "conversation.item.input_audio_transcription.completed",
-                    "item_id": item.id,
-                    "content_index": 0,
-                    "transcript": transcript.text,
-                    "usage": { "type": "duration", "seconds": (item.seconds * 1000.0).round() / 1000.0 },
-                }));
-                if let Some(mut ending) = item.ending.take() {
-                    ending.end(SpeechOutcome::Completed, Some(&transcript), Some(computed));
-                }
-                self.quiet_since = Instant::now();
+                self.complete_ready();
             }
             Outcome::Failed(failure) => {
                 if self.items[index].failure.is_some() {
@@ -1010,6 +1193,289 @@ impl Connection {
                     self.fail_current(failure);
                 }
             }
+            Outcome::Opened(_) | Outcome::Frames(..) | Outcome::Tail(_) | Outcome::Unheard(_) => unreachable!("the speakers' outcomes are answered above"),
+        }
+    }
+
+    /// Every committed item ready, in order: its transcript in, and its
+    /// speaker known when it has one. An item waiting for its speaker holds
+    /// no later one back: a later item ends later, so its speaker comes no
+    /// sooner.
+    fn complete_ready(&mut self) {
+        let mut index = 0;
+        while index < self.items.len() {
+            let item = &self.items[index];
+            if item.transcript.is_none() || (item.diarized && item.speaker.is_none()) {
+                index += 1;
+                continue;
+            }
+            let item = self.items.remove(index).expect("an item at the index");
+            self.complete(item);
+        }
+    }
+
+    /// A committed item's text and its end: what its deltas have not sent,
+    /// its speaker after its last delta (spec speech/08), then `completed`.
+    fn complete(&mut self, mut item: Item) {
+        let (transcript, computed) = item.transcript.take().expect("a transcript in");
+        match extension(&item.emitted, &transcript.text) {
+            Some(delta) => self.send(json!({
+                "type": "conversation.item.input_audio_transcription.delta",
+                "item_id": item.id,
+                "content_index": 0,
+                "delta": delta,
+            })),
+            None if !transcript.text.starts_with(item.emitted.as_str()) => {
+                // The executor revised stable text, which spec 01 §4
+                // says it never does: the transcript is still its own.
+                tracing::warn!(
+                    name: "ignis.speech.stable_text_revised",
+                    variant = %self.files.id,
+                    "a transcript does not begin with the stable text its deltas sent, so they do not join to it"
+                );
+            }
+            None => {}
+        }
+        self.end_tail(&mut item);
+        if let Some(Some(speaker)) = item.speaker {
+            self.send(json!({ "type": "ignis.input_audio_transcription.speaker", "item_id": item.id, "content_index": 0, "speaker": speaker }));
+        }
+        self.send(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": item.id,
+            "content_index": 0,
+            "transcript": transcript.text,
+            "usage": { "type": "duration", "seconds": (item.seconds * 1000.0).round() / 1000.0 },
+        }));
+        if let Some(mut ending) = item.ending.take() {
+            ending.end(SpeechOutcome::Completed, Some(&transcript), Some(computed));
+        }
+        self.quiet_since = Instant::now();
+    }
+
+    /// The length guard (spec speech/08): once the current item holds the
+    /// limit in force, the session's or the server's, it ends at the VAD's
+    /// next pause, or `speech.utterance_cut_search_ms` past the limit at the
+    /// latest, where the audio is; the speech goes on in a new item.
+    fn guard(&mut self, paused: bool) {
+        let live = self.server.live();
+        let Some(limit) = self.config.utterance_limit(live.speech.max_utterance_seconds) else { return };
+        let item = self.items.back().expect("a current item");
+        if item.id.is_none() || item.failure.is_some() {
+            return;
+        }
+        let held_ms = item.samples_in * 1000 / u64::from(TARGET_RATE);
+        let limit_ms = u64::from(limit) * 1000;
+        if held_ms >= limit_ms && (paused || held_ms >= limit_ms + u64::from(live.speech.utterance_cut_search_ms)) {
+            let at = item.start + item.samples_in;
+            self.cut_item(at, false);
+        }
+    }
+
+    /// End the current item at sample `at` of the session's clock, as the VAD
+    /// ends one at a silence, and go on with the speech in a new item from
+    /// there (spec speech/08): `speech_stopped` at `at`, `committed`, then
+    /// `speech_started` at `at` for the new one, which has no prefix padding
+    /// (it would take the speech before) and the leading silence. At a
+    /// speaker change (`change`) the audio past `at`, heard already, is the
+    /// new item's, and the item is decoded again from its audio before `at`;
+    /// the length guard cuts where the audio is, so none is past it.
+    fn cut_item(&mut self, at: u64, change: bool) {
+        let millis = |sample: u64| sample * 1000 / u64::from(TARGET_RATE);
+        let item = self.items.back().expect("a current item");
+        let (id, start, given, lead) = (item.id.clone(), item.start, item.samples_in, ignis_speech::vad::ms_samples(item.lead_ms) as usize);
+        self.send(json!({ "type": "input_audio_buffer.speech_stopped", "audio_end_ms": millis(at), "item_id": id }));
+        let moved = self.since_item.range(at, start + given);
+        let kept = (at - start) as usize;
+        if change {
+            // What the item's session was pushed, and what still waits to be.
+            let queued = (lead + given as usize).saturating_sub(self.pending.len());
+            let fed = lead + kept;
+            match fed.checked_sub(queued) {
+                Some(more) => self.pending.truncate(more),
+                None => self.pending.clear(),
+            }
+            self.queue(Unit::Cut(fed));
+        }
+        let item = self.current();
+        item.samples_in = kept as u64;
+        item.seconds = kept as f64 / f64::from(TARGET_RATE);
+        self.since_item.ended_at(at);
+        self.end_item();
+        self.begin_item();
+        self.current().start = at;
+        let id = self.current().id.clone();
+        self.send(json!({ "type": "input_audio_buffer.speech_started", "audio_start_ms": millis(at), "item_id": id }));
+        self.lead_in();
+        self.give(moved);
+    }
+
+    /// The speakers `session.update` set: at once while the current item
+    /// holds no audio, else from the next item, as a switch of turn detection
+    /// holds. Speakers that start read the `diarizer` group, and their stream
+    /// starts at the audio heard so far; speakers that stop leave the items
+    /// waiting for theirs without one.
+    fn sync_speakers(&mut self) {
+        let wanted = self.config.diarization;
+        if self.speakers.as_ref().map(|speakers| speakers.mode) == wanted || self.current().samples_in > 0 {
+            return;
+        }
+        if let Some(gone) = self.speakers.take() {
+            gone.cancel.store(true, Ordering::SeqCst);
+            self.unheard();
+        }
+        let Some(mode) = wanted else { return };
+        let live = self.server.live();
+        self.speakers = Some(Diarized {
+            mode,
+            origin: self.heard,
+            sent: 0,
+            pending: Vec::new(),
+            due: None,
+            stepping: false,
+            tailing: false,
+            frames: Speakers::new(f64::from(live.diarizer.min_speaker_seconds) / 1000.0),
+            tail_end: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            failed: false,
+        });
+        self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode == Diarization::File)));
+    }
+
+    /// The audio the session holds that is not computed yet: the current
+    /// item's not yet queued, the speakers' not yet sent, and what the units
+    /// in the worker carry.
+    fn uncomputed(&self) -> usize {
+        let speakers = self.speakers.as_ref().map_or(0, |speakers| speakers.pending.len());
+        self.pending.len() + speakers + self.in_worker_samples
+    }
+
+    /// Queue the diarizer's next step once the audio it waits for is heard:
+    /// one at a time, each answering when the next falls due.
+    fn diarize(&mut self) {
+        let Some(speakers) = self.speakers.as_mut() else { return };
+        let heard = speakers.sent + speakers.pending.len() as u64;
+        if speakers.stepping || speakers.failed || !speakers.due.is_some_and(|due| heard >= due) {
+            return;
+        }
+        let samples = std::mem::take(&mut speakers.pending);
+        speakers.sent += samples.len() as u64;
+        speakers.stepping = true;
+        self.queue_speakers(Unit::Diarize(samples));
+    }
+
+    /// Score what the stream heard past its last step when an item's
+    /// transcript is in and its speaker waits for frames no more audio may
+    /// bring: a file's end, a pause, a commit, a close (spec speech/08). On a
+    /// copy of the stream, one at a time.
+    fn want_tail(&mut self) {
+        let Some(speakers) = self.speakers.as_ref() else { return };
+        if speakers.tailing || speakers.failed || speakers.due.is_none() {
+            return;
+        }
+        let covered = speakers.frames.len().max(speakers.tail_end);
+        let waits = self.items.iter().any(|item| {
+            item.diarized && item.speaker.is_none() && item.transcript.is_some() && item.end.is_some_and(|end| speakers.frame(end) > covered)
+        });
+        if !waits {
+            return;
+        }
+        let speakers = self.speakers.as_mut().expect("the speakers are on");
+        let samples = std::mem::take(&mut speakers.pending);
+        speakers.sent += samples.len() as u64;
+        speakers.tailing = true;
+        self.queue_speakers(Unit::Tail(samples));
+    }
+
+    /// The diarizer's stream is open: its first step waits for `due` samples.
+    fn speakers_opened(&mut self, due: usize) {
+        let Some(speakers) = self.speakers.as_mut() else { return };
+        speakers.due = Some(due as u64);
+        self.diarize();
+        self.want_tail();
+    }
+
+    /// A step's frames: a speaker change in the current item cuts it, and the
+    /// items they cover the end of have their speaker.
+    fn heard_frames(&mut self, frames: Frames, due: usize) {
+        let Some(speakers) = self.speakers.as_mut() else { return };
+        speakers.stepping = false;
+        speakers.due = Some(due as u64);
+        speakers.frames.push(&frames.probs);
+        self.speaker_change();
+        self.assign_speakers(None);
+        self.complete_ready();
+        self.diarize();
+        self.want_tail();
+    }
+
+    /// A tail's frames: scored with no look-ahead, so they cut nothing and
+    /// join no later step's, but they give the items they cover the end of
+    /// their speaker.
+    fn heard_tail(&mut self, tail: Frames) {
+        let Some(speakers) = self.speakers.as_mut() else { return };
+        speakers.tailing = false;
+        let mut heard = speakers.frames.clone();
+        heard.push(tail.probs.get(heard.len().saturating_sub(tail.first)..).unwrap_or_default());
+        speakers.tail_end = heard.len();
+        self.assign_speakers(Some(heard));
+        self.complete_ready();
+        self.want_tail();
+    }
+
+    /// The diarizer failed: an `error` says so, and the session goes on
+    /// without speakers, the items waiting for theirs completed without one.
+    fn speakers_failed(&mut self, why: String) {
+        let Some(speakers) = self.speakers.as_mut().filter(|speakers| !speakers.failed) else { return };
+        speakers.failed = true;
+        speakers.pending = Vec::new();
+        speakers.cancel.store(true, Ordering::SeqCst);
+        tracing::warn!(name: "ignis.speech.diarizer_failed", session = %self.session_id, reason = %why, "the diarizer failed; the session goes on without speakers");
+        let message = format!("the diarizer failed ({why}); the session goes on without speakers");
+        self.send(json!({ "type": "error", "error": { "type": "server_error", "code": "ignis_diarizer_failed", "message": message, "param": null, "event_id": null } }));
+        self.unheard();
+    }
+
+    /// The items waiting for a speaker that no frame will give now get none.
+    fn unheard(&mut self) {
+        for item in self.items.iter_mut().filter(|item| item.diarized && item.speaker.is_none()) {
+            item.speaker = Some(None);
+        }
+        self.complete_ready();
+    }
+
+    /// The committed items whose end the frames cover (`heard`, else the
+    /// steps') take their speaker: the one holding most of their speech
+    /// frames (spec speech/08).
+    fn assign_speakers(&mut self, heard: Option<Speakers>) {
+        let Some(speakers) = self.speakers.as_ref() else { return };
+        let frames = heard.as_ref().unwrap_or(&speakers.frames);
+        for item in self.items.iter_mut().filter(|item| item.diarized && item.speaker.is_none()) {
+            let Some(end) = item.end else { continue };
+            let (from, to) = (speakers.frame(item.start), speakers.frame(end));
+            if frames.len() >= to {
+                item.speaker = Some(frames.speaker_of(from, to));
+            }
+        }
+    }
+
+    /// A change of speaker inside the current item ends it at the change, the
+    /// first frame of the new speaker's run (spec speech/08), as many times
+    /// as the frames hold one.
+    fn speaker_change(&mut self) {
+        loop {
+            let Some(speakers) = self.speakers.as_ref() else { return };
+            let speaking = self.turns.as_ref().is_some_and(|turns| turns.speaking());
+            let item = self.items.back().expect("a current item");
+            if !speaking || !item.diarized || item.id.is_none() || item.failure.is_some() {
+                return;
+            }
+            let Some((frame, _)) = speakers.frames.change(speakers.frame(item.start), speakers.frames.len()) else { return };
+            let at = speakers.sample(frame);
+            if at <= item.start || at >= item.start + item.samples_in {
+                return;
+            }
+            self.cut_item(at, true);
         }
     }
 
@@ -1089,16 +1555,18 @@ impl Connection {
 }
 
 /// Run a unit's next step on the worker thread: `More` for a commit with
-/// steps left; done with `None` when it has nothing to say: an open or a push
-/// that went through, a refresh `stop` stopped (Q79), or a unit after a
-/// failure that left no session (the failure already answered).
-fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Progress {
+/// steps left; done with `None` when it has nothing to say: an open, a push or
+/// a cut that went through, a refresh `stop` stopped (Q79), or a unit after a
+/// failure that left no session (the failure already answered). The
+/// speakers' units answer what the diarizer did, or why it failed.
+fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, diarizer: &dyn DiarizerExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Progress {
     let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
     let failed = |slot: &mut Slot, why: String| {
         slot.session = None;
         Progress::Done(Some(Outcome::Failed(Failure::Fault(Fault::Executor(why)))))
     };
     let began = std::time::Instant::now();
+    let tail = matches!(unit, Unit::Tail(_));
     match unit {
         Unit::Open(open, load) => {
             slot.session = None;
@@ -1148,7 +1616,51 @@ fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files
                 Err(error) => failed(&mut *slot, error.0),
             }
         }
+        Unit::Cut(at) => {
+            let Some(session) = slot.session.as_mut() else { return Progress::Done(None) };
+            let cut = session.cut(*at);
+            slot.computed += began.elapsed();
+            match cut {
+                Ok(()) => Progress::Done(None),
+                Err(error) => failed(&mut *slot, error.0),
+            }
+        }
+        Unit::Speakers(open) => {
+            slot.stream = None;
+            match diarizer.open(*open) {
+                Ok(stream) => {
+                    let due = stream.samples_needed();
+                    slot.stream = Some(stream);
+                    Progress::Done(Some(Outcome::Opened(due)))
+                }
+                Err(error) => Progress::Done(Some(Outcome::Unheard(error.0))),
+            }
+        }
+        Unit::Diarize(samples) | Unit::Tail(samples) => {
+            let Some(stream) = slot.stream.as_mut() else {
+                return Progress::Done(Some(Outcome::Unheard("the diarizer's stream is not open".to_owned())));
+            };
+            stream.push(&std::mem::take(samples));
+            let scored = match tail {
+                true => stream.tail().map(Outcome::Tail),
+                false => stream.step().map(|frames| Outcome::Frames(frames.unwrap_or_default(), stream.samples_needed())),
+            };
+            match scored {
+                Ok(outcome) => Progress::Done(Some(outcome)),
+                Err(error) => {
+                    slot.stream = None;
+                    Progress::Done(Some(Outcome::Unheard(error.0)))
+                }
+            }
+        }
     }
+}
+
+/// The 16 kHz samples base64 `audio` of 16-bit PCM at `rate` makes, read off
+/// its length before it is decoded.
+fn samples_of(audio: &str, rate: u32) -> usize {
+    let bytes = audio.trim_end_matches('=').len() * 3 / 4;
+    bytes / 2 * TARGET_RATE as usize / rate as usize
 }
 
 /// Push `samples` when there are any: a partial or a commit with nothing new

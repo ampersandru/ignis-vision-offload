@@ -239,6 +239,10 @@ count_kind!(
     /// A count of waiting requests.
     Requests: u32, "requests", "request count"
 );
+count_kind!(
+    /// A count of the diarizer's 80 ms frames.
+    Frames: u32, "frames", "frame count"
+);
 
 /// The speech model's compute threads (spec speech/01): a count, or `auto`,
 /// the physical cores less one. Rendered `auto` when unset, so a file written
@@ -279,6 +283,88 @@ impl FieldKind for Fraction {
 
     fn render(value: &u32) -> Value {
         Value::from(f64::from(*value) / 1000.0)
+    }
+}
+
+/// A decimal number, at least 0 (`6.5`), kept as thousandths so a group of
+/// them stays `Eq`: a third decimal place is the finest it keeps. A
+/// [`super::field::Validator::DecimalRange`] bounds it, in the same
+/// thousandths.
+pub struct Decimal;
+
+impl Decimal {
+    /// `raw` in thousandths, or why not.
+    fn thousandths(raw: &str) -> Option<u32> {
+        raw.parse::<f64>().ok().filter(|value| value.is_finite() && (0.0..=f64::from(u32::MAX) / 1000.0).contains(value)).map(|value| (value * 1000.0).round() as u32)
+    }
+
+    fn written(value: u32) -> Value {
+        Value::from(f64::from(value) / 1000.0)
+    }
+}
+
+impl FieldKind for Decimal {
+    type Value = u32;
+    const TAG: &'static str = "number";
+
+    fn parse(raw: &str) -> Result<u32, String> {
+        Decimal::thousandths(raw).ok_or_else(|| format!("expects a number of at least 0, got `{raw}`"))
+    }
+
+    fn render(value: &u32) -> Value {
+        Decimal::written(*value)
+    }
+
+    fn number(value: &u32) -> Option<i64> {
+        Some(i64::from(*value))
+    }
+}
+
+/// A decimal number as [`Decimal`] reads it, or `auto`: the model's own
+/// value, which its weights carry. Rendered `auto` when unset.
+pub struct AutoDecimal;
+
+impl FieldKind for AutoDecimal {
+    type Value = Option<u32>;
+    const TAG: &'static str = "number|auto";
+
+    fn parse(raw: &str) -> Result<Self::Value, String> {
+        if raw.eq_ignore_ascii_case("auto") {
+            return Ok(None);
+        }
+        Decimal::thousandths(raw).map(Some).ok_or_else(|| format!("expects `auto` or a number of at least 0, got `{raw}`"))
+    }
+
+    fn render(value: &Self::Value) -> Value {
+        value.map_or_else(|| Value::String("auto".to_owned()), Decimal::written)
+    }
+
+    fn number(value: &Self::Value) -> Option<i64> {
+        value.map(i64::from)
+    }
+}
+
+/// A count, or `auto`: the model's own value, which its weights carry.
+/// Rendered `auto` when unset.
+pub struct AutoCount;
+
+impl FieldKind for AutoCount {
+    type Value = Option<u32>;
+    const TAG: &'static str = "count|auto";
+
+    fn parse(raw: &str) -> Result<Self::Value, String> {
+        if raw.eq_ignore_ascii_case("auto") {
+            return Ok(None);
+        }
+        raw.parse::<u32>().map(Some).map_err(|_| format!("expects `auto` or a count, got `{raw}`"))
+    }
+
+    fn render(value: &Self::Value) -> Value {
+        value.map_or_else(|| Value::String("auto".to_owned()), Value::from)
+    }
+
+    fn number(value: &Self::Value) -> Option<i64> {
+        value.map(i64::from)
     }
 }
 
@@ -1065,6 +1151,33 @@ mod tests {
             let err = DraftRows::parse(bad).unwrap_err();
             assert!(err.contains("2..=32") && err.contains(bad), "{err}");
         }
+    }
+
+    /// Spec speech/08: a decimal keeps three places as thousandths and
+    /// reads back; `auto` is the model's own value for the two kinds that
+    /// take it.
+    #[test]
+    fn decimals_keep_thousandths_and_auto_is_the_models_own() {
+        assert_eq!(Decimal::parse("6"), Ok(6_000));
+        assert_eq!(Decimal::parse("0.25"), Ok(250));
+        assert_eq!(Decimal::parse("1.5"), Ok(1_500));
+        for bad in ["-1", "fast", "NaN", "inf"] {
+            assert!(Decimal::parse(bad).unwrap_err().contains(bad), "{bad}");
+        }
+        assert_eq!(Decimal::render(&250), serde_json::json!(0.25));
+        assert_eq!(Decimal::number(&1_500), Some(1_500));
+        assert_eq!(AutoDecimal::parse("auto"), Ok(None));
+        assert_eq!(AutoDecimal::parse("0.05"), Ok(Some(50)));
+        assert!(AutoDecimal::parse("lots").unwrap_err().contains("auto"));
+        assert_eq!(AutoDecimal::render(&None), serde_json::json!("auto"));
+        assert_eq!(AutoCount::parse("AUTO"), Ok(None));
+        assert_eq!(AutoCount::parse("3"), Ok(Some(3)));
+        assert!(AutoCount::parse("1.5").is_err());
+        round_trips::<Decimal>(6_500);
+        round_trips::<AutoDecimal>(None);
+        round_trips::<AutoDecimal>(Some(750));
+        round_trips::<AutoCount>(Some(1));
+        round_trips::<AutoCount>(None);
     }
 
     #[test]

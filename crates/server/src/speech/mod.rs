@@ -31,7 +31,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::config::schema::SpeechGroup;
 use crate::download::Catalog;
-use executor::{LoadSettings, NoExecutor, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession};
+use executor::{DiarizerExecutor, LoadSettings, NoDiarizer, NoExecutor, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession};
 use worker::{Full, Gauges, Job, Worker};
 
 /// The `Retry-After` of a refused Realtime session: room frees when a person
@@ -65,6 +65,8 @@ impl Availability {
 /// The speech model's slot.
 pub struct Speech {
     executor: Arc<dyn SpeechExecutor>,
+    /// The diarizer beside it (spec speech/08), its steps on the same worker.
+    diarizer: Arc<dyn DiarizerExecutor>,
     models: Option<SpeechModels>,
     gauges: Arc<Gauges>,
     /// Started by the first request: a server that is never asked for a
@@ -88,6 +90,7 @@ impl Speech {
     pub fn new(executor: Arc<dyn SpeechExecutor>, models: Option<SpeechModels>) -> Self {
         Self {
             executor,
+            diarizer: Arc::new(NoDiarizer),
             models,
             gauges: Arc::default(),
             worker: OnceLock::new(),
@@ -108,6 +111,17 @@ impl Speech {
 
     pub fn executor(&self) -> &Arc<dyn SpeechExecutor> {
         &self.executor
+    }
+
+    /// Give speakers with `diarizer` (spec speech/08). A slot built without
+    /// one has a diarizer that is unavailable, saying so.
+    pub fn with_diarizer(mut self, diarizer: Arc<dyn DiarizerExecutor>) -> Self {
+        self.diarizer = diarizer;
+        self
+    }
+
+    pub fn diarizer(&self) -> &Arc<dyn DiarizerExecutor> {
+        &self.diarizer
     }
 
     /// The catalog the speech model is looked up in, when the server has one.

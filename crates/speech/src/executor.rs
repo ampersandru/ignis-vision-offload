@@ -178,6 +178,12 @@ impl Executor {
         self.core.loaded.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
+    /// The model as loaded now, with its pool and its ISA, for what computes beside it on the same
+    /// threads (the diarizer, spec speech/08); `None` when it is not loaded.
+    pub fn loaded_now(&self) -> Option<Arc<Loaded>> {
+        self.core.loaded.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Loads the model if it is not loaded: the first signal (a session opening, a mic press,
     /// a batch request). Returns the load's report, or `None` when it was already loaded.
     pub fn load(&self) -> Result<Option<LoadReport>, ExecError> {

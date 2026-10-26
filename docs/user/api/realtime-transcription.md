@@ -64,7 +64,7 @@ The first event is `session.created`, with the configuration in effect:
       "turn_detection": { "type": "server_vad", "threshold": 0.5,
         "prefix_padding_ms": 300, "silence_duration_ms": 500, "idle_timeout_ms": null } } },
     "include": [],
-    "ignis": { "provisional_tail": false } } }
+    "ignis": { "provisional_tail": false, "diarization": null, "max_utterance_seconds": null } } }
 ```
 
 A session that sends no `turn_detection` runs **`server_vad`**, as OpenAI's
@@ -97,7 +97,12 @@ with an `error`, the session keeping the configuration it had.
 | `audio.input.turn_detection` | `{type: "server_vad", ...}`, the default, or `null` for manual commit: [turn detection](#turn-detection). `semantic_vad` is refused. |
 | `audio.input.noise_reduction` | `null`. `near_field` and `far_field` are refused. |
 | `include` | Empty. `item.input_audio_transcription.logprobs` is refused. |
-| `ignis.provisional_tail` | `true` to receive the provisional tail, below. Any other key under `ignis` is an `error` naming it. |
+| `ignis.provisional_tail` | `true` to receive the provisional tail, below. |
+| `ignis.diarization` | `"live"` or `"file"` to label each item with its [speaker](#speakers), `null` (the default) for none. Only under `server_vad`: on a manual-commit session it is an `error` naming `turn_detection`, and so is a switch to manual commit while it is on. With the diarizer unavailable it is an `error`, `ignis_diarizer_unavailable`, with the reason, and the session goes on without speakers. A change while an item holds audio holds from the next item. |
+| `ignis.max_utterance_seconds` | The [length guard](#long-utterances)'s limit for this session: `null` (the default) is the server's `speech.max_utterance_seconds`, `0` turns it off, otherwise whole seconds up to `speech.max_clip_seconds`. Declared as set. |
+
+`ignis` takes those three keys; any other is an `error` naming it and the
+three.
 
 `transcription_session.update`, the retired beta's event, is an `error` naming
 `session.update`, and every conversation event (`response.create`,
@@ -113,6 +118,14 @@ with an `error`, the session keeping the configuration it had.
 to 15 MiB of base64 an event. Nothing is sent back. Under manual commit the
 audio between two commits is one **item**, which gets its `item_id` with its
 first append; under `server_vad` an item is one utterance the server found.
+
+A session holds at most `speech.max_queued_audio_seconds` (120) of audio that
+is not computed yet: received, and still waiting for the speech model's
+windows or the diarizer's steps. An append that would take it past is
+refused with an `error`, `ignis_audio_queue_full`, before any of it is read,
+and the session stays open: send it again once the session catches up. A
+client fed at real time never meets it; one that sends a file flat out paces
+itself by it, or sends the file nearer real time.
 
 - `input_audio_buffer.commit` ends the item: `input_audio_buffer.committed`
   `{item_id, previous_item_id}` at once, then its transcription. A commit with
@@ -186,7 +199,26 @@ changed context does.
 item and the client commits it. The Playground's dictation commits this way, at
 **Done**, when its silence setting is Off or the shortcut is held; by default it
 asks for `server_vad` with a 3 s `silence_duration_ms` and treats the first
-commit as Done ([dictation](../playground/chat.md#dictating-a-prompt)).
+commit as Done ([dictation](../playground/chat.md#dictating-a-prompt)), with
+the length guard off (`ignis.max_utterance_seconds: 0`), so a long dictation
+with short pauses is not ended by it.
+
+### Long utterances
+
+Under `server_vad` an item ends only at a silence, so a room that never falls
+silent would hold one open until `speech.max_clip_seconds` fails all of it.
+**The length guard** ends it sooner: once an item holds
+`speech.max_utterance_seconds` (120) of audio, the server ends it at the next
+32 ms the VAD hears under `threshold`, a pause too short to end the item, or
+`speech.utterance_cut_search_ms` (2000) later at the latest, where the audio
+is. The search looks forward only, so no text already sent is past the cut.
+The events are those of an utterance that ended and one that began at once:
+`speech_stopped` with `audio_end_ms` at the cut, `committed`, then
+`speech_started` for a new item with `audio_start_ms` at the cut, which takes
+no prefix padding (it would be the end of the item before) and is fed after
+the leading silence as every item is. The speech goes on in the new item,
+with the same speaker. A session sets its own limit with
+`ignis.max_utterance_seconds`, `0` for none.
 
 ## The text
 
@@ -246,6 +278,55 @@ the previous one, and `""` when the item ends. Show the deltas, then the tail
 greyed after them. A session that does not opt in never receives the event, so
 a client that rejects unknown events is safe.
 
+## Speakers
+
+A session that sets `ignis.diarization` gets each item's **speaker**: the
+diarizer, Nemotron 3 Diarization on the CPU beside the speech model, reads the
+session's audio as the VAD does, from where the speakers start, and tells up
+to 8 voices apart, numbered in the order they first spoke. It never
+transcribes. `"live"` is its geometry for audio at real time, which scores
+2 s of audio a step and waits for 0.32 s more: a frame's speaker is known
+about 2.3 s after it is heard. `"file"` is the card's offline geometry, for a
+file fed faster than real time: 27.2 s a step and 30.4 s of wait, at a
+fraction of the CPU. The `diarizer` group sets both ([speech
+configuration](../configuration/speech.md#the-diarizer)).
+
+```json
+{ "type": "ignis.input_audio_transcription.speaker", "event_id": "event_…", "item_id": "item_…", "content_index": 0, "speaker": 1 }
+```
+
+It comes after the item's last delta and before its `completed`; a session
+that does not opt in never receives it. An item's speaker is the voice that
+holds most of its speech; an item with no speech in it (an idle timeout's
+silence) gets no speaker event. A voice counts as a speaker of its own only
+once it has spoken `diarizer.min_speaker_seconds`; until then its speech
+counts for the speaker it sounds most like, so a short mistaken voice splits
+nothing. The session's first voice is a speaker at once. A ninth voice lands
+on one of the eight.
+
+- **One speaker per item.** When the speaker changes inside an item, the
+  server ends the item at the change, as it does at a silence:
+  `speech_stopped` with `audio_end_ms` at the first 80 ms of the new speaker,
+  `committed`, then `speech_started` for a new item with `audio_start_ms` there,
+  with no prefix padding and the leading silence. The change is found when the
+  diarizer's frames show it, after the audio was heard: the item ended is
+  decoded again from its audio up to the change, and the audio from the change
+  on is the new item's. A change found only once the item has ended does not
+  split it: the item takes the speaker that holds most of it.
+- **The text comes at the end.** A change can move an item's end after its
+  text was decoded, and the model gives no word times, so in a session with
+  speakers no text is fixed before the item ends: the refreshes still run and
+  the provisional tail carries all of the item's text, and at the end one
+  `delta` carries the whole transcript, so the deltas joined still equal
+  `completed.transcript`. A session with speakers that does not opt in to the
+  provisional tail sees an item's text only at its end.
+- **`completed` waits for the speaker**: until the diarizer's frames cover the
+  item's end. With no more audio after it (a file's end, a pause in what the
+  client sends, a commit), the server scores what the diarizer has heard
+  past its last step at once, as if the audio ended there, rather than wait.
+- A diarizer that fails is an `error`, `ignis_diarizer_failed`, saying why, and
+  the session goes on without speakers.
+
 ## Several sessions, and the queue
 
 One compute worker serves the speech model. Up to `speech.max_sessions` (4)
@@ -253,7 +334,11 @@ sessions are open at once; they take turns a unit of work at a time (a window
 of audio, a refresh, or a step of a commit: a window, 104 tokens of the
 decode's prefill or 16 tokens decoded) and every unit goes ahead of the
 [transcription requests](transcriptions.md#waiting-and-refusing), which run in
-the gaps.
+the gaps. The diarizer runs on the same worker, a step of its geometry a unit
+in its session's turn, with the speech model's threads: a refresh is skipped
+while a step of its session is in the worker, as while a window is, so on a
+slow CPU the refreshes thin out first and the windows, the steps and the
+commits keep their pace.
 
 A session with no committed item still being transcribed and no frame from its
 client for `server.socket_idle_close` seconds (300; 0 never) is closed with a

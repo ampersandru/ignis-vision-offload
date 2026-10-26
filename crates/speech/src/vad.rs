@@ -9,8 +9,10 @@
 //!   first frame whose speech probability reaches the threshold, with the prefix padding before
 //!   it (silence, even the end of the turn before, never an earlier turn's speech), and ends
 //!   once the silence after its last such frame lasts the silence duration, that silence
-//!   included; with an idle timeout, as much audio without speech is a turn of its own. Every
-//!   length is in samples of the stream, from its first.
+//!   included; with an idle timeout, as much audio without speech is a turn of its own. Inside a
+//!   turn, each frame under the threshold that does not end it is a pause, where the server's
+//!   length guard may cut a long turn (spec speech/08). Every length is in samples of the stream,
+//!   from its first.
 //!
 //! Provenance (ADR 0051, an adapted op): the graph is ported from Silero VAD
 //! (<https://github.com/snakers4/silero-vad>, tag v6.2.3, commit 5cd79456): the model of
@@ -263,6 +265,9 @@ pub enum TurnEvent {
     Started { start: u64 },
     /// The current turn's next samples.
     Audio(Vec<f32>),
+    /// Inside a turn, a frame under the threshold, a pause too short to end it, ending at sample
+    /// `end`: after that frame's audio.
+    Pause { end: u64 },
     /// The turn's silence lasted the silence duration: the turn ends at sample `end`, that
     /// silence included.
     Stopped { end: u64 },
@@ -402,6 +407,8 @@ impl<V: SpeechProbability> Turns<V> {
                     out.push(TurnEvent::Stopped { end });
                     self.state = State::Idle;
                     (self.floor, self.idle_since) = (last_speech, end);
+                } else {
+                    out.push(TurnEvent::Pause { end });
                 }
             }
         }
@@ -447,13 +454,15 @@ mod tests {
         TimedOut(u64, u64, usize),
     }
 
-    /// The events `samples` give, each run of audio joined, and that audio in order.
+    /// The events `samples` give, each run of audio joined, and that audio in order; the pauses
+    /// are [`pauses`]'.
     fn run(turns: &mut Turns<fn(&[f32]) -> f32>, samples: &[f32]) -> (Vec<Seen>, Vec<f32>) {
         let mut out = Vec::new();
         turns.push(samples, &mut out);
         let (mut seen, mut audio) = (Vec::new(), Vec::new());
         for event in out {
             match event {
+                TurnEvent::Pause { .. } => {}
                 TurnEvent::Started { start } => seen.push(Seen::Started(start)),
                 TurnEvent::Audio(more) => {
                     match seen.last_mut() {
@@ -595,6 +604,27 @@ mod tests {
         let (seen, audio) = run(&mut t, &rest);
         assert_eq!(seen, [Seen::Started(2 * f - 12), Seen::Audio(2 * FRAME + 12)], "the padding is only what came after the clear");
         assert_eq!(audio.len(), 2 * FRAME + 12);
+    }
+
+    /// Where `samples` pause inside a turn.
+    fn pauses(turns: &mut Turns<fn(&[f32]) -> f32>, samples: &[f32]) -> Vec<u64> {
+        let mut out = Vec::new();
+        turns.push(samples, &mut out);
+        out.into_iter().filter_map(|event| if let TurnEvent::Pause { end } = event { Some(end) } else { None }).collect()
+    }
+
+    /// Spec speech/08: inside a turn, every frame under the threshold that does not end it is a
+    /// pause at its end, the length guard's place to cut; the frame that ends the turn is none,
+    /// and nor is a quiet frame outside a turn.
+    #[test]
+    fn a_quiet_frame_inside_a_turn_is_a_pause() {
+        let f = FRAME as u64;
+        let stream = frames(&[0.1, 0.9, 0.2, 0.49, 0.5, 0.1, 0.1, 0.1, 0.1]);
+        assert_eq!(pauses(&mut turns(SETTINGS), &stream), [3 * f, 4 * f, 6 * f, 7 * f]);
+        let mut out = Vec::new();
+        turns(SETTINGS).push(&stream, &mut out);
+        let at = out.iter().position(|event| *event == TurnEvent::Pause { end: 3 * f }).unwrap();
+        assert!(matches!(&out[at - 1], TurnEvent::Audio(samples) if samples.len() == FRAME), "after its frame's audio");
     }
 
     /// A change of the settings holds from the next frame.
