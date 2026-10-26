@@ -284,14 +284,22 @@ enum Outcome {
     Unheard(String),
 }
 
-/// A unit is out of its worker: what it says, if anything, the samples it
-/// carried, and whether it was the speakers' (the diarizer's thread) or the
-/// speech model's (the speech worker).
+/// A unit is out of its worker: whose it was, what it says, if anything,
+/// and the samples it carried.
 struct Done {
-    item: u64,
+    of: Of,
     outcome: Option<Outcome>,
     samples: usize,
-    speakers: bool,
+}
+
+/// Whose a unit is.
+#[derive(Clone, Copy)]
+enum Of {
+    /// The item `seq`'s, on the speech worker.
+    Item(u64),
+    /// The speakers' stream numbered so in the session, on the diarizer's
+    /// thread: a stream turned off or replaced since hears nothing more.
+    Stream(u64),
 }
 
 /// Why an item failed.
@@ -429,6 +437,8 @@ struct Connection {
     since_item: SinceItem,
     /// Under `server_vad`, with `session.ignis.diarization`, the speakers.
     speakers: Option<Diarized>,
+    /// The speakers' streams opened so far: the next one's number.
+    streams: u64,
 }
 
 /// A session's speakers (spec speech/08): the diarizer's stream, on the
@@ -439,6 +449,8 @@ struct Connection {
 /// leading silence only the speech model is fed is no audio of the stream's.
 struct Diarized {
     mode: Diarization,
+    /// Its number in the session, which its units' answers carry.
+    number: u64,
     /// The diarizer's stream, once its open unit opened it.
     stream: StreamSlot,
     /// The session's sample the stream's first is.
@@ -655,6 +667,7 @@ impl Connection {
             turns: None,
             since_item: SinceItem::default(),
             speakers: None,
+            streams: 0,
         }
     }
 
@@ -824,7 +837,7 @@ impl Connection {
             broken.lock().unwrap_or_else(PoisonError::into_inner).session = None;
             Outcome::Failed(Failure::Fault(Fault::Executor("the speech executor panicked".to_owned())))
         };
-        let task = self.task(Done { item: seq, outcome: None, samples, speakers: false }, cancel, work, panicked);
+        let task = self.task(Done { of: Of::Item(seq), outcome: None, samples }, cancel, work, panicked);
         self.in_worker += 1;
         self.in_worker_samples += samples;
         self.server.speech.submit_interactive(&self.guard, task);
@@ -844,7 +857,7 @@ impl Connection {
             *broken.lock().unwrap_or_else(PoisonError::into_inner) = None;
             Outcome::Unheard("the diarizer panicked".to_owned())
         };
-        let task = self.task(Done { item: u64::MAX, outcome: None, samples, speakers: true }, cancel, work, panicked);
+        let task = self.task(Done { of: Of::Stream(speakers.number), outcome: None, samples }, cancel, work, panicked);
         self.speakers_in_worker_samples += samples;
         self.server.speech.submit_diarizer(&self.guard, task);
     }
@@ -1263,26 +1276,30 @@ impl Connection {
 
     /// A unit is out of its worker.
     fn done(&mut self, done: Done) {
-        match done.speakers {
-            true => self.speakers_in_worker_samples -= done.samples,
-            false => {
+        let seq = match done.of {
+            Of::Item(seq) => {
                 self.in_worker -= 1;
                 self.in_worker_samples -= done.samples;
+                seq
             }
-        }
-        let Some(outcome) = done.outcome else { return };
-        let outcome = match outcome {
-            Outcome::Opened(due) => return self.speakers_opened(due),
-            Outcome::Frames(frames, due, cost) => return self.heard_frames(frames, due, cost),
-            Outcome::Tail(frames) => return self.heard_tail(frames),
-            Outcome::Unheard(why) => return self.speakers_failed(why),
-            outcome => outcome,
+            Of::Stream(number) => {
+                self.speakers_in_worker_samples -= done.samples;
+                // A step of a stream turned off or replaced since, still
+                // running then, says nothing of the next.
+                if self.speakers.as_ref().is_some_and(|speakers| speakers.number == number) {
+                    if let Some(outcome) = done.outcome {
+                        self.speakers_heard(outcome);
+                    }
+                }
+                return;
+            }
         };
+        let Some(outcome) = done.outcome else { return };
         if let Outcome::Partial(_, cost) = &outcome {
             self.hold_refreshes(*cost);
         }
         // An item cleared or ended since: nobody is waiting for it.
-        let Some(index) = self.items.iter().position(|item| item.seq == done.item) else { return };
+        let Some(index) = self.items.iter().position(|item| item.seq == seq) else { return };
         match outcome {
             Outcome::Partial(partial, _) => {
                 let opted_in = self.config.provisional_tail;
@@ -1333,7 +1350,18 @@ impl Connection {
                     self.fail_current(failure);
                 }
             }
-            Outcome::Opened(_) | Outcome::Frames(..) | Outcome::Tail(_) | Outcome::Unheard(_) => unreachable!("the speakers' outcomes are answered above"),
+            Outcome::Opened(_) | Outcome::Frames(..) | Outcome::Tail(_) | Outcome::Unheard(_) => unreachable!("a speech unit answers for its item"),
+        }
+    }
+
+    /// What a unit of the current speakers' stream did.
+    fn speakers_heard(&mut self, outcome: Outcome) {
+        match outcome {
+            Outcome::Opened(due) => self.speakers_opened(due),
+            Outcome::Frames(frames, due, cost) => self.heard_frames(frames, due, cost),
+            Outcome::Tail(frames) => self.heard_tail(frames),
+            Outcome::Unheard(why) => self.speakers_failed(why),
+            Outcome::Partial(..) | Outcome::Transcript(..) | Outcome::Failed(_) => unreachable!("a speakers' unit answers what the diarizer did"),
         }
     }
 
@@ -1467,8 +1495,10 @@ impl Connection {
         }
         let Some(mode) = wanted else { return };
         let live = self.server.live();
+        self.streams += 1;
         self.speakers = Some(Diarized {
             mode,
+            number: self.streams,
             stream: Arc::default(),
             origin: self.heard,
             sent: 0,

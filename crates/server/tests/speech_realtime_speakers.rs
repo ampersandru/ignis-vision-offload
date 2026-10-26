@@ -479,6 +479,36 @@ async fn a_pending_diarizer_step_skips_no_refresh() {
     assert!(during >= 5, "{during} refreshes began while a step ran: steps {:?}, refreshes {:?} (ms)", millis(base, &steps), millis(base, &refreshes));
 }
 
+/// Spec speech/08: speakers turned to another geometry between items open a
+/// new stream, numbered afresh, and a step of the old one still running then
+/// says nothing of the new. The `file` stream's first step (frames 0 to 339,
+/// all speaker 1) runs when the session turns `live`; the clip after it, on
+/// the new stream, is speaker 0's alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_of_the_stream_before_says_nothing_of_the_next() {
+    let executor = Arc::new(FakeExecutor::saying(&["ciao"]));
+    let diarizer = Arc::new(FakeDiarizer::hearing(|_| Some(1)));
+    diarizer.set_step_delay(Duration::from_secs(2));
+    let (mut socket, _, _live, _dir) = opened(&executor, &diarizer, json!({ "ignis": { "diarization": "file" } }), |_| {}).await;
+    // The file geometry's first step needs 380 frames heard: 30.4 s of silence.
+    send(&mut socket, json!({ "type": "input_audio_buffer.append", "audio": base64(&vec![0; 2 * 486_400]) })).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while diarizer.steps_begun.load(std::sync::atomic::Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // The step runs for two seconds: the session turns while it does.
+    diarizer.set_script(|frame| (15..100).contains(&frame).then_some(0));
+    diarizer.set_step_delay(Duration::ZERO);
+    send(&mut socket, update(json!({ "ignis": { "diarization": "live" } }))).await;
+    let updated = next_event(&mut socket).await;
+    assert_eq!(updated["session"]["ignis"]["diarization"], "live", "{updated}");
+    send_clip(&mut socket, 0, 144_960).await;
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(kinds(&events.iter().collect::<Vec<_>>()), [STARTED, STOPPED, COMMITTED, DELTA, SPEAKER, COMPLETED], "{events:?}");
+    assert_eq!(of(&events, SPEAKER)[0]["speaker"], 0, "{events:?}");
+    assert_eq!(diarizer.calls()[..3], ["open 340", "step 0 340", "open 25"], "the old stream's step ran while the session turned");
+}
+
 /// A diarizer that fails (here, its open) is an `error` saying so, and the
 /// session goes on without speakers: its items complete with no speaker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -308,7 +308,8 @@ impl DiarizerExecutor for NoDiarizer {
 /// and ended is kept ([`FakeDiarizer::steps_at`]). Test builds only.
 #[cfg(any(test, feature = "fake-speech"))]
 pub struct FakeDiarizer {
-    pub script: Arc<dyn Fn(usize) -> Probs + Send + Sync>,
+    /// The frames of the streams opened from now: [`FakeDiarizer::set_script`].
+    pub script: Mutex<Arc<dyn Fn(usize) -> Probs + Send + Sync>>,
     pub unavailable: Mutex<Option<String>>,
     pub fail_open: AtomicBool,
     pub loaded: AtomicBool,
@@ -319,6 +320,8 @@ pub struct FakeDiarizer {
     pub calls: Arc<Mutex<Vec<String>>>,
     /// When each step began and ended, over every stream, in order.
     pub steps_at: Arc<Mutex<Vec<(Instant, Instant)>>>,
+    /// The steps begun so far, over every stream, the one running included.
+    pub steps_begun: Arc<AtomicUsize>,
 }
 
 #[cfg(any(test, feature = "fake-speech"))]
@@ -338,7 +341,7 @@ impl FakeDiarizer {
     /// A diarizer whose frames are `script`'s.
     pub fn scripted(script: impl Fn(usize) -> Probs + Send + Sync + 'static) -> Self {
         Self {
-            script: Arc::new(script),
+            script: Mutex::new(Arc::new(script)),
             unavailable: Mutex::new(None),
             fail_open: AtomicBool::new(false),
             loaded: AtomicBool::new(false),
@@ -347,11 +350,18 @@ impl FakeDiarizer {
             opened: Mutex::new(Vec::new()),
             calls: Arc::new(Mutex::new(Vec::new())),
             steps_at: Arc::new(Mutex::new(Vec::new())),
+            steps_begun: Arc::default(),
         }
     }
 
     pub fn set_unavailable(&self, reason: Option<&str>) {
         *self.unavailable.lock().unwrap() = reason.map(str::to_owned);
+    }
+
+    /// The streams opened from now hear `speaker(frame)` in each frame; the
+    /// ones open keep their script.
+    pub fn set_script(&self, speaker: impl Fn(usize) -> Option<usize> + Send + Sync + 'static) {
+        *self.script.lock().unwrap() = Self::hearing(speaker).script.into_inner().unwrap();
     }
 
     /// When each step so far began and ended ([`FakeDiarizer::steps_at`]).
@@ -379,6 +389,7 @@ struct FakeStream {
     delay: Arc<Mutex<Duration>>,
     calls: Arc<Mutex<Vec<String>>>,
     steps_at: Arc<Mutex<Vec<(Instant, Instant)>>>,
+    steps_begun: Arc<AtomicUsize>,
 }
 
 #[cfg(any(test, feature = "fake-speech"))]
@@ -403,6 +414,7 @@ impl DiarizerStream for FakeStream {
             return Ok(None);
         }
         let began = Instant::now();
+        self.steps_begun.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(*self.delay.lock().unwrap());
         let frames = self.frames(self.done, self.geometry.chunk);
         self.calls.lock().unwrap().push(format!("step {} {}", frames.first, frames.probs.len()));
@@ -437,12 +449,13 @@ impl DiarizerExecutor for FakeDiarizer {
         self.opened.lock().unwrap().push(open);
         Ok(Box::new(FakeStream {
             geometry: open.geometry,
-            script: Arc::clone(&self.script),
+            script: Arc::clone(&self.script.lock().unwrap()),
             heard: 0,
             done: 0,
             delay: Arc::clone(&self.step_delay),
             calls: Arc::clone(&self.calls),
             steps_at: Arc::clone(&self.steps_at),
+            steps_begun: Arc::clone(&self.steps_begun),
         }))
     }
 
