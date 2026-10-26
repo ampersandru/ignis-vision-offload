@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use super::executor::SpeechExecutor;
+use super::executor::{DiarizerExecutor, NoDiarizer, SpeechExecutor};
 
 /// A batch job, driven a window at a time.
 pub trait Job: Send {
@@ -101,6 +101,9 @@ struct Shared {
     state: Mutex<State>,
     wake: Condvar,
     executor: Arc<dyn SpeechExecutor>,
+    /// The diarizer beside it: unloaded with the speech model (spec
+    /// speech/08).
+    diarizer: Arc<dyn DiarizerExecutor>,
     gauges: Arc<Gauges>,
     /// `speech.idle_unload` in seconds, 0 never: the live value, which the
     /// speech slot writes.
@@ -134,10 +137,17 @@ pub struct Worker {
 impl Worker {
     /// The worker, its idle clock reading `idle_unload_secs` (0 never).
     pub fn start(executor: Arc<dyn SpeechExecutor>, gauges: Arc<Gauges>, idle_unload_secs: Arc<AtomicU64>) -> Self {
+        Self::start_with(executor, Arc::new(NoDiarizer), gauges, idle_unload_secs)
+    }
+
+    /// [`Worker::start`] with a diarizer whose weights go when the speech
+    /// model's do.
+    pub fn start_with(executor: Arc<dyn SpeechExecutor>, diarizer: Arc<dyn DiarizerExecutor>, gauges: Arc<Gauges>, idle_unload_secs: Arc<AtomicU64>) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
             executor,
+            diarizer,
             gauges,
             idle_unload_secs,
             last_used: Mutex::new(Instant::now()),
@@ -324,6 +334,7 @@ impl Shared {
             if unused >= idle {
                 drop(state);
                 self.executor.unload();
+                self.diarizer.unload();
                 tracing::info!(
                     name: "ignis.speech.unloaded",
                     idle_seconds = unused.as_secs(),
@@ -350,7 +361,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::speech::executor::FakeExecutor;
+    use crate::speech::executor::{FakeDiarizer, FakeExecutor};
     use std::sync::mpsc;
 
     /// A job of `windows` steps that logs each into `log` under its name.
@@ -611,6 +622,26 @@ mod tests {
         }
         assert!(!executor.is_loaded());
         assert_eq!(executor.unloads.load(Ordering::SeqCst), 1);
+    }
+
+    /// Spec speech/08 (AC 15): the diarizer is unloaded with the speech
+    /// model at `speech.idle_unload`, and not before.
+    #[test]
+    fn the_diarizer_is_unloaded_with_the_speech_model() {
+        let executor = Arc::new(FakeExecutor::saying(&["x"]));
+        let diarizer = Arc::new(FakeDiarizer::hearing(|_| None));
+        let worker = Worker::start_with(executor.clone(), diarizer.clone(), Arc::new(Gauges::default()), Arc::default());
+        executor.loaded.store(true, Ordering::SeqCst);
+        diarizer.loaded.store(true, Ordering::SeqCst);
+        worker.set_idle_unload(1);
+        worker.touch();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(executor.is_loaded() && diarizer.is_loaded(), "not yet idle for a second");
+        let until = Instant::now() + Duration::from_secs(10);
+        while executor.is_loaded() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!executor.is_loaded() && !diarizer.is_loaded(), "both go together");
     }
 
     /// `speech.idle_unload` is read live: a clock waiting on 0 (never) or on

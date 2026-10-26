@@ -42,13 +42,22 @@ ticket ([ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows
 The `diarizer` group configures the diarizer, Nemotron 3 Diarization, which
 gives a live session that asks for them its [speakers](../api/realtime-transcription.md#speakers).
 It runs on the CPU, on the speech model's worker and threads. Every field is
-read live, when a session's speakers start. The geometries and the speaker
+read live, when a session's speakers start. The diarizer is a
+[catalog](../guides/models.md#the-catalog) entry of its own, `kind: diarizer`
+(one GGUF, no sidecar), fetched with `ignis-server model download <id>` like any
+entry; the built-in catalog has none yet, so until it has one the entry is the
+operator's own ([the operator catalog](../guides/operator-catalog.md)). It is
+loaded by the first session that asks for speakers, about 0.2 to 0.4 GB of RAM,
+never VRAM, and unloaded with the speech model, after `speech.idle_unload`
+seconds with no session open. `GET /v1/models` says whether it can serve and
+whether it is loaded ([the `speech.diarizer` member](../api/transcriptions.md#turning-it-on)).
+The geometries and the speaker
 cache's constants are Sortformer's, Nemotron 3 Diarization's own: a diarizer
 of another family would refuse them.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--diarizer-model` | `IGNIS_DIARIZER_MODEL` | `auto` | `auto` is the catalog's diarizer entry; a catalog id picks another; `off` turns speakers off. Nothing downloads by itself. |
+| `--diarizer-model` | `IGNIS_DIARIZER_MODEL` | `auto` | `auto` is the catalog's diarizer entry; a catalog id picks another; `off` turns speakers off. A text, image or speech model's id is refused, at start and by a `PATCH /v1/config`. A live change takes the next session's load. Nothing downloads by itself. |
 | `--diarizer-min-speaker-seconds` | `IGNIS_DIARIZER_MIN_SPEAKER_SECONDS` | `6` | The seconds of speech a voice needs to be a speaker of its own; until then its speech counts for the speaker it sounds most like, so a short mistaken voice splits no utterance. 0 makes every voice a speaker at once. Provisional, to be set by a measurement on twenty conversations. |
 | `--diarizer-live-speaker-cache-frames`, `-live-fifo-frames`, `-live-chunk-frames`, `-live-right-context-frames`, `-live-update-period-frames` | `IGNIS_DIARIZER_LIVE_*` | `264`, `264`, `25`, `4`, `222` | The live geometry (`ignis.diarization: "live"`), in 80 ms frames: the speaker cache, the FIFO, the chunk a step scores, the look-ahead it waits for, and the frames an overflowing FIFO gives the cache. The chunk and the look-ahead are the latency, 2.32 s; this geometry measured a better DER than the card's low-latency one at 2.6 times less CPU. |
 | `--diarizer-file-speaker-cache-frames`, ... | `IGNIS_DIARIZER_FILE_*` | `264`, `40`, `340`, `40`, `300` | The file geometry (`"file"`), the card's offline one, for audio fed faster than real time: 30.4 s of latency, at 25 to 47 times less CPU than real time. |

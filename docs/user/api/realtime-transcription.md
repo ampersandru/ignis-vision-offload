@@ -356,3 +356,10 @@ committed item writes one `ignis.speech.transcription` line, its wait counted
 from the commit (at WARN with a `reason` when the speech model failed it), and counts in `ignis_speech_transcriptions_total` and
 `ignis_speech_commit_wait_seconds`; `ignis_speech_sessions_open` is the open
 sessions ([metrics](../reference/metrics.md)).
+
+A session with [speakers](#speakers) writes one more line when it ends,
+`ignis.speech.diarization`: its `speakers` (how many voices its items were given),
+its `steps`, and the diarizer's step time on the worker, `step_mean_ms` and
+`step_max_ms`. The diarizer's load is `ignis.diarizer.load`, with the speaker
+cache's constants in force (`auto` resolved to the checkpoint's values, or the
+override); a failed one is `ignis.speech.diarizer_failed`.

@@ -399,6 +399,9 @@ pub enum Unswitchable {
     /// A speech model's catalog entry (ADR 0067): loaded beside the active
     /// model by the first transcription, never switched to.
     Speech,
+    /// The diarizer's catalog entry (ADR 0069): one GGUF the speech model's
+    /// worker loads at the first session that asks for speakers.
+    Diarizer,
 }
 
 /// A model `GET /v1/models` lists besides the loaded one
@@ -596,6 +599,12 @@ impl Switcher {
         self.catalog.as_ref().and_then(|catalog| catalog.catalog.entry(model)).is_some_and(|entry| entry.is_speech())
     }
 
+    /// Whether `model` names the diarizer's catalog entry (`kind: diarizer`,
+    /// ADR 0069): like the speech model, no model a switch goes to.
+    pub fn is_diarizer(&self, model: &str) -> bool {
+        self.catalog.as_ref().and_then(|catalog| catalog.catalog.entry(model)).is_some_and(|entry| entry.is_diarizer())
+    }
+
     /// The catalog a switch can go to, with the directory it is looked up in.
     pub fn catalog(&self) -> Option<&CatalogModels> {
         self.catalog.as_ref()
@@ -620,6 +629,9 @@ impl Switcher {
         }
         if self.is_speech(model) {
             return Err(Unswitchable::Speech);
+        }
+        if self.is_diarizer(model) {
+            return Err(Unswitchable::Diarizer);
         }
         if let Some(listed) = self.listed_models().remove(model) {
             return if listed.is_file() { Ok(listed) } else { Err(Unswitchable::KnownMissing { artifact: listed }) };
@@ -771,7 +783,7 @@ impl Switcher {
         };
         catalog
             .chain(known.keys().cloned())
-            .filter(|id| !self.is_speech(id))
+            .filter(|id| !self.is_speech(id) && !self.is_diarizer(id))
             .filter(|id| seen.insert(id.clone()))
             .filter_map(|id| match self.known(&id) {
                 Some(_) => Some(Servable { id, unavailable: None }),
@@ -791,7 +803,7 @@ impl Switcher {
     /// not (ADR 0064 §3): a request naming it never switches.
     pub fn known(&self, model: &str) -> Option<PathBuf> {
         // A speech model is no model to switch to (ADR 0067).
-        if self.is_speech(model) {
+        if self.is_speech(model) || self.is_diarizer(model) {
             return None;
         }
         if self.above_class(model).is_some() {

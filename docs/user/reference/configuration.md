@@ -1499,7 +1499,7 @@ The audio a Realtime session may hold that is not computed yet, in seconds: rece
 | Models | all |
 | `/v1/config` | shown by `GET`, patchable live |
 
-The diarizer: `auto` (the catalog's diarizer entry), a catalog entry's id, or `off`. It is enabled when its files are on disk; nothing is ever downloaded by itself.
+The diarizer: `auto` (the catalog's diarizer entry), a catalog entry's id, or `off`. It is enabled when its files are on disk; nothing is ever downloaded by itself. A text, image or speech model's id is refused. Loaded by the first session that asks for speakers, unloaded with the speech model.
 
 ### `diarizer.min_speaker_seconds`
 

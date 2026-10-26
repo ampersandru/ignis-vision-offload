@@ -76,7 +76,9 @@ async fn an_available_speech_model_is_listed_after_the_text_model() {
     assert_eq!(data[1]["kind"], "speech");
     assert_eq!(data[1]["active"], true);
     assert_eq!(data[1]["available"], true);
-    assert_eq!(list["speech"], json!({ "available": true }));
+    // A test server has no diarizer (`speech_diarizer_models.rs` is the member's).
+    assert_eq!(list["speech"]["available"], true);
+    assert!(list["speech"].get("reason").is_none());
     // The compat names are not listed.
     assert!(data.iter().all(|entry| entry["id"] != "whisper-1"));
 }

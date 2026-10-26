@@ -38,7 +38,8 @@ or a [live session](realtime-transcription.md) open.
 { "data": [ {"id": "qwen3.8-27b", "active": true, "kind": "text"},
             {"id": "qwen3-asr-1.7b", "active": true, "kind": "speech", "available": true} ],
   "status": "serving",
-  "speech": { "available": true } }
+  "speech": { "available": true,
+              "diarizer": { "id": "acme-diarizer", "loaded": false, "available": true } } }
 ```
 
 The speech entry is listed right after the model on the card, and only while
@@ -52,6 +53,20 @@ its microphone before it is pressed:
 | no speech model files for `qwen3-asr-1.7b` under download.path; fetch them with `ignis-server model download qwen3-asr-1.7b` | run that command |
 | the CPU lacks AVX2, which the speech model needs | a CPU from 2013 (Haswell) or later is required |
 | `speech.model` names an id that is not in the model catalog | fix the id, or add the entry to `download.catalog` |
+
+The `speech` object's `diarizer` member says the same of the
+[diarizer](realtime-transcription.md#speakers) that gives a live session its
+speakers: `id` is the model `diarizer.model` names (absent when it names none),
+`loaded` whether its weights are in memory now, and `available` and `reason` as
+above. It is no entry of `data`: no request names it. Its `reason` is one of:
+
+| `reason` | What to do |
+|---|---|
+| the diarizer is turned off (`diarizer.model` is `off`) | set `diarizer.model` to `auto` or a catalog id |
+| `diarizer.model` is `auto` and the model catalog has no diarizer entry | name a `kind: diarizer` entry of your [catalog](../guides/operator-catalog.md), or set `diarizer.model` to its id |
+| `diarizer.model` names an id that is not in the model catalog, or one that is not a diarizer | fix the id |
+| the CPU lacks AVX2, which the speech model needs | the diarizer computes on the speech model's CPU, so it needs the same one |
+| no diarizer files for `acme-diarizer` under download.path; fetch them with `ignis-server model download acme-diarizer` | run that command |
 
 A transcription asked of a model that is unavailable is `503
 speech_unavailable`, with the same reason and **no `Retry-After`**: waiting

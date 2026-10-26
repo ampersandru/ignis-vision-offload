@@ -36,6 +36,12 @@ the CPU beside the loaded model, so they state no card class and no card refuses
 them, and a switch never goes to one. `ignis-server model download qwen3-asr-1.7b`
 fetches the default; the two 1.7B entries share one encoder file.
 
+The [diarizer](../configuration/speech.md#the-diarizer) that labels a live
+session's speakers is an entry of its own kind, `kind: diarizer`: one GGUF, no
+sidecar, no card class, never switched to. The built-in catalog has none yet;
+an [operator's catalog](operator-catalog.md) can state one, and
+`ignis-server model download <id>` fetches it like any entry.
+
 Each entry states the smallest **card class** it loads on
 ([ADR 0064](../../adr/0064-a-catalog-entry-states-its-card-class.md)): every
 built-in model is 32 GB, the RTX 5090's class, except `qwen3.8-27b-16g` (16 GB) and the speech models (none).

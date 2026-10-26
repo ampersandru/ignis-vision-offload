@@ -109,3 +109,6 @@ models:
     files:
       - { name: mmproj-Qwen3-ASR-0.6B-Q8_0.gguf, bytes: 214392608, sha256: "ee5e87436bcf8b1c550edd4300fd0516067d55b547611734d27fbc55ecaec3bc" }
       - { name: Qwen3-ASR-0.6B-Q8_0.gguf, bytes: 804749376, sha256: "027ad3329549cd2c14e4ebd7d104e0390566e06570270c33062529474ec56015" }
+
+  # The diarizer (`kind: diarizer`, spec speech/08) has no built-in entry yet: its Hugging Face repo
+  # waits for the owner's OK (Q115), and the entry is added here with its pins then.
