@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CATALOG, CONFIG } from "./fixture.ts";
-import { afterDownload, downloadFailure, downloadsFromPage, followDownloads, nextProgress, progressLabel, runningDownload, speedOf } from "./download.ts";
+import type { ModelState } from "../api/model.ts";
+import { afterDownload, cancelReachable, downloadFailure, downloadsFromPage, followDownloads, nextProgress, progressLabel, runningDownload, speedOf } from "./download.ts";
 import type { Answer, CatalogRow } from "./routes.ts";
 
 // A download from the Server view (GitHub #376): which row runs, whether the
@@ -61,6 +62,22 @@ describe("the row's words", () => {
     const reason = "GET http://hf/acme/m/resolve/v1/m.ninfer: 401 Unauthorized: the endpoint wants a token and none was sent";
     expect(downloadFailure({ ...CATALOG[1], download: "failed", download_reason: reason })).toBe(reason);
     expect(downloadFailure(CATALOG[1])).toBeNull();
+  });
+});
+
+// GitHub #377: a cancel never touches the loaded model, so the server takes it during a switch too.
+describe("cancelReachable", () => {
+  it("is in reach wherever the server answers a cancel: serving, unloaded, during a switch or a load, after a failed one", () => {
+    const reachable: ModelState[] = [
+      { state: "ready", id: "qwen3.8-27b", contextLimit: null },
+      { state: "unloaded", id: "qwen3.8-27b", contextLimit: null },
+      { state: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next", since: 0 },
+      { state: "loading", to: "qwen3.8-27b", since: 0 },
+      { state: "error", message: "switching to qwen3.8-flash-next failed", failed: true },
+    ];
+    for (const model of reachable) expect(cancelReachable(model), model.state).toBe(true);
+    expect(cancelReachable({ state: "reading" })).toBe(false);
+    expect(cancelReachable({ state: "error", message: "ignis is not answering" })).toBe(false);
   });
 });
 

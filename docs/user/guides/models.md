@@ -208,12 +208,17 @@ a download of it, through the API or `model download`, continues it. The one
 exception is the model the server is started to serve, which a start fetches
 when it is missing, as [below](#letting-the-server-fetch-it).
 
+A cancel never touches the loaded model, so the server answers it during a
+model switch too, as it answers `GET /v1/models`: a download begun before the
+switch is stopped while the switch runs. A new download waits for the switch
+(`503 model_switching`).
+
 | Answer | When |
 |---|---|
 | `200` | The download stopped; its partial files stay. |
 | `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
 | `409 download_not_running` | No download runs: none began, or the one that ran had already landed or failed, which the message says. |
-| `503 model_switching` | A switch is under way; retry once it lands. |
+| `503 server_not_ready` | The loaded model's first traversal has not run yet; retry shortly. |
 
 The log has `ignis.model.download_cancelled` at INFO, with the entry's `model`,
 `repo` and `endpoint`, its `bytes` and the `bytes_on_disk` it keeps for the

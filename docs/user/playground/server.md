@@ -109,8 +109,9 @@ offers **Resume**, which sends `POST /v1/models/download` again: the server
 fetches only what is missing, from the `.part` on, and checks each file against
 its pinned size and SHA-256 before it renames it into place, as for any
 download ([Get a model](../guides/models.md#cancelling-and-resuming-post-v1modelsdownloadcancel)).
-**Cancel** is out of reach while it is being sent, during a switch, or while
-no model serves, and takes the same API key as **Download**.
+**Cancel** stays in reach during a switch, since stopping a download never
+touches the loaded model; it is out of reach only while it is being sent or
+while the server is not answering, and takes the same API key as **Download**.
 
 A download cut short by a dropped connection or a restart of the server leaves
 a partial entry too, shown the same way. Nothing resumes by itself: after a

@@ -506,6 +506,54 @@ async fn a_cancel_with_nothing_running_is_refused_and_sits_behind_the_api_key() 
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `GET /v1/models` until its `status` reads `wanted` (bounded turns).
+async fn until_status(app: &axum::Router, wanted: &str) -> Value {
+    for _ in 0..10_000 {
+        let (status, body) = send(app, Method::GET, "/v1/models", None).await;
+        if status == StatusCode::OK && body["status"] == wanted {
+            return body;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    panic!("`GET /v1/models` never reported {wanted}");
+}
+
+/// GitHub #377: a cancel never touches the loaded model, so it stays open
+/// while a switch runs, as the routes that report and drive the switch do: a
+/// download begun before the switch is cancelled during it, and keeps its
+/// partial files, while a new download is still held by the switch.
+#[tokio::test]
+async fn a_download_is_cancelled_while_a_switch_runs() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "cancel-switching", &[("acme-held", 32), ("acme-next", 32), ("acme-later", 32)]);
+    let dir = models.dir.clone();
+    let next = files_of("acme-next");
+    std::fs::write(dir.join(&next.sidecar.0), &next.sidecar.1).unwrap();
+    std::fs::write(dir.join(&next.artifact.0), &next.artifact.1).unwrap();
+    repo.hold(&files_of("acme-held").artifact.0, 4096);
+    let app = server_with(&loader, models, &config(&repo, &[])).app();
+    let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-held" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_row(&app, "acme-held", |row| row["bytes_on_disk"] == json!(1 + 4096)).await;
+
+    let release = loader.hold_next_load();
+    let (status, _) = send(&app, Method::POST, "/v1/models/switch", Some(json!({ "model": "acme-next" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_status(&app, "switching").await;
+    let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::SERVICE_UNAVAILABLE, json!("model_switching")), "a new download waits for the switch: {refused}");
+    let (status, cancelled) = send(&app, Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!((status, cancelled["status"].clone(), cancelled["bytes_on_disk"].clone()), (StatusCode::OK, json!("cancelled"), json!(1 + 4096)), "{cancelled}");
+    let stopped = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-held").clone();
+    assert_eq!((stopped["download"].clone(), stopped["on_disk"].clone()), (json!("none"), json!("partial")), "{stopped}");
+
+    release.send(()).expect("the held load waits");
+    assert_eq!(until_status(&app, "serving").await["data"][0]["id"], "acme-next", "the switch went on as it would have");
+    repo.release();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// GitHub #377 AC 5: after a restart a partial entry stays partial. A server
 /// started over the `.part` an earlier one left (a fresh `Downloads`, the
 /// same `download.path`) shows the entry partial with its bytes and no

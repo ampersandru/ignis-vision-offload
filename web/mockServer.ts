@@ -421,12 +421,9 @@ export function createServerSim() {
       return { status: 202, body: { status: "downloading", model: id, bytes: row.bytes ?? 0, bytes_on_disk: from } };
     },
 
-    /** POST /v1/models/download/cancel (GitHub #377): stop the running download; what landed stays, partial. */
+    /** POST /v1/models/download/cancel (GitHub #377): stop the running download; what landed stays, partial. Answered during a switch too. */
     cancelDownload(now: number): MockAnswer {
       advance(now);
-      if (running) {
-        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
-      }
       const row = download && CATALOG.find((r) => r.id === download!.id);
       if (!download || !row) {
         return refuse(409, "invalid_request_error", "download_not_running", "no download is running; GET /v1/models/catalog shows each entry's state");

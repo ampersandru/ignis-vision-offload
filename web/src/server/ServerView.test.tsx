@@ -106,7 +106,7 @@ describe("ServerView: the model band", () => {
   });
 
   // GitHub #377: Cancel on the running row, Resume on a partial one.
-  it("offers Cancel on the running row, held while it is sent or no model serves, and Resume on a partial row with its bytes", () => {
+  it("offers Cancel on the running row, held while it is sent or the server is not answering, in reach during a switch, and Resume on a partial row with its bytes", () => {
     const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, on_disk: "partial" as const, download: "running" as const, bytes_on_disk: 1.5 * 1024 ** 3 } : r));
     const running = { catalog: { state: "ok" as const, value: rows } };
     const cancel = /<button[^>]*aria-label="Cancel the download of qwen3\.8-27b-custom"[^>]*>([^<]*)</;
@@ -116,8 +116,11 @@ describe("ServerView: the model band", () => {
     const sending = render({ ...running, cancelling: true });
     expect(sending.match(cancel)?.[0]).toContain('disabled=""');
     expect(sending.match(cancel)?.[1]).toBe("Cancelling…");
+    // A cancel never touches the loaded model: the server takes it during a switch.
     const switching: ModelState = { state: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next", since: 0 };
-    expect(render(running, switching).match(cancel)?.[0]).toContain('disabled=""');
+    expect(render(running, switching).match(cancel)?.[0]).not.toContain('disabled=""');
+    const unreachable: ModelState = { state: "error", message: "ignis is not answering" };
+    expect(render(running, unreachable).match(cancel)?.[0]).toContain('disabled=""');
     // A refused cancel shows the server's reason in the band.
     expect(render({ downloadRefusal: "no download is running; GET /v1/models/catalog shows each entry's state" })).toContain("no download is running");
 

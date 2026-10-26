@@ -1,3 +1,4 @@
+import { canSend, loadUnderWay, type ModelState } from "../api/model.ts";
 import { formatBytes } from "../monitor/format.ts";
 import type { Answer, CatalogRow, ConfigDocument } from "./routes.ts";
 
@@ -53,6 +54,15 @@ export function progressLabel(row: CatalogRow, speed: number | null): string {
   const done = formatBytes(row.bytes_on_disk ?? 0);
   const of = row.bytes === undefined ? done : `${done} of ${formatBytes(row.bytes)}`;
   return speed === null ? `Downloading, ${of}` : `Downloading, ${of}, ${formatBytes(speed)}/s`;
+}
+
+/**
+ * Whether the server takes "Cancel" in its model's state (GitHub #377): a cancel never touches the loaded model, so
+ * it is open while a model serves or is unloaded, and during a switch or a load and after a failed one too. Not
+ * before the page has read the model, nor with the server unreachable.
+ */
+export function cancelReachable(model: ModelState): boolean {
+  return canSend(model) || loadUnderWay(model) || (model.state === "error" && model.failed === true);
 }
 
 /** Why a row's last download failed, as the server words it; null when it did not. */

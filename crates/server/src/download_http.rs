@@ -357,13 +357,13 @@ pub(crate) struct DownloadCancelled {
     tag = "models",
     operation_id = "cancel_model_download",
     summary = "Stop the running download, keeping its partial files",
-    description = "Stops the download `POST /v1/models/download` began, the one at a time that runs, and answers once it has stopped. What it fetched stays under `download.path`: every file it verified at its name, and the `.part` of the file it was writing with every byte that arrived. `GET /v1/models/catalog` then shows the entry `on_disk: partial` with its `bytes_on_disk` and `download: none`, and the entry's next `POST /v1/models/download` resumes from those files, with `Range`, and verifies them against the pins. Nothing resumes by itself, at a restart either. The request has no body. Logs `ignis.model.download_cancelled`. Under the same API key as `PATCH /v1/config` (ADR 0071).",
+    description = "Stops the download `POST /v1/models/download` began, the one at a time that runs, and answers once it has stopped. What it fetched stays under `download.path`: every file it verified at its name, and the `.part` of the file it was writing with every byte that arrived. `GET /v1/models/catalog` then shows the entry `on_disk: partial` with its `bytes_on_disk` and `download: none`, and the entry's next `POST /v1/models/download` resumes from those files, with `Range`, and verifies them against the pins. Nothing resumes by itself, at a restart either. The request has no body. Logs `ignis.model.download_cancelled`. A cancel never touches the loaded model, so it is answered during a model switch too. Under the same API key as `PATCH /v1/config` (ADR 0071).",
     responses(
         (status = 200, description = "The download stopped; its partial files stay.", body = DownloadCancelled),
         (status = 401, description = "The server was started with an API key and the request carried no matching bearer token.", body = ApiError),
         (status = 409, description = "No download is running (`download_not_running`): none began, or the one that ran had already landed or failed, which the message says.", body = ApiError),
         (status = 501, description = "This server has no catalog to download from (`download_unavailable`).", body = ApiError),
-        (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`), or a model switch is under way (`model_switching`).", body = ApiError),
+        (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`).", body = ApiError),
     ),
 )]
 pub(crate) async fn post_model_download_cancel(State(server): State<Arc<Server>>) -> Response {
