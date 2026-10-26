@@ -139,3 +139,12 @@ in `$NotGpuLegs`. Run each alone, with nothing else on the CPU, and the
 CUDA_VISIBLE_DEVICES= cargo test --release -p ignis-server --test speech_diarizer_study -- --ignored --nocapture the_diarizer_keeps_up
 CUDA_VISIBLE_DEVICES= cargo test -p ignis-server --test speech_diarizer_study -- --ignored --nocapture every_item_of_the_conversations
 ```
+
+`crates/server/tests/speech_diarizer_refreshes.rs`'s `--ignored` leg
+`a_long_monologue_keeps_its_live_text_with_speakers_on` (in `$NotGpuLegs`)
+feeds one long item of `tools/speech-diarizer/long_items.py` (`IGNIS_LONG_ITEM`,
+default `125192-240`, under `length-guard-361/` on the study disk) at real time
+with the provisional tail, without speakers and then with them, and prints per
+item the refreshes the client saw and the longest the live text stood still: the
+measure of how the diarizer's steps leave room for the refreshes on a long
+monologue (decision D6). A timing run, `--release`, alone on the CPU.
