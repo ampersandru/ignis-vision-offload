@@ -334,11 +334,13 @@ sessions are open at once; they take turns a unit of work at a time (a window
 of audio, a refresh, or a step of a commit: a window, 104 tokens of the
 decode's prefill or 16 tokens decoded) and every unit goes ahead of the
 [transcription requests](transcriptions.md#waiting-and-refusing), which run in
-the gaps. The diarizer runs on the same worker, a step of its geometry a unit
-in its session's turn, with the speech model's threads: a refresh is skipped
-while a step of its session is in the worker, as while a window is, so on a
-slow CPU the refreshes thin out first and the windows, the steps and the
-commits keep their pace.
+the gaps. The diarizer runs on the same worker, with the speech model's
+threads, a step of its geometry a unit in a turn of its own beside its
+session's, so a step waits for at most one unit of the speech model's. Its
+steps go ahead of the refreshes: a refresh is skipped while a step of its
+session is in the worker, as while a window is, and a refresh under way when a
+step falls due stops where it is, so the refreshes thin out first and the
+windows, the steps and the commits keep their pace.
 
 A session with no committed item still being transcribed and no frame from its
 client for `server.socket_idle_close` seconds (300; 0 never) is closed with a
@@ -359,7 +361,9 @@ sessions ([metrics](../reference/metrics.md)).
 
 A session with [speakers](#speakers) writes one more line when it ends,
 `ignis.speech.diarization`: its `speakers` (how many voices its items were given),
-its `steps`, and the diarizer's step time on the worker, `step_mean_ms` and
-`step_max_ms`. The diarizer's load is `ignis.diarizer.load`, with the speaker
+its `items` (how many had one), its `steps`, the diarizer's step time on the
+worker, `step_mean_ms` and `step_max_ms`, and `lag_max_ms`, the most a stretch
+of audio waited from its arrival for the diarizer's view of it: on a machine
+that keeps up, the geometry's latency (2.32 s live) plus a step or two. The diarizer's load is `ignis.diarizer.load`, with the speaker
 cache's constants in force (`auto` resolved to the checkpoint's values, or the
 override); a failed one is `ignis.speech.diarizer_failed`.

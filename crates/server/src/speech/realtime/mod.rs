@@ -440,12 +440,24 @@ struct Diarized {
     steps: u32,
     step_total: Duration,
     step_max: Duration,
+    /// When the session had heard so many samples, the latest minute of it,
+    /// and the most a frame waited from its first sample's arrival to its
+    /// step's probabilities: the diarizer's pace (spec speech/08, AC 11).
+    heard_at: VecDeque<(u64, Instant)>,
+    lag_max: Duration,
+    /// The items given a speaker.
+    items: u32,
 }
+
+/// How far back [`Diarized::heard_at`] reaches, in samples: a minute, past the
+/// file geometry's latency.
+const HEARD_AT_SAMPLES: u64 = 60 * TARGET_RATE as u64;
 
 impl Diarized {
     /// The session's one log line about its speakers (spec speech/08, Out of
-    /// Scope): how many were heard and what a step cost on the worker, the
-    /// figures a person tunes `diarizer.*` by. Numbers only.
+    /// Scope): how many were heard, what a step cost on the worker, and how
+    /// long a frame waited for its probabilities, the figures a person tunes
+    /// `diarizer.*` by. Numbers only.
     fn log(&self, session: &str) {
         let mean = self.step_total.checked_div(self.steps).unwrap_or_default();
         tracing::info!(
@@ -455,8 +467,15 @@ impl Diarized {
             steps = self.steps,
             step_mean_ms = mean.as_secs_f64() * 1000.0,
             step_max_ms = self.step_max.as_secs_f64() * 1000.0,
+            items = self.items,
+            lag_max_ms = self.lag_max.as_secs_f64() * 1000.0,
             "a session with speakers ended"
         );
+    }
+
+    /// When the session's sample `sample` had arrived, while it is recent.
+    fn arrived(&self, sample: u64) -> Option<Instant> {
+        self.heard_at.iter().find(|(heard, _)| *heard >= sample).map(|(_, at)| *at)
     }
 
     /// The frame a session sample is in, from the stream's first: the first
@@ -719,9 +738,8 @@ impl Connection {
         self.queue_for(unit, seq, cancel, stop, false);
     }
 
-    /// Queue a unit of the speakers' (spec speech/08): one more interactive
-    /// unit in this socket's lane, of no item, after what the socket queued
-    /// before it.
+    /// Queue a unit of the speakers' (spec speech/08): an interactive unit of
+    /// no item, in the speakers' own lane, after the speakers' units before it.
     fn queue_speakers(&mut self, unit: Unit) {
         let cancel = Arc::clone(&self.speakers.as_ref().expect("the speakers are on").cancel);
         self.queue_for(unit, u64::MAX, cancel, Arc::default(), true);
@@ -764,7 +782,10 @@ impl Connection {
         });
         self.in_worker += 1;
         self.in_worker_samples += samples;
-        self.server.speech.submit_interactive(&self.guard, task);
+        match speakers {
+            true => self.server.speech.submit_speakers(&self.guard, task),
+            false => self.server.speech.submit_interactive(&self.guard, task),
+        }
     }
 
     /// One client frame.
@@ -932,6 +953,10 @@ impl Connection {
         // The diarizer reads what the VAD reads (spec speech/08).
         if let Some(speakers) = self.speakers.as_mut().filter(|speakers| !speakers.failed) {
             speakers.pending.extend_from_slice(&samples);
+            speakers.heard_at.push_back((self.heard, Instant::now()));
+            while speakers.heard_at.front().is_some_and(|(heard, _)| heard + HEARD_AT_SAMPLES < self.heard) {
+                speakers.heard_at.pop_front();
+            }
         }
         for event in events {
             self.turn(event);
@@ -1367,6 +1392,9 @@ impl Connection {
             steps: 0,
             step_total: Duration::ZERO,
             step_max: Duration::ZERO,
+            heard_at: VecDeque::new(),
+            lag_max: Duration::ZERO,
+            items: 0,
         });
         self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode == Diarization::File)));
     }
@@ -1391,6 +1419,13 @@ impl Connection {
         speakers.sent += samples.len() as u64;
         speakers.stepping = true;
         self.queue_speakers(Unit::Diarize(samples));
+        // The steps rank above the refreshes (spec speech/08): a refresh in
+        // the worker, which would hold the step for its whole decode, stops at
+        // its next unit of compute and leaves its session as it was (Q79);
+        // the refreshes after it take a new flag.
+        let item = self.current();
+        item.stop_refresh.store(true, Ordering::SeqCst);
+        item.stop_refresh = Arc::new(AtomicBool::new(false));
     }
 
     /// Score what the stream heard past its last step when an item's
@@ -1435,6 +1470,12 @@ impl Connection {
             speakers.step_max = speakers.step_max.max(cost);
         }
         speakers.due = Some(due as u64);
+        if !frames.probs.is_empty() {
+            let first = speakers.sample(speakers.frames.len()) + 1;
+            if let Some(at) = speakers.arrived(first) {
+                speakers.lag_max = speakers.lag_max.max(at.elapsed());
+            }
+        }
         speakers.frames.push(&frames.probs);
         self.speaker_change();
         self.assign_speakers(None);
@@ -1485,16 +1526,19 @@ impl Connection {
         let Some(speakers) = self.speakers.as_ref() else { return };
         let frames = heard.as_ref().unwrap_or(&speakers.frames);
         let mut given = 0u32;
+        let mut items = 0;
         for item in self.items.iter_mut().filter(|item| item.diarized && item.speaker.is_none()) {
             let Some(end) = item.end else { continue };
             let (from, to) = (speakers.frame(item.start), speakers.frame(end));
             if frames.len() >= to {
                 item.speaker = Some(frames.speaker_of(from, to));
                 given |= item.speaker.flatten().map_or(0, |speaker| 1 << (speaker as u32));
+                items += 1;
             }
         }
         if let Some(speakers) = self.speakers.as_mut() {
             speakers.heard_speakers |= given;
+            speakers.items += items;
         }
     }
 

@@ -91,6 +91,9 @@ async fn a_session_with_speakers_writes_one_line_of_numbers_when_it_ends() {
     assert_eq!((line["speakers"].as_u64(), line["steps"].as_u64()), (Some(2), Some(4)), "{line}");
     let (mean, max) = (line["step_mean_ms"].as_f64().unwrap(), line["step_max_ms"].as_f64().unwrap());
     assert!(mean >= 20.0 && max >= mean, "a step takes its 20 ms delay: {line}");
+    // Both items had their speaker; a frame's probabilities wait at least for their step.
+    assert_eq!(line["items"].as_u64(), Some(2), "{line}");
+    assert!(line["lag_max_ms"].as_f64().unwrap() >= 20.0, "a frame waits for its step: {line}");
     let all = sink.lines().join("\n");
     assert!(!all.contains("zanzibar") && !all.contains("quokka"), "no text in the log");
 }
