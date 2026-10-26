@@ -20,6 +20,22 @@ export function pickScenes(all, names) {
   return all.filter((scene) => wanted.has(scene.name));
 }
 
+/**
+ * The catalog without the dev mock's test-only rows (`qwen3.8-27b-dead`, `qwen3.8-27b-fail`: a switch to
+ * either fails by design). The mock keeps them for its tests; a picture of the Server view must not show them.
+ */
+export function withoutTestRows(catalog) {
+  return { ...catalog, data: catalog.data.filter((row) => !/-(dead|fail)$/.test(row.id)) };
+}
+
+/** Answer the Server view's catalog request with `withoutTestRows` of what the server says. */
+async function hideTestRows(page) {
+  await page.route("**/v1/models/catalog", async (route) => {
+    const answer = await route.fetch();
+    await route.fulfill({ response: answer, json: withoutTestRows(await answer.json()) });
+  });
+}
+
 /** Open one of the header's views. */
 const view = (page, name) => page.getByRole("navigation", { name: "View" }).getByRole("button", { name, exact: true }).click();
 // The chat's prompt box (the Image view has one of the same name).
@@ -266,6 +282,7 @@ export const scenes = [
   },
   {
     name: "server",
+    before: hideTestRows,
     run: async (page) => {
       await chatReady(page);
       await view(page, "Server");
@@ -286,6 +303,7 @@ export const scenes = [
   {
     name: "server-switching",
     real: false,
+    before: hideTestRows,
     run: async (page) => {
       await chatReady(page);
       await view(page, "Server");

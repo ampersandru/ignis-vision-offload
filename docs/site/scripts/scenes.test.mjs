@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { pickScenes, scenes } from "./scenes.mjs";
+import { pickScenes, scenes, withoutTestRows } from "./scenes.mjs";
 
 const guide = fileURLToPath(new URL("../../user/", import.meta.url));
 const pictures = fs
@@ -48,5 +48,17 @@ describe("pickScenes", () => {
   });
   it("refuses a name no scene has, listing the scenes", () => {
     expect(() => pickScenes(all, "a,z")).toThrow(/no scene named z; the scenes are a, b, c/);
+  });
+});
+
+describe("withoutTestRows", () => {
+  const row = (id) => ({ id, source: "known" });
+
+  it("drops the mock's -dead and -fail rows and keeps the others, in order, with the list's other fields", () => {
+    const catalog = { object: "list", data: [row("qwen3.8-27b"), row("qwen3.8-flash-next"), row("qwen3.8-27b-dead"), row("qwen3.8-27b-fail")] };
+    expect(withoutTestRows(catalog)).toEqual({ object: "list", data: [row("qwen3.8-27b"), row("qwen3.8-flash-next")] });
+  });
+  it("is what the server and server-switching scenes ask for", () => {
+    for (const name of ["server", "server-switching"]) expect(scenes.find((scene) => scene.name === name).before).toBeTypeOf("function");
   });
 });
