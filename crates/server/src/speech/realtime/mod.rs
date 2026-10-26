@@ -48,8 +48,10 @@
 //!   inside the rollback zone, as `ignis.input_audio_transcription.provisional`.
 //! - **Speakers** (spec speech/08). Under `server_vad`, a session that asks
 //!   with `session.ignis.diarization` feeds the diarizer the audio the VAD
-//!   reads, a step of its geometry a unit in this socket's lane; a refresh is
-//!   skipped while a step is in the worker, as while a window is. A change of
+//!   reads, a step of its geometry a unit in this socket's lane on the
+//!   diarizer's own thread, beside the speech worker: a step never waits for
+//!   the speech model's units and never stops them, and a refresh is not
+//!   skipped for a step, only for the socket's speech units. A change of
 //!   speaker inside an item cuts it there, the audio past the change heard
 //!   already moved to the next item and the item decoded again up to it. No
 //!   text is fixed before an item ends; its end sends one delta, its speaker
@@ -198,14 +200,17 @@ pub(crate) async fn connect(
 }
 
 /// The executor's session the units of one socket take turns at, and what
-/// the item's units have computed so far; and the diarizer's stream, which
-/// outlives the items (spec speech/08).
+/// the item's units have computed so far.
 #[derive(Default)]
 struct Slot {
     session: Option<Box<dyn SpeechSession>>,
     computed: Duration,
-    stream: Option<Box<dyn DiarizerStream>>,
 }
+
+/// The diarizer's stream of a session's speakers (spec speech/08), which
+/// outlives the items: a lock of its own, so a step on the diarizer's thread
+/// never waits for a unit of the speech model's, which holds the [`Slot`].
+type StreamSlot = Arc<Mutex<Option<Box<dyn DiarizerStream>>>>;
 
 /// One call to the executor, a window or less of work.
 enum Unit {
@@ -222,8 +227,22 @@ enum Unit {
     /// End the item at sample `at` of what its session was pushed: the audio
     /// from it on and the stable text go (spec speech/08).
     Cut(usize),
+}
+
+impl Unit {
+    /// The 16 kHz samples it carries: audio not computed while it waits.
+    fn samples(&self) -> usize {
+        match self {
+            Unit::Push(samples) | Unit::Partial(samples) | Unit::Commit(samples) => samples.len(),
+            Unit::Open(..) | Unit::Cut(_) => 0,
+        }
+    }
+}
+
+/// One call to the diarizer (spec speech/08), on its own thread.
+enum SpeakersUnit {
     /// Open the diarizer's stream, loading the diarizer if it is not.
-    Speakers(StreamOpen),
+    Open(StreamOpen),
     /// Push the stream's next samples, then score its next step.
     Diarize(Vec<f32>),
     /// Push the stream's next samples, then score what it heard past its
@@ -231,12 +250,12 @@ enum Unit {
     Tail(Vec<f32>),
 }
 
-impl Unit {
+impl SpeakersUnit {
     /// The 16 kHz samples it carries: audio not computed while it waits.
     fn samples(&self) -> usize {
         match self {
-            Unit::Push(samples) | Unit::Partial(samples) | Unit::Commit(samples) | Unit::Diarize(samples) | Unit::Tail(samples) => samples.len(),
-            Unit::Open(..) | Unit::Cut(_) | Unit::Speakers(_) => 0,
+            SpeakersUnit::Diarize(samples) | SpeakersUnit::Tail(samples) => samples.len(),
+            SpeakersUnit::Open(_) => 0,
         }
     }
 }
@@ -257,7 +276,7 @@ enum Outcome {
     /// The diarizer's stream opened: the samples its first step waits for.
     Opened(usize),
     /// A step's frames, the samples the next waits for, and the step's
-    /// compute time on the worker.
+    /// compute time on the diarizer's thread.
     Frames(Frames, usize, Duration),
     /// What the stream heard past its last step, scored as if it ended.
     Tail(Frames),
@@ -265,8 +284,9 @@ enum Outcome {
     Unheard(String),
 }
 
-/// A unit is out of the worker: what it says, if anything, the samples it
-/// carried, and whether it was the speakers'.
+/// A unit is out of its worker: what it says, if anything, the samples it
+/// carried, and whether it was the speakers' (the diarizer's thread) or the
+/// speech model's (the speech worker).
 struct Done {
     item: u64,
     outcome: Option<Outcome>,
@@ -389,8 +409,9 @@ struct Connection {
     /// may be: `speech.partial_cost_factor` times its compute time later.
     refresh_queued: Instant,
     refresh_hold: Instant,
-    /// This socket's units queued on the worker and not yet out of it, and
-    /// the 16 kHz samples they carry: the speech model's, and the speakers'.
+    /// This socket's speech units queued on the speech worker and not yet out
+    /// of it, and the 16 kHz samples they carry; and the samples the speakers'
+    /// units carry on the diarizer's thread.
     in_worker: usize,
     in_worker_samples: usize,
     speakers_in_worker_samples: usize,
@@ -411,12 +432,15 @@ struct Connection {
 }
 
 /// A session's speakers (spec speech/08): the diarizer's stream, on the
-/// worker, fed the 16 kHz audio the VAD reads from sample `origin` on, a step
-/// of its geometry at a time; and the frames it scored, by the ghost rule.
+/// diarizer's thread, fed the 16 kHz audio the VAD reads from sample `origin`
+/// on, a step of its geometry at a time; and the frames it scored, by the
+/// ghost rule.
 /// The audio is read from where the speakers start, never from before: the
 /// leading silence only the speech model is fed is no audio of the stream's.
 struct Diarized {
     mode: Diarization,
+    /// The diarizer's stream, once its open unit opened it.
+    stream: StreamSlot,
     /// The session's sample the stream's first is.
     origin: u64,
     /// The samples heard since `origin` that the stream has been sent, and
@@ -426,7 +450,7 @@ struct Diarized {
     /// The samples heard, from `origin`, its next step waits for; `None` until
     /// the stream is open.
     due: Option<u64>,
-    /// A step is in the worker; a tail is.
+    /// A step is on the diarizer's thread; a tail is.
     stepping: bool,
     tailing: bool,
     /// The frames scored, and the latest tail's: the steps' with the frames
@@ -439,8 +463,8 @@ struct Diarized {
     /// The diarizer failed: the session goes on without speakers.
     failed: bool,
     /// What the session's log line says when its speakers end: the channels
-    /// the items were given (a bit each), the steps' compute times, and the
-    /// tails run.
+    /// the items were given (a bit each), the steps' compute times on the
+    /// diarizer's thread, and the tails run.
     heard_speakers: u32,
     steps: u32,
     step_total: Duration,
@@ -457,7 +481,7 @@ struct Diarized {
 
 impl Diarized {
     /// The session's one log line about its speakers (spec speech/08, Out of
-    /// Scope): how many were heard, what a step cost on the worker, the tails
+    /// Scope): how many were heard, what a step cost on the diarizer's thread, the tails
     /// run, and how long a frame waited for its probabilities, the figures a
     /// person tunes `diarizer.*` by. Numbers only.
     fn log(&self, session: &str) {
@@ -784,68 +808,73 @@ impl Connection {
         }
     }
 
-    /// Queue `unit` of the current item on the worker, in this socket's lane.
-    /// Every unit answers when it is out of the worker, so the socket knows
-    /// what it still has in it.
-    fn queue(&mut self, unit: Unit) {
+    /// Queue `unit` of the current item on the speech worker, in this socket's
+    /// lane. Every unit answers when it is out of the worker, so the socket
+    /// knows what it still has in it.
+    fn queue(&mut self, mut unit: Unit) {
         let item = self.items.back().expect("a current item");
         let (seq, cancel, stop) = (item.seq, Arc::clone(&item.cancel), Arc::clone(&item.stop_refresh));
-        self.queue_for(unit, seq, cancel, stop, false);
+        let samples = unit.samples();
+        let (slot, broken) = (Arc::clone(&self.slot), Arc::clone(&self.slot));
+        let executor = Arc::clone(self.server.speech.executor());
+        let files = self.files.clone();
+        let work = move || run(&mut unit, &slot, executor.as_ref(), &files, &stop);
+        // A unit that panicked leaves no session to go on with.
+        let panicked = move || {
+            broken.lock().unwrap_or_else(PoisonError::into_inner).session = None;
+            Outcome::Failed(Failure::Fault(Fault::Executor("the speech executor panicked".to_owned())))
+        };
+        let task = self.task(Done { item: seq, outcome: None, samples, speakers: false }, cancel, work, panicked);
+        self.in_worker += 1;
+        self.in_worker_samples += samples;
+        self.server.speech.submit_interactive(&self.guard, task);
     }
 
     /// Queue a unit of the speakers' (spec speech/08): an interactive unit of
-    /// no item, in the speakers' own lane, after the speakers' units before it.
-    fn queue_speakers(&mut self, unit: Unit) {
-        let cancel = Arc::clone(&self.speakers.as_ref().expect("the speakers are on").cancel);
-        self.queue_for(unit, u64::MAX, cancel, Arc::default(), true);
+    /// no item, on the diarizer's own thread, after the speakers' units before
+    /// it, in turn with the other sessions'.
+    fn queue_speakers(&mut self, mut unit: SpeakersUnit) {
+        let speakers = self.speakers.as_ref().expect("the speakers are on");
+        let (cancel, stream, broken) = (Arc::clone(&speakers.cancel), Arc::clone(&speakers.stream), Arc::clone(&speakers.stream));
+        let samples = unit.samples();
+        let diarizer = Arc::clone(self.server.speech.diarizer());
+        let work = move || run_speakers(&mut unit, &stream, diarizer.as_ref());
+        // A unit that panicked leaves no stream to go on with.
+        let panicked = move || {
+            *broken.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            Outcome::Unheard("the diarizer panicked".to_owned())
+        };
+        let task = self.task(Done { item: u64::MAX, outcome: None, samples, speakers: true }, cancel, work, panicked);
+        self.speakers_in_worker_samples += samples;
+        self.server.speech.submit_diarizer(&self.guard, task);
     }
 
-    fn queue_for(&mut self, mut unit: Unit, seq: u64, cancel: Arc<AtomicBool>, stop: Arc<AtomicBool>, speakers: bool) {
-        let samples = unit.samples();
-        let slot = Arc::clone(&self.slot);
-        let executor = Arc::clone(self.server.speech.executor());
-        let diarizer = Arc::clone(self.server.speech.diarizer());
-        let files = self.files.clone();
+    /// A unit as its worker runs it: nothing once `cancel` is set, `work`
+    /// otherwise, `panicked`'s outcome if it panics; out of the worker, it
+    /// answers `done` with its outcome.
+    fn task(
+        &self,
+        done: Done,
+        cancel: Arc<AtomicBool>,
+        mut work: impl FnMut() -> Progress + Send + 'static,
+        panicked: impl Fn() -> Outcome + Send + 'static,
+    ) -> super::worker::Task {
         let results = self.results_tx.clone();
-        let task = Box::new(move || {
+        let mut done = Some(done);
+        Box::new(move || {
             let progress = match cancel.load(Ordering::SeqCst) {
                 true => Progress::Done(None),
-                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut unit, &slot, executor.as_ref(), diarizer.as_ref(), &files, &stop)))
-                    .unwrap_or_else(|_| {
-                        // A unit that panicked leaves no session, or no stream, to go on with.
-                        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
-                        let outcome = match speakers {
-                            true => {
-                                slot.stream = None;
-                                Outcome::Unheard("the diarizer panicked".to_owned())
-                            }
-                            false => {
-                                slot.session = None;
-                                Outcome::Failed(Failure::Fault(Fault::Executor("the speech executor panicked".to_owned())))
-                            }
-                        };
-                        Progress::Done(Some(outcome))
-                    }),
+                false => std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut work)).unwrap_or_else(|_| Progress::Done(Some(panicked()))),
             };
             match progress {
                 Progress::More => Step::More,
                 Progress::Done(outcome) => {
-                    let _ = results.send(Done { item: seq, outcome, samples, speakers });
+                    let done = done.take().expect("a unit is done once");
+                    let _ = results.send(Done { outcome, ..done });
                     Step::Done
                 }
             }
-        });
-        self.in_worker += 1;
-        match speakers {
-            true => {
-                self.speakers_in_worker_samples += samples;
-                self.server.speech.submit_speakers(&self.guard, task);
-            }
-            false => {
-                self.in_worker_samples += samples;
-                self.server.speech.submit_interactive(&self.guard, task);
-            }
-        }
+        })
     }
 
     /// One client frame.
@@ -1232,12 +1261,14 @@ impl Connection {
         }
     }
 
-    /// A unit is out of the worker.
+    /// A unit is out of its worker.
     fn done(&mut self, done: Done) {
-        self.in_worker -= 1;
         match done.speakers {
             true => self.speakers_in_worker_samples -= done.samples,
-            false => self.in_worker_samples -= done.samples,
+            false => {
+                self.in_worker -= 1;
+                self.in_worker_samples -= done.samples;
+            }
         }
         let Some(outcome) = done.outcome else { return };
         let outcome = match outcome {
@@ -1438,6 +1469,7 @@ impl Connection {
         let live = self.server.live();
         self.speakers = Some(Diarized {
             mode,
+            stream: Arc::default(),
             origin: self.heard,
             sent: 0,
             pending: Vec::new(),
@@ -1457,14 +1489,14 @@ impl Connection {
             lag_max: Duration::ZERO,
             items: 0,
         });
-        self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode)));
+        self.queue_speakers(SpeakersUnit::Open(StreamOpen::of(&live.diarizer, mode)));
     }
 
     /// The audio the session holds that is not computed yet, each sample
     /// counted once however many consumers hold it: the larger of the speech
     /// model's (the current item's samples not yet queued, and its units'
-    /// in the worker) and the speakers' (their samples not yet sent, and
-    /// their units' in the worker).
+    /// in the speech worker) and the speakers' (their samples not yet sent,
+    /// and their units' on the diarizer's thread).
     fn uncomputed(&self) -> usize {
         let speakers = self.speakers.as_ref().map_or(0, |speakers| speakers.pending.len());
         (self.pending.len() + self.in_worker_samples).max(speakers + self.speakers_in_worker_samples)
@@ -1481,19 +1513,12 @@ impl Connection {
         let samples = std::mem::take(&mut speakers.pending);
         speakers.sent += samples.len() as u64;
         speakers.stepping = true;
-        self.queue_speakers(Unit::Diarize(samples));
-        // The steps rank above the refreshes (spec speech/08): a refresh in
-        // the worker, which would hold the step for its whole decode, stops at
-        // its next unit of compute and leaves its session as it was (Q79);
-        // the refreshes after it take a new flag.
-        let item = self.current();
-        item.stop_refresh.store(true, Ordering::SeqCst);
-        item.stop_refresh = Arc::new(AtomicBool::new(false));
+        self.queue_speakers(SpeakersUnit::Diarize(samples));
     }
 
     /// When the speakers' tail falls due (spec speech/08): an item's
     /// transcript is in and its speaker waits for frames past the steps' and
-    /// the last tail's, no step is in the worker (one that can run is), and
+    /// the last tail's, no step is on the diarizer's thread (one that can run is), and
     /// the stream has stalled. `None` while none is wanted.
     fn tail_due(&self) -> Option<Instant> {
         let speakers = self.speakers.as_ref()?;
@@ -1520,7 +1545,7 @@ impl Connection {
         let samples = std::mem::take(&mut speakers.pending);
         speakers.sent += samples.len() as u64;
         speakers.tailing = true;
-        self.queue_speakers(Unit::Tail(samples));
+        self.queue_speakers(SpeakersUnit::Tail(samples));
     }
 
     /// The diarizer's stream is open: its first step waits for `due` samples.
@@ -1663,8 +1688,9 @@ impl Connection {
             let live = self.server.live();
             self.next_partial = Some(now + Duration::from_millis(u64::from(live.speech.partial_interval_ms)));
             // Best effort (Q74): with anything of this socket's still in the
-            // worker (a window, the last refresh, a commit) the refresh is
-            // skipped, never queued behind it.
+            // speech worker (a window, the last refresh, a commit) the refresh
+            // is skipped, never queued behind it. A diarizer step on its own
+            // thread holds nothing back (spec speech/08).
             let item = self.items.back().expect("a current item");
             if self.in_worker == 0 && item.failure.is_none() && item.fresh_audio {
                 let rest = std::mem::take(&mut self.pending);
@@ -1723,19 +1749,17 @@ impl Connection {
     }
 }
 
-/// Run a unit's next step on the worker thread: `More` for a commit with
-/// steps left; done with `None` when it has nothing to say: an open, a push or
-/// a cut that went through, a refresh `stop` stopped (Q79), or a unit after a
-/// failure that left no session (the failure already answered). The
-/// speakers' units answer what the diarizer did, or why it failed.
-fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, diarizer: &dyn DiarizerExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Progress {
+/// Run a unit's next step on the speech worker's thread: `More` for a commit
+/// with steps left; done with `None` when it has nothing to say: an open, a
+/// push or a cut that went through, a refresh `stop` stopped (Q79), or a unit
+/// after a failure that left no session (the failure already answered).
+fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, files: &SpeechFiles, stop: &AtomicBool) -> Progress {
     let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
     let failed = |slot: &mut Slot, why: String| {
         slot.session = None;
         Progress::Done(Some(Outcome::Failed(Failure::Fault(Fault::Executor(why)))))
     };
     let began = std::time::Instant::now();
-    let tail = matches!(unit, Unit::Tail(_));
     match unit {
         Unit::Open(open, load) => {
             slot.session = None;
@@ -1794,19 +1818,30 @@ fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, diari
                 Err(error) => failed(&mut *slot, error.0),
             }
         }
-        Unit::Speakers(open) => {
-            slot.stream = None;
+    }
+}
+
+/// Run a speakers' unit on the diarizer's thread: it answers what the
+/// diarizer did, or why it failed. Only the stream's lock is taken, never the
+/// speech model's [`Slot`].
+fn run_speakers(unit: &mut SpeakersUnit, stream: &Mutex<Option<Box<dyn DiarizerStream>>>, diarizer: &dyn DiarizerExecutor) -> Progress {
+    let mut slot = stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let began = std::time::Instant::now();
+    let tail = matches!(unit, SpeakersUnit::Tail(_));
+    match unit {
+        SpeakersUnit::Open(open) => {
+            *slot = None;
             match diarizer.open(*open) {
                 Ok(stream) => {
                     let due = stream.samples_needed();
-                    slot.stream = Some(stream);
+                    *slot = Some(stream);
                     Progress::Done(Some(Outcome::Opened(due)))
                 }
                 Err(error) => Progress::Done(Some(Outcome::Unheard(error.0))),
             }
         }
-        Unit::Diarize(samples) | Unit::Tail(samples) => {
-            let Some(stream) = slot.stream.as_mut() else {
+        SpeakersUnit::Diarize(samples) | SpeakersUnit::Tail(samples) => {
+            let Some(stream) = slot.as_mut() else {
                 return Progress::Done(Some(Outcome::Unheard("the diarizer's stream is not open".to_owned())));
             };
             stream.push(&std::mem::take(samples));
@@ -1817,7 +1852,7 @@ fn run(unit: &mut Unit, slot: &Mutex<Slot>, executor: &dyn SpeechExecutor, diari
             match scored {
                 Ok(outcome) => Progress::Done(Some(outcome)),
                 Err(error) => {
-                    slot.stream = None;
+                    *slot = None;
                     Progress::Done(Some(Outcome::Unheard(error.0)))
                 }
             }

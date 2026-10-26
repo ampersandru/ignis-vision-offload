@@ -6,13 +6,16 @@
 //! asks for the unload.
 //!
 //! Beside it, [`CpuDiarizer`]: the crate's diarizer (spec speech/08) behind
-//! [`DiarizerExecutor`], its steps computed on the speech model's pool and
-//! ISA, never a pool of its own.
+//! [`DiarizerExecutor`], its steps computed on a pool of its own
+//! (`diarizer.threads`), never the speech model's, with the speech model's
+//! ISA.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use ignis_speech::cpu::Isa;
 use ignis_speech::diarizer::{Constants, Diarizer, Stream};
+use ignis_speech::pool::Pool;
 use ignis_speech::{Features, ModelFiles, SessionTuning, Settings, Threads};
 
 use super::executor::{
@@ -55,10 +58,11 @@ impl CpuExecutor {
         self.loaded.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The speech model as loaded now, its pool and ISA among it: what the
-    /// diarizer computes its steps on.
-    fn compute(&self) -> Result<Arc<ignis_speech::Loaded>, SpeechError> {
-        self.slot().as_ref().and_then(|l| l.exec.loaded_now()).ok_or_else(|| SpeechError("the speech model is not loaded".into()))
+    /// The instruction set the speech model computes with: the diarizer's
+    /// too.
+    fn isa(&self) -> Result<Isa, SpeechError> {
+        self.availability().map_err(SpeechError)?;
+        ignis_speech::cpu::select(self.features).map_err(|reason| SpeechError(reason.to_owned()))
     }
 }
 
@@ -180,13 +184,22 @@ impl SpeechSession for CpuSession {
 }
 
 /// The diarizer on the CPU (spec speech/08, ADR 0069): Nemotron 3
-/// Diarization's GGUF, loaded at the first stream that opens, its steps
-/// computed on `speech`'s pool and ISA.
+/// Diarization's GGUF, loaded at the first stream that opens with a pool of
+/// its own, its steps computed there with `speech`'s ISA.
 pub struct CpuDiarizer {
     weights: PathBuf,
     pinned: bool,
     speech: Arc<CpuExecutor>,
-    loaded: Mutex<Option<Arc<Diarizer>>>,
+    loaded: Mutex<Option<Arc<Compute>>>,
+}
+
+/// The diarizer loaded: its weights, the pool of `diarizer.threads` its steps
+/// compute on (the calling thread, the diarizer's, among them), created with
+/// the weights and dropped with them, and the speech model's ISA.
+struct Compute {
+    diarizer: Diarizer,
+    pool: Pool,
+    isa: Isa,
 }
 
 impl CpuDiarizer {
@@ -195,19 +208,29 @@ impl CpuDiarizer {
         CpuDiarizer { weights, pinned, speech, loaded: Mutex::new(None) }
     }
 
-    fn slot(&self) -> MutexGuard<'_, Option<Arc<Diarizer>>> {
+    fn slot(&self) -> MutexGuard<'_, Option<Arc<Compute>>> {
         self.loaded.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The weights, loaded if they are not, and whether they were just now.
-    fn diarizer(&self) -> Result<(Arc<Diarizer>, bool), SpeechError> {
+    /// The weights and their pool, loaded on `threads` (`None` is `auto`) if
+    /// they are not, and whether they were just now.
+    fn diarizer(&self, threads: Option<u32>) -> Result<(Arc<Compute>, bool), SpeechError> {
         let mut slot = self.slot();
         if let Some(d) = slot.as_ref() {
             return Ok((Arc::clone(d), false));
         }
-        let d = Arc::new(Diarizer::load(&self.weights, self.pinned).map_err(err)?);
+        let isa = self.speech.isa()?;
+        let diarizer = Diarizer::load(&self.weights, self.pinned).map_err(err)?;
+        let (n, _) = threads.map_or(Threads::Auto, |n| Threads::Count(n as usize)).resolve_diarizer();
+        let d = Arc::new(Compute { diarizer, pool: Pool::named(n, "ignis-diarizer"), isa });
         *slot = Some(Arc::clone(&d));
         Ok((d, true))
+    }
+
+    /// The threads the loaded diarizer computes on, `None` while it is not
+    /// loaded.
+    pub fn threads(&self) -> Option<usize> {
+        self.slot().as_ref().map(|d| d.pool.threads())
     }
 }
 
@@ -233,26 +256,28 @@ impl DiarizerExecutor for CpuDiarizer {
     }
 
     fn open(&self, open: StreamOpen) -> Result<Box<dyn DiarizerStream>, SpeechError> {
-        let (d, loaded) = self.diarizer()?;
-        let constants = constants(d.weights().constants, open.constants);
+        let (d, loaded) = self.diarizer(open.threads)?;
+        let constants = constants(d.diarizer.weights().constants, open.constants);
         if loaded {
             // The constants in force: the `diarizer` group's overrides over the checkpoint's.
             tracing::info!(
                 name: "ignis.diarizer.load",
-                millis = d.weights().report.millis as u64,
-                mapped_bytes = d.weights().report.mapped_bytes,
+                millis = d.diarizer.weights().report.millis as u64,
+                mapped_bytes = d.diarizer.weights().report.mapped_bytes,
+                threads = d.pool.threads(),
                 prediction_score_threshold = constants.prediction_score_threshold,
                 latest_frames_score_boost = constants.latest_frames_score_boost,
                 strong_boost_rate = constants.strong_boost_rate,
                 weak_boost_rate = constants.weak_boost_rate,
                 min_positive_scores_rate = constants.min_positive_scores_rate,
                 speaker_cache_silence_frames_per_speaker = constants.speaker_cache_silence_frames_per_speaker,
-                "the diarizer loaded in {} ms",
-                d.weights().report.millis
+                "the diarizer loaded in {} ms, on {} threads",
+                d.diarizer.weights().report.millis,
+                d.pool.threads()
             );
         }
-        let stream = d.open(open.geometry, constants);
-        Ok(Box::new(CpuStream { diarizer: d, stream, speech: Arc::clone(&self.speech) }))
+        let stream = d.diarizer.open(open.geometry, constants);
+        Ok(Box::new(CpuStream { compute: d, stream }))
     }
 
     fn unload(&self) {
@@ -266,9 +291,8 @@ impl DiarizerExecutor for CpuDiarizer {
 
 /// A stream of the crate's diarizer, and what computes its steps.
 struct CpuStream {
-    diarizer: Arc<Diarizer>,
+    compute: Arc<Compute>,
     stream: Stream,
-    speech: Arc<CpuExecutor>,
 }
 
 fn frames(step: ignis_speech::diarizer::Step) -> Frames {
@@ -288,15 +312,15 @@ impl DiarizerStream for CpuStream {
         if !self.stream.ready() {
             return Ok(None);
         }
-        let l = self.speech.compute()?;
-        Ok(self.stream.step(&self.diarizer, &l.pool, l.isa).map(frames))
+        let c = &self.compute;
+        Ok(self.stream.step(&c.diarizer, &c.pool, c.isa).map(frames))
     }
 
     fn tail(&self) -> Result<Frames, SpeechError> {
-        let l = self.speech.compute()?;
+        let c = &self.compute;
         let mut copy = self.stream.clone();
         let first = copy.frames_done();
-        Ok(copy.finish(&self.diarizer, &l.pool, l.isa).map(frames).unwrap_or(Frames { first, probs: Vec::new() }))
+        Ok(copy.finish(&c.diarizer, &c.pool, c.isa).map(frames).unwrap_or(Frames { first, probs: Vec::new() }))
     }
 }
 
@@ -422,26 +446,28 @@ mod tests {
     fn the_gpu_profile_skips_the_diarizers_leg() {
         let script = include_str!("../../../../scripts/gpu-profile.ps1");
         let listed = script.split("$NotGpuLegs = @(").nth(1).and_then(|rest| rest.split(')').next()).expect("gpu-profile.ps1 lists $NotGpuLegs");
-        assert!(listed.contains("\"the_diarizer_adapter_steps_the_crates_stream_on_the_speech_models_pool\""), "{listed}");
+        assert!(listed.contains("\"the_diarizer_adapter_steps_the_crates_stream_on_its_own_pool\""), "{listed}");
     }
 
     /// Spec speech/08 on the real weights (the study disk, `IGNIS_SPEECH_STUDY`, CPU only): the
-    /// adapter's stream is the crate's, its steps computed on the speech model's pool and ISA:
-    /// step by step its frames are those of the crate's stream run alone on a pool of the same
-    /// threads. Its tail is that stream's copy finished, and leaves the stream as it was; the
-    /// constants left `auto` are the checkpoint's; a speech model unloaded stops the steps.
+    /// adapter's stream is the crate's, its steps computed on a pool of its own, of
+    /// `diarizer.threads`, with the speech model's ISA: step by step its frames are those of the
+    /// crate's stream run alone on a pool of the same threads. Its tail is that stream's copy
+    /// finished, and leaves the stream as it was; the constants left `auto` are the checkpoint's;
+    /// the speech model unloaded stops nothing, and the diarizer's unload gives its pool back.
     #[test]
     #[ignore = "reads the diarizer's weights from the study disk (CPU only)"]
-    fn the_diarizer_adapter_steps_the_crates_stream_on_the_speech_models_pool() {
+    fn the_diarizer_adapter_steps_the_crates_stream_on_its_own_pool() {
         let study = PathBuf::from(std::env::var("IGNIS_SPEECH_STUDY").unwrap_or_else(|_| "H:/speech-study".into()));
         let weights = study.join("models").join("diarizer").join("Nemotron-3-Diarization-F32.gguf");
         assert!(weights.is_file(), "the diarizer's weights are not at {} (set IGNIS_SPEECH_STUDY)", weights.display());
         let speech = Arc::new(loaded_synthetic("diarizer-adapter"));
         let adapter = CpuDiarizer::new(weights.clone(), false, Arc::clone(&speech));
         assert_eq!(adapter.availability(), Ok(()));
-        let open = StreamOpen { geometry: ignis_speech::diarizer::Geometry::LIVE, constants: CacheConstants::default() };
+        let open = StreamOpen { geometry: ignis_speech::diarizer::Geometry::LIVE, constants: CacheConstants::default(), threads: Some(2) };
         let mut stream = adapter.open(open).unwrap();
         assert!(adapter.is_loaded());
+        assert_eq!(adapter.threads(), Some(2), "diarizer.threads");
         let d = Diarizer::load(&weights, false).unwrap();
         let isa = ignis_speech::cpu::select(Features::detect()).unwrap();
         let pool = ignis_speech::pool::Pool::new(2);
@@ -466,11 +492,14 @@ mod tests {
         alone.push(&audio[..48_000]);
         let after = stream.step().unwrap().expect("the tail left the stream able to step");
         assert_eq!(after.probs, alone.step(&d, &pool, isa).unwrap().frames, "the tail left the stream as it was");
-        stream.push(&audio[..32_000]);
+        // The speech model unloaded, the stream steps on.
         speech.unload();
-        assert!(stream.step().is_err(), "a step needs the speech model's pool");
+        stream.push(&audio[..32_000]);
+        alone.push(&audio[..32_000]);
+        let after = stream.step().unwrap().expect("a step on the diarizer's own pool");
+        assert_eq!(after.probs, alone.step(&d, &pool, isa).unwrap().frames);
         adapter.unload();
-        assert!(!adapter.is_loaded());
+        assert!(!adapter.is_loaded() && adapter.threads().is_none());
     }
 
     /// The speaker cache's constants: each override, the rest the checkpoint's.

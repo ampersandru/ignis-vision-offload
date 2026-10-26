@@ -289,7 +289,7 @@ names a model served from the entry's files under another id too.
 | `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
 | `403 removal_disabled` | `--download-from-ui false`. |
 | `404 model_not_found` | `model` is not a catalog entry: a known model is a path the operator gave, and only a catalog entry's files are removed. |
-| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading (by its id or from its files), the [speech model](../api/transcriptions.md) or the [diarizer](../configuration/speech.md#the-diarizer) the speech worker has loaded, or the entry the server is downloading; the message says which. Cancel the download, load another model, or wait for the speech worker to unload it (`--speech-idle-unload` seconds after its last transcription), first. |
+| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading (by its id or from its files), the [speech model](../api/transcriptions.md) or the [diarizer](../configuration/speech.md#the-diarizer) loaded beside it, or the entry the server is downloading; the message says which. Cancel the download, load another model, or wait for the speech worker to unload it (`--speech-idle-unload` seconds after its last transcription), first. |
 | `409 download_locked` | `model download`, or another server on the same folder, is fetching the entry. |
 | `409 model_not_downloaded` | Nothing of the entry is under `--download-path`. |
 | `500 removal_failed` | A file could not be deleted; the message names it, and what was deleted before it. |

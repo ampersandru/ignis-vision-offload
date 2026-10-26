@@ -4,9 +4,11 @@
 //! 100 ms, with `server_vad` and `session.ignis.diarization: "live"`, Qwen3-ASR `qwen3-asr-1.7b`
 //! transcribing every item in the same session. The diarizer keeps up when every frame's speaker
 //! probabilities come within the live geometry's latency plus 2 s of the frame's first sample
-//! arriving, the speech model's units beside it on the one worker: the session's log line's
+//! arriving, the speech model computing beside it on its own worker: the session's log line's
 //! `lag_max_ms`. (An item's speaker can come later than that by design: a cut at a change reaches
-//! back to where the new speaker's run began, up to `diarizer.min_speaker_seconds` before.) `--ignored`: it reads the study disk (`IGNIS_SPEECH_STUDY`,
+//! back to where the new speaker's run began, up to `diarizer.min_speaker_seconds` before.) It
+//! prints each item's time from its `committed` to its `completed`, as the client heard them, with
+//! their median and max: what the diarizer costs the commits. `--ignored`: it reads the study disk (`IGNIS_SPEECH_STUDY`,
 //! default `H:/speech-study`): the converted Qwen3-ASR pair and the diarizer's GGUF
 //! (`IGNIS_DIARIZER_GGUF`, default the F16 one), and fails without them.
 //!
@@ -127,13 +129,24 @@ async fn the_diarizer_keeps_up_with_a_conversation_at_real_time_pace() {
     assert_eq!(next_event(&mut socket).await["type"], "session.updated");
     let (mut out, mut events) = socket.split();
     let started = Instant::now();
+    // Each item's `committed` and `completed` as the client heard them, in the order committed.
+    let ends = Arc::new(Mutex::new(Vec::<(String, Instant, Option<Instant>)>::new()));
+    let heard = Arc::clone(&ends);
     // Every event is read, so the socket never backs up; a refusal fails the run.
     let reader = tokio::spawn(async move {
         while let Some(Ok(frame)) = events.next().await {
             let tokio_tungstenite::tungstenite::Message::Text(text) = frame else { continue };
             let event: Value = serde_json::from_str(text.as_str()).unwrap();
-            if matches!(event["type"].as_str(), Some("error" | "conversation.item.input_audio_transcription.failed")) {
-                panic!("the session refused: {event}");
+            let id = event["item_id"].as_str().unwrap_or_default().to_owned();
+            match event["type"].as_str() {
+                Some("error" | "conversation.item.input_audio_transcription.failed") => panic!("the session refused: {event}"),
+                Some("input_audio_buffer.committed") => heard.lock().unwrap().push((id, Instant::now(), None)),
+                Some("conversation.item.input_audio_transcription.completed") => {
+                    if let Some(item) = heard.lock().unwrap().iter_mut().find(|item| item.0 == id) {
+                        item.2 = Some(Instant::now());
+                    }
+                }
+                _ => {}
             }
         }
     });
@@ -159,6 +172,23 @@ async fn the_diarizer_keeps_up_with_a_conversation_at_real_time_pace() {
     let lag = line["lag_max_ms"].as_f64().unwrap();
     let group = speech_group();
     println!("{name}: {:.0} s of audio, partials every {} ms, cost factor {}, {line}", audio.len() as f64 / 16_000.0, group.partial_interval_ms, group.partial_cost_factor);
+    // From each item's `committed` to its `completed` (its transcript and its speaker), as spec
+    // speech/03's leg times a dictation's commit: what the diarizer beside it costs the commits.
+    let ends = std::mem::take(&mut *ends.lock().unwrap());
+    let mut waits: Vec<Duration> = Vec::new();
+    for (i, (id, committed, completed)) in ends.iter().enumerate() {
+        match completed {
+            Some(completed) => {
+                waits.push(*completed - *committed);
+                println!("{name}: item {i} ({id}): committed to completed {} ms", (*completed - *committed).as_millis());
+            }
+            None => println!("{name}: item {i} ({id}): committed, never completed"),
+        }
+    }
+    waits.sort();
+    if let (Some(median), Some(max)) = (waits.get(waits.len() / 2), waits.last()) {
+        println!("{name}: committed to completed over {} items: median {} ms, max {} ms", waits.len(), median.as_millis(), max.as_millis());
+    }
     assert!(line["items"].as_u64().unwrap() >= 10, "a conversation's items had their speakers: {line}");
     assert!(lag <= BOUND_MS, "{name}: a frame's probabilities came {lag:.0} ms after its first sample, over {BOUND_MS} ms");
 }

@@ -33,10 +33,32 @@ impl Threads {
     /// capped by the CPUs the affinity mask and the cgroup quota allow.
     pub fn resolve(self) -> (usize, &'static str) {
         match self {
-            Threads::Auto => (num_cpus::get_physical().min(num_cpus::get()).saturating_sub(1).max(1), "auto"),
+            Threads::Auto => (physical_cores().saturating_sub(1).max(1), "auto"),
             Threads::Count(n) => (n.max(1), "configured"),
         }
     }
+
+    /// `diarizer.threads` (spec speech/08): the diarizer's own pool, beside
+    /// the speech model's. `auto` is [`Threads::diarizer_auto`] of the
+    /// physical cores, counted as [`Threads::resolve`] counts them; a count
+    /// is used as given.
+    pub fn resolve_diarizer(self) -> (usize, &'static str) {
+        match self {
+            Threads::Auto => (Threads::diarizer_auto(physical_cores()), "auto"),
+            Threads::Count(n) => (n.max(1), "configured"),
+        }
+    }
+
+    /// The diarizer's `auto` on `physical` cores: a third of them, at least
+    /// 2 (3 on the i9's 10 cores, 2 on 4).
+    pub fn diarizer_auto(physical: usize) -> usize {
+        (physical / 3).max(2)
+    }
+}
+
+/// The physical cores within the CPUs this process may run on.
+fn physical_cores() -> usize {
+    num_cpus::get_physical().min(num_cpus::get())
 }
 
 /// The executor's settings: the `speech` fields it reads, as plain values.

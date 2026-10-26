@@ -16,6 +16,11 @@
 //!   unloads the model. An open session is a dictation in progress; its end
 //!   restarts the clock. `speech.idle_unload` is read live: a change wakes the
 //!   clock, which waits for the new value from the model's last use.
+//!
+//! Beside it, the diarizer's own thread ([`DiarizerWorker`], spec speech/08):
+//! the speakers' units of every session, in lanes that take turns as the
+//! interactive ones do here, computed on the diarizer's own pool. A step never
+//! waits for a unit of the speech model's and never holds one back.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -51,6 +56,42 @@ struct Lane {
     tasks: VecDeque<Task>,
 }
 
+/// The sessions with tasks queued, in turn order: each takes one task a
+/// turn, and a task with steps left stays first in its session's lane.
+#[derive(Default)]
+struct Lanes(VecDeque<Lane>);
+
+impl Lanes {
+    /// Queue `task` after the ones `session` queued before.
+    fn push(&mut self, session: u64, task: Task) {
+        match self.0.iter_mut().find(|lane| lane.session == session) {
+            Some(lane) => lane.tasks.push_back(task),
+            None => self.0.push_back(Lane { session, tasks: VecDeque::from([task]) }),
+        }
+    }
+
+    /// The task whose turn it is, and its session: its lane's next task
+    /// waits its turn behind the other sessions'.
+    fn next(&mut self) -> Option<(u64, Task)> {
+        let mut lane = self.0.pop_front()?;
+        let task = lane.tasks.pop_front().expect("a lane holds a task");
+        let session = lane.session;
+        if !lane.tasks.is_empty() {
+            self.0.push_back(lane);
+        }
+        Some((session, task))
+    }
+
+    /// A task with steps left: first in its session's lane again, ahead of
+    /// what the session queued since, with the turn passed on.
+    fn resume(&mut self, session: u64, task: Task) {
+        match self.0.iter_mut().find(|lane| lane.session == session) {
+            Some(lane) => lane.tasks.push_front(task),
+            None => self.0.push_back(Lane { session, tasks: VecDeque::from([task]) }),
+        }
+    }
+}
+
 /// The gauges `ignis_speech_sessions_open` and `ignis_speech_queue_length`
 /// read, and where they are published.
 #[derive(Default)]
@@ -83,7 +124,7 @@ struct Entry {
 #[derive(Default)]
 struct State {
     /// The sessions with tasks queued, in turn order.
-    interactive: VecDeque<Lane>,
+    interactive: Lanes,
     batch: VecDeque<Entry>,
     /// The audio seconds of the job being stepped now, if one is.
     stepping: Option<f64>,
@@ -203,12 +244,7 @@ impl Worker {
     /// it queued before, before any batch window, and in turn with the other
     /// sessions' tasks.
     pub fn submit_interactive(&self, session: u64, task: Task) {
-        let mut state = self.shared.lock();
-        match state.interactive.iter_mut().find(|lane| lane.session == session) {
-            Some(lane) => lane.tasks.push_back(task),
-            None => state.interactive.push_back(Lane { session, tasks: VecDeque::from([task]) }),
-        }
-        drop(state);
+        self.shared.lock().interactive.push(session, task);
         self.shared.touch();
         self.shared.wake.notify_all();
     }
@@ -277,25 +313,13 @@ impl Shared {
             if state.stop {
                 return;
             }
-            if let Some(mut lane) = state.interactive.pop_front() {
-                let session = lane.session;
-                let mut task = lane.tasks.pop_front().expect("a lane holds a task");
-                // Its next task waits its turn behind the other sessions'.
-                if !lane.tasks.is_empty() {
-                    state.interactive.push_back(lane);
-                }
+            if let Some((session, mut task)) = state.interactive.next() {
                 drop(state);
                 // A panic in a task is that task's, not the worker's: it is over.
                 let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task())).unwrap_or(Step::Done);
                 self.touch();
                 if step == Step::More {
-                    // First in its session's lane again, ahead of what the
-                    // session queued since, with the turn passed on.
-                    let mut state = self.lock();
-                    match state.interactive.iter_mut().find(|lane| lane.session == session) {
-                        Some(lane) => lane.tasks.push_front(task),
-                        None => state.interactive.push_back(Lane { session, tasks: VecDeque::from([task]) }),
-                    }
+                    self.lock().interactive.resume(session, task);
                 }
                 continue;
             }
@@ -355,6 +379,85 @@ impl Shared {
         let seen = (audio_seconds / computed.as_secs_f64() * 1000.0) as u64;
         let before = self.speed_milli.load(Ordering::SeqCst);
         self.speed_milli.store((before * 3 + seen) / 4, Ordering::SeqCst);
+    }
+}
+
+/// The diarizer's own thread (spec speech/08, ADR 0069): every session's
+/// speakers' units (a stream's open, its steps and its tails), the sessions
+/// taking turns a unit each, as the speech worker's interactive lanes do. It
+/// shares no lock and no pool with the speech worker, so a step never waits
+/// for a unit of the speech model's and never holds one back. It has no batch
+/// queue and no idle clock: the speech worker's clock unloads the diarizer with
+/// the speech model.
+pub struct DiarizerWorker {
+    shared: Arc<DiarizerShared>,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+#[derive(Default)]
+struct DiarizerShared {
+    state: Mutex<DiarizerState>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct DiarizerState {
+    lanes: Lanes,
+    stop: bool,
+}
+
+impl DiarizerWorker {
+    pub fn start() -> Self {
+        let shared = Arc::new(DiarizerShared::default());
+        let running = Arc::clone(&shared);
+        let thread = std::thread::Builder::new()
+            .name("ignis-diarizer".to_owned())
+            .spawn(move || running.run())
+            .expect("the diarizer's thread starts");
+        Self { shared, thread: Mutex::new(Some(thread)) }
+    }
+
+    /// Queue a unit of `session`'s speakers: after the ones it queued before,
+    /// in turn with the other sessions'.
+    pub fn submit(&self, session: u64, task: Task) {
+        self.shared.lock().lanes.push(session, task);
+        self.shared.wake.notify_all();
+    }
+}
+
+impl Drop for DiarizerWorker {
+    fn drop(&mut self) {
+        self.shared.lock().stop = true;
+        self.shared.wake.notify_all();
+        if let Some(thread) = self.thread.lock().expect("diarizer thread lock").take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl DiarizerShared {
+    fn lock(&self) -> MutexGuard<'_, DiarizerState> {
+        self.state.lock().expect("diarizer worker lock")
+    }
+
+    fn run(&self) {
+        let mut state = self.lock();
+        loop {
+            if state.stop {
+                return;
+            }
+            let Some((session, mut task)) = state.lanes.next() else {
+                state = self.wake.wait(state).expect("diarizer worker lock");
+                continue;
+            };
+            drop(state);
+            // A panic in a unit is that unit's, not the thread's: it is over.
+            let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task())).unwrap_or(Step::Done);
+            state = self.lock();
+            if step == Step::More {
+                state.lanes.resume(session, task);
+            }
+        }
     }
 }
 
@@ -507,6 +610,59 @@ mod tests {
         open(&held);
         assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
         assert_eq!(*log.lock().unwrap(), ["b1", "c1", "y1", "c2", "y2", "c3", "open", "b2"]);
+    }
+
+    /// Spec speech/08 (AC 10, amended 2026-10-26): the diarizer's thread
+    /// serves the speakers' units while a unit of the speech worker's is
+    /// still running, the sessions taking turns a unit each.
+    #[test]
+    fn the_diarizers_thread_serves_its_units_beside_a_speech_unit_running() {
+        let (worker, _) = worker();
+        let diarizer = DiarizerWorker::start();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let held = gate();
+        let (running, started) = mpsc::channel();
+        let gate_of_speech = Arc::clone(&held);
+        worker.submit_interactive(
+            0,
+            Box::new(move || {
+                let _ = running.send(());
+                let (gate, opened) = &*gate_of_speech;
+                let mut open = gate.lock().unwrap();
+                while !*open {
+                    open = opened.wait(open).unwrap();
+                }
+                Step::Done
+            }),
+        );
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // A unit of a third session holds the diarizer's thread until the
+        // others are queued.
+        let first = gate();
+        let gate_of_diarizer = Arc::clone(&first);
+        diarizer.submit(
+            0,
+            Box::new(move || {
+                let (gate, opened) = &*gate_of_diarizer;
+                let mut open = gate.lock().unwrap();
+                while !*open {
+                    open = opened.wait(open).unwrap();
+                }
+                Step::Done
+            }),
+        );
+        for (session, unit) in [(1, "x1"), (1, "x2"), (1, "x3"), (2, "y1"), (2, "y2")] {
+            diarizer.submit(session, logs(&log, unit));
+        }
+        open(&first);
+        let until = Instant::now() + Duration::from_secs(5);
+        while log.lock().unwrap().len() < 5 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let served = log.lock().unwrap().clone();
+        // The speech unit ends before any assertion, so the worker can stop.
+        open(&held);
+        assert_eq!(served, ["x1", "y1", "x2", "y2", "x3"], "served while the speech unit runs");
     }
 
     /// AC 11: past `max_queue` waiting jobs the next is refused, with a

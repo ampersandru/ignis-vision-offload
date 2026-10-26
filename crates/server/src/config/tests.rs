@@ -2868,6 +2868,7 @@ fn every_diarizer_field_resolves_from_flag_env_and_file_by_precedence() {
     // Per field: the file's value, the env var's, the flag's.
     let cases = [
         ("model", "my-diarizer", "off", "auto"),
+        ("threads", "2", "4", "auto"),
         ("min_speaker_seconds", "0", "2.5", "14.5"),
         ("live_speaker_cache_frames", "188", "200", "300"),
         ("live_fifo_frames", "188", "100", "40"),
@@ -2930,6 +2931,8 @@ fn a_diarizer_field_past_its_bounds_is_refused_naming_it() {
     }
     let err = refused(&["--diarizer-weak-boost-rate", "strong"]);
     assert!(err.contains("--diarizer-weak-boost-rate") && err.contains("auto"), "{err}");
+    let err = refused(&["--diarizer-threads", "0"]);
+    assert!(err.contains("--diarizer-threads") && err.contains("auto"), "{err}");
 }
 
 /// Spec speech/08: the Sortformer fields are Nemotron 3 Diarization's alone,

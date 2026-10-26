@@ -1,6 +1,6 @@
 //! A Realtime session with speakers writes one `info` line when it ends
 //! (spec speech/08, Out of Scope: no new metric families): how many speakers
-//! its items were given and what a diarizer step cost on the worker, mean and
+//! its items were given and what a diarizer step cost on its own thread, mean and
 //! max, and nothing of the audio or the text.
 //!
 //! Its own binary, like `speech_realtime_log.rs`: tracing caches a callsite's

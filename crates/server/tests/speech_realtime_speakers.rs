@@ -410,37 +410,73 @@ async fn a_diarized_session_counts_its_audio_once_against_the_queue_limit() {
     assert!(message.contains("holds 10.0 s"), "{message}");
 }
 
-/// AC 10 (Q113): the diarizer's steps rank below the windows and commits and
-/// above the refreshes: a refresh is skipped, never queued, while a step of
-/// its session is in the worker. With a slow speech model and a slower
-/// diarizer, the refreshes thin out next to the same feed with a quick
-/// diarizer, while every step, the tail and the commits are served.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_slow_diarizer_thins_the_refreshes_and_every_step_is_served() {
-    let mut refreshes = Vec::new();
-    for step_ms in [0, 600] {
-        let executor = Arc::new(FakeExecutor::saying(&["uno", "due"]));
-        executor.set_step_delay(Duration::from_millis(20));
-        let diarizer = hearing(|_| 0);
-        diarizer.set_step_delay(Duration::from_millis(step_ms));
-        let (mut socket, _, _live, _dir) = opened(&executor, &diarizer, json!({ "ignis": { "diarization": "live" } }), |group| group.partial_interval_ms = 100).await;
-        // The clip at four times real time.
-        for piece in clip().chunks(3_200) {
-            send(&mut socket, json!({ "type": "input_audio_buffer.append", "audio": base64(piece) })).await;
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        let events = until(&mut socket, COMPLETED).await;
-        assert_eq!(of(&events, SPEAKER).len(), 1, "{events:?}");
-        // The tail covers the item's end, frame 107, from what was heard then.
-        let calls = diarizer.calls();
-        assert_eq!(calls[..5], ["open 25", "step 0 25", "step 25 25", "step 50 25", "step 75 25"], "every step served");
-        let tail: usize = calls[5].strip_prefix("tail 100 ").expect("then the tail").parse().unwrap();
-        assert!((7..=14).contains(&tail) && calls.len() == 6, "{calls:?}");
-        assert!(executor.calls().iter().any(|call| call.starts_with("commit")));
-        refreshes.push(executor.partials_at().len());
+/// The clip at twice real time in a session with speakers `live`, refreshes
+/// due every 100 ms and held back no longer than they take, to its item's
+/// `completed`, with what every such run serves: the item's one speaker, every
+/// step (frames 0 to 99), the tail over the item's end (frame 107) from what was
+/// heard then, and the commit.
+async fn a_diarized_clip(executor: &Arc<FakeExecutor>, diarizer: &Arc<FakeDiarizer>) {
+    let fields = json!({ "ignis": { "diarization": "live" } });
+    let (mut socket, _, _live, _dir) = opened(executor, diarizer, fields, |group| {
+        group.partial_interval_ms = 100;
+        group.partial_cost_factor = 1;
+    })
+    .await;
+    for piece in clip().chunks(3_200) {
+        send(&mut socket, json!({ "type": "input_audio_buffer.append", "audio": base64(piece) })).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let (quick, slow) = (refreshes[0], refreshes[1]);
-    assert!(slow < quick, "{slow} refreshes beside a slow diarizer, {quick} beside a quick one");
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(of(&events, SPEAKER).len(), 1, "{events:?}");
+    let calls = diarizer.calls();
+    assert_eq!(calls[..5], ["open 25", "step 0 25", "step 25 25", "step 50 25", "step 75 25"], "every step served");
+    let tail: usize = calls[5].strip_prefix("tail 100 ").expect("then the tail").parse().unwrap();
+    assert!((7..=14).contains(&tail) && calls.len() == 6, "{calls:?}");
+    assert!(executor.calls().iter().any(|call| call.starts_with("commit")));
+}
+
+/// Spans as milliseconds from `base`, for a failure's message.
+fn millis(base: std::time::Instant, spans: &[(std::time::Instant, std::time::Instant)]) -> Vec<(u128, u128)> {
+    spans.iter().map(|(from, to)| ((*from - base).as_millis(), (*to - base).as_millis())).collect()
+}
+
+/// AC 10 (Q113, amended 2026-10-26): the diarizer computes on a thread of its
+/// own, so its steps never wait for the speech model's units and never stop
+/// them. Beside refreshes of a second each, a step of 100 ms runs whole inside
+/// one, and no refresh is stopped but by the commit; every step, the tail and
+/// the commit are served.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_diarizer_step_neither_waits_for_a_refresh_nor_stops_it() {
+    let executor = Arc::new(FakeExecutor::saying(&["uno", "due"]));
+    executor.set_step_delay(Duration::from_millis(20));
+    executor.set_partial_delay(Duration::from_secs(1));
+    let diarizer = hearing(|_| 0);
+    diarizer.set_step_delay(Duration::from_millis(100));
+    a_diarized_clip(&executor, &diarizer).await;
+    let (steps, refreshes) = (diarizer.steps_at(), executor.partial_spans());
+    let inside = steps.iter().any(|(began, ended)| refreshes.iter().any(|(from, to)| from <= began && ended <= to));
+    let base = refreshes[0].0;
+    assert!(inside, "no step ran inside a refresh: steps {:?}, refreshes {:?} (ms)", millis(base, &steps), millis(base, &refreshes));
+    let stopped = executor.stopped.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(stopped <= 1, "{stopped} refreshes stopped: only the commit stops one");
+}
+
+/// Spec speech/08, spec speech/03 (Q74): a refresh is skipped while a unit of
+/// its session's speech is in the speech worker, never for a diarizer step,
+/// which on its own thread is pending almost always while audio flows. Beside
+/// steps of a second each, the refreshes due every 100 ms go on: several begin
+/// while a step runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pending_diarizer_step_skips_no_refresh() {
+    let executor = Arc::new(FakeExecutor::saying(&["uno", "due"]));
+    executor.set_step_delay(Duration::from_millis(20));
+    let diarizer = hearing(|_| 0);
+    diarizer.set_step_delay(Duration::from_secs(1));
+    a_diarized_clip(&executor, &diarizer).await;
+    let (steps, refreshes) = (diarizer.steps_at(), executor.partial_spans());
+    let during = refreshes.iter().filter(|(from, _)| steps.iter().any(|(began, ended)| began <= from && from < ended)).count();
+    let base = refreshes[0].0;
+    assert!(during >= 5, "{during} refreshes began while a step ran: steps {:?}, refreshes {:?} (ms)", millis(base, &steps), millis(base, &refreshes));
 }
 
 /// A diarizer that fails (here, its open) is an `error` saying so, and the
