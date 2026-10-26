@@ -30,6 +30,9 @@ export type Progress = { id: string; samples: Sample[] };
 /** How long the readings a speed is taken over span, at most. */
 const SPEED_WINDOW_MS = 5_000;
 
+/** How often the catalog is read while a download runs: every second, as a switch is followed. */
+const FOLLOW_MS = 1_000;
+
 /** `progress` after a catalog read at `at`: the running row's reading added, a new download's readings started afresh, none without one running. */
 export function nextProgress(progress: Progress | null, rows: CatalogRow[], at: number): Progress | null {
   const row = runningDownload(rows);
@@ -77,19 +80,19 @@ export function afterDownload(answer: Answer<unknown>): { refusal: string | null
 }
 
 /**
- * Follow the downloads: read the catalog every `every` ms and hand each answer on, until a
+ * Follow the downloads: read the catalog every second and hand each answer on, until a
  * read shows none running. A read that failed is tried again a tick later. Returns the stop.
  */
-export function followDownloads(read: () => Promise<Answer<CatalogRow[]>>, onAnswer: (answer: Answer<CatalogRow[]>) => void, every = 1_000): () => void {
+export function followDownloads(read: () => Promise<Answer<CatalogRow[]>>, onAnswer: (answer: Answer<CatalogRow[]>) => void): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const tick = async () => {
     const answer = await read();
     if (stopped) return;
     onAnswer(answer);
-    if (!answer.ok || runningDownload(answer.value)) timer = setTimeout(() => void tick(), every);
+    if (!answer.ok || runningDownload(answer.value)) timer = setTimeout(() => void tick(), FOLLOW_MS);
   };
-  timer = setTimeout(() => void tick(), every);
+  timer = setTimeout(() => void tick(), FOLLOW_MS);
   return () => {
     stopped = true;
     clearTimeout(timer);

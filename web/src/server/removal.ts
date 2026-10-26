@@ -1,5 +1,6 @@
 import { canSend, loadUnderWay, type ModelState } from "../api/model.ts";
 import { formatBytes } from "../monitor/format.ts";
+import type { PageGate } from "./band.ts";
 import type { Line } from "./outcome.ts";
 import type { Answer, CatalogRow, ConfigDocument, ModelRemoved } from "./routes.ts";
 
@@ -8,9 +9,6 @@ import type { Answer, CatalogRow, ConfigDocument, ModelRemoved } from "./routes.
 // (POST /v1/models/remove), after the page asked for a confirmation that
 // says what the entry is to this server. Remove sits beside the row's own
 // action: Load on an entry on disk, Resume on a partial one.
-
-/** What a row's Remove depends on beyond the row: whether the server removes from the page, and whether a removal is being sent. */
-export type RemovalGate = { fromPage: boolean; busy: boolean };
 
 /** Whether the server removes from the page: `download.from_ui`, as the running configuration says. `download.enabled` false keeps the server off the network, and a removal uses none. Unread, it may. */
 export function removalsFromPage(config: ConfigDocument | null): boolean {
@@ -25,7 +23,7 @@ export function removalsFromPage(config: ConfigDocument | null): boolean {
  * removal is sent, and wherever the server would refuse it for its model's
  * state: no model serving, or one on its way.
  */
-export function removeAction(row: CatalogRow, model: ModelState, gate: RemovalGate): { enabled: boolean } | null {
+export function removeAction(row: CatalogRow, model: ModelState, gate: PageGate): { enabled: boolean } | null {
   if (!gate.fromPage || row.source === "known" || row.on_disk === "absent" || row.loaded || row.download === "running") return null;
   if (model.state === "unloaded" && model.id === row.id) return null;
   if (loadUnderWay(model) && model.to === row.id) return null;

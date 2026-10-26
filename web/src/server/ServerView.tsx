@@ -47,12 +47,14 @@ export function ServerView({
           drain={drain}
           now={now}
           onLoad={actions.load}
-          downloads={{ fromPage: downloadsFromPage(config), busy: state.downloadingId !== null || runningDownload(rows) !== null }}
-          downloadingId={state.downloadingId}
-          downloadSpeed={state.downloadSpeed}
-          onDownload={actions.download}
-          cancelling={state.cancelling}
-          onCancel={actions.cancel}
+          downloads={{
+            gate: { fromPage: downloadsFromPage(config), busy: state.downloadingId !== null || runningDownload(rows) !== null },
+            sendingId: state.downloadingId,
+            speed: state.downloadSpeed,
+            onDownload: actions.download,
+            cancelling: state.cancelling,
+            onCancel: actions.cancel,
+          }}
           removals={{
             gate: { fromPage: removalsFromPage(config), busy: state.removingId !== null },
             removingId: state.removingId,

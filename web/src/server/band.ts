@@ -56,8 +56,11 @@ export type RowAction =
   /** A catalog entry above this card's class (ADR 0064): neither switched to nor downloaded; `reason` is the server's. */
   | { kind: "unavailable"; reason: string };
 
-/** What a row's Download depends on beyond the row: whether the server downloads from the page, and whether a download runs or is being sent (one at a time). */
-export type DownloadGate = { fromPage: boolean; busy: boolean };
+/**
+ * What a row's Download or Remove depends on beyond the row: whether the server takes it from the page, and whether
+ * one is busy — for Download a download running or being sent (one at a time), for Remove a removal being sent.
+ */
+export type PageGate = { fromPage: boolean; busy: boolean };
 
 /**
  * The row's one action. "Load" follows the server's `switchable`, and is out
@@ -69,7 +72,7 @@ export type DownloadGate = { fromPage: boolean; busy: boolean };
  * its way. "Resume" is the same request, on a partial entry, and is out of
  * reach where "Download" is.
  */
-export function rowAction(row: CatalogRow, model: ModelState, gate: DownloadGate = { fromPage: true, busy: false }): RowAction {
+export function rowAction(row: CatalogRow, model: ModelState, gate: PageGate = { fromPage: true, busy: false }): RowAction {
   const loading = loadUnderWay(model);
   if (loading && row.id === model.to) return { kind: "loading" };
   if (row.loaded) return { kind: "loaded" };
