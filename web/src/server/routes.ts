@@ -75,10 +75,10 @@ export type CatalogRow = {
   download_reason?: string;
   /** What of it is on disk now, partial files included. */
   bytes_on_disk?: number;
-  /** The server started on this entry, from its files under download.path (GitHub #380): removed, the next start looks for it again. */
-  start?: boolean;
-  /** `switch.known_models` names this entry's id at one of its files: removed, a switch to it is refused until it is downloaded again. */
-  known?: boolean;
+  /** The id the server started on, loaded from this entry's files under download.path whatever id serves it (GitHub #380): removed, the next start looks for it again. */
+  start_model?: string;
+  /** The ids `switch.known_models` names at this entry's files, the start model's apart: removed, a switch to any of them is refused until it is downloaded again. */
+  known_models?: string[];
 };
 
 /** Why the card cannot load a row (ADR 0064), as the server words it; null when it can. The one wording every view shows. */

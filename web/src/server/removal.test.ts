@@ -61,8 +61,8 @@ describe("removalPrompt", () => {
     ]);
   });
 
-  it("says when it is the model the server started on, and what the next start does without it", () => {
-    const start = { ...row("qwen3.8-flash-next"), start: true };
+  it("says when it is the model the server started on, under which id, and what the next start does without it", () => {
+    const start = { ...row("qwen3.8-flash-next"), start_model: "qwen3.8-flash-next" };
     expect(removalPrompt(start, CONFIG)[1]).toBe(
       "The server started on it: the next start downloads it again (asking first on a terminal), or, when model.artifact names its file, refuses to start.",
     );
@@ -70,12 +70,22 @@ describe("removalPrompt", () => {
     expect(removalPrompt(start, offline)[1]).toBe(
       "The server started on it: with download.enabled false the next start does not download it again and comes up with no model, on the placeholder template, or, when model.artifact names its file, refuses to start.",
     );
+    // GitHub #380: matched by file, the start model may be served under another id; the confirmation names it.
+    expect(removalPrompt({ ...start, start_model: "boot" }, CONFIG)[1]).toBe(
+      "The server started on it (as boot): the next start downloads it again (asking first on a terminal), or, when model.artifact names its file, refuses to start.",
+    );
   });
 
-  it("says when it is a known model, which no switch reaches once it is gone", () => {
-    const known = { ...row("qwen3.8-flash-next"), known: true };
+  it("says when known models load from it, naming each served under another id, which no switch reaches once it is gone", () => {
+    const known = { ...row("qwen3.8-flash-next"), known_models: ["qwen3.8-flash-next"] };
     expect(removalPrompt(known, CONFIG)[1]).toBe(
       "It is a known model (switch.known_models names its file): until it is downloaded again, a switch to it is refused, after the next start too.",
+    );
+    expect(removalPrompt({ ...known, known_models: ["flash"] }, CONFIG)[1]).toBe(
+      "switch.known_models names its file as flash: until it is downloaded again, a switch to it is refused, after the next start too.",
+    );
+    expect(removalPrompt({ ...known, known_models: ["flash", "qwen3.8-flash-next"] }, CONFIG)[1]).toBe(
+      "switch.known_models names its file as flash, qwen3.8-flash-next: until it is downloaded again, a switch to any of them is refused, after the next start too.",
     );
   });
 });

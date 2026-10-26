@@ -32,20 +32,28 @@ export function removeAction(row: CatalogRow, model: ModelState, gate: RemovalGa
   return { enabled: !gate.busy && canSend(model) };
 }
 
-/** The confirmation's sentences: what goes, then what the entry is to this server — the model it started on, or a known model — and what that means once it is gone. */
+/**
+ * The confirmation's sentences: what goes, then what the entry is to this server — the model it started on, or known
+ * models — and what that means once it is gone, naming each by the id it is served under when that is not the row's.
+ */
 export function removalPrompt(row: CatalogRow, config: ConfigDocument | null): string[] {
   const size = formatBytes(row.bytes_on_disk ?? row.bytes ?? 0);
   const partial = row.on_disk === "partial" ? ", its unfinished download included" : "";
   const lines = [`Remove ${row.id}? Its files under download.path go, ${size}${partial}; it can be downloaded again.`];
-  if (row.start) {
+  if (row.start_model !== undefined) {
+    const as = row.start_model === row.id ? "" : ` (as ${row.start_model})`;
     lines.push(
       config?.download?.enabled === false
-        ? "The server started on it: with download.enabled false the next start does not download it again and comes up with no model, on the placeholder template, or, when model.artifact names its file, refuses to start."
-        : "The server started on it: the next start downloads it again (asking first on a terminal), or, when model.artifact names its file, refuses to start.",
+        ? `The server started on it${as}: with download.enabled false the next start does not download it again and comes up with no model, on the placeholder template, or, when model.artifact names its file, refuses to start.`
+        : `The server started on it${as}: the next start downloads it again (asking first on a terminal), or, when model.artifact names its file, refuses to start.`,
     );
   }
-  if (row.known) {
+  const known = row.known_models ?? [];
+  if (known.length === 1 && known[0] === row.id) {
     lines.push("It is a known model (switch.known_models names its file): until it is downloaded again, a switch to it is refused, after the next start too.");
+  } else if (known.length > 0) {
+    const them = known.length === 1 ? "it" : "any of them";
+    lines.push(`switch.known_models names its file as ${known.join(", ")}: until it is downloaded again, a switch to ${them} is refused, after the next start too.`);
   }
   return lines;
 }

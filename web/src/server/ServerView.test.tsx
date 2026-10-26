@@ -219,7 +219,7 @@ describe("ServerView: the model band", () => {
   });
 
   it("asks before it removes, saying when the entry is the model the server started on, and holds every Remove while one is sent", () => {
-    const rows = CATALOG.map((r) => (r.id === "qwen3.8-flash-next" ? { ...r, start: true } : r));
+    const rows = CATALOG.map((r) => (r.id === "qwen3.8-flash-next" ? { ...r, start_model: "qwen3.8-flash-next" } : r));
     const asking = render({ catalog: { state: "ok", value: rows }, confirmingRemoval: "qwen3.8-flash-next" });
     const row = asking.split("<li").find((li) => li.includes(">qwen3.8-flash-next<"))!;
     expect(row).toContain('aria-label="Confirm the removal of qwen3.8-flash-next"');

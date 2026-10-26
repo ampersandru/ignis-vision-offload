@@ -125,13 +125,15 @@ as before ([Letting the server fetch it](../guides/models.md#letting-the-server-
 **Remove** asks first, under the row: `Remove <id>? Its files under
 download.path go, <size>; it can be downloaded again.`, with `its unfinished
 download included` on a partly downloaded entry. When the server started on
-that entry, the confirmation also says what the next start does without it: it
-downloads it again, asking first on a terminal, or, with `download.enabled`
-false, comes up with no model, on the placeholder template; a start whose
-`model.artifact` names its file refuses to start. When `switch.known_models`
-names the entry's file, it says a switch to it is refused until it is
-downloaded again. **Remove** there sends `POST /v1/models/remove` with the id;
-**Keep it** sends nothing.
+that entry's files, the confirmation also says what the next start does without
+it: it downloads it again, asking first on a terminal, or, with
+`download.enabled` false, comes up with no model, on the placeholder template; a
+start whose `model.artifact` names its file refuses to start. When
+`switch.known_models` names the entry's file, it says a switch to that model is
+refused until it is downloaded again. Either is named by the id it is served
+under when that is not the entry's own (`The server started on it (as boot)`).
+**Remove** there sends `POST /v1/models/remove` with the id; **Keep it** sends
+nothing.
 
 The server deletes the entry's files under its `download.path`, each at its
 name and its `.part`, and answers once they are gone
@@ -143,9 +145,10 @@ is on disk or being downloaded, and the band names it, `Kept <file>, which
 
 The server refuses, with its reason in the band, the model loaded (also when it
 was unloaded while idle, or serves from the entry's files under another id),
-the model a switch or a load is loading, and an entry being downloaded, by the
-server (**Cancel** it first) or by `ignis-server model download` on its
-machine. The page offers no **Remove** on the loaded row, the one loading or
+the model a switch or a load is loading, the speech model the speech worker has
+loaded (until it unloads it, `speech.idle_unload` seconds after its last
+transcription), and an entry being downloaded, by the server (**Cancel** it
+first) or by `ignis-server model download` on its machine. The page offers no **Remove** on the loaded row, the one loading or
 the one downloading, and **Remove** is out of reach while a removal is sent,
 during a switch, or while no model serves. A known model that is no catalog
 entry is a path the operator gave, and is never removed.

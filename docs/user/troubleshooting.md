@@ -196,9 +196,11 @@ the model band
 ([Removing a model](guides/models.md#removing-a-model-post-v1modelsremove)):
 
 - `409 model_in_use`: the entry is the model loaded (also unloaded while idle,
-  or served from its files under another id), the one a load is loading, or the
-  one the server is downloading. Load another model first, or **Cancel** its
-  download.
+  or served from its files under another id), the one a load is loading, the
+  speech model the speech worker has loaded, or the one the server is
+  downloading. Load another model first, **Cancel** its download, or wait for
+  the speech worker to unload it (`--speech-idle-unload` seconds after its last
+  transcription).
 - `409 download_locked`: `ignis-server model download`, or another server on
   the same `--download-path`, is fetching the entry. Remove it once that ends.
 - `409 model_not_downloaded`: nothing of it is under `--download-path`; a row

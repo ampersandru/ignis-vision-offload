@@ -51,9 +51,10 @@ reads `download: none`, with its `bytes_on_disk` growing: the command's fetch
 is not the server's, and a download of the entry through the API is refused
 with `409 download_locked` until it ends
 ([one writer per entry](../guides/models.md#one-writer-per-entry)).
-The row of the entry the server started on carries `start: true`, and the row
-of an entry `--switch-known-models` names at one of its files `known: true`,
-when those files are under `--download-path`: what
+The row of an entry the server started on, from one of its files under
+`--download-path`, names that model in `start_model`, and the row of an entry
+`--switch-known-models` names at one of its files lists those ids in
+`known_models`, whatever id each is served under: what
 [removing it](../guides/models.md#removing-a-model-post-v1modelsremove) takes
 away.
 

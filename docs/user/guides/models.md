@@ -254,14 +254,16 @@ Its `GET /v1/models/catalog` row then reads `on_disk: absent` (or `partial`),
 forgotten, and `GET /v1/models` no longer lists it; its next download fetches
 it again.
 
-The start model may go. Its catalog row carries `start: true` while the
-server's start loaded it from these files, and the next start looks for it under
-`--download-path` again: it fetches it, asking first on a terminal, as
-[below](#letting-the-server-fetch-it); with `--download-enabled false` it comes
-up on the placeholder template; and a start whose `--model-artifact` names the
-removed file refuses to start. A row carries `known: true` when
-`--switch-known-models` names its id at one of its files: removed, a switch to
-it is refused until it is downloaded again.
+The start model may go. Its catalog row names it in `start_model` while the
+server's start loaded it from these files, under whatever id it serves, and the
+next start looks for it under `--download-path` again: it fetches it, asking
+first on a terminal, as [below](#letting-the-server-fetch-it); with
+`--download-enabled false` it comes up on the placeholder template; and a start
+whose `--model-artifact` names the removed file refuses to start. A row lists in
+`known_models` the ids `--switch-known-models` names at one of its files, its
+own or another: removed, a switch to any of them is refused until it is
+downloaded again. Both are matched by file, so the Server view's confirmation
+names a model served from the entry's files under another id too.
 
 | Answer | When |
 |---|---|
@@ -270,7 +272,7 @@ it is refused until it is downloaded again.
 | `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
 | `403 removal_disabled` | `--download-from-ui false`. |
 | `404 model_not_found` | `model` is not a catalog entry: a known model is a path the operator gave, and only a catalog entry's files are removed. |
-| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading, or the entry the server is downloading; the message says which. Cancel the download, or load another model, first. |
+| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading (by its id or from its files), the [speech model](../api/transcriptions.md) the speech worker has loaded, or the entry the server is downloading; the message says which. Cancel the download, load another model, or wait for the speech worker to unload it (`--speech-idle-unload` seconds after its last transcription), first. |
 | `409 download_locked` | `model download`, or another server on the same folder, is fetching the entry. |
 | `409 model_not_downloaded` | Nothing of the entry is under `--download-path`. |
 | `500 removal_failed` | A file could not be deleted; the message names it, and what was deleted before it. |
