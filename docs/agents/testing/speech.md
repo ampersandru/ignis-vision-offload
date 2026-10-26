@@ -94,11 +94,13 @@ suite against a diarizer scripted frame by frame (`FakeDiarizer`, beside
 `FakeExecutor`): `crates/server/tests/speech_realtime_speakers.rs` runs the
 real VAD on the FLEURS fixture clip, so the cuts at a speaker change, the
 length guard's cuts and their times are exact, and checks the queue limit and
-the rank of the diarizer's steps on the worker. `ignis_speech::Session::cut`
+that the diarizer's steps, on a thread of their own, neither wait for the
+refreshes nor hold them back (slow fakes, timed spans). `ignis_speech::Session::cut`
 is checked against the session of the audio before the cut on the synthetic
 pair (`crates/speech/tests/executor.rs`). The real adapter, `CpuDiarizer`, has
-one `--ignored` leg on the study directory's F32 GGUF, on the CPU: its frames
-against the crate's stream, step by step, its tail and its `auto` constants.
+one `--ignored` leg on the study directory's F32 GGUF, on the CPU: its frames,
+on its own pool, against the crate's stream, step by step, its tail and its
+`auto` constants.
 `scripts/gpu-profile.ps1` skips it by name (`$NotGpuLegs`).
 
 Its catalog side is `crates/server/tests/speech_diarizer_models.rs`: a diarizer
@@ -124,7 +126,8 @@ in `$NotGpuLegs`. Run each alone, with nothing else on the CPU, and the
 - `the_diarizer_keeps_up_with_a_conversation_at_real_time_pace` (AC 11): one
   conversation (`IGNIS_DIARIZER_CONV`, default `conv07`, 5 minutes) at real
   time, speakers `live`; the session's `lag_max_ms` within the live geometry's
-  latency plus 2 s. A timing run: `--release`. `IGNIS_SPEECH_PARTIAL_MS` and
+  latency plus 2 s. It prints each item's time from `committed` to
+  `completed`, with their median and max. A timing run: `--release`. `IGNIS_SPEECH_PARTIAL_MS` and
   `IGNIS_SPEECH_PARTIAL_FACTOR` move the refreshes.
 - `every_item_of_the_conversations_sends_its_text_whole_at_its_end` (AC 7):
   every conversation (`IGNIS_DIARIZER_CONVS`, names separated by commas, for

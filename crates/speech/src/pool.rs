@@ -44,6 +44,12 @@ pub struct Pool {
 impl Pool {
     /// A pool of `n` workers, the caller of [`run`](Self::run) included.
     pub fn new(n: usize) -> Pool {
+        Pool::named(n, "ignis-speech")
+    }
+
+    /// A pool of `n` workers whose threads are named `<name>-<i>`: the
+    /// diarizer's own (spec speech/08) apart from the speech model's.
+    pub fn named(n: usize, name: &str) -> Pool {
         let n = n.max(1);
         let sh = Arc::new(Shared {
             epoch: AtomicUsize::new(0),
@@ -59,7 +65,7 @@ impl Pool {
         let handles: Vec<_> = (1..n)
             .map(|i| {
                 let s = sh.clone();
-                thread::Builder::new().name(format!("ignis-speech-{i}")).spawn(move || worker(&s)).expect("spawn a speech worker")
+                thread::Builder::new().name(format!("{name}-{i}")).spawn(move || worker(&s)).expect("spawn a speech worker")
             })
             .collect();
         sh.threads.set(handles.iter().map(|h| h.thread().clone()).collect()).ok();
@@ -208,6 +214,14 @@ mod tests {
             sum.fetch_add(1, Relaxed);
         });
         assert_eq!(sum.load(Relaxed), 64 * 63 / 2 + 8);
+    }
+
+    /// The spawned workers carry the pool's name, the caller being worker 0.
+    #[test]
+    fn a_named_pools_threads_carry_its_name() {
+        let names = |pool: &Pool| pool.sh.threads.get().unwrap().iter().map(|t| t.name().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(names(&Pool::named(3, "ignis-diarizer")), ["ignis-diarizer-1", "ignis-diarizer-2"]);
+        assert_eq!(names(&Pool::new(2)), ["ignis-speech-1"]);
     }
 
     #[test]

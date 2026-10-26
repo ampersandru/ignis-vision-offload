@@ -816,6 +816,13 @@ config_group! {
         /// model's id is refused. Loaded by the first session that asks for
         /// speakers, unloaded with the speech model.
         model: Text = super::DEFAULT_DIARIZER_MODEL.to_owned(), NO_RULE, ALL, [Visible, Patchable];
+        /// The threads the diarizer computes with, a pool of its own beside the
+        /// speech model's, so its steps never wait for the speech model's work:
+        /// `auto` is a third of the
+        /// physical cores, at least 2 (3 on a 10-core machine), counted within the CPUs the server may run on.
+        /// Read by the load, so a change holds from the next one; the load
+        /// logs the count (`ignis.diarizer.load`).
+        threads: Threads = None, NO_RULE, ALL, [Visible, Patchable];
         /// The ghost rule, in seconds of speech: a voice the diarizer hears is
         /// a speaker of its own once it has spoken this long, and until then
         /// its speech counts for the speaker it sounds most like, so a short
@@ -1049,12 +1056,13 @@ mod tests {
 
     /// Spec speech/08, AC 14: every field that is a concept of Sortformer, the
     /// two geometries and the speaker cache's six constants, only Nemotron 3
-    /// Diarization takes, under its plain key; the model and the ghost rule
-    /// every diarizer does. The geometries default to the measured ones, the
-    /// constants to the checkpoint's (`auto`), each override bounded.
+    /// Diarization takes, under its plain key; the model, its threads and the
+    /// ghost rule every diarizer does. The geometries default to the measured
+    /// ones, the constants to the checkpoint's (`auto`), each override
+    /// bounded, the threads to `auto`.
     #[test]
     fn the_sortformer_fields_are_nemotron_diarizations_own() {
-        let shared = ["model", "min_speaker_seconds"];
+        let shared = ["model", "threads", "min_speaker_seconds"];
         for meta in DiarizerGroup::FIELDS {
             let only = meta.applies == NEMOTRON_DIARIZATION_ONLY;
             assert_eq!(only, !shared.contains(&meta.name), "{}", meta.name);
@@ -1081,7 +1089,7 @@ mod tests {
             group.speaker_cache_silence_frames_per_speaker,
         ];
         assert_eq!(constants, [None; 6], "auto: the checkpoint's own");
-        assert_eq!((group.model.as_str(), group.min_speaker_seconds), ("auto", 2_000));
+        assert_eq!((group.model.as_str(), group.threads, group.min_speaker_seconds), ("auto", None, 2_000));
         assert_eq!(field("diarizer", "weak_boost_rate").unwrap().validator.describe(), "0..=4");
     }
 

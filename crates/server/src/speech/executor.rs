@@ -6,7 +6,8 @@
 //! only) behind this trait, and the adapter is the one place that knows both.
 //!
 //! The diarizer (spec speech/08) has its seam beside it, [`DiarizerExecutor`]:
-//! availability, a stream opened at a geometry, a step run. The real one is
+//! availability, a stream opened at a geometry, a step run on the diarizer's
+//! own thread. The real one is
 //! `ignis_speech::diarizer`, adapted in [`super::cpu`]; the Realtime session
 //! is tested against `FakeDiarizer`, scripted frame by frame.
 
@@ -169,16 +170,20 @@ pub struct CacheConstants {
 }
 
 /// What a diarizer stream opens with: its geometry and the speaker cache's
-/// constants, the `diarizer` group's when a session's speakers start.
+/// constants, the `diarizer` group's when a session's speakers start; and
+/// `diarizer.threads`, which only a load reads, so a change holds from the
+/// next one (`None` is `auto`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamOpen {
     pub geometry: Geometry,
     pub constants: CacheConstants,
+    pub threads: Option<u32>,
 }
 
 impl StreamOpen {
     /// The live geometry (`diarizer.live_*`), or the file one
-    /// (`diarizer.file_*`), as the session asked, with the group's constants.
+    /// (`diarizer.file_*`), as the session asked, with the group's constants
+    /// and threads.
     pub(crate) fn of(group: &crate::config::schema::DiarizerGroup, mode: super::realtime::config::Diarization) -> Self {
         use super::realtime::config::Diarization;
         let frames = |n: u32| n as usize;
@@ -207,7 +212,7 @@ impl StreamOpen {
             min_positive_scores_rate: decimal(group.min_positive_scores_rate),
             speaker_cache_silence_frames_per_speaker: group.speaker_cache_silence_frames_per_speaker.map(|n| n as usize),
         };
-        Self { geometry, constants }
+        Self { geometry, constants, threads: group.threads }
     }
 }
 
@@ -227,7 +232,8 @@ impl Frames {
 }
 
 /// One stream of the diarizer: a Realtime session's 16 kHz audio from its
-/// first sample, scored a step of its geometry at a time on the worker.
+/// first sample, scored a step of its geometry at a time on the diarizer's
+/// thread.
 pub trait DiarizerStream: Send {
     /// The stream's next 16 kHz samples.
     fn push(&mut self, samples: &[f32]);
@@ -242,15 +248,15 @@ pub trait DiarizerStream: Send {
     fn tail(&self) -> Result<Frames, SpeechError>;
 }
 
-/// The diarizer's executor (spec speech/08): who spoke when, on the speech
-/// model's worker, with its threads.
+/// The diarizer's executor (spec speech/08): who spoke when, on a thread and
+/// a pool of its own beside the speech model's worker.
 pub trait DiarizerExecutor: Send + Sync {
     /// Whether the diarizer can serve, and if not why, in a sentence a client
     /// reads. Cheap: asked per session.
     fn availability(&self) -> Result<(), String>;
-    /// Open a stream, loading the weights first if they are not: on the
-    /// worker, with the speech model loaded, whose pool and ISA the steps
-    /// compute on.
+    /// Open a stream, loading the weights first if they are not, with a pool
+    /// of `open.threads`: on the diarizer's thread, whose steps compute on
+    /// that pool, never the speech model's.
     fn open(&self, open: StreamOpen) -> Result<Box<dyn DiarizerStream>, SpeechError>;
     /// Give the weights' host memory back.
     fn unload(&self);
@@ -298,7 +304,8 @@ impl DiarizerExecutor for NoDiarizer {
 /// frames its chunk's. Its tail scores the frames heard past the last step.
 /// It records what it was opened with and every call, in order
 /// ([`FakeDiarizer::calls`]): `open <chunk>`, `step <first> <frames>`,
-/// `tail <first> <frames>`; each step takes `step_delay`. Test builds only.
+/// `tail <first> <frames>`; each step takes `step_delay`, and when each began
+/// and ended is kept ([`FakeDiarizer::steps_at`]). Test builds only.
 #[cfg(any(test, feature = "fake-speech"))]
 pub struct FakeDiarizer {
     pub script: Arc<dyn Fn(usize) -> Probs + Send + Sync>,
@@ -310,6 +317,8 @@ pub struct FakeDiarizer {
     pub step_delay: Arc<Mutex<Duration>>,
     pub opened: Mutex<Vec<StreamOpen>>,
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// When each step began and ended, over every stream, in order.
+    pub steps_at: Arc<Mutex<Vec<(Instant, Instant)>>>,
 }
 
 #[cfg(any(test, feature = "fake-speech"))]
@@ -337,11 +346,17 @@ impl FakeDiarizer {
             step_delay: Arc::new(Mutex::new(Duration::ZERO)),
             opened: Mutex::new(Vec::new()),
             calls: Arc::new(Mutex::new(Vec::new())),
+            steps_at: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn set_unavailable(&self, reason: Option<&str>) {
         *self.unavailable.lock().unwrap() = reason.map(str::to_owned);
+    }
+
+    /// When each step so far began and ended ([`FakeDiarizer::steps_at`]).
+    pub fn steps_at(&self) -> Vec<(Instant, Instant)> {
+        self.steps_at.lock().unwrap().clone()
     }
 
     /// Every step from now takes `delay`.
@@ -363,6 +378,7 @@ struct FakeStream {
     done: usize,
     delay: Arc<Mutex<Duration>>,
     calls: Arc<Mutex<Vec<String>>>,
+    steps_at: Arc<Mutex<Vec<(Instant, Instant)>>>,
 }
 
 #[cfg(any(test, feature = "fake-speech"))]
@@ -386,9 +402,11 @@ impl DiarizerStream for FakeStream {
         if self.heard < self.samples_needed() {
             return Ok(None);
         }
+        let began = Instant::now();
         std::thread::sleep(*self.delay.lock().unwrap());
         let frames = self.frames(self.done, self.geometry.chunk);
         self.calls.lock().unwrap().push(format!("step {} {}", frames.first, frames.probs.len()));
+        self.steps_at.lock().unwrap().push((began, Instant::now()));
         self.done = frames.end();
         Ok(Some(frames))
     }
@@ -424,6 +442,7 @@ impl DiarizerExecutor for FakeDiarizer {
             done: 0,
             delay: Arc::clone(&self.step_delay),
             calls: Arc::clone(&self.calls),
+            steps_at: Arc::clone(&self.steps_at),
         }))
     }
 
@@ -478,7 +497,7 @@ impl SpeechExecutor for NoExecutor {
 /// is stable per 8 s window pushed (128,000 samples), the last arriving only
 /// at the commit. It records what it was opened with, the samples it was
 /// pushed, what it was loaded with, every call its sessions took, in order
-/// ([`FakeExecutor::calls`]), when each refresh began, how many stopped, and
+/// ([`FakeExecutor::calls`]), when each refresh began and ended, how many stopped, and
 /// the silence each session was fed first. A refresh checks its stop every
 /// millisecond it takes; a commit takes `commit_steps` steps. Test builds only.
 #[cfg(any(test, feature = "fake-speech"))]
@@ -514,6 +533,8 @@ pub struct FakeExecutor {
     pub calls: Arc<Mutex<Vec<String>>>,
     /// When each `partial` began, over every session, in order.
     pub partials_at: Arc<Mutex<Vec<Instant>>>,
+    /// When each `partial` ended, stopped or not, in the same order.
+    pub partials_ended: Arc<Mutex<Vec<Instant>>>,
     /// Per session, in the order opened, the samples it was pushed before
     /// its first that is not zero: the digital silence it was fed first.
     pub silent_lead: Arc<Mutex<Vec<usize>>>,
@@ -542,6 +563,7 @@ impl FakeExecutor {
             load_files: Mutex::new(Vec::new()),
             calls: Arc::new(Mutex::new(Vec::new())),
             partials_at: Arc::new(Mutex::new(Vec::new())),
+            partials_ended: Arc::new(Mutex::new(Vec::new())),
             silent_lead: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -574,6 +596,12 @@ impl FakeExecutor {
         self.partials_at.lock().unwrap().clone()
     }
 
+    /// When each refresh so far began and ended, stopped or not.
+    pub fn partial_spans(&self) -> Vec<(Instant, Instant)> {
+        let began = self.partials_at.lock().unwrap().clone();
+        began.into_iter().zip(self.partials_ended.lock().unwrap().iter().copied()).collect()
+    }
+
     /// Each session's leading digital silence so far
     /// ([`FakeExecutor::silent_lead`]).
     pub fn silent_lead(&self) -> Vec<usize> {
@@ -599,6 +627,7 @@ struct FakeSession {
     index: usize,
     calls: Arc<Mutex<Vec<String>>>,
     partials_at: Arc<Mutex<Vec<Instant>>>,
+    partials_ended: Arc<Mutex<Vec<Instant>>>,
     /// The executor's record of leading silence, and whether this session
     /// has been pushed a sample that is not zero.
     silent_lead: Arc<Mutex<Vec<usize>>>,
@@ -639,6 +668,7 @@ impl SpeechSession for FakeSession {
         loop {
             if stop() {
                 self.stopped.fetch_add(1, Ordering::SeqCst);
+                self.partials_ended.lock().unwrap().push(Instant::now());
                 return Ok(None);
             }
             let left = end.saturating_duration_since(Instant::now());
@@ -647,6 +677,7 @@ impl SpeechSession for FakeSession {
             }
             std::thread::sleep(left.min(Duration::from_millis(1)));
         }
+        self.partials_ended.lock().unwrap().push(Instant::now());
         let (stable, tail) = self.words.split_at(self.stable_words);
         let tail = tail.first().map(|word| format!(" {word}")).unwrap_or_default();
         Ok(Some(Partial { stable: stable.join(" "), tail }))
@@ -736,6 +767,7 @@ impl SpeechExecutor for FakeExecutor {
             index,
             calls: Arc::clone(&self.calls),
             partials_at: Arc::clone(&self.partials_at),
+            partials_ended: Arc::clone(&self.partials_ended),
             silent_lead: Arc::clone(&self.silent_lead),
             sounded: false,
             commit_steps: self.commit_steps.load(Ordering::SeqCst).max(1),

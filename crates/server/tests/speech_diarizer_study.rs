@@ -4,7 +4,7 @@
 //! 100 ms, with `server_vad` and `session.ignis.diarization: "live"`, Qwen3-ASR `qwen3-asr-1.7b`
 //! transcribing every item in the same session. The diarizer keeps up when every frame's speaker
 //! probabilities come within the live geometry's latency plus 2 s of the frame's first sample
-//! arriving, the speech model's units beside it on the one worker: the session's log line's
+//! arriving, the speech model computing beside it on its own worker: the session's log line's
 //! `lag_max_ms`. (An item's speaker can come later than that by design: a cut at a change reaches
 //! back to where the new speaker's run began, up to `diarizer.min_speaker_seconds` before.) It
 //! prints each item's time from its `committed` to its `completed`, as the client heard them, with

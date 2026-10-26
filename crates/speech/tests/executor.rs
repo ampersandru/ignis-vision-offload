@@ -453,3 +453,15 @@ fn threads_resolve_auto_and_counts() {
     assert_eq!(Threads::Count(3).resolve(), (3, "configured"));
     assert_eq!(Threads::Count(0).resolve(), (1, "configured"));
 }
+
+/// Spec speech/08: `diarizer.threads`' `auto` is a third of the physical cores, at least 2 (3 on
+/// the i9's 10, where conv01 ran 2.4, 3.3 and 3.5 times faster than real time on 2, 3 and 4), and
+/// a count is used as given.
+#[test]
+fn diarizer_threads_resolve_auto_and_counts() {
+    assert_eq!([2, 4, 6, 10, 16].map(Threads::diarizer_auto), [2, 2, 2, 3, 5]);
+    let usable = num_cpus::get_physical().min(num_cpus::get());
+    assert_eq!(Threads::Auto.resolve_diarizer(), (Threads::diarizer_auto(usable), "auto"));
+    assert_eq!(Threads::Count(4).resolve_diarizer(), (4, "configured"));
+    assert_eq!(Threads::Count(0).resolve_diarizer(), (1, "configured"));
+}

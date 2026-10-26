@@ -41,8 +41,10 @@ ticket ([ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows
 
 The `diarizer` group configures the diarizer, Nemotron 3 Diarization, which
 gives a live session that asks for them its [speakers](../api/realtime-transcription.md#speakers).
-It runs on the CPU, on the speech model's worker and threads. Every field is
-read live, when a session's speakers start. The diarizer is a
+It runs on the CPU, on a thread and CPU threads of its own beside the speech
+model's, so its steps never hold up the speech model's work. Every field but
+`diarizer.threads` is read live, when a session's speakers start;
+`diarizer.threads` is read by the next load. The diarizer is a
 [catalog](../guides/models.md#the-catalog) entry of its own, `kind: diarizer`
 (one GGUF, no sidecar): the built-in `nemotron-3-diarization`, fetched with
 `ignis-server model download nemotron-3-diarization` like any entry, or one of
@@ -51,10 +53,12 @@ loaded by the first session that asks for speakers, about 0.2 GB of RAM for
 its F16 weights, never VRAM, and unloaded with the speech model, after
 `speech.idle_unload` seconds with no session open.
 
-What it costs, measured on a 297 s conversation at the live geometry: on a
-10-core i9-10900K with 9 threads a 2 s step takes about 0.33 s (0.45 s with
-its speaker cache full), and beside `qwen3-asr-1.7b` transcribing the same
-session at real time the speakers stayed within 3.6 s of the audio; on 4
+What it costs, measured at the live geometry: on a 10-core i9-10900K a 2 s
+step takes about 0.63 s on its 3 threads alone (0.88 s on 2, 0.56 s on 4), and
+on a 297 s conversation with `qwen3-asr-1.7b` transcribing the same session at
+real time, 0.73 s on average, the speakers staying within 3.9 s of the audio,
+the commits no slower than with the diarizer sharing the speech model's
+threads and the live text as frequent as without speakers; on 4
 cores of a Linux container, the diarizer alone took 23 to 24 % of the four
 cores (3.2 to 4.1 times faster than real time), where the speech model's
 refreshes alone already fall behind. A file, at the file geometry, costs 25 to
@@ -67,6 +71,7 @@ of another family would refuse them.
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--diarizer-model` | `IGNIS_DIARIZER_MODEL` | `auto` | `auto` is the catalog's diarizer entry; a catalog id picks another; `off` turns speakers off. A text, image or speech model's id is refused, at start and by a `PATCH /v1/config`. A live change takes the next session's load. Nothing downloads by itself. |
+| `--diarizer-threads` | `IGNIS_DIARIZER_THREADS` | `auto` | The CPU threads the diarizer computes with, its own beside the speech model's; `auto` is a third of the physical cores, at least 2 (3 on a 10-core machine), counted within the CPUs the server may run on. The load reads it, so a change holds from the next one, and logs the count (`ignis.diarizer.load`). |
 | `--diarizer-min-speaker-seconds` | `IGNIS_DIARIZER_MIN_SPEAKER_SECONDS` | `2` | The seconds of speech a voice needs to be a speaker of its own; until then its speech counts for the speaker it sounds most like, so a short mistaken voice splits no utterance. 0 makes every voice a speaker at once. At 2 s a mistaken voice of a few seconds in test conversations went, and no participant of real meetings who spoke little was lost (at 5 s some were). The price: a new voice's first seconds go to someone else (a colleague who at first only says "yes, exactly" is labelled as another speaker until they have spoken this long; the run of speech that makes them a speaker becomes theirs), and when the voice changes with no pause, the utterance before the change ends only once the new voice is a speaker. |
 | `--diarizer-live-speaker-cache-frames`, `-live-fifo-frames`, `-live-chunk-frames`, `-live-right-context-frames`, `-live-update-period-frames` | `IGNIS_DIARIZER_LIVE_*` | `264`, `264`, `25`, `4`, `222` | The live geometry (`ignis.diarization: "live"`), in 80 ms frames: the speaker cache, the FIFO, the chunk a step scores, the look-ahead it waits for, and the frames an overflowing FIFO gives the cache. The chunk and the look-ahead are the latency, 2.32 s; this geometry measured a better DER than the card's low-latency one at 2.6 times less CPU. |
 | `--diarizer-file-speaker-cache-frames`, ... | `IGNIS_DIARIZER_FILE_*` | `264`, `40`, `340`, `40`, `300` | The file geometry (`"file"`), the card's offline one, for audio fed faster than real time: 30.4 s of latency, at 25 to 47 times less CPU than real time. |

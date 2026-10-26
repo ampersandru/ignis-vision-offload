@@ -33,7 +33,7 @@ use std::sync::{Arc, OnceLock};
 use crate::config::schema::{DiarizerGroup, SpeechGroup};
 use crate::download::Catalog;
 use executor::{DiarizerExecutor, LoadSettings, NoDiarizer, NoExecutor, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession};
-use worker::{Full, Gauges, Job, Worker};
+use worker::{DiarizerWorker, Full, Gauges, Job, Worker};
 
 /// The `Retry-After` of a refused Realtime session: room frees when a person
 /// ends a dictation, which no clip length estimates, so the shortest wait.
@@ -77,14 +77,18 @@ pub struct DiarizerAvailability {
 /// The speech model's slot.
 pub struct Speech {
     executor: Arc<dyn SpeechExecutor>,
-    /// The diarizer beside it (spec speech/08), its steps on the same worker.
+    /// The diarizer beside it (spec speech/08), its units on a thread of its
+    /// own.
     diarizer: Arc<dyn DiarizerExecutor>,
     models: Option<SpeechModels>,
     gauges: Arc<Gauges>,
     /// Started by the first request: a server that is never asked for a
     /// transcription never has the thread.
     worker: OnceLock<Worker>,
-    /// The next Realtime session's key: its lane on the worker.
+    /// The diarizer's thread, started by the first session that asks for
+    /// speakers: a server never asked for them never has it.
+    diarizer_worker: OnceLock<DiarizerWorker>,
+    /// The next Realtime session's key: its lane on each worker.
     next_session: AtomicU64,
     /// `speech.idle_unload` in seconds as the live configuration last said:
     /// the worker's idle clock reads it ([`Speech::live_changed`]).
@@ -106,6 +110,7 @@ impl Speech {
             models,
             gauges: Arc::default(),
             worker: OnceLock::new(),
+            diarizer_worker: OnceLock::new(),
             next_session: AtomicU64::new(0),
             idle_unload_secs: Arc::new(AtomicU64::new(u64::from(SpeechGroup::default().idle_unload))),
         }
@@ -254,8 +259,7 @@ impl Speech {
             }
         }
         self.gauges.publish();
-        // Two lanes a session: its speech units' and its speakers'.
-        Ok(SessionGuard { speech: Arc::clone(self), key: self.next_session.fetch_add(2, Ordering::SeqCst) })
+        Ok(SessionGuard { speech: Arc::clone(self), key: self.next_session.fetch_add(1, Ordering::SeqCst) })
     }
 
     /// The Realtime sessions open now.
@@ -275,12 +279,12 @@ impl Speech {
         self.worker().submit_interactive(session.key, task);
     }
 
-    /// Queue a unit of an open Realtime session's speakers (spec speech/08):
-    /// in a lane of their own, which takes its turn with the session's speech
-    /// units one unit each, so a diarizer step waits for at most one unit of
-    /// the speech model's, never for a whole commit (acceptance 11).
-    pub fn submit_speakers(&self, session: &SessionGuard, task: worker::Task) {
-        self.worker().submit_interactive(session.key + 1, task);
+    /// Queue a unit of an open Realtime session's speakers (spec speech/08)
+    /// on the diarizer's own thread, in turn with the other sessions': it
+    /// never waits for a unit of the speech model's, nor holds one back.
+    /// Starts the thread.
+    pub fn submit_diarizer(&self, session: &SessionGuard, task: worker::Task) {
+        self.diarizer_worker.get_or_init(DiarizerWorker::start).submit(session.key, task);
     }
 }
 
@@ -370,7 +374,7 @@ pub(crate) fn open_loaded(executor: &dyn SpeechExecutor, files: &SpeechFiles, lo
 }
 
 /// An open Realtime session's place among `speech.max_sessions`, and its
-/// lane on the worker.
+/// lane on each worker.
 pub struct SessionGuard {
     speech: Arc<Speech>,
     key: u64,

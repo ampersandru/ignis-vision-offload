@@ -1,10 +1,11 @@
-//! The live text of a long monologue with speakers on (spec speech/08, decision D6): one voice for
-//! minutes, fed through `GET /v1/realtime?intent=transcription` at real-time pace with the provisional
-//! tail, once with `session.ignis.diarization: "live"` and once without, on the real executor
-//! and the real diarizer. A diarizer step that falls due stops the refresh under way; on a long
-//! item a refresh can take longer than the steps leave it, and then the live text would stand
-//! still until `completed`. Per item it prints the refreshes the client saw and the longest wait
-//! between two, with speakers and without. `--ignored`: it reads the study disk
+//! The live text of a long monologue with speakers on (spec speech/08): one voice for minutes, fed
+//! through `GET /v1/realtime?intent=transcription` at real-time pace with the provisional tail,
+//! once with `session.ignis.diarization: "live"` and once without, on the real executor and the
+//! real diarizer. The diarizer computes on a thread of its own, so its steps should leave the
+//! refreshes about as they are without speakers. In the first design (decision D6) a step that
+//! fell due stopped the refresh under way; on a long item a refresh took longer than the steps
+//! left it, and the live text stood still until `completed`. Per item it prints the refreshes the
+//! client saw and the longest wait between two, with speakers and without. `--ignored`: it reads the study disk
 //! (`IGNIS_SPEECH_STUDY`): the converted Qwen3-ASR pair, the diarizer's F16 GGUF and a long item of
 //! `tools/speech-diarizer/long_items.py` (`IGNIS_LONG_ITEM`, default `125192-240`). A timing run:
 //! nothing else may be using the CPU.

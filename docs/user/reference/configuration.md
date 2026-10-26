@@ -1501,6 +1501,19 @@ The audio a Realtime session may hold that is not computed yet, in seconds: rece
 
 The diarizer: `auto` (the catalog's diarizer entry), a catalog entry's id, or `off`. It is enabled when its files are on disk; nothing is ever downloaded by itself. A text, image or speech model's id is refused. Loaded by the first session that asks for speakers, unloaded with the speech model.
 
+### `diarizer.threads`
+
+| | |
+|---|---|
+| Flag | `--diarizer-threads` |
+| Env var | `IGNIS_DIARIZER_THREADS` |
+| Kind | `count\|auto` |
+| Default | `auto` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The threads the diarizer computes with, a pool of its own beside the speech model's, so its steps never wait for the speech model's work: `auto` is a third of the physical cores, at least 2 (3 on a 10-core machine), counted within the CPUs the server may run on. Read by the load, so a change holds from the next one; the load logs the count (`ignis.diarizer.load`).
+
 ### `diarizer.min_speaker_seconds`
 
 | | |

@@ -54,13 +54,24 @@ spec settles a protocol detail the grill left to it (Q118), it says `(spec 08)`.
 - **The Server view** shows the diarizer beside the speech model: its id, whether it is loaded, and its reason when
   unavailable.
 
-### On the worker (Q113)
+### On the worker (Q113; amended by the owner, 2026-10-26)
 
-- The diarizer runs on the speech model's worker, as one more kind of interactive unit in its session's lane: one
-  step of its geometry.
-- **Its steps rank below the speech model's windows and commits and above its partials.** A partial is already
-  skipped, never queued, while a window is pending (spec 03). It is skipped, too, while a diarizer step of its
-  session is pending. On a slow CPU the partials thin out first, and the labels and commits keep their pace.
+- **The diarizer runs on a thread of its own, beside the speech model's worker**, with a pool of its own:
+  `diarizer.threads` threads (`auto`: a third of the physical cores, at least 2; 3 on the i9), created when the
+  diarizer loads and dropped when it unloads, computing with the speech executor's ISA. The one thread serves every
+  session's speakers' units (a stream's open, its steps, its tails), the sessions taking turns a unit each, as the
+  speech worker serves its lanes.
+- **Its steps never wait for the speech model's units and never stop them.** A partial is skipped, never queued, while
+  a unit of its session's speech is pending on the speech worker (spec 03), never for a diarizer step, which on its
+  own thread is pending almost always while audio flows.
+- **Not the speech model's pool.** Its dispatch takes one lock per op: a Qwen3-ASR decode token is about 200 small
+  ops, a diarizer op on a live step's 557 rows takes 2-5 ms, so a shared pool would put a diarizer op in front of
+  every one of the decoder's.
+- The owner's choice, on one condition, confirmed by the measurements (As built): the diarizer's thread must not
+  hurt the other critical paths, the commit's latency above all, the live text and the other sessions. As first
+  decided it ran on the speech model's worker, its steps ranked below the windows and commits and above the partials,
+  and a step that fell due stopped the refresh under way; on a long monologue the live text then stood still for the
+  whole item (As built).
 - It reads the session's 16 kHz stream after resampling, the same samples the VAD reads, from the session's first.
   It never reads the leading silence that only the speech model is fed.
 
@@ -161,6 +172,7 @@ spec settles a protocol detail the grill left to it (Q118), it says `(spec 08)`.
 | field | applicable to | default | from |
 |---|---|---|---|
 | `diarizer.model` | every diarizer | `auto` (the catalog's diarizer entry); an id; `off` | Q116, Q118 |
+| `diarizer.threads` | every diarizer | `auto` (a third of the physical cores, at least 2); a count | owner, 2026-10-26 |
 | `diarizer.min_speaker_seconds` | every diarizer | measured on the twenty conversations; `0` off | Q108, Q116 |
 | the live geometry (5 fields: speaker cache, FIFO, chunk, right context, update period) | `Nemotron3Diarization` | 264 / 264 / 25 / 4 / 222 frames | Q106 |
 | the file geometry (the same 5 fields) | `Nemotron3Diarization` | 264 / 40 / 340 / 40 / 300 frames | Q106 |
@@ -206,8 +218,11 @@ The constants' names are the checkpoint's own keys.
    that does not opt in gets none (Q111).
 9. `session.ignis.diarization` is honoured on `server_vad` sessions and refused on manual commit. With the diarizer
    unavailable it is refused with the reason, and the session stays open. `session.updated` declares it (Q111).
-10. The diarizer's steps rank below windows and commits and above partials. A test with a slow fake executor shows
-    the partials thinning while every diarizer step and commit is served (Q113).
+10. The diarizer runs on a thread and a pool of its own: its steps never wait for the speech model's units and never
+    stop them, and a partial is never skipped for a step. A test with slow fakes shows both progressing: a step runs
+    whole inside a refresh, which no step stops, refreshes begin while a step runs, and every diarizer step and commit
+    is served (Q113; amended by the owner, 2026-10-26: the first wording ranked the steps above the partials on the
+    speech model's worker, and the partials thinned out).
 11. On the i9, at the live geometry, with Qwen3-ASR `qwen3-asr-1.7b` live in the same session, a 5-minute
     conversation fed at real time keeps the diarizer within its geometry's latency plus 2 s: every frame's speaker
     probabilities come within that of the frame's first sample (the session log line's `lag_max_ms`). The 4-core
@@ -257,7 +272,8 @@ The constants' names are the checkpoint's own keys.
   sentence.
 - `crates/server/src/speech/realtime/mod.rs`: the cuts, the events, the per-item speaker, the text rule of a diarized
   session, the queue limit.
-- `crates/server/src/speech/worker.rs`: the diarizer's unit and its rank.
+- `crates/server/src/speech/worker.rs`: the diarizer's own thread (`DiarizerWorker`); `crates/server/src/speech/cpu.rs`:
+  its pool.
 - `crates/server/src/config/schema.rs`: the `diarizer` group and the `speech` fields. `crates/core/src/compute.rs`:
   `ModelFamily::Nemotron3Diarization`. `crates/server/src/download/catalog.rs` and the catalog file: the entry and
   `kind: diarizer`.
@@ -350,7 +366,7 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
     compute, as a commit does (Q79). The refreshes thin out on long items. (Decision D6.) **Superseded, see below:**
     measured on the idle i9 with a long monologue (`speech_diarizer_refreshes`), the refreshes did not thin out but
     stopped: 0 in items of 137 and 147 s with speakers, against 26-32 without (the live text still for the whole
-    item); the owner chose a diarizer thread of its own (2026-10-26).
+    item); the owner chose a diarizer thread of its own (2026-10-26), [below](#the-diarizers-own-thread-ac-10-11).
   - An item's speaker can come later than the bound by design: a cut at a change reaches back to where the new
     speaker's run began, up to `diarizer.min_speaker_seconds` before. The session's log line's `lag_max_ms` is the
     diarizer's pace, not that.
@@ -360,6 +376,40 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
   beside it was not made there: Qwen3-ASR's live refreshes alone do not keep up on that machine (spec 01).
 - **RAM:** the F16 weights, 199 MB, mapped; a stream holds its speaker cache and FIFO (528 rows of 512, 1 MB) and the
   samples its next step reads; a diarized item keeps its audio for a cut (64 KB/s, 7.7 MB at the 120 s guard).
+
+### The diarizer's own thread (AC 10, 11)
+
+The owner's choice of 2026-10-26, on the condition that it hurt neither the commit's latency, nor the live text, nor
+the other sessions; built on branch `speech-diarizer-thread` and confirmed by the measurements below.
+
+- **Built:** one thread, `ignis-diarizer` (`DiarizerWorker`), serves every session's speakers' units in lanes that take
+  turns a unit each; `CpuDiarizer` loads the weights with a pool of `diarizer.threads` (`ignis-diarizer-<i>`), dropped
+  with them, and the speech executor's ISA. A session's stream sits behind a lock of its own: a speech unit holds the
+  session's slot for its whole call, so a shared lock would have put the steps back behind the refreshes. The
+  preemption (D6), the speakers' lane on the speech worker and the refresh gate's count of the steps are gone; the
+  queue limit, the tail on a stall, the cuts and the log line are unchanged.
+- **`diarizer.threads`.** conv01 (198 s) through `examples/diarize`, live, F16, the i9 idle: 2 threads 884 ms a step
+  (median; 1,169 ms max), 2.4x real time; 3 threads 629 ms (1,102), 3.3x; 4 threads 564 ms (1,473), 3.5x. The third
+  thread adds 38 %, the fourth 8 %: `auto` is a third of the physical cores, at least 2, so 3 on the i9's 10.
+- **Before and after**, the same i9 (`9585b5c5`, the first design with the leg's commit timing, against this
+  build), each leg run with no `cargo`, `rustc` or `link` in `tasklist` and the desktop's own 7-22 % of the 20 logical
+  CPUs (`typeperf`), nothing else running:
+
+  | leg | before | after |
+  |---|---|---|
+  | `speech_diarizer_refreshes`, 125192-240: refreshes in the two long items (130-147 s), speakers off | 28, 24 (still at most 19.0, 14.9 s) | 29, 27 (14.1, 12.9 s) |
+  | the same, speakers `live` | 0, 0 (136.2, 145.3 s) | 32, 24 (13.9, 15.0 s) |
+  | AC 11, conv07: `lag_max_ms` (bound 4,320) | 3,858 | 3,946 |
+  | AC 11: `committed` to `completed`, 38 items: median, p90, max | 2,240, 4,077, 5,920 ms | 2,201, 2,977, 3,513 ms |
+  | AC 11: a step, mean and max | 353, 528 ms (the speech model's 9 threads) | 732, 1,634 ms (3 of its own) |
+  | spec 03's dictation leg, d10 (67 s), no speakers: commit to `completed`, two runs | 2,678, 2,726 ms | 2,506, 2,678 ms |
+
+  With speakers the live text keeps the pace it has without them; the commits are no slower, and their tail is
+  shorter, since a step no longer takes a turn in front of them; a step takes twice as long on 3 threads beside the
+  decode, and the speakers still keep within AC 11's bound; a session without speakers sees no change (no pool exists
+  until the diarizer loads). The dictation's 2,000 ms of spec 03's AC 13 failed on this box before as after: the leg's
+  own figure, unchanged by this.
+- The 4-core container was not measured with the thread: there `auto` is 2 threads beside the speech model's 3.
 
 ### The text in a session with speakers (AC 7)
 
