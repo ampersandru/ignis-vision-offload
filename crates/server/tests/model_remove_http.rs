@@ -462,7 +462,11 @@ async fn a_removal_is_refused_with_a_reason_and_deletes_nothing() {
     assert_eq!((status, code.as_str()), (StatusCode::FORBIDDEN, "removal_disabled"), "{message}");
     assert!(message.contains("download.from_ui is false"), "{message}");
     assert_eq!(files_in(&dir).len(), 2, "nothing deleted: {:?}", files_in(&dir));
-    assert!(!files_in(&dir).iter().any(|name| name.starts_with("acme-none")), "nothing created for an entry not there");
+    // The refusals come before the entry's lock is taken: not even its `.lock` file is created.
+    let none_lock = ignis_server::download::EntryLock::path(models.catalog.entry("acme-none").unwrap(), &dir);
+    assert!(!none_lock.exists(), "nothing created for an entry not there: {}", none_lock.display());
+    let here_lock = ignis_server::download::EntryLock::path(models.catalog.entry("acme-here").unwrap(), &dir);
+    assert!(!here_lock.exists(), "nor for one whose removal was refused: {}", here_lock.display());
 
     let air_gapped = server_on(&loader, "mock-a", models, &config(&repo, &["--download-enabled", "false"])).app();
     let (status, removed) = remove(&air_gapped, "acme-here").await;
