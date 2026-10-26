@@ -788,8 +788,9 @@ config_group! {
         /// How long past `speech.max_utterance_seconds` the length guard looks
         /// for a pause, in milliseconds, before it cuts where the audio is.
         /// The search looks forward only, so no text already sent is past the
-        /// cut.
-        utterance_cut_search_ms: Millis = 2000, between(0, 60_000), ALL, [Visible, Patchable];
+        /// cut. In fluent speech the VAD hears a pause within 10 s 95 times in
+        /// 100 (spec speech/08, As built).
+        utterance_cut_search_ms: Millis = 10_000, between(0, 60_000), ALL, [Visible, Patchable];
         /// The audio a Realtime session may hold that is not computed yet, in
         /// seconds: received, and still waiting for the speech model's windows
         /// or the diarizer's steps. An append past it is refused with an
@@ -820,7 +821,9 @@ config_group! {
         /// its speech counts for the speaker it sounds most like, so a short
         /// mistaken voice splits no utterance. The session's first voice is a
         /// speaker at once. 0 makes every voice a speaker at its first frame.
-        min_speaker_seconds: Decimal = 6_000, decimal(0.0, 60.0), ALL, [Visible, Patchable];
+        /// At 5 s the count of speakers was right in 19 of the twenty
+        /// conversations, against 15 with 0 (spec speech/08, As built).
+        min_speaker_seconds: Decimal = 5_000, decimal(0.0, 60.0), ALL, [Visible, Patchable];
         /// The live geometry's speaker cache, in 80 ms frames: what the
         /// diarizer keeps of every speaker heard so far.
         live_speaker_cache_frames: Frames = 264, between(8, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
@@ -1066,7 +1069,7 @@ mod tests {
             group.speaker_cache_silence_frames_per_speaker,
         ];
         assert_eq!(constants, [None; 6], "auto: the checkpoint's own");
-        assert_eq!((group.model.as_str(), group.min_speaker_seconds), ("auto", 6_000));
+        assert_eq!((group.model.as_str(), group.min_speaker_seconds), ("auto", 5_000));
         assert_eq!(field("diarizer", "weak_boost_rate").unwrap().validator.describe(), "0..=4");
     }
 

@@ -191,8 +191,10 @@ The constants' names are the checkpoint's own keys.
    `--ignored` leg), the port's DER at collar 0.25 is within +0.5 pt of NeMo-Speech.cpp's at the same geometry, at
    the live and the file geometries (Q114).
 4. A small public real-meeting set (AMI, English) is scored and reported in "As built"; it does not gate (Q114).
-5. `diarizer.min_speaker_seconds`'s default is the value that minimizes DER on the twenty conversations
-   with no conversation's count of speakers worse than with `0`. `0` turns the rule off (Q108, Q116).
+5. `diarizer.min_speaker_seconds`'s default is the value that makes the count of speakers right in the most of the
+   twenty conversations, its DER within +0.5 pt of `0`'s, with no conversation's count worse than with `0`. `0` turns
+   the rule off (Q108, Q116). (Amended by the owner, 2026-10-26: the first wording, the value that minimizes DER,
+   picked `0`, since the rule only adds confusion; the rule is for the ghost labels.)
 6. A speaker change inside an item ends it at the change. The events are `speech_stopped`, `committed` and
    `speech_started`, with the times at the change. The new item has no prefix padding and has the leading silence
    (Q107, spec 08).
@@ -307,7 +309,7 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
   0 s 4.70 % (speaker count right in 75 % of the conversations), 1-2 s 4.71 % (80 %), 3 s 4.91 % (85 %), 5 s 5.06 %
   (95 %), 6 s 5.44 % (95 %), 8 s 6.10 % (90 %, conv17's count worse than with 0); file 0 s 5.29 % (80 %) to 6 s 6.05 %
   (90 %). The rule only adds confusion (a channel's frames before it is established count for another), so the
-  letter of AC 5 picks 0; the default awaits the owner (decision D1: the letter of AC 5 gives 0; recommended 5 s).
+  letter of AC 5 picks 0; **the default is 5 s** (the owner, 2026-10-26, with AC 5 amended: 95 % of the counts right, +0.36 pt of DER).
 
 ### Cost (AC 2, 11)
 
@@ -359,7 +361,7 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
   120 s and 0.49 GB at 240 s per session. **`speech.max_utterance_seconds` stays 120.**
 - **The cut search:** from any point of these speakers' speech the wait to the first frame under the VAD's threshold
   is p50 1.9-2.8 s, p90 5.0-8.2 s, p95 6.6-10.0 s, max 13-21 s: Silero stays over 0.5 across the gaps between the
-  words of fluent speech. `speech.utterance_cut_search_ms`'s default awaits the owner (decision D2; recommended 10,000 ms, the p95).
+  words of fluent speech. **`speech.utterance_cut_search_ms` defaults to 10,000 ms** (the owner, 2026-10-26): the p95 of both speakers, so 95 % of the cuts fall in a dip and an item runs at most N + 10 s.
 
 ### The server (built in slices E-G, decisions the spec left open)
 

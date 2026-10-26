@@ -2850,12 +2850,12 @@ fn a_speech_field_past_its_bounds_is_refused_naming_it() {
     assert!(err.contains("--speech-compat-names") && err.contains("whitespace"), "{err}");
 }
 
-/// Spec speech/08: the length guard's defaults (120 s, then 2 s of search)
-/// and the queue limit's (120 s, above spec 07's client pace of 60).
+/// Spec speech/08: the length guard's defaults (120 s, then 10 s of search,
+/// As built) and the queue limit's (120 s, above spec 07's client pace of 60).
 #[test]
 fn the_length_guard_and_the_queue_limit_default_to_the_specs() {
     let speech = config(&[]).settings().speech.clone();
-    assert_eq!((speech.max_utterance_seconds, speech.utterance_cut_search_ms, speech.max_queued_audio_seconds), (120, 2000, 120));
+    assert_eq!((speech.max_utterance_seconds, speech.utterance_cut_search_ms, speech.max_queued_audio_seconds), (120, 10_000, 120));
 }
 
 // ── the diarizer's group (spec speech/08, its configuration table) ──
@@ -2905,7 +2905,7 @@ fn every_diarizer_field_resolves_from_flag_env_and_file_by_precedence() {
     let diarizer = crate::Live::of(&config(&["--diarizer-min-speaker-seconds", "2.5", "--diarizer-strong-boost-rate", "0.5"])).diarizer;
     assert_eq!((diarizer.min_speaker_seconds, diarizer.strong_boost_rate), (2_500, Some(500)));
     let shown = config(&[]).settings().render();
-    assert_eq!((shown["diarizer"]["min_speaker_seconds"].clone(), shown["diarizer"]["weak_boost_rate"].clone()), (serde_json::json!(6.0), serde_json::json!("auto")));
+    assert_eq!((shown["diarizer"]["min_speaker_seconds"].clone(), shown["diarizer"]["weak_boost_rate"].clone()), (serde_json::json!(5.0), serde_json::json!("auto")));
 }
 
 /// Spec speech/08, AC 14: an override of a speaker cache constant is
