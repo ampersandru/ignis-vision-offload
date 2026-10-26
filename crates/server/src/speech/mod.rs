@@ -160,6 +160,12 @@ impl Speech {
         self.executor.loaded_files()
     }
 
+    /// The GGUF the diarizer has loaded now, `None` while none is: unloaded
+    /// with the speech model, whatever `diarizer.model` names since.
+    pub fn diarizer_loaded(&self) -> Option<PathBuf> {
+        self.diarizer.loaded_weights()
+    }
+
     /// Publish the worker's gauges to `metrics` (`Server::with_metrics`).
     pub fn attach_metrics(&self, metrics: Arc<crate::metrics::Metrics>) {
         self.gauges.attach(metrics);

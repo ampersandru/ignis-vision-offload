@@ -203,8 +203,8 @@ the model band
 
 - `409 model_in_use`: the entry is the model loaded (also unloaded while idle,
   or served from its files under another id), the one a load is loading, the
-  speech model the speech worker has loaded, or the one the server is
-  downloading. Load another model first, **Cancel** its download, or wait for
+  speech model or the diarizer the speech worker has loaded, or the one the
+  server is downloading. Load another model first, **Cancel** its download, or wait for
   the speech worker to unload it (`--speech-idle-unload` seconds after its last
   transcription).
 - `409 download_locked`: `ignis-server model download`, or another server on

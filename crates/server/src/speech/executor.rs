@@ -259,6 +259,11 @@ pub trait DiarizerExecutor: Send + Sync {
     fn id(&self) -> Option<String> {
         None
     }
+    /// The GGUF the diarizer has loaded now, `None` while none is: what a
+    /// removal of its catalog entry must leave alone (GitHub #380).
+    fn loaded_weights(&self) -> Option<PathBuf> {
+        None
+    }
     /// The live `diarizer.*` settings changed: a diarizer that resolves its
     /// model from them takes the new one for the next stream.
     fn follow(&self, _: &crate::config::schema::DiarizerGroup) {}
@@ -299,6 +304,8 @@ pub struct FakeDiarizer {
     pub unavailable: Mutex<Option<String>>,
     pub fail_open: AtomicBool,
     pub loaded: AtomicBool,
+    /// What [`DiarizerExecutor::loaded_weights`] names while it is loaded.
+    pub weights: Mutex<Option<PathBuf>>,
     pub step_delay: Arc<Mutex<Duration>>,
     pub opened: Mutex<Vec<StreamOpen>>,
     pub calls: Arc<Mutex<Vec<String>>>,
@@ -325,6 +332,7 @@ impl FakeDiarizer {
             unavailable: Mutex::new(None),
             fail_open: AtomicBool::new(false),
             loaded: AtomicBool::new(false),
+            weights: Mutex::new(None),
             step_delay: Arc::new(Mutex::new(Duration::ZERO)),
             opened: Mutex::new(Vec::new()),
             calls: Arc::new(Mutex::new(Vec::new())),
@@ -428,6 +436,10 @@ impl DiarizerExecutor for FakeDiarizer {
 
     fn id(&self) -> Option<String> {
         Some("fake-diarizer".to_owned())
+    }
+
+    fn loaded_weights(&self) -> Option<PathBuf> {
+        self.loaded.load(Ordering::SeqCst).then(|| self.weights.lock().unwrap().clone()).flatten()
     }
 }
 

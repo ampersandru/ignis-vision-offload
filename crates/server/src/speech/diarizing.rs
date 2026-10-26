@@ -127,6 +127,10 @@ impl DiarizerExecutor for CatalogDiarizer {
     fn is_loaded(&self) -> bool {
         self.current().as_ref().is_some_and(|(_, diarizer)| diarizer.is_loaded())
     }
+
+    fn loaded_weights(&self) -> Option<PathBuf> {
+        self.current().as_ref().filter(|(_, diarizer)| diarizer.is_loaded()).map(|(weights, _)| weights.clone())
+    }
 }
 
 #[cfg(test)]
