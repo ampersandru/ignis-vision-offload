@@ -175,18 +175,19 @@ pub struct StreamOpen {
 
 impl StreamOpen {
     /// The live geometry (`diarizer.live_*`), or the file one
-    /// (`diarizer.file_*`), with the group's constants.
-    pub fn of(group: &crate::config::schema::DiarizerGroup, file: bool) -> Self {
+    /// (`diarizer.file_*`), as the session asked, with the group's constants.
+    pub(crate) fn of(group: &crate::config::schema::DiarizerGroup, mode: super::realtime::config::Diarization) -> Self {
+        use super::realtime::config::Diarization;
         let frames = |n: u32| n as usize;
-        let geometry = match file {
-            false => Geometry {
+        let geometry = match mode {
+            Diarization::Live => Geometry {
                 speaker_cache: frames(group.live_speaker_cache_frames),
                 fifo: frames(group.live_fifo_frames),
                 chunk: frames(group.live_chunk_frames),
                 right_context: frames(group.live_right_context_frames),
                 update_period: frames(group.live_update_period_frames),
             },
-            true => Geometry {
+            Diarization::File => Geometry {
                 speaker_cache: frames(group.file_speaker_cache_frames),
                 fifo: frames(group.file_fifo_frames),
                 chunk: frames(group.file_chunk_frames),

@@ -1457,7 +1457,7 @@ impl Connection {
             lag_max: Duration::ZERO,
             items: 0,
         });
-        self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode == Diarization::File)));
+        self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode)));
     }
 
     /// The audio the session holds that is not computed yet, each sample

@@ -8,6 +8,8 @@
 //! and v with no bias, the output with one; then a 2,048-wide MLP with the exact GELU. A final
 //! LayerNorm, a projection to 192, and a kernel-3 convolution to 8 × 192 per row upsample each row
 //! to 8 rows of 10 ms; the head (ReLU, 192 → 192, ReLU, 192 → 8) gives each its 8 speakers' logits.
+//!
+//! Provenance: the module's (`diarizer/mod.rs`, ADR 0051).
 
 use std::path::Path;
 use std::time::Instant;

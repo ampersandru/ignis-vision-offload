@@ -12,10 +12,11 @@
 //!   80 ms frame's 8 speaker probabilities, the speakers numbered in the order they first spoke.
 //!
 //! Provenance (ADR 0051, an adapted op): the graph and its streaming state are ported from the
-//! checkpoint's Transformers code, `src/transformers/models/nemotron3_diarization/` of
-//! transformers 5.20.2 (Apache-2.0, Copyright 2026 The HuggingFace Inc. team), which restates
-//! NVIDIA NeMo's streaming Sortformer (Apache-2.0, Copyright NVIDIA CORPORATION), and checked
-//! against that code running the checkpoint `nvidia/Nemotron-3-Diarization` @ f667ed73
+//! checkpoint's Transformers code (<https://github.com/huggingface/transformers>, tag v5.20.2,
+//! commit 18329f10): `src/transformers/models/nemotron3_diarization/`, which restates NVIDIA NeMo's
+//! streaming Sortformer (<https://github.com/NVIDIA/NeMo>). Both are Apache-2.0, Copyright 2026 The
+//! HuggingFace Inc. team and Copyright NVIDIA CORPORATION. The port is checked against that code
+//! running the checkpoint `nvidia/Nemotron-3-Diarization` @ f667ed73
 //! (`tools/speech-diarizer/record.py`). The weights are not in the tree: they keep their
 //! OpenMDW-1.1 licence beside them. The licences are in `NOTICE`.
 
@@ -57,11 +58,6 @@ impl Geometry {
     pub const LIVE: Geometry = Geometry { speaker_cache: 264, fifo: 264, chunk: 25, right_context: 4, update_period: 222 };
     /// The card's offline geometry, for a stream fed faster than real time.
     pub const FILE: Geometry = Geometry { speaker_cache: 264, fifo: 40, chunk: 340, right_context: 40, update_period: 300 };
-
-    /// How long a frame waits for its step, at most: the chunk and its look-ahead.
-    pub fn latency_ms(&self) -> u64 {
-        (self.chunk + self.right_context) as u64 * 80
-    }
 }
 
 /// The speaker cache's constants (the checkpoint's `streaming_config`).

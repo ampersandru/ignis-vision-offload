@@ -13,6 +13,9 @@
 //! - An item's speaker is the established channel that holds most of its speech frames.
 //! - A change: inside an item, the first speech frame whose speaker is not the item's first
 //!   speech frame's. The item ends there.
+//!
+//! Provenance: the module's (`diarizer/mod.rs`, ADR 0051), for the checkpoint's line between speech
+//! and not; the rules are spec 08's.
 
 use super::{Probs, SPEAKERS};
 
