@@ -208,7 +208,13 @@ describe("the model's kind (spec image-model/05)", () => {
       status: "serving",
       speech: { available: true },
     };
-    expect(await readModel(answering(speaking))).toEqual({ state: "ready", id: "qwen3.8-27b", contextLimit: 786432, kind: "text", speech: { available: true } });
+    expect(await readModel(answering(speaking))).toEqual({
+      state: "ready",
+      id: "qwen3.8-27b",
+      contextLimit: 786432,
+      kind: "text",
+      speech: { available: true, id: "qwen3-asr-1.7b" },
+    });
     const off = { data: [speaking.data[0]], status: "serving", speech: { available: false, reason: "the speech model is turned off (`speech.model` is `off`)" } };
     expect(await readModel(answering(off))).toMatchObject({ speech: { available: false, reason: "the speech model is turned off (`speech.model` is `off`)" } });
     // The speech routes serve through a switch, so its availability is read in every status.
@@ -216,6 +222,23 @@ describe("the model's kind (spec image-model/05)", () => {
     expect(await readModel(answering(switching))).toMatchObject({ state: "switching", speech: { available: false } });
     // An older server has no speech object: nothing is said.
     expect(await readModel(answering({ data: [speaking.data[0]] }))).not.toHaveProperty("speech");
+  });
+
+  it("reads the diarizer beside the speech model: its id, whether it is loaded, and why it cannot serve (spec speech/08)", async () => {
+    saveKey("sk");
+    const text = { id: "qwen3.8-27b", active: true, kind: "text", max_model_len: 786432 };
+    const diarizer = { id: "nemotron-3-diarization", loaded: true, available: true };
+    const loaded = { data: [text], status: "serving", speech: { available: true, diarizer } };
+    expect(await readModel(answering(loaded))).toMatchObject({ speech: { diarizer: { id: "nemotron-3-diarization", loaded: true, available: true } } });
+    const missing = "nemotron-3-diarization is not on disk: `ignis-server model download nemotron-3-diarization`";
+    const absent = { ...loaded, speech: { available: true, diarizer: { id: "nemotron-3-diarization", loaded: false, available: false, reason: missing } } };
+    expect(await readModel(answering(absent))).toMatchObject({ speech: { diarizer: { id: "nemotron-3-diarization", loaded: false, available: false, reason: missing } } });
+    // `off` names no id.
+    const off = { ...loaded, speech: { available: true, diarizer: { loaded: false, available: false, reason: "turned off" } } };
+    const read = await readModel(answering(off));
+    expect(read.speech?.diarizer).toEqual({ loaded: false, available: false, reason: "turned off" });
+    // A server older than the diarizer says nothing of it.
+    expect((await readModel(answering({ ...loaded, speech: { available: true } }))).speech).not.toHaveProperty("diarizer");
   });
 
   it("lets the chat use any model but an image one, and the image view use only that", () => {

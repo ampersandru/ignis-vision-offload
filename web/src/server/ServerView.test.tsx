@@ -94,6 +94,22 @@ describe("ServerView: the model band", () => {
     expect(html).toContain("Partly downloaded, 6 GiB of 18.07 GiB");
   });
 
+  // Spec speech/08: the diarizer beside the speech model, its id, whether it
+  // is loaded, and its reason when unavailable.
+  it("shows the speech model and the diarizer beside it, whether the diarizer is loaded, and why either cannot serve", () => {
+    const diarizer = { id: "nemotron-3-diarization", loaded: false, available: true };
+    const html = render({}, { ...ready, speech: { available: true, id: "qwen3-asr-1.7b", diarizer } });
+    expect(html).toMatch(/>Speech<\/dt>.*qwen3-asr-1\.7b.*Available/);
+    expect(html).toMatch(/>Diarizer<\/dt>.*nemotron-3-diarization.*Not loaded/);
+    expect(render({}, { ...ready, speech: { available: true, id: "qwen3-asr-1.7b", diarizer: { ...diarizer, loaded: true } } })).toMatch(/nemotron-3-diarization.*>Loaded</);
+    const missing = "nemotron-3-diarization is not on disk: `ignis-server model download nemotron-3-diarization`";
+    const unavailable = render({}, { ...ready, speech: { available: false, reason: "the speech model is turned off", diarizer: { ...diarizer, available: false, reason: missing } } });
+    expect(unavailable).toContain("Speech: the speech model is turned off");
+    expect(unavailable).toContain(`Diarizer: ${missing}`);
+    // An older server reports neither.
+    expect(render()).not.toContain(">Diarizer<");
+  });
+
   // GitHub #376: a download from the page, followed on its row.
   it("follows a running download on its row, with its bytes and speed, and keeps every other Download out of reach", () => {
     const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, on_disk: "partial" as const, download: "running" as const, bytes_on_disk: 1.5 * 1024 ** 3 } : r));

@@ -1,4 +1,4 @@
-import { canSend, loadUnderWay, type ModelState } from "../api/model.ts";
+import { canSend, loadUnderWay, type ModelState, type SpeechStatus } from "../api/model.ts";
 import { formatBytes, formatSeconds } from "../monitor/format.ts";
 import { type CatalogRow, unavailableReason } from "./routes.ts";
 
@@ -95,6 +95,36 @@ export function rowAction(row: CatalogRow, model: ModelState, gate: PageGate = {
 /** The family the loaded model runs as (its scope name), from the catalog's loaded row. */
 export function runningFamily(catalog: CatalogRow[] | null): string | null {
   return catalog?.find((row) => row.loaded)?.family ?? null;
+}
+
+/** A model loaded beside the one that serves: its id, its state, and why it cannot serve while it cannot. */
+export type SpeechFigure = { label: string; value: string; state: string; dot: string; reason?: string };
+
+/**
+ * The speech model and the diarizer beside it (spec speech/08), from `GET /v1/models`' `speech`: no row of the
+ * catalog loads either, so the band says what they are and whether they can serve. An older server reports neither,
+ * or no diarizer.
+ */
+export function speechFigures(speech: SpeechStatus | undefined): SpeechFigure[] {
+  if (!speech) return [];
+  const reason = (text: string | undefined) => (text ? { reason: text } : {});
+  const figures: SpeechFigure[] = [
+    speech.available
+      ? { label: "Speech", value: speech.id ?? "Available", state: "Available", dot: "var(--good)" }
+      : { label: "Speech", value: "Unavailable", state: "Unavailable", dot: "var(--ash)", ...reason(speech.reason) },
+  ];
+  const diarizer = speech.diarizer;
+  if (diarizer) {
+    const value = diarizer.id ?? "None";
+    figures.push(
+      !diarizer.available
+        ? { label: "Diarizer", value, state: "Unavailable", dot: "var(--ash)", ...reason(diarizer.reason) }
+        : diarizer.loaded
+          ? { label: "Diarizer", value, state: "Loaded", dot: "var(--good)" }
+          : { label: "Diarizer", value, state: "Not loaded", dot: "var(--ash)" },
+    );
+  }
+  return figures;
 }
 
 /** Whole seconds since a switch was first seen: `12 s`, `1m 12s`. */

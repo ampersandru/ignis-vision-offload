@@ -480,3 +480,7 @@ the other sessions; built on branch `speech-diarizer-thread` and confirmed by th
   and with it the old weights and their pool, until it ends. Meanwhile `GET /v1/models` reads the new diarizer, not
   loaded, and the old one's file is not refused by a removal (on Windows the removal fails while the file is mapped).
   The owner chose (2026-10-26) to document this rare case rather than track the weights an open stream still holds.
+- **The Server view** reads the diarizer from `GET /v1/models`' `speech.diarizer`: beside the loaded model's figures,
+  **Speech** (the speech model's id, the `kind: speech` entry of `data`) and **Diarizer** (its id, `Loaded` or `Not
+  loaded`), either `Unavailable` with the server's reason under the figures. The Server view had shown no speech
+  model before, so both are new; the diarizer's catalog row keeps its Download and Remove, and no row loads either.

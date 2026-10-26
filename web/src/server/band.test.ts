@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelState } from "../api/model.ts";
-import { diskLabel, downloadCommand, elapsed, rowAction, runningFamily, sourceLabel } from "./band.ts";
+import { diskLabel, downloadCommand, elapsed, rowAction, runningFamily, sourceLabel, speechFigures } from "./band.ts";
 import { CATALOG } from "./fixture.ts";
 import type { CatalogRow } from "./routes.ts";
 
@@ -141,5 +141,37 @@ describe("elapsed", () => {
     expect(elapsed(1_000, 1_400)).toBe("0 s");
     expect(elapsed(1_000, 13_200)).toBe("12 s");
     expect(elapsed(0, 72_000)).toBe("1m 12s");
+  });
+});
+
+// Spec speech/08: the diarizer beside the speech model, its id, whether it is
+// loaded, and its reason when unavailable.
+describe("speechFigures", () => {
+  it("shows the speech model and the diarizer beside it, loaded or not", () => {
+    const diarizer = { id: "nemotron-3-diarization", loaded: true, available: true };
+    expect(speechFigures({ available: true, id: "qwen3-asr-1.7b", diarizer })).toEqual([
+      { label: "Speech", value: "qwen3-asr-1.7b", state: "Available", dot: "var(--good)" },
+      { label: "Diarizer", value: "nemotron-3-diarization", state: "Loaded", dot: "var(--good)" },
+    ]);
+    const idle = speechFigures({ available: true, id: "qwen3-asr-1.7b", diarizer: { ...diarizer, loaded: false } });
+    expect(idle[1]).toEqual({ label: "Diarizer", value: "nemotron-3-diarization", state: "Not loaded", dot: "var(--ash)" });
+  });
+
+  it("says why either cannot serve, and names no diarizer where none is named", () => {
+    const missing = "nemotron-3-diarization is not on disk: `ignis-server model download nemotron-3-diarization`";
+    const [speech, diarizer] = speechFigures({
+      available: false,
+      reason: "the speech model is turned off",
+      diarizer: { id: "nemotron-3-diarization", loaded: false, available: false, reason: missing },
+    });
+    expect(speech).toEqual({ label: "Speech", value: "Unavailable", state: "Unavailable", dot: "var(--ash)", reason: "the speech model is turned off" });
+    expect(diarizer).toEqual({ label: "Diarizer", value: "nemotron-3-diarization", state: "Unavailable", dot: "var(--ash)", reason: missing });
+    const off = speechFigures({ available: true, id: "qwen3-asr-1.7b", diarizer: { loaded: false, available: false, reason: "turned off" } });
+    expect(off[1]).toMatchObject({ value: "None", state: "Unavailable", reason: "turned off" });
+  });
+
+  it("shows nothing of what an older server does not report", () => {
+    expect(speechFigures(undefined)).toEqual([]);
+    expect(speechFigures({ available: true, id: "qwen3-asr-1.7b" })).toHaveLength(1);
   });
 });
