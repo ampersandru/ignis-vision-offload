@@ -25,14 +25,14 @@ describe("the file pace", () => {
   });
 
   it("is the viewer's pick, kept by this browser", () => {
-    chooseFilePace(30);
-    expect(storage.get(FILE_PACE_KEY)).toBe("30");
+    chooseFilePace(90);
+    expect(storage.get(FILE_PACE_KEY)).toBe("90");
     reloadFilePace();
-    expect(filePace()).toBe(30);
+    expect(filePace()).toBe(90);
   });
 
-  it("falls back to the default on a value it does not offer", () => {
-    storage.set(FILE_PACE_KEY, "45");
+  it("falls back to the default on a value it does not offer, none at the server's queue limit", () => {
+    storage.set(FILE_PACE_KEY, "120");
     reloadFilePace();
     expect(filePace()).toBe(60);
   });

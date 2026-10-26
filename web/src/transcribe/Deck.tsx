@@ -6,7 +6,8 @@ import { caption, field } from "../ui/classes.ts";
 import { IconPause, IconPlay, IconStopSquare } from "../ui/icons.tsx";
 import { Switch } from "../ui/Switch.tsx";
 import { clock } from "./export.ts";
-import type { LaneName, ListeningSource, ListeningState } from "./listening.ts";
+import type { LaneName, ListeningState } from "./listening.ts";
+import type { SourceKind } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view's deck, at the foot of the sheet as the chat's composer
@@ -16,8 +17,6 @@ import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 // progress and the time left. The hint line under it says what the server or
 // the browser refused, in spec 04's words, and before a call that headphones
 // keep the far voices out of the microphone (Q93).
-
-export type SourceKind = ListeningSource["kind"];
 
 /** Said before a call starts (Q93). */
 export const HEADPHONES = "Use headphones on a call: through speakers, the far voices reach the microphone and are transcribed twice.";

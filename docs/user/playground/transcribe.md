@@ -37,20 +37,23 @@ Pick a source in the deck, then **Start**:
 - **File**: a recording you pick (wav, mp3, ogg, m4a, webm, an mp4's audio:
   whatever the browser decodes). The browser decodes it to 16 kHz mono and
   sends it faster than real time, with a progress bar and the time left. It
-  stays ahead of its transcript by at most the **File pace** on the right (30,
-  60 or 120 seconds of audio not yet transcribed; 60 unless you pick another,
+  stays ahead of its transcript by at most the **File pace** on the right (45,
+  60 or 90 seconds of audio not yet transcribed; 60 unless you pick another,
   kept by this browser); past that it sends an utterance still under way at
   real time, since only more audio can end it, and waits while utterances wait
   for their text. A pause in it longer than the pace is not held against it.
+  With speakers, an utterance's text waits for up to 30 s of the audio after
+  it, so a lower pace runs nearer real time.
 
 While it listens, the deck is a dark strip with a level meter for each source
-(Mic, and Call on a call), the time, **Pause** and **Stop**; the view's tab
-shows the listening from every view, with its time, and a press on it comes
-back here. **Pause** lets the microphone go (a call keeps its pick, so
+(Mic, and Call on a call), the time, **Pause** and **Stop**; the header shows
+the listening and its time from every view, beside the model's status, and a
+press on it comes back here. **Pause** lets the microphone go (a call keeps its pick, so
 **Resume** needs no new one) and ends the utterance under way; **Resume** goes
 on, on a new session if the server closed the old one while it was paused
-(after `server.socket_idle_close`, 300 s). **Stop** ends the utterance under
-way, waits while its text comes (**Finishing the last words**; with speakers
+(after `server.socket_idle_close`, 300 s). **Stop** waits until the server
+has read the last audio sent, ends the utterance under way, waits while its
+text comes (**Finishing the last words**; with speakers
 the server waits for the diarizer, up to about 2.3 s live and 30 s for a file)
 and closes; **Stop now** closes at once.
 
@@ -121,7 +124,7 @@ Each transcript is kept in this browser as each utterance completes, with its
 text, times, speakers and corrections, and never its audio
 ([Sessions and storage](sessions.md)). Its title is the date, the time and the
 source, "25 Oct 15:42 · Call" (a file's name for a file); click it to rename
-it. **New transcript** starts another; the cross on a row deletes one, except
+it. **New transcript** starts another; the bin on a row deletes one, except
 the one listening. A reload keeps every completed utterance and ends the
 listening; so does a lost connection.
 
@@ -185,7 +188,8 @@ Each asks for:
 It sends no `session.ignis.max_utterance_seconds`, so the server's length guard
 (`speech.max_utterance_seconds`, 120 s) cuts a long utterance at its weakest
 pause. A file's append the server refuses for its queue limit
-(`ignis_audio_queue_full`) is sent again from there a moment later.
+(`ignis_audio_queue_full`) is sent again from there a moment later, after
+the file's end too.
 
 **Cost.** A microphone left open sends silence, so its session never idles,
 and with speakers the diarizer reads all of it: measured at about a fifth of a

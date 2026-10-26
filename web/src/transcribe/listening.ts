@@ -3,10 +3,20 @@ import { MIC_BLOCKED, unavailable } from "../speech/availability.ts";
 import { CallNotShared, type Capture, MicBlocked, NoSharedAudio } from "../speech/capture.ts";
 import { setListening } from "../speech/listening.ts";
 import { CHUNK_SAMPLES, levelOf, TARGET_RATE } from "../speech/pcm.ts";
-import { BUSY_RETRY_MAX_SECONDS, BUSY_RETRY_SECONDS } from "../speech/dictation.ts";
-import { CONFIGURATION_EVENT, DIARIZER_UNAVAILABLE, type Diarization, type Listening, type ListeningEvent, type ListeningOptions, type Refusal } from "../speech/realtime.ts";
+import { BUSY_RETRY_MAX_SECONDS, BUSY_RETRY_SECONDS, type Tone } from "../speech/dictation.ts";
+import {
+  CONFIGURATION_EVENT,
+  DIARIZER_FAILED,
+  DIARIZER_UNAVAILABLE,
+  type Diarization,
+  type Listening,
+  type ListeningEvent,
+  type ListeningOptions,
+  QUEUE_FULL,
+  type Refusal,
+} from "../speech/realtime.ts";
 import { allowance, backlogMs, estimate } from "./pacing.ts";
-import type { Heard, Voice } from "./transcript.ts";
+import type { Heard, SourceKind, Voice } from "./transcript.ts";
 
 // One listening in the Transcribe view (spec speech/07): the state the view
 // reads, and what drives it. It knows the server only through the Realtime
@@ -24,6 +34,10 @@ import type { Heard, Voice } from "./transcript.ts";
 //   from its first sample, and that sample's place on the clock is the lane's
 //   origin. The clock starts where the Transcript's stopped (a Continue) and
 //   stands still while paused.
+// - **An end** (Stop, a file's end) flushes each session first: the VAD's
+//   events for the last audio sent may still be on their way, so the
+//   utterance under way is known, and committed, only once the server has read
+//   all of it. The session closes once every utterance's text has come.
 
 // What the hint line says (spec speech/07; spec speech/04's states).
 export const CONNECTION_LOST = "Listening stopped: the connection to the server closed. Every completed utterance is kept.";
@@ -35,11 +49,8 @@ export const NO_WEBSOCKET = "Listening could not start: the server is up, but th
 export const busyRetry = (seconds: number) => `Speech is busy: every session is taken. Trying again in ${seconds} s.`;
 export const STILL_BUSY = "The listening still could not open: speech is busy. Press Start to try again.";
 export const speakersOff = (why: string) => `Speakers are off for this listening: ${why.replace(/\.$/, "")}.`;
-export const ITEM_FAILED = (why: string) => `An utterance could not be transcribed: ${why.replace(/\.$/, "")}.`;
+export const itemFailed = (why: string) => `An utterance could not be transcribed: ${why.replace(/\.$/, "")}.`;
 export const fileDone = (name: string) => `Transcribed ${name}.`;
-
-/** The server's queue limit refused an append (spec speech/08): the file is sent again from it. */
-const QUEUE_FULL = "ignis_audio_queue_full";
 
 /** A file's appends are named by their first sample, so a refused one says where to send again from. */
 const APPEND_PREFIX = "audio_";
@@ -50,11 +61,6 @@ const BURST_MS = 5_000;
 
 /** How long a refused append waits before the file is sent again from it. */
 const QUEUE_FULL_BACKOFF_MS = 1_000;
-
-/** A diarizer that failed mid-session: the session goes on without speakers (spec speech/08). */
-const DIARIZER_FAILED = "ignis_diarizer_failed";
-
-export type Tone = "ash" | "warn" | "fault";
 
 /** Bars in a lane's level meter. */
 export const METER_BARS = 20;
@@ -72,7 +78,7 @@ export type ListeningState = {
   phase: "idle" | "listening" | "paused" | "finishing" | "waiting";
   /** The Transcript it appends to. */
   transcript: number | null;
-  source: ListeningSource["kind"] | null;
+  source: SourceKind | null;
   /** The speakers asked for: off from the start, or turned off by the server's refusal. */
   speakers: boolean;
   /** The clock: where the next utterance would start. */
@@ -147,6 +153,10 @@ type Lane = {
   sentMs: number;
   items: Map<string, Item>;
   capture: Capture | null;
+  /** Flushes asked for and not answered yet (`openListening`'s `flush`). */
+  flushes: number;
+  /** Ending: once its last flush is answered, its utterance under way is committed. */
+  ending: boolean;
 };
 
 const quiet = (): number[] => Array(METER_BARS).fill(0);
@@ -176,8 +186,12 @@ export class ListeningController {
   private stopNotice: ListeningState["notice"] = null;
   /** This start was refused busy once already. */
   private retried = false;
+  /** Bumped by every start and every end, not by a busy retry: a file decoded across a retry is still this listening's. */
+  private listenings = 0;
   /** A file's audio once decoded, its name, and how far into it the page has sent. */
   private pcm: Int16Array | null = null;
+  /** The sending reached the file's end: a refused append after it sends again. */
+  private fileEnded = false;
   private fileName: string | null = null;
   private cursor = 0;
   /** Where in the file the file lane's session starts, and the Transcript's clock at the file's start. */
@@ -219,6 +233,8 @@ export class ListeningController {
     this.retried = false;
     this.pcm = null;
     this.fileName = null;
+    this.fileEnded = false;
+    this.listenings++;
     if (options.source.kind === "file") {
       this.picked = null;
       this.fileName = options.source.file.name;
@@ -305,8 +321,16 @@ export class ListeningController {
     await Promise.all(this.lanes.map((lane) => lane.capture?.flush()));
     if (attempt !== this.attempt) return;
     this.halt();
-    for (const lane of this.lanes) this.commitOpen(lane);
+    for (const lane of this.lanes) this.endLane(lane);
     this.finishIfDone();
+  }
+
+  /** A lane's end: flushed, then its utterance under way committed (the class comment's "An end"). */
+  private endLane(lane: Lane) {
+    if (!lane.session) return;
+    lane.ending = true;
+    lane.flushes++;
+    lane.session.flush();
   }
 
   /** The page is going away: whatever is under way stops, and the mic is let go. */
@@ -323,7 +347,7 @@ export class ListeningController {
   }
 
   private lane(name: LaneName, labels: Labels, diarization: Diarization | null): Lane {
-    return { name, labels, diarization, session: null, stream: "", origin: null, sentMs: 0, items: new Map(), capture: null };
+    return { name, labels, diarization, session: null, stream: "", origin: null, sentMs: 0, items: new Map(), capture: null, flushes: 0, ending: false };
   }
 
   /** A new session for the lane: a stream of its own, its origin at its first audio. */
@@ -333,6 +357,8 @@ export class ListeningController {
     lane.origin = null;
     lane.sentMs = 0;
     lane.items = new Map();
+    lane.flushes = 0;
+    lane.ending = false;
     lane.session = this.deps.open({ context: this.context, diarization: lane.diarization }, (event) => attempt === this.attempt && this.heard(lane, event));
   }
 
@@ -350,15 +376,16 @@ export class ListeningController {
   }
 
   private async decode(file: File) {
-    const attempt = this.attempt;
+    const listening = this.listenings;
     try {
       const pcm = await this.deps.decode(file);
-      if (attempt !== this.attempt) return;
+      if (listening !== this.listenings) return;
       this.pcm = pcm;
     } catch (err) {
-      if (attempt === this.attempt) this.finish({ text: cannotStart(err instanceof Error ? err.message : String(err)), tone: "fault" });
+      if (listening === this.listenings) this.finish({ text: cannotStart(err instanceof Error ? err.message : String(err)), tone: "fault" });
       return;
     }
+    // A busy server waited on: the retry runs the sending.
     if (this.state.phase === "listening") this.run();
   }
 
@@ -391,11 +418,11 @@ export class ListeningController {
     this.showProgress(lane, pcm);
     if (this.cursor < pcm.length) return;
     this.stopTicker();
+    this.fileEnded = true;
     this.stopNotice = { text: fileDone(this.fileName ?? "the file"), tone: "ash" };
     this.update({ phase: "finishing" });
     setListening(false);
-    this.commitOpen(lane);
-    this.finishIfDone();
+    this.endLane(lane);
   }
 
   private showProgress(lane: Lane, pcm: Int16Array) {
@@ -409,7 +436,12 @@ export class ListeningController {
     const onChunk = (pcm: Int16Array) => attempt === this.attempt && runs === this.runs && this.append(lane, pcm);
     let capture: Capture;
     try {
-      capture = lane.name === "shared" && this.picked ? await this.deps.captureShared(await this.picked, onChunk) : await this.deps.captureMic(onChunk);
+      if (lane.name === "shared") {
+        if (!this.picked) return;
+        capture = await this.deps.captureShared(await this.picked, onChunk);
+      } else {
+        capture = await this.deps.captureMic(onChunk);
+      }
     } catch (err) {
       if (attempt === this.attempt) this.refusedCapture(err);
       return;
@@ -426,9 +458,10 @@ export class ListeningController {
     this.finish({ text: cannotStart(err instanceof Error ? err.message : String(err)), tone: "fault" });
   }
 
-  /** The browser's own Stop sharing: the call is over, and the listening stops as Stop does. */
+  /** The browser's own Stop sharing: the call is over, and the listening stops as Stop does, saying why. */
   private sharingEnded() {
     this.stopNotice = { text: SHARING_ENDED, tone: "ash" };
+    if (this.state.phase === "waiting") return this.finish(this.stopNotice);
     void this.stop();
   }
 
@@ -452,9 +485,10 @@ export class ListeningController {
     if (lane.session && [...lane.items.values()].some((item) => item.open)) lane.session.commit();
   }
 
-  /** Finishing, and nothing waits for its text: done. */
+  /** Finishing, every session flushed and nothing waiting for its text: done. */
   private finishIfDone() {
-    if (this.state.phase === "finishing" && this.lanes.every((lane) => !lane.session || lane.items.size === 0)) this.finish(this.stopNotice);
+    if (this.state.phase !== "finishing") return;
+    if (this.lanes.every((lane) => !lane.session || (!lane.ending && lane.items.size === 0))) this.finish(this.stopNotice);
   }
 
   /** The listening is over: the sessions close, and the Transcript keeps the clock. */
@@ -518,7 +552,13 @@ export class ListeningController {
       case "item_failed":
         lane.items.delete(event.item);
         this.showLive();
-        this.update({ notice: { text: ITEM_FAILED(event.message), tone: "warn" } });
+        this.update({ notice: { text: itemFailed(event.message), tone: "warn" } });
+        return this.finishIfDone();
+      case "flushed":
+        lane.flushes = Math.max(0, lane.flushes - 1);
+        if (lane.flushes > 0 || !lane.ending) return;
+        lane.ending = false;
+        this.commitOpen(lane);
         return this.finishIfDone();
       case "error":
         return this.refusedEvent(lane, event);
@@ -539,6 +579,15 @@ export class ListeningController {
         lane.sentMs = msOf(from - this.sessionStart);
       }
       this.backoffUntil = this.now() + QUEUE_FULL_BACKOFF_MS;
+      // Refused after the file's last append went: the sending goes on, and the end comes again.
+      if (this.fileEnded && this.state.phase === "finishing" && this.cursor < (this.pcm?.length ?? 0)) {
+        this.fileEnded = false;
+        this.stopNotice = null;
+        lane.ending = false;
+        setListening(true);
+        this.update({ phase: "listening" });
+        this.run();
+      }
       return;
     }
     if (code === DIARIZER_UNAVAILABLE || code === DIARIZER_FAILED) {
@@ -601,11 +650,14 @@ export class ListeningController {
     // A file is sent again from the oldest utterance the session took with it.
     const lost = [...lane.items.values()].map((item) => item.startMs);
     if (lane.name === "file" && lost.length > 0) this.cursor = Math.min(this.cursor, this.sessionStart + Math.round((Math.min(...lost) * TARGET_RATE) / 1_000));
+    const unsettled = lost.length > 0 || lane.ending;
     lane.session = null;
     lane.items = new Map();
+    lane.ending = false;
     this.showLive();
     if (this.state.phase === "paused") return;
-    if (this.state.phase === "finishing") return this.finishIfDone();
+    // Finishing with nothing lost is an end like any other; with utterances lost, the connection is.
+    if (this.state.phase === "finishing" && !unsettled) return this.finishIfDone();
     this.finish({ text: CONNECTION_LOST, tone: "fault" });
   }
 
@@ -647,6 +699,7 @@ export class ListeningController {
   /** Lets every session and capture go, and a call's pick; later answers from them go unheard. */
   private end() {
     this.attempt++;
+    this.listenings++;
     this.halt();
     for (const lane of this.lanes) {
       lane.session?.close();

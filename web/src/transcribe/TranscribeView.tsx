@@ -5,10 +5,10 @@ import { IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Deck } from "./Deck.tsx";
 import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
-import { type ListeningHandle, type ListeningState, useListening } from "./listening.ts";
+import { type ListeningHandle, type ListeningState, type LiveUtterance, useListening } from "./listening.ts";
 import { Sheet, speakerColor } from "./Sheet.tsx";
 import { titleOf, type TranscriptList } from "./sessions.ts";
-import type { Transcript } from "./transcript.ts";
+import { sessionsWithSpeakers, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view (spec speech/07), in the Decide tab's three-column
@@ -16,6 +16,9 @@ import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 // at its foot, and on the right its speakers, its exports and Open in chat.
 // Below `lg` the two side columns are drawers the header opens. The state is
 // the page's (useTranscribe.ts): a listening goes on while the view is hidden.
+
+/** The utterances under way of a listening that appends elsewhere: one array, so the sheet is not drawn again. */
+const NONE_LIVE: LiveUtterance[] = [];
 
 /** Which side drawer is out, below `lg`. */
 export type Drawer = "sessions" | "settings" | null;
@@ -71,7 +74,7 @@ export function TranscribeView({
       />
 
       <main aria-label="Transcript" className="flex min-w-0 flex-1 flex-col">
-        <Sheet transcript={state.active} listening={listening} here={here} actions={actions} />
+        <Sheet transcript={state.active} live={here ? listening.live : NONE_LIVE} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} />
         <Deck state={state} listening={listening} actions={actions} speech={speech} secure={secure} here={here} />
       </main>
 
@@ -170,9 +173,6 @@ function download(t: Transcript, { extension, type, write }: (typeof EXPORTS)[nu
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-/** A session's channels are `stream:index`: more than one stream is a Resume or a Continue, whose voices are numbered anew. */
-export const severalSessions = (t: Transcript) => new Set(Object.keys(t.channels).filter((c) => c.includes(":")).map((c) => c.split(":")[0])).size > 1;
-
 function Tools({
   transcript: t,
   actions,
@@ -240,7 +240,7 @@ function Tools({
             ))}
           </ul>
         )}
-        {severalSessions(t) && (
+        {sessionsWithSpeakers(t) > 1 && (
           <p className="text-xs leading-snug text-ash">A Resume or a Continue numbers the voices anew: merge a speaker who came back into the one they were.</p>
         )}
       </section>

@@ -4,7 +4,7 @@ import { MIC_BLOCKED, TURNED_OFF } from "../speech/availability.ts";
 import { BUSY_RETRY_SECONDS } from "../speech/dictation.ts";
 import { listening } from "../speech/listening.ts";
 import type { Listening, ListeningEvent, ListeningOptions } from "../speech/realtime.ts";
-import { busyRetry, CALL_NOT_SHARED, fileDone, CONNECTION_LOST, ITEM_FAILED, NO_WEBSOCKET, speakersOff, STILL_BUSY, ListeningController, type ListeningDeps, type ListeningState, cannotStart, NO_SHARED_AUDIO, SHARING_ENDED } from "./listening.ts";
+import { busyRetry, CALL_NOT_SHARED, fileDone, CONNECTION_LOST, itemFailed, NO_WEBSOCKET, speakersOff, STILL_BUSY, ListeningController, type ListeningDeps, type ListeningState, cannotStart, NO_SHARED_AUDIO, SHARING_ENDED } from "./listening.ts";
 import type { Heard } from "./transcript.ts";
 
 // A listening in the Transcribe view (spec speech/07) through the controller
@@ -16,7 +16,7 @@ type FakeCapture = { chunk: (samples: number) => void; stopped: boolean };
 
 const made: ListeningController[] = [];
 
-function harness(options: { pace?: number; decoded?: number; refuseMic?: Error; refusePick?: Error } = {}) {
+function harness(options: { pace?: number; decoded?: number; refuseMic?: Error; refusePick?: Error; decodeGate?: Promise<void> } = {}) {
   const sessions: FakeSession[] = [];
   const mics: FakeCapture[] = [];
   const shared: FakeCapture[] = [];
@@ -37,6 +37,7 @@ function harness(options: { pace?: number; decoded?: number; refuseMic?: Error; 
         append: (pcm, eventId) => session.appended.push({ samples: pcm.length, ...(eventId === undefined ? {} : { eventId }) }),
         setContext: (context) => session.contexts.push(context),
         commit: () => session.calls.push("commit"),
+        flush: () => session.calls.push("flush"),
         close: () => session.calls.push("close"),
       };
       return handle;
@@ -55,6 +56,7 @@ function harness(options: { pace?: number; decoded?: number; refuseMic?: Error; 
     captureShared: async (_stream, onChunk) => capture(shared)(onChunk),
     decode: async (file) => {
       events.push(`decode ${file.name}`);
+      await options.decodeGate;
       if (options.decoded === undefined) throw new Error("The browser could not decode this file as audio.");
       return new Int16Array(options.decoded);
     },
@@ -217,21 +219,35 @@ describe("Pause, Resume and Stop (Q97)", () => {
     h.session().emit({ type: "started", item: "a", atMs: 2_000 });
     await h.controller.stop();
     expect(h.mics[0].stopped).toBe(true);
-    expect(h.session().calls).toEqual(["commit"]);
+    // Flushed first: the VAD's events for the last audio sent may still be on their way.
+    expect(h.session().calls).toEqual(["flush"]);
     expect(h.state().phase).toBe("finishing");
     expect(listening()).toBe(false);
+    h.session().emit({ type: "flushed" });
+    expect(h.session().calls).toEqual(["flush", "commit"]);
     h.session().emit({ type: "committed", item: "a" });
     h.session().emit({ type: "completed", item: "a", transcript: "Chiudo." });
-    expect(h.session().calls).toEqual(["commit", "close"]);
+    expect(h.session().calls).toEqual(["flush", "commit", "close"]);
     expect(h.state().phase).toBe("idle");
     expect(h.clocks).toEqual([[3, 5_900]]);
   });
 
-  it("Stop with nothing under way closes at once", async () => {
+  it("Stop with nothing under way closes once the session is flushed", async () => {
     const h = await talking();
     await h.controller.stop();
-    expect(h.session().calls).toEqual(["close"]);
+    expect(h.state().phase).toBe("finishing");
+    h.session().emit({ type: "flushed" });
+    expect(h.session().calls).toEqual(["flush", "close"]);
     expect(h.state().phase).toBe("idle");
+  });
+
+  it("Stop commits an utterance whose start was still on its way when it was pressed", async () => {
+    const h = await talking();
+    await h.controller.stop();
+    h.session().emit({ type: "started", item: "late", atMs: 50 });
+    h.session().emit({ type: "flushed" });
+    expect(h.session().calls).toEqual(["flush", "commit"]);
+    expect(h.state().phase).toBe("finishing");
   });
 
   it("a lost connection ends the listening, every completed utterance kept", async () => {
@@ -309,9 +325,19 @@ describe("a call (Q93, Q112)", () => {
     await settle();
     h.endSharing();
     await settle();
+    for (const s of h.sessions) s.emit({ type: "flushed" });
     expect(h.state().phase).toBe("idle");
     expect(h.state().notice).toEqual({ text: SHARING_ENDED, tone: "ash" });
-    expect(h.sessions.map((s) => s.calls)).toEqual([["close"], ["close"]]);
+    expect(h.sessions.map((s) => s.calls)).toEqual([["flush", "close"], ["flush", "close"]]);
+  });
+
+  it("says the sharing ended when it ends while a busy server is waited on", async () => {
+    const h = harness();
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "" });
+    await settle();
+    h.session().emit({ type: "refused", refusal: { kind: "busy" } });
+    h.endSharing();
+    expect(h.state()).toMatchObject({ phase: "idle", notice: { text: SHARING_ENDED, tone: "ash" } });
   });
 
   it("does not start when the pick is cancelled or shares no audio, and lets the mic go", async () => {
@@ -426,7 +452,7 @@ describe("what the server refuses (AC 15: spec speech/04's states)", () => {
     start(h);
     h.session().emit({ type: "started", item: "a", atMs: 0 });
     h.session().emit({ type: "item_failed", item: "a", message: "the speech model failed" });
-    expect(h.state()).toMatchObject({ phase: "listening", live: [], notice: { text: ITEM_FAILED("the speech model failed"), tone: "warn" } });
+    expect(h.state()).toMatchObject({ phase: "listening", live: [], notice: { text: itemFailed("the speech model failed"), tone: "warn" } });
   });
 
   it("a configuration the server refuses ends the listening with the server's words", async () => {
@@ -498,8 +524,10 @@ describe("a file (Q94, Q99)", () => {
     s.emit({ type: "started", item: "z", atMs: 110_000 });
     await vi.advanceTimersByTimeAsync(200);
     expect(sentMs(s)).toBe(120_000);
-    expect(s.calls).toEqual(["commit"]);
+    expect(s.calls).toEqual(["flush"]);
     expect(h.state().phase).toBe("finishing");
+    s.emit({ type: "flushed" });
+    expect(s.calls).toEqual(["flush", "commit"]);
     s.emit({ type: "committed", item: "z" });
     s.emit({ type: "completed", item: "z", transcript: "Fine." });
     expect(h.heard.map(([, u]) => [u.text, u.startMs, u.endMs])).toEqual([["Fine.", 140_000, 150_000]]);
@@ -533,6 +561,48 @@ describe("a file (Q94, Q99)", () => {
     h.controller.resume();
     await vi.advanceTimersByTimeAsync(100);
     expect(sentMs(s)).toBe(10_000);
+  });
+
+  it("keeps a file decoded while a busy server is waited on, and sends it once the retry opens", async () => {
+    let decoded!: () => void;
+    const h = harness({ decoded: 120 * SECONDS, pace: 60, decodeGate: new Promise<void>((resolve) => (decoded = resolve)) });
+    h.controller.start({ transcript: 5, clockMs: 0, source: { kind: "file", file }, speakers: true, context: "" });
+    h.session().emit({ type: "refused", refusal: { kind: "busy" } });
+    decoded();
+    await settle();
+    await vi.advanceTimersByTimeAsync(3_100);
+    expect(h.sessions).toHaveLength(2);
+    expect(sentMs(h.session())).toBe(5_000);
+  });
+
+  it("sends again an append the queue limit refused after the file's last one went", async () => {
+    const h = await feeding();
+    await vi.advanceTimersByTimeAsync(2_400);
+    const s = h.session();
+    expect(sentMs(s)).toBe(120_000);
+    expect(h.state().phase).toBe("finishing");
+    s.emit({ type: "error", code: "ignis_audio_queue_full", message: "full", eventId: `audio_${118 * SECONDS}` });
+    expect(h.state().phase).toBe("listening");
+    s.appended.length = 0;
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(s.appended[0]).toEqual({ samples: 1_600, eventId: `audio_${118 * SECONDS}` });
+    // The first end's flush, then the second's.
+    s.emit({ type: "flushed" });
+    expect(h.state().phase).toBe("finishing");
+    s.emit({ type: "flushed" });
+    expect(h.state()).toMatchObject({ phase: "idle", notice: { text: fileDone("standup.m4a") } });
+  });
+
+  it("says the connection was lost when it closes while utterances still wait for their text", async () => {
+    const h = await feeding();
+    await vi.advanceTimersByTimeAsync(100);
+    const s = h.session();
+    s.emit({ type: "started", item: "a", atMs: 1_000 });
+    await h.controller.stop();
+    s.emit({ type: "flushed" });
+    expect(h.state().phase).toBe("finishing");
+    s.emit({ type: "closed" });
+    expect(h.state()).toMatchObject({ phase: "idle", notice: { text: CONNECTION_LOST, tone: "fault" } });
   });
 
   it("says when the browser cannot decode the file", async () => {

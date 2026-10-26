@@ -491,6 +491,24 @@ describe("openListening", () => {
     expect(socket().sent).toHaveLength(3);
   });
 
+  it("flushes: an empty session.update whose answer comes once the server has read every append before it, a context's answer not counted", () => {
+    const { socket, heard, session } = listen({ context: "", diarization: null });
+    socket().accept();
+    socket().emit({ type: "session.updated", session: {} });
+    session.append(new Int16Array([1]));
+    session.setContext("Names.");
+    session.flush();
+    expect(socket().sent.slice(1)).toEqual([
+      { type: "input_audio_buffer.append", audio: "AQA=" },
+      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: "Names." } } } } },
+      { type: "session.update", event_id: "listening_flush", session: { type: "transcription" } },
+    ]);
+    socket().emit({ type: "session.updated", session: {} });
+    expect(heard).toEqual([]);
+    socket().emit({ type: "session.updated", session: {} });
+    expect(heard).toEqual([{ type: "flushed" }]);
+  });
+
   it("says when the connection closes under it, and nothing once the page has closed it", () => {
     const dropped = listen({ context: "", diarization: null });
     dropped.socket().accept();

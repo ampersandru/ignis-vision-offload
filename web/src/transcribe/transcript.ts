@@ -62,7 +62,8 @@ export type Heard = { stream: string; startMs: number; endMs: number; text: stri
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const two = (n: number) => String(n).padStart(2, "0");
+/** Two digits: a clock's minutes and seconds. */
+export const two = (n: number) => String(n).padStart(2, "0");
 
 /** "25 Oct" and "15:42", in English whatever the browser's locale: a title and an export read the same everywhere. */
 export const dayAndTime = (at: Date) => ({ day: `${at.getDate()} ${MONTHS[at.getMonth()]}`, time: `${two(at.getHours())}:${two(at.getMinutes())}` });
@@ -108,6 +109,16 @@ function newSpeaker(t: Transcript, role: Speaker["role"]): { transcript: Transcr
 }
 
 const channelOf = (stream: string, voice: Voice) => (voice.kind === "speaker" ? `${stream}:${voice.index}` : voice.kind);
+
+/** How many sessions' voices the Transcript holds: more than one is a Resume or a Continue, whose voices are numbered anew. */
+export const sessionsWithSpeakers = (t: Transcript): number =>
+  new Set(Object.keys(t.channels).filter((channel) => channel.includes(":")).map((channel) => channel.split(":")[0])).size;
+
+/**
+ * Where a Continue's clock starts: the clock the last listening left, or past the last utterance when it left none
+ * (a reload in the middle of a listening keeps the utterances but never hands the clock back).
+ */
+export const clockOf = (t: Transcript): number => Math.max(t.clockMs, ...t.utterances.map((u) => u.endMs));
 
 /** The label a channel speaks under, made the first time it speaks. */
 function labelFor(t: Transcript, stream: string, voice: Voice): { transcript: Transcript; id: number } {

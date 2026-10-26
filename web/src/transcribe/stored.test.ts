@@ -4,7 +4,7 @@ import { openIndexedDbStore } from "../store/indexeddb.ts";
 import { createMemoryStore } from "../store/memory.ts";
 import { activeOf, openTranscript, removeTranscript, startList, titleOf, UNTITLED } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, TRANSCRIBE_VERSION, toStored, worthKeeping } from "./stored.ts";
-import { addUtterance, beginListening, createTranscript, mergeSpeakers, type Transcript } from "./transcript.ts";
+import { addUtterance, beginListening, clockOf, createTranscript, mergeSpeakers, type Transcript } from "./transcript.ts";
 
 // The Transcripts as the view lists them and the page's store keeps them
 // (spec speech/07, "The Transcript", Q86, Q101): a new kind of session, saved
@@ -44,6 +44,15 @@ describe("the Transcripts listed", () => {
     const later = new Date(2026, 9, 26, 9, 0);
     expect(beginListening(heardTwice(), { source: "microphone", at: later })).toMatchObject({ title: "25 Oct 15:42 · Call", startedAt: at.getTime() });
     expect(beginListening(createTranscript(1), { source: "file", at, fileName: "talk.mp3" })).toMatchObject({ title: "25 Oct 15:42 · talk.mp3", startedAt: null });
+  });
+});
+
+describe("where a Continue starts", () => {
+  it("is the clock the last listening left, or past the last utterance a reload kept when it left none", () => {
+    expect(clockOf(heardTwice())).toBe(2_400);
+    // A reload mid-listening keeps the utterances but never hands the clock back.
+    expect(clockOf({ ...heardTwice(), clockMs: 0 })).toBe(2_000);
+    expect(clockOf(createTranscript(1))).toBe(0);
   });
 });
 

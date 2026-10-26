@@ -12,7 +12,7 @@ import { filePace } from "./filePace.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
-import { addUtterance, beginListening, editText, mergeSpeakers, moveUtterance, renameSpeaker, splitUtterance, type Transcript } from "./transcript.ts";
+import { addUtterance, beginListening, clockOf, editText, mergeSpeakers, moveUtterance, renameSpeaker, splitUtterance, type Transcript } from "./transcript.ts";
 
 // The Transcribe view's state (spec speech/07), held by the page and not by
 // the view, as the Image view's is: the header shows a listening from every
@@ -120,11 +120,10 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
       },
       start: (source) => {
         if (controller.getState().phase !== "idle") return;
-        const now = listNow.current;
-        const t = activeOf(now);
-        const begun = beginListening(t, { source: source.kind, at: new Date(), ...(source.kind === "file" ? { fileName: source.file.name } : {}) });
-        setList(updateTranscript(now, t.id, () => begun));
-        controller.start({ transcript: t.id, clockMs: t.clockMs, source, speakers: speakersRef.current, context: contextRef.current });
+        const t = activeOf(listNow.current);
+        const start = { source: source.kind, at: new Date(), ...(source.kind === "file" ? { fileName: source.file.name } : {}) };
+        setList((l) => updateTranscript(l, t.id, (current) => beginListening(current, start)));
+        controller.start({ transcript: t.id, clockMs: clockOf(t), source, speakers: speakersRef.current, context: contextRef.current });
       },
       pause: () => controller.pause(),
       resume: () => controller.resume(),

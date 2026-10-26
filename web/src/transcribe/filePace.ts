@@ -6,12 +6,14 @@ import { useSyncExternalStore } from "react";
 // localStorage, which can be absent or throw, so every read and write is
 // guarded and the setting simply lasts the page then. The server's own limit,
 // `speech.max_queued_audio_seconds` (120 by default), refuses an append past
-// it, so no choice goes beyond it.
+// it, so every choice stays under it. With speakers a file's utterance waits
+// up to 30.4 s of audio for the diarizer (spec speech/08), so the lowest
+// choice still sends ahead past that.
 
 export const FILE_PACE_KEY = "ignis.transcribeFilePace";
 
 /** The choices the view offers, in seconds. */
-export const FILE_PACE_CHOICES = [30, 60, 120];
+export const FILE_PACE_CHOICES = [45, 60, 90];
 
 export const DEFAULT_FILE_PACE_SECONDS = 60;
 

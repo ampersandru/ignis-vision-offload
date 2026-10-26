@@ -307,6 +307,8 @@ export type ListeningEvent =
   /** The server refused an event of ours; `eventId` is the one the page gave it. The session goes on. */
   | { type: "error"; code: string | null; message: string; eventId: string | null }
   | { type: "refused"; refusal: Refusal }
+  /** The server has read every event sent before the page's last `flush()`, its appends included. */
+  | { type: "flushed" }
   /** The connection closed under the session. */
   | { type: "closed" };
 
@@ -317,14 +319,28 @@ export type Listening = {
   setContext: (context: string) => void;
   /** Ends the utterance under way: its transcript follows. */
   commit: () => void;
+  /**
+   * Asks for a `flushed` once the server has read everything sent before: an empty `session.update`, answered in
+   * order. Before it, the VAD's events for the last audio sent may still be on their way.
+   */
+  flush: () => void;
   close: () => void;
 };
 
 /** The event id of a listening's configuration: the `error` that refuses it names it. */
 export const CONFIGURATION_EVENT = "listening_configuration";
 
+/** The event id of a flush's empty update. */
+export const FLUSH_EVENT = "listening_flush";
+
 /** The code of an update refused for the speakers it asks for: the session goes on without them (spec speech/08). */
 export const DIARIZER_UNAVAILABLE = "ignis_diarizer_unavailable";
+
+/** A diarizer that failed mid-session: the session goes on without speakers (spec speech/08). */
+export const DIARIZER_FAILED = "ignis_diarizer_failed";
+
+/** An append past the audio a session may hold not computed yet (spec speech/08): it is refused, not read. */
+export const QUEUE_FULL = "ignis_audio_queue_full";
 
 /** A listening's configuration (spec speech/07, "The session"). */
 function listeningConfiguration({ context, diarization }: ListeningOptions) {
@@ -368,6 +384,8 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
   let greeted = false;
   let configured = false;
   const waiting: object[] = [];
+  /** The page's updates after the configuration, in the order sent: each is answered by one `session.updated`. */
+  const updates: ("context" | "flush")[] = [];
   let socket: SocketLike | null = null;
   const send = (event: object) => socket?.send(JSON.stringify(event));
   const say = (event: ListeningEvent) => closedByPage || onEvent(event);
@@ -380,7 +398,10 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
         send(listeningConfiguration({ ...options, context }));
         return;
       case "session.updated":
-        if (configured) return;
+        if (configured) {
+          if (updates.shift() === "flush") say({ type: "flushed" });
+          return;
+        }
         configured = true;
         for (const queued of waiting.splice(0)) send(queued);
         return;
@@ -458,7 +479,13 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
       context = next;
       // Not greeted yet: the configuration carries it.
       if (!greeted) return;
+      updates.push("context");
       sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: next === "" ? null : next } } } } });
+    },
+    flush() {
+      if (ended) return;
+      updates.push("flush");
+      sendConfigured({ type: "session.update", event_id: FLUSH_EVENT, session: { type: "transcription" } });
     },
     commit() {
       if (!ended) sendConfigured({ type: "input_audio_buffer.commit" });

@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { memo, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { isAtBottom } from "../ui/scroll.ts";
 import { clock, startedLine, startOf } from "./export.ts";
 import type { LiveUtterance, ListeningState } from "./listening.ts";
@@ -26,23 +26,30 @@ export function speakerColor(speaker: Speaker | undefined): string {
 /** The label of a call's utterance under way, before the server names its speaker. */
 const laneLabel = (lane: LiveUtterance["lane"], call: boolean) => (call ? (lane === "mic" ? "Me" : "Call") : null);
 
-export function Sheet({
+/**
+ * The sheet. It is handed only what it draws, not the listening's whole state, and redraws only when that changes:
+ * the levels move ten times a second and the clock every second.
+ */
+export const Sheet = memo(function Sheet({
   transcript,
-  listening,
+  live,
+  phase,
+  call,
   here,
   actions,
 }: {
   transcript: Transcript;
-  listening: ListeningState;
-  /** The listening appends to this Transcript: its utterances under way show here. */
+  /** The utterances under way of the listening appending here; none when it appends elsewhere. */
+  live: LiveUtterance[];
+  phase: ListeningState["phase"];
+  call: boolean;
+  /** The listening appends to this Transcript. */
   here: boolean;
   actions: Pick<TranscribeActions, "rename" | "moveUtterance" | "splitUtterance" | "editText">;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
-  const live = here ? listening.live : [];
   const speakers = new Map(transcript.speakers.map((s) => [s.id, s]));
-  const call = listening.source === "call";
 
   useLayoutEffect(() => setFollowing(true), [transcript.id]);
   useLayoutEffect(() => {
@@ -63,20 +70,20 @@ export function Sheet({
         <div className="mx-auto w-full max-w-3xl">
           <Heading transcript={transcript} onRename={(title) => actions.rename(transcript.id, title)} />
           {empty ? (
-            <Empty listening={here && listening.phase !== "idle"} />
+            <Empty listening={here && phase !== "idle"} />
           ) : (
             <ol aria-label="Utterances" className="mt-6">
               {transcript.utterances.map((u) => (
                 <UtteranceRow key={u.id} utterance={u} speaker={u.speaker === null ? undefined : speakers.get(u.speaker)} speakers={transcript.speakers} actions={actions} />
               ))}
               {live.map((u) => (
-                <LiveRow key={u.key} utterance={u} label={laneLabel(u.lane, call)} burning={listening.phase === "listening" || listening.phase === "finishing"} />
+                <LiveRow key={u.key} utterance={u} label={laneLabel(u.lane, call)} burning={phase === "listening" || phase === "finishing"} />
               ))}
             </ol>
           )}
         </div>
       </div>
-      {!following && here && listening.phase !== "idle" && (
+      {!following && here && phase !== "idle" && (
         <button
           type="button"
           onClick={jump}
@@ -87,7 +94,7 @@ export function Sheet({
       )}
     </div>
   );
-}
+});
 
 function Heading({ transcript, onRename }: { transcript: Transcript; onRename: (title: string) => void }) {
   const speaking = transcript.speakers.length;
@@ -138,7 +145,8 @@ function Row({ time, tick, label, children }: { time: string; tick: { color?: st
   );
 }
 
-function UtteranceRow({
+/** An utterance of the sheet: drawn again only when it, its speaker or the speakers change. */
+const UtteranceRow = memo(function UtteranceRow({
   utterance: u,
   speaker,
   speakers,
@@ -202,7 +210,7 @@ function UtteranceRow({
       )}
     </Row>
   );
-}
+});
 
 /**
  * A speaker as a native menu: the speakers, then a new one. Native, so it opens over a clipped `.cut` box and on a

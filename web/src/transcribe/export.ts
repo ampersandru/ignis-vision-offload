@@ -1,4 +1,4 @@
-import { dayAndTime, type Transcript, type Utterance } from "./transcript.ts";
+import { dayAndTime, type Transcript, two, type Utterance } from "./transcript.ts";
 
 // A Transcript out of the view (spec speech/07, "Out of the view", Q95),
 // computed in the page from its utterances as edited, each speaker by the
@@ -6,8 +6,6 @@ import { dayAndTime, type Transcript, type Utterance } from "./transcript.ts";
 // `h:mm:ss` past an hour (Q100). A split's guessed time is marked `~` where a
 // line shows it; a cue writes it as it is. An utterance whose text was
 // emptied is left out.
-
-const two = (n: number) => String(n).padStart(2, "0");
 
 /** `mm:ss` from the start, `h:mm:ss` past an hour. */
 export function clock(ms: number): string {

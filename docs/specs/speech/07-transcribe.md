@@ -218,10 +218,20 @@ its listening) and `web/src/speech/` (the session, the capture, the strike of th
   utterance under way at real time, and stops only while utterances wait for their text. With the file geometry
   `completed` lags an item's end by up to 30.4 s of audio, so items over about 30 s go stop-and-go at N = 60. An
   append refused for the queue limit (`ignis_audio_queue_full`, its `event_id` echoed) is sent again from there after
-  1 s. N's choices are 30, 60 and 120 s, none past the server's default limit.
+  1 s, after the file's end too. One look sends up to 5 s of appends, so if the server refuses one and takes a later
+  one of the same look, that later audio goes twice: the pace keeps the backlog under N, and N under the server's
+  default limit, so a refusal needs a server limit set lower. N's choices are 45, 60 and 90 s: 120 would sit at the
+  server's default limit, and below about 45 s a file with speakers runs near real time.
 - **A file's Pause** stops the sending and commits nothing: a commit would cut the utterance under way in two. A live
-  source's Pause commits it, as the spec says ("Stop commits the last item"), and only when one is under way: a
-  commit with no speech since the last item would make an item of the silence.
+  source's Pause commits it, as Stop commits the last item (the spec says only that Pause "stops the capture"), and
+  only when one is under way: a commit with no speech since the last item would make an item of the silence.
+- **An end flushes first.** Stop and a file's end send each session an empty `session.update` and commit the
+  utterance under way only once it is answered: the server reads events in order, so by then the VAD's events for
+  the last audio sent have come, and an utterance whose start was still on its way is not lost. The session closes
+  once every utterance's text has come; a session that closes while one still waits ends the listening as a lost
+  connection.
+- **A Continue's clock** starts at the larger of the clock the last listening left and the last utterance's end: a
+  reload in the middle of a listening keeps the utterances but never hands the clock back.
 - **A call's Pause** lets the microphone go and keeps the shared tab, window or screen picked (not sent), so Resume
   asks for no new pick; the browser's own Stop sharing stops the listening as Stop does.
 - **A file's title** is its name ("25 Oct 15:42 · standup.m4a"), not "· File": the list tells files apart.

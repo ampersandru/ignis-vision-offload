@@ -5,8 +5,8 @@ import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft 
 import { IDLE, type ListeningState } from "./listening.ts";
 import { Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
-import { fileStem, severalSessions, transcriptSummary } from "./TranscribeView.tsx";
-import { addUtterance, createTranscript, splitUtterance, type Transcript } from "./transcript.ts";
+import { fileStem, transcriptSummary } from "./TranscribeView.tsx";
+import { addUtterance, createTranscript, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view drawn in its states (spec speech/07): the sheet, the
@@ -39,7 +39,8 @@ function room(): Transcript {
   return t;
 }
 
-const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) => renderToStaticMarkup(<Sheet transcript={t} listening={listening} here={here} actions={actions} />);
+const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
+  renderToStaticMarkup(<Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} />);
 
 describe("the sheet", () => {
   it("hangs each utterance on the spine: its mm:ss, its speaker as a menu in its hue (a move, a new speaker), its text", () => {
@@ -168,7 +169,7 @@ describe("the Transcripts list", () => {
   it("names a download after the title, and tells a Transcript heard over more than one session", () => {
     expect(fileStem("25 Oct 15:42 · Call")).toBe("25-Oct-15-42-Call");
     const t = room();
-    expect(severalSessions(t)).toBe(false);
-    expect(severalSessions(addUtterance(t, { stream: "mic-2", startMs: 9_000, endMs: 9_500, text: "Eccomi.", voice: { kind: "speaker", index: 0 } }))).toBe(true);
+    expect(sessionsWithSpeakers(t)).toBe(1);
+    expect(sessionsWithSpeakers(addUtterance(t, { stream: "mic-2", startMs: 9_000, endMs: 9_500, text: "Eccomi.", voice: { kind: "speaker", index: 0 } }))).toBe(2);
   });
 });
