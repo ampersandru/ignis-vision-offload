@@ -2055,6 +2055,27 @@ fn a_patch_wins_over_the_command_line_and_is_validated_whole() {
     assert!(err.contains("spec.draft_rows") && err.contains("99"), "{err}");
 }
 
+/// Spec speech/08: a live patch of the diarizer's Sortformer fields is taken
+/// by a server running any active model, as a start takes them, and stays at
+/// its plain key: the patch is not homed into a family's section, so the
+/// running configuration and the file written from it agree.
+#[test]
+fn a_patch_of_the_diarizers_fields_is_taken_by_every_active_model_at_its_plain_key() {
+    let patch = patch_of(&[("diarizer", "weak_boost_rate", "2"), ("diarizer", "live_chunk_frames", "30")]);
+    for meta in [schema::field("diarizer", "weak_boost_rate").unwrap(), schema::field("diarizer", "live_chunk_frames").unwrap()] {
+        assert!(patch.homed().get(meta, None).is_some(), "{} stays at its group key", meta.file_key());
+    }
+    for family in [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21] {
+        let running = config(&["--profile", "none"]).for_family(family).unwrap();
+        let patched = running.with_patch(&patch).unwrap_or_else(|e| panic!("{family:?}: {e}"));
+        let diarizer = &patched.settings().diarizer;
+        assert_eq!((diarizer.weak_boost_rate, diarizer.live_chunk_frames), (Some(2_000), 30), "{family:?}");
+        assert_eq!(crate::Live::of(&patched).diarizer.weak_boost_rate, Some(2_000));
+        let document = file::effective_document(&patched);
+        assert_eq!((document["diarizer"]["weak_boost_rate"].clone(), document["diarizer"]["live_chunk_frames"].clone()), (serde_json::json!(2.0), serde_json::json!(30)), "{family:?}");
+    }
+}
+
 /// One patch entry, as `PATCH /v1/config` would give it.
 fn patch_of(entries: &[(&str, &str, &str)]) -> source::Layer {
     let mut patch = source::Layer::default();

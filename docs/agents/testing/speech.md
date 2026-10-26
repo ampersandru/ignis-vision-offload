@@ -58,3 +58,21 @@ steps: `convert` writes the `.jit`'s 16 kHz weights to
 `crates/speech/tests/fixtures/vad/` (the dictations' to the study directory,
 never the repo) and the bound: ten times the `.jit`'s distance from the same
 graph in fp64, at least 1e-5.
+
+## Speakers in a Realtime session (GitHub #361)
+
+The server's side of the diarizer (spec speech/08) is tested in the default
+suite against a diarizer scripted frame by frame (`FakeDiarizer`, beside
+`FakeExecutor`): `crates/server/tests/speech_realtime_speakers.rs` runs the
+real VAD on the FLEURS fixture clip, so the cuts at a speaker change, the
+length guard's cuts and their times are exact, and checks the queue limit and
+the rank of the diarizer's steps on the worker. `ignis_speech::Session::cut`
+is checked against the session of the audio before the cut on the synthetic
+pair (`crates/speech/tests/executor.rs`). The real adapter, `CpuDiarizer`, has
+one `--ignored` leg on the study directory's F32 GGUF, on the CPU: its frames
+against the crate's stream, step by step. `scripts/gpu-profile.ps1` skips it
+by name (`$NotGpuLegs`).
+
+```sh
+CUDA_VISIBLE_DEVICES= cargo test -p ignis-server --lib speech::cpu::tests::the_diarizer_adapter -- --ignored
+```
