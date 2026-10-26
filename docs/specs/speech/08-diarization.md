@@ -338,6 +338,18 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
 - **RAM:** the F16 weights, 199 MB, mapped; a stream holds its speaker cache and FIFO (528 rows of 512, 1 MB) and the
   samples its next step reads; a diarized item keeps its audio for a cut (64 KB/s, 7.7 MB at the 120 s guard).
 
+### The text in a session with speakers (AC 7)
+
+- **AC 7, passed.** `speech_diarizer_study.rs`'s second leg (`--ignored`): the twenty conversations (77 min), each in a
+  session of its own, fed at twice real time with speakers `live`, Qwen3-ASR `qwen3-asr-1.7b` and the diarizer (F16)
+  on the one worker, the test profile, the i9 shared with another session's run: 347 items, 9 of them cut at a change
+  of speaker (conv03, conv05, conv12, conv15 five times, conv20; none by the length guard). No item had a delta before
+  its `committed`; each had at most one delta, its deltas joined equal to its `completed.transcript`, and its speaker
+  after them and before `completed`. No `error`, no `failed`. Speakers heard: 2 to 6 a conversation.
+- The worker ran behind the 2x feed (each conversation's last item completed 77-417 s after its audio ended), so most of
+  the 119 changes the references hold with under 0.5 s of silence were found after their item had ended and split
+  nothing, as designed. A worker that keeps up should cut more of them (not measured here).
+
 ### The length guard (AC 12)
 
 - **Items:** continuous Italian from two VoxPopuli speakers (`long_items.py`): their segments concatenated, every run of

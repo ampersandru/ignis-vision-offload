@@ -22,7 +22,9 @@
 //! fed `IGNIS_DIARIZER_PACE` (default 2) times faster than real time with speakers `live`. In such a
 //! session no delta comes before its item's `committed`, the deltas of each item joined are its
 //! `completed.transcript`, cut items included, and its speaker comes after its last delta and
-//! before `completed`. It prints each conversation's items, cuts and speakers. About 40 minutes:
+//! before `completed`. It prints each conversation's items, cuts and speakers. About 95 minutes on
+//! the i9 in the test profile, where the worker falls behind a 2x feed: an item's change found
+//! only after the item ended splits nothing, so a worker that keeps up should cut more items.
 //!
 //! ```text
 //! cargo test -p ignis-server --test speech_diarizer_study -- --ignored --nocapture every_item_of_the_conversations

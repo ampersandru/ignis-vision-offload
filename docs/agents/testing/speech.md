@@ -131,7 +131,9 @@ in `$NotGpuLegs`. Run each alone, with nothing else on the CPU, and the
   fewer) in a session of its own, fed `IGNIS_DIARIZER_PACE` (2) times faster
   than real time: no item's delta before its `committed`, its deltas joined
   its `completed.transcript`, cut items included. It prints each
-  conversation's items, cuts and speakers; about 40 minutes at 2x.
+  conversation's items, cuts and speakers; about 95 minutes at 2x in the test
+  profile on the i9, where the worker falls behind the feed, so changes found
+  after their item ended split nothing (9 cuts in 347 items).
 
 ```sh
 CUDA_VISIBLE_DEVICES= cargo test --release -p ignis-server --test speech_diarizer_study -- --ignored --nocapture the_diarizer_keeps_up
