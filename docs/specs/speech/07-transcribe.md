@@ -226,8 +226,9 @@ its listening) and `web/src/speech/` (the session, the capture, the strike of th
   source's Pause commits it, as Stop commits the last item (the spec says only that Pause "stops the capture"), and
   only when one is under way: a commit with no speech since the last item would make an item of the silence.
 - **An end flushes first.** Stop and a file's end send each session an empty `session.update` and commit the
-  utterance under way only once it is answered: the server reads events in order, so by then the VAD's events for
-  the last audio sent have come, and an utterance whose start was still on its way is not lost. The session closes
+  utterance under way only once it is answered: the server reads events in order and runs its VAD as it reads each
+  append, so by then the VAD's events for the last audio sent have come (the empty update changes no context, so it
+  prefills nothing), and an utterance whose start was still on its way is not lost. The session closes
   once every utterance's text has come; a session that closes while one still waits ends the listening as a lost
   connection.
 - **A Continue's clock** starts at the larger of the clock the last listening left and the last utterance's end: a

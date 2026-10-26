@@ -392,6 +392,17 @@ describe("what the server refuses (AC 15: spec speech/04's states)", () => {
     expect(h.state().notice).toEqual({ text: STILL_BUSY, tone: "warn" });
   });
 
+  it("a busy refusal that comes after Stop does not start it again", async () => {
+    const h = harness();
+    start(h);
+    await h.controller.stop();
+    h.session().emit({ type: "refused", refusal: { kind: "busy" } });
+    expect(h.state().phase).toBe("idle");
+    await vi.advanceTimersByTimeAsync(BUSY_RETRY_SECONDS * 1_000);
+    expect(h.sessions).toHaveLength(1);
+    expect(h.mics.every((m) => m.stopped)).toBe(true);
+  });
+
   it("Stop while it waits gives the retry up", async () => {
     const h = harness();
     start(h);

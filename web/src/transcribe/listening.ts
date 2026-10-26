@@ -604,6 +604,8 @@ export class ListeningController {
   private refused(refusal: Refusal) {
     switch (refusal.kind) {
       case "busy":
+        // Stopped before the refusal came: nothing to wait for.
+        if (this.state.phase === "finishing") return this.finish(this.stopNotice);
         if (this.retried) return this.finish({ text: STILL_BUSY, tone: "warn" });
         this.retried = true;
         return this.countDown(Math.min(BUSY_RETRY_MAX_SECONDS, Math.ceil(refusal.retryAfter ?? BUSY_RETRY_SECONDS)));
