@@ -321,9 +321,14 @@ on one of the eight.
   `completed.transcript`. A session with speakers that does not opt in to the
   provisional tail sees an item's text only at its end.
 - **`completed` waits for the speaker**: until the diarizer's frames cover the
-  item's end. With no more audio after it (a file's end, a pause in what the
-  client sends, a commit), the server scores what the diarizer has heard
-  past its last step at once, as if the audio ended there, rather than wait.
+  item's end. While the audio keeps coming, the diarizer's next step covers
+  it, with its look-ahead. When it stops (a file's end, a pause in what the
+  client sends, a commit with no audio after it), the server waits as long as
+  that step's missing audio takes at real time, plus the client's last piece
+  again (what a client at real-time pace takes to send it), then scores what
+  the diarizer has heard past its last step as if the audio ended there. That
+  wait is at most the geometry's latency (2.32 s live, 30.4 s for a file) and
+  the last piece.
 - A diarizer that fails is an `error`, `ignis_diarizer_failed`, saying why, and
   the session goes on without speakers.
 
@@ -362,7 +367,9 @@ sessions ([metrics](../reference/metrics.md)).
 A session with [speakers](#speakers) writes one more line when it ends,
 `ignis.speech.diarization`: its `speakers` (how many voices its items were given),
 its `items` (how many had one), its `steps`, the diarizer's step time on the
-worker, `step_mean_ms` and `step_max_ms`, and `lag_max_ms`, the most a stretch
+worker, `step_mean_ms` and `step_max_ms`, its `tails` (the times the audio
+stopped with an item waiting for its speaker, and the diarizer scored what it
+had heard past its last step), and `lag_max_ms`, the most a stretch
 of audio waited from its arrival for the diarizer's view of it: on a machine
 that keeps up, the geometry's latency (2.32 s live) plus a step or two. The diarizer's load is `ignis.diarizer.load`, with the speaker
 cache's constants in force (`auto` resolved to the checkpoint's values, or the

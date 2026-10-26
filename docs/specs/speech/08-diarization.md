@@ -366,6 +366,14 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
 - `session.ignis.diarization` changes apply at once while the current item holds no audio, else from the next item;
   a new stream numbers its speakers afresh. A diarizer that fails mid-session is an `error`, `ignis_diarizer_failed`,
   and the session goes on without speakers; an unavailable one refuses the opt-in with `ignis_diarizer_unavailable`.
+- **The tail.** An item's speaker waits for the frames over its end, which in a stream that flows the next step brings
+  with its look-ahead. A stream that stalls, no audio for as long as its next step's missing samples take at real time
+  plus the client's last piece again (a client at real-time pace sends its next piece that long after the last), gets
+  them from a copy of the stream finished: what it heard past its last step, scored with no look-ahead (a file's end,
+  a pause in what the client sends, a commit with no audio after it). The tail's frames cut nothing and serve the
+  items whose end they cover, those ended after it too, until the steps reach as far. The wait is at most the
+  geometry's latency (2.32 s live, 30.4 s file) and the last piece. The log line counts the tails (`tails`) apart from the
+  steps; their compute is not in `step_mean_ms`.
 - A change found only after its item ended does not split it (the item takes its majority speaker). An item with no
   speech gets no speaker event. The speaker is the model's channel, so numbers can skip one the ghost rule held back
   (spec 07 numbers the speakers by first appearance).
