@@ -73,7 +73,7 @@ thinking budget forced a close on 15 of 32 turns against 8 of 32 on NVFP4.
 - **A report of your card**: `ignis-bench small-card`
   ([measure a 16 GB card](../guides/measure-a-16gb-card.md)).
 - **Playground**: the [Server view](../playground/server.md) lists the 16 GB
-  entry and copies its download command.
+  entry and downloads it.
 
 ## Limits
 

@@ -164,6 +164,12 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .routes(routes!(switch_model))
         // Spec playground/05: the models a switch can go to or fetch.
         .routes(routes!(crate::catalog_http::get_models_catalog))
+        // GitHub #380: remove a catalog entry's files from the models folder.
+        .routes(routes!(crate::removal_http::post_model_remove))
+        // GitHub #376: download a catalog entry in the background.
+        .routes(routes!(crate::download_http::post_model_download))
+        // GitHub #377: stop it, keeping its partial files.
+        .routes(routes!(crate::download_http::post_model_download_cancel))
         // Spec config-v2/02: the running configuration, read and changed.
         .routes(routes!(crate::config_http::get_config, crate::config_http::patch_config))
         // Spec playground/05: what each of those fields is, and where each
@@ -210,6 +216,9 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .route("/v1/models", options(cors_preflight))
         .route("/v1/models/switch", options(cors_preflight))
         .route("/v1/models/catalog", options(cors_preflight))
+        .route("/v1/models/remove", options(cors_preflight))
+        .route("/v1/models/download", options(cors_preflight))
+        .route("/v1/models/download/cancel", options(cors_preflight))
         .route("/v1/config", options(cors_preflight))
         .route("/v1/config/fields", options(cors_preflight))
         .route("/v1/config/origins", options(cors_preflight))
@@ -697,11 +706,13 @@ pub(crate) fn implicit_switch_refused(refusal: crate::model_switch::ImplicitRefu
 /// configuration, which a reload with a changed config is changing (spec
 /// config-v2/02), and what a page needs to show the switch and the
 /// configuration while it runs: the fields' declarations, where each value
-/// comes from and the models a switch can go to (spec playground/05).
+/// comes from and the models a switch can go to (spec playground/05). And
+/// the cancel of a running download (GitHub #377), which never touches the
+/// loaded model: a download begun before the switch is stopped during it.
 fn reports_or_drives_the_switch(method: &axum::http::Method, path: &str) -> bool {
     (method == axum::http::Method::GET
         && matches!(path, "/v1/models" | "/v1/models/catalog" | "/v1/config" | "/v1/config/fields" | "/v1/config/origins"))
-        || (method == axum::http::Method::POST && path == "/v1/models/switch")
+        || (method == axum::http::Method::POST && matches!(path, "/v1/models/switch" | "/v1/models/download/cancel"))
 }
 
 async fn require_api_key(State(server): State<Arc<Server>>, req: Request, next: Next) -> Response {
@@ -3647,6 +3658,12 @@ mod tests {
             // They drive a switch or a reload, which holds the switch's slot.
             ("POST", "/v1/models/switch"),
             ("PATCH", "/v1/config"),
+            // A removal deletes files beside the model, never its own (GitHub #380).
+            ("POST", "/v1/models/remove"),
+            // A download fetches files beside the model (GitHub #376).
+            ("POST", "/v1/models/download"),
+            // Stopping it (GitHub #377).
+            ("POST", "/v1/models/download/cancel"),
             // The Responses socket's upgrade: its jobs count, one by one.
             ("GET", "/v1/responses"),
             // The speech model runs beside the text model on the CPU, and a

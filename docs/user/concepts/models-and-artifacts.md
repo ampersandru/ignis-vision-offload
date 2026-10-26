@@ -147,7 +147,8 @@ variant of a built-in model is a new id
 A request may name any **servable** model: the loaded one, plus every model
 whose artifact is on disk. Naming one other than the loaded model switches the
 server to it ([model switching](switching-and-idle-unload.md)). A switch never
-starts a download; fetching is a separate step (`ignis-server model download`).
+starts a download; fetching is a separate step (`ignis-server model download`,
+or **Download** on the Playground's [Server view](../playground/server.md#downloading-a-model)).
 
 ## The abliterated variant
 

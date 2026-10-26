@@ -13,6 +13,15 @@
 //!
 //! The endpoint is injectable, so the whole path is covered by tests against
 //! loopback servers (`tests/model_download.rs`), never the internet.
+//!
+//! A start and `model download` wait for [`Downloader::fetch`]. A server
+//! that keeps serving runs the same transfer on a task of its own with
+//! [`Downloader::start`] (GitHub #375): the [`Download`] it returns reads the
+//! bytes on disk, cancels it, and says how it [`Ended`]. A cancel stops it at
+//! the next thing it waits for — a response, a chunk of body, a resumed
+//! `.part`'s replay — and flushes the `.part` it was writing, which stays
+//! for the next transfer of the entry to resume, as a dropped connection's
+//! does.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,8 +29,10 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::watch;
 
 use super::catalog::{CatalogEntry, CatalogFile};
+use super::lock::{EntryLock, Holder, NotLocked};
 use crate::config::ApiKey;
 
 /// How long the connection alone may take. The transfer as a whole is
@@ -61,6 +72,103 @@ impl DownloadError {
     }
 }
 
+/// How a [`Download`] ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    /// Every file verified and in place: the artifact's path.
+    Fetched(PathBuf),
+    /// [`Download::cancel`] stopped it. What it fetched stays: the files it
+    /// verified, and the `.part` it was writing, flushed, for the next
+    /// transfer of the entry to resume.
+    Cancelled,
+    /// It did not produce a verified entry, for this reason, leaving what
+    /// [`Downloader::fetch`] leaves on the same failure.
+    Failed(DownloadError),
+}
+
+/// A transfer running on a task of its own ([`Downloader::start`]) while its
+/// caller goes on. Every clone is a handle on the same download; dropping
+/// them all does not stop it.
+#[derive(Clone)]
+pub struct Download {
+    entry: Arc<CatalogEntry>,
+    dir: PathBuf,
+    cancel: watch::Sender<bool>,
+    ended: watch::Receiver<Option<Ended>>,
+}
+
+impl Download {
+    /// The entry it fetches.
+    pub fn entry(&self) -> &CatalogEntry {
+        &self.entry
+    }
+
+    /// Stop it. Returns at once: the transfer stops at the next thing it
+    /// waits for, and [`Download::wait`] then answers [`Ended::Cancelled`].
+    /// One that has already ended stays as it ended.
+    pub fn cancel(&self) {
+        self.cancel.send_replace(true);
+    }
+
+    /// The bytes of the entry under its directory now, partial files
+    /// included ([`super::command::bytes_on_disk`]), read from the
+    /// filesystem: running, cancelled or ended, what is there.
+    pub fn bytes_on_disk(&self) -> u64 {
+        super::command::bytes_on_disk(&self.entry, &self.dir, &super::command::file_size)
+    }
+
+    /// How it ended, or `None` while it runs.
+    pub fn ended(&self) -> Option<Ended> {
+        if let Some(ended) = self.ended.borrow().clone() {
+            return Some(ended);
+        }
+        self.ended.has_changed().is_err().then(task_gone)
+    }
+
+    /// Wait until it ends, and say how.
+    pub async fn wait(&self) -> Ended {
+        let mut ended = self.ended.clone();
+        match ended.wait_for(Option::is_some).await {
+            Ok(ended) => ended.clone().unwrap_or_else(task_gone),
+            Err(_) => task_gone(),
+        }
+    }
+}
+
+/// How a download whose task stopped without saying how it ended reads: a
+/// panic on that task, which no transfer is meant to have.
+fn task_gone() -> Ended {
+    Ended::Failed(DownloadError::new("the download stopped without ending: its task is gone"))
+}
+
+/// What a transfer watches for a cancel: raised by [`Download::cancel`], and
+/// by nothing at all for [`Downloader::fetch`].
+struct Cancel(watch::Receiver<bool>);
+
+impl Cancel {
+    /// One nothing can raise.
+    fn never() -> Self {
+        let (_raise, watched) = watch::channel(false);
+        Self(watched)
+    }
+
+    /// Resolves once the cancel is raised; never, when nothing can raise it
+    /// any more.
+    async fn raised(&mut self) {
+        if self.0.wait_for(|raised| *raised).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// What became of what a transfer went for.
+enum Landed {
+    /// Verified and renamed into place.
+    Verified,
+    /// Stopped by a cancel, its `.part` flushed for the next to resume.
+    Cancelled,
+}
+
 /// Where a transfer says what it is doing.
 #[derive(Clone)]
 pub enum Report {
@@ -96,12 +204,15 @@ pub struct Downloader {
     /// it to that) — Hugging Face sends a large file's body from its CDN.
     token: Option<ApiKey>,
     report: Report,
+    /// Who it takes an entry's lock as ([`EntryLock`]): what a fetch it
+    /// refuses meanwhile names.
+    holder: Holder,
 }
 
 impl Downloader {
     /// One fetching from `endpoint` (`https://host[/prefix]`, a trailing
     /// slash or none) with `token` ([`super::bearer_token`]'s choice),
-    /// reporting to the log.
+    /// reporting to the log, as a server.
     pub fn new(endpoint: &str, token: Option<ApiKey>) -> Result<Self, DownloadError> {
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -110,12 +221,18 @@ impl Downloader {
             .build()
             .map_err(|err| DownloadError::new(format!("HTTP client: {err}")))?;
         let endpoint = endpoint.trim_end_matches('/').to_owned();
-        Ok(Self { client, endpoint, token, report: Report::Log })
+        Ok(Self { client, endpoint, token, report: Report::Log, holder: Holder::Server })
     }
 
     /// The same, reporting as `report` says.
     pub fn reporting(self, report: Report) -> Self {
         Self { report, ..self }
+    }
+
+    /// The same, holding each entry's lock as `holder`: `model download`
+    /// holds it as the command.
+    pub fn holding_as(self, holder: Holder) -> Self {
+        Self { holder, ..self }
     }
 
     /// The URL a file of `entry` resolves to: Hugging Face's own route,
@@ -135,7 +252,47 @@ impl Downloader {
     /// name and left alone — checked for every file before any byte is
     /// fetched. The rest are fetched in ascending byte order, so a repo that
     /// cannot serve its small files fails in a second instead of an hour.
+    ///
+    /// It holds the entry's lock in `dir` until it returns ([`EntryLock`]),
+    /// and is refused before anything is fetched when another fetch holds it.
     pub async fn fetch(&self, entry: &CatalogEntry, dir: &Path) -> Result<PathBuf, DownloadError> {
+        let _lock = EntryLock::take(entry, dir, self.holder)?;
+        match self.fetch_until(entry, dir, &mut Cancel::never()).await? {
+            Landed::Verified => Ok(entry.artifact_path(dir)),
+            // Nothing raises a cancel nobody holds.
+            Landed::Cancelled => Err(DownloadError::new(format!("{}: cancelled", entry.id))),
+        }
+    }
+
+    /// The same transfer as [`Downloader::fetch`], on a task of its own on
+    /// the tokio runtime this is called on, returning at once: the
+    /// [`Download`] reads what is on disk, cancels it, and says how it ended.
+    /// It reports as this downloader reports.
+    ///
+    /// It takes the entry's lock in `dir` before it returns, refused when
+    /// another fetch holds it, and holds it until the download ends: released
+    /// before [`Download::ended`] says how, so whoever reads that the download
+    /// ended finds the entry free.
+    pub fn start(self, entry: CatalogEntry, dir: PathBuf) -> Result<Download, NotLocked> {
+        let lock = EntryLock::take(&entry, &dir, self.holder)?;
+        let (cancel, watched) = watch::channel(false);
+        let (end, ended) = watch::channel(None);
+        let entry = Arc::new(entry);
+        let download = Download { entry: Arc::clone(&entry), dir: dir.clone(), cancel, ended };
+        tokio::spawn(async move {
+            let ended = match self.fetch_until(&entry, &dir, &mut Cancel(watched)).await {
+                Ok(Landed::Verified) => Ended::Fetched(entry.artifact_path(&dir)),
+                Ok(Landed::Cancelled) => Ended::Cancelled,
+                Err(err) => Ended::Failed(err),
+            };
+            drop(lock);
+            end.send_replace(Some(ended));
+        });
+        Ok(download)
+    }
+
+    /// [`Downloader::fetch`]'s transfer, watching `cancel`.
+    async fn fetch_until(&self, entry: &CatalogEntry, dir: &Path, cancel: &mut Cancel) -> Result<Landed, DownloadError> {
         tokio::fs::create_dir_all(dir)
             .await
             .map_err(|err| DownloadError::new(format!("cannot create {}: {err}", dir.display())))?;
@@ -158,14 +315,16 @@ impl Downloader {
             }
         }
         for (file, path) in missing {
-            self.fetch_file(entry, file, &path).await?;
+            if let Landed::Cancelled = self.fetch_file(entry, file, &path, cancel).await? {
+                return Ok(Landed::Cancelled);
+            }
         }
-        Ok(entry.artifact_path(dir))
+        Ok(Landed::Verified)
     }
 
     /// One file. Resumes an earlier `.part` when there is one, verifies
     /// length and digest, and only then renames.
-    async fn fetch_file(&self, entry: &CatalogEntry, file: &CatalogFile, path: &Path) -> Result<(), DownloadError> {
+    async fn fetch_file(&self, entry: &CatalogEntry, file: &CatalogFile, path: &Path, cancel: &mut Cancel) -> Result<Landed, DownloadError> {
         let part = part_path(path);
         let url = self.url(entry, &file.name);
         // What an earlier attempt left. As many bytes as the pin names (or
@@ -181,7 +340,13 @@ impl Downloader {
         };
         let mut hasher = Sha256::new();
         if have > 0 {
-            replay_into_hasher(&part, have, &mut hasher).await?;
+            // Replaying a large `.part` takes a while; it only reads, so a
+            // cancel may cut it anywhere.
+            tokio::select! {
+                biased;
+                () = cancel.raised() => return Ok(Landed::Cancelled),
+                replayed = replay_into_hasher(&part, have, &mut hasher) => replayed?,
+            }
         }
 
         let mut request = self.client.get(&url);
@@ -191,10 +356,12 @@ impl Downloader {
         if have > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
-        let mut response = request
-            .send()
-            .await
-            .map_err(|err| DownloadError::new(format!("GET {url}: {err}")))?;
+        let sent = tokio::select! {
+            biased;
+            () = cancel.raised() => return Ok(Landed::Cancelled),
+            sent = request.send() => sent,
+        };
+        let mut response = sent.map_err(|err| DownloadError::new(format!("GET {url}: {err}")))?;
         let status = response.status();
         // The source has no bytes past where the partial file ends: it is not
         // the file this `.part` was the start of. Keeping it would send the
@@ -204,6 +371,16 @@ impl Downloader {
             return Err(DownloadError::new(format!(
                 "{}: the source has no bytes past {have}, where the partial download ends — it was discarded, start again to fetch the file whole",
                 file.name
+            )));
+        }
+        // A gated or private repository: say which token was sent and where
+        // it is read from, never what it is.
+        if matches!(status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) {
+            return Err(DownloadError::new(format!(
+                "GET {url}: {} {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or(""),
+                self.token_hint()
             )));
         }
         if !status.is_success() {
@@ -228,10 +405,18 @@ impl Downloader {
         let mut written = have;
         let mut next_report = written as f64 / file.bytes.max(1) as f64 + PROGRESS_STEP;
         loop {
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|err| DownloadError::new(format!("GET {url}: {err}")))?;
+            let chunk = tokio::select! {
+                biased;
+                // What arrived stays, all of it on disk, for the next
+                // transfer to resume from.
+                () = cancel.raised() => {
+                    out.flush()
+                        .await
+                        .map_err(|err| DownloadError::new(format!("flush {}: {err}", part.display())))?;
+                    return Ok(Landed::Cancelled);
+                }
+                chunk = response.chunk() => chunk.map_err(|err| DownloadError::new(format!("GET {url}: {err}")))?,
+            };
             let Some(chunk) = chunk else { break };
             out.write_all(&chunk)
                 .await
@@ -284,7 +469,22 @@ impl Downloader {
             .await
             .map_err(|err| DownloadError::new(format!("rename {}: {err}", part.display())))?;
         self.say(Event::Fetched { entry, file, path, seconds: started.elapsed().as_secs() });
-        Ok(())
+        Ok(Landed::Verified)
+    }
+
+    /// What a `401` or `403` from the endpoint is told: whether a token was
+    /// sent, and where it is read from — `HF_TOKEN` named only for Hugging
+    /// Face itself, the one host it is sent to. Never the token.
+    fn token_hint(&self) -> String {
+        let names = if super::is_huggingface(&self.endpoint) {
+            "IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN"
+        } else {
+            "IGNIS_DOWNLOAD_TOKEN (download.token)"
+        };
+        match self.token {
+            None => format!("the endpoint wants a token and none was sent: set {names} for the server (read at its start) or for `model download`"),
+            Some(_) => format!("the endpoint refused the token sent, {names} as the server (at its start) or `model download` read it"),
+        }
     }
 
     /// Report `event` the way this downloader reports. No event carries the
@@ -448,5 +648,24 @@ mod tests {
     #[test]
     fn the_part_file_is_the_final_name_plus_part() {
         assert_eq!(part_path(Path::new("models/a.ninfer")), PathBuf::from("models/a.ninfer.part"));
+    }
+
+    /// GitHub #376: a `401` or `403` says whether a token was sent and where
+    /// it is read from, in each of the four cells — no token or one, Hugging
+    /// Face or another endpoint — naming `HF_TOKEN` for Hugging Face alone,
+    /// the one host it is sent to, and never the token.
+    #[test]
+    fn a_refusal_for_the_token_says_whether_one_was_sent_and_where_it_is_read() {
+        let hint = |endpoint: &str, token: Option<&str>| Downloader::new(endpoint, token.map(ApiKey::new)).expect("a client").token_hint();
+        let set = "set IGNIS_DOWNLOAD_TOKEN (download.token)";
+        let none = hint("https://huggingface.co", None);
+        assert_eq!(none, format!("the endpoint wants a token and none was sent: {set}, or HF_TOKEN for the server (read at its start) or for `model download`"));
+        let mirror = hint("https://mirror.example/hf", None);
+        assert_eq!(mirror, format!("the endpoint wants a token and none was sent: {set} for the server (read at its start) or for `model download`"));
+        let refused = hint("https://huggingface.co", Some("tok-secret"));
+        assert_eq!(refused, "the endpoint refused the token sent, IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN as the server (at its start) or `model download` read it");
+        let refused_by_mirror = hint("https://mirror.example/hf", Some("tok-secret"));
+        assert_eq!(refused_by_mirror, "the endpoint refused the token sent, IGNIS_DOWNLOAD_TOKEN (download.token) as the server (at its start) or `model download` read it");
+        assert!(![none, mirror, refused, refused_by_mirror].iter().any(|hint| hint.contains("tok-secret")), "never the token");
     }
 }

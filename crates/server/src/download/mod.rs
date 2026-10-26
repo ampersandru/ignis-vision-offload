@@ -19,8 +19,11 @@
 //!   catalog, an `exists` probe and whatever the operator answered; every
 //!   cell of spec 01's table is a unit test below;
 //! - [`bearer_token`] — which token a request carries: pure;
-//! - `transfer.rs` — the [`Downloader`], driven against loopback `axum`
-//!   servers (`tests/model_download.rs`);
+//! - `transfer.rs` — the [`Downloader`], and the [`Download`] it runs in the
+//!   background, driven against loopback `axum` servers
+//!   (`tests/model_download.rs`);
+//! - `lock.rs` — the [`EntryLock`] every fetch holds: one writer per entry
+//!   in a folder, the server's and `model download`'s alike;
 //! - `command.rs` — `model download` and `model list`.
 
 use std::path::{Path, PathBuf};
@@ -29,11 +32,13 @@ use crate::config::ApiKey;
 
 pub mod catalog;
 pub mod command;
+mod lock;
 mod transfer;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
-pub use transfer::{DownloadError, Downloader, Report};
+pub use lock::{EntryLock, Holder, NotLocked};
+pub use transfer::{Download, DownloadError, Downloader, Ended, Report};
 
 /// The host whose own credential `HF_TOKEN` is.
 const HUGGINGFACE_HOST: &str = "huggingface.co";
@@ -210,6 +215,33 @@ pub enum StartRefusal {
     Config(crate::config::ConfigError),
 }
 
+/// The start-time fetch ([`ArtifactSource::Download`]): every file of `entry`
+/// into `dir` from `endpoint` with `token`, once the volume `dir` is on has
+/// room for what of it is still missing plus `free_margin`
+/// (`download.free_margin`, GitHub #378), checked before a byte is written,
+/// as the Server view's Download and `model download` check it
+/// ([`command::room_for`]). Whatever stops it — no room, an HTTP client that
+/// cannot be built, the transfer's own failure — is logged as
+/// `ignis.model.download_failed` at ERROR, "refusing to start", and
+/// returned: `main` refuses the start on it, with exit code 1. The artifact's
+/// path once every file verified.
+pub async fn fetch_at_start(entry: &CatalogEntry, dir: &Path, endpoint: &str, token: Option<ApiKey>, free_margin: u64) -> Result<PathBuf, DownloadError> {
+    let refused = |err: DownloadError| {
+        tracing::error!(
+            name: "ignis.model.download_failed",
+            model = %entry.id,
+            repo = %entry.repo,
+            endpoint = %endpoint,
+            error = %err,
+            "refusing to start"
+        );
+        err
+    };
+    command::room_for(entry, dir, free_margin).map_err(|reason| refused(DownloadError(reason)))?;
+    let downloader = Downloader::new(endpoint, token).map_err(refused)?;
+    downloader.fetch(entry, dir).await.map_err(refused)
+}
+
 /// Which token a request to `endpoint` carries (spec model-download/02
 /// §Endpoint and token): `download.token` when it is set; else `HF_TOKEN`,
 /// but **only** when the endpoint's host is `huggingface.co` itself — a
@@ -221,11 +253,16 @@ pub fn bearer_token(endpoint: &str, configured: Option<&ApiKey>, hf_token: Optio
         return Some(token.clone());
     }
     let hf_token = hf_token.map(str::trim).filter(|token| !token.is_empty())?;
-    let huggingface = reqwest::Url::parse(endpoint)
+    is_huggingface(endpoint).then(|| ApiKey::new(hf_token))
+}
+
+/// Whether `endpoint`'s host is `huggingface.co` itself, the one host
+/// `HF_TOKEN` is sent to ([`bearer_token`]).
+pub(crate) fn is_huggingface(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint)
         .ok()
         .and_then(|url| url.host_str().map(|host| host.eq_ignore_ascii_case(HUGGINGFACE_HOST)))
-        .unwrap_or(false);
-    huggingface.then(|| ApiKey::new(hf_token))
+        .unwrap_or(false)
 }
 
 /// Put the question to the operator on stderr and read the answer from stdin.

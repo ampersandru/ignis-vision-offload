@@ -6,7 +6,9 @@
 //! the model: every file of an entry — sidecars included — is checked
 //! against its byte count and digest before it is renamed into place, the
 //! small files are fetched first, an interrupted transfer resumes from its
-//! own `.part`, and the token goes to the endpoint and nowhere else.
+//! own `.part`, and the token goes to the endpoint and nowhere else. A
+//! transfer in the background (GitHub #375) reads its bytes on disk while it
+//! runs and stops on a cancel, keeping its `.part` for the next to resume.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -24,7 +26,7 @@ use axum::Router;
 use ignis_server::config::file::Files;
 use ignis_server::config::{resolve_with, ApiKey, ConfigOutcome};
 use ignis_server::download::command::run;
-use ignis_server::download::{CatalogEntry, CatalogFile, CatalogLayer, Downloader, ModelCommand, Report};
+use ignis_server::download::{CatalogEntry, CatalogFile, CatalogLayer, Download, Downloader, Ended, ModelCommand, NotLocked, Report};
 
 // ── the repo this test serves ───────────────────────────────────────────────
 
@@ -113,6 +115,12 @@ struct Served {
     /// Answer every repo request with a redirect to this base instead (the
     /// CDN Hugging Face sends a large file from).
     redirect_to: Mutex<Option<String>>,
+    /// Hold every artifact response after this many body bytes, until
+    /// [`Served::release`] lets the rest through (`None` = never hold): a
+    /// download caught mid-transfer, without a timer.
+    hold_after: Mutex<Option<usize>>,
+    /// Notified once, it lets one held response send the rest of its body.
+    release: tokio::sync::Notify,
 }
 
 impl Served {
@@ -165,7 +173,7 @@ async fn cdn(State(state): State<Arc<Served>>, UrlPath(file): UrlPath<String>, h
     serve(&state, &file, range)
 }
 
-fn serve(state: &Served, file: &str, range: Option<String>) -> Response {
+fn serve(state: &Arc<Served>, file: &str, range: Option<String>) -> Response {
     let Some(mut body) = body_of(file) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -190,12 +198,27 @@ fn serve(state: &Served, file: &str, range: Option<String>) -> Response {
     if is_artifact && truncate_after > 0 {
         served.truncate(truncate_after);
     }
-    *state.bytes_sent.lock().unwrap().entry(file.to_owned()).or_default() += served.len();
     let status = if start > 0 && !ignore_range {
         StatusCode::PARTIAL_CONTENT
     } else {
         StatusCode::OK
     };
+    let hold_after = if is_artifact { *state.hold_after.lock().unwrap() } else { None };
+    if let Some(at) = hold_after.filter(|at| *at < served.len()) {
+        // The first `at` bytes now, the rest only once released: each counted
+        // as sent when it is, so a held body cut off by its client never is.
+        let rest = served.split_off(at);
+        *state.bytes_sent.lock().unwrap().entry(file.to_owned()).or_default() += served.len();
+        let (state, file) = (Arc::clone(state), file.to_owned());
+        let first = futures_util::stream::once(async move { Ok::<_, std::io::Error>(axum::body::Bytes::from(served)) });
+        let then = futures_util::stream::once(async move {
+            state.release.notified().await;
+            *state.bytes_sent.lock().unwrap().entry(file).or_default() += rest.len();
+            Ok(axum::body::Bytes::from(rest))
+        });
+        return (status, Body::from_stream(futures_util::StreamExt::chain(first, then))).into_response();
+    }
+    *state.bytes_sent.lock().unwrap().entry(file.to_owned()).or_default() += served.len();
     (status, Body::from(served)).into_response()
 }
 
@@ -465,6 +488,117 @@ async fn a_file_at_its_final_name_with_another_size_is_refused_and_left_in_place
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ── in the background ───────────────────────────────────────────────────────
+
+/// Every byte [`entry`] pins: the sidecar's and the artifact's.
+fn entry_bytes() -> u64 {
+    (SIDECAR_BODY.len() + artifact_bytes().len()) as u64
+}
+
+/// `download`'s bytes on disk, read until they are `want` (scheduling turns,
+/// bounded): the endpoint has sent a held body's first bytes before the
+/// download has written them.
+async fn until_on_disk(download: &Download, want: u64) {
+    for _ in 0..10_000 {
+        if download.bytes_on_disk() == want {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    panic!("the bytes on disk never reached {want}: {}", download.bytes_on_disk());
+}
+
+/// The `Range` of each request for the artifact, in order.
+fn artifact_ranges(state: &Served) -> Vec<Option<String>> {
+    state.seen.lock().unwrap().iter().filter(|seen| seen.file == ARTIFACT).map(|seen| seen.range.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_download_in_the_background_reads_its_bytes_on_disk_while_it_runs() {
+    // GitHub #375: started on a task of its own, the download goes on while
+    // its caller does. Held mid-body, it is still running, and its reading
+    // counts the sidecar it verified and the artifact's `.part` so far; let
+    // through, it ends verified, every byte on disk.
+    let (addr, state) = repo_server().await;
+    *state.hold_after.lock().unwrap() = Some(4096);
+    let dir = temp_dir("background");
+
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+
+    until_on_disk(&download, SIDECAR_BODY.len() as u64 + 4096).await;
+    assert_eq!(download.ended(), None, "held mid-body, it is still running");
+    assert!(dir.join(SIDECAR).exists() && part(&dir, ARTIFACT).exists() && !dir.join(ARTIFACT).exists());
+    state.release.notify_one();
+    assert_eq!(download.wait().await, Ended::Fetched(dir.join(ARTIFACT)));
+    assert_eq!(download.ended(), Some(Ended::Fetched(dir.join(ARTIFACT))), "and stays ended");
+    assert_eq!(download.bytes_on_disk(), entry_bytes());
+    assert_eq!(std::fs::read(dir.join(ARTIFACT)).unwrap(), artifact_bytes());
+    assert!(!part(&dir, ARTIFACT).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_cancelled_download_stops_keeps_its_part_and_the_next_one_resumes_from_it() {
+    // GitHub #375: a cancel stops a download even while the body it waits
+    // on is held, through any handle on it. What it fetched stays — the
+    // verified sidecar and the artifact's `.part`, exactly the bytes that
+    // arrived — and the next transfer of the entry asks only for the rest.
+    let (addr, state) = repo_server().await;
+    *state.hold_after.lock().unwrap() = Some(4096);
+    let dir = temp_dir("cancel");
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+    until_on_disk(&download, SIDECAR_BODY.len() as u64 + 4096).await;
+
+    download.clone().cancel();
+
+    assert_eq!(download.wait().await, Ended::Cancelled);
+    assert_eq!(std::fs::metadata(part(&dir, ARTIFACT)).expect("the partial file stays").len(), 4096);
+    assert_eq!(std::fs::read(dir.join(SIDECAR)).unwrap(), SIDECAR_BODY);
+    assert!(!dir.join(ARTIFACT).exists());
+    assert_eq!(download.bytes_on_disk(), SIDECAR_BODY.len() as u64 + 4096, "a cancelled download reads as what it fetched");
+
+    *state.hold_after.lock().unwrap() = None;
+    let path = downloader(addr).fetch(&entry(), &dir).await.expect("resumed");
+    assert_eq!(std::fs::read(&path).unwrap(), artifact_bytes());
+    assert_eq!(artifact_ranges(&state), [None, Some("bytes=4096-".to_owned())]);
+    assert_eq!(state.requested(), [SIDECAR, ARTIFACT, ARTIFACT], "the verified sidecar is not fetched again");
+    assert_eq!(state.sent(ARTIFACT), artifact_bytes().len(), "each byte of the artifact is sent once");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_download_cancelled_before_it_began_fetches_nothing() {
+    // GitHub #375: the cancel is honoured wherever the download is, its
+    // first request included. This test's runtime runs one task at a time,
+    // so the download has not begun when the cancel is raised.
+    let (addr, state) = repo_server().await;
+    let dir = temp_dir("cancel-first");
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+
+    download.cancel();
+
+    assert_eq!(download.wait().await, Ended::Cancelled);
+    assert!(state.requested().is_empty(), "{:?}", state.requested());
+    assert_eq!(download.bytes_on_disk(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_download_that_fails_in_the_background_ends_with_its_reason() {
+    // GitHub #375: a failure ends the download with the reason a fetch in
+    // the foreground gives, apart from a cancel.
+    let (addr, state) = repo_server().await;
+    state.extra_bytes.store(1, Ordering::SeqCst);
+    let dir = temp_dir("background-fail");
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+
+    let Ended::Failed(err) = download.wait().await else { panic!("a longer source fails the download") };
+
+    assert!(err.to_string().contains("longer") && err.to_string().contains(ARTIFACT), "{err}");
+    assert!(!dir.join(ARTIFACT).exists() && !part(&dir, ARTIFACT).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── the endpoint and the token ──────────────────────────────────────────────
 
 #[tokio::test]
@@ -654,6 +788,43 @@ async fn model_download_out_puts_it_elsewhere_and_no_id_fetches_the_configured_m
 }
 
 #[tokio::test]
+async fn model_download_refuses_an_entry_the_folder_has_no_room_for_before_any_byte() {
+    // GitHub #378: the command checks the room as the server does, before
+    // each entry: its bytes still missing plus `download.free_margin` above
+    // the free space refuse it, both numbers named, nonzero exit. Nothing is
+    // requested, and the folder, which did not exist, is not even created.
+    // The short disk is the margin itself, set larger than any disk.
+    let (addr, state) = repo_server().await;
+    let dir = temp_dir("cli-no-room");
+    let endpoint = format!("http://{addr}");
+    let files = operator_catalog();
+    let dir_text = dir.display().to_string();
+    let argv = ["model", "download", "test-model", "--download-catalog", "ops.catalog.yaml", "--download-endpoint", &endpoint, "--download-path", &dir_text, "--download-free-margin", "1000000G"];
+
+    let (stdout, progress, code) = ran(command(&argv, &files)).await;
+
+    assert_ne!(code, 0, "{progress:?}");
+    assert!(stdout.is_empty(), "{stdout}");
+    let needed = format!("{} bytes needed", 1_000_000u64 * (1 << 30) + entry_bytes());
+    assert!(
+        progress.iter().any(|line| line.starts_with("test-model: failed") && line.contains(&needed) && line.contains("bytes free") && line.contains("download.free_margin")),
+        "{progress:?}"
+    );
+    assert!(state.requested().is_empty(), "{:?}", state.requested());
+    assert!(!dir.exists(), "nothing written");
+
+    // An entry with nothing missing writes nothing: never refused for room.
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(SIDECAR), SIDECAR_BODY).unwrap();
+    std::fs::write(dir.join(ARTIFACT), artifact_bytes()).unwrap();
+    let (stdout, progress, code) = ran(command(&argv, &files)).await;
+    assert_eq!(code, 0, "{progress:?}");
+    assert_eq!(stdout.trim(), dir.join(ARTIFACT).display().to_string());
+    assert!(state.requested().is_empty(), "{:?}", state.requested());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn model_download_exits_nonzero_when_an_entry_does_not_verify() {
     // 02 AC 12: a failure is a nonzero exit, its reason on the progress
     // stream; nothing unverified is printed as fetched.
@@ -670,5 +841,176 @@ async fn model_download_exits_nonzero_when_an_entry_does_not_verify() {
     assert_ne!(code, 0);
     assert!(stdout.is_empty(), "{stdout}");
     assert!(progress.iter().any(|line| line.contains("test-model: failed") && line.contains("longer")), "{progress:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── one writer per entry ────────────────────────────────────────────────────
+
+/// The entry's lock in `dir`: `<artifact>.lock` beside its files.
+fn lock_file(dir: &Path) -> PathBuf {
+    dir.join(format!("{ARTIFACT}.lock"))
+}
+
+#[tokio::test]
+async fn a_download_holds_its_entry_and_a_fetch_of_the_same_entry_is_refused_saying_so() {
+    // GitHub #379: whichever starts first holds the entry's lock in the
+    // models folder for the length of its fetch; a second fetch of the
+    // entry is refused, saying the entry is being downloaded, and touches
+    // nothing: no request, the first one's `.part` as it was.
+    let (addr, state) = repo_server().await;
+    *state.hold_after.lock().unwrap() = Some(4096);
+    let dir = temp_dir("lock-held");
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+    until_on_disk(&download, SIDECAR_BODY.len() as u64 + 4096).await;
+
+    let err = downloader(addr).fetch(&entry(), &dir).await.expect_err("one writer per entry");
+
+    let message = err.to_string();
+    assert!(message.contains("test-model is already being downloaded") && message.contains(&lock_file(&dir).display().to_string()), "{message}");
+    assert!(message.contains(&format!("by a server (process {})", std::process::id())), "it names the holder: {message}");
+    assert_eq!(state.requested(), [SIDECAR, ARTIFACT], "the refused fetch sent nothing");
+    assert_eq!(std::fs::metadata(part(&dir, ARTIFACT)).unwrap().len(), 4096, "and wrote nothing");
+    assert_eq!(download.ended(), None, "the first one still runs");
+    state.release.notify_one();
+    assert_eq!(download.wait().await, Ended::Fetched(dir.join(ARTIFACT)));
+    // Released once it ended: the next fetch of the entry takes it.
+    downloader(addr).fetch(&entry(), &dir).await.expect("free again after a success");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_entry_is_free_again_once_its_download_was_cancelled_or_failed() {
+    // GitHub #379: the lock goes with the download however it ends. A
+    // cancelled one leaves its `.part` and the entry free, so the next
+    // fetch resumes it; a failed one leaves the entry free for the next
+    // attempt, which lands.
+    let (addr, state) = repo_server().await;
+    *state.hold_after.lock().unwrap() = Some(4096);
+    let dir = temp_dir("lock-cancel");
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+    until_on_disk(&download, SIDECAR_BODY.len() as u64 + 4096).await;
+    download.cancel();
+    assert_eq!(download.wait().await, Ended::Cancelled);
+    *state.hold_after.lock().unwrap() = None;
+    let path = downloader(addr).fetch(&entry(), &dir).await.expect("free after a cancel, and resumed");
+    assert_eq!(std::fs::read(path).unwrap(), artifact_bytes());
+    assert_eq!(artifact_ranges(&state), [None, Some("bytes=4096-".to_owned())]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (addr, state) = repo_server().await;
+    state.extra_bytes.store(1, Ordering::SeqCst);
+    let dir = temp_dir("lock-fail");
+    let failed = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+    assert!(matches!(failed.wait().await, Ended::Failed(_)));
+    state.extra_bytes.store(0, Ordering::SeqCst);
+    let again = downloader(addr).start(entry(), dir.clone()).expect("free after a failure");
+    assert_eq!(again.wait().await, Ended::Fetched(dir.join(ARTIFACT)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An entry of its own: another id, another file, served by the same repo.
+fn other_entry() -> CatalogEntry {
+    CatalogEntry {
+        id: "other-model".to_owned(),
+        artifact: COMPANION.to_owned(),
+        files: vec![pinned(COMPANION, &companion_bytes())],
+        ..entry()
+    }
+}
+
+#[tokio::test]
+async fn two_different_entries_are_fetched_into_one_folder_at_the_same_time() {
+    // GitHub #379: the lock is the entry's, not the folder's: while one
+    // entry's download is held mid-body, another entry lands beside it.
+    let (addr, state) = repo_server().await;
+    *state.hold_after.lock().unwrap() = Some(4096);
+    let dir = temp_dir("lock-two");
+    let download = downloader(addr).start(entry(), dir.clone()).expect("the entry is free");
+    until_on_disk(&download, SIDECAR_BODY.len() as u64 + 4096).await;
+
+    let path = downloader(addr).fetch(&other_entry(), &dir).await.expect("another entry is not locked");
+
+    assert_eq!(std::fs::read(path).unwrap(), companion_bytes());
+    assert_eq!(download.ended(), None, "the first one still runs");
+    state.release.notify_one();
+    assert_eq!(download.wait().await, Ended::Fetched(dir.join(ARTIFACT)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_lock_holds_across_processes_and_dies_with_the_process_holding_it() {
+    // GitHub #379: the real binary's `model download`, held mid-body by the
+    // endpoint, holds the entry: a fetch in this process is refused saying
+    // so. Killed there, as a crash or a `kill -9` would end it, it leaves
+    // the entry free — the operating system dropped its lock with its
+    // files — and the next fetch resumes what it left and lands.
+    use tokio::io::AsyncBufReadExt;
+
+    let (addr, state) = repo_server().await;
+    *state.hold_after.lock().unwrap() = Some(4096);
+    let dir = temp_dir("lock-process");
+    let home = temp_dir("lock-process-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let catalog = home.join("ops.catalog.yaml");
+    std::fs::write(&catalog, operator_catalog().1).unwrap();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_ignis-server"))
+        .args(["model", "download", "test-model", "--download-catalog", catalog.to_str().unwrap()])
+        .args(["--download-endpoint", &format!("http://{addr}"), "--download-path", dir.to_str().unwrap()])
+        // No config file on the machine, no token from it.
+        .current_dir(&home)
+        .env("APPDATA", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env_remove("IGNIS_CONFIG")
+        .env_remove("IGNIS_PROFILE")
+        .env_remove("IGNIS_DOWNLOAD_TOKEN")
+        .env_remove("HF_TOKEN")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn ignis-server model download");
+    let mut progress = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    let fetching = format!("{ARTIFACT}: fetching");
+    let mut seen = Vec::new();
+    // Its artifact's request went out: it holds the entry, the body held.
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while let Some(line) = progress.next_line().await.expect("its stderr") {
+            seen.push(line);
+            if seen.last().unwrap().starts_with(&fetching) {
+                return;
+            }
+        }
+        panic!("it ended before fetching its artifact: {seen:?}");
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no `{fetching}` line: {seen:?}"));
+
+    let err = downloader(addr).fetch(&entry(), &dir).await.expect_err("held by the other process");
+    assert!(err.to_string().contains("test-model is already being downloaded"), "{err}");
+    // Story 17: the refused side reads who holds it from the lock file, the
+    // other process's own note, on Windows as on Linux.
+    let holder = format!("by `ignis-server model download` (process {}), which holds", child.id().expect("it runs"));
+    assert!(err.to_string().contains(&holder), "it names the holder: {err}");
+
+    child.kill().await.expect("killed");
+    *state.hold_after.lock().unwrap() = None;
+    let path = downloader(addr).fetch(&entry(), &dir).await.expect("free once its holder died");
+    assert_eq!(std::fs::read(path).unwrap(), artifact_bytes());
+    let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&home));
+}
+
+#[tokio::test]
+async fn a_lock_that_cannot_be_opened_refuses_the_fetch_naming_it_and_is_not_a_held_one() {
+    // GitHub #379: a lock file that cannot be opened (a directory under its
+    // name here) refuses the fetch before anything is fetched, saying why —
+    // and not as an entry being downloaded, which it is not.
+    let (addr, state) = repo_server().await;
+    let dir = temp_dir("lock-unopenable");
+    std::fs::create_dir_all(lock_file(&dir)).unwrap();
+
+    let err = downloader(addr).fetch(&entry(), &dir).await.expect_err("no lock, no fetch");
+    assert!(err.to_string().starts_with("cannot open the lock") && err.to_string().contains(&lock_file(&dir).display().to_string()), "{err}");
+    let Err(NotLocked::Failed(_)) = downloader(addr).start(entry(), dir.clone()) else { panic!("a lock that cannot be opened is no held one") };
+    assert!(state.requested().is_empty(), "{:?}", state.requested());
     let _ = std::fs::remove_dir_all(&dir);
 }
