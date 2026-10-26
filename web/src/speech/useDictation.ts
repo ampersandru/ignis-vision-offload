@@ -3,6 +3,7 @@ import { keyRequired } from "../api/auth.ts";
 import type { SpeechStatus } from "../api/model.ts";
 import { startCapture } from "./capture.ts";
 import { DictationController, type DictationHandle, type DictationState, dictating, subscribeDictating } from "./dictation.ts";
+import { listening, subscribeListening } from "./listening.ts";
 import { openTranscription } from "./realtime.ts";
 
 /** A field's dictation: what drives it, and the textarea it writes into. */
@@ -49,7 +50,9 @@ export function useDictation(options: {
   // Outside https and localhost the browser gives no page a microphone (Q18); a test has no such flag.
   const secure = typeof globalThis.isSecureContext === "boolean" ? globalThis.isSecureContext : true;
   const { speech } = options;
-  useEffect(() => controller.setAvailability({ secure, speech }), [controller, secure, speech]);
+  // A listening in the Transcribe view strikes every other mic (spec speech/07, Q85).
+  const transcribing = useSyncExternalStore(subscribeListening, listening, listening);
+  useEffect(() => controller.setAvailability({ secure, speech, listening: transcribing }), [controller, secure, speech, transcribing]);
   useEffect(() => () => controller.dispose(), [controller]);
   return useMemo(() => ({ controller, field }), [controller]);
 }

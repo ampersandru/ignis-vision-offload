@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MIC_BLOCKED, SECURE_CONTEXT, TURNED_OFF } from "./availability.ts";
+import { LISTENING_ELSEWHERE, MIC_BLOCKED, SECURE_CONTEXT, TURNED_OFF } from "./availability.ts";
 import { type Capture, MicBlocked } from "./capture.ts";
 import {
   BUSY_RETRY_MAX_SECONDS,
@@ -20,6 +20,7 @@ import {
   NO_WEBSOCKET,
   STILL_BUSY,
 } from "./dictation.ts";
+import { setListening } from "./listening.ts";
 import type { AutoStop, Refusal, Transcription, TranscriptionHandlers } from "./realtime.ts";
 
 // One field's dictation (spec speech/04) through the controller the mic, the
@@ -94,6 +95,7 @@ const chord = (repeat = false) => key("Space", { key: " ", ctrlKey: true, shiftK
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
+  setListening(false);
   for (const controller of made.splice(0)) controller.dispose();
   vi.useRealTimers();
 });
@@ -564,6 +566,34 @@ describe("one dictation at a time", () => {
     second.controller.toggle();
     expect(first.field.value).toBe("già sentito");
     second.controller.dispose();
+  });
+});
+
+// The Transcribe view's listening holds the page's speech (spec speech/07, Q85).
+describe("while the Transcribe view listens", () => {
+  it("a dictation under way ends as when another mic starts, its text landing in its own field", async () => {
+    const h = harness({ value: "" });
+    h.controller.toggle();
+    await settle();
+    h.mic().chunk([1]);
+    setListening(true);
+    expect(h.state().phase).toBe("finishing");
+    await settle();
+    expect(h.session().calls).toEqual(["commit"]);
+    h.session().handlers.onCompleted("Prima della riunione.");
+    expect(h.field.value).toBe("Prima della riunione.");
+  });
+
+  it("strikes the mic with Listening in Transcribe: a press says it and opens no session", () => {
+    const h = harness();
+    h.controller.setAvailability({ secure: true, listening: true });
+    expect(h.state().unavailable).toEqual({ sentence: LISTENING_ELSEWHERE, blocked: false });
+    expect(LISTENING_ELSEWHERE).toBe("Listening in Transcribe.");
+    h.controller.toggle();
+    expect(h.sessions).toHaveLength(0);
+    expect(h.state().notice).toEqual({ kind: "said", text: LISTENING_ELSEWHERE, tone: "ash" });
+    h.controller.setAvailability({ secure: true, listening: false });
+    expect(h.state().unavailable).toBeNull();
   });
 });
 

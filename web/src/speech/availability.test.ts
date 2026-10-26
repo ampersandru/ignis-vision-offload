@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { unavailable } from "./availability.ts";
+import { speakersUnavailable, unavailable } from "./availability.ts";
 
 // Why the mic cannot start (spec speech/04, Q18, Q35, Q39, Q17): one sentence
 // for the hint line. The server's reasons are the ones speech/mod.rs writes.
@@ -37,5 +37,29 @@ describe("unavailable", () => {
       sentence: "Microphone access is blocked for this site. Allow it in the browser's site settings, then press the mic again.",
       blocked: true,
     });
+  });
+});
+
+// The Transcribe view's Speakers toggle (spec speech/07, Q112; spec speech/08): struck with the diarizer's reason, in
+// the way an unavailable mic says its own. The reasons are the ones speech/diarizing.rs writes.
+describe("speakersUnavailable", () => {
+  const say = (reason: string) => speakersUnavailable({ available: true, diarizer: { loaded: false, available: false, reason } });
+
+  it("is nothing while the diarizer can serve", () => {
+    expect(speakersUnavailable({ available: true, diarizer: { id: "nemotron-3-diarization", loaded: false, available: true } })).toBeNull();
+  });
+
+  it("says each cause in a sentence, the download command filled in", () => {
+    expect(say("the diarizer is turned off (`diarizer.model` is `off`)")).toBe("Speakers are turned off on this server (`diarizer.model = off`).");
+    expect(say("no diarizer files for `nemotron-3-diarization` under download.path; fetch them with `ignis-server model download nemotron-3-diarization`")).toBe(
+      "No diarizer on this server. Download one with `ignis-server model download nemotron-3-diarization`.",
+    );
+    expect(say("`diarizer.model` names `nemotron-x`, which is not in the model catalog")).toBe(
+      "Speakers are unavailable on this server: `diarizer.model` names `nemotron-x`, which is not in the model catalog.",
+    );
+  });
+
+  it("counts a server that says nothing of a diarizer as one without: it would refuse the field", () => {
+    expect(speakersUnavailable({ available: true })).toBe("This server has no diarizer: Speakers needs a newer ignis.");
   });
 });
