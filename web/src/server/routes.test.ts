@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getAuth, saveKey } from "../api/auth.ts";
-import { cancelDownload, patchConfig, readCatalog, readConfigFile, readFields, readOrigins, refusalOf, startDownload, switchTo } from "./routes.ts";
+import { cancelDownload, patchConfig, readCatalog, readConfigFile, readFields, readOrigins, refusalOf, removeModel, startDownload, switchTo } from "./routes.ts";
 
 // The Server view's requests (spec playground/05): what each sends, and how
 // each answer is read.
@@ -148,5 +148,26 @@ describe("refusalOf", () => {
     expect(refusalOf(400, JSON.stringify({ error: { message: "m", code: "c" } }))).toEqual({ status: 400, message: "m", code: "c" });
     expect(refusalOf(502, "Bad gateway")).toEqual({ status: 502, message: "Bad gateway" });
     expect(refusalOf(503, "")).toEqual({ status: 503, message: "503" });
+  });
+});
+
+// GitHub #380: a catalog entry's files removed from the server's models folder.
+describe("removeModel", () => {
+  it("sends POST /v1/models/remove with the catalog id alone, and the key", async () => {
+    saveKey("sk-test");
+    const sent: Sent[] = [];
+    const removed = { status: "removed", model: "qwen3.8-flash-next", bytes_freed: 72799980571, files_removed: ["qwen3_8_flash_next.ninfer"], files_kept: [] };
+    const answer = await removeModel("qwen3.8-flash-next", answering(200, removed, sent));
+    expect(answer).toEqual({ ok: true, status: 200, value: removed });
+    expect(sent[0].url).toBe("/v1/models/remove");
+    expect(sent[0].init.method).toBe("POST");
+    expect(JSON.parse(sent[0].init.body as string)).toEqual({ model: "qwen3.8-flash-next" });
+    expect(sent[0].init.headers).toMatchObject({ Authorization: "Bearer sk-test", "Content-Type": "application/json" });
+  });
+
+  it("reads a refusal as the server's message and code", async () => {
+    saveKey("sk-test");
+    const body = { error: { message: "qwen3.8-27b is the model loaded (qwen3.8-27b), which serves from its files; load another model before removing it", code: "model_in_use" } };
+    expect(await removeModel("qwen3.8-27b", answering(409, body))).toEqual({ ok: false, status: 409, message: body.error.message, code: "model_in_use" });
   });
 });

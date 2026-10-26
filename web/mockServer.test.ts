@@ -167,6 +167,24 @@ describe("createServerSim: downloads (GitHub #376)", () => {
     expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T + 60_000)).toMatchObject({ status: 202, body: { bytes_on_disk: kept } });
     expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 70_000)).toMatchObject({ download: "none", on_disk: "complete", bytes_on_disk: 19406984175 });
   });
+
+  // GitHub #380: a removal takes an entry's files, finished or partial, but never the model loaded or the one downloading.
+  it("removes an entry on disk or partly downloaded, refuses the loaded and the downloading one, and downloads a removed one again", () => {
+    const sim = createServerSim();
+    expect(sim.removeModel({ model: "qwen3.8-27b" }, T)).toMatchObject({ status: 409, body: { error: { code: "model_in_use" } } });
+    expect(sim.removeModel({ model: "qwen3.8-27b-custom" }, T)).toMatchObject({ status: 409, body: { error: { code: "model_not_downloaded" } } });
+    expect(sim.removeModel({ model: "qwen3.8-27b-dead" }, T)).toMatchObject({ status: 404 });
+    const removed = sim.removeModel({ model: "qwen3.8-flash-next" }, T);
+    expect(removed).toMatchObject({ status: 200, body: { status: "removed", model: "qwen3.8-flash-next", bytes_freed: 72799980571, files_kept: [] } });
+    expect(rowOf(sim, "qwen3.8-flash-next", T)).toMatchObject({ on_disk: "absent", bytes_on_disk: 0, switchable: false });
+    expect((sim.models(T).data as { id: string }[]).some((model) => model.id === "qwen3.8-flash-next")).toBe(false);
+    expect(sim.removeModel({ model: "qwen3.8-27b-abliterated" }, T)).toMatchObject({ status: 200, body: { bytes_freed: 6442450944 } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T)).toMatchObject({ on_disk: "absent", bytes_on_disk: 0 });
+
+    expect(sim.downloadModel({ model: "qwen3.8-flash-next" }, T)).toMatchObject({ status: 202, body: { bytes_on_disk: 0 } });
+    expect(sim.removeModel({ model: "qwen3.8-flash-next" }, T + 1_000)).toMatchObject({ status: 409, body: { error: { code: "model_in_use" } } });
+    expect(rowOf(sim, "qwen3.8-flash-next", T + 11_000)).toMatchObject({ on_disk: "complete", download: "none" });
+  });
 });
 
 describe("createServerSim: per-model values", () => {

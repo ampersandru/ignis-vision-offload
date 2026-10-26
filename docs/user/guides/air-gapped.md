@@ -23,3 +23,5 @@ sidebar:
   `model download` command to copy instead. With a mirror,
   **Download** fetches from it like a start does
   ([Downloading from the Server view](models.md#downloading-from-the-server-view-post-v1modelsdownload)).
+  **Remove** still frees the disk: a removal uses no network
+  ([Removing a model](models.md#removing-a-model-post-v1modelsremove)).

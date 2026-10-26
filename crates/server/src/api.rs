@@ -164,6 +164,8 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .routes(routes!(switch_model))
         // Spec playground/05: the models a switch can go to or fetch.
         .routes(routes!(crate::catalog_http::get_models_catalog))
+        // GitHub #380: remove a catalog entry's files from the models folder.
+        .routes(routes!(crate::removal_http::post_model_remove))
         // GitHub #376: download a catalog entry in the background.
         .routes(routes!(crate::download_http::post_model_download))
         // GitHub #377: stop it, keeping its partial files.
@@ -214,6 +216,7 @@ fn v1_parts() -> (Router<Arc<Server>>, utoipa::openapi::OpenApi) {
         .route("/v1/models", options(cors_preflight))
         .route("/v1/models/switch", options(cors_preflight))
         .route("/v1/models/catalog", options(cors_preflight))
+        .route("/v1/models/remove", options(cors_preflight))
         .route("/v1/models/download", options(cors_preflight))
         .route("/v1/models/download/cancel", options(cors_preflight))
         .route("/v1/config", options(cors_preflight))
@@ -3653,6 +3656,8 @@ mod tests {
             // They drive a switch or a reload, which holds the switch's slot.
             ("POST", "/v1/models/switch"),
             ("PATCH", "/v1/config"),
+            // A removal deletes files beside the model, never its own (GitHub #380).
+            ("POST", "/v1/models/remove"),
             // A download fetches files beside the model (GitHub #376).
             ("POST", "/v1/models/download"),
             // Stopping it (GitHub #377).

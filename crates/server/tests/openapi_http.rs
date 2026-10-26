@@ -87,6 +87,8 @@ fn the_document_lists_exactly_the_v1_surface() {
         // Spec playground/05: the models a switch can go to or fetch, and
         // what each configuration field is.
         "get /v1/models/catalog",
+        // GitHub #380: remove a catalog entry's files from the models folder.
+        "post /v1/models/remove",
         // GitHub #376: download a catalog entry in the background.
         "post /v1/models/download",
         // GitHub #377: stop it, keeping its partial files.

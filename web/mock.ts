@@ -88,6 +88,10 @@ export function mockIgnis(): Plugin {
         if (req.method !== "POST") return answer(res, { status: 405, body: {} });
         answer(res, sim.downloadModel(await readJson(req), Date.now()));
       });
+      server.middlewares.use("/v1/models/remove", async (req, res) => {
+        if (req.method !== "POST") return answer(res, { status: 405, body: {} });
+        answer(res, sim.removeModel(await readJson(req), Date.now()));
+      });
       // `max_model_len` (vLLM's name for the context length) feeds the
       // Playground's context bar, as ignis reports it.
       server.middlewares.use("/v1/models", (_req, res) => answer(res, { status: 200, body: sim.models(Date.now()) }));

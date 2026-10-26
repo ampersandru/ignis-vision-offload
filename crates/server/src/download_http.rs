@@ -167,6 +167,18 @@ impl Downloads {
     fn refused(&self, id: &str, reason: &str) {
         lock(&self.failures).insert(id.to_owned(), reason.to_owned());
     }
+
+    /// `download.from_ui`: off, the API neither downloads nor removes
+    /// (GitHub #380, ADR 0071).
+    pub(crate) fn from_ui(&self) -> bool {
+        self.from_ui
+    }
+
+    /// Forget the entry `id`'s last failure: its files were removed (GitHub
+    /// #380), and its row reads as one never downloaded.
+    pub(crate) fn forget(&self, id: &str) {
+        lock(&self.failures).remove(id);
+    }
 }
 
 /// Why [`Downloads::begin`] began nothing.

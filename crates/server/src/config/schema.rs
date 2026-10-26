@@ -802,7 +802,8 @@ config_group! {
         /// Let POST /v1/models/download, the Server view's Download, fetch a
         /// catalog entry while the server runs, under the same API key as
         /// PATCH /v1/config; it needs `enabled` too. Off refuses it, and
-        /// `model download` on the server's machine still fetches.
+        /// `model download` on the server's machine still fetches. Off
+        /// refuses POST /v1/models/remove too, the Server view's Remove.
         from_ui: Bool = true, NO_RULE, ALL, [Visible];
         /// What a download must leave free on the volume of `path` beyond
         /// the bytes it still misses: the Server view's Download, `model
