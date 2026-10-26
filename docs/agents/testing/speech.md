@@ -59,6 +59,34 @@ steps: `convert` writes the `.jit`'s 16 kHz weights to
 never the repo) and the bound: ten times the `.jit`'s distance from the same
 graph in fp64, at least 1e-5.
 
+## The diarizer's oracle (GitHub #361)
+
+The diarizer (`crates/speech/src/diarizer/`, spec speech/08) is checked
+against the checkpoint's Transformers code in FP32 on the CPU, recorded by
+`tools/speech-diarizer/record.py` (its `requirements.txt` pins the venv) on
+the committed fixture clip (`crates/speech/tests/fixtures/diarizer/`, 16 s of
+one of the twenty synthetic conversations, VoxPopuli audio, CC0) and on three
+conversations of the study directory. Each bound is ten times the
+reference's distance from fp64, at least 1e-5, in `thresholds.json`.
+`crates/speech/tests/diarizer.rs` holds the legs. The default suite runs the
+two that need no weights: `the_log_mel_matches_transformers_fp32` and
+`the_speaker_cache_keeps_the_frames_the_reference_keeps` (the speaker cache
+replayed on the recorded probabilities, at a small geometry that compresses
+it and at the live one). The four `--ignored` legs read the F32 GGUF
+(`models/diarizer/` of `IGNIS_SPEECH_STUDY`, from
+`tools/speech-diarizer/convert.py`) and the records in
+`nemotron-spike/oracle-361/`, and fail without them:
+`the_first_step_matches_the_reference_tensor_by_tensor`,
+`the_port_matches_the_reference_on_the_fixture_clip`,
+`the_port_matches_the_reference_on_the_conversations` (the live and file
+geometries, a few minutes) and
+`the_speaker_cache_keeps_the_frames_the_reference_keeps_on_the_conversations`.
+The GPU profile excludes the crate.
+
+```sh
+cargo test --release -p ignis-speech --test diarizer -- --ignored --test-threads=1
+```
+
 ## Speakers in a Realtime session (GitHub #361)
 
 The server's side of the diarizer (spec speech/08) is tested in the default
@@ -70,8 +98,8 @@ the rank of the diarizer's steps on the worker. `ignis_speech::Session::cut`
 is checked against the session of the audio before the cut on the synthetic
 pair (`crates/speech/tests/executor.rs`). The real adapter, `CpuDiarizer`, has
 one `--ignored` leg on the study directory's F32 GGUF, on the CPU: its frames
-against the crate's stream, step by step. `scripts/gpu-profile.ps1` skips it
-by name (`$NotGpuLegs`).
+against the crate's stream, step by step, its tail and its `auto` constants.
+`scripts/gpu-profile.ps1` skips it by name (`$NotGpuLegs`).
 
 Its catalog side is `crates/server/tests/speech_diarizer_models.rs`: a diarizer
 entry of the test's own (`kind: diarizer`; the built-in catalog has none until
@@ -84,4 +112,28 @@ a callsite's interest process-wide.
 
 ```sh
 CUDA_VISIBLE_DEVICES= cargo test -p ignis-server --lib speech::cpu::tests::the_diarizer_adapter -- --ignored
+```
+
+The real executor and the real diarizer in one session are
+`crates/server/tests/speech_diarizer_study.rs`, two `--ignored` CPU legs on the
+study directory (Qwen3-ASR 1.7B's GGUF pair in `models/ignis-conv/`, the F16
+diarizer GGUF or `IGNIS_DIARIZER_GGUF`, the twenty conversations), both listed
+in `$NotGpuLegs`. Run each alone, with nothing else on the CPU, and the
+`CUDA_VISIBLE_DEVICES` empty:
+
+- `the_diarizer_keeps_up_with_a_conversation_at_real_time_pace` (AC 11): one
+  conversation (`IGNIS_DIARIZER_CONV`, default `conv07`, 5 minutes) at real
+  time, speakers `live`; the session's `lag_max_ms` within the live geometry's
+  latency plus 2 s. A timing run: `--release`. `IGNIS_SPEECH_PARTIAL_MS` and
+  `IGNIS_SPEECH_PARTIAL_FACTOR` move the refreshes.
+- `every_item_of_the_conversations_sends_its_text_whole_at_its_end` (AC 7):
+  every conversation (`IGNIS_DIARIZER_CONVS`, names separated by commas, for
+  fewer) in a session of its own, fed `IGNIS_DIARIZER_PACE` (2) times faster
+  than real time: no item's delta before its `committed`, its deltas joined
+  its `completed.transcript`, cut items included. It prints each
+  conversation's items, cuts and speakers; about 40 minutes at 2x.
+
+```sh
+CUDA_VISIBLE_DEVICES= cargo test --release -p ignis-server --test speech_diarizer_study -- --ignored --nocapture the_diarizer_keeps_up
+CUDA_VISIBLE_DEVICES= cargo test -p ignis-server --test speech_diarizer_study -- --ignored --nocapture every_item_of_the_conversations
 ```
