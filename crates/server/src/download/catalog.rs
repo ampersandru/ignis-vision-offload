@@ -837,7 +837,7 @@ mod tests {
         let document = Format::Yaml.read(BUILT_IN_TEXT).expect("YAML");
         let parsed = parse(&document, "built into this binary", CatalogLayer::BuiltIn).expect("every invariant holds");
         assert_eq!(parsed, BUILT_IN_CATALOG.entries);
-        assert_eq!(parsed.len(), RELEASES.len() + SPEECH_RELEASES.len());
+        assert_eq!(parsed.len(), RELEASES.len() + SPEECH_RELEASES.len() + 1, "and the diarizer");
         for (entry, (id, repo, revision, artifact, card_class, aliases, files)) in parsed.iter().zip(RELEASES) {
             assert_eq!(entry.kind, None, "{id}: a text or image model states no kind");
             assert_eq!((entry.id.as_str(), entry.repo.as_str(), entry.revision.as_str(), entry.artifact.as_str()), (id, repo, revision, artifact));
@@ -943,7 +943,15 @@ mod tests {
         }
         let error = operator(&DIARIZER_OPERATOR.replace("kind: diarizer", "kind: image")).expect_err("image").to_string();
         assert!(error.contains("`speech` or `diarizer`"), "{error}");
-        assert!(Catalog::built_in().entries().iter().all(|entry| !entry.is_diarizer()), "no built-in diarizer until its repo exists (Q115)");
+        // The built-in diarizer, pin for pin: the F16 GGUF (spec speech/08, AC 2) on its own repo.
+        let built_in: Vec<&CatalogEntry> = Catalog::built_in().entries().iter().filter(|entry| entry.is_diarizer()).collect();
+        let [entry] = built_in.as_slice() else { panic!("one built-in diarizer: {built_in:?}") };
+        assert_eq!(
+            (entry.id.as_str(), entry.repo.as_str(), entry.revision.as_str(), entry.artifact.as_str(), entry.card_class),
+            ("nemotron-3-diarization", "gpillon/Nemotron-3-Diarization-GGUF-ignis", "d46d59d03be709db18e223b6bf92e8c32d14f422", "Nemotron-3-Diarization-F16.gguf", None)
+        );
+        let listed: Vec<(&str, u64, &str)> = entry.files.iter().map(|f| (f.name.as_str(), f.bytes, f.sha256.as_str())).collect();
+        assert_eq!(listed, [("Nemotron-3-Diarization-F16.gguf", 198_805_760, "f7a80981d178be5d683aee225166bc03806aac2d9b629f42f418d4e5fd2c8623")]);
     }
 
     /// The invariants the rest of the server leans on, stated once more over
@@ -982,7 +990,7 @@ mod tests {
         let json = serde_json::to_string(&Format::Yaml.read(OPERATOR).unwrap()).unwrap();
         let from_json = parse_operator(&json, Format::Json, "acme.catalog.json").expect("valid");
         assert_eq!(from_yaml, from_json);
-        assert_eq!(from_yaml.ids(), ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3.8-27b-16g", "qwen3-asr-1.7b", "qwen3-asr-1.7b-q8", "qwen3-asr-0.6b", "acme-qwen3.8-27b-ft"]);
+        assert_eq!(from_yaml.ids(), ["qwen3.8-27b", "qwen3.8-27b-abliterated", "qwen3.8-flash-next", "ignis-image-2.1-turbo", "qwen3.8-27b-16g", "qwen3-asr-1.7b", "qwen3-asr-1.7b-q8", "qwen3-asr-0.6b", "nemotron-3-diarization", "acme-qwen3.8-27b-ft"]);
         let acme = from_yaml.entry("acme-qwen3.8-27b-ft").unwrap();
         assert_eq!(acme.layer, CatalogLayer::Operator);
         assert_eq!(acme.revision, "v1");

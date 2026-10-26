@@ -26,6 +26,7 @@ revision of its Hugging Face repository:
 | `qwen3-asr-1.7b` | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 1.5 GiB (the [speech model](../api/transcriptions.md), `speech.model: auto`: a Q4_K_M decoder and a Q8_0 audio encoder) |
 | `qwen3-asr-1.7b-q8` | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 2.3 GiB (the same with a Q8_0 decoder) |
 | `qwen3-asr-0.6b` | [`gpillon/Qwen3-ASR-0.6B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-0.6B-GGUF-ignis) | 0.9 GiB (the smaller speech model, for a weak CPU) |
+| `nemotron-3-diarization` | [`gpillon/Nemotron-3-Diarization-GGUF-ignis`](https://huggingface.co/gpillon/Nemotron-3-Diarization-GGUF-ignis) | 0.2 GiB (the [diarizer](../configuration/speech.md#the-diarizer), `diarizer.model: auto`; OpenMDW-1.1 licence) |
 
 The id is the **served id**: what `--model-id` names, what `/v1/models`
 reports and what a request puts in `model`.
@@ -38,9 +39,9 @@ fetches the default; the two 1.7B entries share one encoder file.
 
 The [diarizer](../configuration/speech.md#the-diarizer) that labels a live
 session's speakers is an entry of its own kind, `kind: diarizer`: one GGUF, no
-sidecar, no card class, never switched to. The built-in catalog has none yet;
-an [operator's catalog](operator-catalog.md) can state one, and
-`ignis-server model download <id>` fetches it like any entry.
+sidecar, no card class, never switched to. The built-in one is
+`nemotron-3-diarization`; an [operator's catalog](operator-catalog.md) can state
+another, and `ignis-server model download <id>` fetches it like any entry.
 
 Each entry states the smallest **card class** it loads on
 ([ADR 0064](../../adr/0064-a-catalog-entry-states-its-card-class.md)): every

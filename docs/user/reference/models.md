@@ -25,6 +25,7 @@ The models the server knows how to fetch without an operator catalog. Each is pi
 | [`qwen3-asr-1.7b`](#qwen3-asr-17b) | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 1.5 GiB | `Qwen3-ASR-1.7B-Q4_K_M.gguf` |
 | [`qwen3-asr-1.7b-q8`](#qwen3-asr-17b-q8) | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 2.3 GiB | `Qwen3-ASR-1.7B-Q8_0.gguf` |
 | [`qwen3-asr-0.6b`](#qwen3-asr-06b) | [`gpillon/Qwen3-ASR-0.6B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-0.6B-GGUF-ignis) | 0.9 GiB | `Qwen3-ASR-0.6B-Q8_0.gguf` |
+| [`nemotron-3-diarization`](#nemotron-3-diarization) | [`gpillon/Nemotron-3-Diarization-GGUF-ignis`](https://huggingface.co/gpillon/Nemotron-3-Diarization-GGUF-ignis) | 0.2 GiB | `Nemotron-3-Diarization-F16.gguf` |
 
 ## qwen3.8-27b
 
@@ -99,3 +100,11 @@ The models the server knows how to fetch without an operator catalog. Each is pi
 |---|---|---|
 | `mmproj-Qwen3-ASR-0.6B-Q8_0.gguf` | 214,392,608 | `ee5e87436bcf8b1c550edd4300fd0516067d55b547611734d27fbc55ecaec3bc` |
 | `Qwen3-ASR-0.6B-Q8_0.gguf` | 804,749,376 | `027ad3329549cd2c14e4ebd7d104e0390566e06570270c33062529474ec56015` |
+
+## nemotron-3-diarization
+
+[`gpillon/Nemotron-3-Diarization-GGUF-ignis`](https://huggingface.co/gpillon/Nemotron-3-Diarization-GGUF-ignis) at revision `d46d59d03be709db18e223b6bf92e8c32d14f422`, 198,805,760 bytes in 1 files.
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `Nemotron-3-Diarization-F16.gguf` | 198,805,760 | `f7a80981d178be5d683aee225166bc03806aac2d9b629f42f418d4e5fd2c8623` |

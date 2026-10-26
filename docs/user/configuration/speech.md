@@ -44,9 +44,9 @@ gives a live session that asks for them its [speakers](../api/realtime-transcrip
 It runs on the CPU, on the speech model's worker and threads. Every field is
 read live, when a session's speakers start. The diarizer is a
 [catalog](../guides/models.md#the-catalog) entry of its own, `kind: diarizer`
-(one GGUF, no sidecar), fetched with `ignis-server model download <id>` like any
-entry; the built-in catalog has none yet, so until it has one the entry is the
-operator's own ([the operator catalog](../guides/operator-catalog.md)). It is
+(one GGUF, no sidecar): the built-in `nemotron-3-diarization`, fetched with
+`ignis-server model download nemotron-3-diarization` like any entry, or one of
+[an operator's catalog](../guides/operator-catalog.md). It is
 loaded by the first session that asks for speakers, about 0.2 GB of RAM for
 its F16 weights, never VRAM, and unloaded with the speech model, after
 `speech.idle_unload` seconds with no session open.
