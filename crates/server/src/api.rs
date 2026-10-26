@@ -706,11 +706,13 @@ pub(crate) fn implicit_switch_refused(refusal: crate::model_switch::ImplicitRefu
 /// configuration, which a reload with a changed config is changing (spec
 /// config-v2/02), and what a page needs to show the switch and the
 /// configuration while it runs: the fields' declarations, where each value
-/// comes from and the models a switch can go to (spec playground/05).
+/// comes from and the models a switch can go to (spec playground/05). And
+/// the cancel of a running download (GitHub #377), which never touches the
+/// loaded model: a download begun before the switch is stopped during it.
 fn reports_or_drives_the_switch(method: &axum::http::Method, path: &str) -> bool {
     (method == axum::http::Method::GET
         && matches!(path, "/v1/models" | "/v1/models/catalog" | "/v1/config" | "/v1/config/fields" | "/v1/config/origins"))
-        || (method == axum::http::Method::POST && path == "/v1/models/switch")
+        || (method == axum::http::Method::POST && matches!(path, "/v1/models/switch" | "/v1/models/download/cancel"))
 }
 
 async fn require_api_key(State(server): State<Arc<Server>>, req: Request, next: Next) -> Response {

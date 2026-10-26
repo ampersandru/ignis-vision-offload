@@ -128,6 +128,9 @@ impl SpeechExecutor for Timed {
     fn is_loaded(&self) -> bool {
         self.inner.is_loaded()
     }
+    fn loaded_files(&self) -> Option<SpeechFiles> {
+        self.inner.loaded_files()
+    }
     fn open(&self, open: SessionOpen) -> Result<Box<dyn SpeechSession>, SpeechError> {
         Ok(Box::new(TimedSession { inner: self.inner.open(open)?, calls: Arc::clone(&self.calls), committing: Duration::ZERO }))
     }

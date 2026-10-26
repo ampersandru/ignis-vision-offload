@@ -37,7 +37,7 @@ mod transfer;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
-pub use lock::{EntryLock, NotLocked};
+pub use lock::{EntryLock, Holder, NotLocked};
 pub use transfer::{Download, DownloadError, Downloader, Ended, Report};
 
 /// The host whose own credential `HF_TOKEN` is.
@@ -213,6 +213,33 @@ pub enum StartRefusal {
     AboveClass(ClassRefusal),
     /// Its artifact and id over the start options do not resolve.
     Config(crate::config::ConfigError),
+}
+
+/// The start-time fetch ([`ArtifactSource::Download`]): every file of `entry`
+/// into `dir` from `endpoint` with `token`, once the volume `dir` is on has
+/// room for what of it is still missing plus `free_margin`
+/// (`download.free_margin`, GitHub #378), checked before a byte is written,
+/// as the Server view's Download and `model download` check it
+/// ([`command::room_for`]). Whatever stops it — no room, an HTTP client that
+/// cannot be built, the transfer's own failure — is logged as
+/// `ignis.model.download_failed` at ERROR, "refusing to start", and
+/// returned: `main` refuses the start on it, with exit code 1. The artifact's
+/// path once every file verified.
+pub async fn fetch_at_start(entry: &CatalogEntry, dir: &Path, endpoint: &str, token: Option<ApiKey>, free_margin: u64) -> Result<PathBuf, DownloadError> {
+    let refused = |err: DownloadError| {
+        tracing::error!(
+            name: "ignis.model.download_failed",
+            model = %entry.id,
+            repo = %entry.repo,
+            endpoint = %endpoint,
+            error = %err,
+            "refusing to start"
+        );
+        err
+    };
+    command::room_for(entry, dir, free_margin).map_err(|reason| refused(DownloadError(reason)))?;
+    let downloader = Downloader::new(endpoint, token).map_err(refused)?;
+    downloader.fetch(entry, dir).await.map_err(refused)
 }
 
 /// Which token a request to `endpoint` carries (spec model-download/02

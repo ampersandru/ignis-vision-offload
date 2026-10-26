@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CATALOG, CONFIG } from "./fixture.ts";
-import { afterDownload, downloadFailure, downloadsFromPage, followDownloads, nextProgress, progressLabel, runningDownload, speedOf } from "./download.ts";
+import type { ModelState } from "../api/model.ts";
+import { afterDownload, cancelReachable, downloadFailure, downloadsFromPage, followDownloads, nextProgress, progressLabel, runningDownload, speedOf } from "./download.ts";
 import type { Answer, CatalogRow } from "./routes.ts";
 
 // A download from the Server view (GitHub #376): which row runs, whether the
@@ -64,6 +65,22 @@ describe("the row's words", () => {
   });
 });
 
+// GitHub #377: a cancel never touches the loaded model, so the server takes it during a switch too.
+describe("cancelReachable", () => {
+  it("is in reach wherever the server answers a cancel: serving, unloaded, during a switch or a load, after a failed one", () => {
+    const reachable: ModelState[] = [
+      { state: "ready", id: "qwen3.8-27b", contextLimit: null },
+      { state: "unloaded", id: "qwen3.8-27b", contextLimit: null },
+      { state: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next", since: 0 },
+      { state: "loading", to: "qwen3.8-27b", since: 0 },
+      { state: "error", message: "switching to qwen3.8-flash-next failed", failed: true },
+    ];
+    for (const model of reachable) expect(cancelReachable(model), model.state).toBe(true);
+    expect(cancelReachable({ state: "reading" })).toBe(false);
+    expect(cancelReachable({ state: "error", message: "ignis is not answering" })).toBe(false);
+  });
+});
+
 describe("afterDownload", () => {
   it("follows a download that began, and the one already running when refused for it", () => {
     expect(afterDownload({ ok: true, status: 202, value: {} })).toEqual({ refusal: null, follow: true });
@@ -82,7 +99,7 @@ describe("afterDownload", () => {
 
   it("shows why an entry `model download` is fetching is refused, and follows nothing: no row of this server runs", () => {
     // GitHub #379: the server's refusal names the lock's holder; the command's download is not this server's to follow.
-    const message = "qwen3.8-27b is already being downloaded into ./models, by a server or by `ignis-server model download`, which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends";
+    const message = "qwen3.8-27b is already being downloaded into ./models, by `ignis-server model download` (process 4120), which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends";
     const locked = { ok: false as const, status: 409, message, code: "download_locked" };
     expect(afterDownload(locked)).toEqual({ refusal: message, follow: false });
   });

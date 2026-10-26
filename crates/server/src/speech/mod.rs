@@ -115,6 +115,12 @@ impl Speech {
         self.models.as_ref().map(|models| &*models.catalog)
     }
 
+    /// The files of the speech model the worker has loaded now, `None` while
+    /// none is: those it was loaded from, whatever `speech.model` names since.
+    pub fn loaded(&self) -> Option<SpeechFiles> {
+        self.executor.loaded_files()
+    }
+
     /// Publish the worker's gauges to `metrics` (`Server::with_metrics`).
     pub fn attach_metrics(&self, metrics: Arc<crate::metrics::Metrics>) {
         self.gauges.attach(metrics);

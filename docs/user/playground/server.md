@@ -68,7 +68,9 @@ switch, or while no model serves.
 Once every file verified, the row reads `On disk` and offers **Load**: the
 server never switches to a model by itself. A partly downloaded entry offers
 **Resume** instead. A download that fails keeps its reason under the row,
-`Download failed: …`, until the entry's next download or a restart; a gated
+`Download failed: …`, until the entry's next download or a restart, or until
+the entry is on disk whole by another way (`ignis-server model download`): a row
+that reads `On disk` shows no failure. A gated
 repository fails naming the token the server reads from its environment
 (`IGNIS_DOWNLOAD_TOKEN`, or `HF_TOKEN` for huggingface.co). The page never asks
 for a token nor shows one. A refused **Download** (another one running, the
@@ -81,14 +83,15 @@ Before a byte is written, the server checks that the volume of its
 partial entry's **Resume**) is refused, and the reason, naming the bytes needed
 and the bytes free, shows under
 the row rather than in the band, `Download failed: not enough room for …`,
-until the entry's next download or a restart
+until the entry's next download, a restart, or the entry on disk whole
 ([Room on the disk](../guides/models.md#room-on-the-disk---download-free-margin)).
 Free some space there and press it again. `download.free_margin` is
 shown read-only, `Set at start`, in the Download group.
 
 An entry that `ignis-server model download` is fetching into the server's
-`download.path` is refused too, with `409 download_locked`, until the command
-ends: each fetch of an entry holds its lock, the server's and the command's
+`download.path` is refused too, with `409 download_locked` naming the command
+and its process id, until the command ends: each fetch of an entry holds its
+lock, the server's and the command's
 alike, so two never write the same file
 ([one writer per entry](../guides/models.md#one-writer-per-entry)). Its row
 shows no download of the server's, and any other entry downloads meanwhile.
@@ -109,8 +112,9 @@ offers **Resume**, which sends `POST /v1/models/download` again: the server
 fetches only what is missing, from the `.part` on, and checks each file against
 its pinned size and SHA-256 before it renames it into place, as for any
 download ([Get a model](../guides/models.md#cancelling-and-resuming-post-v1modelsdownloadcancel)).
-**Cancel** is out of reach while it is being sent, during a switch, or while
-no model serves, and takes the same API key as **Download**.
+**Cancel** stays in reach during a switch, since stopping a download never
+touches the loaded model; it is out of reach only while it is being sent or
+while the server is not answering, and takes the same API key as **Download**.
 
 A download cut short by a dropped connection or a restart of the server leaves
 a partial entry too, shown the same way. Nothing resumes by itself: after a
@@ -124,13 +128,15 @@ as before ([Letting the server fetch it](../guides/models.md#letting-the-server-
 **Remove** asks first, under the row: `Remove <id>? Its files under
 download.path go, <size>; it can be downloaded again.`, with `its unfinished
 download included` on a partly downloaded entry. When the server started on
-that entry, the confirmation also says what the next start does without it: it
-downloads it again, asking first on a terminal, or, with `download.enabled`
-false, comes up with no model, on the placeholder template; a start whose
-`model.artifact` names its file refuses to start. When `switch.known_models`
-names the entry's file, it says a switch to it is refused until it is
-downloaded again. **Remove** there sends `POST /v1/models/remove` with the id;
-**Keep it** sends nothing.
+that entry's files, the confirmation also says what the next start does without
+it: it downloads it again, asking first on a terminal, or, with
+`download.enabled` false, comes up with no model, on the placeholder template; a
+start whose `model.artifact` names its file refuses to start. When
+`switch.known_models` names the entry's file, it says a switch to that model is
+refused until it is downloaded again. Either is named by the id it is served
+under when that is not the entry's own (`The server started on it (as boot)`).
+**Remove** there sends `POST /v1/models/remove` with the id; **Keep it** sends
+nothing.
 
 The server deletes the entry's files under its `download.path`, each at its
 name and its `.part`, and answers once they are gone
@@ -142,9 +148,10 @@ is on disk or being downloaded, and the band names it, `Kept <file>, which
 
 The server refuses, with its reason in the band, the model loaded (also when it
 was unloaded while idle, or serves from the entry's files under another id),
-the model a switch or a load is loading, and an entry being downloaded, by the
-server (**Cancel** it first) or by `ignis-server model download` on its
-machine. The page offers no **Remove** on the loaded row, the one loading or
+the model a switch or a load is loading, the speech model the speech worker has
+loaded (until it unloads it, `speech.idle_unload` seconds after its last
+transcription), and an entry being downloaded, by the server (**Cancel** it
+first) or by `ignis-server model download` on its machine. The page offers no **Remove** on the loaded row, the one loading or
 the one downloading, and **Remove** is out of reach while a removal is sent,
 during a switch, or while no model serves. A known model that is no catalog
 entry is a path the operator gave, and is never removed.

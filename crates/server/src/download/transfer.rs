@@ -32,7 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 use super::catalog::{CatalogEntry, CatalogFile};
-use super::lock::{EntryLock, NotLocked};
+use super::lock::{EntryLock, Holder, NotLocked};
 use crate::config::ApiKey;
 
 /// How long the connection alone may take. The transfer as a whole is
@@ -103,11 +103,6 @@ impl Download {
         &self.entry
     }
 
-    /// The directory it fetches into.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// Stop it. Returns at once: the transfer stops at the next thing it
     /// waits for, and [`Download::wait`] then answers [`Ended::Cancelled`].
     /// One that has already ended stays as it ended.
@@ -119,8 +114,7 @@ impl Download {
     /// included ([`super::command::bytes_on_disk`]), read from the
     /// filesystem: running, cancelled or ended, what is there.
     pub fn bytes_on_disk(&self) -> u64 {
-        let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
-        super::command::bytes_on_disk(&self.entry, &self.dir, &size_of)
+        super::command::bytes_on_disk(&self.entry, &self.dir, &super::command::file_size)
     }
 
     /// How it ended, or `None` while it runs.
@@ -210,12 +204,15 @@ pub struct Downloader {
     /// it to that) — Hugging Face sends a large file's body from its CDN.
     token: Option<ApiKey>,
     report: Report,
+    /// Who it takes an entry's lock as ([`EntryLock`]): what a fetch it
+    /// refuses meanwhile names.
+    holder: Holder,
 }
 
 impl Downloader {
     /// One fetching from `endpoint` (`https://host[/prefix]`, a trailing
     /// slash or none) with `token` ([`super::bearer_token`]'s choice),
-    /// reporting to the log.
+    /// reporting to the log, as a server.
     pub fn new(endpoint: &str, token: Option<ApiKey>) -> Result<Self, DownloadError> {
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -224,12 +221,18 @@ impl Downloader {
             .build()
             .map_err(|err| DownloadError::new(format!("HTTP client: {err}")))?;
         let endpoint = endpoint.trim_end_matches('/').to_owned();
-        Ok(Self { client, endpoint, token, report: Report::Log })
+        Ok(Self { client, endpoint, token, report: Report::Log, holder: Holder::Server })
     }
 
     /// The same, reporting as `report` says.
     pub fn reporting(self, report: Report) -> Self {
         Self { report, ..self }
+    }
+
+    /// The same, holding each entry's lock as `holder`: `model download`
+    /// holds it as the command.
+    pub fn holding_as(self, holder: Holder) -> Self {
+        Self { holder, ..self }
     }
 
     /// The URL a file of `entry` resolves to: Hugging Face's own route,
@@ -253,7 +256,7 @@ impl Downloader {
     /// It holds the entry's lock in `dir` until it returns ([`EntryLock`]),
     /// and is refused before anything is fetched when another fetch holds it.
     pub async fn fetch(&self, entry: &CatalogEntry, dir: &Path) -> Result<PathBuf, DownloadError> {
-        let _lock = EntryLock::take(entry, dir)?;
+        let _lock = EntryLock::take(entry, dir, self.holder)?;
         match self.fetch_until(entry, dir, &mut Cancel::never()).await? {
             Landed::Verified => Ok(entry.artifact_path(dir)),
             // Nothing raises a cancel nobody holds.
@@ -271,7 +274,7 @@ impl Downloader {
     /// before [`Download::ended`] says how, so whoever reads that the download
     /// ended finds the entry free.
     pub fn start(self, entry: CatalogEntry, dir: PathBuf) -> Result<Download, NotLocked> {
-        let lock = EntryLock::take(&entry, &dir)?;
+        let lock = EntryLock::take(&entry, &dir, self.holder)?;
         let (cancel, watched) = watch::channel(false);
         let (end, ended) = watch::channel(None);
         let entry = Arc::new(entry);
@@ -645,5 +648,24 @@ mod tests {
     #[test]
     fn the_part_file_is_the_final_name_plus_part() {
         assert_eq!(part_path(Path::new("models/a.ninfer")), PathBuf::from("models/a.ninfer.part"));
+    }
+
+    /// GitHub #376: a `401` or `403` says whether a token was sent and where
+    /// it is read from, in each of the four cells — no token or one, Hugging
+    /// Face or another endpoint — naming `HF_TOKEN` for Hugging Face alone,
+    /// the one host it is sent to, and never the token.
+    #[test]
+    fn a_refusal_for_the_token_says_whether_one_was_sent_and_where_it_is_read() {
+        let hint = |endpoint: &str, token: Option<&str>| Downloader::new(endpoint, token.map(ApiKey::new)).expect("a client").token_hint();
+        let set = "set IGNIS_DOWNLOAD_TOKEN (download.token)";
+        let none = hint("https://huggingface.co", None);
+        assert_eq!(none, format!("the endpoint wants a token and none was sent: {set}, or HF_TOKEN for the server (read at its start) or for `model download`"));
+        let mirror = hint("https://mirror.example/hf", None);
+        assert_eq!(mirror, format!("the endpoint wants a token and none was sent: {set} for the server (read at its start) or for `model download`"));
+        let refused = hint("https://huggingface.co", Some("tok-secret"));
+        assert_eq!(refused, "the endpoint refused the token sent, IGNIS_DOWNLOAD_TOKEN (download.token), or HF_TOKEN as the server (at its start) or `model download` read it");
+        let refused_by_mirror = hint("https://mirror.example/hf", Some("tok-secret"));
+        assert_eq!(refused_by_mirror, "the endpoint refused the token sent, IGNIS_DOWNLOAD_TOKEN (download.token) as the server (at its start) or `model download` read it");
+        assert!(![none, mirror, refused, refused_by_mirror].iter().any(|hint| hint.contains("tok-secret")), "never the token");
     }
 }

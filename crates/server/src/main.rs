@@ -355,39 +355,12 @@ async fn main() {
             // GitHub #378: so does a models folder without room for what is
             // still missing plus download.free_margin, before a byte is
             // written, as the Server view's Download and `model download`.
-            if let Err(err) = download::command::room_for(&entry, &dir, start_options.settings().download.free_margin) {
-                tracing::error!(
-                    name: "ignis.model.download_failed",
-                    model = %entry.id,
-                    repo = %entry.repo,
-                    endpoint = %download_endpoint,
-                    error = %err,
-                    "refusing to start"
-                );
-                exit_after_flush(&logging_handle, 1);
-            }
+            // `fetch_at_start` logs every refusal; the exit is ours.
             let token = download::bearer_token(&download_endpoint, download_token.as_ref(), std::env::var("HF_TOKEN").ok().as_deref());
-            let downloader = match download::Downloader::new(&download_endpoint, token) {
-                Ok(downloader) => downloader,
-                Err(err) => {
-                    tracing::error!(name: "ignis.model.download_failed", error = %err, "refusing to start");
-                    exit_after_flush(&logging_handle, 1);
-                }
-            };
             stop.starting("downloading");
-            match downloader.fetch(&entry, &dir).await {
+            match download::fetch_at_start(&entry, &dir, &download_endpoint, token, start_options.settings().download.free_margin).await {
                 Ok(path) => Some(path),
-                Err(err) => {
-                    tracing::error!(
-                        name: "ignis.model.download_failed",
-                        model = %entry.id,
-                        repo = %entry.repo,
-                        endpoint = %download_endpoint,
-                        error = %err,
-                        "refusing to start"
-                    );
-                    exit_after_flush(&logging_handle, 1);
-                }
+                Err(_) => exit_after_flush(&logging_handle, 1),
             }
         }
     };

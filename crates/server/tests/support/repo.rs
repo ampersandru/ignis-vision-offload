@@ -6,7 +6,7 @@
 //!
 //! A test holds a download mid-transfer by holding one file's body after a
 //! number of bytes until it releases it ([`Repo::hold`], [`Repo::release`]),
-//! never by a timer (ADR 0006); it makes the endpoint refuse every request
+//! never by a timer; it makes the endpoint refuse every request
 //! with a status ([`Repo::answer`]), as a gated repository does.
 
 #![allow(dead_code)]

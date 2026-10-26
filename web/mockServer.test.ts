@@ -168,6 +168,15 @@ describe("createServerSim: downloads (GitHub #376)", () => {
     expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 70_000)).toMatchObject({ download: "none", on_disk: "complete", bytes_on_disk: 19406984175 });
   });
 
+  it("cancels a download during a switch, which a new download waits for", () => {
+    const sim = createServerSim();
+    expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T)).toMatchObject({ status: 202 });
+    expect(sim.switchTo({ model: "qwen3.8-flash-next" }, T + 1_000)).toMatchObject({ status: 202 });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-custom" }, T + 1_500)).toMatchObject({ status: 503, body: { error: { code: "model_switching" } } });
+    expect(sim.cancelDownload(T + 2_000)).toMatchObject({ status: 200, body: { status: "cancelled", model: "qwen3.8-27b-abliterated" } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 2_000)).toMatchObject({ download: "none", on_disk: "partial" });
+  });
+
   // GitHub #380: a removal takes an entry's files, finished or partial, but never the model loaded or the one downloading.
   it("removes an entry on disk or partly downloaded, refuses the loaded and the downloading one, and downloads a removed one again", () => {
     const sim = createServerSim();

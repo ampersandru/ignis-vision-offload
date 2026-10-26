@@ -63,6 +63,10 @@ const isObject = (value: unknown): value is Record<string, unknown> => value !==
 
 const refuse = (status: number, type: string, code: string, message: string): MockAnswer => ({ status, body: { error: { message, type, code } } });
 
+/** The serving gate's `503 model_switching` while a switch from `from` to `to` runs, as the server words it. */
+const switching = ({ from, to }: { from: string; to: string }): MockAnswer =>
+  refuse(503, "server_error", "model_switching", `the server is switching models from ${from} to ${to}; retry once GET /v1/models reports \`serving\``);
+
 const keyOf = (entry: Entry) => (entry.scope === null ? entry.decl.file_key : `${entry.decl.group}.${entry.scope}.${entry.decl.name}`);
 
 /** A value as the config file writes it back: a bool, a count, a choice in its own spelling, else the text. */
@@ -333,7 +337,7 @@ export function createServerSim() {
     patch(body: unknown, now: number): MockAnswer {
       advance(now);
       if (running) {
-        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
+        return switching(running);
       }
       const unready = restoring ?? dead;
       if (unready) return refuse(503, "server_error", "server_not_ready", `a model switch failed and no model is serving (${unready.reason}); retry shortly`);
@@ -400,7 +404,7 @@ export function createServerSim() {
     downloadModel(body: unknown, now: number): MockAnswer {
       advance(now);
       if (running) {
-        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
+        return switching(running);
       }
       const id = isObject(body) && typeof body.model === "string" ? body.model.trim() : "";
       if (!id) return refuse(400, "invalid_request_error", "invalid_request_error", "`model` must name the catalog entry to download");
@@ -421,12 +425,9 @@ export function createServerSim() {
       return { status: 202, body: { status: "downloading", model: id, bytes: row.bytes ?? 0, bytes_on_disk: from } };
     },
 
-    /** POST /v1/models/download/cancel (GitHub #377): stop the running download; what landed stays, partial. */
+    /** POST /v1/models/download/cancel (GitHub #377): stop the running download; what landed stays, partial. Answered during a switch too. */
     cancelDownload(now: number): MockAnswer {
       advance(now);
-      if (running) {
-        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
-      }
       const row = download && CATALOG.find((r) => r.id === download!.id);
       if (!download || !row) {
         return refuse(409, "invalid_request_error", "download_not_running", "no download is running; GET /v1/models/catalog shows each entry's state");
@@ -441,7 +442,7 @@ export function createServerSim() {
     removeModel(body: unknown, now: number): MockAnswer {
       advance(now);
       if (running) {
-        return refuse(503, "server_error", "model_switching", `the server is switching models from ${running.from} to ${running.to}; retry once GET /v1/models reports \`serving\``);
+        return switching(running);
       }
       const id = isObject(body) && typeof body.model === "string" ? body.model.trim() : "";
       if (!id) return refuse(400, "invalid_request_error", "invalid_request_error", "`model` must name the catalog entry to remove");

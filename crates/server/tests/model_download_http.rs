@@ -4,21 +4,17 @@
 //! no GPU, no real model. `POST /v1/models/download` starts it in the
 //! background, `GET /v1/models/catalog` follows it, and what lands under the
 //! models folder is the outcome. A download is held mid-transfer by holding
-//! the endpoint's response, never by a timer (ADR 0006).
+//! the endpoint's response, never by a timer.
 
-use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use http_body_util::BodyExt;
-use ignis_server::config::file::RealFiles;
-use ignis_server::config::{resolve_with, Config, ConfigOutcome};
+use ignis_server::config::Config;
 use ignis_server::download_http::Downloads;
 use ignis_server::model_switch::{CatalogModels, Switcher};
 use ignis_server::Server;
-use serde_json::{json, Value};
+use serde_json::json;
 use tower::ServiceExt;
 
 #[path = "support/switch.rs"]
@@ -29,26 +25,9 @@ use switch_support::MockLoader;
 mod repo;
 use repo::{catalog_served, files_of, Repo};
 
-const PATIENT: Duration = Duration::from_secs(30);
-
-async fn send(app: &axum::Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let request = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json");
-    let request = request.body(body.map_or_else(Body::empty, |body| Body::from(body.to_string()))).unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
-}
-
-/// The configuration a start with `argv` runs, fetching from `repo`.
-fn config(repo: &Repo, argv: &[&str]) -> Config {
-    let mut args = vec!["--download-endpoint".to_owned(), repo.endpoint()];
-    args.extend(argv.iter().map(|arg| arg.to_string()));
-    match resolve_with(&args, |_| None, &RealFiles).expect("the start options resolve") {
-        ConfigOutcome::Config(config) => config,
-        other => panic!("{other:?}"),
-    }
-}
+#[path = "support/model_routes.rs"]
+mod routes;
+use routes::{config, files_in, model_download, row, send, until_row, until_status, PATIENT};
 
 /// A server on `mock-a`, switching to the catalog `models`, downloading as
 /// `config` says.
@@ -56,34 +35,6 @@ fn server_with(loader: &Arc<MockLoader>, models: CatalogModels, config: &Config)
     Server::from_active(loader.model("mock-a"))
         .with_switcher(Switcher::new(Arc::clone(loader) as _, PATIENT).with_catalog(models, true))
         .with_downloads(Downloads::of(config, None))
-}
-
-fn row<'a>(rows: &'a Value, id: &str) -> &'a Value {
-    rows["data"].as_array().expect("an array of rows").iter().find(|row| row["id"] == id).unwrap_or_else(|| panic!("no row for {id}: {rows}"))
-}
-
-/// `GET /v1/models/catalog` until `id`'s row meets `wanted` (scheduling
-/// turns, bounded): the bytes the endpoint sent land on disk shortly after.
-async fn until_row(app: &axum::Router, id: &str, wanted: impl Fn(&Value) -> bool) -> Value {
-    let mut last = Value::Null;
-    for _ in 0..10_000 {
-        let (status, rows) = send(app, Method::GET, "/v1/models/catalog", None).await;
-        assert_eq!(status, StatusCode::OK, "{rows}");
-        last = row(&rows, id).clone();
-        if wanted(&last) {
-            return last;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("{id}'s row never got there: {last}");
-}
-
-/// The files under `dir` but an entry's lock (`<artifact>.lock`, GitHub
-/// #379), which a fetch leaves there, empty and released, for the next.
-fn files_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| !name.ends_with(".lock")).collect();
-    names.sort();
-    names
 }
 
 /// AC 1, 6, 7: the download answers 202 and runs in the background while the
@@ -112,7 +63,7 @@ async fn a_download_answers_202_runs_in_the_background_and_leaves_a_servable_mod
     assert_eq!((status, models["status"].clone(), models["data"][0]["id"].clone()), (StatusCode::OK, json!("serving"), json!("mock-a")));
 
     repo.release();
-    let landed = until_row(&app, "acme-new", |row| row["on_disk"] == "complete").await;
+    let landed = until_row(&app, "acme-new", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!((landed["download"].clone(), landed["bytes_on_disk"].clone(), landed["switchable"].clone()), (json!("none"), json!(files.total()), json!(true)), "{landed}");
     assert_eq!(files_in(&dir), [files.artifact.0.clone(), files.sidecar.0.clone()], "every file at its name, no .part left");
     let (_, models) = send(&app, Method::GET, "/v1/models", None).await;
@@ -146,10 +97,10 @@ async fn a_second_download_while_one_runs_is_refused_with_409() {
     assert_eq!((row(&rows, "acme-a")["download"].clone(), row(&rows, "acme-b")["download"].clone()), (json!("running"), json!("none")), "the refused one was never queued");
 
     repo.release();
-    until_row(&app, "acme-a", |row| row["on_disk"] == "complete").await;
+    until_row(&app, "acme-a", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     let (status, accepted) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-b" }))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
-    until_row(&app, "acme-b", |row| row["on_disk"] == "complete").await;
+    until_row(&app, "acme-b", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -237,6 +188,37 @@ async fn a_download_the_models_folder_has_no_room_for_is_refused_and_its_row_say
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// GitHub #378, #376: a refusal or failure kept on a row does not outlive the
+/// entry it was about. Refused for want of room, the entry is then fetched
+/// another way, by `model download` into the same folder: its row reads
+/// complete with no failure, and the failure is forgotten, not hidden — the
+/// entry made partial again reads partial with none.
+#[tokio::test]
+async fn a_kept_failure_goes_once_the_entry_is_complete_another_way() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "stale-failure", &[("acme-later", 32)]);
+    let (catalog, dir) = (Arc::clone(&models.catalog), models.dir.clone());
+    let files = files_of("acme-later");
+    std::fs::write(dir.join(&files.sidecar.0), &files.sidecar.1).unwrap();
+    let app = server_with(&loader, models, &config(&repo, &["--download-free-margin", "1000000G"])).app();
+    let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
+    assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
+    let refused = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+    assert_eq!(refused["download"], "failed", "{refused}");
+
+    let (code, lines) = model_download(&repo, &catalog, &["acme-later"], &dir).await;
+    assert_eq!(code, 0, "{lines:?}");
+    let landed = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+    assert_eq!((landed["on_disk"].clone(), landed["download"].clone()), (json!("complete"), json!("none")), "{landed}");
+    assert!(landed.get("download_reason").is_none(), "a complete row reads no failure: {landed}");
+
+    std::fs::remove_file(dir.join(&files.artifact.0)).unwrap();
+    let partial = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-later").clone();
+    assert_eq!((partial["on_disk"].clone(), partial["download"].clone()), (json!("partial"), json!("none")), "forgotten, not hidden: {partial}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// AC 8: a failed download keeps its reason on the row, in memory, until the
 /// next attempt; a 401 or 403 from the endpoint names the token and where
 /// the server reads it, and never the token itself.
@@ -262,7 +244,7 @@ async fn a_failed_download_keeps_its_reason_on_the_row_until_the_next_attempt() 
     repo.answer(0);
     let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-gated" }))).await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let landed = until_row(&app, "acme-gated", |row| row["on_disk"] == "complete").await;
+    let landed = until_row(&app, "acme-gated", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!(landed["download"], "none", "{landed}");
     assert!(landed.get("download_reason").is_none(), "{landed}");
 
@@ -339,23 +321,6 @@ async fn a_server_without_downloads_answers_501() {
     assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("download_unavailable")));
 }
 
-/// `ignis-server model download` of `ids` from `repo` into `dir`, as `main`
-/// runs it: its exit code and the lines it reported.
-async fn model_download(repo: &Repo, catalog: &ignis_server::download::Catalog, ids: &[&str], dir: &Path) -> (i32, Vec<String>) {
-    let command = ignis_server::download::ModelCommand::Download {
-        entries: ids.iter().map(|id| catalog.entry(id).expect("a catalog entry").clone()).collect(),
-        dir: dir.to_path_buf(),
-        endpoint: repo.endpoint(),
-        token: None,
-        free_margin: 0,
-    };
-    let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let collected = Arc::clone(&lines);
-    let code = ignis_server::download::command::run(command, &mut std::io::sink(), Arc::new(move |line: &str| collected.lock().unwrap().push(line.to_owned()))).await;
-    let lines = lines.lock().unwrap().clone();
-    (code, lines)
-}
-
 /// GitHub #379: the command refuses an entry the server is downloading,
 /// saying so, and fetches nothing of it; another entry it fetches at the
 /// same time, beside the server's download, which lands as it would have.
@@ -373,7 +338,9 @@ async fn model_download_refuses_an_entry_the_server_is_downloading_and_fetches_a
 
     let (code, lines) = model_download(&repo, &catalog, &["acme-a"], &dir).await;
     assert_eq!(code, 1, "{lines:?}");
-    assert!(lines.iter().any(|line| line.starts_with("acme-a: failed: acme-a is already being downloaded")), "{lines:?}");
+    // Story 17: it says who holds the entry, the server, and its process.
+    let holder = format!("by a server (process {}), which holds", std::process::id());
+    assert!(lines.iter().any(|line| line.starts_with("acme-a: failed: acme-a is already being downloaded") && line.contains(&holder)), "{lines:?}");
     assert_eq!(repo.seen().iter().filter(|seen| seen.file.starts_with("acme-a")).count(), 2, "the command sent nothing for it: {:?}", repo.seen());
 
     let (code, lines) = model_download(&repo, &catalog, &["acme-b"], &dir).await;
@@ -407,7 +374,8 @@ async fn the_page_refuses_an_entry_model_download_is_downloading_and_starts_anot
         let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-a" }))).await;
         assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
         let message = refused["error"]["message"].as_str().unwrap();
-        assert!(message.contains("acme-a is already being downloaded") && message.contains("model download"), "{message}");
+        let holder = format!("by `ignis-server model download` (process {}), which holds", std::process::id());
+        assert!(message.contains("acme-a is already being downloaded") && message.contains(&holder), "it names the holder: {message}");
         let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
         assert!(row(&rows, "acme-a").get("download_reason").is_none(), "a refusal is no failure: {rows}");
         // Short of room too, it is refused for the lock: a refusal for room
@@ -506,6 +474,42 @@ async fn a_cancel_with_nothing_running_is_refused_and_sits_behind_the_api_key() 
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// GitHub #377: a cancel never touches the loaded model, so it stays open
+/// while a switch runs, as the routes that report and drive the switch do: a
+/// download begun before the switch is cancelled during it, and keeps its
+/// partial files, while a new download is still held by the switch.
+#[tokio::test]
+async fn a_download_is_cancelled_while_a_switch_runs() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "cancel-switching", &[("acme-held", 32), ("acme-next", 32), ("acme-later", 32)]);
+    let dir = models.dir.clone();
+    let next = files_of("acme-next");
+    std::fs::write(dir.join(&next.sidecar.0), &next.sidecar.1).unwrap();
+    std::fs::write(dir.join(&next.artifact.0), &next.artifact.1).unwrap();
+    repo.hold(&files_of("acme-held").artifact.0, 4096);
+    let app = server_with(&loader, models, &config(&repo, &[])).app();
+    let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-held" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_row(&app, "acme-held", |row| row["bytes_on_disk"] == json!(1 + 4096)).await;
+
+    let release = loader.hold_next_load();
+    let (status, _) = send(&app, Method::POST, "/v1/models/switch", Some(json!({ "model": "acme-next" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_status(&app, "switching").await;
+    let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::SERVICE_UNAVAILABLE, json!("model_switching")), "a new download waits for the switch: {refused}");
+    let (status, cancelled) = send(&app, Method::POST, "/v1/models/download/cancel", None).await;
+    assert_eq!((status, cancelled["status"].clone(), cancelled["bytes_on_disk"].clone()), (StatusCode::OK, json!("cancelled"), json!(1 + 4096)), "{cancelled}");
+    let stopped = row(&send(&app, Method::GET, "/v1/models/catalog", None).await.1, "acme-held").clone();
+    assert_eq!((stopped["download"].clone(), stopped["on_disk"].clone()), (json!("none"), json!("partial")), "{stopped}");
+
+    release.send(()).expect("the held load waits");
+    assert_eq!(until_status(&app, "serving").await["data"][0]["id"], "acme-next", "the switch went on as it would have");
+    repo.release();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// GitHub #377 AC 5: after a restart a partial entry stays partial. A server
 /// started over the `.part` an earlier one left (a fresh `Downloads`, the
 /// same `download.path`) shows the entry partial with its bytes and no
@@ -537,7 +541,7 @@ async fn a_partial_entry_stays_partial_after_a_restart_until_its_resume() {
     assert_eq!(repo.seen().len(), requests, "nothing resumed by itself");
     let (status, accepted) = send(&after, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
     assert_eq!((status, accepted["bytes_on_disk"].clone()), (StatusCode::ACCEPTED, json!(1 + 4096)), "{accepted}");
-    until_row(&after, "acme-later", |row| row["on_disk"] == "complete").await;
+    until_row(&after, "acme-later", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!(std::fs::read(dir.join(&files.artifact.0)).unwrap(), files.artifact.1);
     let _ = std::fs::remove_dir_all(dir);
 }

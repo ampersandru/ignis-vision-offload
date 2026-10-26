@@ -101,6 +101,13 @@ pub fn bytes_on_disk(entry: &CatalogEntry, dir: &Path, size_of: &dyn Fn(&Path) -
         .sum()
 }
 
+/// The size of the file at `path`, read from the filesystem now; `None` when
+/// nothing is there, or no file: the probe [`on_disk`] and [`bytes_on_disk`]
+/// take everywhere but in their tests.
+pub fn file_size(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len())
+}
+
 /// Whether the volume `dir` is on has room for what of `entry` is still
 /// missing there plus `margin` (`download.free_margin`, GitHub #378), read
 /// from the filesystem now: what the Server view's Download, `model
@@ -108,8 +115,7 @@ pub fn bytes_on_disk(entry: &CatalogEntry, dir: &Path, size_of: &dyn Fn(&Path) -
 /// The reason, naming both numbers, when it has not. An entry with nothing
 /// missing writes nothing, so it always has room.
 pub fn room_for(entry: &CatalogEntry, dir: &Path, margin: u64) -> Result<(), String> {
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
-    let missing = entry.total_bytes().saturating_sub(bytes_on_disk(entry, dir, &size_of));
+    let missing = entry.total_bytes().saturating_sub(bytes_on_disk(entry, dir, &file_size));
     if missing == 0 {
         return Ok(());
     }
@@ -164,7 +170,24 @@ pub struct Removed {
     /// The bytes they held.
     pub bytes: u64,
     /// Each file left in place, with the entry that also lists it.
-    pub kept: Vec<(String, String)>,
+    pub kept: Vec<FileKept>,
+}
+
+/// A file a removal left, and the entry that also lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct FileKept {
+    /// Its name under `download.path`.
+    pub file: String,
+    /// The other entry's id.
+    pub by: String,
+}
+
+/// Another entry listing a file of the one a removal deletes: whether its
+/// shared files stay, and its lock, held while they do not.
+struct Sharer<'a> {
+    id: &'a str,
+    keeps: bool,
+    _lock: Option<super::EntryLock>,
 }
 
 /// Delete `entry`'s files under `dir`, finished or partial — each file at
@@ -182,28 +205,26 @@ pub struct Removed {
 /// cannot be deleted stops the removal, naming it and what was deleted
 /// before it.
 pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Removed, String> {
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
     let mut removed = Removed::default();
-    // Each entry sharing a file, once: whether it keeps its shared files,
-    // and its lock while it does not.
-    let mut others: Vec<(&str, bool, Option<super::EntryLock>)> = Vec::new();
+    // Each entry sharing a file, once.
+    let mut others: Vec<Sharer<'_>> = Vec::new();
     for file in &entry.files {
         let mut kept_by = None;
         for other in catalog.entries().iter().filter(|other| other.id != entry.id && other.files.iter().any(|theirs| theirs.name == file.name)) {
-            let keeps = match others.iter().find(|(id, ..)| *id == other.id) {
-                Some((_, keeps, _)) => *keeps,
+            let keeps = match others.iter().find(|sharer| sharer.id == other.id) {
+                Some(sharer) => sharer.keeps,
                 None => {
-                    let (keeps, lock) = if on_disk(other, dir, &size_of) == OnDisk::Complete {
+                    let (keeps, lock) = if on_disk(other, dir, &file_size) == OnDisk::Complete {
                         (true, None)
                     } else {
                         // Held, or not to be opened: that entry may be being
                         // downloaded, and its file stays.
-                        match super::EntryLock::take(other, dir) {
+                        match super::EntryLock::take(other, dir, super::Holder::Server) {
                             Ok(lock) => (false, Some(lock)),
                             Err(_) => (true, None),
                         }
                     };
-                    others.push((other.id.as_str(), keeps, lock));
+                    others.push(Sharer { id: other.id.as_str(), keeps, _lock: lock });
                     keeps
                 }
             };
@@ -211,13 +232,13 @@ pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Rem
                 kept_by = Some(other.id.clone());
             }
         }
-        if let Some(other) = kept_by {
-            removed.kept.push((file.name.clone(), other));
+        if let Some(by) = kept_by {
+            removed.kept.push(FileKept { file: file.name.clone(), by });
             continue;
         }
         let path = dir.join(&file.name);
         for path in [part_path(&path), path] {
-            let Some(bytes) = size_of(&path) else { continue };
+            let Some(bytes) = file_size(&path) else { continue };
             if let Err(err) = std::fs::remove_file(&path) {
                 let before = if removed.files.is_empty() { "nothing".to_owned() } else { removed.files.join(", ") };
                 return Err(format!("{} could not be deleted: {err}; deleted before it: {before}", path.display()));
@@ -234,6 +255,9 @@ pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Rem
 pub struct ListRow {
     pub entry: CatalogEntry,
     pub on_disk: OnDisk,
+    /// What of it is on disk, partial files included ([`bytes_on_disk`]):
+    /// read with `on_disk`, from the same sizes.
+    pub bytes_on_disk: u64,
     /// The family the artifact's own header names, when the artifact is on
     /// disk and names one — never declared in the catalog (ADR 0047).
     pub family: Option<ModelFamily>,
@@ -241,12 +265,19 @@ pub struct ListRow {
 
 /// Every entry of `catalog` as a row, probed under `dir` through `size_of`
 /// and, for an artifact that is there, `family_of` (its header).
+///
+/// Each file's size is read once per listing and every row is taken from
+/// that one reading (GitHub #376): a row's `on_disk` and its `bytes_on_disk`
+/// never disagree, as they did when a download landed files between two
+/// reads of them (`absent` with bytes).
 pub fn list_rows(
     catalog: &Catalog,
     dir: &Path,
     size_of: &dyn Fn(&Path) -> Option<u64>,
     family_of: &dyn Fn(&Path) -> Option<ModelFamily>,
 ) -> Vec<ListRow> {
+    let sizes = std::cell::RefCell::new(std::collections::HashMap::<PathBuf, Option<u64>>::new());
+    let read = |path: &Path| *sizes.borrow_mut().entry(path.to_path_buf()).or_insert_with(|| size_of(path));
     catalog
         .entries()
         .iter()
@@ -254,8 +285,9 @@ pub fn list_rows(
             let artifact = entry.artifact_path(dir);
             ListRow {
                 entry: entry.clone(),
-                on_disk: on_disk(entry, dir, size_of),
-                family: size_of(&artifact).and_then(|_| family_of(&artifact)),
+                on_disk: on_disk(entry, dir, &read),
+                bytes_on_disk: bytes_on_disk(entry, dir, &read),
+                family: read(&artifact).and_then(|_| family_of(&artifact)),
             }
         })
         .collect()
@@ -356,15 +388,14 @@ pub fn render_list(rows: &[ListRow], format: ListFormat) -> String {
 pub async fn run(command: ModelCommand, out: &mut dyn Write, progress: Arc<dyn Fn(&str) + Send + Sync>) -> i32 {
     match command {
         ModelCommand::List { catalog, dir, format } => {
-            let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
             let family_of = |path: &Path| crate::loader::artifact_family(path).ok().flatten();
-            let rows = list_rows(&catalog, &dir, &size_of, &family_of);
+            let rows = list_rows(&catalog, &dir, &file_size, &family_of);
             let _ = out.write_all(render_list(&rows, format).as_bytes());
             0
         }
         ModelCommand::Download { entries, dir, endpoint, token, free_margin } => {
             let downloader = match Downloader::new(&endpoint, token) {
-                Ok(downloader) => downloader.reporting(Report::Lines(Arc::clone(&progress))),
+                Ok(downloader) => downloader.reporting(Report::Lines(Arc::clone(&progress))).holding_as(super::Holder::Command),
                 Err(err) => {
                     progress(&format!("ignis-server model download: {err}"));
                     return 1;
@@ -468,6 +499,33 @@ mod tests {
             let listed: Vec<(&str, u64)> = files.iter().map(|(name, bytes)| (name.as_str(), *bytes)).collect();
             assert_eq!(bytes_on_disk(entry, dir, &sizes(&listed)), want, "{files:?}");
         }
+    }
+
+    /// GitHub #376 (13a45bcf): a listing reads each file's size once and
+    /// takes a row's state on disk and its bytes from that one reading, so a
+    /// download landing files while the catalog is listed never gives a row
+    /// that is `absent` with bytes, or `partial` by one reading and `absent`
+    /// by another. The probe is such a download: each file is missing at its
+    /// first reading and whole at any later one.
+    #[test]
+    fn a_listing_reads_each_file_once_and_each_row_agrees_with_itself() {
+        let catalog = Catalog::built_in();
+        let entry = catalog.entry("qwen3.8-27b").unwrap();
+        let dir = Path::new("m");
+        let reads = std::cell::RefCell::new(BTreeMap::<PathBuf, usize>::new());
+        let landing = |path: &Path| {
+            let mut reads = reads.borrow_mut();
+            let count = reads.entry(path.to_path_buf()).or_insert(0);
+            *count += 1;
+            let whole = entry.files.iter().find(|file| dir.join(&file.name) == path).map(|file| file.bytes);
+            if *count == 1 { None } else { whole }
+        };
+        let rows = list_rows(&catalog, dir, &landing, &|_| None);
+        let row = rows.iter().find(|row| row.entry.id == entry.id).unwrap();
+        assert_eq!((row.on_disk, row.bytes_on_disk), (OnDisk::Absent, 0), "one reading: nothing there yet");
+        let reads = reads.into_inner();
+        assert!(reads.contains_key(&dir.join(&entry.files[1].name)), "{reads:?}");
+        assert!(reads.values().all(|&count| count == 1), "each file read once: {reads:?}");
     }
 
     /// GitHub #378: the free space must cover the bytes still missing plus

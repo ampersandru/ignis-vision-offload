@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { canSend, loadUnderWay, type ModelState } from "../api/model.ts";
-import { diskLabel, downloadCommand, type DownloadGate, elapsed, rowAction, runningFamily, sourceLabel } from "./band.ts";
-import { downloadFailure, progressLabel } from "./download.ts";
+import { loadUnderWay, type ModelState } from "../api/model.ts";
+import { diskLabel, downloadCommand, elapsed, type PageGate, rowAction, runningFamily, sourceLabel } from "./band.ts";
+import { cancelReachable, downloadFailure, progressLabel } from "./download.ts";
 import { familyName } from "./form.ts";
 import { drainNote, lastSwitchLine, type Line } from "./outcome.ts";
-import { type RemovalGate, removalPrompt, removeAction } from "./removal.ts";
+import { removalPrompt, removeAction } from "./removal.ts";
 import type { CatalogRow, ConfigDocument } from "./routes.ts";
 import type { Loaded } from "./useServer.ts";
 
@@ -26,11 +26,6 @@ export function ModelBand({
   now,
   onLoad,
   downloads,
-  downloadingId,
-  downloadSpeed,
-  onDownload,
-  cancelling,
-  onCancel,
   removals,
   removal,
 }: {
@@ -44,16 +39,8 @@ export function ModelBand({
   drain: number | null;
   now: number;
   onLoad: (id: string) => void;
-  /** Whether the server downloads from the page, and whether a download runs. */
-  downloads: DownloadGate;
-  /** The id whose Download is being sent. */
-  downloadingId: string | null;
-  /** The running download's bytes per second, once read. */
-  downloadSpeed: number | null;
-  onDownload: (id: string) => void;
-  /** A "Cancel" of the running download is being sent. */
-  cancelling: boolean;
-  onCancel: () => void;
+  /** What a row needs to offer Download and follow it, and to cancel it or resume it (GitHub #376, #377). */
+  downloads: RowDownloads;
   /** What a row needs to offer Remove and confirm it (GitHub #380). */
   removals: RowRemovals;
   /** The last removal's line: what it freed, or why the server refused it. */
@@ -94,7 +81,7 @@ export function ModelBand({
         model={model}
         loadingId={loadingId}
         onLoad={onLoad}
-        downloads={{ gate: downloads, sendingId: downloadingId, speed: downloadSpeed, onDownload, cancelling, onCancel }}
+        downloads={downloads}
         removals={removals}
       />
     </section>
@@ -166,17 +153,21 @@ function Figure({ label, value, dot }: { label: string; value: string; dot?: str
 
 /** What a row needs to offer Download and follow it, and to cancel it or resume it (GitHub #377). */
 type RowDownloads = {
-  gate: DownloadGate;
+  /** Whether the server downloads from the page, and whether a download runs. */
+  gate: PageGate;
+  /** The id whose Download is being sent. */
   sendingId: string | null;
+  /** The running download's bytes per second, once read. */
   speed: number | null;
   onDownload: (id: string) => void;
+  /** A "Cancel" of the running download is being sent. */
   cancelling: boolean;
   onCancel: () => void;
 };
 
 /** What a row needs to offer Remove and confirm it (GitHub #380). */
 type RowRemovals = {
-  gate: RemovalGate;
+  gate: PageGate;
   /** The id whose removal is being sent. */
   removingId: string | null;
   /** The id whose Remove waits for its confirmation. */
@@ -286,12 +277,12 @@ function RowActionView({
     case "copy":
       return <CopyCommand id={row.id} />;
     case "downloading":
-      // Its progress is in the disk column; the action stops it, keeping what it fetched (GitHub #377).
+      // Its progress is in the disk column; the action stops it, keeping what it fetched (GitHub #377), during a switch too.
       return (
         <button
           type="button"
           aria-label={`Cancel the download of ${row.id}`}
-          disabled={downloads.cancelling || !canSend(model)}
+          disabled={downloads.cancelling || !cancelReachable(model)}
           onClick={downloads.onCancel}
           className="border border-[#4a525c] px-3 py-1.5 font-display text-[13px] font-semibold text-[#ff8a4c] hover:border-[#ff5a1f] hover:bg-[#ff5a1f]/15 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[#4a525c] disabled:hover:bg-transparent"
         >

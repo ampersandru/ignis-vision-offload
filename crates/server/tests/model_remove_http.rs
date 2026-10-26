@@ -5,7 +5,7 @@
 //! files; what is left under the models folder, and the entry's row in
 //! `GET /v1/models/catalog`, are the outcome. A download the removal must
 //! refuse is held mid-transfer by holding the local endpoint's response,
-//! never by a timer (ADR 0006).
+//! never by a timer.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,9 +13,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use http_body_util::BodyExt;
-use ignis_server::config::file::RealFiles;
-use ignis_server::config::{resolve_with, Config, ConfigOutcome};
+use ignis_server::config::Config;
 use ignis_server::download_http::Downloads;
 use ignis_server::model_switch::{CatalogModels, Switcher};
 use ignis_server::Server;
@@ -30,29 +28,12 @@ use switch_support::MockLoader;
 mod repo;
 use repo::{catalog_served, files_of, Repo};
 
-const PATIENT: Duration = Duration::from_secs(30);
-
-async fn send(app: &axum::Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let request = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json");
-    let request = request.body(body.map_or_else(Body::empty, |body| Body::from(body.to_string()))).unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
-}
+#[path = "support/model_routes.rs"]
+mod routes;
+use routes::{catalog_row, config, files_in, model_download, send, until_row, until_status, PATIENT};
 
 async fn remove(app: &axum::Router, model: &str) -> (StatusCode, Value) {
     send(app, Method::POST, "/v1/models/remove", Some(json!({ "model": model }))).await
-}
-
-/// The configuration a start with `argv` runs, fetching from `repo`.
-fn config(repo: &Repo, argv: &[&str]) -> Config {
-    let mut args = vec!["--download-endpoint".to_owned(), repo.endpoint()];
-    args.extend(argv.iter().map(|arg| arg.to_string()));
-    match resolve_with(&args, |_| None, &RealFiles).expect("the start options resolve") {
-        ConfigOutcome::Config(config) => config,
-        other => panic!("{other:?}"),
-    }
 }
 
 /// A server on `loaded`, switching to the catalog `models`, downloading as
@@ -70,27 +51,6 @@ fn on_disk(dir: &Path, id: &str) {
     std::fs::write(dir.join(&files.artifact.0), &files.artifact.1).unwrap();
 }
 
-fn row<'a>(rows: &'a Value, id: &str) -> &'a Value {
-    rows["data"].as_array().expect("an array of rows").iter().find(|row| row["id"] == id).unwrap_or_else(|| panic!("no row for {id}: {rows}"))
-}
-
-async fn catalog_row(app: &axum::Router, id: &str) -> Value {
-    let (status, rows) = send(app, Method::GET, "/v1/models/catalog", None).await;
-    assert_eq!(status, StatusCode::OK, "{rows}");
-    row(&rows, id).clone()
-}
-
-/// The files under `dir` but the entries' `.lock` files (GitHub #379), which
-/// stay for the next fetch.
-fn files_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.ends_with(".lock"))
-        .collect();
-    names.sort();
-    names
-}
 
 /// AC 1: a removal deletes every file of the entry and answers once they
 /// are gone, with the bytes it freed; the row reads absent, and the model is
@@ -200,36 +160,13 @@ async fn the_entry_being_downloaded_is_refused_until_its_download_ends() {
     assert!(message.contains("acme-new") && message.contains("being downloaded"), "{message}");
 
     repo.release();
-    for _ in 0..10_000 {
-        // Its files land a moment before the download says it ended.
-        let landed = catalog_row(&app, "acme-new").await;
-        if landed["on_disk"] == "complete" && landed["download"] == "none" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    // Its files land a moment before the download says it ended.
+    until_row(&app, "acme-new", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!(files_in(&dir), [files.artifact.0.clone(), files.sidecar.0.clone()], "the download landed whole");
     let (status, removed) = remove(&app, "acme-new").await;
     assert_eq!((status, removed["bytes_freed"].clone()), (StatusCode::OK, json!(files.total())), "{removed}");
     assert!(files_in(&dir).is_empty());
     let _ = std::fs::remove_dir_all(dir);
-}
-
-/// `ignis-server model download <ids>` into `dir`, from `repo`, as the
-/// command line runs it: its exit code and its progress lines.
-async fn model_download(repo: &Repo, catalog: &ignis_server::download::Catalog, ids: &[&str], dir: &Path) -> (i32, Vec<String>) {
-    let command = ignis_server::download::ModelCommand::Download {
-        entries: ids.iter().map(|id| catalog.entry(id).expect("a catalog entry").clone()).collect(),
-        dir: dir.to_path_buf(),
-        endpoint: repo.endpoint(),
-        token: None,
-        free_margin: 0,
-    };
-    let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let collected = Arc::clone(&lines);
-    let code = ignis_server::download::command::run(command, &mut std::io::sink(), Arc::new(move |line: &str| collected.lock().unwrap().push(line.to_owned()))).await;
-    let lines = lines.lock().unwrap().clone();
-    (code, lines)
 }
 
 /// AC 2 with GitHub #379: an entry `model download` is writing, which holds
@@ -259,7 +196,8 @@ async fn an_entry_model_download_is_writing_is_refused_and_its_lock_file_stays()
         let (status, refused) = remove(&app, "acme-cli").await;
         assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
         let message = refused["error"]["message"].as_str().unwrap();
-        assert!(message.contains("acme-cli is already being downloaded") && message.contains("model download"), "{message}");
+        let holder = format!("by `ignis-server model download` (process {})", std::process::id());
+        assert!(message.contains("acme-cli is already being downloaded") && message.contains(&holder), "it names the holder: {message}");
         assert_eq!(std::fs::metadata(&part).map(|meta| meta.len()).ok(), Some(4096), "the command's .part is left to it");
         repo.release();
     };
@@ -274,17 +212,6 @@ async fn an_entry_model_download_is_writing_is_refused_and_its_lock_file_stays()
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// `GET /v1/models` until its `status` reads `wanted` (bounded turns).
-async fn until_status(app: &axum::Router, wanted: &str) -> Value {
-    for _ in 0..10_000 {
-        let (status, body) = send(app, Method::GET, "/v1/models", None).await;
-        if status == StatusCode::OK && body["status"] == wanted {
-            return body;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("`GET /v1/models` never reported {wanted}");
-}
 
 /// AC 2: while a switch loads an entry, its removal is refused — the switch
 /// holds every `/v1` route but the ones that report and drive it, `503
@@ -319,12 +246,33 @@ async fn the_model_a_switch_is_loading_is_refused_and_then_the_model_loaded() {
 /// `409 model_in_use`, the load saying it is loading.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_model_a_load_out_of_unloaded_is_loading_is_refused() {
+    refused_while_a_load_out_of_unloaded_loads("loading", "acme-wake", None).await;
+}
+
+/// GitHub #380, story 24: the same, when the model loading is a known model
+/// served under another id from the entry's file: the entry is matched by
+/// its file, not only by its id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_entry_a_known_model_loading_out_of_unloaded_loads_from_is_refused() {
+    refused_while_a_load_out_of_unloaded_loads("loading-known", "wake-alias", Some("wake-alias")).await;
+}
+
+/// A server on `mock-a`, unloaded while idle, then loading `named` out of
+/// `unloaded` for a chat, the load held: the removal of `acme-wake` is
+/// refused meanwhile, and nothing of it is deleted. `alias` is a known model
+/// at `acme-wake`'s artifact.
+async fn refused_while_a_load_out_of_unloaded_loads(tag: &str, named: &str, alias: Option<&str>) {
     let repo = Repo::start().await;
     let loader = MockLoader::new();
-    let models = catalog_served(&repo, "loading", &[("acme-wake", 32)]);
+    let models = catalog_served(&repo, tag, &[("acme-wake", 32)]);
     let dir = models.dir.clone();
     on_disk(&dir, "acme-wake");
-    let server = server_on(&loader, "mock-a", models, &config(&repo, &[])).with_idle_unload(Duration::from_secs(1));
+    let known = alias.map(|alias| (alias.to_owned(), dir.join(files_of("acme-wake").artifact.0)));
+    let switcher = Switcher::new(Arc::clone(&loader) as _, PATIENT).with_catalog(models, true).with_known_models(known.into_iter().collect());
+    let server = Server::from_active(loader.model("mock-a"))
+        .with_switcher(switcher)
+        .with_downloads(Downloads::of(&config(&repo, &[]), None))
+        .with_idle_unload(Duration::from_secs(1));
     let app = server.app();
     let _clock = server.spawn_idle_clock(Duration::from_millis(50)).expect("a clock");
     until_status(&app, "unloaded").await;
@@ -339,20 +287,20 @@ async fn the_model_a_load_out_of_unloaded_is_loading_is_refused() {
     let release = loader.hold_next_load();
     let chat = {
         let app = app.clone();
-        let body = json!({ "model": "acme-wake", "messages": [{ "role": "user", "content": "hello there" }], "max_tokens": 3 });
+        let body = json!({ "model": named, "messages": [{ "role": "user", "content": "hello there" }], "max_tokens": 3 });
         tokio::spawn(async move { send(&app, Method::POST, "/v1/chat/completions", Some(body)).await })
     };
     let loading = until_status(&app, "loading").await;
-    assert_eq!(loading["switching"]["to"], "acme-wake", "{loading}");
+    assert_eq!(loading["switching"]["to"], named, "{loading}");
     let (status, refused) = remove(&app, "acme-wake").await;
     assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("model_in_use")), "{refused}");
     let message = refused["error"]["message"].as_str().unwrap();
-    assert!(message.contains("acme-wake") && message.contains("loading"), "{message}");
+    assert!(message.contains("acme-wake") && message.contains(named) && message.contains("loading"), "{message}");
     assert_eq!(files_in(&dir).len(), 2, "nothing deleted: {:?}", files_in(&dir));
 
     release.send(()).expect("the held load waits");
     let (status, completion) = chat.await.unwrap();
-    assert_eq!((status, completion["model"].clone()), (StatusCode::OK, json!("acme-wake")), "{completion}");
+    assert_eq!((status, completion["model"].clone()), (StatusCode::OK, json!(named)), "{completion}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -418,7 +366,7 @@ async fn a_file_an_entry_being_downloaded_also_lists_stays() {
         std::fs::write(dir.join(name), vec![7u8; bytes]).unwrap();
     }
     // A fetch of acme-b holds its lock, as `model download acme-b` does.
-    let fetching = ignis_server::download::EntryLock::take(catalog.entry("acme-b").unwrap(), &dir).expect("acme-b is free");
+    let fetching = ignis_server::download::EntryLock::take(catalog.entry("acme-b").unwrap(), &dir, ignis_server::download::Holder::Command).expect("acme-b is free");
     let app = server_on(&loader, "mock-a", models, &config(&repo, &[])).app();
 
     let (status, removed) = remove(&app, "acme-a").await;
@@ -530,13 +478,15 @@ async fn a_removed_entry_forgets_its_last_failure() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// AC 4, the server's half: a catalog row says when its entry is the model
-/// the server started on (`start`) or a known model's (`known`), loaded from
-/// its files under `download.path`, so a page can say what removing it
-/// means before it asks; other rows carry neither. The start model, once
-/// another is loaded, is removed like any entry, and its row still says so.
+/// AC 4, the server's half: a catalog row names the model the server
+/// started on (`start_model`) and the known models (`known_models`) loaded
+/// from its files under `download.path`, whatever id each is served under —
+/// matched by file, not by id — so a page can say what removing it means
+/// before it asks; other rows carry neither. The start model, listed among
+/// the known ones as `main` lists it, is named once, as the start model. Once
+/// another is loaded it is removed like any entry, and its row still names it.
 #[tokio::test]
-async fn the_rows_say_which_entry_the_server_started_on_and_which_a_known_model_loads() {
+async fn the_rows_name_the_start_model_and_the_known_models_loaded_from_their_files() {
     let repo = Repo::start().await;
     let loader = MockLoader::new();
     let models = catalog_served(&repo, "start-known", &[("acme-start", 32), ("acme-known", 32), ("acme-plain", 32)]);
@@ -544,22 +494,63 @@ async fn the_rows_say_which_entry_the_server_started_on_and_which_a_known_model_
     for id in ["acme-start", "acme-known", "acme-plain"] {
         on_disk(&dir, id);
     }
-    let switcher = Switcher::new(Arc::clone(&loader) as _, PATIENT)
-        .with_catalog(models, true)
-        .with_known_models([("acme-known".to_owned(), dir.join(files_of("acme-known").artifact.0))].into());
-    switcher.note_start(Some(&ignis_server::ModelSource { artifact: dir.join(files_of("acme-start").artifact.0), model: "acme-start".to_owned() }));
+    let (start_file, known_file) = (dir.join(files_of("acme-start").artifact.0), dir.join(files_of("acme-known").artifact.0));
+    let switcher = Switcher::new(Arc::clone(&loader) as _, PATIENT).with_catalog(models, true).with_known_models(
+        [("boot".to_owned(), start_file.clone()), ("acme-known".to_owned(), known_file.clone()), ("acme-twin".to_owned(), known_file)].into(),
+    );
+    switcher.note_start(Some(&ignis_server::ModelSource { artifact: start_file, model: "boot".to_owned() }));
     let app = Server::from_active(loader.model("mock-a")).with_switcher(switcher).with_downloads(Downloads::of(&config(&repo, &[]), None)).app();
 
     let start = catalog_row(&app, "acme-start").await;
-    assert_eq!((start["start"].clone(), start.get("known")), (json!(true), None), "{start}");
+    assert_eq!((start["start_model"].clone(), start.get("known_models")), (json!("boot"), None), "{start}");
     let known = catalog_row(&app, "acme-known").await;
-    assert_eq!((known["known"].clone(), known.get("start")), (json!(true), None), "{known}");
+    assert_eq!((known["known_models"].clone(), known.get("start_model")), (json!(["acme-known", "acme-twin"]), None), "{known}");
     let plain = catalog_row(&app, "acme-plain").await;
-    assert!(plain.get("start").is_none() && plain.get("known").is_none(), "{plain}");
+    assert!(plain.get("start_model").is_none() && plain.get("known_models").is_none(), "{plain}");
 
     let (status, removed) = remove(&app, "acme-start").await;
     assert_eq!(status, StatusCode::OK, "{removed}");
     let gone = catalog_row(&app, "acme-start").await;
-    assert_eq!((gone["on_disk"].clone(), gone["start"].clone()), (json!("absent"), json!(true)), "{gone}");
+    assert_eq!((gone["on_disk"].clone(), gone["start_model"].clone()), (json!("absent"), json!("boot")), "{gone}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// GitHub #380, story 24: the speech model the speech worker has loaded
+/// transcribes from its files beside the loaded model, so its removal is
+/// refused, `409 model_in_use` saying so, and nothing of it is deleted; once
+/// the worker has unloaded it, it is removed like any entry.
+#[tokio::test]
+async fn the_speech_model_loaded_is_refused_until_the_worker_unloads_it() {
+    use ignis_server::speech::executor::{FakeExecutor, LoadSettings, SpeechExecutor, SpeechFiles};
+    use ignis_server::speech::{Speech, SpeechModels};
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let dir = repo::fresh_dir("speech-loaded");
+    let (encoder, decoder) = ("mmproj-acme-asr.gguf", "acme-asr-decoder.gguf");
+    let zero = "0".repeat(64);
+    let yaml = format!(
+        "models:\n  - id: acme-asr\n    repo: acme/asr\n    revision: v1\n    artifact: {decoder}\n    kind: speech\n    files:\n      - {{ name: {encoder}, bytes: 4, sha256: \"{zero}\" }}\n      - {{ name: {decoder}, bytes: 4, sha256: \"{zero}\" }}\n"
+    );
+    let catalog = Arc::new(ignis_server::download::catalog::parse_operator(&yaml, ignis_server::config::file::Format::Yaml, "test").expect("a valid catalog"));
+    for name in [encoder, decoder] {
+        std::fs::write(dir.join(name), b"gguf").unwrap();
+    }
+    let executor = Arc::new(FakeExecutor::saying(&["hello"]));
+    let speech = Speech::new(Arc::clone(&executor) as Arc<dyn SpeechExecutor>, Some(SpeechModels { catalog: Arc::clone(&catalog), dir: dir.clone() }));
+    let app = server_on(&loader, "mock-a", CatalogModels { catalog, dir: dir.clone() }, &config(&repo, &[])).with_speech(Arc::new(speech)).app();
+    // What the speech worker does at its first transcription.
+    let files = SpeechFiles { id: "acme-asr".to_owned(), decoder: dir.join(decoder), files: vec![dir.join(encoder), dir.join(decoder)] };
+    executor.load(&files, LoadSettings::default()).expect("the fake loads");
+
+    let (status, refused) = remove(&app, "acme-asr").await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("model_in_use")), "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(message.contains("acme-asr is the speech model loaded") && message.contains("speech.idle_unload"), "{message}");
+    assert_eq!(files_in(&dir), [decoder, encoder], "nothing deleted");
+
+    executor.unload();
+    let (status, removed) = remove(&app, "acme-asr").await;
+    assert_eq!((status, removed["bytes_freed"].clone()), (StatusCode::OK, json!(8)), "{removed}");
+    assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
     let _ = std::fs::remove_dir_all(dir);
 }

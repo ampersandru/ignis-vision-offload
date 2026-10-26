@@ -110,11 +110,17 @@ Every fetch of an entry holds the entry's lock for as long as it runs: the
 command's, a server's start, and a server's download from its Server view
 alike. The lock is `<artifact>.lock`, beside the entry's files in the folder
 it fetches into. A second fetch of the same entry into the same folder is
-refused before it fetches anything, so two never write one `.part`:
+refused before it fetches anything, so two never write one `.part`, with a
+message naming who holds the entry, a server or `ignis-server model download`,
+and its process id:
 
 ```
-qwen3.8-27b: failed: qwen3.8-27b is already being downloaded into ./models, by a server or by `ignis-server model download`, which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends
+qwen3.8-27b: failed: qwen3.8-27b is already being downloaded into ./models, by a server (process 4120), which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends
 ```
+
+The holder writes who it is into the `.lock` file while it holds it, and the
+refused side reads it there; a lock whose holder has written nothing yet names
+either of the two.
 
 The command exits 1, the start is refused, and the Server view's **Download**
 answers `409 download_locked`; try again once the other fetch ends. The
@@ -125,7 +131,8 @@ different entries are fetched at the same time. The lock is the operating
 system's, `flock` on Linux and `LockFileEx` on Windows: it ends with the
 fetch, whether the fetch verified, failed or was cancelled, and with the
 process holding it, killed or crashed, so it is never cleared by hand. The
-empty `.lock` file stays in the folder for the next fetch of the entry.
+`.lock` file stays in the folder, emptied of its note, for the next fetch of
+the entry.
 
 ## Downloading from the Server view: `POST /v1/models/download`
 
@@ -154,7 +161,9 @@ verified, the row is `on_disk: complete` and `switchable`, `GET /v1/models`
 lists it, and `POST /v1/models/switch` loads it: the server never switches to
 it by itself, and a switch still never starts a download. A failed download's
 reason stays on the row, in memory, until the entry's next download or a
-restart; nothing about a download is written down, and nothing resumes by
+restart, or until the entry is complete on disk another way (`model download`
+fetched it): a complete row reads no failure. Nothing about a download is
+written down, and nothing resumes by
 itself at the next start: a partial entry's next download, the Server view's
 **Resume**, resumes it ([Cancelling and resuming](#cancelling-and-resuming-post-v1modelsdownloadcancel)).
 
@@ -169,6 +178,7 @@ itself at the next start: a partial entry's next download, the Server view's
 | `409 download_locked` | Another fetch of this entry into `--download-path` holds its lock: `model download`, or another server on the same folder ([one writer per entry](#one-writer-per-entry)). |
 | `409 model_above_card_class` | The entry's `card_class` is above this card's. |
 | `409 model_already_downloaded` | Every file of it is already on disk. |
+| `500 download_failed` | The download could not begin: the server could not build its HTTP client, or could not open the entry's lock file under `--download-path` (a folder it cannot create or write to); the message says which. Nothing was fetched, and the row keeps no reason. |
 | `503 model_switching` | A switch is under way; retry once it lands. |
 | `507 download_no_room` | The models folder's volume has less free space than the entry's bytes still missing plus `--download-free-margin`; the row keeps the reason ([Room on the disk](#room-on-the-disk---download-free-margin)). |
 
@@ -208,12 +218,17 @@ a download of it, through the API or `model download`, continues it. The one
 exception is the model the server is started to serve, which a start fetches
 when it is missing, as [below](#letting-the-server-fetch-it).
 
+A cancel never touches the loaded model, so the server answers it during a
+model switch too, as it answers `GET /v1/models`: a download begun before the
+switch is stopped while the switch runs. A new download waits for the switch
+(`503 model_switching`).
+
 | Answer | When |
 |---|---|
 | `200` | The download stopped; its partial files stay. |
 | `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
 | `409 download_not_running` | No download runs: none began, or the one that ran had already landed or failed, which the message says. |
-| `503 model_switching` | A switch is under way; retry once it lands. |
+| `503 server_not_ready` | The loaded model's first traversal has not run yet; retry shortly. |
 
 The log has `ignis.model.download_cancelled` at INFO, with the entry's `model`,
 `repo` and `endpoint`, its `bytes` and the `bytes_on_disk` it keeps for the
@@ -249,14 +264,16 @@ Its `GET /v1/models/catalog` row then reads `on_disk: absent` (or `partial`),
 forgotten, and `GET /v1/models` no longer lists it; its next download fetches
 it again.
 
-The start model may go. Its catalog row carries `start: true` while the
-server's start loaded it from these files, and the next start looks for it under
-`--download-path` again: it fetches it, asking first on a terminal, as
-[below](#letting-the-server-fetch-it); with `--download-enabled false` it comes
-up on the placeholder template; and a start whose `--model-artifact` names the
-removed file refuses to start. A row carries `known: true` when
-`--switch-known-models` names its id at one of its files: removed, a switch to
-it is refused until it is downloaded again.
+The start model may go. Its catalog row names it in `start_model` while the
+server's start loaded it from these files, under whatever id it serves, and the
+next start looks for it under `--download-path` again: it fetches it, asking
+first on a terminal, as [below](#letting-the-server-fetch-it); with
+`--download-enabled false` it comes up on the placeholder template; and a start
+whose `--model-artifact` names the removed file refuses to start. A row lists in
+`known_models` the ids `--switch-known-models` names at one of its files, its
+own or another: removed, a switch to any of them is refused until it is
+downloaded again. Both are matched by file, so the Server view's confirmation
+names a model served from the entry's files under another id too.
 
 | Answer | When |
 |---|---|
@@ -265,7 +282,7 @@ it is refused until it is downloaded again.
 | `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
 | `403 removal_disabled` | `--download-from-ui false`. |
 | `404 model_not_found` | `model` is not a catalog entry: a known model is a path the operator gave, and only a catalog entry's files are removed. |
-| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading, or the entry the server is downloading; the message says which. Cancel the download, or load another model, first. |
+| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading (by its id or from its files), the [speech model](../api/transcriptions.md) the speech worker has loaded, or the entry the server is downloading; the message says which. Cancel the download, load another model, or wait for the speech worker to unload it (`--speech-idle-unload` seconds after its last transcription), first. |
 | `409 download_locked` | `model download`, or another server on the same folder, is fetching the entry. |
 | `409 model_not_downloaded` | Nothing of the entry is under `--download-path`. |
 | `500 removal_failed` | A file could not be deleted; the message names it, and what was deleted before it. |
@@ -323,8 +340,9 @@ GiB free)`. `model download` prints it as the entry's failure and fetches the
 next entry named, exiting nonzero; the start logs it on
 `ignis.model.download_failed` and refuses to start; `POST /v1/models/download`
 answers `507 download_no_room`, and the entry's row in `GET /v1/models/catalog`
-keeps it as its `download_reason`, `download: failed`, until its next download or
-a restart. Free some space on that volume, or lower the margin and restart: the
+keeps it as its `download_reason`, `download: failed`, until its next download,
+a restart, or the entry complete on disk another way. Free some space on that
+volume, or lower the margin and restart: the
 field cannot be changed by `PATCH /v1/config`.
 
 ## Where the bytes come from: endpoint and token

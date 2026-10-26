@@ -1,3 +1,4 @@
+import { canSend, loadUnderWay, type ModelState } from "../api/model.ts";
 import { formatBytes } from "../monitor/format.ts";
 import type { Answer, CatalogRow, ConfigDocument } from "./routes.ts";
 
@@ -29,6 +30,9 @@ export type Progress = { id: string; samples: Sample[] };
 /** How long the readings a speed is taken over span, at most. */
 const SPEED_WINDOW_MS = 5_000;
 
+/** How often the catalog is read while a download runs: every second, as a switch is followed. */
+const FOLLOW_MS = 1_000;
+
 /** `progress` after a catalog read at `at`: the running row's reading added, a new download's readings started afresh, none without one running. */
 export function nextProgress(progress: Progress | null, rows: CatalogRow[], at: number): Progress | null {
   const row = runningDownload(rows);
@@ -55,6 +59,15 @@ export function progressLabel(row: CatalogRow, speed: number | null): string {
   return speed === null ? `Downloading, ${of}` : `Downloading, ${of}, ${formatBytes(speed)}/s`;
 }
 
+/**
+ * Whether the server takes "Cancel" in its model's state (GitHub #377): a cancel never touches the loaded model, so
+ * it is open while a model serves or is unloaded, and during a switch or a load and after a failed one too. Not
+ * before the page has read the model, nor with the server unreachable.
+ */
+export function cancelReachable(model: ModelState): boolean {
+  return canSend(model) || loadUnderWay(model) || (model.state === "error" && model.failed === true);
+}
+
 /** Why a row's last download failed, as the server words it; null when it did not. */
 export const downloadFailure = (row: CatalogRow): string | null => (row.download === "failed" ? (row.download_reason ?? "The download failed") : null);
 
@@ -67,19 +80,19 @@ export function afterDownload(answer: Answer<unknown>): { refusal: string | null
 }
 
 /**
- * Follow the downloads: read the catalog every `every` ms and hand each answer on, until a
+ * Follow the downloads: read the catalog every second and hand each answer on, until a
  * read shows none running. A read that failed is tried again a tick later. Returns the stop.
  */
-export function followDownloads(read: () => Promise<Answer<CatalogRow[]>>, onAnswer: (answer: Answer<CatalogRow[]>) => void, every = 1_000): () => void {
+export function followDownloads(read: () => Promise<Answer<CatalogRow[]>>, onAnswer: (answer: Answer<CatalogRow[]>) => void): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const tick = async () => {
     const answer = await read();
     if (stopped) return;
     onAnswer(answer);
-    if (!answer.ok || runningDownload(answer.value)) timer = setTimeout(() => void tick(), every);
+    if (!answer.ok || runningDownload(answer.value)) timer = setTimeout(() => void tick(), FOLLOW_MS);
   };
-  timer = setTimeout(() => void tick(), every);
+  timer = setTimeout(() => void tick(), FOLLOW_MS);
   return () => {
     stopped = true;
     clearTimeout(timer);
