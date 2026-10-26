@@ -234,6 +234,9 @@ pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Rem
 pub struct ListRow {
     pub entry: CatalogEntry,
     pub on_disk: OnDisk,
+    /// What of it is on disk, partial files included ([`bytes_on_disk`]):
+    /// read with `on_disk`, from the same sizes.
+    pub bytes_on_disk: u64,
     /// The family the artifact's own header names, when the artifact is on
     /// disk and names one — never declared in the catalog (ADR 0047).
     pub family: Option<ModelFamily>,
@@ -241,12 +244,19 @@ pub struct ListRow {
 
 /// Every entry of `catalog` as a row, probed under `dir` through `size_of`
 /// and, for an artifact that is there, `family_of` (its header).
+///
+/// Each file's size is read once per listing and every row is taken from
+/// that one reading (GitHub #376): a row's `on_disk` and its `bytes_on_disk`
+/// never disagree, as they did when a download landed files between two
+/// reads of them (`absent` with bytes).
 pub fn list_rows(
     catalog: &Catalog,
     dir: &Path,
     size_of: &dyn Fn(&Path) -> Option<u64>,
     family_of: &dyn Fn(&Path) -> Option<ModelFamily>,
 ) -> Vec<ListRow> {
+    let sizes = std::cell::RefCell::new(std::collections::HashMap::<PathBuf, Option<u64>>::new());
+    let read = |path: &Path| *sizes.borrow_mut().entry(path.to_path_buf()).or_insert_with(|| size_of(path));
     catalog
         .entries()
         .iter()
@@ -254,8 +264,9 @@ pub fn list_rows(
             let artifact = entry.artifact_path(dir);
             ListRow {
                 entry: entry.clone(),
-                on_disk: on_disk(entry, dir, size_of),
-                family: size_of(&artifact).and_then(|_| family_of(&artifact)),
+                on_disk: on_disk(entry, dir, &read),
+                bytes_on_disk: bytes_on_disk(entry, dir, &read),
+                family: read(&artifact).and_then(|_| family_of(&artifact)),
             }
         })
         .collect()
@@ -468,6 +479,33 @@ mod tests {
             let listed: Vec<(&str, u64)> = files.iter().map(|(name, bytes)| (name.as_str(), *bytes)).collect();
             assert_eq!(bytes_on_disk(entry, dir, &sizes(&listed)), want, "{files:?}");
         }
+    }
+
+    /// GitHub #376 (13a45bcf): a listing reads each file's size once and
+    /// takes a row's state on disk and its bytes from that one reading, so a
+    /// download landing files while the catalog is listed never gives a row
+    /// that is `absent` with bytes, or `partial` by one reading and `absent`
+    /// by another. The probe is such a download: each file is missing at its
+    /// first reading and whole at any later one.
+    #[test]
+    fn a_listing_reads_each_file_once_and_each_row_agrees_with_itself() {
+        let catalog = Catalog::built_in();
+        let entry = catalog.entry("qwen3.8-27b").unwrap();
+        let dir = Path::new("m");
+        let reads = std::cell::RefCell::new(BTreeMap::<PathBuf, usize>::new());
+        let landing = |path: &Path| {
+            let mut reads = reads.borrow_mut();
+            let count = reads.entry(path.to_path_buf()).or_insert(0);
+            *count += 1;
+            let whole = entry.files.iter().find(|file| dir.join(&file.name) == path).map(|file| file.bytes);
+            if *count == 1 { None } else { whole }
+        };
+        let rows = list_rows(&catalog, dir, &landing, &|_| None);
+        let row = rows.iter().find(|row| row.entry.id == entry.id).unwrap();
+        assert_eq!((row.on_disk, row.bytes_on_disk), (OnDisk::Absent, 0), "one reading: nothing there yet");
+        let reads = reads.into_inner();
+        assert!(reads.contains_key(&dir.join(&entry.files[1].name)), "{reads:?}");
+        assert!(reads.values().all(|&count| count == 1), "each file read once: {reads:?}");
     }
 
     /// GitHub #378: the free space must cover the bytes still missing plus

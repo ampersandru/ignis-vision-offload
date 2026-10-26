@@ -112,7 +112,7 @@ async fn a_download_answers_202_runs_in_the_background_and_leaves_a_servable_mod
     assert_eq!((status, models["status"].clone(), models["data"][0]["id"].clone()), (StatusCode::OK, json!("serving"), json!("mock-a")));
 
     repo.release();
-    let landed = until_row(&app, "acme-new", |row| row["on_disk"] == "complete").await;
+    let landed = until_row(&app, "acme-new", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!((landed["download"].clone(), landed["bytes_on_disk"].clone(), landed["switchable"].clone()), (json!("none"), json!(files.total()), json!(true)), "{landed}");
     assert_eq!(files_in(&dir), [files.artifact.0.clone(), files.sidecar.0.clone()], "every file at its name, no .part left");
     let (_, models) = send(&app, Method::GET, "/v1/models", None).await;
@@ -146,10 +146,10 @@ async fn a_second_download_while_one_runs_is_refused_with_409() {
     assert_eq!((row(&rows, "acme-a")["download"].clone(), row(&rows, "acme-b")["download"].clone()), (json!("running"), json!("none")), "the refused one was never queued");
 
     repo.release();
-    until_row(&app, "acme-a", |row| row["on_disk"] == "complete").await;
+    until_row(&app, "acme-a", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     let (status, accepted) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-b" }))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
-    until_row(&app, "acme-b", |row| row["on_disk"] == "complete").await;
+    until_row(&app, "acme-b", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -262,7 +262,7 @@ async fn a_failed_download_keeps_its_reason_on_the_row_until_the_next_attempt() 
     repo.answer(0);
     let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-gated" }))).await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let landed = until_row(&app, "acme-gated", |row| row["on_disk"] == "complete").await;
+    let landed = until_row(&app, "acme-gated", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!(landed["download"], "none", "{landed}");
     assert!(landed.get("download_reason").is_none(), "{landed}");
 
@@ -537,7 +537,7 @@ async fn a_partial_entry_stays_partial_after_a_restart_until_its_resume() {
     assert_eq!(repo.seen().len(), requests, "nothing resumed by itself");
     let (status, accepted) = send(&after, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-later" }))).await;
     assert_eq!((status, accepted["bytes_on_disk"].clone()), (StatusCode::ACCEPTED, json!(1 + 4096)), "{accepted}");
-    until_row(&after, "acme-later", |row| row["on_disk"] == "complete").await;
+    until_row(&after, "acme-later", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!(std::fs::read(dir.join(&files.artifact.0)).unwrap(), files.artifact.1);
     let _ = std::fs::remove_dir_all(dir);
 }

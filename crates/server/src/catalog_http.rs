@@ -10,9 +10,8 @@
 //! known model is `complete` when its artifact is a file, else `absent`. No
 //! row carries a path: the page switches by id.
 
-use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -154,17 +153,11 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
     // `active` still holds is the torn-down one, so no row is loaded and its
     // model is a way out — "Load" on the unloaded model loads it.
     let serving = !status.no_model_loaded();
-    // Each file's size is read once per listing, and every row is taken from
-    // that one reading: a row's `on_disk` (from `list_rows`) and its
-    // `bytes_on_disk` (read after it) never disagree, as they did when a
-    // download landed files between the two reads (`absent` with bytes).
-    let sizes = RefCell::new(HashMap::<PathBuf, Option<u64>>::new());
-    let size_of = |path: &Path| {
-        *sizes
-            .borrow_mut()
-            .entry(path.to_path_buf())
-            .or_insert_with(|| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len()))
-    };
+    // A catalog entry's `on_disk` and `bytes_on_disk` both come from
+    // `list_rows`, which reads each file once per listing: they never
+    // disagree, as they did when a download landed files between two reads
+    // (`absent` with bytes).
+    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
     let family_of = |path: &Path| crate::loader::artifact_family(path).ok().flatten();
     // GitHub #380: the model the server started on, and the files the known
     // models load from, which a removal of the entry listing them takes away.
@@ -231,10 +224,7 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
                     Some(bytes) => (OnDisk::Complete, bytes, family_of(artifact).map(scope), bytes),
                     None => (OnDisk::Absent, found.entry.total_bytes(), None, 0),
                 },
-                None => {
-                    let landed = crate::download::command::bytes_on_disk(&found.entry, &catalog.dir, &size_of);
-                    (found.on_disk, found.entry.total_bytes(), found.family.map(scope), landed)
-                }
+                None => (found.on_disk, found.entry.total_bytes(), found.family.map(scope), found.bytes_on_disk),
             };
             rows.push(row(&found.entry.id, found.entry.layer.into(), on_disk, Some(bytes), family, landed));
         }
