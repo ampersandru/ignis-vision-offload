@@ -4,7 +4,7 @@
 //! no GPU, no real model. `POST /v1/models/download` starts it in the
 //! background, `GET /v1/models/catalog` follows it, and what lands under the
 //! models folder is the outcome. A download is held mid-transfer by holding
-//! the endpoint's response, never by a timer (ADR 0006).
+//! the endpoint's response, never by a timer.
 
 use std::path::Path;
 use std::sync::Arc;

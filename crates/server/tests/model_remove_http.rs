@@ -5,7 +5,7 @@
 //! files; what is left under the models folder, and the entry's row in
 //! `GET /v1/models/catalog`, are the outcome. A download the removal must
 //! refuse is held mid-transfer by holding the local endpoint's response,
-//! never by a timer (ADR 0006).
+//! never by a timer.
 
 use std::path::Path;
 use std::sync::Arc;
