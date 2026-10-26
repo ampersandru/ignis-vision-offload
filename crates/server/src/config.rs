@@ -134,6 +134,10 @@ pub const DEFAULT_SPEECH_MODEL: &str = "auto";
 /// The catalog id `speech.model: auto` resolves to (spec speech/02, Q49).
 pub const AUTO_SPEECH_MODEL_ID: &str = "qwen3-asr-1.7b";
 
+/// `diarizer.model`'s default (spec speech/08, Q118): the catalog's diarizer
+/// entry.
+pub const DEFAULT_DIARIZER_MODEL: &str = "auto";
+
 /// `speech.compat_names`' default (Q24): the names OpenAI clients send for
 /// a transcription, which the speech model answers to.
 pub const DEFAULT_SPEECH_COMPAT_NAMES: [&str; 5] =
@@ -1029,7 +1033,7 @@ fn refuse_for_family(patch: &source::Layer, family: ModelFamily) -> Result<(), C
         }
         let raw = candidate.raw.trim();
         let value = (meta.canonical)(raw).map_err(|reason| ConfigError(format!("`{}` {reason}", candidate.spelling)))?;
-        if !meta.applies.to(family) && value != (meta.default)() {
+        if meta.applies.refused_by(family) && value != (meta.default)() {
             return Err(ConfigError(format!(
                 "`{} {raw}`: {} does not take it (a {} option)",
                 candidate.spelling,

@@ -71,6 +71,25 @@ impl VadDefaults {
     }
 }
 
+/// `session.ignis.diarization`: the diarizer's geometry a session's speakers
+/// come from (spec speech/08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Diarization {
+    /// The live geometry, for audio at real time.
+    Live,
+    /// The file geometry, for audio fed faster than real time.
+    File,
+}
+
+impl Diarization {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Diarization::Live => "live",
+            Diarization::File => "file",
+        }
+    }
+}
+
 /// What a session runs with.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SessionConfig {
@@ -88,6 +107,12 @@ pub(crate) struct SessionConfig {
     pub delay: Option<String>,
     /// `session.ignis.provisional_tail`: the provisional tail is sent.
     pub provisional_tail: bool,
+    /// `session.ignis.diarization`: the speakers and their geometry; `None`
+    /// none. Only under `server_vad`.
+    pub diarization: Option<Diarization>,
+    /// `session.ignis.max_utterance_seconds`: the length guard's limit, `0`
+    /// off; `None` is the server's `speech.max_utterance_seconds`.
+    pub max_utterance_seconds: Option<u32>,
     /// `turn_detection`: `server_vad`, or `None` for manual commit.
     pub turn_detection: Option<ServerVad>,
     /// What `server_vad`'s fields take when unset or `null`.
@@ -122,6 +147,11 @@ impl From<FieldRefusal> for Refusal {
 
 const TRANSCRIPTION: &str = "session.audio.input.transcription";
 
+/// The keys `session.ignis` takes (spec speech/08).
+const IGNIS_KEYS: [&str; 3] = ["provisional_tail", "diarization", "max_utterance_seconds"];
+
+const DIARIZATION: &str = "session.ignis.diarization";
+
 impl SessionConfig {
     /// A session as it opens: 24 kHz, the speech model, no context, the
     /// language detected, no provisional tail, `server_vad` at the server's
@@ -137,6 +167,8 @@ impl SessionConfig {
             forced: None,
             delay: None,
             provisional_tail: false,
+            diarization: None,
+            max_utterance_seconds: None,
             turn_detection: Some(vad_defaults.server_vad()),
             vad_defaults,
         }
@@ -150,8 +182,15 @@ impl SessionConfig {
 
     /// This configuration with `session.update`'s `session` applied, or the
     /// first field refused. `model` decides what a
-    /// `transcription.model` reaches (spec speech/02's rule).
-    pub fn updated(&self, session: &Value, model: impl Fn(&str) -> Result<String, ModelRefusal>) -> Result<Self, Refusal> {
+    /// `transcription.model` reaches (spec speech/02's rule); `diarizer` says
+    /// whether the diarizer can serve, and if not why, when the update asks
+    /// for speakers (spec speech/08).
+    pub fn updated(
+        &self,
+        session: &Value,
+        model: impl Fn(&str) -> Result<String, ModelRefusal>,
+        diarizer: impl Fn() -> Result<(), String>,
+    ) -> Result<Self, Refusal> {
         let Some(session) = session.as_object() else {
             return Err(Refusal::invalid("session.update needs a `session` object", "session"));
         };
@@ -174,12 +213,13 @@ impl SessionConfig {
             noise_reduction(input.get("noise_reduction"))?;
         }
         include(session.get("include"))?;
+        let mut asks_for_speakers = false;
         if let Some(ignis) = object(session, "ignis", "session.ignis")? {
             // ignis's own namespace lists its keys, so a misspelt opt-in is
             // refused rather than passing unnoticed.
-            if let Some(unknown) = ignis.keys().find(|key| key.as_str() != "provisional_tail") {
+            if let Some(unknown) = ignis.keys().find(|key| !IGNIS_KEYS.contains(&key.as_str())) {
                 return Err(Refusal::invalid(
-                    format!("session.ignis.{unknown} is not an ignis session field: session.ignis takes provisional_tail"),
+                    format!("session.ignis.{unknown} is not an ignis session field: session.ignis takes {}", IGNIS_KEYS.join(", ")),
                     &format!("session.ignis.{unknown}"),
                 ));
             }
@@ -188,6 +228,47 @@ impl SessionConfig {
                 Some(Value::Null) => next.provisional_tail = false,
                 Some(Value::Bool(on)) => next.provisional_tail = *on,
                 Some(_) => return Err(Refusal::invalid("session.ignis.provisional_tail must be true or false", "session.ignis.provisional_tail")),
+            }
+            match ignis.get("diarization") {
+                None => {}
+                Some(Value::Null) => next.diarization = None,
+                Some(Value::String(mode)) if mode == "live" || mode == "file" => {
+                    next.diarization = Some(if mode == "live" { Diarization::Live } else { Diarization::File });
+                    asks_for_speakers = true;
+                }
+                Some(_) => return Err(Refusal::invalid("session.ignis.diarization must be null, \"live\" or \"file\"", DIARIZATION)),
+            }
+            match ignis.get("max_utterance_seconds") {
+                None => {}
+                Some(Value::Null) => next.max_utterance_seconds = None,
+                Some(seconds) => match seconds.as_u64().filter(|&s| s <= u64::from(self.vad_defaults.max_ms / 1000)) {
+                    Some(seconds) => next.max_utterance_seconds = Some(seconds as u32),
+                    None => {
+                        return Err(Refusal::invalid(
+                            format!(
+                                "session.ignis.max_utterance_seconds must be null (the server's), 0 (off) or a whole number of seconds up to {} (speech.max_clip_seconds)",
+                                self.vad_defaults.max_ms / 1000
+                            ),
+                            "session.ignis.max_utterance_seconds",
+                        ))
+                    }
+                },
+            }
+        }
+        // Speakers cut items as the VAD does: a session without it has no
+        // items to cut (spec speech/08).
+        if next.diarization.is_some() && next.turn_detection.is_none() {
+            let message = "session.ignis.diarization needs server_vad: with turn_detection null (manual commit) the client ends its items, so no speaker change can end one; send turn_detection {\"type\": \"server_vad\"} or diarization null";
+            let param = if asks_for_speakers { DIARIZATION } else { "session.audio.input.turn_detection" };
+            return Err(Refusal::invalid(message, param));
+        }
+        if asks_for_speakers && next.diarization != self.diarization {
+            if let Err(why) = diarizer() {
+                return Err(Refusal {
+                    code: "ignis_diarizer_unavailable",
+                    message: format!("the diarizer is unavailable: {why}; the session goes on without speakers"),
+                    param: Some(DIARIZATION.to_owned()),
+                });
             }
         }
         next.forced = route::forced(next.language.as_deref(), &next.languages, &format!("{TRANSCRIPTION}.language"), &format!("{TRANSCRIPTION}.languages"))?;
@@ -238,6 +319,8 @@ impl SessionConfig {
                 *self = Self {
                     rate: self.rate,
                     provisional_tail: self.provisional_tail,
+                    diarization: self.diarization,
+                    max_utterance_seconds: self.max_utterance_seconds,
                     turn_detection: self.turn_detection.take(),
                     ..Self::new(model, self.vad_defaults)
                 };
@@ -363,8 +446,18 @@ impl SessionConfig {
                 "turn_detection": self.turn_detection.as_ref().map(ServerVad::effective),
             } },
             "include": [],
-            "ignis": { "provisional_tail": self.provisional_tail },
+            "ignis": {
+                "provisional_tail": self.provisional_tail,
+                "diarization": self.diarization.map(Diarization::as_str),
+                "max_utterance_seconds": self.max_utterance_seconds,
+            },
         })
+    }
+
+    /// The length guard's limit in force, in seconds, the session's own or
+    /// the server's `server_limit`; `None` when it is off.
+    pub fn utterance_limit(&self, server_limit: u32) -> Option<u32> {
+        Some(self.max_utterance_seconds.unwrap_or(server_limit)).filter(|&seconds| seconds > 0)
     }
 }
 
@@ -503,7 +596,7 @@ mod tests {
     }
 
     fn update(config: &SessionConfig, session: Value) -> Result<SessionConfig, Refusal> {
-        config.updated(&session, model)
+        config.updated(&session, model, || Ok(()))
     }
 
     /// The server's `server_vad` defaults: `speech.vad_*`'s, with items held to 1,200 s.
@@ -532,7 +625,7 @@ mod tests {
             json!({ "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 500, "idle_timeout_ms": null })
         );
         assert!(effective["audio"]["input"]["noise_reduction"].is_null());
-        assert_eq!(effective["ignis"]["provisional_tail"], false);
+        assert_eq!(effective["ignis"], json!({ "provisional_tail": false, "diarization": null, "max_utterance_seconds": null }));
         let other = SessionConfig::new(SERVED.to_owned(), VadDefaults { threshold: 0.25, prefix_padding_ms: 100, silence_duration_ms: 800, ..DEFAULTS });
         let detection = &other.effective("s")["audio"]["input"]["turn_detection"];
         assert_eq!((detection["threshold"].as_f64(), detection["prefix_padding_ms"].as_u64(), detection["silence_duration_ms"].as_u64()), (Some(0.25), Some(100), Some(800)));
@@ -677,14 +770,72 @@ mod tests {
     }
 
     /// Honoured or refused (spec server/09): a key under `session.ignis` that
-    /// is not one of ignis's is refused naming it, the update not applied.
+    /// is not one of ignis's is refused naming it and the three it takes
+    /// (spec speech/08), the update not applied.
     #[test]
     fn an_unknown_ignis_key_is_refused_naming_it() {
         let refused = update(&fresh(), json!({ "ignis": { "provisional_tial": true } })).unwrap_err();
         assert_eq!(refused.param.as_deref(), Some("session.ignis.provisional_tial"));
         assert!(refused.message.contains("provisional_tial") && refused.message.contains("provisional_tail"), "{}", refused.message);
+        assert!(refused.message.ends_with("session.ignis takes provisional_tail, diarization, max_utterance_seconds"), "{}", refused.message);
         let refused = update(&fresh(), json!({ "ignis": { "provisional_tail": true, "extra": 1 } })).unwrap_err();
         assert_eq!(refused.param.as_deref(), Some("session.ignis.extra"));
+    }
+
+    /// Spec speech/08, AC 9: `session.ignis.diarization` takes `null`,
+    /// `"live"` or `"file"` on a `server_vad` session, declared in the
+    /// effective configuration; on manual commit it is refused naming
+    /// `turn_detection`, and so is a switch to manual commit while speakers
+    /// are on; with the diarizer unavailable it is refused with the reason,
+    /// and the session keeps what it had.
+    #[test]
+    fn diarization_is_taken_on_server_vad_and_refused_on_manual_commit() {
+        let live = update(&fresh(), json!({ "ignis": { "diarization": "live" } })).unwrap();
+        assert_eq!(live.diarization, Some(Diarization::Live));
+        assert_eq!(live.effective("s")["ignis"]["diarization"], "live");
+        let file = update(&live, json!({ "ignis": { "diarization": "file" } })).unwrap();
+        assert_eq!(file.effective("s")["ignis"]["diarization"], "file");
+        let kept = update(&file, input(json!({ "transcription": null }))).unwrap();
+        assert_eq!(kept.diarization, Some(Diarization::File), "a reset transcription keeps the speakers");
+        assert_eq!(update(&file, json!({ "ignis": { "diarization": null } })).unwrap().diarization, None);
+        for bad in [json!("yes"), json!(true), json!({ "type": "live" })] {
+            let refused = update(&fresh(), json!({ "ignis": { "diarization": bad } })).unwrap_err();
+            assert_eq!(refused.param.as_deref(), Some("session.ignis.diarization"), "{bad}");
+        }
+        let manual = update(&fresh(), input(json!({ "turn_detection": null }))).unwrap();
+        let refused = update(&manual, json!({ "ignis": { "diarization": "live" } })).unwrap_err();
+        assert_eq!(refused.param.as_deref(), Some("session.ignis.diarization"));
+        assert!(refused.message.contains("turn_detection"), "{}", refused.message);
+        let both = update(&fresh(), json!({ "audio": { "input": { "turn_detection": null } }, "ignis": { "diarization": "live" } })).unwrap_err();
+        assert!(both.message.contains("turn_detection"), "{}", both.message);
+        let refused = update(&live, input(json!({ "turn_detection": null }))).unwrap_err();
+        assert_eq!(refused.param.as_deref(), Some("session.audio.input.turn_detection"), "speakers on: manual commit is refused");
+        assert!(update(&live, json!({ "audio": { "input": { "turn_detection": null } }, "ignis": { "diarization": null } })).is_ok());
+        let unavailable = || Err("no diarizer is configured".to_owned());
+        let refused = fresh().updated(&json!({ "ignis": { "diarization": "live" } }), model, unavailable).unwrap_err();
+        assert_eq!((refused.code, refused.param.as_deref()), ("ignis_diarizer_unavailable", Some("session.ignis.diarization")));
+        assert!(refused.message.contains("no diarizer is configured"), "{}", refused.message);
+        assert!(live.updated(&input(json!({ "transcription": { "prompt": "x" } })), model, unavailable).is_ok(), "only asking for speakers asks the diarizer");
+        assert!(fresh().updated(&json!({ "ignis": { "diarization": null } }), model, unavailable).is_ok());
+    }
+
+    /// Spec speech/08: `session.ignis.max_utterance_seconds` is `null` (the
+    /// server's), `0` (off) or a limit up to `speech.max_clip_seconds`,
+    /// declared as set.
+    #[test]
+    fn the_sessions_utterance_limit_overrides_the_servers() {
+        assert_eq!(fresh().utterance_limit(120), Some(120));
+        assert_eq!(fresh().utterance_limit(0), None, "the server's off");
+        let off = update(&fresh(), json!({ "ignis": { "max_utterance_seconds": 0 } })).unwrap();
+        assert_eq!((off.utterance_limit(120), off.effective("s")["ignis"]["max_utterance_seconds"].as_u64()), (None, Some(0)));
+        let short = update(&off, json!({ "ignis": { "max_utterance_seconds": 30 } })).unwrap();
+        assert_eq!(short.utterance_limit(0), Some(30), "the session's over the server's");
+        assert_eq!(update(&short, json!({ "ignis": { "max_utterance_seconds": null } })).unwrap().utterance_limit(120), Some(120));
+        for bad in [json!(-1), json!(2.5), json!("30"), json!(1_201)] {
+            let refused = update(&fresh(), json!({ "ignis": { "max_utterance_seconds": bad } })).unwrap_err();
+            assert_eq!(refused.param.as_deref(), Some("session.ignis.max_utterance_seconds"), "{bad}");
+        }
+        assert!(update(&fresh(), json!({ "ignis": { "max_utterance_seconds": 1_200 } })).is_ok());
     }
 
     /// AC 9, 11: the prompt and keywords are the context, as spec 02 joins

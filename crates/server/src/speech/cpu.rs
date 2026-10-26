@@ -4,12 +4,21 @@
 //! A load builds the crate's executor from the catalog entry's files and the
 //! load's settings; the server's worker keeps the idle clock (spec 02) and
 //! asks for the unload.
+//!
+//! Beside it, [`CpuDiarizer`]: the crate's diarizer (spec speech/08) behind
+//! [`DiarizerExecutor`], its steps computed on the speech model's pool and
+//! ISA, never a pool of its own.
 
-use std::sync::{Mutex, MutexGuard};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use ignis_speech::diarizer::{Constants, Diarizer, Stream};
 use ignis_speech::{Features, ModelFiles, SessionTuning, Settings, Threads};
 
-use super::executor::{LoadSettings, Partial, SessionOpen, SpeechError, SpeechExecutor, SpeechFiles, SpeechSession, Transcript};
+use super::executor::{
+    CacheConstants, DiarizerExecutor, DiarizerStream, Frames, LoadSettings, Partial, SessionOpen, SpeechError, SpeechExecutor, SpeechFiles, SpeechSession,
+    StreamOpen, Transcript,
+};
 
 /// The reason a person reads on a CPU without AVX2, FMA and F16C.
 pub const NO_AVX2_REASON: &str = "the CPU lacks AVX2, which the speech model needs";
@@ -44,6 +53,12 @@ impl CpuExecutor {
 
     fn slot(&self) -> MutexGuard<'_, Option<Loaded>> {
         self.loaded.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The speech model as loaded now, its pool and ISA among it: what the
+    /// diarizer computes its steps on.
+    fn compute(&self) -> Result<Arc<ignis_speech::Loaded>, SpeechError> {
+        self.slot().as_ref().and_then(|l| l.exec.loaded_now()).ok_or_else(|| SpeechError("the speech model is not loaded".into()))
     }
 }
 
@@ -110,7 +125,10 @@ impl SpeechExecutor for CpuExecutor {
             rollback_tokens: open.rollback_tokens as usize,
             unfixed_partials: open.unfixed_partials as usize,
         };
-        let s = l.exec.open_tuned(&open.context, open.language.as_deref(), tuning).map_err(err)?;
+        let mut s = l.exec.open_tuned(&open.context, open.language.as_deref(), tuning).map_err(err)?;
+        if open.keep_audio {
+            s.keep_audio();
+        }
         Ok(Box::new(CpuSession::Open(s)))
     }
 }
@@ -147,6 +165,134 @@ impl SpeechSession for CpuSession {
         let Some(t) = commit.step().map_err(err)? else { return Ok(None) };
         *self = CpuSession::Spent;
         Ok(Some(Transcript { text: t.text, language: t.language, tokens: t.tokens }))
+    }
+
+    fn cut(&mut self, at: usize) -> Result<(), SpeechError> {
+        match self {
+            CpuSession::Open(s) => s.cut(at).map_err(err),
+            _ => Err(SpeechError(COMMITTED.to_owned())),
+        }
+    }
+}
+
+/// The diarizer on the CPU (spec speech/08, ADR 0069): Nemotron 3
+/// Diarization's GGUF, loaded at the first stream that opens, its steps
+/// computed on `speech`'s pool and ISA.
+pub struct CpuDiarizer {
+    weights: PathBuf,
+    pinned: bool,
+    speech: Arc<CpuExecutor>,
+    loaded: Mutex<Option<Arc<Diarizer>>>,
+}
+
+impl CpuDiarizer {
+    /// The diarizer whose weights are the GGUF at `weights`, beside `speech`.
+    pub fn new(weights: PathBuf, pinned: bool, speech: Arc<CpuExecutor>) -> CpuDiarizer {
+        CpuDiarizer { weights, pinned, speech, loaded: Mutex::new(None) }
+    }
+
+    fn slot(&self) -> MutexGuard<'_, Option<Arc<Diarizer>>> {
+        self.loaded.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The weights, loaded if they are not, and whether they were just now.
+    fn diarizer(&self) -> Result<(Arc<Diarizer>, bool), SpeechError> {
+        let mut slot = self.slot();
+        if let Some(d) = slot.as_ref() {
+            return Ok((Arc::clone(d), false));
+        }
+        let d = Arc::new(Diarizer::load(&self.weights, self.pinned).map_err(err)?);
+        *slot = Some(Arc::clone(&d));
+        Ok((d, true))
+    }
+}
+
+/// The speaker cache's constants: each override, else the weights' own.
+fn constants(own: Constants, over: CacheConstants) -> Constants {
+    Constants {
+        prediction_score_threshold: over.prediction_score_threshold.unwrap_or(own.prediction_score_threshold),
+        latest_frames_score_boost: over.latest_frames_score_boost.unwrap_or(own.latest_frames_score_boost),
+        strong_boost_rate: over.strong_boost_rate.unwrap_or(own.strong_boost_rate),
+        weak_boost_rate: over.weak_boost_rate.unwrap_or(own.weak_boost_rate),
+        min_positive_scores_rate: over.min_positive_scores_rate.unwrap_or(own.min_positive_scores_rate),
+        speaker_cache_silence_frames_per_speaker: over.speaker_cache_silence_frames_per_speaker.unwrap_or(own.speaker_cache_silence_frames_per_speaker),
+    }
+}
+
+impl DiarizerExecutor for CpuDiarizer {
+    fn availability(&self) -> Result<(), String> {
+        self.speech.availability()?;
+        match self.weights.is_file() {
+            true => Ok(()),
+            false => Err(format!("no diarizer weights at {}", self.weights.display())),
+        }
+    }
+
+    fn open(&self, open: StreamOpen) -> Result<Box<dyn DiarizerStream>, SpeechError> {
+        let (d, loaded) = self.diarizer()?;
+        let constants = constants(d.weights().constants, open.constants);
+        if loaded {
+            // The constants in force: the `diarizer` group's overrides over the checkpoint's.
+            tracing::info!(
+                name: "ignis.diarizer.load",
+                millis = d.weights().report.millis as u64,
+                mapped_bytes = d.weights().report.mapped_bytes,
+                prediction_score_threshold = constants.prediction_score_threshold,
+                latest_frames_score_boost = constants.latest_frames_score_boost,
+                strong_boost_rate = constants.strong_boost_rate,
+                weak_boost_rate = constants.weak_boost_rate,
+                min_positive_scores_rate = constants.min_positive_scores_rate,
+                speaker_cache_silence_frames_per_speaker = constants.speaker_cache_silence_frames_per_speaker,
+                "the diarizer loaded in {} ms",
+                d.weights().report.millis
+            );
+        }
+        let stream = d.open(open.geometry, constants);
+        Ok(Box::new(CpuStream { diarizer: d, stream, speech: Arc::clone(&self.speech) }))
+    }
+
+    fn unload(&self) {
+        self.slot().take();
+    }
+
+    fn is_loaded(&self) -> bool {
+        self.slot().is_some()
+    }
+}
+
+/// A stream of the crate's diarizer, and what computes its steps.
+struct CpuStream {
+    diarizer: Arc<Diarizer>,
+    stream: Stream,
+    speech: Arc<CpuExecutor>,
+}
+
+fn frames(step: ignis_speech::diarizer::Step) -> Frames {
+    Frames { first: step.first, probs: step.frames }
+}
+
+impl DiarizerStream for CpuStream {
+    fn push(&mut self, samples: &[f32]) {
+        self.stream.push(samples);
+    }
+
+    fn samples_needed(&self) -> usize {
+        self.stream.samples_needed()
+    }
+
+    fn step(&mut self) -> Result<Option<Frames>, SpeechError> {
+        if !self.stream.ready() {
+            return Ok(None);
+        }
+        let l = self.speech.compute()?;
+        Ok(self.stream.step(&self.diarizer, &l.pool, l.isa).map(frames))
+    }
+
+    fn tail(&self) -> Result<Frames, SpeechError> {
+        let l = self.speech.compute()?;
+        let mut copy = self.stream.clone();
+        let first = copy.frames_done();
+        Ok(copy.finish(&self.diarizer, &l.pool, l.isa).map(frames).unwrap_or(Frames { first, probs: Vec::new() }))
     }
 }
 
@@ -233,6 +379,111 @@ mod tests {
     }
 
     use super::synthetic;
+
+    /// The executor loaded with the crate's synthetic pair (its encoder under the fixed `mmproj-`
+    /// name) on 2 threads: what the diarizer computes on.
+    fn loaded_synthetic(tag: &str) -> CpuExecutor {
+        let e = CpuExecutor::new();
+        let pair = synthetic::pair(tag);
+        let encoder = pair.encoder.with_file_name("mmproj-synthetic.gguf");
+        std::fs::rename(&pair.encoder, &encoder).unwrap();
+        let files = SpeechFiles { id: "synthetic".into(), decoder: pair.decoder.clone(), files: vec![pair.decoder.clone(), encoder] };
+        e.load(&files, LoadSettings { threads: Some(2), pinned_weights: false }).unwrap();
+        e
+    }
+
+    /// Spec speech/08: the diarizer is unavailable, saying why, on a host the speech model cannot
+    /// run on or without its weights; with them it says nothing.
+    #[test]
+    fn the_diarizer_is_unavailable_without_avx2_or_its_weights() {
+        let weights = std::env::temp_dir().join(format!("ignis-no-diarizer-{}.gguf", std::process::id()));
+        let none = CpuDiarizer::new(weights.clone(), false, Arc::new(CpuExecutor::with_features(Features::none())));
+        assert_eq!(none.availability(), Err(NO_AVX2_REASON.to_owned()));
+        let speech = CpuExecutor::new();
+        if speech.availability().is_err() {
+            eprintln!("SKIP: this CPU lacks AVX2; the weights are not looked for");
+            return;
+        }
+        let missing = CpuDiarizer::new(weights.clone(), false, Arc::new(speech)).availability().unwrap_err();
+        assert!(missing.contains("no diarizer weights") && missing.contains(&weights.display().to_string()), "{missing}");
+        std::fs::write(&weights, b"gguf").unwrap();
+        assert_eq!(CpuDiarizer::new(weights.clone(), false, Arc::new(CpuExecutor::new())).availability(), Ok(()));
+        let _ = std::fs::remove_file(&weights);
+    }
+
+    /// The GPU profile's serialized pass runs every `--ignored` test it does not skip; the
+    /// diarizer's leg is the CPU's, on the study disk, so `scripts/gpu-profile.ps1` skips it by
+    /// name.
+    #[test]
+    fn the_gpu_profile_skips_the_diarizers_leg() {
+        let script = include_str!("../../../../scripts/gpu-profile.ps1");
+        let listed = script.split("$NotGpuLegs = @(").nth(1).and_then(|rest| rest.split(')').next()).expect("gpu-profile.ps1 lists $NotGpuLegs");
+        assert!(listed.contains("\"the_diarizer_adapter_steps_the_crates_stream_on_the_speech_models_pool\""), "{listed}");
+    }
+
+    /// Spec speech/08 on the real weights (the study disk, `IGNIS_SPEECH_STUDY`, CPU only): the
+    /// adapter's stream is the crate's, its steps computed on the speech model's pool and ISA:
+    /// step by step its frames are those of the crate's stream run alone on a pool of the same
+    /// threads. Its tail is that stream's copy finished, and leaves the stream as it was; the
+    /// constants left `auto` are the checkpoint's; a speech model unloaded stops the steps.
+    #[test]
+    #[ignore = "reads the diarizer's weights from the study disk (CPU only)"]
+    fn the_diarizer_adapter_steps_the_crates_stream_on_the_speech_models_pool() {
+        let study = PathBuf::from(std::env::var("IGNIS_SPEECH_STUDY").unwrap_or_else(|_| "H:/speech-study".into()));
+        let weights = study.join("models").join("diarizer").join("Nemotron-3-Diarization-F32.gguf");
+        assert!(weights.is_file(), "the diarizer's weights are not at {} (set IGNIS_SPEECH_STUDY)", weights.display());
+        let speech = Arc::new(loaded_synthetic("diarizer-adapter"));
+        let adapter = CpuDiarizer::new(weights.clone(), false, Arc::clone(&speech));
+        assert_eq!(adapter.availability(), Ok(()));
+        let open = StreamOpen { geometry: ignis_speech::diarizer::Geometry::LIVE, constants: CacheConstants::default() };
+        let mut stream = adapter.open(open).unwrap();
+        assert!(adapter.is_loaded());
+        let d = Diarizer::load(&weights, false).unwrap();
+        let isa = ignis_speech::cpu::select(Features::detect()).unwrap();
+        let pool = ignis_speech::pool::Pool::new(2);
+        let mut alone = d.open(ignis_speech::diarizer::Geometry::LIVE, d.weights().constants);
+        let audio = synthetic::audio(12.0);
+        let mut steps = 0;
+        for piece in audio.chunks(16_000) {
+            stream.push(piece);
+            alone.push(piece);
+            while let Some(frames) = stream.step().unwrap() {
+                let reference = alone.step(&d, &pool, isa).expect("the crate's stream steps too");
+                assert_eq!((frames.first, &frames.probs), (reference.first, &reference.frames), "step {steps}");
+                steps += 1;
+            }
+            assert_eq!(stream.samples_needed(), alone.samples_needed());
+        }
+        assert_eq!(steps, 5, "12 s at the live geometry: five steps of 2 s");
+        let tail = stream.tail().unwrap();
+        let reference = alone.clone().finish(&d, &pool, isa).expect("frames past the last step");
+        assert_eq!((tail.first, &tail.probs), (reference.first, &reference.frames));
+        stream.push(&audio[..48_000]);
+        alone.push(&audio[..48_000]);
+        let after = stream.step().unwrap().expect("the tail left the stream able to step");
+        assert_eq!(after.probs, alone.step(&d, &pool, isa).unwrap().frames, "the tail left the stream as it was");
+        stream.push(&audio[..32_000]);
+        speech.unload();
+        assert!(stream.step().is_err(), "a step needs the speech model's pool");
+        adapter.unload();
+        assert!(!adapter.is_loaded());
+    }
+
+    /// The speaker cache's constants: each override, the rest the checkpoint's.
+    #[test]
+    fn an_override_replaces_its_constant_and_auto_keeps_the_checkpoints() {
+        let own = Constants {
+            prediction_score_threshold: 0.25,
+            latest_frames_score_boost: 0.05,
+            strong_boost_rate: 0.75,
+            weak_boost_rate: 1.5,
+            min_positive_scores_rate: 0.5,
+            speaker_cache_silence_frames_per_speaker: 1,
+        };
+        assert_eq!(constants(own, CacheConstants::default()), own);
+        let over = CacheConstants { weak_boost_rate: Some(2.0), speaker_cache_silence_frames_per_speaker: Some(3), ..CacheConstants::default() };
+        assert_eq!(constants(own, over), Constants { weak_boost_rate: 2.0, speaker_cache_silence_frames_per_speaker: 3, ..own });
+    }
 
     /// Q79: the adapter hands the server's stop to the crate's session. On the crate's synthetic
     /// pair (its encoder under the fixed `mmproj-` name), a refresh whose stop says so answers

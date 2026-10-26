@@ -10,7 +10,7 @@
 //! below rather than written down per field, so the three surfaces cannot
 //! disagree about a field's name: there is only one name.
 
-use ignis_core::compute::ModelFamily;
+use ignis_core::compute::{ModelFamily, ModelKind};
 use serde_json::Value;
 
 /// Every model family a config value can be scoped to, in the order
@@ -32,6 +32,10 @@ pub fn scope(family: ModelFamily) -> &'static str {
         // Not in FAMILIES yet: spec image-model/05 gives the image model its
         // config group and decides which fields it takes.
         ModelFamily::QwenImage21 => "qwenimage21",
+        // Not in FAMILIES: the `diarizer` group's own fields are its, under
+        // their plain keys (spec speech/08), and no text model's section
+        // holds one.
+        ModelFamily::Nemotron3Diarization => "nemotron3diarization",
     }
 }
 
@@ -55,6 +59,10 @@ pub enum Validator {
     None,
     /// An inclusive numeric range on the parsed value; either end open.
     Range { min: Option<i64>, max: Option<i64> },
+    /// An inclusive range on a decimal value ([`super::kind::Decimal`]),
+    /// both ends in the thousandths it is kept as, and stated in its own
+    /// units (`0..=1`).
+    DecimalRange { min: i64, max: i64 },
     /// A **nonzero** multiple of the given step (`--model-prefill-chunk`'s
     /// 128). Zero is refused because the one field that uses this
     /// (`--model-prefill-chunk`) has never accepted it, and a chunk of no
@@ -91,6 +99,10 @@ impl Validator {
                     Err(format!("must be a nonzero multiple of {step}, got {value}"))
                 }
             }
+            Validator::DecimalRange { min, max } => match (min..=max).contains(&value) {
+                true => Ok(()),
+                false => Err(format!("must be in {}..={}, got {}", decimal(min), decimal(max), decimal(value))),
+            },
             Validator::None | Validator::OneOf(_) => Ok(()),
         }
     }
@@ -118,6 +130,7 @@ impl Validator {
             Validator::Range { min: None, max: Some(max) } => format!("<= {max}"),
             Validator::Range { min: None, max: None } => String::new(),
             Validator::MultipleOf(step) => format!("nonzero multiple of {step}"),
+            Validator::DecimalRange { min, max } => format!("{}..={}", decimal(min), decimal(max)),
             Validator::OneOf(allowed) => format!("one of {}", allowed.join(", ")),
         }
     }
@@ -137,6 +150,7 @@ impl Validator {
             Validator::None => Value::Null,
             Validator::Range { min, max } => serde_json::json!({ "min": min, "max": max }),
             Validator::MultipleOf(step) => serde_json::json!({ "multiple_of": step }),
+            Validator::DecimalRange { min, max } => serde_json::json!({ "min": min as f64 / 1000.0, "max": max as f64 / 1000.0 }),
             Validator::OneOf(allowed) => {
                 let mut values: Vec<String> = Vec::new();
                 for spelling in allowed {
@@ -164,6 +178,11 @@ impl Validator {
 /// dropped with a log line on a switch (it was named for the model being
 /// switched away from, and was never wrong). This replaces the drop list
 /// `fit_to_family` used to keep by hand.
+///
+/// The family configured is the active model's, a text model or the image
+/// model, the one a switch replaces. A field only the diarizer takes (spec
+/// speech/08) is the diarizer's family's to judge, not the active model's: a
+/// 27B start takes `diarizer.*` as it takes `speech.*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Applicability {
     /// Every family takes the field.
@@ -180,6 +199,22 @@ impl Applicability {
             Applicability::AllFamilies => true,
             Applicability::Only(families) => families.contains(&family),
         }
+    }
+
+    /// Whether `family`'s load judges the field at all: every field but one
+    /// only a model beside the active one takes (the diarizer's), which only
+    /// such a family judges.
+    pub fn judged_by(self, family: ModelFamily) -> bool {
+        match self {
+            Applicability::AllFamilies => true,
+            Applicability::Only(families) => families.iter().any(|only| beside(*only) == beside(family)),
+        }
+    }
+
+    /// Whether `family`'s load refuses an explicit value of the field (at a
+    /// start; drops it on a switch): it judges the field and does not take it.
+    pub fn refused_by(self, family: ModelFamily) -> bool {
+        self.judged_by(family) && !self.to(family)
     }
 
     /// As `help --fields` prints it: `all`, or the families' names.
@@ -321,10 +356,12 @@ impl FieldMeta {
     }
 
     /// The one family a field only that family takes belongs to
-    /// (`Only([family])`); `None` for a field more families take.
+    /// (`Only([family])`), when it is a family with a config scope
+    /// ([`FAMILIES`]); `None` for a field more families take, and for one
+    /// only the diarizer takes, which keeps its plain key (spec speech/08).
     pub fn home_family(&self) -> Option<ModelFamily> {
         match self.applies {
-            Applicability::Only([family]) => Some(*family),
+            Applicability::Only([family]) if FAMILIES.contains(family) => Some(*family),
             _ => None,
         }
     }
@@ -391,6 +428,18 @@ impl FieldMeta {
     }
 }
 
+/// A value in thousandths as the decimal it stands for: `1500` is `1.5`.
+fn decimal(thousandths: i64) -> String {
+    let written = format!("{}.{:03}", thousandths / 1000, (thousandths % 1000).abs());
+    written.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// A family of a model beside the active one (the diarizer, ADR 0069), never
+/// switched to: its fields are its own group's.
+fn beside(family: ModelFamily) -> bool {
+    family.kind() == ModelKind::Diarizer
+}
+
 fn dashed(name: &str) -> String {
     name.replace('_', "-")
 }
@@ -412,6 +461,15 @@ mod tests {
         let ceiling = Validator::Range { min: None, max: Some(3600) };
         assert_eq!(ceiling.check_number(3601).unwrap_err(), "must be at most 3600, got 3601");
         assert_eq!(both.describe(), "1..=8");
+    }
+
+    #[test]
+    fn a_decimal_range_is_stated_and_refused_in_its_own_units() {
+        let rate = Validator::DecimalRange { min: 0, max: 4_000 };
+        assert!(rate.check_number(0).is_ok() && rate.check_number(1_500).is_ok() && rate.check_number(4_000).is_ok());
+        assert_eq!(rate.check_number(4_250).unwrap_err(), "must be in 0..=4, got 4.25");
+        assert_eq!(Validator::DecimalRange { min: 1, max: 1_000 }.describe(), "0.001..=1");
+        assert_eq!(rate.to_json(|_| Ok(Value::Null)), serde_json::json!({ "min": 0.0, "max": 4.0 }));
     }
 
     #[test]
@@ -443,6 +501,26 @@ mod tests {
         assert_eq!(flash.describe(), "Qwen3.8-Flash-Next");
     }
 
+    /// Spec speech/08, AC 14: a field only the diarizer's family takes is
+    /// refused by every other family that judges it, and judged by none of
+    /// the active model's: they take it as they take `speech.*`.
+    #[test]
+    fn a_diarizer_field_is_the_diarizers_family_to_judge() {
+        let diarizer = Applicability::Only(&[ModelFamily::Nemotron3Diarization]);
+        assert!(diarizer.to(ModelFamily::Nemotron3Diarization) && !diarizer.refused_by(ModelFamily::Nemotron3Diarization));
+        for family in ModelFamily::ALL.into_iter().filter(|family| *family != ModelFamily::Nemotron3Diarization) {
+            assert!(!diarizer.to(family), "{family:?} takes it");
+            assert!(!diarizer.judged_by(family) && !diarizer.refused_by(family), "{family:?} judges it");
+        }
+        assert_eq!(diarizer.describe(), "Nemotron 3 Diarization");
+        // An active model's field: the diarizer does not judge it, the other
+        // active families refuse it as before (the image model included).
+        let flash = Applicability::Only(&[ModelFamily::FlashNext]);
+        assert!(flash.refused_by(ModelFamily::Qwen38_27b) && flash.refused_by(ModelFamily::QwenImage21));
+        assert!(!flash.judged_by(ModelFamily::Nemotron3Diarization));
+        assert!(Applicability::AllFamilies.judged_by(ModelFamily::Nemotron3Diarization));
+    }
+
     #[test]
     fn the_family_scopes_are_plain_identifiers_and_read_back() {
         assert_eq!(scope(ModelFamily::Qwen38_27b), "qwen38");
@@ -455,6 +533,8 @@ mod tests {
         // the image model has a spelling but no config scope until spec image-model/05
         assert_eq!(scope(ModelFamily::QwenImage21), "qwenimage21");
         assert_eq!(family_of_scope("qwenimage21"), None);
+        // nor has the diarizer, whose fields keep their plain keys (spec speech/08)
+        assert_eq!(family_of_scope(scope(ModelFamily::Nemotron3Diarization)), None);
     }
 
     #[test]

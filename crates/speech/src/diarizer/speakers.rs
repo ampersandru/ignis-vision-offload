@@ -25,6 +25,7 @@ const FRAMES_PER_SECOND: f64 = 12.5;
 /// A speaker: a channel of the model, 0-7, numbered in the order they first spoke.
 pub type Speaker = u8;
 
+#[derive(Clone)]
 pub struct Speakers {
     /// The frames a channel must hold to be established (the ghost rule), at least 1.
     min_frames: usize,

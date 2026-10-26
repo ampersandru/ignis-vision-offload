@@ -1444,6 +1444,301 @@ How long a loan of free KV pages to the speech model outlives its transcription,
 
 How long a transcription waits for a loan before it runs on the CPU, in seconds (spec speech/06), not served yet.
 
+### `speech.max_utterance_seconds`
+
+| | |
+|---|---|
+| Flag | `--speech-max-utterance-seconds` |
+| Env var | `IGNIS_SPEECH_MAX_UTTERANCE_SECONDS` |
+| Kind | `seconds` |
+| Default | `120` |
+| Rule | 0..=1200 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The length guard: once a `server_vad` item holds this many seconds of audio, the server ends it at the next 32 ms the VAD hears under its threshold, a pause too short to end it, or `speech.utterance_cut_search_ms` later at the latest, and the speech goes on in a new item; so a room that never falls silent loses nothing to `speech.max_clip_seconds`. A session's own `session.ignis.max_utterance_seconds` overrides it. 0 never cuts. Read at each item's audio.
+
+### `speech.utterance_cut_search_ms`
+
+| | |
+|---|---|
+| Flag | `--speech-utterance-cut-search-ms` |
+| Env var | `IGNIS_SPEECH_UTTERANCE_CUT_SEARCH_MS` |
+| Kind | `ms` |
+| Default | `2000` |
+| Rule | 0..=60000 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+How long past `speech.max_utterance_seconds` the length guard looks for a pause, in milliseconds, before it cuts where the audio is. The search looks forward only, so no text already sent is past the cut.
+
+### `speech.max_queued_audio_seconds`
+
+| | |
+|---|---|
+| Flag | `--speech-max-queued-audio-seconds` |
+| Env var | `IGNIS_SPEECH_MAX_QUEUED_AUDIO_SECONDS` |
+| Kind | `seconds` |
+| Default | `120` |
+| Rule | 1..=3600 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The audio a Realtime session may hold that is not computed yet, in seconds: received, and still waiting for the speech model's windows or the diarizer's steps. An append past it is refused with an `error`, `ignis_audio_queue_full`, and the session stays open: a client feeding a file faster than the CPU computes it paces itself by it, and one fed at real time never reaches it. Read at each append.
+
+## diarizer
+
+### `diarizer.model`
+
+| | |
+|---|---|
+| Flag | `--diarizer-model` |
+| Env var | `IGNIS_DIARIZER_MODEL` |
+| Kind | `text` |
+| Default | `auto` |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The diarizer: `auto` (the catalog's diarizer entry), a catalog entry's id, or `off`. It is enabled when its files are on disk; nothing is ever downloaded by itself.
+
+### `diarizer.min_speaker_seconds`
+
+| | |
+|---|---|
+| Flag | `--diarizer-min-speaker-seconds` |
+| Env var | `IGNIS_DIARIZER_MIN_SPEAKER_SECONDS` |
+| Kind | `number` |
+| Default | `6.0` |
+| Rule | 0..=60 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The ghost rule, in seconds of speech: a voice the diarizer hears is a speaker of its own once it has spoken this long, and until then its speech counts for the speaker it sounds most like, so a short mistaken voice splits no utterance. The session's first voice is a speaker at once. 0 makes every voice a speaker at its first frame.
+
+### `diarizer.live_speaker_cache_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-live-speaker-cache-frames` |
+| Env var | `IGNIS_DIARIZER_LIVE_SPEAKER_CACHE_FRAMES` |
+| Kind | `frames` |
+| Default | `264` |
+| Rule | 8..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The live geometry's speaker cache, in 80 ms frames: what the diarizer keeps of every speaker heard so far.
+
+### `diarizer.live_fifo_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-live-fifo-frames` |
+| Env var | `IGNIS_DIARIZER_LIVE_FIFO_FRAMES` |
+| Kind | `frames` |
+| Default | `264` |
+| Rule | 0..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The live geometry's FIFO, in 80 ms frames: the latest frames each step reads beside its chunk.
+
+### `diarizer.live_chunk_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-live-chunk-frames` |
+| Env var | `IGNIS_DIARIZER_LIVE_CHUNK_FRAMES` |
+| Kind | `frames` |
+| Default | `25` |
+| Rule | 1..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The live geometry's chunk, in 80 ms frames: the frames one step scores. 25 is 2 s.
+
+### `diarizer.live_right_context_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-live-right-context-frames` |
+| Env var | `IGNIS_DIARIZER_LIVE_RIGHT_CONTEXT_FRAMES` |
+| Kind | `frames` |
+| Default | `4` |
+| Rule | 0..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The live geometry's right context, in 80 ms frames: the look-ahead a step waits for. With the chunk, the latency: 2.32 s at 25 and 4.
+
+### `diarizer.live_update_period_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-live-update-period-frames` |
+| Env var | `IGNIS_DIARIZER_LIVE_UPDATE_PERIOD_FRAMES` |
+| Kind | `frames` |
+| Default | `222` |
+| Rule | 1..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The live geometry's update period, in 80 ms frames: the oldest frames an overflowing FIFO gives the speaker cache at once.
+
+### `diarizer.file_speaker_cache_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-file-speaker-cache-frames` |
+| Env var | `IGNIS_DIARIZER_FILE_SPEAKER_CACHE_FRAMES` |
+| Kind | `frames` |
+| Default | `264` |
+| Rule | 8..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The file geometry's speaker cache, in 80 ms frames, for a session fed faster than real time (`session.ignis.diarization: "file"`).
+
+### `diarizer.file_fifo_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-file-fifo-frames` |
+| Env var | `IGNIS_DIARIZER_FILE_FIFO_FRAMES` |
+| Kind | `frames` |
+| Default | `40` |
+| Rule | 0..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The file geometry's FIFO, in 80 ms frames.
+
+### `diarizer.file_chunk_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-file-chunk-frames` |
+| Env var | `IGNIS_DIARIZER_FILE_CHUNK_FRAMES` |
+| Kind | `frames` |
+| Default | `340` |
+| Rule | 1..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The file geometry's chunk, in 80 ms frames: 340 is 27.2 s.
+
+### `diarizer.file_right_context_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-file-right-context-frames` |
+| Env var | `IGNIS_DIARIZER_FILE_RIGHT_CONTEXT_FRAMES` |
+| Kind | `frames` |
+| Default | `40` |
+| Rule | 0..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The file geometry's right context, in 80 ms frames: with the chunk, 30.4 s of latency at 340 and 40.
+
+### `diarizer.file_update_period_frames`
+
+| | |
+|---|---|
+| Flag | `--diarizer-file-update-period-frames` |
+| Env var | `IGNIS_DIARIZER_FILE_UPDATE_PERIOD_FRAMES` |
+| Kind | `frames` |
+| Default | `300` |
+| Rule | 1..=1000 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The file geometry's update period, in 80 ms frames.
+
+### `diarizer.prediction_score_threshold`
+
+| | |
+|---|---|
+| Flag | `--diarizer-prediction-score-threshold` |
+| Env var | `IGNIS_DIARIZER_PREDICTION_SCORE_THRESHOLD` |
+| Kind | `number\|auto` |
+| Default | `auto` |
+| Rule | 0.001..=1 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The speaker cache's floor on a frame's probabilities when it scores the frames to keep. `auto` is the checkpoint's (0.25).
+
+### `diarizer.latest_frames_score_boost`
+
+| | |
+|---|---|
+| Flag | `--diarizer-latest-frames-score-boost` |
+| Env var | `IGNIS_DIARIZER_LATEST_FRAMES_SCORE_BOOST` |
+| Kind | `number\|auto` |
+| Default | `auto` |
+| Rule | 0..=10 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+What the speaker cache adds to the scores of the frames the FIFO just gave it. `auto` is the checkpoint's (0.05).
+
+### `diarizer.strong_boost_rate`
+
+| | |
+|---|---|
+| Flag | `--diarizer-strong-boost-rate` |
+| Env var | `IGNIS_DIARIZER_STRONG_BOOST_RATE` |
+| Kind | `number\|auto` |
+| Default | `auto` |
+| Rule | 0..=4 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The share of each speaker's room in the speaker cache whose best frames get the strong boost. `auto` is the checkpoint's (0.75).
+
+### `diarizer.weak_boost_rate`
+
+| | |
+|---|---|
+| Flag | `--diarizer-weak-boost-rate` |
+| Env var | `IGNIS_DIARIZER_WEAK_BOOST_RATE` |
+| Kind | `number\|auto` |
+| Default | `auto` |
+| Rule | 0..=4 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The share of each speaker's room in the speaker cache whose best frames get the weak boost. `auto` is the checkpoint's (1.5).
+
+### `diarizer.min_positive_scores_rate`
+
+| | |
+|---|---|
+| Flag | `--diarizer-min-positive-scores-rate` |
+| Env var | `IGNIS_DIARIZER_MIN_POSITIVE_SCORES_RATE` |
+| Kind | `number\|auto` |
+| Default | `auto` |
+| Rule | 0..=1 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The share of each speaker's room a speaker's positive scores must fill before its other frames stop counting. `auto` is the checkpoint's (0.5).
+
+### `diarizer.speaker_cache_silence_frames_per_speaker`
+
+| | |
+|---|---|
+| Flag | `--diarizer-speaker-cache-silence-frames-per-speaker` |
+| Env var | `IGNIS_DIARIZER_SPEAKER_CACHE_SILENCE_FRAMES_PER_SPEAKER` |
+| Kind | `count\|auto` |
+| Default | `auto` |
+| Rule | 0..=125 |
+| Models | Nemotron 3 Diarization |
+| `/v1/config` | shown by `GET`, patchable live |
+
+The silence frames the speaker cache keeps for every speaker. `auto` is the checkpoint's (1).
+
 ## download
 
 ### `download.enabled`

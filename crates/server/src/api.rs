@@ -530,6 +530,7 @@ pub(crate) fn a_kind(kind: ModelKind) -> &'static str {
         ModelKind::Text => "a text model",
         ModelKind::Image => "an image model",
         ModelKind::Speech => "a speech model",
+        ModelKind::Diarizer => "a diarizer",
     }
 }
 

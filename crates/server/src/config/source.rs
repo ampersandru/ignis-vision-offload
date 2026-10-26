@@ -446,7 +446,7 @@ impl Resolver<'_> {
             };
             let value = parse_candidate::<K>(meta, candidate)?;
             let at_default = value == default;
-            if let Some(family) = self.family.filter(|family| !meta.applies.to(*family) && !at_default) {
+            if let Some(family) = self.family.filter(|family| meta.applies.refused_by(*family) && !at_default) {
                 if self.fit == Fit::Start {
                     return Err(ConfigError(format!(
                         "`{} {}`: {} does not take it (a {} option)",
@@ -465,7 +465,7 @@ impl Resolver<'_> {
         // A profile is a default, never an override: a value of it the
         // family cannot take is passed over in silence, as a hardcoded
         // default for a field the family ignores would be.
-        if self.family.is_none_or(|family| meta.applies.to(family)) {
+        if self.family.is_none_or(|family| !meta.applies.refused_by(family)) {
             if let Some((candidate, scoped)) = self.candidate(&sources.profile, meta) {
                 let value = parse_candidate::<K>(meta, candidate)?;
                 let at_default = value == default;
