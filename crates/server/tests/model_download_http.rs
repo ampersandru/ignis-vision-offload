@@ -6,19 +6,15 @@
 //! models folder is the outcome. A download is held mid-transfer by holding
 //! the endpoint's response, never by a timer.
 
-use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use http_body_util::BodyExt;
-use ignis_server::config::file::RealFiles;
-use ignis_server::config::{resolve_with, Config, ConfigOutcome};
+use ignis_server::config::Config;
 use ignis_server::download_http::Downloads;
 use ignis_server::model_switch::{CatalogModels, Switcher};
 use ignis_server::Server;
-use serde_json::{json, Value};
+use serde_json::json;
 use tower::ServiceExt;
 
 #[path = "support/switch.rs"]
@@ -29,26 +25,9 @@ use switch_support::MockLoader;
 mod repo;
 use repo::{catalog_served, files_of, Repo};
 
-const PATIENT: Duration = Duration::from_secs(30);
-
-async fn send(app: &axum::Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let request = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json");
-    let request = request.body(body.map_or_else(Body::empty, |body| Body::from(body.to_string()))).unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
-}
-
-/// The configuration a start with `argv` runs, fetching from `repo`.
-fn config(repo: &Repo, argv: &[&str]) -> Config {
-    let mut args = vec!["--download-endpoint".to_owned(), repo.endpoint()];
-    args.extend(argv.iter().map(|arg| arg.to_string()));
-    match resolve_with(&args, |_| None, &RealFiles).expect("the start options resolve") {
-        ConfigOutcome::Config(config) => config,
-        other => panic!("{other:?}"),
-    }
-}
+#[path = "support/model_routes.rs"]
+mod routes;
+use routes::{config, files_in, model_download, row, send, until_row, until_status, PATIENT};
 
 /// A server on `mock-a`, switching to the catalog `models`, downloading as
 /// `config` says.
@@ -56,34 +35,6 @@ fn server_with(loader: &Arc<MockLoader>, models: CatalogModels, config: &Config)
     Server::from_active(loader.model("mock-a"))
         .with_switcher(Switcher::new(Arc::clone(loader) as _, PATIENT).with_catalog(models, true))
         .with_downloads(Downloads::of(config, None))
-}
-
-fn row<'a>(rows: &'a Value, id: &str) -> &'a Value {
-    rows["data"].as_array().expect("an array of rows").iter().find(|row| row["id"] == id).unwrap_or_else(|| panic!("no row for {id}: {rows}"))
-}
-
-/// `GET /v1/models/catalog` until `id`'s row meets `wanted` (scheduling
-/// turns, bounded): the bytes the endpoint sent land on disk shortly after.
-async fn until_row(app: &axum::Router, id: &str, wanted: impl Fn(&Value) -> bool) -> Value {
-    let mut last = Value::Null;
-    for _ in 0..10_000 {
-        let (status, rows) = send(app, Method::GET, "/v1/models/catalog", None).await;
-        assert_eq!(status, StatusCode::OK, "{rows}");
-        last = row(&rows, id).clone();
-        if wanted(&last) {
-            return last;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("{id}'s row never got there: {last}");
-}
-
-/// The files under `dir` but an entry's lock (`<artifact>.lock`, GitHub
-/// #379), which a fetch leaves there, empty and released, for the next.
-fn files_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| !name.ends_with(".lock")).collect();
-    names.sort();
-    names
 }
 
 /// AC 1, 6, 7: the download answers 202 and runs in the background while the
@@ -370,23 +321,6 @@ async fn a_server_without_downloads_answers_501() {
     assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("download_unavailable")));
 }
 
-/// `ignis-server model download` of `ids` from `repo` into `dir`, as `main`
-/// runs it: its exit code and the lines it reported.
-async fn model_download(repo: &Repo, catalog: &ignis_server::download::Catalog, ids: &[&str], dir: &Path) -> (i32, Vec<String>) {
-    let command = ignis_server::download::ModelCommand::Download {
-        entries: ids.iter().map(|id| catalog.entry(id).expect("a catalog entry").clone()).collect(),
-        dir: dir.to_path_buf(),
-        endpoint: repo.endpoint(),
-        token: None,
-        free_margin: 0,
-    };
-    let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let collected = Arc::clone(&lines);
-    let code = ignis_server::download::command::run(command, &mut std::io::sink(), Arc::new(move |line: &str| collected.lock().unwrap().push(line.to_owned()))).await;
-    let lines = lines.lock().unwrap().clone();
-    (code, lines)
-}
-
 /// GitHub #379: the command refuses an entry the server is downloading,
 /// saying so, and fetches nothing of it; another entry it fetches at the
 /// same time, beside the server's download, which lands as it would have.
@@ -538,18 +472,6 @@ async fn a_cancel_with_nothing_running_is_refused_and_sits_behind_the_api_key() 
     let response = keyed.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT, "past the key: nothing runs");
     let _ = std::fs::remove_dir_all(dir);
-}
-
-/// `GET /v1/models` until its `status` reads `wanted` (bounded turns).
-async fn until_status(app: &axum::Router, wanted: &str) -> Value {
-    for _ in 0..10_000 {
-        let (status, body) = send(app, Method::GET, "/v1/models", None).await;
-        if status == StatusCode::OK && body["status"] == wanted {
-            return body;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("`GET /v1/models` never reported {wanted}");
 }
 
 /// GitHub #377: a cancel never touches the loaded model, so it stays open

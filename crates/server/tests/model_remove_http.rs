@@ -13,9 +13,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use http_body_util::BodyExt;
-use ignis_server::config::file::RealFiles;
-use ignis_server::config::{resolve_with, Config, ConfigOutcome};
+use ignis_server::config::Config;
 use ignis_server::download_http::Downloads;
 use ignis_server::model_switch::{CatalogModels, Switcher};
 use ignis_server::Server;
@@ -30,29 +28,12 @@ use switch_support::MockLoader;
 mod repo;
 use repo::{catalog_served, files_of, Repo};
 
-const PATIENT: Duration = Duration::from_secs(30);
-
-async fn send(app: &axum::Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let request = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json");
-    let request = request.body(body.map_or_else(Body::empty, |body| Body::from(body.to_string()))).unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())))
-}
+#[path = "support/model_routes.rs"]
+mod routes;
+use routes::{catalog_row, config, files_in, model_download, send, until_row, until_status, PATIENT};
 
 async fn remove(app: &axum::Router, model: &str) -> (StatusCode, Value) {
     send(app, Method::POST, "/v1/models/remove", Some(json!({ "model": model }))).await
-}
-
-/// The configuration a start with `argv` runs, fetching from `repo`.
-fn config(repo: &Repo, argv: &[&str]) -> Config {
-    let mut args = vec!["--download-endpoint".to_owned(), repo.endpoint()];
-    args.extend(argv.iter().map(|arg| arg.to_string()));
-    match resolve_with(&args, |_| None, &RealFiles).expect("the start options resolve") {
-        ConfigOutcome::Config(config) => config,
-        other => panic!("{other:?}"),
-    }
 }
 
 /// A server on `loaded`, switching to the catalog `models`, downloading as
@@ -70,27 +51,6 @@ fn on_disk(dir: &Path, id: &str) {
     std::fs::write(dir.join(&files.artifact.0), &files.artifact.1).unwrap();
 }
 
-fn row<'a>(rows: &'a Value, id: &str) -> &'a Value {
-    rows["data"].as_array().expect("an array of rows").iter().find(|row| row["id"] == id).unwrap_or_else(|| panic!("no row for {id}: {rows}"))
-}
-
-async fn catalog_row(app: &axum::Router, id: &str) -> Value {
-    let (status, rows) = send(app, Method::GET, "/v1/models/catalog", None).await;
-    assert_eq!(status, StatusCode::OK, "{rows}");
-    row(&rows, id).clone()
-}
-
-/// The files under `dir` but the entries' `.lock` files (GitHub #379), which
-/// stay for the next fetch.
-fn files_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.ends_with(".lock"))
-        .collect();
-    names.sort();
-    names
-}
 
 /// AC 1: a removal deletes every file of the entry and answers once they
 /// are gone, with the bytes it freed; the row reads absent, and the model is
@@ -200,36 +160,13 @@ async fn the_entry_being_downloaded_is_refused_until_its_download_ends() {
     assert!(message.contains("acme-new") && message.contains("being downloaded"), "{message}");
 
     repo.release();
-    for _ in 0..10_000 {
-        // Its files land a moment before the download says it ended.
-        let landed = catalog_row(&app, "acme-new").await;
-        if landed["on_disk"] == "complete" && landed["download"] == "none" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    // Its files land a moment before the download says it ended.
+    until_row(&app, "acme-new", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
     assert_eq!(files_in(&dir), [files.artifact.0.clone(), files.sidecar.0.clone()], "the download landed whole");
     let (status, removed) = remove(&app, "acme-new").await;
     assert_eq!((status, removed["bytes_freed"].clone()), (StatusCode::OK, json!(files.total())), "{removed}");
     assert!(files_in(&dir).is_empty());
     let _ = std::fs::remove_dir_all(dir);
-}
-
-/// `ignis-server model download <ids>` into `dir`, from `repo`, as the
-/// command line runs it: its exit code and its progress lines.
-async fn model_download(repo: &Repo, catalog: &ignis_server::download::Catalog, ids: &[&str], dir: &Path) -> (i32, Vec<String>) {
-    let command = ignis_server::download::ModelCommand::Download {
-        entries: ids.iter().map(|id| catalog.entry(id).expect("a catalog entry").clone()).collect(),
-        dir: dir.to_path_buf(),
-        endpoint: repo.endpoint(),
-        token: None,
-        free_margin: 0,
-    };
-    let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let collected = Arc::clone(&lines);
-    let code = ignis_server::download::command::run(command, &mut std::io::sink(), Arc::new(move |line: &str| collected.lock().unwrap().push(line.to_owned()))).await;
-    let lines = lines.lock().unwrap().clone();
-    (code, lines)
 }
 
 /// AC 2 with GitHub #379: an entry `model download` is writing, which holds
@@ -275,17 +212,6 @@ async fn an_entry_model_download_is_writing_is_refused_and_its_lock_file_stays()
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// `GET /v1/models` until its `status` reads `wanted` (bounded turns).
-async fn until_status(app: &axum::Router, wanted: &str) -> Value {
-    for _ in 0..10_000 {
-        let (status, body) = send(app, Method::GET, "/v1/models", None).await;
-        if status == StatusCode::OK && body["status"] == wanted {
-            return body;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("`GET /v1/models` never reported {wanted}");
-}
 
 /// AC 2: while a switch loads an entry, its removal is refused — the switch
 /// holds every `/v1` route but the ones that report and drive it, `503
