@@ -35,6 +35,11 @@ integration branch, the coordinator reports that branch, and the owner merges
 it into `main` locally; nothing is pushed until the owner says so. Tickets
 close as `docs/agents/issue-tracker.md` says under "Closing work".
 
+An implementer merges the integration branch into its own before it reports,
+with a message its brief gives it, such as `Merge 374-integration into the T2
+branch before the report (#377)`: the commit-message hook refuses git's
+default one.
+
 ## Cleanup
 
 Before `git worktree remove --force`, the coordinator copies the worktree's

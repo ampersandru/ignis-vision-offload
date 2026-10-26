@@ -87,4 +87,9 @@ pages under `docs/user/reference/` are generated: change the code, then run
   ([`docs/agents/orchestrated-builds.md`](../../agents/orchestrated-builds.md)).
 - A commit message says what the change does and why, in full sentences, and
   ends with the issue it belongs to, `(#347)`.
+- A merge commit says what it brings in, like any other commit, rather than
+  git's default `Merge branch 'x' into y`, and no commit carries a
+  `Co-Authored-By` trailer. `make setup` turns on `.githooks/commit-msg`,
+  which refuses a message that breaks these rules; the release commit,
+  `ignis X.Y.Z`, is the one exception.
 - Diffs stay semantic: no reformatting of lines a change does not touch.
