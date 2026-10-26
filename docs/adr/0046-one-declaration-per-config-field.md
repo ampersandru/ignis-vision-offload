@@ -102,6 +102,13 @@ then switched *away* from, it is dropped and logged
 this ADR makes that drop list schema-driven instead of hand-maintained, it
 does not change the behavior.
 
+*Amended 2026-10-26 (owner, spec speech/08, decision D4):* a family judges
+only the fields of its own **slot**. The text or image model is one slot; the
+speech model and the diarizer, loaded beside it, are slots of their own. So
+`diarizer.*`'s `Only([Nemotron3Diarization])` fields are judged against the
+diarizer, never against the active text model: a 27B start that sets them is
+not refused (`Applicability::judged_by` / `refused_by`).
+
 **Validators are a small typed enum, not a regex escape hatch for
 everything:** `Range{min,max}`, `MultipleOf(u64)` (`--prefill-chunk`'s
 nonzero-multiple-of-128), `OneOf(&[&str])` (`--kv-format`'s `bf16` /

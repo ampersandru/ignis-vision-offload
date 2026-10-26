@@ -185,8 +185,9 @@ The constants' names are the checkpoint's own keys.
    a multiple of the reference's own distance from fp64, with a negative control past it. The streaming state
    (speaker cache, compression, FIFO) is in the comparison. Its provenance is in its header and in `NOTICE`
    (Q114, Q104).
-2. The stored format is the one measured best of F32, BF16 and Q8_0 on speed at equal DER; the measurement is in
-   "As built" (Q114, ADR 0069).
+2. The stored format is the one measured best of F32, F16 and Q8_0 on speed at equal DER; the measurement is in
+   "As built" (Q114, ADR 0069). (Amended by the owner, 2026-10-26: F16 in place of BF16, which the executor's
+   kernels do not have; the same size, a finer mantissa.)
 3. On the twenty synthetic conversations of the finding (`H:\speech-study\nemotron-spike\data\conv\`, the
    `--ignored` leg), the port's DER at collar 0.25 is within +0.5 pt of NeMo-Speech.cpp's at the same geometry, at
    the live and the file geometries (Q114).
@@ -207,8 +208,11 @@ The constants' names are the checkpoint's own keys.
 10. The diarizer's steps rank below windows and commits and above partials. A test with a slow fake executor shows
     the partials thinning while every diarizer step and commit is served (Q113).
 11. On the i9, at the live geometry, with Qwen3-ASR `qwen3-asr-1.7b` live in the same session, a 5-minute
-    conversation fed at real time keeps the diarizer within its geometry's latency plus 2 s at every item end. The
-    4-core container's figures are reported, with the share of the machine (Q113, Q34's style).
+    conversation fed at real time keeps the diarizer within its geometry's latency plus 2 s: every frame's speaker
+    probabilities come within that of the frame's first sample (the session log line's `lag_max_ms`). The 4-core
+    container's figures are reported, with the share of the machine (Q113, Q34's style). (Amended by the owner,
+    2026-10-26: the first wording bounded every item end, but an item cut at a change gets its speaker later by
+    design, the cut reaching back to the new speaker's run, up to `diarizer.min_speaker_seconds` before.)
 12. `speech.max_utterance_seconds` cuts as specified. On items of 60, 120 and 240 s with no pause of 500 ms (built
     from FLEURS and VoxPopuli), WER, commit time and RAM are measured, and the default is the value that measures
     best, 120 s unless the data say otherwise. `speech.utterance_cut_search_ms`'s default comes from the same
@@ -219,7 +223,9 @@ The constants' names are the checkpoint's own keys.
 14. `diarizer.model` resolves `auto`, an id and `off`, and refuses a text, image or speech id. The diarizer has its
     catalog entry (`kind: diarizer`), is downloadable with `ignis-server model download`, is not in `/v1/models`,
     and its availability is in the `speech` object there. The Server view shows it (Q118). The `diarizer` group's
-    Sortformer fields are `Only([Nemotron3Diarization])`, and a test shows another family refusing them. The speaker
+    Sortformer fields are `Only([Nemotron3Diarization])`, judged against the diarizer's own slot, so a text, image
+    or speech family active beside it does not refuse them, and a test shows it (amended by the owner, 2026-10-26:
+    a family judges only its own slot's fields, ADR 0046; no second diarizer family exists to refuse them). The speaker
     cache's constants resolve `auto` to the GGUF's values from the checkpoint, take an override within their
     ranges, and log and show the effective value (owner, 2026-10-25).
 15. The diarizer loads at the first session that asks for speakers and unloads with the speech model (Q116).
@@ -228,7 +234,9 @@ The constants' names are the checkpoint's own keys.
     and `session.ignis.max_utterance_seconds`; the speech guide states the diarizer's CPU and RAM figures from AC 11
     (AGENTS.md).
 17. A short committable fixture of public audio (a VoxPopuli two-speaker excerpt, CC0) runs the speaker leg in every
-    `cargo test`. The twenty conversations stay on the study disk (the privacy rule).
+    `cargo test`: its log-mel and its speaker cache replayed on the reference's recorded probabilities. The forward
+    pass on it needs the weights, which are not in the tree, so it is an `--ignored` leg on the study disk. The twenty
+    conversations stay on the study disk (the privacy rule). (Amended by the owner, 2026-10-26.)
 18. `cargo test` passes workspace-wide (AGENTS.md).
 
 ## Out of Scope
