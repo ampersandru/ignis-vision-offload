@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { loadUnderWay, type ModelState } from "../api/model.ts";
+import { canSend, loadUnderWay, type ModelState } from "../api/model.ts";
 import { diskLabel, downloadCommand, type DownloadGate, elapsed, rowAction, runningFamily, sourceLabel } from "./band.ts";
 import { downloadFailure, progressLabel } from "./download.ts";
 import { familyName } from "./form.ts";
@@ -28,6 +28,8 @@ export function ModelBand({
   downloadingId,
   downloadSpeed,
   onDownload,
+  cancelling,
+  onCancel,
 }: {
   model: ModelState;
   catalog: Loaded<CatalogRow[]>;
@@ -46,6 +48,9 @@ export function ModelBand({
   /** The running download's bytes per second, once read. */
   downloadSpeed: number | null;
   onDownload: (id: string) => void;
+  /** A "Cancel" of the running download is being sent. */
+  cancelling: boolean;
+  onCancel: () => void;
 }) {
   const rows = catalog.state === "ok" ? catalog.value : null;
   const family = runningFamily(rows);
@@ -81,7 +86,7 @@ export function ModelBand({
         model={model}
         loadingId={loadingId}
         onLoad={onLoad}
-        downloads={{ gate: downloads, sendingId: downloadingId, speed: downloadSpeed, onDownload }}
+        downloads={{ gate: downloads, sendingId: downloadingId, speed: downloadSpeed, onDownload, cancelling, onCancel }}
       />
     </section>
   );
@@ -150,8 +155,15 @@ function Figure({ label, value, dot }: { label: string; value: string; dot?: str
   );
 }
 
-/** What a row needs to offer Download and follow it. */
-type RowDownloads = { gate: DownloadGate; sendingId: string | null; speed: number | null; onDownload: (id: string) => void };
+/** What a row needs to offer Download and follow it, and to cancel it or resume it (GitHub #377). */
+type RowDownloads = {
+  gate: DownloadGate;
+  sendingId: string | null;
+  speed: number | null;
+  onDownload: (id: string) => void;
+  cancelling: boolean;
+  onCancel: () => void;
+};
 
 function Catalog({
   catalog,
@@ -229,21 +241,36 @@ function RowActionView({
         </button>
       );
     case "download":
+    case "resume": {
+      // Resume is the same request on a partial entry: the server resumes what is there.
+      const verb = action.kind === "resume" ? "Resume" : "Download";
       return (
         <button
           type="button"
-          aria-label={`Download ${row.id}`}
+          aria-label={`${verb} ${row.id}`}
           disabled={!action.enabled || downloads.sendingId !== null}
           onClick={() => downloads.onDownload(row.id)}
           className="border border-[#4a525c] px-3 py-1.5 font-display text-[13px] font-semibold text-white hover:border-[#ff5a1f] hover:bg-[#ff5a1f]/15 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[#4a525c] disabled:hover:bg-transparent"
         >
-          {downloads.sendingId === row.id ? "Sending…" : "Download"}
+          {downloads.sendingId === row.id ? "Sending…" : verb}
         </button>
       );
+    }
     case "copy":
       return <CopyCommand id={row.id} />;
     case "downloading":
-      return <span className="font-display text-[13px] font-semibold text-[#ff8a4c]">Downloading…</span>;
+      // Its progress is in the disk column; the action stops it, keeping what it fetched (GitHub #377).
+      return (
+        <button
+          type="button"
+          aria-label={`Cancel the download of ${row.id}`}
+          disabled={downloads.cancelling || !canSend(model)}
+          onClick={downloads.onCancel}
+          className="border border-[#4a525c] px-3 py-1.5 font-display text-[13px] font-semibold text-[#ff8a4c] hover:border-[#ff5a1f] hover:bg-[#ff5a1f]/15 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[#4a525c] disabled:hover:bg-transparent"
+        >
+          {downloads.cancelling ? "Cancelling…" : "Cancel"}
+        </button>
+      );
     case "missing":
       return null;
     case "unavailable":

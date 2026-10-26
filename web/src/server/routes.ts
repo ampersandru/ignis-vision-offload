@@ -160,6 +160,15 @@ export const startDownload = (id: string, fetcher: typeof fetch = fetch) =>
     fetcher,
   );
 
+/** Stop the running download (GitHub #377); what it fetched stays, for its Resume. */
+export const cancelDownload = (fetcher: typeof fetch = fetch) =>
+  call(
+    "/v1/models/download/cancel",
+    { method: "POST" },
+    (body) => body as { model: string; bytes: number; bytes_on_disk: number },
+    fetcher,
+  );
+
 export const patchConfig = (body: object, fetcher: typeof fetch = fetch) =>
   call(
     "/v1/config",

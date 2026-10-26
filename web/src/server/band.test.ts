@@ -12,11 +12,25 @@ const ready: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786
 const switching: ModelState = { state: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next", since: 0 };
 
 describe("rowAction", () => {
-  it("is Loaded on the loaded row, Load where a switch can begin, and Download where the entry is not wholly on disk", () => {
+  it("is Loaded on the loaded row, Load where a switch can begin, Download where the entry is not on disk, and Resume where it is partly", () => {
     expect(rowAction(row("qwen3.8-27b"), ready)).toEqual({ kind: "loaded" });
     expect(rowAction(row("qwen3.8-flash-next"), ready)).toEqual({ kind: "load", enabled: true });
-    expect(rowAction(row("qwen3.8-27b-abliterated"), ready)).toEqual({ kind: "download", enabled: true });
+    expect(rowAction(row("qwen3.8-27b-abliterated"), ready)).toEqual({ kind: "resume", enabled: true });
     expect(rowAction(row("qwen3.8-27b-custom"), ready)).toEqual({ kind: "download", enabled: true });
+  });
+
+  // GitHub #377: a partly downloaded entry, a cancelled download's included,
+  // offers Resume, out of reach exactly where Download is; a running one is
+  // the row that offers Cancel.
+  it("offers Resume on a partial row, out of reach while a download runs or no model serves, and the command where the page downloads nothing", () => {
+    const partial = row("qwen3.8-27b-abliterated");
+    expect(rowAction(partial, ready, { fromPage: true, busy: true })).toEqual({ kind: "resume", enabled: false });
+    expect(rowAction(partial, switching)).toEqual({ kind: "resume", enabled: false });
+    expect(rowAction(partial, { state: "error", message: "x", failed: true })).toEqual({ kind: "resume", enabled: false });
+    expect(rowAction({ ...partial, download: "failed", download_reason: "connection reset" }, ready)).toEqual({ kind: "resume", enabled: true });
+    expect(rowAction(partial, ready, { fromPage: false, busy: false })).toEqual({ kind: "copy" });
+    expect(rowAction({ ...row("qwen3.8-27b-custom"), on_disk: "partial", bytes_on_disk: 4097 }, ready)).toEqual({ kind: "resume", enabled: true });
+    expect(rowAction({ ...partial, download: "running" }, ready)).toEqual({ kind: "downloading" });
   });
 
   // GitHub #376: one download at a time, followed on its row; where the
@@ -98,9 +112,16 @@ describe("row labels", () => {
     expect(sourceLabel("known")).toBe("Known model");
     expect(diskLabel(row("qwen3.8-27b"))).toBe("On disk, 18.07 GiB");
     expect(diskLabel(row("qwen3.8-flash-next"))).toBe("On disk, 67.8 GiB");
-    expect(diskLabel(row("qwen3.8-27b-abliterated"))).toBe("Partly downloaded, 18.07 GiB in all");
+    expect(diskLabel(row("qwen3.8-27b-abliterated"))).toBe("Partly downloaded, 6 GiB of 18.07 GiB");
     expect(diskLabel(row("qwen3.8-27b-custom"))).toBe("Not downloaded, 18.07 GiB");
     expect(diskLabel({ id: "x", source: "known", on_disk: "absent", loaded: false, switchable: false })).toBe("Artifact not found");
+  });
+
+  // GitHub #377: a partial row says how much is already there, beside its total.
+  it("gives a partial row's bytes on disk beside its total, and the total alone from a server that sends none", () => {
+    expect(diskLabel({ ...row("qwen3.8-27b-abliterated"), bytes_on_disk: 4097 })).toBe("Partly downloaded, 4 KiB of 18.07 GiB");
+    expect(diskLabel({ ...row("qwen3.8-27b-abliterated"), bytes_on_disk: undefined })).toBe("Partly downloaded, 18.07 GiB in all");
+    expect(diskLabel({ ...row("qwen3.8-27b-abliterated"), bytes: undefined })).toBe("Partly downloaded, 6 GiB");
   });
 
   it("copies the command that fetches a model", () => {

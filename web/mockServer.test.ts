@@ -150,6 +150,23 @@ describe("createServerSim: downloads (GitHub #376)", () => {
     expect(sim.downloadModel({ model: "qwen3.8-flash-next" }, T + 2_000)).toMatchObject({ status: 409, body: { error: { code: "model_already_downloaded" } } });
     expect(sim.downloadModel({ model: "qwen3.8-27b-fail" }, T + 2_000)).toMatchObject({ status: 404, body: { error: { code: "model_not_found" } } });
   });
+
+  // GitHub #377: a cancel keeps what landed, and the entry's Resume continues from it.
+  it("cancels the running download, keeps what landed as a partial entry, and resumes from it", () => {
+    const sim = createServerSim();
+    expect(sim.cancelDownload(T)).toMatchObject({ status: 409, body: { error: { code: "download_not_running" } } });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T)).toMatchObject({ status: 202 });
+    const cancelled = sim.cancelDownload(T + 5_000);
+    expect(cancelled).toMatchObject({ status: 200, body: { status: "cancelled", model: "qwen3.8-27b-abliterated", bytes: 19406984175 } });
+    const kept = (cancelled.body as { bytes_on_disk: number }).bytes_on_disk;
+    expect(kept).toBeGreaterThan(6442450944);
+    expect(kept).toBeLessThan(19406984175);
+    // Long after: still partial, with what landed, and nothing runs.
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 60_000)).toMatchObject({ download: "none", on_disk: "partial", bytes_on_disk: kept, switchable: false });
+    expect(sim.cancelDownload(T + 60_000)).toMatchObject({ status: 409 });
+    expect(sim.downloadModel({ model: "qwen3.8-27b-abliterated" }, T + 60_000)).toMatchObject({ status: 202, body: { bytes_on_disk: kept } });
+    expect(rowOf(sim, "qwen3.8-27b-abliterated", T + 70_000)).toMatchObject({ download: "none", on_disk: "complete", bytes_on_disk: 19406984175 });
+  });
 });
 
 describe("createServerSim: per-model values", () => {

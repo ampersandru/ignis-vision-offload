@@ -10,6 +10,11 @@
 //! download runs at a time. What runs, and the last failure of each entry,
 //! are kept in memory ([`Downloads`]): nothing is written about them, and
 //! nothing resumes at a restart. A switch never downloads.
+//!
+//! `POST /v1/models/download/cancel` (GitHub #377) stops the running
+//! download — the Server view's Cancel — and keeps what it fetched: the
+//! entry reads partial, and its next download, the row's Resume, continues
+//! from those files.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -123,13 +128,25 @@ impl Downloads {
     }
 
     /// Clear the slot of a download that has ended, keeping a failure's
-    /// reason for its entry and saying it in the log. One that still runs
-    /// stays.
+    /// reason for its entry and saying it in the log, as a cancel is said
+    /// there too. One that still runs stays.
     fn settle(&self, running: &mut Option<Download>) {
         let Some(ended) = running.as_ref().and_then(Download::ended) else {
             return;
         };
         let download = running.take().expect("the download that ended");
+        // GitHub #377: a cancel says so, and what it kept for the resume.
+        if let Ended::Cancelled = ended {
+            tracing::info!(
+                name: "ignis.model.download_cancelled",
+                model = %download.entry().id,
+                repo = %download.entry().repo,
+                endpoint = %self.endpoint,
+                bytes = download.entry().total_bytes(),
+                bytes_on_disk = download.bytes_on_disk(),
+                "the download was cancelled; its partial files stay, and the entry's next download resumes from them"
+            );
+        }
         if let Ended::Failed(err) = ended {
             tracing::warn!(
                 name: "ignis.model.download_failed",
@@ -305,4 +322,60 @@ fn disabled(message: &str) -> Response {
 /// #379), as `err` says.
 fn locked(err: DownloadError) -> Response {
     error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model"))
+}
+
+/// A download that was cancelled (GitHub #377).
+#[derive(Serialize, ToSchema)]
+pub(crate) struct DownloadCancelled {
+    /// Always `cancelled`.
+    status: &'static str,
+    /// The entry it was downloading.
+    model: String,
+    /// The entry's total size.
+    bytes: u64,
+    /// What of it stays under `download.path`, partial files included: what
+    /// the entry's next download resumes from.
+    bytes_on_disk: u64,
+}
+
+/// `POST /v1/models/download/cancel` — stop the running download.
+#[utoipa::path(
+    post,
+    path = "/v1/models/download/cancel",
+    tag = "models",
+    operation_id = "cancel_model_download",
+    summary = "Stop the running download, keeping its partial files",
+    description = "Stops the download `POST /v1/models/download` began, the one at a time that runs, and answers once it has stopped. What it fetched stays under `download.path`: every file it verified at its name, and the `.part` of the file it was writing with every byte that arrived. `GET /v1/models/catalog` then shows the entry `on_disk: partial` with its `bytes_on_disk` and `download: none`, and the entry's next `POST /v1/models/download` resumes from those files, with `Range`, and verifies them against the pins. Nothing resumes by itself, at a restart either. The request has no body. Logs `ignis.model.download_cancelled`. Under the same API key as `PATCH /v1/config` (ADR 0071).",
+    responses(
+        (status = 200, description = "The download stopped; its partial files stay.", body = DownloadCancelled),
+        (status = 401, description = "The server was started with an API key and the request carried no matching bearer token.", body = ApiError),
+        (status = 409, description = "No download is running (`download_not_running`): none began, or the one that ran had already landed or failed, which the message says.", body = ApiError),
+        (status = 501, description = "This server has no catalog to download from (`download_unavailable`).", body = ApiError),
+        (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`), or a model switch is under way (`model_switching`).", body = ApiError),
+    ),
+)]
+pub(crate) async fn post_model_download_cancel(State(server): State<Arc<Server>>) -> Response {
+    let Some(downloads) = server.downloads.as_ref() else {
+        return error_response(StatusCode::NOT_IMPLEMENTED, "server_error", "download_unavailable", "this server has no catalog to download models from");
+    };
+    let Some(download) = downloads.running() else {
+        return not_running("no download is running; GET /v1/models/catalog shows each entry's state".to_owned());
+    };
+    download.cancel();
+    let id = &download.entry().id;
+    match download.wait().await {
+        Ended::Cancelled => (
+            StatusCode::OK,
+            Json(DownloadCancelled { status: "cancelled", model: id.clone(), bytes: download.entry().total_bytes(), bytes_on_disk: download.bytes_on_disk() }),
+        )
+            .into_response(),
+        // It ended on its own before the cancel reached it.
+        Ended::Fetched(_) => not_running(format!("the download of {id} landed before the cancel reached it; POST /v1/models/switch with it loads it")),
+        Ended::Failed(err) => not_running(format!("the download of {id} had already failed before the cancel reached it: {err}")),
+    }
+}
+
+/// `409 download_not_running`: nothing to cancel.
+fn not_running(message: String) -> Response {
+    error_response(StatusCode::CONFLICT, "invalid_request_error", "download_not_running", message)
 }

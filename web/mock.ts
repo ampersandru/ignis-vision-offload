@@ -80,6 +80,10 @@ export function mockIgnis(): Plugin {
         if (req.method !== "POST") return answer(res, { status: 405, body: {} });
         answer(res, sim.switchTo(await readJson(req), Date.now()));
       });
+      server.middlewares.use("/v1/models/download/cancel", (req, res) => {
+        if (req.method !== "POST") return answer(res, { status: 405, body: {} });
+        answer(res, sim.cancelDownload(Date.now()));
+      });
       server.middlewares.use("/v1/models/download", async (req, res) => {
         if (req.method !== "POST") return answer(res, { status: 405, body: {} });
         answer(res, sim.downloadModel(await readJson(req), Date.now()));

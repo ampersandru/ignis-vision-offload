@@ -16,7 +16,7 @@ import type { ServerActions, ServerState } from "./useServer.ts";
 
 const ready: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 786432 };
 
-const actions: ServerActions = { load: () => {}, download: () => {}, edit: () => {}, remove: () => {}, undo: () => {}, discard: () => {}, apply: () => {}, dismiss: () => {} };
+const actions: ServerActions = { load: () => {}, download: () => {}, cancel: () => {}, edit: () => {}, remove: () => {}, undo: () => {}, discard: () => {}, apply: () => {}, dismiss: () => {} };
 
 const base: ServerState = {
   fields: { state: "ok", value: FIELDS },
@@ -33,6 +33,7 @@ const base: ServerState = {
   downloadingId: null,
   downloadRefusal: null,
   downloadSpeed: null,
+  cancelling: false,
 };
 
 const render = (state: Partial<ServerState> = {}, model: ModelState = ready, streaming = false, now = 0) =>
@@ -83,11 +84,11 @@ describe("ServerView: the model band", () => {
     expect(html).toContain(">Loaded<");
     expect(html).toContain('aria-label="Load qwen3.8-flash-next"');
     expect(html).toContain('aria-label="Load qwen3.8-27b-fail"');
-    expect(html).toContain('aria-label="Download qwen3.8-27b-abliterated"');
+    expect(html).toContain('aria-label="Resume qwen3.8-27b-abliterated"');
     expect(html).toContain('aria-label="Download qwen3.8-27b-custom"');
     expect(html).not.toContain("Copy download command");
     expect(html).toContain("On disk, 67.8 GiB");
-    expect(html).toContain("Partly downloaded, 18.07 GiB in all");
+    expect(html).toContain("Partly downloaded, 6 GiB of 18.07 GiB");
   });
 
   // GitHub #376: a download from the page, followed on its row.
@@ -95,10 +96,35 @@ describe("ServerView: the model band", () => {
     const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, on_disk: "partial" as const, download: "running" as const, bytes_on_disk: 1.5 * 1024 ** 3 } : r));
     const html = render({ catalog: { state: "ok", value: rows }, downloadSpeed: 85.3 * 1024 ** 2 });
     expect(html).toContain("Downloading, 1.5 GiB of 18.07 GiB, 85.3 MiB/s");
-    expect(html).toContain(">Downloading…<");
+    expect(html).toContain('aria-label="Cancel the download of qwen3.8-27b-custom"');
     expect(html).not.toContain('aria-label="Download qwen3.8-27b-custom"');
-    expect(html).toMatch(/aria-label="Download qwen3\.8-27b-abliterated" disabled=""/);
+    expect(html).toMatch(/aria-label="Resume qwen3\.8-27b-abliterated" disabled=""/);
     expect(html).not.toMatch(/aria-label="Load qwen3\.8-flash-next" disabled=""/);
+  });
+
+  // GitHub #377: Cancel on the running row, Resume on a partial one.
+  it("offers Cancel on the running row, held while it is sent or no model serves, and Resume on a partial row with its bytes", () => {
+    const rows = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, on_disk: "partial" as const, download: "running" as const, bytes_on_disk: 1.5 * 1024 ** 3 } : r));
+    const running = { catalog: { state: "ok" as const, value: rows } };
+    const cancel = /<button[^>]*aria-label="Cancel the download of qwen3\.8-27b-custom"[^>]*>([^<]*)</;
+    const html = render(running);
+    expect(html.match(cancel)?.[0]).not.toContain('disabled=""');
+    expect(html.match(cancel)?.[1]).toBe("Cancel");
+    const sending = render({ ...running, cancelling: true });
+    expect(sending.match(cancel)?.[0]).toContain('disabled=""');
+    expect(sending.match(cancel)?.[1]).toBe("Cancelling…");
+    const switching: ModelState = { state: "switching", from: "qwen3.8-27b", to: "qwen3.8-flash-next", since: 0 };
+    expect(render(running, switching).match(cancel)?.[0]).toContain('disabled=""');
+    // A refused cancel shows the server's reason in the band.
+    expect(render({ downloadRefusal: "no download is running; GET /v1/models/catalog shows each entry's state" })).toContain("no download is running");
+
+    // Cancelled: the row is partial again, with what stayed, and offers Resume.
+    const stopped = CATALOG.map((r) => (r.id === "qwen3.8-27b-custom" ? { ...r, on_disk: "partial" as const, bytes_on_disk: 1.5 * 1024 ** 3 } : r));
+    const after = render({ catalog: { state: "ok", value: stopped } });
+    expect(after).toContain("Partly downloaded, 1.5 GiB of 18.07 GiB");
+    expect(after).toMatch(/aria-label="Resume qwen3\.8-27b-custom"[^>]*>Resume</);
+    expect(after).not.toContain("Cancel the download");
+    expect(render({ catalog: { state: "ok", value: stopped }, downloadingId: "qwen3.8-27b-custom" })).toMatch(/aria-label="Resume qwen3\.8-27b-custom" disabled=""[^>]*>Sending…</);
   });
 
   it("keeps a failed download's reason on its row and offers Download again; shows a refused one's reason", () => {

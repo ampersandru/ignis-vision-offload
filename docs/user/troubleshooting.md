@@ -186,7 +186,8 @@ the endpoint refused the token sent`, is a gated or private repository: set
 `IGNIS_DOWNLOAD_TOKEN` (`download.token`), or `HF_TOKEN` for huggingface.co,
 where the server starts, restart it, and press **Download** again; the page
 never takes a token. Any other reason is the transfer's, as `model download`
-prints it, and the next **Download** resumes from what is on disk.
+prints it, and the row's **Resume** (its **Download**, when nothing landed)
+continues from what is on disk.
 
 ### `not enough room for … under …`
 
