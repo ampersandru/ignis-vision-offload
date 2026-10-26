@@ -867,6 +867,7 @@ async fn a_download_holds_its_entry_and_a_fetch_of_the_same_entry_is_refused_say
 
     let message = err.to_string();
     assert!(message.contains("test-model is already being downloaded") && message.contains(&lock_file(&dir).display().to_string()), "{message}");
+    assert!(message.contains(&format!("by a server (process {})", std::process::id())), "it names the holder: {message}");
     assert_eq!(state.requested(), [SIDECAR, ARTIFACT], "the refused fetch sent nothing");
     assert_eq!(std::fs::metadata(part(&dir, ARTIFACT)).unwrap().len(), 4096, "and wrote nothing");
     assert_eq!(download.ended(), None, "the first one still runs");
@@ -986,6 +987,10 @@ async fn the_lock_holds_across_processes_and_dies_with_the_process_holding_it() 
 
     let err = downloader(addr).fetch(&entry(), &dir).await.expect_err("held by the other process");
     assert!(err.to_string().contains("test-model is already being downloaded"), "{err}");
+    // Story 17: the refused side reads who holds it from the lock file, the
+    // other process's own note, on Windows as on Linux.
+    let holder = format!("by `ignis-server model download` (process {}), which holds", child.id().expect("it runs"));
+    assert!(err.to_string().contains(&holder), "it names the holder: {err}");
 
     child.kill().await.expect("killed");
     *state.hold_after.lock().unwrap() = None;

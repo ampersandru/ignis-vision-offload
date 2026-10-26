@@ -259,7 +259,8 @@ async fn an_entry_model_download_is_writing_is_refused_and_its_lock_file_stays()
         let (status, refused) = remove(&app, "acme-cli").await;
         assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
         let message = refused["error"]["message"].as_str().unwrap();
-        assert!(message.contains("acme-cli is already being downloaded") && message.contains("model download"), "{message}");
+        let holder = format!("by `ignis-server model download` (process {})", std::process::id());
+        assert!(message.contains("acme-cli is already being downloaded") && message.contains(&holder), "it names the holder: {message}");
         assert_eq!(std::fs::metadata(&part).map(|meta| meta.len()).ok(), Some(4096), "the command's .part is left to it");
         repo.release();
     };
@@ -439,7 +440,7 @@ async fn a_file_an_entry_being_downloaded_also_lists_stays() {
         std::fs::write(dir.join(name), vec![7u8; bytes]).unwrap();
     }
     // A fetch of acme-b holds its lock, as `model download acme-b` does.
-    let fetching = ignis_server::download::EntryLock::take(catalog.entry("acme-b").unwrap(), &dir).expect("acme-b is free");
+    let fetching = ignis_server::download::EntryLock::take(catalog.entry("acme-b").unwrap(), &dir, ignis_server::download::Holder::Command).expect("acme-b is free");
     let app = server_on(&loader, "mock-a", models, &config(&repo, &[])).app();
 
     let (status, removed) = remove(&app, "acme-a").await;

@@ -404,7 +404,9 @@ async fn model_download_refuses_an_entry_the_server_is_downloading_and_fetches_a
 
     let (code, lines) = model_download(&repo, &catalog, &["acme-a"], &dir).await;
     assert_eq!(code, 1, "{lines:?}");
-    assert!(lines.iter().any(|line| line.starts_with("acme-a: failed: acme-a is already being downloaded")), "{lines:?}");
+    // Story 17: it says who holds the entry, the server, and its process.
+    let holder = format!("by a server (process {}), which holds", std::process::id());
+    assert!(lines.iter().any(|line| line.starts_with("acme-a: failed: acme-a is already being downloaded") && line.contains(&holder)), "{lines:?}");
     assert_eq!(repo.seen().iter().filter(|seen| seen.file.starts_with("acme-a")).count(), 2, "the command sent nothing for it: {:?}", repo.seen());
 
     let (code, lines) = model_download(&repo, &catalog, &["acme-b"], &dir).await;
@@ -438,7 +440,8 @@ async fn the_page_refuses_an_entry_model_download_is_downloading_and_starts_anot
         let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-a" }))).await;
         assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
         let message = refused["error"]["message"].as_str().unwrap();
-        assert!(message.contains("acme-a is already being downloaded") && message.contains("model download"), "{message}");
+        let holder = format!("by `ignis-server model download` (process {}), which holds", std::process::id());
+        assert!(message.contains("acme-a is already being downloaded") && message.contains(&holder), "it names the holder: {message}");
         let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
         assert!(row(&rows, "acme-a").get("download_reason").is_none(), "a refusal is no failure: {rows}");
         // Short of room too, it is refused for the lock: a refusal for room

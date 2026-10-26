@@ -20,7 +20,7 @@ use utoipa::ToSchema;
 
 use crate::api::{error_response, error_response_naming, ApiError};
 use crate::download::command::lists_file;
-use crate::download::{CatalogEntry, EntryLock, NotLocked};
+use crate::download::{CatalogEntry, EntryLock, Holder, NotLocked};
 use crate::model_switch::{Slot, Switcher};
 use crate::Server;
 
@@ -126,7 +126,7 @@ pub(crate) async fn post_model_remove(State(server): State<Arc<Server>>, Json(re
         // GitHub #379: the entry's lock, held while its files go, so a fetch
         // of it — `model download`, another server on the folder — is never
         // left writing a `.part` this deletes, and none begins meanwhile.
-        let _lock = EntryLock::take(&entry, &catalog.dir).map_err(|refused| match refused {
+        let _lock = EntryLock::take(&entry, &catalog.dir, Holder::Server).map_err(|refused| match refused {
             NotLocked::Held(err) => error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model")),
             NotLocked::Failed(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "removal_failed", err.to_string()),
         })?;

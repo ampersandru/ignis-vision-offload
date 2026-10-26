@@ -30,7 +30,7 @@ use utoipa::ToSchema;
 use crate::api::{error_response, error_response_naming, ApiError};
 use crate::config::{ApiKey, Config};
 use crate::download::command::{on_disk, room_for, OnDisk};
-use crate::download::{CatalogEntry, Download, DownloadError, Downloader, Ended, EntryLock, NotLocked};
+use crate::download::{CatalogEntry, Download, DownloadError, Downloader, Ended, EntryLock, Holder, NotLocked};
 use crate::Server;
 
 /// The downloads a server runs through the API, and how they are fetched:
@@ -241,7 +241,7 @@ pub(crate) struct DownloadAccepted {
         (status = 401, description = "The server was started with an API key and the request carried no matching bearer token.", body = ApiError),
         (status = 403, description = "Downloading through the API is off (`download_disabled`): `download.enabled` is false, so the server never uses the network, or `download.from_ui` is false; the message names which.", body = ApiError),
         (status = 404, description = "`model` is not a catalog entry (`model_not_found`): a known model is a path, and nothing but a catalog entry is downloaded.", body = ApiError),
-        (status = 409, description = "A download already runs (`download_in_progress`, naming it): downloads are one at a time, never queued. Or the entry's `card_class` is above this card's (`model_above_card_class`, ADR 0064), or every file of it is already on disk (`model_already_downloaded`). Or another fetch of the entry into `download.path` holds its lock (`download_locked`): `ignis-server model download`, or another server on the same folder; one writer per entry.", body = ApiError),
+        (status = 409, description = "A download already runs (`download_in_progress`, naming it): downloads are one at a time, never queued. Or the entry's `card_class` is above this card's (`model_above_card_class`, ADR 0064), or every file of it is already on disk (`model_already_downloaded`). Or another fetch of the entry into `download.path` holds its lock (`download_locked`): `ignis-server model download`, or another server on the same folder, which the message names with its process id; one writer per entry.", body = ApiError),
         (status = 501, description = "This server has no catalog to download from (`download_unavailable`).", body = ApiError),
         (status = 503, description = "The loaded model's first traversal has not run yet (`server_not_ready`), or a model switch is under way (`model_switching`).", body = ApiError),
         (status = 507, description = "The volume of `download.path` has less free space than the entry's bytes still missing plus `download.free_margin` (`download_no_room`): nothing was written, and the message names the bytes needed and the bytes free. The entry's row keeps it as its `download_reason`, `download: failed`, until its next download, the entry complete on disk another way, or a restart.", body = ApiError),
@@ -303,7 +303,7 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
         // GitHub #379: so does another fetch writing the entry, `model
         // download` or another server: it is refused for that instead, and
         // leaves no refusal for room behind on the row it then completes.
-        if let Err(NotLocked::Held(err)) = EntryLock::take(entry, &catalog.dir) {
+        if let Err(NotLocked::Held(err)) = EntryLock::take(entry, &catalog.dir, Holder::Server) {
             return locked(err);
         }
         downloads.refused(&entry.id, &reason);

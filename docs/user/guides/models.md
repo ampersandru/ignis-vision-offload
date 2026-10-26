@@ -110,11 +110,17 @@ Every fetch of an entry holds the entry's lock for as long as it runs: the
 command's, a server's start, and a server's download from its Server view
 alike. The lock is `<artifact>.lock`, beside the entry's files in the folder
 it fetches into. A second fetch of the same entry into the same folder is
-refused before it fetches anything, so two never write one `.part`:
+refused before it fetches anything, so two never write one `.part`, with a
+message naming who holds the entry, a server or `ignis-server model download`,
+and its process id:
 
 ```
-qwen3.8-27b: failed: qwen3.8-27b is already being downloaded into ./models, by a server or by `ignis-server model download`, which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends
+qwen3.8-27b: failed: qwen3.8-27b is already being downloaded into ./models, by a server (process 4120), which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends
 ```
+
+The holder writes who it is into the `.lock` file while it holds it, and the
+refused side reads it there; a lock whose holder has written nothing yet names
+either of the two.
 
 The command exits 1, the start is refused, and the Server view's **Download**
 answers `409 download_locked`; try again once the other fetch ends. The
@@ -125,7 +131,8 @@ different entries are fetched at the same time. The lock is the operating
 system's, `flock` on Linux and `LockFileEx` on Windows: it ends with the
 fetch, whether the fetch verified, failed or was cancelled, and with the
 process holding it, killed or crashed, so it is never cleared by hand. The
-empty `.lock` file stays in the folder for the next fetch of the entry.
+`.lock` file stays in the folder, emptied of its note, for the next fetch of
+the entry.
 
 ## Downloading from the Server view: `POST /v1/models/download`
 

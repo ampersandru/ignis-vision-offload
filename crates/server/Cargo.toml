@@ -63,6 +63,13 @@ symphonia = { version = "0.6.1", default-features = false, features = ["wav", "p
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# An entry's lock (GitHub #379, `download/lock.rs`): `LockFileEx` on one byte
+# of the lock file past the holder's note, so a refused fetch reads who holds
+# it; std's `File::try_lock` locks the whole file on Windows. The workspace's
+# version and features, already in the target graph through `ignis-artifact`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
 # The scripted speech executor the integration tests drive (`fake-speech`,
 # below): this crate again, with the feature on, so a shipped build has none.

@@ -146,15 +146,16 @@ missing, or an artifact that does not verify against its provenance sidecar
 (`.graft.json` or `.conversion.json`), refuses the start
 ([Get a model](guides/models.md)).
 
-### `… is already being downloaded into …, by a server or by ignis-server model download`
+### `… is already being downloaded into …, by … (process …)`
 
-Another fetch of the same entry into the same folder holds its lock: a server
-downloading it from its Server view or at its start, or another `ignis-server
-model download`. `model download` then fails that entry and exits 1, and a
-start that would fetch it is refused; nothing was fetched or written. Wait for
-the other fetch to end, or stop it, and run again: a partial download resumes
-from its `.part`. A killed or crashed fetch leaves no lock behind, and the
-empty `<artifact>.lock` file it names stays for the next fetch
+Another fetch of the same entry into the same folder holds its lock, and the
+message names it with its process id: `a server`, downloading it from its
+Server view or at its start (or removing it), or `ignis-server model download`.
+`model download` then fails that entry and exits 1, and a start that would
+fetch it is refused; nothing was fetched or written. Wait for the other fetch
+to end, or stop that process, and run again: a partial download resumes from
+its `.part`. A killed or crashed fetch leaves no lock behind, and the
+`<artifact>.lock` file it names stays for the next fetch
 ([one writer per entry](guides/models.md#one-writer-per-entry)).
 
 ### The Server view's Download is refused, or fails

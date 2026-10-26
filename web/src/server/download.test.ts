@@ -99,7 +99,7 @@ describe("afterDownload", () => {
 
   it("shows why an entry `model download` is fetching is refused, and follows nothing: no row of this server runs", () => {
     // GitHub #379: the server's refusal names the lock's holder; the command's download is not this server's to follow.
-    const message = "qwen3.8-27b is already being downloaded into ./models, by a server or by `ignis-server model download`, which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends";
+    const message = "qwen3.8-27b is already being downloaded into ./models, by `ignis-server model download` (process 4120), which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends";
     const locked = { ok: false as const, status: 409, message, code: "download_locked" };
     expect(afterDownload(locked)).toEqual({ refusal: message, follow: false });
   });

@@ -89,8 +89,9 @@ Free some space there and press it again. `download.free_margin` is
 shown read-only, `Set at start`, in the Download group.
 
 An entry that `ignis-server model download` is fetching into the server's
-`download.path` is refused too, with `409 download_locked`, until the command
-ends: each fetch of an entry holds its lock, the server's and the command's
+`download.path` is refused too, with `409 download_locked` naming the command
+and its process id, until the command ends: each fetch of an entry holds its
+lock, the server's and the command's
 alike, so two never write the same file
 ([one writer per entry](../guides/models.md#one-writer-per-entry)). Its row
 shows no download of the server's, and any other entry downloads meanwhile.

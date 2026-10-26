@@ -37,7 +37,7 @@ mod transfer;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogError, CatalogFile, CatalogLayer, ClassRefusal, BUILT_IN_CATALOG};
 pub use command::{ListFormat, ModelCommand, OnDisk};
-pub use lock::{EntryLock, NotLocked};
+pub use lock::{EntryLock, Holder, NotLocked};
 pub use transfer::{Download, DownloadError, Downloader, Ended, Report};
 
 /// The host whose own credential `HF_TOKEN` is.

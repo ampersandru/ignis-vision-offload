@@ -32,7 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 use super::catalog::{CatalogEntry, CatalogFile};
-use super::lock::{EntryLock, NotLocked};
+use super::lock::{EntryLock, Holder, NotLocked};
 use crate::config::ApiKey;
 
 /// How long the connection alone may take. The transfer as a whole is
@@ -210,12 +210,15 @@ pub struct Downloader {
     /// it to that) — Hugging Face sends a large file's body from its CDN.
     token: Option<ApiKey>,
     report: Report,
+    /// Who it takes an entry's lock as ([`EntryLock`]): what a fetch it
+    /// refuses meanwhile names.
+    holder: Holder,
 }
 
 impl Downloader {
     /// One fetching from `endpoint` (`https://host[/prefix]`, a trailing
     /// slash or none) with `token` ([`super::bearer_token`]'s choice),
-    /// reporting to the log.
+    /// reporting to the log, as a server.
     pub fn new(endpoint: &str, token: Option<ApiKey>) -> Result<Self, DownloadError> {
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -224,12 +227,18 @@ impl Downloader {
             .build()
             .map_err(|err| DownloadError::new(format!("HTTP client: {err}")))?;
         let endpoint = endpoint.trim_end_matches('/').to_owned();
-        Ok(Self { client, endpoint, token, report: Report::Log })
+        Ok(Self { client, endpoint, token, report: Report::Log, holder: Holder::Server })
     }
 
     /// The same, reporting as `report` says.
     pub fn reporting(self, report: Report) -> Self {
         Self { report, ..self }
+    }
+
+    /// The same, holding each entry's lock as `holder`: `model download`
+    /// holds it as the command.
+    pub fn holding_as(self, holder: Holder) -> Self {
+        Self { holder, ..self }
     }
 
     /// The URL a file of `entry` resolves to: Hugging Face's own route,
@@ -253,7 +262,7 @@ impl Downloader {
     /// It holds the entry's lock in `dir` until it returns ([`EntryLock`]),
     /// and is refused before anything is fetched when another fetch holds it.
     pub async fn fetch(&self, entry: &CatalogEntry, dir: &Path) -> Result<PathBuf, DownloadError> {
-        let _lock = EntryLock::take(entry, dir)?;
+        let _lock = EntryLock::take(entry, dir, self.holder)?;
         match self.fetch_until(entry, dir, &mut Cancel::never()).await? {
             Landed::Verified => Ok(entry.artifact_path(dir)),
             // Nothing raises a cancel nobody holds.
@@ -271,7 +280,7 @@ impl Downloader {
     /// before [`Download::ended`] says how, so whoever reads that the download
     /// ended finds the entry free.
     pub fn start(self, entry: CatalogEntry, dir: PathBuf) -> Result<Download, NotLocked> {
-        let lock = EntryLock::take(&entry, &dir)?;
+        let lock = EntryLock::take(&entry, &dir, self.holder)?;
         let (cancel, watched) = watch::channel(false);
         let (end, ended) = watch::channel(None);
         let entry = Arc::new(entry);

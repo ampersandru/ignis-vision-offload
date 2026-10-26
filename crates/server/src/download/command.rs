@@ -198,7 +198,7 @@ pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Rem
                     } else {
                         // Held, or not to be opened: that entry may be being
                         // downloaded, and its file stays.
-                        match super::EntryLock::take(other, dir) {
+                        match super::EntryLock::take(other, dir, super::Holder::Server) {
                             Ok(lock) => (false, Some(lock)),
                             Err(_) => (true, None),
                         }
@@ -375,7 +375,7 @@ pub async fn run(command: ModelCommand, out: &mut dyn Write, progress: Arc<dyn F
         }
         ModelCommand::Download { entries, dir, endpoint, token, free_margin } => {
             let downloader = match Downloader::new(&endpoint, token) {
-                Ok(downloader) => downloader.reporting(Report::Lines(Arc::clone(&progress))),
+                Ok(downloader) => downloader.reporting(Report::Lines(Arc::clone(&progress))).holding_as(super::Holder::Command),
                 Err(err) => {
                     progress(&format!("ignis-server model download: {err}"));
                     return 1;
