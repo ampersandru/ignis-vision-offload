@@ -46,6 +46,11 @@ included, and `download`: `running` while a
 fetches it, `failed` with a `download_reason` once one failed, else `none`.
 A download refused for want of room on the disk (`507 download_no_room`) is
 kept the same way, as the entry's `failed` with its reason.
+An entry that `ignis-server model download` is fetching into `--download-path`
+reads `download: none`, with its `bytes_on_disk` growing: the command's fetch
+is not the server's, and a download of the entry through the API is refused
+with `409 download_locked` until it ends
+([one writer per entry](../guides/models.md#one-writer-per-entry)).
 
 **How the last one ended.** After the first switch or reload since start,
 `GET /v1/models` carries `last_switch: {from, to, outcome, reason?, host_plan?}`:
