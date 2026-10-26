@@ -225,18 +225,34 @@ fn wtype(name: &str, ty: TensorType) -> Result<WType, LoadError> {
     })
 }
 
-struct Loader {
+pub(crate) struct Loader {
     src: Source,
-    repacked: usize,
-    mapped: usize,
+    pub(crate) repacked: usize,
+    pub(crate) mapped: usize,
 }
 
 impl Loader {
-    fn tensor(&self, name: &str) -> Result<&TensorInfo, LoadError> {
+    /// A loader over one GGUF file; with `pinned`, its tensors are read from a private copy, and the
+    /// second value says whether its pages are locked.
+    pub(crate) fn open(path: &Path, pinned: bool) -> Result<(Loader, bool), LoadError> {
+        let gguf = Gguf::open(path).map_err(|e| LoadError(e.to_string()))?;
+        let (src, locked) = Source::new(gguf, pinned)?;
+        Ok((Loader { src, repacked: 0, mapped: 0 }, locked))
+    }
+
+    pub(crate) fn gguf(&self) -> &Gguf {
+        &self.src.gguf
+    }
+
+    pub(crate) fn pinned_bytes(&self) -> usize {
+        self.src.pinned_bytes()
+    }
+
+    pub(crate) fn tensor(&self, name: &str) -> Result<&TensorInfo, LoadError> {
         self.src.gguf.tensor(name).ok_or_else(|| LoadError(format!("{}: no tensor {name}", self.src.gguf.path().display())))
     }
 
-    fn f32s(&mut self, name: &str) -> Result<Vec<f32>, LoadError> {
+    pub(crate) fn f32s(&mut self, name: &str) -> Result<Vec<f32>, LoadError> {
         let t = self.tensor(name)?.clone();
         if t.ty != TensorType::F32 {
             return err(format!("{name}: {} where F32 is expected", t.ty.name()));
@@ -246,7 +262,7 @@ impl Loader {
 
     /// A matmul weight of `n` rows: ggml order puts the row length first, and every further
     /// dimension but the last is folded into it (the convolutions' 3 × 3 × c_in).
-    fn weight(&mut self, name: &str) -> Result<Weight, LoadError> {
+    pub(crate) fn weight(&mut self, name: &str) -> Result<Weight, LoadError> {
         let t = self.tensor(name)?.clone();
         let n = *t.dims.last().unwrap() as usize;
         let k = (t.elements() / n as u64) as usize;
@@ -260,22 +276,22 @@ impl Loader {
         Ok(Weight::new(name, ty, n, k, Blob::borrowed(bytes, self.src.owner())))
     }
 
-    fn linear(&mut self, base: &str) -> Result<Linear, LoadError> {
+    pub(crate) fn linear(&mut self, base: &str) -> Result<Linear, LoadError> {
         let w = self.weight(&format!("{base}.weight"))?;
         let bias = format!("{base}.bias");
         let b = if self.src.gguf.tensor(&bias).is_some() { Some(self.f32s(&bias)?) } else { None };
         Ok(Linear { w, b })
     }
 
-    fn ln(&mut self, base: &str) -> Result<(Vec<f32>, Vec<f32>), LoadError> {
+    pub(crate) fn ln(&mut self, base: &str) -> Result<(Vec<f32>, Vec<f32>), LoadError> {
         Ok((self.f32s(&format!("{base}.weight"))?, self.f32s(&format!("{base}.bias"))?))
     }
 
-    fn kv_u(&self, key: &str) -> Result<usize, LoadError> {
+    pub(crate) fn kv_u(&self, key: &str) -> Result<usize, LoadError> {
         self.src.gguf.get(key).and_then(Value::as_u64).map(|v| v as usize).ok_or_else(|| LoadError(format!("{}: no {key}", self.src.gguf.path().display())))
     }
 
-    fn kv_f(&self, key: &str) -> Result<f64, LoadError> {
+    pub(crate) fn kv_f(&self, key: &str) -> Result<f64, LoadError> {
         self.src.gguf.get(key).and_then(Value::as_f64).ok_or_else(|| LoadError(format!("{}: no {key}", self.src.gguf.path().display())))
     }
 }

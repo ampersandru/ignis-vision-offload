@@ -139,3 +139,15 @@ for WAV, FLAC, MP3, AAC and the Ogg, MP4 and Matroska containers. They are
 licensed under the Mozilla Public License, Version 2.0, whose copyleft binds
 only the files of those crates, which ignis does not change; their source is
 available from crates.io.
+
+The diarizer (crates/speech/src/diarizer/, spec speech/08) ports Nemotron 3
+Diarization's graph and streaming state from the checkpoint's Transformers
+code, src/transformers/models/nemotron3_diarization/ of transformers 5.20.2
+(Copyright 2026 The HuggingFace Inc. team), which restates the streaming
+Sortformer of NVIDIA NeMo (Copyright NVIDIA CORPORATION), restated in Rust
+rather than copied verbatim (ADR 0051). Both are licensed under the Apache
+License, Version 2.0 (see LICENSE). Its weights, nvidia/Nemotron-3-Diarization,
+are not in this repository or its build: they are converted to a GGUF file by
+tools/speech-diarizer/convert.py and distributed beside it under their own
+licence, the OpenMDW License Agreement, version 1.1
+(https://openmdw.ai/license/1-1/).

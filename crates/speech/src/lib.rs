@@ -20,20 +20,23 @@
 //! ```
 //!
 //! Beside it, [`vad`]: `server_vad`'s voice activity detection, which finds the
-//! turns in a Realtime session's audio (spec speech/05).
+//! turns in a Realtime session's audio (spec speech/05); and [`diarizer`]:
+//! Nemotron 3 Diarization, who spoke when in that audio (spec speech/08).
 //!
 //! Provenance: every kernel and op is our own (ADR 0051's first tier). The
 //! GGUF block layouts and their quantization rules are the file format the
 //! kernels read, not copied code; nothing from ggml or llama.cpp is in the
-//! tree or the build. The one exception is [`vad`], `server_vad`'s voice
-//! activity detection: an adapted port of Silero VAD's graph, with its
-//! weights built in (MIT, spec speech/05), its provenance in its header and
-//! in `NOTICE`.
+//! tree or the build. Two modules are adapted ports, each with its provenance
+//! in its header and in `NOTICE`: [`vad`], Silero VAD's graph with its
+//! weights built in (MIT, spec speech/05), and [`diarizer`], Nemotron 3
+//! Diarization's graph and streaming state from the checkpoint's Transformers
+//! code (Apache-2.0, spec speech/08), its weights out of the tree.
 
 #[cfg(target_arch = "x86_64")]
 pub mod avx2;
 pub mod cpu;
 pub mod decoder;
+pub mod diarizer;
 pub mod encoder;
 pub mod executor;
 pub mod gguf;
