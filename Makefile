@@ -271,8 +271,9 @@ doctor: ## Check the toolchain, the artifact and the web deps
 	exit $$missing
 
 .PHONY: setup
-setup: web-install ## Install the Rust target and the web dependencies
+setup: web-install ## Install the Rust target and the web dependencies, and turn on the commit-message hook
 	rustup target add $(TARGET_TRIPLE)
+	git config core.hooksPath .githooks
 
 # ---------------------------------------------------------------------------
 ##@ Build
@@ -580,6 +581,12 @@ version-selftest: ## Test the version tool itself -- both implementations, compa
 .PHONY: changelog-selftest
 changelog-selftest: ## Test the changelog draft -- a throwaway repo, a stubbed gh
 	@bash mk/changelog-selftest.sh
+
+# The hook reads only the message file it is handed, so its test writes
+# nothing outside a temp directory either.
+.PHONY: commit-msg-selftest
+commit-msg-selftest: ## Test the commit-message hook, .githooks/commit-msg
+	@bash mk/commit-msg-selftest.sh
 
 # ---------------------------------------------------------------------------
 ##@ GPU (one run on the card at a time -- docs/agents/testing.md)

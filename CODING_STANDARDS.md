@@ -53,6 +53,15 @@ changed beyond a recorded patch, leaves the vendored tree and
 makes no parity claim (ADR 0031, ADR 0051). A comparison with the reference
 says whether it crosses an Ignis-patched behaviour.
 
+## A test waits for the whole end state
+
+A test that waits for asynchronous work (a background task, a download, a
+switch) polls until every field it then asserts holds, not until the first
+sign of the end: fields one reading of the state reports together are often
+published at different moments, and a wait on one of them races the others.
+The download route tests waited for `on_disk` complete, then asserted
+`download` none, and failed about once in a hundred runs (7ac1011f).
+
 ## After a merge or a rebase
 
 The checks are `make ci`, whose `check` step compiles the code behind the
@@ -88,7 +97,8 @@ The smell baseline does not apply to:
   reads the code that produces them.
 
 Tooling already enforces the kernel's vendored tree against its manifest and
-the generated pages against the code (both in `cargo test`), and the guide's
-links (`make docs-build`). The guardrails are `make ci`, run by hand before a
+the generated pages against the code (both in `cargo test`), the guide's
+links (`make docs-build`), and the commit messages' conventions
+(`.githooks/commit-msg`). The guardrails are `make ci`, run by hand before a
 merge, and the release workflow's `cargo test` on Linux and Windows on every
 code push to `main`.

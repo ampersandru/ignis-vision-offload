@@ -28,12 +28,24 @@ run, a gate leg) itself, one at a time, after `make gpu-status` shows that
 nothing else holds the card, another worktree's run included
 (`docs/agents/testing.md`, the GPU test profile).
 
+The local checks run on one host, so code behind the other host's `cfg`
+compiles nowhere before `main`. Before the owner merges the integration
+branch, the coordinator pushes its tip as `ci/<spec>`, with the owner's OK
+since it is a push: the release workflow runs its Linux and Windows test jobs
+on `ci/**` without touching `main`. The coordinator reports both results with
+the branch and deletes `ci/<spec>` once the owner has merged.
+
 ## The end of a build
 
 There is no pull request. Each implementer's branch merges into the
 integration branch, the coordinator reports that branch, and the owner merges
 it into `main` locally; nothing is pushed until the owner says so. Tickets
 close as `docs/agents/issue-tracker.md` says under "Closing work".
+
+An implementer merges the integration branch into its own before it reports,
+with a message its brief gives it, such as `Merge 374-integration into the T2
+branch before the report (#377)`: the commit-message hook refuses git's
+default one.
 
 ## Cleanup
 
