@@ -91,6 +91,33 @@ pub fn layers(size: &str) -> Layers {
     Layers { meta, tensors }
 }
 
+/// A record of `tools/speech-diarizer/record.py`: `<base>.{json,bin}`, named little-endian arrays
+/// listed in the `.json`'s `tensors` with their dtype, shape and offset.
+pub struct Blob {
+    pub meta: Value,
+    pub f32: HashMap<String, (Vec<usize>, Vec<f32>)>,
+    pub i32: HashMap<String, (Vec<usize>, Vec<i32>)>,
+}
+
+pub fn blob(base: &Path) -> Blob {
+    let meta = json(&base.with_extension("json"));
+    let raw = std::fs::read(base.with_extension("bin")).unwrap_or_else(|e| panic!("{}: {e}", base.display()));
+    let (mut f32s, mut i32s) = (HashMap::new(), HashMap::new());
+    for e in meta["tensors"].as_array().unwrap() {
+        let name = e["name"].as_str().unwrap().to_owned();
+        let shape: Vec<usize> = e["shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+        let off = e["offset"].as_u64().unwrap() as usize;
+        let n: usize = shape.iter().product();
+        let words = raw[off..off + 4 * n].chunks_exact(4).map(|b| <[u8; 4]>::try_from(b).unwrap());
+        match e["dtype"].as_str().unwrap() {
+            "f32" => drop(f32s.insert(name, (shape, words.map(f32::from_le_bytes).collect()))),
+            "i32" => drop(i32s.insert(name, (shape, words.map(i32::from_le_bytes).collect()))),
+            other => panic!("{name}: dtype {other}"),
+        }
+    }
+    Blob { meta, f32: f32s, i32: i32s }
+}
+
 pub fn ids(v: &Value) -> Vec<u32> {
     v.as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u32).collect()
 }

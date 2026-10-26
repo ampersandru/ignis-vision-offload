@@ -19,6 +19,7 @@
 
 pub mod audio;
 pub mod cpu;
+pub mod diarizing;
 pub mod executor;
 pub mod languages;
 pub mod realtime;
@@ -29,10 +30,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::config::schema::SpeechGroup;
+use crate::config::schema::{DiarizerGroup, SpeechGroup};
 use crate::download::Catalog;
-use executor::{LoadSettings, NoExecutor, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession};
-use worker::{Full, Gauges, Job, Worker};
+use executor::{DiarizerExecutor, LoadSettings, NoDiarizer, NoExecutor, SessionOpen, SpeechExecutor, SpeechFiles, SpeechSession};
+use worker::{DiarizerWorker, Full, Gauges, Job, Worker};
 
 /// The `Retry-After` of a refused Realtime session: room frees when a person
 /// ends a dictation, which no clip length estimates, so the shortest wait.
@@ -62,15 +63,32 @@ impl Availability {
     }
 }
 
+/// What `GET /v1/models` says of the diarizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiarizerAvailability {
+    /// The id `diarizer.model` names, when it names one.
+    pub id: Option<String>,
+    /// Whether the weights are in memory right now.
+    pub loaded: bool,
+    /// Why it cannot serve; `None` when it can.
+    pub reason: Option<String>,
+}
+
 /// The speech model's slot.
 pub struct Speech {
     executor: Arc<dyn SpeechExecutor>,
+    /// The diarizer beside it (spec speech/08), its units on a thread of its
+    /// own.
+    diarizer: Arc<dyn DiarizerExecutor>,
     models: Option<SpeechModels>,
     gauges: Arc<Gauges>,
     /// Started by the first request: a server that is never asked for a
     /// transcription never has the thread.
     worker: OnceLock<Worker>,
-    /// The next Realtime session's key: its lane on the worker.
+    /// The diarizer's thread, started by the first session that asks for
+    /// speakers: a server never asked for them never has it.
+    diarizer_worker: OnceLock<DiarizerWorker>,
+    /// The next Realtime session's key: its lane on each worker.
     next_session: AtomicU64,
     /// `speech.idle_unload` in seconds as the live configuration last said:
     /// the worker's idle clock reads it ([`Speech::live_changed`]).
@@ -88,9 +106,11 @@ impl Speech {
     pub fn new(executor: Arc<dyn SpeechExecutor>, models: Option<SpeechModels>) -> Self {
         Self {
             executor,
+            diarizer: Arc::new(NoDiarizer),
             models,
             gauges: Arc::default(),
             worker: OnceLock::new(),
+            diarizer_worker: OnceLock::new(),
             next_session: AtomicU64::new(0),
             idle_unload_secs: Arc::new(AtomicU64::new(u64::from(SpeechGroup::default().idle_unload))),
         }
@@ -110,6 +130,30 @@ impl Speech {
         &self.executor
     }
 
+    /// Give speakers with `diarizer` (spec speech/08). A slot built without
+    /// one has a diarizer that is unavailable, saying so.
+    pub fn with_diarizer(mut self, diarizer: Arc<dyn DiarizerExecutor>) -> Self {
+        self.diarizer = diarizer;
+        self
+    }
+
+    pub fn diarizer(&self) -> &Arc<dyn DiarizerExecutor> {
+        &self.diarizer
+    }
+
+    /// The live `diarizer.*` settings changed (the server's start, a `PATCH
+    /// /v1/config`, a reload): the diarizer takes `diarizer.model` for the
+    /// next stream it opens.
+    pub fn diarizer_changed(&self, group: &DiarizerGroup) {
+        self.diarizer.follow(group);
+    }
+
+    /// What `GET /v1/models` says of the diarizer: its id, whether its
+    /// weights are in memory, and why it cannot serve (spec speech/08, Q118).
+    pub fn diarizer_availability(&self) -> DiarizerAvailability {
+        DiarizerAvailability { id: self.diarizer.id(), loaded: self.diarizer.is_loaded(), reason: self.diarizer.availability().err() }
+    }
+
     /// The catalog the speech model is looked up in, when the server has one.
     pub fn catalog(&self) -> Option<&Catalog> {
         self.models.as_ref().map(|models| &*models.catalog)
@@ -121,13 +165,19 @@ impl Speech {
         self.executor.loaded_files()
     }
 
+    /// The GGUF the diarizer has loaded now, `None` while none is: unloaded
+    /// with the speech model, whatever `diarizer.model` names since.
+    pub fn diarizer_loaded(&self) -> Option<PathBuf> {
+        self.diarizer.loaded_weights()
+    }
+
     /// Publish the worker's gauges to `metrics` (`Server::with_metrics`).
     pub fn attach_metrics(&self, metrics: Arc<crate::metrics::Metrics>) {
         self.gauges.attach(metrics);
     }
 
     fn worker(&self) -> &Worker {
-        self.worker.get_or_init(|| Worker::start(Arc::clone(&self.executor), Arc::clone(&self.gauges), Arc::clone(&self.idle_unload_secs)))
+        self.worker.get_or_init(|| Worker::start_with(Arc::clone(&self.executor), Arc::clone(&self.diarizer), Arc::clone(&self.gauges), Arc::clone(&self.idle_unload_secs)))
     }
 
     /// The id `speech.model` names: `auto` is the 1.7B Q4_K_M entry, `off`
@@ -228,6 +278,14 @@ impl Speech {
     pub fn submit_interactive(&self, session: &SessionGuard, task: worker::Task) {
         self.worker().submit_interactive(session.key, task);
     }
+
+    /// Queue a unit of an open Realtime session's speakers (spec speech/08)
+    /// on the diarizer's own thread, in turn with the other sessions': it
+    /// never waits for a unit of the speech model's, nor holds one back.
+    /// Starts the thread.
+    pub fn submit_diarizer(&self, session: &SessionGuard, task: worker::Task) {
+        self.diarizer_worker.get_or_init(DiarizerWorker::start).submit(session.key, task);
+    }
 }
 
 /// `speech.model` and `speech.compat_names` against `catalog`, the operator's
@@ -246,6 +304,20 @@ pub fn check_names(catalog: &Catalog, group: &SpeechGroup) -> Result<(), String>
     for name in &group.compat_names {
         if catalog.entries().iter().any(|entry| entry.id.eq_ignore_ascii_case(name) || entry.aliases.iter().any(|alias| alias.eq_ignore_ascii_case(name))) {
             return Err(format!("`speech.compat_names` names `{name}`, which is a catalog model's id: a compat name is for a name no served model has"));
+        }
+    }
+    Ok(())
+}
+
+/// `diarizer.model` against `catalog`, the operator's file among it (spec
+/// speech/08, Q118): an id naming an entry that is not a diarizer is refused,
+/// as `check_names` refuses a wrong-kind `speech.model`. Checked at start,
+/// where the catalog is read, and by a `PATCH /v1/config` naming the field;
+/// the config's own check covers the built-in entries and the model families.
+pub fn check_diarizer_name(catalog: &Catalog, group: &DiarizerGroup) -> Result<(), String> {
+    if let Some(id) = diarizing::served_id(catalog, &group.model) {
+        if let Some(entry) = catalog.entries().iter().find(|entry| entry.id == id).filter(|entry| !entry.is_diarizer()) {
+            return Err(format!("`diarizer.model` names `{}`, which is not a diarizer: name a diarizer entry of the catalog, `auto` or `off`", entry.id));
         }
     }
     Ok(())
@@ -302,7 +374,7 @@ pub(crate) fn open_loaded(executor: &dyn SpeechExecutor, files: &SpeechFiles, lo
 }
 
 /// An open Realtime session's place among `speech.max_sessions`, and its
-/// lane on the worker.
+/// lane on each worker.
 pub struct SessionGuard {
     speech: Arc<Speech>,
     key: u64,
@@ -429,6 +501,21 @@ mod tests {
         assert!(refused.contains("speech.model") && refused.contains("not a speech model"), "{refused}");
         assert!(check_names(&models.catalog, &group("qwen3-asr-0.6b")).is_ok());
         assert!(check_names(&models.catalog, &group("auto")).is_ok());
+    }
+
+    /// Spec speech/08 (AC 14): `diarizer.model` naming a catalog entry that is
+    /// not a diarizer is refused, the operator's entries among them.
+    #[test]
+    fn a_diarizer_model_of_another_kind_is_refused_against_the_catalog() {
+        let models = fixture_models(&tempfile_dir("diarizer-kind"));
+        let named = |model: &str| DiarizerGroup { model: model.to_owned(), ..DiarizerGroup::default() };
+        for id in ["qwen3-asr-0.6b", "qwen3-asr-1.7b"] {
+            let refused = check_diarizer_name(&models.catalog, &named(id)).unwrap_err();
+            assert!(refused.contains("diarizer.model") && refused.contains(id) && refused.contains("not a diarizer"), "{refused}");
+        }
+        for id in ["auto", "off", "not-in-the-catalog"] {
+            assert!(check_diarizer_name(&models.catalog, &named(id)).is_ok(), "{id}");
+        }
     }
 
     /// The compat names against the catalog the server runs with, an

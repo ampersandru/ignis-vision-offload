@@ -108,7 +108,9 @@ function configuration(context: string, silenceMs: number | null) {
           turn_detection: silenceMs === null ? null : { type: "server_vad", silence_duration_ms: silenceMs },
         },
       },
-      ignis: { provisional_tail: true },
+      // The length guard off (spec speech/08): the dictation's first server commit ends it (Q80),
+      // so a long one with short pauses must not be cut; `speech.max_clip_seconds` still bounds it.
+      ignis: { provisional_tail: true, max_utterance_seconds: 0 },
     },
   };
 }

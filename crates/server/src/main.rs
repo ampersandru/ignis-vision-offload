@@ -301,6 +301,11 @@ async fn main() {
         tracing::error!(name: "ignis.config.speech_invalid", error = %why, "refusing to start");
         exit_after_flush(&logging_handle, 1);
     }
+    // Spec speech/08: `diarizer.model` against it too.
+    if let Err(why) = ignis_server::speech::check_diarizer_name(&catalog, &start_options.settings().diarizer) {
+        tracing::error!(name: "ignis.config.diarizer_invalid", error = %why, "refusing to start");
+        exit_after_flush(&logging_handle, 1);
+    }
 
     // ADR 0064 (spec 27b-16gb/04 §6): with no artifact named, the model is
     // the catalog's, fitted to the card's class before it is looked for or
@@ -436,7 +441,8 @@ async fn main() {
         .with_idle_unload(std::time::Duration::from_secs(u64::from(idle_unload_secs)))
         .with_socket_idle_close(std::time::Duration::from_secs(u64::from(socket_idle_close_secs)))
         .with_image(running.settings().image.clone())
-        .with_speech_group(running.settings().speech.clone());
+        .with_speech_group(running.settings().speech.clone())
+        .with_diarizer_group(running.settings().diarizer.clone());
     // Spec config-v2/02: the running configuration, shown and changed over
     // `GET`/`PATCH /v1/config` and written back to the config file in use;
     // the model loader shares it, so a later switch loads with a live change
@@ -467,10 +473,13 @@ async fn main() {
     // files are looked for in the same catalog and directory; its executor is
     // `ignis-speech` on the CPU (spec speech/01), unavailable with its reason
     // on a CPU without AVX2.
-    let speech = ignis_server::speech::Speech::new(
-        Arc::new(ignis_server::speech::cpu::CpuExecutor::new()),
-        Some(ignis_server::speech::SpeechModels { catalog: Arc::clone(&catalog), dir: model_download_path.clone() }),
-    );
+    // The diarizer (spec speech/08) is the catalog's too, computed on a pool
+    // of its own with the same executor's ISA: loaded by the first session
+    // that asks for speakers, unloaded with the speech model.
+    let speech_cpu = Arc::new(ignis_server::speech::cpu::CpuExecutor::new());
+    let speech_models = ignis_server::speech::SpeechModels { catalog: Arc::clone(&catalog), dir: model_download_path.clone() };
+    let speech = ignis_server::speech::Speech::new(speech_cpu.clone(), Some(speech_models.clone()))
+        .with_diarizer(Arc::new(ignis_server::speech::diarizing::CatalogDiarizer::new(speech_models, speech_cpu)));
     // Spec model-download/02 §Known models: a catalog entry whose artifact is
     // under `--download-path` when a request names it is switchable too, so
     // a `model download` into this directory needs no restart.

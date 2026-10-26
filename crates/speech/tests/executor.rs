@@ -359,6 +359,65 @@ fn stable_text_never_outgrows_the_text_room() {
     assert!(t.text.starts_with(&p.stable));
 }
 
+/// Spec speech/08: a session cut at a sample is the session pushed only the audio before it, the
+/// same way: a refresh and the transcript are that session's. The windows past the cut leave the
+/// audio prefix and the one holding it is encoded again; the stable text, which may hold words
+/// past the cut, goes. A session that keeps its audio is cut back over whole windows; one that
+/// does not reaches only the audio it still keeps, and says so past it.
+#[test]
+fn a_cut_session_is_the_session_of_the_audio_before_the_cut() {
+    // The pair whose decode runs to the KV cache's end: how far it gets reads the audio prefix's
+    // length, and with no rollback all of it is stable.
+    let files = synthetic::endless_pair("cut");
+    let e = exec(&files, Settings { rollback_tokens: 0, unfixed_partials: 0, max_clip_seconds: 40, ..settings() });
+    let audio = synthetic::audio(30.0);
+    let session = |upto: usize, keep: bool| {
+        let mut s = e.open("", None).unwrap();
+        if keep {
+            s.keep_audio();
+        }
+        for c in audio[..upto].chunks(1600) {
+            s.push(c).unwrap();
+        }
+        s
+    };
+    // 12.3 s is inside the second window, two windows behind the three 30 s encoded; 28 s is
+    // past them, in the audio not yet a window.
+    // A commit stepped to its end, and its steps: a stable text left behind would be prefilled,
+    // a window of tokens a step, where the session of the audio before the cut decodes.
+    let stepped = |s: ignis_speech::Session| {
+        let mut commit = s.into_commit();
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            if let Some(t) = commit.step().unwrap() {
+                return (t, steps);
+            }
+        }
+    };
+    let refreshed_and_cut = |at: usize, keep: bool| {
+        let mut s = session(audio.len(), keep);
+        s.partial().unwrap();
+        assert!(s.stats().stable_tokens > 104, "a refresh fixed more than a window of tokens");
+        s.cut(at).unwrap();
+        assert_eq!((s.seconds(), s.stats().stable_tokens), (at as f64 / 16_000.0, 0));
+        s
+    };
+    for (at, keep) in [(196_800, true), (448_000, false), (448_000, true)] {
+        assert_eq!(stepped(refreshed_and_cut(at, keep)), stepped(session(at, keep)), "a cut at {at}");
+        let (mut cut, mut reference) = (refreshed_and_cut(at, keep), session(at, keep));
+        assert_eq!(cut.partial().unwrap(), reference.partial().unwrap(), "a refresh after a cut at {at}");
+        assert_eq!(cut.stats().stable_tokens, reference.stats().stable_tokens, "a refresh after a cut at {at}");
+    }
+    let mut unkept = session(audio.len(), false);
+    assert!(matches!(unkept.cut(196_800), Err(ignis_speech::SessionError::CutTooFar { at: 196_800 })));
+    // A cut at the end drops the stable text only.
+    let mut whole = session(audio.len(), false);
+    whole.partial().unwrap();
+    whole.cut(audio.len()).unwrap();
+    assert_eq!(stepped(whole), stepped(session(audio.len(), false)));
+}
+
 /// Acceptance 16: no language is forced unless asked, and a forced one is the official
 /// assistant prefill, `language <Name><asr_text>` after the assistant turn's head; the model's
 /// output is then all text, labelled with the forced language.
@@ -393,4 +452,16 @@ fn threads_resolve_auto_and_counts() {
     assert_eq!(Threads::Auto.resolve(), ((usable - 1).max(1), "auto"));
     assert_eq!(Threads::Count(3).resolve(), (3, "configured"));
     assert_eq!(Threads::Count(0).resolve(), (1, "configured"));
+}
+
+/// Spec speech/08: `diarizer.threads`' `auto` is a third of the physical cores, at least 2 (3 on
+/// the i9's 10, where conv01 ran 2.4, 3.3 and 3.5 times faster than real time on 2, 3 and 4), and
+/// a count is used as given.
+#[test]
+fn diarizer_threads_resolve_auto_and_counts() {
+    assert_eq!([2, 4, 6, 10, 16].map(Threads::diarizer_auto), [2, 2, 2, 3, 5]);
+    let usable = num_cpus::get_physical().min(num_cpus::get());
+    assert_eq!(Threads::Auto.resolve_diarizer(), (Threads::diarizer_auto(usable), "auto"));
+    assert_eq!(Threads::Count(4).resolve_diarizer(), (4, "configured"));
+    assert_eq!(Threads::Count(0).resolve_diarizer(), (1, "configured"));
 }

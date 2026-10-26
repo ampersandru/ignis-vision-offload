@@ -2055,6 +2055,27 @@ fn a_patch_wins_over_the_command_line_and_is_validated_whole() {
     assert!(err.contains("spec.draft_rows") && err.contains("99"), "{err}");
 }
 
+/// Spec speech/08: a live patch of the diarizer's Sortformer fields is taken
+/// by a server running any active model, as a start takes them, and stays at
+/// its plain key: the patch is not homed into a family's section, so the
+/// running configuration and the file written from it agree.
+#[test]
+fn a_patch_of_the_diarizers_fields_is_taken_by_every_active_model_at_its_plain_key() {
+    let patch = patch_of(&[("diarizer", "weak_boost_rate", "2"), ("diarizer", "live_chunk_frames", "30")]);
+    for meta in [schema::field("diarizer", "weak_boost_rate").unwrap(), schema::field("diarizer", "live_chunk_frames").unwrap()] {
+        assert!(patch.homed().get(meta, None).is_some(), "{} stays at its group key", meta.file_key());
+    }
+    for family in [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21] {
+        let running = config(&["--profile", "none"]).for_family(family).unwrap();
+        let patched = running.with_patch(&patch).unwrap_or_else(|e| panic!("{family:?}: {e}"));
+        let diarizer = &patched.settings().diarizer;
+        assert_eq!((diarizer.weak_boost_rate, diarizer.live_chunk_frames), (Some(2_000), 30), "{family:?}");
+        assert_eq!(crate::Live::of(&patched).diarizer.weak_boost_rate, Some(2_000));
+        let document = file::effective_document(&patched);
+        assert_eq!((document["diarizer"]["weak_boost_rate"].clone(), document["diarizer"]["live_chunk_frames"].clone()), (serde_json::json!(2.0), serde_json::json!(30)), "{family:?}");
+    }
+}
+
 /// One patch entry, as `PATCH /v1/config` would give it.
 fn patch_of(entries: &[(&str, &str, &str)]) -> source::Layer {
     let mut patch = source::Layer::default();
@@ -2749,6 +2770,9 @@ fn every_speech_field_resolves_from_flag_env_and_file_by_precedence() {
         ("vad_leading_silence_ms", "250", "750", "1500"),
         ("loan_grace_seconds", "10", "20", "40"),
         ("loan_wait_seconds", "1", "2", "9"),
+        ("max_utterance_seconds", "0", "60", "240"),
+        ("utterance_cut_search_ms", "500", "1000", "4000"),
+        ("max_queued_audio_seconds", "61", "90", "300"),
     ];
     assert_eq!(cases.len(), schema::SpeechGroup::FIELDS.len(), "every speech field has a case");
     for (name, file, env, flag) in cases {
@@ -2805,6 +2829,9 @@ fn a_speech_field_past_its_bounds_is_refused_naming_it() {
         ("unfixed_partials", 0, 16),
         ("max_sessions", 1, 64),
         ("max_queue", 0, 64),
+        ("max_utterance_seconds", 0, 1200),
+        ("utterance_cut_search_ms", 0, 60_000),
+        ("max_queued_audio_seconds", 1, 3600),
     ] {
         let flag = schema::field("speech", name).unwrap().flag();
         for taken in [low, high] {
@@ -2823,6 +2850,117 @@ fn a_speech_field_past_its_bounds_is_refused_naming_it() {
     assert!(err.contains("--speech-compat-names") && err.contains("whitespace"), "{err}");
 }
 
+/// Spec speech/08: the length guard's defaults (120 s, then 10 s of search,
+/// As built) and the queue limit's (120 s, above spec 07's client pace of 60).
+#[test]
+fn the_length_guard_and_the_queue_limit_default_to_the_specs() {
+    let speech = config(&[]).settings().speech.clone();
+    assert_eq!((speech.max_utterance_seconds, speech.utterance_cut_search_ms, speech.max_queued_audio_seconds), (120, 10_000, 120));
+}
+
+// ── the diarizer's group (spec speech/08, its configuration table) ──
+
+/// Every `diarizer.*` field resolves from its flag, its env var and the
+/// config file with config v2's precedence, and the server's live knobs
+/// carry it.
+#[test]
+fn every_diarizer_field_resolves_from_flag_env_and_file_by_precedence() {
+    // Per field: the file's value, the env var's, the flag's.
+    let cases = [
+        ("model", "my-diarizer", "off", "auto"),
+        ("threads", "2", "4", "auto"),
+        ("min_speaker_seconds", "0", "2.5", "14.5"),
+        ("live_speaker_cache_frames", "188", "200", "300"),
+        ("live_fifo_frames", "188", "100", "40"),
+        ("live_chunk_frames", "6", "12", "30"),
+        ("live_right_context_frames", "0", "7", "13"),
+        ("live_update_period_frames", "144", "100", "200"),
+        ("file_speaker_cache_frames", "188", "200", "300"),
+        ("file_fifo_frames", "0", "20", "80"),
+        ("file_chunk_frames", "100", "200", "400"),
+        ("file_right_context_frames", "0", "20", "80"),
+        ("file_update_period_frames", "100", "200", "400"),
+        ("prediction_score_threshold", "0.1", "0.3", "auto"),
+        ("latest_frames_score_boost", "0", "0.1", "0.2"),
+        ("strong_boost_rate", "0.5", "auto", "1"),
+        ("weak_boost_rate", "1", "2", "3.5"),
+        ("min_positive_scores_rate", "0.25", "0.75", "1"),
+        ("speaker_cache_silence_frames_per_speaker", "0", "2", "auto"),
+    ];
+    assert_eq!(cases.len(), schema::DiarizerGroup::FIELDS.len(), "every diarizer field has a case");
+    for (name, file, env, flag) in cases {
+        let meta = schema::field("diarizer", name).unwrap();
+        let canonical = |raw: &str| (meta.canonical)(raw).unwrap();
+        let resolved = |config: &Config| config.settings().render()["diarizer"][name].clone();
+        let files = MemFiles::with(&[("c.yaml", &format!("diarizer:\n  {name}: \"{file}\"\n"))]);
+        let env_var = |key: &str| (key == meta.env()).then(|| env.to_owned());
+
+        assert_eq!(resolved(&config(&[])), (meta.default)(), "{name}: the default");
+        let from_file = with_files(&["--config", "c.yaml"], no_env, &files).unwrap();
+        assert_eq!(resolved(&from_file), canonical(file), "{name}: the file over the default");
+        let from_env = with_files(&["--config", "c.yaml"], env_var, &files).unwrap();
+        assert_eq!(resolved(&from_env), canonical(env), "{name}: the env var over the file");
+        let from_flag = with_files(&["--config", "c.yaml", &meta.flag(), flag], env_var, &files).unwrap();
+        assert_eq!(resolved(&from_flag), canonical(flag), "{name}: the flag over the env var");
+    }
+    let diarizer = crate::Live::of(&config(&["--diarizer-min-speaker-seconds", "2.5", "--diarizer-strong-boost-rate", "0.5"])).diarizer;
+    assert_eq!((diarizer.min_speaker_seconds, diarizer.strong_boost_rate), (2_500, Some(500)));
+    let shown = config(&[]).settings().render();
+    assert_eq!((shown["diarizer"]["min_speaker_seconds"].clone(), shown["diarizer"]["weak_boost_rate"].clone()), (serde_json::json!(2.0), serde_json::json!("auto")));
+}
+
+/// Spec speech/08, AC 14: an override of a speaker cache constant is
+/// bounded, and a value past its bounds is refused naming the spelling and
+/// the bound in the constant's own units; so is a geometry past its own.
+#[test]
+fn a_diarizer_field_past_its_bounds_is_refused_naming_it() {
+    for (name, value, bound) in [
+        ("prediction_score_threshold", "0", "0.001..=1"),
+        ("prediction_score_threshold", "1.5", "0.001..=1"),
+        ("weak_boost_rate", "4.5", "0..=4"),
+        ("min_positive_scores_rate", "1.25", "0..=1"),
+        ("latest_frames_score_boost", "11", "0..=10"),
+        ("min_speaker_seconds", "61", "0..=60"),
+        ("speaker_cache_silence_frames_per_speaker", "126", "0..=125"),
+        ("live_chunk_frames", "0", "1..=1000"),
+        ("file_speaker_cache_frames", "4", "8..=1000"),
+    ] {
+        let flag = schema::field("diarizer", name).unwrap().flag();
+        let err = refused(&[&flag, value]);
+        assert!(err.contains(&flag) && err.contains(bound), "{name} {value}: {err}");
+    }
+    let err = refused(&["--diarizer-weak-boost-rate", "strong"]);
+    assert!(err.contains("--diarizer-weak-boost-rate") && err.contains("auto"), "{err}");
+    let err = refused(&["--diarizer-threads", "0"]);
+    assert!(err.contains("--diarizer-threads") && err.contains("auto"), "{err}");
+}
+
+/// Spec speech/08: the Sortformer fields are Nemotron 3 Diarization's alone,
+/// and the families a start configures are the active model's, which take
+/// them as they take `speech.*` -- every text family and the image model
+/// start with one set, and the written configuration keeps it under its
+/// plain key, never in a family's section, where no family takes it.
+#[test]
+fn a_start_of_any_active_model_takes_the_diarizers_fields_under_their_plain_keys() {
+    let started = config(&["--profile", "none", "--diarizer-live-chunk-frames", "30", "--diarizer-weak-boost-rate", "2"]);
+    for family in ModelFamily::ALL.into_iter().filter(|family| family.kind() != ignis_core::compute::ModelKind::Diarizer) {
+        let fitted = started.for_family(family).unwrap_or_else(|e| panic!("{family:?}: {e}"));
+        assert_eq!((fitted.settings().diarizer.live_chunk_frames, fitted.settings().diarizer.weak_boost_rate), (30, Some(2_000)), "{family:?}");
+    }
+    let (switched, dropped) = fit_to_family(&started.for_family(ModelFamily::Qwen38_27b).unwrap(), ModelFamily::FlashNext).unwrap();
+    assert!(dropped.is_empty(), "a switch drops none: {dropped:?}");
+    assert_eq!(switched.settings().diarizer.live_chunk_frames, 30);
+    let document = file::effective_document(&started);
+    assert_eq!(document["diarizer"]["live_chunk_frames"], 30, "{document}");
+    assert_eq!(document["diarizer"]["weak_boost_rate"], 2.0);
+    for family in field::FAMILIES {
+        assert!(document["diarizer"].get(field::scope(family)).is_none(), "{document}");
+    }
+    let files = MemFiles::with(&[("c.yaml", "diarizer:\n  qwen38:\n    live_chunk_frames: 30\n")]);
+    let err = with_files(&["--config", "c.yaml"], no_env, &files).expect_err("no family section holds it").0;
+    assert!(err.contains("diarizer.live_chunk_frames"), "{err}");
+}
+
 /// `speech.model` naming a text or image model is refused (spec speech/02:
 /// an id is that catalog entry, a speech one): a built-in entry of another
 /// kind, or a model family's id. A speech entry, `auto`, `off` and an id the
@@ -2835,6 +2973,20 @@ fn a_speech_model_of_another_kind_is_refused() {
     }
     for id in ["qwen3-asr-0.6b", "auto", "off", "an-asr-of-my-own"] {
         assert!(resolve(&args(&["--speech-model", id]), no_env).is_ok(), "{id}");
+    }
+}
+
+/// Spec speech/08 (AC 14): `diarizer.model` naming a text, image or speech
+/// model is refused, a built-in entry of another kind or a model family's
+/// id; `auto`, `off` and an id the catalog lacks are taken.
+#[test]
+fn a_diarizer_model_of_another_kind_is_refused() {
+    for id in ["qwen3.8-27b", "ignis-image-2.1-turbo", "qwen3-asr-1.7b"] {
+        let err = refused(&["--diarizer-model", id]);
+        assert!(err.contains("--diarizer-model") && err.contains(id) && err.contains("not a diarizer"), "{err}");
+    }
+    for id in ["auto", "off", "nemotron-3-diarization", "a-diarizer-of-my-own"] {
+        assert!(resolve(&args(&["--diarizer-model", id]), no_env).is_ok(), "{id}");
     }
 }
 

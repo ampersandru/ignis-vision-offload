@@ -700,6 +700,8 @@ fn the_document_describes_the_speech_model_and_its_route() {
     assert!(post["requestBody"]["content"]["multipart/form-data"].is_object());
     let models = document["paths"]["/v1/models"]["get"]["description"].as_str().unwrap();
     assert!(models.contains("kind: \"speech\"") && models.contains("top-level `speech` object"), "{models}");
+    // Spec speech/08: the diarizer's member of that object.
+    assert!(models.contains("`diarizer` member") && models.contains("`loaded`") && models.contains("model download <id>"), "{models}");
 }
 
 /// Spec speech/03 AC 16: the Realtime transcription session is documented

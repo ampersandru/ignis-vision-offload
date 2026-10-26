@@ -18,7 +18,16 @@ a field that needs it.
 
 The headline is the loaded model's id with its **State** (`Serving`,
 `Switching`, `Loading`, `Unloaded`, `Not serving`), its **Context** in tokens
-and its **Family**. Under it, one row per model the server's catalog knows
+and its **Family**. Beside them, the models loaded beside it rather than
+switched to: **Speech**, the
+[speech model](../api/realtime-transcription.md)'s id, and **Diarizer**, the
+model that gives a live transcript its
+[speakers](../api/realtime-transcription.md#speakers), with whether it is
+**Loaded** (the first session that asks for speakers loads it, the speech
+model's idle unload frees it) or **Not loaded**. Either one that cannot serve
+reads **Unavailable**, with the server's reason under the figures: turned off,
+or its files missing, with the `ignis-server model download` command that
+fetches them. Under it, one row per model the server's catalog knows
 (`GET /v1/models/catalog`): where the entry comes from (the built-in catalog,
 an [operator catalog](../guides/operator-catalog.md), or a known model), how
 much of it is on disk, and its action:

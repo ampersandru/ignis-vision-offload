@@ -140,6 +140,10 @@ pub const DEFAULT_SPEECH_MODEL: &str = "auto";
 /// The catalog id `speech.model: auto` resolves to (spec speech/02, Q49).
 pub const AUTO_SPEECH_MODEL_ID: &str = "qwen3-asr-1.7b";
 
+/// `diarizer.model`'s default (spec speech/08, Q118): the catalog's diarizer
+/// entry.
+pub const DEFAULT_DIARIZER_MODEL: &str = "auto";
+
 /// `speech.compat_names`' default (Q24): the names OpenAI clients send for
 /// a transcription, which the speech model answers to.
 pub const DEFAULT_SPEECH_COMPAT_NAMES: [&str; 5] =
@@ -1035,7 +1039,7 @@ fn refuse_for_family(patch: &source::Layer, family: ModelFamily) -> Result<(), C
         }
         let raw = candidate.raw.trim();
         let value = (meta.canonical)(raw).map_err(|reason| ConfigError(format!("`{}` {reason}", candidate.spelling)))?;
-        if !meta.applies.to(family) && value != (meta.default)() {
+        if meta.applies.refused_by(family) && value != (meta.default)() {
             return Err(ConfigError(format!(
                 "`{} {raw}`: {} does not take it (a {} option)",
                 candidate.spelling,
@@ -1171,6 +1175,7 @@ fn derive(
 
     let download_catalog = derive_download(sources, &resolution, &spelled)?;
     derive_speech(&resolution, &spelled)?;
+    derive_diarizer(&resolution, &spelled)?;
 
     let mut model = s.model.id.clone().unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     let mut speculation = speculation;
@@ -1421,6 +1426,27 @@ fn derive_speech(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> Strin
                 spelled("speech", "compat_names")
             )));
         }
+    }
+    Ok(())
+}
+
+/// `diarizer.model` against the ids the server knows (spec speech/08, Q118),
+/// at start and on every `PATCH /v1/config`, as `speech.model` is: an id of a
+/// built-in entry or a model family that is not a diarizer is refused. An
+/// operator catalog's entries are checked where it is read
+/// (`speech::check_diarizer_name`).
+fn derive_diarizer(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> String) -> Result<(), ConfigError> {
+    let id = match resolution.settings.diarizer.model.as_str() {
+        "auto" | "off" => return Ok(()),
+        id => id,
+    };
+    let other_kind = crate::download::Catalog::built_in().entry(id).is_some_and(|entry| !entry.is_diarizer())
+        || ModelFamily::of_model_id(id).is_some_and(|family| family.kind() != ignis_core::compute::ModelKind::Diarizer);
+    if other_kind {
+        return Err(ConfigError(format!(
+            "`{}` names `{id}`, which is not a diarizer: name a diarizer entry of the catalog, `auto` or `off`",
+            spelled("diarizer", "model")
+        )));
     }
     Ok(())
 }

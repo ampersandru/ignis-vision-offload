@@ -694,15 +694,20 @@ fn check_enhancer(server: &Server, next: &Config, patch: &Layer) -> Result<(), S
 /// `speech.model` and `speech.compat_names` against the catalog this server
 /// runs with, an operator's file among it, when the patch names either: what
 /// the start checks where it reads the catalog (`speech::check_names`); the
-/// config's own check has the built-in entries already.
+/// config's own check has the built-in entries already. `diarizer.model` the
+/// same way (`speech::check_diarizer_name`).
 fn check_speech(server: &Server, next: &Config, patch: &Layer) -> Result<(), String> {
-    if !patch.named().any(|(meta, _)| meta.group == "speech" && (meta.name == "model" || meta.name == "compat_names")) {
+    let Some(catalog) = server.speech.catalog() else {
         return Ok(());
+    };
+    if patch.named().any(|(meta, _)| meta.group == "speech" && (meta.name == "model" || meta.name == "compat_names")) {
+        crate::speech::check_names(catalog, &next.settings().speech)?;
     }
-    match server.speech.catalog() {
-        Some(catalog) => crate::speech::check_names(catalog, &next.settings().speech),
-        None => Ok(()),
+    // `diarizer.model` (spec speech/08): the same kind check, for the diarizer.
+    if patch.named().any(|(meta, _)| meta.group == "diarizer" && meta.name == "model") {
+        crate::speech::check_diarizer_name(catalog, &next.settings().diarizer)?;
     }
+    Ok(())
 }
 
 /// `PATCH /v1/config` — change the running configuration.

@@ -16,13 +16,18 @@
 //!   unloads the model. An open session is a dictation in progress; its end
 //!   restarts the clock. `speech.idle_unload` is read live: a change wakes the
 //!   clock, which waits for the new value from the model's last use.
+//!
+//! Beside it, the diarizer's own thread ([`DiarizerWorker`], spec speech/08):
+//! the speakers' units of every session, in lanes that take turns as the
+//! interactive ones do here, computed on the diarizer's own pool. A step never
+//! waits for a unit of the speech model's and never holds one back.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use super::executor::SpeechExecutor;
+use super::executor::{DiarizerExecutor, NoDiarizer, SpeechExecutor};
 
 /// A batch job, driven a window at a time.
 pub trait Job: Send {
@@ -49,6 +54,42 @@ pub type Task = Box<dyn FnMut() -> Step + Send>;
 struct Lane {
     session: u64,
     tasks: VecDeque<Task>,
+}
+
+/// The sessions with tasks queued, in turn order: each takes one task a
+/// turn, and a task with steps left stays first in its session's lane.
+#[derive(Default)]
+struct Lanes(VecDeque<Lane>);
+
+impl Lanes {
+    /// Queue `task` after the ones `session` queued before.
+    fn push(&mut self, session: u64, task: Task) {
+        match self.0.iter_mut().find(|lane| lane.session == session) {
+            Some(lane) => lane.tasks.push_back(task),
+            None => self.0.push_back(Lane { session, tasks: VecDeque::from([task]) }),
+        }
+    }
+
+    /// The task whose turn it is, and its session: its lane's next task
+    /// waits its turn behind the other sessions'.
+    fn next(&mut self) -> Option<(u64, Task)> {
+        let mut lane = self.0.pop_front()?;
+        let task = lane.tasks.pop_front().expect("a lane holds a task");
+        let session = lane.session;
+        if !lane.tasks.is_empty() {
+            self.0.push_back(lane);
+        }
+        Some((session, task))
+    }
+
+    /// A task with steps left: first in its session's lane again, ahead of
+    /// what the session queued since, with the turn passed on.
+    fn resume(&mut self, session: u64, task: Task) {
+        match self.0.iter_mut().find(|lane| lane.session == session) {
+            Some(lane) => lane.tasks.push_front(task),
+            None => self.0.push_back(Lane { session, tasks: VecDeque::from([task]) }),
+        }
+    }
 }
 
 /// The gauges `ignis_speech_sessions_open` and `ignis_speech_queue_length`
@@ -83,7 +124,7 @@ struct Entry {
 #[derive(Default)]
 struct State {
     /// The sessions with tasks queued, in turn order.
-    interactive: VecDeque<Lane>,
+    interactive: Lanes,
     batch: VecDeque<Entry>,
     /// The audio seconds of the job being stepped now, if one is.
     stepping: Option<f64>,
@@ -101,6 +142,9 @@ struct Shared {
     state: Mutex<State>,
     wake: Condvar,
     executor: Arc<dyn SpeechExecutor>,
+    /// The diarizer beside it: unloaded with the speech model (spec
+    /// speech/08).
+    diarizer: Arc<dyn DiarizerExecutor>,
     gauges: Arc<Gauges>,
     /// `speech.idle_unload` in seconds, 0 never: the live value, which the
     /// speech slot writes.
@@ -134,10 +178,17 @@ pub struct Worker {
 impl Worker {
     /// The worker, its idle clock reading `idle_unload_secs` (0 never).
     pub fn start(executor: Arc<dyn SpeechExecutor>, gauges: Arc<Gauges>, idle_unload_secs: Arc<AtomicU64>) -> Self {
+        Self::start_with(executor, Arc::new(NoDiarizer), gauges, idle_unload_secs)
+    }
+
+    /// [`Worker::start`] with a diarizer whose weights go when the speech
+    /// model's do.
+    pub fn start_with(executor: Arc<dyn SpeechExecutor>, diarizer: Arc<dyn DiarizerExecutor>, gauges: Arc<Gauges>, idle_unload_secs: Arc<AtomicU64>) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
             executor,
+            diarizer,
             gauges,
             idle_unload_secs,
             last_used: Mutex::new(Instant::now()),
@@ -193,12 +244,7 @@ impl Worker {
     /// it queued before, before any batch window, and in turn with the other
     /// sessions' tasks.
     pub fn submit_interactive(&self, session: u64, task: Task) {
-        let mut state = self.shared.lock();
-        match state.interactive.iter_mut().find(|lane| lane.session == session) {
-            Some(lane) => lane.tasks.push_back(task),
-            None => state.interactive.push_back(Lane { session, tasks: VecDeque::from([task]) }),
-        }
-        drop(state);
+        self.shared.lock().interactive.push(session, task);
         self.shared.touch();
         self.shared.wake.notify_all();
     }
@@ -267,25 +313,13 @@ impl Shared {
             if state.stop {
                 return;
             }
-            if let Some(mut lane) = state.interactive.pop_front() {
-                let session = lane.session;
-                let mut task = lane.tasks.pop_front().expect("a lane holds a task");
-                // Its next task waits its turn behind the other sessions'.
-                if !lane.tasks.is_empty() {
-                    state.interactive.push_back(lane);
-                }
+            if let Some((session, mut task)) = state.interactive.next() {
                 drop(state);
                 // A panic in a task is that task's, not the worker's: it is over.
                 let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task())).unwrap_or(Step::Done);
                 self.touch();
                 if step == Step::More {
-                    // First in its session's lane again, ahead of what the
-                    // session queued since, with the turn passed on.
-                    let mut state = self.lock();
-                    match state.interactive.iter_mut().find(|lane| lane.session == session) {
-                        Some(lane) => lane.tasks.push_front(task),
-                        None => state.interactive.push_back(Lane { session, tasks: VecDeque::from([task]) }),
-                    }
+                    self.lock().interactive.resume(session, task);
                 }
                 continue;
             }
@@ -324,6 +358,7 @@ impl Shared {
             if unused >= idle {
                 drop(state);
                 self.executor.unload();
+                self.diarizer.unload();
                 tracing::info!(
                     name: "ignis.speech.unloaded",
                     idle_seconds = unused.as_secs(),
@@ -347,10 +382,89 @@ impl Shared {
     }
 }
 
+/// The diarizer's own thread (spec speech/08, ADR 0069): every session's
+/// speakers' units (a stream's open, its steps and its tails), the sessions
+/// taking turns a unit each, as the speech worker's interactive lanes do. It
+/// shares no lock and no pool with the speech worker, so a step never waits
+/// for a unit of the speech model's and never holds one back. It has no batch
+/// queue and no idle clock: the speech worker's clock unloads the diarizer with
+/// the speech model.
+pub struct DiarizerWorker {
+    shared: Arc<DiarizerShared>,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+#[derive(Default)]
+struct DiarizerShared {
+    state: Mutex<DiarizerState>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct DiarizerState {
+    lanes: Lanes,
+    stop: bool,
+}
+
+impl DiarizerWorker {
+    pub fn start() -> Self {
+        let shared = Arc::new(DiarizerShared::default());
+        let running = Arc::clone(&shared);
+        let thread = std::thread::Builder::new()
+            .name("ignis-diarizer".to_owned())
+            .spawn(move || running.run())
+            .expect("the diarizer's thread starts");
+        Self { shared, thread: Mutex::new(Some(thread)) }
+    }
+
+    /// Queue a unit of `session`'s speakers: after the ones it queued before,
+    /// in turn with the other sessions'.
+    pub fn submit(&self, session: u64, task: Task) {
+        self.shared.lock().lanes.push(session, task);
+        self.shared.wake.notify_all();
+    }
+}
+
+impl Drop for DiarizerWorker {
+    fn drop(&mut self) {
+        self.shared.lock().stop = true;
+        self.shared.wake.notify_all();
+        if let Some(thread) = self.thread.lock().expect("diarizer thread lock").take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl DiarizerShared {
+    fn lock(&self) -> MutexGuard<'_, DiarizerState> {
+        self.state.lock().expect("diarizer worker lock")
+    }
+
+    fn run(&self) {
+        let mut state = self.lock();
+        loop {
+            if state.stop {
+                return;
+            }
+            let Some((session, mut task)) = state.lanes.next() else {
+                state = self.wake.wait(state).expect("diarizer worker lock");
+                continue;
+            };
+            drop(state);
+            // A panic in a unit is that unit's, not the thread's: it is over.
+            let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task())).unwrap_or(Step::Done);
+            state = self.lock();
+            if step == Step::More {
+                state.lanes.resume(session, task);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::speech::executor::FakeExecutor;
+    use crate::speech::executor::{FakeDiarizer, FakeExecutor};
     use std::sync::mpsc;
 
     /// A job of `windows` steps that logs each into `log` under its name.
@@ -498,6 +612,59 @@ mod tests {
         assert_eq!(*log.lock().unwrap(), ["b1", "c1", "y1", "c2", "y2", "c3", "open", "b2"]);
     }
 
+    /// Spec speech/08 (AC 10, amended 2026-10-26): the diarizer's thread
+    /// serves the speakers' units while a unit of the speech worker's is
+    /// still running, the sessions taking turns a unit each.
+    #[test]
+    fn the_diarizers_thread_serves_its_units_beside_a_speech_unit_running() {
+        let (worker, _) = worker();
+        let diarizer = DiarizerWorker::start();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let held = gate();
+        let (running, started) = mpsc::channel();
+        let gate_of_speech = Arc::clone(&held);
+        worker.submit_interactive(
+            0,
+            Box::new(move || {
+                let _ = running.send(());
+                let (gate, opened) = &*gate_of_speech;
+                let mut open = gate.lock().unwrap();
+                while !*open {
+                    open = opened.wait(open).unwrap();
+                }
+                Step::Done
+            }),
+        );
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // A unit of a third session holds the diarizer's thread until the
+        // others are queued.
+        let first = gate();
+        let gate_of_diarizer = Arc::clone(&first);
+        diarizer.submit(
+            0,
+            Box::new(move || {
+                let (gate, opened) = &*gate_of_diarizer;
+                let mut open = gate.lock().unwrap();
+                while !*open {
+                    open = opened.wait(open).unwrap();
+                }
+                Step::Done
+            }),
+        );
+        for (session, unit) in [(1, "x1"), (1, "x2"), (1, "x3"), (2, "y1"), (2, "y2")] {
+            diarizer.submit(session, logs(&log, unit));
+        }
+        open(&first);
+        let until = Instant::now() + Duration::from_secs(5);
+        while log.lock().unwrap().len() < 5 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let served = log.lock().unwrap().clone();
+        // The speech unit ends before any assertion, so the worker can stop.
+        open(&held);
+        assert_eq!(served, ["x1", "y1", "x2", "y2", "x3"], "served while the speech unit runs");
+    }
+
     /// AC 11: past `max_queue` waiting jobs the next is refused, with a
     /// `Retry-After` of one to fifteen seconds; with room it is taken.
     #[test]
@@ -611,6 +778,27 @@ mod tests {
         }
         assert!(!executor.is_loaded());
         assert_eq!(executor.unloads.load(Ordering::SeqCst), 1);
+    }
+
+    /// Spec speech/08 (AC 15): the diarizer is unloaded with the speech
+    /// model at `speech.idle_unload`, and not before.
+    #[test]
+    fn the_diarizer_is_unloaded_with_the_speech_model() {
+        let executor = Arc::new(FakeExecutor::saying(&["x"]));
+        let diarizer = Arc::new(FakeDiarizer::hearing(|_| None));
+        let worker = Worker::start_with(executor.clone(), diarizer.clone(), Arc::new(Gauges::default()), Arc::default());
+        executor.loaded.store(true, Ordering::SeqCst);
+        diarizer.loaded.store(true, Ordering::SeqCst);
+        worker.set_idle_unload(1);
+        worker.touch();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(executor.is_loaded() && diarizer.is_loaded(), "not yet idle for a second");
+        // The worker unloads one, then the other: wait for both.
+        let until = Instant::now() + Duration::from_secs(10);
+        while (executor.is_loaded() || diarizer.is_loaded()) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!executor.is_loaded() && !diarizer.is_loaded(), "both go together");
     }
 
     /// `speech.idle_unload` is read live: a clock waiting on 0 (never) or on

@@ -48,6 +48,10 @@ pub enum ModelFamily {
     /// transformer and a VAE, from its own artifact (spec image-model/01). No
     /// [`ModelConfig`] describes it: that topology is a text model's.
     QwenImage21,
+    /// Nemotron 3 Diarization (ADR 0069, spec speech/08): the diarizer, a
+    /// Sortformer beside the speech model on the CPU. Its config fields are
+    /// the `diarizer` group's; no [`ModelConfig`] describes it.
+    Nemotron3Diarization,
 }
 
 /// What a model produces (ADR 0050, `GLOSSARY.md`): a **text model** tokens,
@@ -63,6 +67,9 @@ pub enum ModelKind {
     /// The speech model (ADR 0067, spec speech/02): audio in, its transcript
     /// out, on the CPU, loaded beside the active model and never switched to.
     Speech,
+    /// The diarizer (ADR 0069, spec speech/08): audio in, who spoke when out,
+    /// never what was said; beside the speech model, on the CPU.
+    Diarizer,
 }
 
 impl ModelKind {
@@ -72,6 +79,7 @@ impl ModelKind {
             ModelKind::Text => "text",
             ModelKind::Image => "image",
             ModelKind::Speech => "speech",
+            ModelKind::Diarizer => "diarizer",
         }
     }
 }
@@ -796,7 +804,7 @@ impl LayerKind {
 impl ModelFamily {
     /// Every family, in declaration order: the one list a caller walks, so
     /// a family added here reaches every one of them.
-    pub const ALL: [ModelFamily; 3] = [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21];
+    pub const ALL: [ModelFamily; 4] = [ModelFamily::Qwen38_27b, ModelFamily::FlashNext, ModelFamily::QwenImage21, ModelFamily::Nemotron3Diarization];
 
     /// The family an artifact's identity `model_id` names, or `None` for an
     /// artifact of no family (a test fixture).
@@ -813,7 +821,7 @@ impl ModelFamily {
         match self {
             ModelFamily::Qwen38_27b => crate::N_DECODE_LANES as u32,
             ModelFamily::FlashNext => 3,
-            ModelFamily::QwenImage21 => 0,
+            ModelFamily::QwenImage21 | ModelFamily::Nemotron3Diarization => 0,
         }
     }
 
@@ -843,7 +851,7 @@ impl ModelFamily {
         match self {
             ModelFamily::Qwen38_27b => 2 * self.decode_lanes(named_lanes),
             ModelFamily::FlashNext => 8,
-            ModelFamily::QwenImage21 => 0,
+            ModelFamily::QwenImage21 | ModelFamily::Nemotron3Diarization => 0,
         }
     }
 
@@ -857,7 +865,7 @@ impl ModelFamily {
     /// is one decode round per chunk (ADR 0018); 50 splits time evenly.
     pub fn default_decode_share_percent(self) -> u32 {
         match self {
-            ModelFamily::Qwen38_27b | ModelFamily::FlashNext | ModelFamily::QwenImage21 => 25,
+            ModelFamily::Qwen38_27b | ModelFamily::FlashNext | ModelFamily::QwenImage21 | ModelFamily::Nemotron3Diarization => 25,
         }
     }
 
@@ -868,7 +876,7 @@ impl ModelFamily {
     /// 27B, whose cut costs ~19 ms and whose prefills keep their splits.
     pub fn opener_page_rides_capture(self) -> bool {
         match self {
-            ModelFamily::Qwen38_27b | ModelFamily::QwenImage21 => false,
+            ModelFamily::Qwen38_27b | ModelFamily::QwenImage21 | ModelFamily::Nemotron3Diarization => false,
             ModelFamily::FlashNext => true,
         }
     }
@@ -881,6 +889,7 @@ impl ModelFamily {
             ModelFamily::Qwen38_27b => "qwen3.8-27b",
             ModelFamily::FlashNext => "qwen3.8-flash-next",
             ModelFamily::QwenImage21 => "ignis-image-2.1-turbo",
+            ModelFamily::Nemotron3Diarization => "nemotron-3-diarization",
         }
     }
 
@@ -889,6 +898,7 @@ impl ModelFamily {
         match self {
             ModelFamily::Qwen38_27b | ModelFamily::FlashNext => ModelKind::Text,
             ModelFamily::QwenImage21 => ModelKind::Image,
+            ModelFamily::Nemotron3Diarization => ModelKind::Diarizer,
         }
     }
 
@@ -909,7 +919,7 @@ impl ModelFamily {
         match self {
             ModelFamily::Qwen38_27b => Some(crate::SpeculativeBackend::Dflash2),
             ModelFamily::FlashNext => Some(crate::SpeculativeBackend::Mtp),
-            ModelFamily::QwenImage21 => None,
+            ModelFamily::QwenImage21 | ModelFamily::Nemotron3Diarization => None,
         }
     }
 
@@ -919,17 +929,20 @@ impl ModelFamily {
             ModelFamily::Qwen38_27b => "Qwen3.8-27B",
             ModelFamily::FlashNext => "Qwen3.8-Flash-Next",
             ModelFamily::QwenImage21 => "Qwen-Image-2.1",
+            ModelFamily::Nemotron3Diarization => "Nemotron 3 Diarization",
         }
     }
 
     /// `enum ignis_model_family`. The text leaf's enum has no image entry:
     /// the image model never builds a [`ModelConfig`] (its leaf is spec
-    /// image-model/04's), so 2 is reserved for it here.
+    /// image-model/04's), so 2 is reserved for it here, and 3 for the
+    /// diarizer, which runs on the CPU and never reaches a leaf.
     pub fn abi_code(self) -> i32 {
         match self {
             ModelFamily::Qwen38_27b => 0,
             ModelFamily::FlashNext => 1,
             ModelFamily::QwenImage21 => 2,
+            ModelFamily::Nemotron3Diarization => 3,
         }
     }
 }
@@ -1096,15 +1109,17 @@ mod tests {
     use crate::kv_format::{KvFormat, KvGeometry};
 
     /// ADR 0050: the two text families are text models, the image family the
-    /// one image model, and the API spells each kind one way.
+    /// one image model, the diarizer's family the diarizer (ADR 0069), and
+    /// the API spells each kind one way.
     #[test]
     fn every_family_is_of_one_kind() {
         assert_eq!(ModelFamily::Qwen38_27b.kind(), ModelKind::Text);
         assert_eq!(ModelFamily::FlashNext.kind(), ModelKind::Text);
         assert_eq!(ModelFamily::QwenImage21.kind(), ModelKind::Image);
+        assert_eq!(ModelFamily::Nemotron3Diarization.kind(), ModelKind::Diarizer);
         assert_eq!(
-            (ModelKind::Text.as_str(), ModelKind::Image.as_str(), ModelKind::Speech.as_str()),
-            ("text", "image", "speech")
+            (ModelKind::Text.as_str(), ModelKind::Image.as_str(), ModelKind::Speech.as_str(), ModelKind::Diarizer.as_str()),
+            ("text", "image", "speech", "diarizer")
         );
     }
 

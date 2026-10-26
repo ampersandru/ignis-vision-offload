@@ -11,10 +11,10 @@ use axum::body::Body;
 use axum::http::Request;
 use http_body_util::BodyExt;
 use ignis_core::{ConcreteScheduler, MockCompute, SchedulerConfig};
-use ignis_server::config::schema::SpeechGroup;
+use ignis_server::config::schema::{DiarizerGroup, SpeechGroup};
 use ignis_server::download::catalog::{Catalog, CatalogEntry, CatalogFile, CatalogLayer};
 use ignis_server::engine::Engine;
-use ignis_server::speech::executor::FakeExecutor;
+use ignis_server::speech::executor::{FakeDiarizer, FakeExecutor};
 use ignis_server::speech::{Speech, SpeechModels};
 use ignis_server::template::SimpleTemplateProvider;
 use ignis_server::Server;
@@ -88,6 +88,31 @@ pub fn server_on(base: Server, executor: Arc<FakeExecutor>, edit: impl FnOnce(&m
     let mut group = SpeechGroup::default();
     edit(&mut group);
     let server = base.with_speech(Arc::new(Speech::new(executor, Some(models(&dir))))).with_speech_group(group);
+    (server, dir)
+}
+
+/// [`server`], with `diarizer` giving the speakers (spec speech/08) and the
+/// `diarizer` group as `edit_diarizer` changed it.
+pub fn server_with_diarizer(
+    executor: Arc<FakeExecutor>,
+    diarizer: Arc<FakeDiarizer>,
+    edit: impl FnOnce(&mut SpeechGroup),
+    edit_diarizer: impl FnOnce(&mut DiarizerGroup),
+) -> (Server, PathBuf) {
+    let scheduler = ConcreteScheduler::with_config(
+        SchedulerConfig { model: TEXT_MODEL.into(), ..SchedulerConfig::default() },
+        Arc::new(MockCompute::new()),
+    );
+    let dir = temp_dir("server");
+    put_files(&dir, SPEECH_MODEL);
+    let (mut group, mut diarizer_group) = (SpeechGroup::default(), DiarizerGroup::default());
+    edit(&mut group);
+    edit_diarizer(&mut diarizer_group);
+    let speech = Speech::new(executor, Some(models(&dir))).with_diarizer(diarizer);
+    let server = Server::new(Engine::new(Box::new(scheduler)), Box::new(SimpleTemplateProvider))
+        .with_speech(Arc::new(speech))
+        .with_speech_group(group)
+        .with_diarizer_group(diarizer_group);
     (server, dir)
 }
 

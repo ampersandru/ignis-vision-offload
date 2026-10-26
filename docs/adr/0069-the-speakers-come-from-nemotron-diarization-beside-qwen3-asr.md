@@ -11,6 +11,12 @@ Q91 asked for. Specs `docs/specs/speech/07-transcribe.md` (the Playground view) 
 - **Applies ADR 0051**: the Sortformer graph restated from NeMo (Apache-2.0) is an adapted op, as the VAD's Silero
   port is.
 
+Amended 2026-10-26 (#361, the owner's choice on a condition, confirmed by the measurements): decision 5's shared worker
+gives way to a thread and a pool of the diarizer's own (`diarizer.threads`), on the condition that it hurt neither the
+commit's latency, nor the live text, nor the other sessions. On the shared worker a step that fell due stopped the
+refresh under way, and on a long monologue the live text stood still for the whole item; on its own thread the
+refreshes with speakers match those without, and the commits are no slower (spec speech/08, As built).
+
 Sources: the finding [Nemotron on the CPU](../findings/2026-10-25-nemotron-on-the-cpu.md), with the spike's scripts
 and raw data on `H:\speech-study\nemotron-spike\`; the finding
 [Qwen3-ASR on the CPU](../findings/2026-10-24-qwen3-asr-on-cpu.md); the session's decision log, kept untracked in
@@ -62,8 +68,13 @@ Italian conversations built from VoxPopuli:
 4. **Never resident in VRAM** (ADR 0067; Q104). It is loaded at the first session that asks for speakers, and
    unloaded with the speech model at `speech.idle_unload` (Q116). It costs about 0.2-0.4 GB of host RAM, depending on
    the stored format.
-5. **It shares the speech model's worker.** Its steps rank below the speech model's windows and commits and above
-   its partials, so on a slow CPU the partials thin out first and the labels keep up (Q113).
+5. **It runs on a thread and a pool of its own, beside the speech model's worker** (the owner, 2026-10-26; first
+   decided: it shares the speech model's worker, its steps ranked below the windows and commits and above the
+   partials, Q113). The thread serves every session's speakers' units in turns; the pool has `diarizer.threads`
+   threads, made when the diarizer loads and dropped when it unloads, and computes with the speech executor's ISA. A
+   step never waits for the speech model's units and never stops them, and no partial is skipped for one. The speech
+   model's pool is not shared: its dispatch takes one lock per op, and a decode token is about 200 small ops beside a
+   diarizer op of 2-5 ms.
 6. **Its configuration is a group and a family of its own** (owner, 2026-10-25; ADR 0046):
    - the `diarizer` group, as the image model has `image` and the speech model `speech`;
    - `ModelFamily` gains `Nemotron3Diarization`, and every field that is a concept of Sortformer is
@@ -84,8 +95,8 @@ Italian conversations built from VoxPopuli:
 ## Consequences
 
 - A user who never asks for speakers pays nothing: no download, no load, no CPU.
-- With speakers on, live transcription costs more CPU on top of Qwen3-ASR's partials. On a 4-core machine the
-  partials come less often; the labels and the commits keep their pace.
+- With speakers on, live transcription costs more CPU on top of Qwen3-ASR's partials: the diarizer's threads compute
+  beside the speech model's, and on a machine with few cores they share them.
 - A label never changes the transcript. Corrections (rename, move, merge, split) are mappings of labels in the
   Playground, and nothing goes back to the model (Q109). Sortformer has no enrolment input that could take them.
 - At most 8 speakers, the model's channels (Q110). A ninth voice lands on one of the eight.

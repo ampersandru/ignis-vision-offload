@@ -26,6 +26,10 @@ describe("createServerSim", () => {
     expect(sim.models(T)).not.toHaveProperty("last_switch");
     // No Realtime socket here: the speech model is unavailable, so the Playground strikes its mic.
     expect(sim.models(T)).toMatchObject({ speech: { available: false, reason: expect.stringContaining("ignis-server model download qwen3-asr-1.7b") } });
+    // Nor its diarizer: the Server view says so beside the speech model (spec speech/08).
+    expect(sim.models(T)).toMatchObject({
+      speech: { diarizer: { id: "nemotron-3-diarization", loaded: false, available: false, reason: expect.stringContaining("ignis-server model download nemotron-3-diarization") } },
+    });
   });
 
   it("lists the servable models as the server does: the loaded one first and active, then every row on disk (spec model-switch/03)", () => {

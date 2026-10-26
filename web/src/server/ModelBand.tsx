@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { loadUnderWay, type ModelState } from "../api/model.ts";
-import { diskLabel, downloadCommand, elapsed, type PageGate, rowAction, runningFamily, sourceLabel } from "./band.ts";
+import { diskLabel, downloadCommand, elapsed, type PageGate, rowAction, runningFamily, sourceLabel, speechFigures } from "./band.ts";
 import { cancelReachable, downloadFailure, progressLabel } from "./download.ts";
 import { familyName } from "./form.ts";
 import { drainNote, lastSwitchLine, type Line } from "./outcome.ts";
@@ -48,6 +48,9 @@ export function ModelBand({
 }) {
   const rows = catalog.state === "ok" ? catalog.value : null;
   const family = runningFamily(rows);
+  // Spec speech/08: the speech model and the diarizer beside the loaded model.
+  const beside = speechFigures(model.speech);
+  const besideReasons = beside.filter((figure) => figure.reason);
   // The last switch's line stays until the next switch begins.
   const last =
     model.state !== "reading" && !loadUnderWay(model) && model.lastSwitch ? lastSwitchLine(model.lastSwitch) : null;
@@ -62,7 +65,19 @@ export function ModelBand({
           )}
           {model.state === "ready" && family && <Figure label="Family" value={familyName(family)} />}
           {loadUnderWay(model) && <Figure label="Elapsed" value={elapsed(model.since, now)} />}
+          {beside.map((figure) => (
+            <Figure key={figure.label} label={figure.label} value={figure.value} dot={figure.dot} detail={figure.state} />
+          ))}
         </dl>
+        {besideReasons.length > 0 && (
+          <div className="flex flex-col gap-1 text-sm text-[#b9bec4]">
+            {besideReasons.map((figure) => (
+              <p key={figure.label} className="[overflow-wrap:anywhere]">
+                {figure.label}: {figure.reason}
+              </p>
+            ))}
+          </div>
+        )}
         {(last || refusal || removal || streaming || model.state === "error" || model.state === "unloaded") && (
           <div className="flex flex-col gap-1 text-sm" aria-live="polite">
             {model.state === "error" && <p className="text-fault [overflow-wrap:anywhere]">{model.message}</p>}
@@ -139,14 +154,15 @@ function stateColor(model: ModelState): string {
   return model.state === "reading" || model.state === "unloaded" ? "var(--ash)" : "var(--fault)";
 }
 
-function Figure({ label, value, dot }: { label: string; value: string; dot?: string }) {
+function Figure({ label, value, dot, detail }: { label: string; value: string; dot?: string; detail?: string }) {
   return (
-    <div>
+    <div className="min-w-0">
       <dt className="text-[11px] text-[#939ba4]">{label}</dt>
-      <dd className="flex items-center gap-2 font-display text-lg leading-tight font-semibold text-[#eae8e4]">
+      <dd className="flex items-center gap-2 font-display text-lg leading-tight font-semibold text-[#eae8e4] [overflow-wrap:anywhere]">
         {dot && <span className="cut size-2.5 shrink-0 [--cut-size:4px]" style={{ background: dot }} aria-hidden />}
         {value}
       </dd>
+      {detail && <dd className="text-xs text-[#939ba4]">{detail}</dd>}
     </div>
   );
 }

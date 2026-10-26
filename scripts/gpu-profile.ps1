@@ -60,7 +60,11 @@ $CpuOracleTest = "gqa_and_gdn_references_cover_two_tokens"
 # is listed here, so a rename cannot put it back in the sweep.
 $NotGpuLegs = @(
     "the_eleven_dictations_through_the_real_route_at_real_time_pace",
-    "the_smallest_speech_entry_downloads_and_verifies_against_its_pins"
+    "the_smallest_speech_entry_downloads_and_verifies_against_its_pins",
+    "the_diarizer_adapter_steps_the_crates_stream_on_its_own_pool",
+    "the_diarizer_keeps_up_with_a_conversation_at_real_time_pace",
+    "every_item_of_the_conversations_sends_its_text_whole_at_its_end",
+    "a_long_monologue_keeps_its_live_text_with_speakers_on"
 )
 
 # Per-stage wall time (GitHub #135): the profile's cost is the point of this

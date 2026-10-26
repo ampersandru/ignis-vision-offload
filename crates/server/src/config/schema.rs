@@ -223,6 +223,7 @@ pub fn field(group: &str, name: &str) -> Option<&'static FieldMeta> {
 const ALL: Applicability = Applicability::AllFamilies;
 const FLASH_NEXT_ONLY: Applicability = Applicability::Only(&[ModelFamily::FlashNext]);
 const QWEN38_ONLY: Applicability = Applicability::Only(&[ModelFamily::Qwen38_27b]);
+const NEMOTRON_DIARIZATION_ONLY: Applicability = Applicability::Only(&[ModelFamily::Nemotron3Diarization]);
 const NO_RULE: Validator = Validator::None;
 
 const fn between(min: i64, max: i64) -> Validator {
@@ -231,6 +232,11 @@ const fn between(min: i64, max: i64) -> Validator {
 
 const fn at_least(min: i64) -> Validator {
     Validator::Range { min: Some(min), max: None }
+}
+
+/// A decimal field's range, in its own units: `decimal(0.0, 4.0)`.
+const fn decimal(min: f64, max: f64) -> Validator {
+    Validator::DecimalRange { min: (min * 1000.0) as i64, max: (max * 1000.0) as i64 }
 }
 
 config_group! {
@@ -770,6 +776,107 @@ config_group! {
         /// How long a transcription waits for a loan before it runs on the
         /// CPU, in seconds (spec speech/06), not served yet.
         loan_wait_seconds: Secs = 5, between(0, 600), ALL, [Visible, Patchable];
+        /// The length guard: once a `server_vad` item holds this many seconds
+        /// of audio, the server ends it at the next 32 ms the VAD hears under
+        /// its threshold, a pause too short to end it, or
+        /// `speech.utterance_cut_search_ms` later at the latest, and the
+        /// speech goes on in a new item; so a room that never falls silent
+        /// loses nothing to `speech.max_clip_seconds`. A session's own
+        /// `session.ignis.max_utterance_seconds` overrides it. 0 never cuts.
+        /// Read at each item's audio.
+        max_utterance_seconds: Secs = 120, between(0, 1200), ALL, [Visible, Patchable];
+        /// How long past `speech.max_utterance_seconds` the length guard looks
+        /// for a pause, in milliseconds, before it cuts where the audio is.
+        /// The search looks forward only, so no text already sent is past the
+        /// cut. In fluent speech the VAD hears a pause within 10 s 95 times in
+        /// 100 (spec speech/08, As built).
+        utterance_cut_search_ms: Millis = 10_000, between(0, 60_000), ALL, [Visible, Patchable];
+        /// The audio a Realtime session may hold that is not computed yet, in
+        /// seconds: received, and still waiting for the speech model's windows
+        /// or the diarizer's steps. An append past it is refused with an
+        /// `error`, `ignis_audio_queue_full`, and the session stays open: a
+        /// client feeding a file faster than the CPU computes it paces itself
+        /// by it, and one fed at real time never reaches it. Read at each
+        /// append.
+        max_queued_audio_seconds: Secs = 120, between(1, 3600), ALL, [Visible, Patchable];
+    }
+}
+
+config_group! {
+    /// The diarizer (spec speech/08, ADR 0069): Nemotron 3 Diarization, who
+    /// spoke when, beside the speech model on the CPU, for the Realtime
+    /// sessions that ask for speakers. The geometries and the speaker cache's
+    /// constants are Sortformer's, so only its family takes them. A session
+    /// reads them when its speakers start, so each changes live from the
+    /// next.
+    DiarizerGroup = "diarizer" {
+        /// The diarizer: `auto` (the catalog's diarizer entry), a catalog
+        /// entry's id, or `off`. It is enabled when its files are on disk;
+        /// nothing is ever downloaded by itself. A text, image or speech
+        /// model's id is refused. Loaded by the first session that asks for
+        /// speakers, unloaded with the speech model.
+        model: Text = super::DEFAULT_DIARIZER_MODEL.to_owned(), NO_RULE, ALL, [Visible, Patchable];
+        /// The threads the diarizer computes with, a pool of its own beside the
+        /// speech model's, so its steps never wait for the speech model's work:
+        /// `auto` is a third of the
+        /// physical cores, at least 2 (3 on a 10-core machine), counted within the CPUs the server may run on.
+        /// Read by the load, so a change holds from the next one; the load
+        /// logs the count (`ignis.diarizer.load`).
+        threads: Threads = None, NO_RULE, ALL, [Visible, Patchable];
+        /// The ghost rule, in seconds of speech: a voice the diarizer hears is
+        /// a speaker of its own once it has spoken this long, and until then
+        /// its speech counts for the speaker it sounds most like, so a short
+        /// mistaken voice splits no utterance. The session's first voice is a
+        /// speaker at once. 0 makes every voice a speaker at its first frame.
+        /// At 2 s a ghost voice of the synthetic conversations goes, and no
+        /// real meeting's quiet participant is lost (spec speech/08, As built).
+        min_speaker_seconds: Decimal = 2_000, decimal(0.0, 60.0), ALL, [Visible, Patchable];
+        /// The live geometry's speaker cache, in 80 ms frames: what the
+        /// diarizer keeps of every speaker heard so far.
+        live_speaker_cache_frames: Frames = 264, between(8, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The live geometry's FIFO, in 80 ms frames: the latest frames each
+        /// step reads beside its chunk.
+        live_fifo_frames: Frames = 264, between(0, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The live geometry's chunk, in 80 ms frames: the frames one step
+        /// scores. 25 is 2 s.
+        live_chunk_frames: Frames = 25, between(1, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The live geometry's right context, in 80 ms frames: the look-ahead
+        /// a step waits for. With the chunk, the latency: 2.32 s at 25 and 4.
+        live_right_context_frames: Frames = 4, between(0, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The live geometry's update period, in 80 ms frames: the oldest
+        /// frames an overflowing FIFO gives the speaker cache at once.
+        live_update_period_frames: Frames = 222, between(1, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The file geometry's speaker cache, in 80 ms frames, for a session
+        /// fed faster than real time (`session.ignis.diarization: "file"`).
+        file_speaker_cache_frames: Frames = 264, between(8, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The file geometry's FIFO, in 80 ms frames.
+        file_fifo_frames: Frames = 40, between(0, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The file geometry's chunk, in 80 ms frames: 340 is 27.2 s.
+        file_chunk_frames: Frames = 340, between(1, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The file geometry's right context, in 80 ms frames: with the chunk,
+        /// 30.4 s of latency at 340 and 40.
+        file_right_context_frames: Frames = 40, between(0, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The file geometry's update period, in 80 ms frames.
+        file_update_period_frames: Frames = 300, between(1, 1000), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The speaker cache's floor on a frame's probabilities when it scores
+        /// the frames to keep. `auto` is the checkpoint's (0.25).
+        prediction_score_threshold: AutoDecimal = None, decimal(0.001, 1.0), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// What the speaker cache adds to the scores of the frames the FIFO
+        /// just gave it. `auto` is the checkpoint's (0.05).
+        latest_frames_score_boost: AutoDecimal = None, decimal(0.0, 10.0), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The share of each speaker's room in the speaker cache whose best
+        /// frames get the strong boost. `auto` is the checkpoint's (0.75).
+        strong_boost_rate: AutoDecimal = None, decimal(0.0, 4.0), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The share of each speaker's room in the speaker cache whose best
+        /// frames get the weak boost. `auto` is the checkpoint's (1.5).
+        weak_boost_rate: AutoDecimal = None, decimal(0.0, 4.0), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The share of each speaker's room a speaker's positive scores must
+        /// fill before its other frames stop counting. `auto` is the
+        /// checkpoint's (0.5).
+        min_positive_scores_rate: AutoDecimal = None, decimal(0.0, 1.0), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
+        /// The silence frames the speaker cache keeps for every speaker.
+        /// `auto` is the checkpoint's (1).
+        speaker_cache_silence_frames_per_speaker: AutoCount = None, between(0, 125), NEMOTRON_DIARIZATION_ONLY, [Visible, Patchable];
     }
 }
 
@@ -869,6 +976,8 @@ settings! {
     image: ImageGroup,
     /// The speech model.
     speech: SpeechGroup,
+    /// The diarizer.
+    diarizer: DiarizerGroup,
     /// Model download.
     download: DownloadGroup,
     /// The n-gram table.
@@ -914,6 +1023,7 @@ mod tests {
             (MediaGroup::NAME, debug_field_names(&MediaGroup::default())),
             (ImageGroup::NAME, debug_field_names(&ImageGroup::default())),
             (SpeechGroup::NAME, debug_field_names(&SpeechGroup::default())),
+            (DiarizerGroup::NAME, debug_field_names(&DiarizerGroup::default())),
             (DownloadGroup::NAME, debug_field_names(&DownloadGroup::default())),
             (NgramGroup::NAME, debug_field_names(&NgramGroup::default())),
             (KvDiskGroup::NAME, debug_field_names(&KvDiskGroup::default())),
@@ -932,12 +1042,55 @@ mod tests {
         );
     }
 
-    /// The eleven groups spec config-v2/01 §Groups names, and the image
-    /// model's (spec image-model/05), no more.
+    /// The eleven groups spec config-v2/01 §Groups names, the image
+    /// model's (spec image-model/05), the speech model's (spec speech/02) and
+    /// the diarizer's (spec speech/08), no more.
     #[test]
     fn the_groups_are_the_specs() {
         let names: Vec<&str> = GROUPS.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, ["server", "model", "vram", "reuse", "switch", "spec", "vision", "media", "image", "speech", "download", "ngram", "kv_disk"]);
+        assert_eq!(
+            names,
+            ["server", "model", "vram", "reuse", "switch", "spec", "vision", "media", "image", "speech", "diarizer", "download", "ngram", "kv_disk"]
+        );
+    }
+
+    /// Spec speech/08, AC 14: every field that is a concept of Sortformer, the
+    /// two geometries and the speaker cache's six constants, only Nemotron 3
+    /// Diarization takes, under its plain key; the model, its threads and the
+    /// ghost rule every diarizer does. The geometries default to the measured
+    /// ones, the constants to the checkpoint's (`auto`), each override
+    /// bounded, the threads to `auto`.
+    #[test]
+    fn the_sortformer_fields_are_nemotron_diarizations_own() {
+        let shared = ["model", "threads", "min_speaker_seconds"];
+        for meta in DiarizerGroup::FIELDS {
+            let only = meta.applies == NEMOTRON_DIARIZATION_ONLY;
+            assert_eq!(only, !shared.contains(&meta.name), "{}", meta.name);
+            assert!(meta.visible && meta.patchable && !meta.reload_required && !meta.scoped, "{}", meta.name);
+            assert_eq!(meta.home_family(), None, "{} keeps its plain key", meta.name);
+            assert!(only == (meta.validator != NO_RULE) || meta.name == "min_speaker_seconds", "{} is bounded", meta.name);
+        }
+        let group = DiarizerGroup::default();
+        let geometry = |speaker_cache, fifo, chunk, right_context, update_period| [speaker_cache, fifo, chunk, right_context, update_period];
+        assert_eq!(
+            geometry(group.live_speaker_cache_frames, group.live_fifo_frames, group.live_chunk_frames, group.live_right_context_frames, group.live_update_period_frames),
+            [264, 264, 25, 4, 222]
+        );
+        assert_eq!(
+            geometry(group.file_speaker_cache_frames, group.file_fifo_frames, group.file_chunk_frames, group.file_right_context_frames, group.file_update_period_frames),
+            [264, 40, 340, 40, 300]
+        );
+        let constants = [
+            group.prediction_score_threshold,
+            group.latest_frames_score_boost,
+            group.strong_boost_rate,
+            group.weak_boost_rate,
+            group.min_positive_scores_rate,
+            group.speaker_cache_silence_frames_per_speaker,
+        ];
+        assert_eq!(constants, [None; 6], "auto: the checkpoint's own");
+        assert_eq!((group.model.as_str(), group.threads, group.min_speaker_seconds), ("auto", None, 2_000));
+        assert_eq!(field("diarizer", "weak_boost_rate").unwrap().validator.describe(), "0..=4");
     }
 
     /// No two fields share a spelling on any surface, family-scoped ones

@@ -583,8 +583,8 @@ fn cuda_scheduler_for(
         )
         .map_err(LoadError::from),
         // The image model has no token scheduler: `load_image_model` loads
-        // it, never this.
-        ModelFamily::QwenImage21 => Err(LoadError::LoadFailed(format!("{} has no token scheduler", family.name()))),
+        // it, never this; nor has the diarizer, which no artifact carries.
+        ModelFamily::QwenImage21 | ModelFamily::Nemotron3Diarization => Err(LoadError::LoadFailed(format!("{} has no token scheduler", family.name()))),
     };
     // The 27B's context, lanes and head are the ones its plan kept, and so
     // its rope table: what the scheduler admits and `GET /v1/models` says.

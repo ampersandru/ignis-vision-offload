@@ -153,6 +153,7 @@ fn by_server_vad(exec: &Executor, audio: &[f32], lead: &[f32]) -> Vec<String> {
                     item = Some(opened);
                 }
                 TurnEvent::Audio(samples) => item.as_mut().expect("audio inside a turn").push(&samples),
+                TurnEvent::Pause { .. } => {}
                 TurnEvent::Stopped { .. } => texts.push(item.take().expect("a turn to stop").commit()),
                 TurnEvent::TimedOut { .. } => unreachable!("no idle timeout"),
             }

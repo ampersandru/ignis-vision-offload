@@ -554,3 +554,41 @@ async fn the_speech_model_loaded_is_refused_until_the_worker_unloads_it() {
     assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Spec speech/08: the diarizer the speech worker has loaded reads its GGUF
+/// for the live sessions with speakers, so its removal is refused, `409
+/// model_in_use` saying so, and nothing of it is deleted; once the worker has
+/// unloaded it, with the speech model, it is removed like any entry.
+#[tokio::test]
+async fn the_diarizer_loaded_is_refused_until_the_worker_unloads_it() {
+    use ignis_server::speech::executor::{DiarizerExecutor, FakeDiarizer, FakeExecutor, SpeechExecutor};
+    use ignis_server::speech::{Speech, SpeechModels};
+    use std::sync::atomic::Ordering;
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let dir = repo::fresh_dir("diarizer-loaded");
+    let gguf = "acme-diarizer.gguf";
+    let zero = "0".repeat(64);
+    let yaml = format!("models:\n  - id: acme-diarizer\n    repo: acme/diarizer\n    revision: v1\n    artifact: {gguf}\n    kind: diarizer\n    files:\n      - {{ name: {gguf}, bytes: 4, sha256: \"{zero}\" }}\n");
+    let catalog = Arc::new(ignis_server::download::catalog::parse_operator(&yaml, ignis_server::config::file::Format::Yaml, "test").expect("a valid catalog"));
+    std::fs::write(dir.join(gguf), b"gguf").unwrap();
+    let diarizer = Arc::new(FakeDiarizer::hearing(|_| None));
+    let speech = Speech::new(Arc::new(FakeExecutor::saying(&["hello"])) as Arc<dyn SpeechExecutor>, Some(SpeechModels { catalog: Arc::clone(&catalog), dir: dir.clone() }))
+        .with_diarizer(Arc::clone(&diarizer) as Arc<dyn DiarizerExecutor>);
+    let app = server_on(&loader, "mock-a", CatalogModels { catalog, dir: dir.clone() }, &config(&repo, &[])).with_speech(Arc::new(speech)).app();
+    // What the first session that asks for speakers does.
+    *diarizer.weights.lock().unwrap() = Some(dir.join(gguf));
+    diarizer.loaded.store(true, Ordering::SeqCst);
+
+    let (status, refused) = remove(&app, "acme-diarizer").await;
+    assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("model_in_use")), "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(message.contains("acme-diarizer is the diarizer loaded") && message.contains("speech.idle_unload"), "{message}");
+    assert_eq!(files_in(&dir), [gguf], "nothing deleted");
+
+    diarizer.unload();
+    let (status, removed) = remove(&app, "acme-diarizer").await;
+    assert_eq!((status, removed["bytes_freed"].clone()), (StatusCode::OK, json!(4)), "{removed}");
+    assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
+    let _ = std::fs::remove_dir_all(dir);
+}

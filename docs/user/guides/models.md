@@ -26,6 +26,7 @@ revision of its Hugging Face repository:
 | `qwen3-asr-1.7b` | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 1.5 GiB (the [speech model](../api/transcriptions.md), `speech.model: auto`: a Q4_K_M decoder and a Q8_0 audio encoder) |
 | `qwen3-asr-1.7b-q8` | [`gpillon/Qwen3-ASR-1.7B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-1.7B-GGUF-ignis) | 2.3 GiB (the same with a Q8_0 decoder) |
 | `qwen3-asr-0.6b` | [`gpillon/Qwen3-ASR-0.6B-GGUF-ignis`](https://huggingface.co/gpillon/Qwen3-ASR-0.6B-GGUF-ignis) | 0.9 GiB (the smaller speech model, for a weak CPU) |
+| `nemotron-3-diarization` | [`gpillon/Nemotron-3-Diarization-GGUF-ignis`](https://huggingface.co/gpillon/Nemotron-3-Diarization-GGUF-ignis) | 0.2 GiB (the [diarizer](../configuration/speech.md#the-diarizer), `diarizer.model: auto`; OpenMDW-1.1 licence) |
 
 The id is the **served id**: what `--model-id` names, what `/v1/models`
 reports and what a request puts in `model`.
@@ -35,6 +36,12 @@ GGUF files each, a decoder and its audio encoder, with no sidecar. They run on
 the CPU beside the loaded model, so they state no card class and no card refuses
 them, and a switch never goes to one. `ignis-server model download qwen3-asr-1.7b`
 fetches the default; the two 1.7B entries share one encoder file.
+
+The [diarizer](../configuration/speech.md#the-diarizer) that labels a live
+session's speakers is an entry of its own kind, `kind: diarizer`: one GGUF, no
+sidecar, no card class, never switched to. The built-in one is
+`nemotron-3-diarization`; an [operator's catalog](operator-catalog.md) can state
+another, and `ignis-server model download <id>` fetches it like any entry.
 
 Each entry states the smallest **card class** it loads on
 ([ADR 0064](../../adr/0064-a-catalog-entry-states-its-card-class.md)): every
@@ -282,7 +289,7 @@ names a model served from the entry's files under another id too.
 | `401 invalid_api_key` | The server has an API key and the request did not carry it: the same key as `PATCH /v1/config`. |
 | `403 removal_disabled` | `--download-from-ui false`. |
 | `404 model_not_found` | `model` is not a catalog entry: a known model is a path the operator gave, and only a catalog entry's files are removed. |
-| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading (by its id or from its files), the [speech model](../api/transcriptions.md) the speech worker has loaded, or the entry the server is downloading; the message says which. Cancel the download, load another model, or wait for the speech worker to unload it (`--speech-idle-unload` seconds after its last transcription), first. |
+| `409 model_in_use` | The entry is the model loaded (also unloaded while idle, or served from its files under another id), the model a load is loading (by its id or from its files), the [speech model](../api/transcriptions.md) or the [diarizer](../configuration/speech.md#the-diarizer) loaded beside it, or the entry the server is downloading; the message says which. Cancel the download, load another model, or wait for the speech worker to unload it (`--speech-idle-unload` seconds after its last transcription), first. |
 | `409 download_locked` | `model download`, or another server on the same folder, is fetching the entry. |
 | `409 model_not_downloaded` | Nothing of the entry is under `--download-path`. |
 | `500 removal_failed` | A file could not be deleted; the message names it, and what was deleted before it. |

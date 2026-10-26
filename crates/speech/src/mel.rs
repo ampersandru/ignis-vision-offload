@@ -66,6 +66,32 @@ fn mel_to_hz(m: f64) -> f64 {
     if m >= 15.0 { 1000.0 * ((m - 15.0) * (6.4f64.ln() / 27.0)).exp() } else { 200.0 * m / 3.0 }
 }
 
+/// The 128 triangular slaney filters of an `n_fft`-point transform at 16 kHz: between
+/// N_MELS + 2 points evenly spaced in mel from 0 to 8 kHz, each scaled by 2 / its width in Hz.
+/// Each is its first non-zero bin and its weights.
+pub(crate) fn slaney_filters(n_fft: usize) -> Vec<(usize, Vec<f64>)> {
+    let bins = n_fft / 2 + 1;
+    let (lo, hi) = (hz_to_mel(0.0), hz_to_mel(SAMPLE_RATE as f64 / 2.0));
+    let pts: Vec<f64> = (0..N_MELS + 2).map(|i| mel_to_hz(lo + (hi - lo) * i as f64 / (N_MELS + 1) as f64)).collect();
+    let fft_hz: Vec<f64> = (0..bins).map(|k| (SAMPLE_RATE / 2) as f64 * k as f64 / (bins - 1) as f64).collect();
+    (0..N_MELS)
+        .map(|m| {
+            let enorm = 2.0 / (pts[m + 2] - pts[m]);
+            let w: Vec<f64> = fft_hz
+                .iter()
+                .map(|&f| {
+                    let down = (f - pts[m]) / (pts[m + 1] - pts[m]);
+                    let up = (pts[m + 2] - f) / (pts[m + 2] - pts[m + 1]);
+                    down.min(up).max(0.0) * enorm
+                })
+                .collect();
+            let first = w.iter().position(|&v| v != 0.0).unwrap_or(0);
+            let last = w.iter().rposition(|&v| v != 0.0).map_or(first, |l| l + 1);
+            (first, w[first..last].to_vec())
+        })
+        .collect()
+}
+
 impl Default for Mel {
     fn default() -> Self {
         Self::new()
@@ -84,28 +110,7 @@ impl Mel {
                 sin[k * N_FFT + n] = a.sin();
             }
         }
-        // Triangular slaney filters between N_MELS + 2 points evenly spaced in mel from 0 to 8 kHz,
-        // each scaled by 2 / its width in Hz.
-        let (lo, hi) = (hz_to_mel(0.0), hz_to_mel(SAMPLE_RATE as f64 / 2.0));
-        let pts: Vec<f64> = (0..N_MELS + 2).map(|i| mel_to_hz(lo + (hi - lo) * i as f64 / (N_MELS + 1) as f64)).collect();
-        let fft_hz: Vec<f64> = (0..N_BINS).map(|k| (SAMPLE_RATE / 2) as f64 * k as f64 / (N_BINS - 1) as f64).collect();
-        let filters = (0..N_MELS)
-            .map(|m| {
-                let enorm = 2.0 / (pts[m + 2] - pts[m]);
-                let w: Vec<f64> = fft_hz
-                    .iter()
-                    .map(|&f| {
-                        let down = (f - pts[m]) / (pts[m + 1] - pts[m]);
-                        let up = (pts[m + 2] - f) / (pts[m + 2] - pts[m + 1]);
-                        down.min(up).max(0.0) * enorm
-                    })
-                    .collect();
-                let first = w.iter().position(|&v| v != 0.0).unwrap_or(0);
-                let last = w.iter().rposition(|&v| v != 0.0).map_or(first, |l| l + 1);
-                (first, w[first..last].to_vec())
-            })
-            .collect();
-        Mel { window, cos, sin, filters }
+        Mel { window, cos, sin, filters: slaney_filters(N_FFT) }
     }
 
     /// log10 of the mel power (clamped at 1e-10) of frames `first..first + n` of the signal

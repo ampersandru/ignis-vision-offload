@@ -98,7 +98,7 @@ describe("openTranscription", () => {
     expect(sockets[1].protocols).toEqual(["realtime"]);
   });
 
-  it("configures the session as spec 04 says: manual commit when the auto-stop is Off, PCM16 at 16 kHz, the context, the provisional tail, no language", () => {
+  it("configures the session as spec 04 says: manual commit when the auto-stop is Off, PCM16 at 16 kHz, the context, the provisional tail, no language, the length guard off (spec 08)", () => {
     const { sockets, handlers, deps } = setup();
     openTranscription("The last reply.\n\nThe composer's text.", handlers, deps, null);
     sockets[0].accept();
@@ -114,7 +114,7 @@ describe("openTranscription", () => {
               turn_detection: null,
             },
           },
-          ignis: { provisional_tail: true },
+          ignis: { provisional_tail: true, max_utterance_seconds: 0 },
         },
       },
     ]);
@@ -127,6 +127,8 @@ describe("openTranscription", () => {
     sockets[0].accept();
     const detection = (sockets[0].sent[0] as { session: { audio: { input: { turn_detection: object } } } }).session.audio.input.turn_detection;
     expect(detection).toEqual({ type: "server_vad", silence_duration_ms: 3_000 });
+    // Its first server commit ends the dictation: the length guard must not cut it (spec 08).
+    expect(sockets[0].sent[0]).toMatchObject({ session: { ignis: { max_utterance_seconds: 0 } } });
   });
 
   it("waits to configure while the auto-stop is pending, audio included, then sends it as settled", () => {

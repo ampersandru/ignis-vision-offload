@@ -173,3 +173,16 @@ page").
 - More than one `getDisplayMedia` pick on a call (Q93).
 - `diarized_json` for files on the batch route: a parked idea (Q94).
 - Corrections that teach the diarizer (Q109).
+
+## Notes from #361 (2026-10-26, ideas, not ACs)
+
+The owner's third scenario, two people working together for a whole day, raised three things for this view's build:
+- **Speakers across sessions.** A quiet socket closes after `server.socket_idle_close` (300 s); Resume opens a new
+  session, and a new diarizer stream numbers its speakers afresh (the speaker event carries the stream's channel). The
+  view maps channels to its own Speaker n per stream, so after a Resume the same person can come back as a new
+  Speaker until the user merges them: worth a sentence in the view, or a merge suggestion.
+- **The cost of a microphone left open.** With silence still flowing the socket never idles, and the diarizer steps on
+  the silence all day: about 0.33 s of nine threads every 2 s on the i9 (some 20 %), more on four cores. Pause is how
+  a user stops it.
+- **Hours are not measured.** Nothing has run for hours; the owner's live check of a long session is the test of its
+  memory and stability.

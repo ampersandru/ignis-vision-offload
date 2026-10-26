@@ -28,8 +28,51 @@ every default, is [the configuration reference](../reference/configuration.md).
 | `--speech-unfixed-partials` | `IGNIS_SPEECH_UNFIXED_PARTIALS` | `2` | The first refreshes of a live session's transcript that make no text stable, whatever `speech.rollback_tokens` says: the language and the opening words are decided on more than one interval of audio. 0 fixes text from the first refresh. Read when a session opens, so a change holds from the next session. |
 | `--speech-vad-threshold`, `--speech-vad-prefix-padding-ms`, `--speech-vad-silence-duration-ms` | `IGNIS_SPEECH_VAD_*` | `0.5`, `300`, `500` | The defaults of a live session's [`server_vad`](../api/realtime-transcription.md#turn-detection), OpenAI's: the speech probability that counts as speech, the audio an utterance keeps from before it, and the silence after it at which the server commits it. A session reads them when it opens; one that sends its own values uses those. |
 | `--speech-vad-leading-silence-ms` | `IGNIS_SPEECH_VAD_LEADING_SILENCE_MS` | `500` | The digital silence the speech model reads before each `server_vad` utterance, never shown to the client; it counts toward `speech.max_clip_seconds` ([turn detection](../api/realtime-transcription.md#turn-detection)). 0 feeds the utterance as heard. |
+| `--speech-max-utterance-seconds` | `IGNIS_SPEECH_MAX_UTTERANCE_SECONDS` | `120` | The [length guard](../api/realtime-transcription.md#long-utterances): once a `server_vad` utterance holds this many seconds, the server ends it at the next short pause, or `utterance_cut_search_ms` later where the audio is, and the speech goes on in a new item, so a room that never falls silent loses nothing to `max_clip_seconds`. A session's `ignis.max_utterance_seconds` overrides it; 0 never cuts. At 240 s an utterance's commit took four times as long as at 120 s, at no gain in word error rate. |
+| `--speech-utterance-cut-search-ms` | `IGNIS_SPEECH_UTTERANCE_CUT_SEARCH_MS` | `10000` | How long past the limit the length guard looks for a pause before it cuts where the audio is. It looks forward only, so no text already sent is past the cut. In fluent speech the pause comes within 10 s 95 times in 100: between words the VAD's speech probability seldom drops. |
+| `--speech-max-queued-audio-seconds` | `IGNIS_SPEECH_MAX_QUEUED_AUDIO_SECONDS` | `120` | The audio a live session may hold that is not computed yet; an append past it is refused, `ignis_audio_queue_full`, and the session stays open ([sending audio](../api/realtime-transcription.md#sending-audio)). Above the Playground's 60 s pace for a file; provisional. |
 | `--speech-loan-grace-seconds`, `--speech-loan-wait-seconds` | `IGNIS_SPEECH_LOAN_*` | `30`, `5` | The loan of free KV pages to the speech model. Not served yet. |
 
 The fields marked "not served yet" are declared so that a configuration file
 written today keeps its meaning: the loan that reads them comes with its own
 ticket ([ADR 0067](../../adr/0067-the-speech-model-waits-on-the-host-and-borrows-free-kv-pages.md)).
+
+## The diarizer
+
+The `diarizer` group configures the diarizer, Nemotron 3 Diarization, which
+gives a live session that asks for them its [speakers](../api/realtime-transcription.md#speakers).
+It runs on the CPU, on a thread and CPU threads of its own beside the speech
+model's, so its steps never hold up the speech model's work. Every field but
+`diarizer.threads` is read live, when a session's speakers start;
+`diarizer.threads` is read by the next load. The diarizer is a
+[catalog](../guides/models.md#the-catalog) entry of its own, `kind: diarizer`
+(one GGUF, no sidecar): the built-in `nemotron-3-diarization`, fetched with
+`ignis-server model download nemotron-3-diarization` like any entry, or one of
+[an operator's catalog](../guides/operator-catalog.md). It is
+loaded by the first session that asks for speakers, about 0.2 GB of RAM for
+its F16 weights, never VRAM, and unloaded with the speech model, after
+`speech.idle_unload` seconds with no session open.
+
+What it costs, measured at the live geometry: on a 10-core i9-10900K a 2 s
+step takes about 0.63 s on its 3 threads alone (0.88 s on 2, 0.56 s on 4), and
+on a 297 s conversation with `qwen3-asr-1.7b` transcribing the same session at
+real time, 0.73 s on average, the speakers staying within 3.9 s of the audio,
+the commits no slower than with the diarizer sharing the speech model's
+threads and the live text as frequent as without speakers; on 4
+cores of a Linux container, the diarizer alone took 23 to 24 % of the four
+cores (3.2 to 4.1 times faster than real time), where the speech model's
+refreshes alone already fall behind. A file, at the file geometry, costs 25 to
+47 times less than its length. `GET /v1/models` says whether it can serve and
+whether it is loaded ([the `speech.diarizer` member](../api/transcriptions.md#turning-it-on)).
+The geometries and the speaker
+cache's constants are Sortformer's, Nemotron 3 Diarization's own: a diarizer
+of another family would refuse them.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--diarizer-model` | `IGNIS_DIARIZER_MODEL` | `auto` | `auto` is the catalog's diarizer entry; a catalog id picks another; `off` turns speakers off. A text, image or speech model's id is refused, at start and by a `PATCH /v1/config`. A live change takes the next session's load. A session open with speakers keeps the diarizer it opened with until it ends: meanwhile `GET /v1/models` reads the new one, and the old one's file is not protected from `model remove` (on Windows its removal fails while the session holds it). Nothing downloads by itself. |
+| `--diarizer-threads` | `IGNIS_DIARIZER_THREADS` | `auto` | The CPU threads the diarizer computes with, its own beside the speech model's; `auto` is a third of the physical cores, at least 2 (3 on a 10-core machine), counted within the CPUs the server may run on. The load reads it, so a change holds from the next one, and logs the count (`ignis.diarizer.load`). |
+| `--diarizer-min-speaker-seconds` | `IGNIS_DIARIZER_MIN_SPEAKER_SECONDS` | `2` | The seconds of speech a voice needs to be a speaker of its own; until then its speech counts for the speaker it sounds most like, so a short mistaken voice splits no utterance. 0 makes every voice a speaker at once. At 2 s a mistaken voice of a few seconds in test conversations went, and no participant of real meetings who spoke little was lost (at 5 s some were). The price: a new voice's first seconds go to someone else (a colleague who at first only says "yes, exactly" is labelled as another speaker until they have spoken this long; the run of speech that makes them a speaker becomes theirs), and when the voice changes with no pause, the utterance before the change ends only once the new voice is a speaker. |
+| `--diarizer-live-speaker-cache-frames`, `-live-fifo-frames`, `-live-chunk-frames`, `-live-right-context-frames`, `-live-update-period-frames` | `IGNIS_DIARIZER_LIVE_*` | `264`, `264`, `25`, `4`, `222` | The live geometry (`ignis.diarization: "live"`), in 80 ms frames: the speaker cache, the FIFO, the chunk a step scores, the look-ahead it waits for, and the frames an overflowing FIFO gives the cache. The chunk and the look-ahead are the latency, 2.32 s; this geometry measured a better DER than the card's low-latency one at 2.6 times less CPU. |
+| `--diarizer-file-speaker-cache-frames`, ... | `IGNIS_DIARIZER_FILE_*` | `264`, `40`, `340`, `40`, `300` | The file geometry (`"file"`), the card's offline one, for audio fed faster than real time: 30.4 s of latency, at 25 to 47 times less CPU than real time. |
+| `--diarizer-prediction-score-threshold`, `-latest-frames-score-boost`, `-strong-boost-rate`, `-weak-boost-rate`, `-min-positive-scores-rate`, `-speaker-cache-silence-frames-per-speaker` | `IGNIS_DIARIZER_*` | `auto` | The speaker cache's constants, by the checkpoint's own names: how it scores and keeps the frames of each speaker. `auto` is the checkpoint's value (0.25, 0.05, 0.75, 1.5, 0.5 and 1), which its weights carry; an override is bounded, and the values in force when the diarizer loads are logged (`ignis.diarizer.load`). |

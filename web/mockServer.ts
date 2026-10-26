@@ -123,6 +123,9 @@ export function yamlOf(value: Record<string, unknown>, depth = 0): string {
 /** Why the mock's speech model cannot serve, in the server's words (speech/mod.rs): the Playground's mic is struck. */
 export const SPEECH_REASON = "no speech model files for `qwen3-asr-1.7b` under download.path; fetch them with `ignis-server model download qwen3-asr-1.7b`";
 
+/** Why the mock's diarizer cannot serve, in the server's words (speech/diarizing.rs): the Server view shows it (spec speech/08). */
+export const DIARIZER_REASON = "no diarizer files for `nemotron-3-diarization` under download.path; fetch them with `ignis-server model download nemotron-3-diarization`";
+
 export function createServerSim() {
   const state: State = { store: structuredClone(CONFIG) as ConfigDocument, from: structuredClone(PROVENANCE) };
   let loaded = "qwen3.8-27b";
@@ -317,8 +320,13 @@ export function createServerSim() {
         ...(running ? { switching: { from: running.from, to: running.to } } : {}),
         ...(restoring || dead ? { reason: (restoring ?? dead)!.reason } : {}),
         ...(last ? { last_switch: last } : {}),
-        // The mock has no Realtime socket: its speech model is one whose files are not on disk (spec speech/02).
-        speech: { available: false, reason: SPEECH_REASON },
+        // The mock has no Realtime socket: its speech model is one whose files are not on disk (spec speech/02), and
+        // so is its diarizer (spec speech/08).
+        speech: {
+          available: false,
+          reason: SPEECH_REASON,
+          diarizer: { id: "nemotron-3-diarization", loaded: false, available: false, reason: DIARIZER_REASON },
+        },
       };
     },
 

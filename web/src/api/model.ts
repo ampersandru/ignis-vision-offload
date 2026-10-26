@@ -57,9 +57,16 @@ export type ModelKind = "text" | "image" | "speech";
 /**
  * Whether the speech model can serve (`GET /v1/models`' top-level `speech`, spec speech/02): read in every status,
  * since the speech routes serve through a switch, so the Playground can disable its microphone before the press.
- * `reason`, for a person, while it cannot.
+ * `reason`, for a person, while it cannot; `id`, the speech entry of `data`, listed only while it can. `diarizer`:
+ * the diarizer beside it (spec speech/08), absent from a server older than it.
  */
-export type SpeechStatus = { available: boolean; reason?: string };
+export type SpeechStatus = { available: boolean; reason?: string; id?: string; diarizer?: DiarizerStatus };
+
+/**
+ * The diarizer that gives a Realtime session its speakers (`speech.diarizer`, spec speech/08): no request names it.
+ * `id` is what `diarizer.model` names, absent when it names none; `loaded`, whether its weights are in memory now.
+ */
+export type DiarizerStatus = { id?: string; loaded: boolean; available: boolean; reason?: string };
 
 export type ModelState = (
   /** The page's own first read of the model, under way. */
@@ -83,8 +90,30 @@ type ModelList = {
   reason?: string;
   last_switch?: LastSwitch;
   /** Absent from a server older than speech. */
-  speech?: SpeechStatus;
+  speech?: { available?: boolean; reason?: string; diarizer?: { id?: string; loaded?: boolean; available?: boolean; reason?: string } };
 };
+
+/** `GET /v1/models`' `speech`, with the speech model's id from its entry in `data`. */
+function speechOf(body: ModelList): SpeechStatus | null {
+  if (!body.speech) return null;
+  const id = body.data?.find((listed) => listed.kind === "speech")?.id;
+  const diarizer = body.speech.diarizer;
+  return {
+    available: body.speech.available === true,
+    ...(body.speech.reason ? { reason: body.speech.reason } : {}),
+    ...(id ? { id } : {}),
+    ...(diarizer
+      ? {
+          diarizer: {
+            ...(diarizer.id ? { id: diarizer.id } : {}),
+            loaded: diarizer.loaded === true,
+            available: diarizer.available === true,
+            ...(diarizer.reason ? { reason: diarizer.reason } : {}),
+          },
+        }
+      : {}),
+  };
+}
 
 /** The model loaded now, or why it could not be read. `now` stamps a switch first seen by this read. */
 export async function readModel(fetcher: typeof fetch = fetch, now = Date.now()): Promise<ModelState> {
@@ -97,9 +126,10 @@ export async function readModel(fetcher: typeof fetch = fetch, now = Date.now())
     if (!res.ok) throw new Error(`GET /v1/models: ${res.status}`);
     const body = (await res.json()) as ModelList;
     // What every state carries beside its own: how the last switch ended, and the speech model's availability.
+    const speech = speechOf(body);
     const beside = {
       ...(body.last_switch ? { lastSwitch: body.last_switch } : {}),
-      ...(body.speech ? { speech: { available: body.speech.available === true, ...(body.speech.reason ? { reason: body.speech.reason } : {}) } } : {}),
+      ...(speech ? { speech } : {}),
     };
     // The entry is still the old model while switching; the ids are in `switching`.
     if (body.status === "switching" && body.switching) {

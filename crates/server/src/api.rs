@@ -539,6 +539,7 @@ pub(crate) fn a_kind(kind: ModelKind) -> &'static str {
         ModelKind::Text => "a text model",
         ModelKind::Image => "an image model",
         ModelKind::Speech => "a speech model",
+        ModelKind::Diarizer => "a diarizer",
     }
 }
 
@@ -1845,7 +1846,7 @@ pub(crate) fn now() -> u64 {
     summary = "The servable models, the loaded one first",
     description = "The models a request may name and be served by now, without a download. `data[0]` is always the model this server loaded (`active: true`), with its `kind` (`text` or `image`: the routes it serves; the speech model's is `speech`) and for a text model the context a single request may spend (`max_model_len`, prompt plus completion), how many requests it decodes at once (`decode_lanes`) and every adaptation its load took to fit the VRAM plan (`adapted`, in the order taken, as the `ignis.runtime.vram_plan` log line spells them; `\"\"` when it took none — the 27B under `rtx50-16gb` in a 13 GiB budget (16 GiB less 3 GiB of desktop) says `max_context 262144 -> 65536 (adapt_context_step 65536, adapt_spare_tokens 65536)`). `max_model_len` and `decode_lanes` are the values the load runs, after any adaptation; `GET /v1/config` keeps the values configured. The other entries (`active: false`) are the models a request naming them switches to: every catalog entry whose artifact is under `download.path` (catalog order), then every known model (`switch.known_models`, and the model the server started on) whose artifact is a file (id order) — read at each request, so a model downloaded into a running server is listed at once. Their `kind` is given only when the id is a model family's own, and `max_model_len`, `decode_lanes` and `adapted` never: they are known once a model is loaded. No entry carries a path. With `switch.allow_implicit` false only `data[0]` is listed. Among the others, a catalog entry on disk whose `card_class` is above this card's (ADR 0064) is listed with `available: false` and the `reason`, naming its class and the card's: a request naming it is refused `409 model_above_card_class` and never switches to it — or, on a card where another entry answers to its id (on a 16 GB card `qwen3.8-27b-16g` to `qwen3.8-27b`), is served by that one, which the reason names. Every other entry is `available: true`. A server serves one text or image model at a time: a request naming another entry waits while it replaces the loaded one; a text request naming the image model is refused `409 model_kind_mismatch`. The speech model is loaded beside it, not instead of it (ADR 0067): it is listed right after `data[0]`, with `kind: \"speech\"`, `active: true` and `available: true`, only while it is available -- turned on by `speech.model`, its files on disk and the host able to run it -- whether or not it is loaded right now, and never as a model a switch goes to. Its compat names (`speech.compat_names`) are not listed.
 
-The top-level `speech` object, `{\"available\": bool, \"reason\": string}`, is always present, beside `status`: `reason` says why the speech model cannot serve (turned off, its files missing and the command that fetches them, or the CPU lacking AVX2) and is absent while it can, so a page can disable its microphone before it is pressed.
+The top-level `speech` object, `{\"available\": bool, \"reason\": string, \"diarizer\": {...}}`, is always present, beside `status`: `reason` says why the speech model cannot serve (turned off, its files missing and the command that fetches them, or the CPU lacking AVX2) and is absent while it can, so a page can disable its microphone before it is pressed. Its `diarizer` member, `{\"id\": string, \"loaded\": bool, \"available\": bool, \"reason\": string}`, says the same of the diarizer that gives a Realtime session its speakers (`diarizer.model`; it is no entry of `data`, no request names it): `id` is the model `diarizer.model` names and is absent when it names none, `loaded` whether its weights are in memory now (the first session that asks for speakers loads them, the speech model's idle unload frees them), `available` and `reason` as the speech model's, the reason naming `ignis-server model download <id>` when its files are missing.
 
 `status` beside the entries says what the API is doing, and speaks of `data[0]`: `serving`; `switching` while a switch replaces the model (`switching` names both ids, and `data[0]` is still the old model until the new one serves); or `failed` when the last switch failed (`reason` says why) — briefly, while the previous model is reloaded, or until a switch succeeds when it could not be. While switching or failed this route answers; every other `/v1` route answers 503 -- but `POST /v1/audio/transcriptions` and `GET /v1/realtime`, which serve on the CPU through a switch.
 
@@ -1889,7 +1890,12 @@ fn models_now(server: &Server) -> ModelList {
     // instead of it, and listed only while it can serve. Right after
     // `data[0]`, which stays the text or image model.
     let speech = server.speech.availability(&server.live().speech);
-    let speech_state = SpeechState { available: speech.available(), reason: speech.reason.clone() };
+    let diarizer = server.speech.diarizer_availability();
+    let speech_state = SpeechState {
+        available: speech.available(),
+        reason: speech.reason.clone(),
+        diarizer: DiarizerState { id: diarizer.id, loaded: diarizer.loaded, available: diarizer.reason.is_none(), reason: diarizer.reason },
+    };
     if let (true, Some(id)) = (speech.available(), speech.id) {
         data.push(ModelInfo {
             id,
@@ -1969,6 +1975,27 @@ struct SpeechState {
     available: bool,
     /// Why it cannot: turned off, its files missing (with the command that
     /// fetches them), or the host unable to run it. Absent while it can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    /// The diarizer beside it (spec speech/08): no request names it, so it
+    /// is no entry of `data`.
+    diarizer: DiarizerState,
+}
+
+/// Whether the diarizer can serve, and whether it is in memory.
+#[derive(Serialize, ToSchema)]
+struct DiarizerState {
+    /// The id `diarizer.model` names; absent when it names none (`off`, or
+    /// `auto` with no diarizer in the catalog).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    /// Whether its weights are in memory now: loaded by the first session
+    /// that asks for speakers, unloaded with the speech model.
+    loaded: bool,
+    available: bool,
+    /// Why it cannot: turned off, no diarizer in the catalog, its files
+    /// missing (with the command that fetches them), or the host unable to
+    /// run it. Absent while it can.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
 }
@@ -2186,6 +2213,15 @@ fn resolve_by_id(server: &Server, model: &str) -> Result<std::path::PathBuf, Res
                     "invalid_request_error",
                     "model_kind_mismatch",
                     format!("{model} is a speech model: it is loaded beside the active model by a transcription, and a switch never goes to it"),
+                    Some("model"),
+                )
+            }
+            Unswitchable::Diarizer => {
+                return error_response_naming(
+                    StatusCode::CONFLICT,
+                    "invalid_request_error",
+                    "model_kind_mismatch",
+                    format!("{model} is a diarizer: it is loaded beside the speech model by the first session that asks for speakers, and a switch never goes to it"),
                     Some("model"),
                 )
             }

@@ -216,6 +216,10 @@ pub struct Live {
     /// its compat names, the clip and queue limits — each read per request,
     /// so a live change needs no reload.
     pub speech: config::schema::SpeechGroup,
+    /// The diarizer (`diarizer.*`, spec speech/08): which model, the ghost
+    /// rule, the geometries and the speaker cache's constants, read when a
+    /// Realtime session's speakers start.
+    pub diarizer: config::schema::DiarizerGroup,
 }
 
 impl Default for Live {
@@ -240,6 +244,7 @@ impl Default for Live {
             loop_guard: loop_guard::LoopGuardParams { mode: loop_guard::LoopGuardMode::Off, ..Default::default() },
             image: config::schema::ImageGroup::default(),
             speech: config::schema::SpeechGroup::default(),
+            diarizer: config::schema::DiarizerGroup::default(),
         }
     }
 }
@@ -260,6 +265,7 @@ impl Live {
             loop_guard: config.loop_guard.clone(),
             image: config.settings().image.clone(),
             speech: config.settings().speech.clone(),
+            diarizer: config.settings().diarizer.clone(),
         }
     }
 }
@@ -370,6 +376,7 @@ impl Server {
         let mut live = Live::clone(&self.live());
         edit(&mut live);
         self.speech.live_changed(&live.speech);
+        self.speech.diarizer_changed(&live.diarizer);
         self.live.store(std::sync::Arc::new(live));
     }
 
@@ -382,6 +389,7 @@ impl Server {
         let live = Live::of(config);
         // The speech worker's idle clock reads `speech.idle_unload` live.
         self.speech.live_changed(&live.speech);
+        self.speech.diarizer_changed(&live.diarizer);
         self.live.store(std::sync::Arc::new(live));
         if let Some(switcher) = &self.switcher {
             // The explicit switch by id (spec playground/05) names these
@@ -612,6 +620,7 @@ impl Server {
     /// speech model that is unavailable, saying so.
     pub fn with_speech(mut self, speech: std::sync::Arc<speech::Speech>) -> Self {
         speech.live_changed(&self.live().speech);
+        speech.diarizer_changed(&self.live().diarizer);
         self.speech = speech;
         self
     }
@@ -620,6 +629,13 @@ impl Server {
     /// what `main` resolved at start, until a live change applies another.
     pub fn with_speech_group(self, speech: config::schema::SpeechGroup) -> Self {
         self.update_live(|live| live.speech = speech);
+        self
+    }
+
+    /// Diarize as `diarizer` says (`diarizer.*`, spec speech/08): what `main`
+    /// resolved at start, until a live change applies another.
+    pub fn with_diarizer_group(self, diarizer: config::schema::DiarizerGroup) -> Self {
+        self.update_live(|live| live.diarizer = diarizer);
         self
     }
 

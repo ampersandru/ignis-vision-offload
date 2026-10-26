@@ -110,6 +110,12 @@ impl SpeechSession for TimedSession {
         }
         out
     }
+    fn cut(&mut self, at: usize) -> Result<(), SpeechError> {
+        let began = Instant::now();
+        let out = self.inner.cut(at);
+        self.calls.lock().unwrap().push(("cut", began.elapsed()));
+        out
+    }
 }
 
 impl SpeechExecutor for Timed {

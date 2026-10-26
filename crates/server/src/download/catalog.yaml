@@ -109,3 +109,13 @@ models:
     files:
       - { name: mmproj-Qwen3-ASR-0.6B-Q8_0.gguf, bytes: 214392608, sha256: "ee5e87436bcf8b1c550edd4300fd0516067d55b547611734d27fbc55ecaec3bc" }
       - { name: Qwen3-ASR-0.6B-Q8_0.gguf, bytes: 804749376, sha256: "027ad3329549cd2c14e4ebd7d104e0390566e06570270c33062529474ec56015" }
+
+  # The diarizer (`kind: diarizer`, spec speech/08, ADR 0069): Nemotron 3 Diarization, F16 (AC 2), converted
+  # by tools/speech-diarizer/convert.py from nvidia/Nemotron-3-Diarization @ f667ed73; OpenMDW-1.1 beside it.
+  - id: nemotron-3-diarization
+    repo: gpillon/Nemotron-3-Diarization-GGUF-ignis
+    revision: "d46d59d03be709db18e223b6bf92e8c32d14f422"
+    artifact: Nemotron-3-Diarization-F16.gguf
+    kind: diarizer
+    files:
+      - { name: Nemotron-3-Diarization-F16.gguf, bytes: 198805760, sha256: "f7a80981d178be5d683aee225166bc03806aac2d9b629f42f418d4e5fd2c8623" }
