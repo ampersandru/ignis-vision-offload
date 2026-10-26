@@ -366,6 +366,7 @@ describe("openListening", () => {
     expect(socket().sent).toEqual([
       {
         type: "session.update",
+        event_id: "listening_configuration",
         session: {
           type: "transcription",
           audio: {
@@ -438,6 +439,21 @@ describe("openListening", () => {
       { type: "item_failed", item: "item_4", message: "the speech model failed" },
       { type: "error", code: "ignis_audio_queue_full", message: "the session holds 120.0 s", eventId: "audio_37" },
       { type: "error", code: "ignis_diarizer_unavailable", message: "the diarizer is turned off", eventId: null },
+    ]);
+  });
+
+  it("configures again without speakers when the diarizer is unavailable, which refuses the whole update, and says why", () => {
+    const { socket, heard, session } = listen({ context: "", diarization: "live" });
+    socket().accept();
+    session.append(new Int16Array([1]));
+    expect(socket().sent[0]).toMatchObject({ event_id: "listening_configuration" });
+    socket().emit({ type: "error", error: { code: "ignis_diarizer_unavailable", message: "the diarizer is turned off (`diarizer.model` is `off`)", event_id: "listening_configuration" } });
+    expect(socket().sent[1]).toMatchObject({ type: "session.update", event_id: "listening_configuration", session: { ignis: { provisional_tail: true } } });
+    expect(JSON.stringify(socket().sent[1])).not.toContain("diarization");
+    socket().emit({ type: "session.updated", session: {} });
+    expect(socket().types()).toEqual(["session.update", "session.update", "input_audio_buffer.append"]);
+    expect(heard).toEqual([
+      { type: "error", code: "ignis_diarizer_unavailable", message: "the diarizer is turned off (`diarizer.model` is `off`)", eventId: "listening_configuration" },
     ]);
   });
 

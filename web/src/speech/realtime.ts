@@ -320,10 +320,17 @@ export type Listening = {
   close: () => void;
 };
 
+/** The event id of a listening's configuration: the `error` that refuses it names it. */
+export const CONFIGURATION_EVENT = "listening_configuration";
+
+/** The code of an update refused for the speakers it asks for: the session goes on without them (spec speech/08). */
+export const DIARIZER_UNAVAILABLE = "ignis_diarizer_unavailable";
+
 /** A listening's configuration (spec speech/07, "The session"). */
 function listeningConfiguration({ context, diarization }: ListeningOptions) {
   return {
     type: "session.update",
+    event_id: CONFIGURATION_EVENT,
     session: {
       type: "transcription",
       audio: {
@@ -348,7 +355,8 @@ function listeningConfiguration({ context, diarization }: ListeningOptions) {
  * audio waits, as a dictation's does, until the server has taken the
  * configuration. A refused upgrade is asked about as a dictation's is.
  */
-export function openListening(options: ListeningOptions, onEvent: (event: ListeningEvent) => void, deps: RealtimeDeps = {}): Listening {
+export function openListening(asked: ListeningOptions, onEvent: (event: ListeningEvent) => void, deps: RealtimeDeps = {}): Listening {
+  let options = asked;
   const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
   const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
   let context = options.context;
@@ -394,6 +402,11 @@ export function openListening(options: ListeningOptions, onEvent: (event: Listen
       case "conversation.item.input_audio_transcription.failed":
         return say({ type: "item_failed", item, message: event.error?.message ?? "the server could not transcribe it" });
       case "error":
+        // The diarizer refuses the whole update: configured again without speakers, the session goes on.
+        if (!configured && event.error?.event_id === CONFIGURATION_EVENT && event.error.code === DIARIZER_UNAVAILABLE && options.diarization !== null) {
+          options = { ...options, diarization: null };
+          send(listeningConfiguration({ ...options, context }));
+        }
         return say({
           type: "error",
           code: event.error?.code ?? null,
