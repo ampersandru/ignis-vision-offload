@@ -42,8 +42,5 @@ undoing it.
   never merged; `main` keeps only the validated decision.
 - A rejected enhancement is recorded in `.out-of-scope/<concept>.md`, the
   folder `/triage` keeps, created at the first rejection.
-- Every agent's worktree lives under `../.inference-qwen-worktrees/`, one per
-  issue, including those Claude Code would otherwise create in
-  `.claude/worktrees/` inside the repo.
 - The open issues with no category get `bug` or `enhancement` from a list an
   agent proposes and the owner approves before anything is applied (#367).

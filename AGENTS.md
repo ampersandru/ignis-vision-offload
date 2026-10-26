@@ -81,13 +81,6 @@ long as it runs. Restarting a server whose log holds an incident: copy
 `ignis-server.log` and its `.err` out of `.scratch/serve/` first, since
 `make start` rewrites both.
 
-### Worktrees
-
-Creating a git worktree: put it under `../.inference-qwen-worktrees/`, beside
-the repo root, one subdirectory per issue or feature. Every agent shares it
-whatever its tool, Claude Code included, whose own default is
-`.claude/worktrees/`.
-
 ### Orchestrated builds
 
 Coordinating implementer agents on a spec's tickets:

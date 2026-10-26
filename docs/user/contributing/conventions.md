@@ -81,8 +81,6 @@ pages under `docs/user/reference/` are generated: change the code, then run
 
 - Work happens on a branch per issue, merged into `main` with a merge commit
   that names the issue.
-- Agents keep every git worktree under `../.inference-qwen-worktrees/`, one
-  directory per issue, beside the repository.
 - A spec whose tickets agents build in parallel goes through an integration
   branch the owner merges into `main` locally, with no pull request; the
   coordinating session runs the GPU legs one at a time

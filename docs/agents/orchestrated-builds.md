@@ -6,10 +6,9 @@ the skill leaves open.
 
 ## Worktrees
 
-The integration branch and each implementer's branch get their own worktree in
-the shared sibling folder that AGENTS.md's Worktrees section names, one per
-ticket, every implementer branch starting from the integration branch. Each
-worktree builds into its own target directory: two worktrees on one
+The integration branch and each implementer's branch get their own worktree,
+one per ticket, every implementer branch starting from the integration branch.
+Each worktree builds into its own target directory: two worktrees on one
 `CARGO_TARGET_DIR` link each other's workspace crates, with no error unless a
 signature happens to break.
 
