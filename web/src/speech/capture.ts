@@ -3,7 +3,9 @@ import { CHUNK_SAMPLES, PROCESSOR, TARGET_RATE, WORKLET_SOURCE } from "./pcm.ts"
 // The mic, for one dictation (spec speech/04, "Capture"): asked for at the
 // press, run through the worklet in pcm.ts at the context's own rate, and let
 // go on every way out — Done, Esc, a closed connection, the page leaving — so
-// the browser's recording indicator never outlives a dictation (Q13). The
+// the browser's recording indicator never outlives a dictation (Q13). A
+// listening in the Transcribe view takes the mic the same way, and on a call
+// the shared audio of one `getDisplayMedia` pick too (spec speech/07). The
 // browser's objects are injectable, so the cleanup is testable without one.
 
 /** The browser, or the person, refused the mic: the cause pressing it again can clear. */
@@ -24,32 +26,88 @@ export type CaptureDeps = {
   moduleUrl?: () => string;
 };
 
+/** The person cancelled the call's pick, or the browser refused it. */
+export class CallNotShared extends Error {}
+
+/** The picked tab, window or screen shares no audio. */
+export class NoSharedAudio extends Error {}
+
+const defaults = (deps: CaptureDeps) => ({
+  createContext: deps.createContext ?? (() => new AudioContext()),
+  createNode: deps.createNode ?? ((context, name, options) => new AudioWorkletNode(context, name, options)),
+  moduleUrl: deps.moduleUrl ?? (() => URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "text/javascript" }))),
+});
+
 export async function startCapture(onChunk: (pcm: Int16Array) => void, deps: CaptureDeps = {}): Promise<Capture> {
   const getUserMedia = deps.getUserMedia ?? ((constraints) => navigator.mediaDevices.getUserMedia(constraints));
-  const createContext = deps.createContext ?? (() => new AudioContext());
-  const createNode = deps.createNode ?? ((context, name, options) => new AudioWorkletNode(context, name, options));
-  const moduleUrl = deps.moduleUrl ?? (() => URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "text/javascript" })));
+  // Made before the first await, inside the press's user activation: a context made later can stay suspended.
+  const context = defaults(deps).createContext();
+  let stream: MediaStream;
+  try {
+    stream = await getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (err) {
+    void context.close();
+    if (err instanceof Error && (err.name === "NotAllowedError" || err.name === "SecurityError")) throw new MicBlocked(err.message);
+    throw err;
+  }
+  return run(context, stream, onChunk, deps, true);
+}
 
-  let stream: MediaStream | null = null;
-  let context: AudioContext | null = null;
+/**
+ * A stream someone else picked, through the same worklet: a call's shared audio (spec speech/07). Its stop
+ * lets the worklet go and leaves the stream's tracks to whoever picked them, so a Pause needs no new pick.
+ */
+export async function captureStream(stream: MediaStream, onChunk: (pcm: Int16Array) => void, deps: CaptureDeps = {}): Promise<Capture> {
+  return run(defaults(deps).createContext(), stream, onChunk, deps, false);
+}
+
+/**
+ * A call's other side (spec speech/07, Q93): one `getDisplayMedia` pick with its audio — a tab's, the whole
+ * screen's system audio (on Windows every application's sound, mixed), or a window's where the browser offers
+ * it. The browser wants video with it; the page reads only the audio. `onEnded` is the browser's own "Stop
+ * sharing". Asked inside the press's user activation.
+ */
+export async function pickSharedAudio(
+  onEnded: () => void,
+  deps: { getDisplayMedia?: (options: DisplayMediaStreamOptions) => Promise<MediaStream> } = {},
+): Promise<MediaStream> {
+  const getDisplayMedia = deps.getDisplayMedia ?? ((options) => navigator.mediaDevices.getDisplayMedia(options));
+  let stream: MediaStream;
+  try {
+    stream = await getDisplayMedia({
+      video: true,
+      // The far side as it is: the page's own processing is for a voice in the room.
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      systemAudio: "include",
+      // Chrome 141+: a window's own audio, where the browser offers it.
+      windowAudio: "window",
+    } as DisplayMediaStreamOptions);
+  } catch (err) {
+    if (err instanceof Error && (err.name === "NotAllowedError" || err.name === "AbortError")) throw new CallNotShared(err.message);
+    throw err;
+  }
+  const audio = stream.getAudioTracks();
+  if (audio.length === 0) {
+    for (const track of stream.getTracks()) track.stop();
+    throw new NoSharedAudio("the pick shares no audio");
+  }
+  for (const track of audio) track.addEventListener("ended", onEnded);
+  return stream;
+}
+
+/** The worklet on `stream`, in `context`; `owned` streams are let go with it. */
+async function run(context: AudioContext, stream: MediaStream, onChunk: (pcm: Int16Array) => void, deps: CaptureDeps, owned: boolean): Promise<Capture> {
+  const { createNode, moduleUrl } = defaults(deps);
   let stopped = false;
   let flushed: (() => void) | null = null;
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    for (const track of stream?.getTracks() ?? []) track.stop();
-    void context?.close();
+    if (owned) for (const track of stream.getTracks()) track.stop();
+    void context.close();
     flushed?.();
   };
   try {
-    // Made before the first await, inside the press's user activation: a context made later can stay suspended.
-    context = createContext();
-    try {
-      stream = await getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-    } catch (err) {
-      if (err instanceof Error && (err.name === "NotAllowedError" || err.name === "SecurityError")) throw new MicBlocked(err.message);
-      throw err;
-    }
     const url = moduleUrl();
     try {
       await context.audioWorklet.addModule(url);
