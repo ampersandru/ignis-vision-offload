@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::{error_response, error_response_naming, ApiError};
-use crate::download::command::lists_file;
+use crate::download::command::{file_size, lists_file, FileKept};
 use crate::download::{CatalogEntry, EntryLock, Holder, NotLocked};
 use crate::model_switch::{Slot, Switcher};
 use crate::Server;
@@ -46,15 +46,6 @@ pub(crate) struct ModelRemoved {
     /// The files of the entry left in place, because another entry on disk
     /// or being downloaded also lists them: the entry then reads `partial`.
     files_kept: Vec<FileKept>,
-}
-
-/// A file a removal left, and the entry that also lists it.
-#[derive(Serialize, ToSchema)]
-pub(crate) struct FileKept {
-    /// Its name under `download.path`.
-    file: String,
-    /// The other entry's id.
-    by: String,
 }
 
 /// `POST /v1/models/remove` — delete a catalog entry's files.
@@ -111,8 +102,7 @@ pub(crate) async fn post_model_remove(State(server): State<Arc<Server>>, Json(re
     if let Some(reason) = in_use(&server, &entry, &catalog.dir) {
         return error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "model_in_use", reason, Some("model"));
     }
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
-    if crate::download::command::on_disk(&entry, &catalog.dir, &size_of) == crate::download::OnDisk::Absent {
+    if crate::download::command::on_disk(&entry, &catalog.dir, &file_size) == crate::download::OnDisk::Absent {
         return error_response_naming(
             StatusCode::CONFLICT,
             "invalid_request_error",
@@ -127,7 +117,7 @@ pub(crate) async fn post_model_remove(State(server): State<Arc<Server>>, Json(re
         // of it — `model download`, another server on the folder — is never
         // left writing a `.part` this deletes, and none begins meanwhile.
         let _lock = EntryLock::take(&entry, &catalog.dir, Holder::Server).map_err(|refused| match refused {
-            NotLocked::Held(err) => error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model")),
+            NotLocked::Held(err) => crate::download_http::locked(err),
             NotLocked::Failed(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "removal_failed", err.to_string()),
         })?;
         let removed = crate::download::command::remove(&entry, &catalog.catalog, &catalog.dir)
@@ -150,13 +140,12 @@ pub(crate) async fn post_model_remove(State(server): State<Arc<Server>>, Json(re
         dir = %catalog_dir.display(),
         bytes = removed.bytes,
         files = %removed.files.join(","),
-        kept = %removed.kept.iter().map(|(file, by)| format!("{file} (listed by {by})")).collect::<Vec<_>>().join(","),
+        kept = %removed.kept.iter().map(|kept| format!("{} (listed by {})", kept.file, kept.by)).collect::<Vec<_>>().join(","),
         "the entry's files were removed from the models folder; its next download fetches them again"
     );
-    let files_kept = removed.kept.into_iter().map(|(file, by)| FileKept { file, by }).collect();
     (
         StatusCode::OK,
-        Json(ModelRemoved { status: "removed", model: entry.id, bytes_freed: removed.bytes, files_removed: removed.files, files_kept }),
+        Json(ModelRemoved { status: "removed", model: entry.id, bytes_freed: removed.bytes, files_removed: removed.files, files_kept: removed.kept }),
     )
         .into_response()
 }

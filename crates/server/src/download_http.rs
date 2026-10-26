@@ -17,7 +17,7 @@
 //! from those files.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::extract::State;
@@ -29,7 +29,7 @@ use utoipa::ToSchema;
 
 use crate::api::{error_response, error_response_naming, ApiError};
 use crate::config::{ApiKey, Config};
-use crate::download::command::{on_disk, room_for, OnDisk};
+use crate::download::command::{file_size, on_disk, room_for, OnDisk};
 use crate::download::{CatalogEntry, Download, DownloadError, Downloader, Ended, EntryLock, Holder, NotLocked};
 use crate::Server;
 
@@ -283,8 +283,7 @@ pub(crate) async fn post_model_download(State(server): State<Arc<Server>>, Json(
             Some("model"),
         );
     }
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
-    if on_disk(entry, &catalog.dir, &size_of) == OnDisk::Complete {
+    if on_disk(entry, &catalog.dir, &file_size) == OnDisk::Complete {
         return error_response_naming(
             StatusCode::CONFLICT,
             "invalid_request_error",
@@ -343,7 +342,7 @@ fn disabled(message: &str) -> Response {
 
 /// `409 download_locked`: another fetch of the entry holds its lock (GitHub
 /// #379), as `err` says.
-fn locked(err: DownloadError) -> Response {
+pub(crate) fn locked(err: DownloadError) -> Response {
     error_response_naming(StatusCode::CONFLICT, "invalid_request_error", "download_locked", err.to_string(), Some("model"))
 }
 

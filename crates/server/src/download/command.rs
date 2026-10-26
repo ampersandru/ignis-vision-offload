@@ -101,6 +101,13 @@ pub fn bytes_on_disk(entry: &CatalogEntry, dir: &Path, size_of: &dyn Fn(&Path) -
         .sum()
 }
 
+/// The size of the file at `path`, read from the filesystem now; `None` when
+/// nothing is there, or no file: the probe [`on_disk`] and [`bytes_on_disk`]
+/// take everywhere but in their tests.
+pub fn file_size(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len())
+}
+
 /// Whether the volume `dir` is on has room for what of `entry` is still
 /// missing there plus `margin` (`download.free_margin`, GitHub #378), read
 /// from the filesystem now: what the Server view's Download, `model
@@ -108,8 +115,7 @@ pub fn bytes_on_disk(entry: &CatalogEntry, dir: &Path, size_of: &dyn Fn(&Path) -
 /// The reason, naming both numbers, when it has not. An entry with nothing
 /// missing writes nothing, so it always has room.
 pub fn room_for(entry: &CatalogEntry, dir: &Path, margin: u64) -> Result<(), String> {
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
-    let missing = entry.total_bytes().saturating_sub(bytes_on_disk(entry, dir, &size_of));
+    let missing = entry.total_bytes().saturating_sub(bytes_on_disk(entry, dir, &file_size));
     if missing == 0 {
         return Ok(());
     }
@@ -164,7 +170,24 @@ pub struct Removed {
     /// The bytes they held.
     pub bytes: u64,
     /// Each file left in place, with the entry that also lists it.
-    pub kept: Vec<(String, String)>,
+    pub kept: Vec<FileKept>,
+}
+
+/// A file a removal left, and the entry that also lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct FileKept {
+    /// Its name under `download.path`.
+    pub file: String,
+    /// The other entry's id.
+    pub by: String,
+}
+
+/// Another entry listing a file of the one a removal deletes: whether its
+/// shared files stay, and its lock, held while they do not.
+struct Sharer<'a> {
+    id: &'a str,
+    keeps: bool,
+    _lock: Option<super::EntryLock>,
 }
 
 /// Delete `entry`'s files under `dir`, finished or partial — each file at
@@ -182,18 +205,16 @@ pub struct Removed {
 /// cannot be deleted stops the removal, naming it and what was deleted
 /// before it.
 pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Removed, String> {
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
     let mut removed = Removed::default();
-    // Each entry sharing a file, once: whether it keeps its shared files,
-    // and its lock while it does not.
-    let mut others: Vec<(&str, bool, Option<super::EntryLock>)> = Vec::new();
+    // Each entry sharing a file, once.
+    let mut others: Vec<Sharer<'_>> = Vec::new();
     for file in &entry.files {
         let mut kept_by = None;
         for other in catalog.entries().iter().filter(|other| other.id != entry.id && other.files.iter().any(|theirs| theirs.name == file.name)) {
-            let keeps = match others.iter().find(|(id, ..)| *id == other.id) {
-                Some((_, keeps, _)) => *keeps,
+            let keeps = match others.iter().find(|sharer| sharer.id == other.id) {
+                Some(sharer) => sharer.keeps,
                 None => {
-                    let (keeps, lock) = if on_disk(other, dir, &size_of) == OnDisk::Complete {
+                    let (keeps, lock) = if on_disk(other, dir, &file_size) == OnDisk::Complete {
                         (true, None)
                     } else {
                         // Held, or not to be opened: that entry may be being
@@ -203,7 +224,7 @@ pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Rem
                             Err(_) => (true, None),
                         }
                     };
-                    others.push((other.id.as_str(), keeps, lock));
+                    others.push(Sharer { id: other.id.as_str(), keeps, _lock: lock });
                     keeps
                 }
             };
@@ -211,13 +232,13 @@ pub fn remove(entry: &CatalogEntry, catalog: &Catalog, dir: &Path) -> Result<Rem
                 kept_by = Some(other.id.clone());
             }
         }
-        if let Some(other) = kept_by {
-            removed.kept.push((file.name.clone(), other));
+        if let Some(by) = kept_by {
+            removed.kept.push(FileKept { file: file.name.clone(), by });
             continue;
         }
         let path = dir.join(&file.name);
         for path in [part_path(&path), path] {
-            let Some(bytes) = size_of(&path) else { continue };
+            let Some(bytes) = file_size(&path) else { continue };
             if let Err(err) = std::fs::remove_file(&path) {
                 let before = if removed.files.is_empty() { "nothing".to_owned() } else { removed.files.join(", ") };
                 return Err(format!("{} could not be deleted: {err}; deleted before it: {before}", path.display()));
@@ -367,9 +388,8 @@ pub fn render_list(rows: &[ListRow], format: ListFormat) -> String {
 pub async fn run(command: ModelCommand, out: &mut dyn Write, progress: Arc<dyn Fn(&str) + Send + Sync>) -> i32 {
     match command {
         ModelCommand::List { catalog, dir, format } => {
-            let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
             let family_of = |path: &Path| crate::loader::artifact_family(path).ok().flatten();
-            let rows = list_rows(&catalog, &dir, &size_of, &family_of);
+            let rows = list_rows(&catalog, &dir, &file_size, &family_of);
             let _ = out.write_all(render_list(&rows, format).as_bytes());
             0
         }

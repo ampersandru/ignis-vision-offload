@@ -103,11 +103,6 @@ impl Download {
         &self.entry
     }
 
-    /// The directory it fetches into.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// Stop it. Returns at once: the transfer stops at the next thing it
     /// waits for, and [`Download::wait`] then answers [`Ended::Cancelled`].
     /// One that has already ended stays as it ended.
@@ -119,8 +114,7 @@ impl Download {
     /// included ([`super::command::bytes_on_disk`]), read from the
     /// filesystem: running, cancelled or ended, what is there.
     pub fn bytes_on_disk(&self) -> u64 {
-        let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
-        super::command::bytes_on_disk(&self.entry, &self.dir, &size_of)
+        super::command::bytes_on_disk(&self.entry, &self.dir, &super::command::file_size)
     }
 
     /// How it ended, or `None` while it runs.

@@ -22,7 +22,7 @@ use utoipa::ToSchema;
 use crate::api::ApiError;
 use crate::config::field::scope;
 use crate::download::catalog::CatalogLayer;
-use crate::download::command::{lists_file, OnDisk};
+use crate::download::command::{file_size, lists_file, OnDisk};
 use crate::download_http::DownloadStatus;
 use crate::model_switch::Switcher;
 use crate::{ModelStatus, Server};
@@ -160,7 +160,6 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
     // `list_rows`, which reads each file once per listing: they never
     // disagree, as they did when a download landed files between two reads
     // (`absent` with bytes).
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
     let family_of = |path: &Path| crate::loader::artifact_family(path).ok().flatten();
     // GitHub #380: the model the server started on, and the files the known
     // models load from, which a removal of the entry listing them takes away.
@@ -222,14 +221,14 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
     }
     let mut seen = BTreeSet::new();
     if let Some(catalog) = switcher.and_then(|switcher| switcher.catalog()) {
-        for found in crate::download::command::list_rows(&catalog.catalog, &catalog.dir, &size_of, &family_of) {
+        for found in crate::download::command::list_rows(&catalog.catalog, &catalog.dir, &file_size, &family_of) {
             seen.insert(found.entry.id.clone());
             // A listed model of the same id wins over `download.path`, as it
             // does for a switch (`Switcher::resolve`): its file is where the
             // server would load it from, and gone it is absent, whatever
             // `download.path` holds.
             let (on_disk, bytes, family, landed) = match listed.get(&found.entry.id) {
-                Some(artifact) => match size_of(artifact) {
+                Some(artifact) => match file_size(artifact) {
                     Some(bytes) => (OnDisk::Complete, bytes, family_of(artifact).map(scope), bytes),
                     None => (OnDisk::Absent, found.entry.total_bytes(), None, 0),
                 },
@@ -239,7 +238,7 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
         }
     }
     for (id, artifact) in listed.iter().filter(|(id, _)| !seen.contains(*id)) {
-        let bytes = size_of(artifact);
+        let bytes = file_size(artifact);
         let on_disk = if bytes.is_some() { OnDisk::Complete } else { OnDisk::Absent };
         let family = bytes.and_then(|_| family_of(artifact)).map(scope);
         rows.push(row(id, CatalogSource::Known, on_disk, bytes, family, bytes.unwrap_or(0)));
