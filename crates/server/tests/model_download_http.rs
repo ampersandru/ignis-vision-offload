@@ -78,8 +78,10 @@ async fn until_row(app: &axum::Router, id: &str, wanted: impl Fn(&Value) -> bool
     panic!("{id}'s row never got there: {last}");
 }
 
+/// The files under `dir` but an entry's lock (`<artifact>.lock`, GitHub
+/// #379), which a fetch leaves there, empty and released, for the next.
 fn files_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| !name.ends_with(".lock")).collect();
     names.sort();
     names
 }
@@ -335,4 +337,96 @@ async fn a_server_without_downloads_answers_501() {
     let app = Server::from_active(loader.model("mock-a")).app();
     let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "qwen3.8-27b" }))).await;
     assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("download_unavailable")));
+}
+
+/// `ignis-server model download` of `ids` from `repo` into `dir`, as `main`
+/// runs it: its exit code and the lines it reported.
+async fn model_download(repo: &Repo, catalog: &ignis_server::download::Catalog, ids: &[&str], dir: &Path) -> (i32, Vec<String>) {
+    let command = ignis_server::download::ModelCommand::Download {
+        entries: ids.iter().map(|id| catalog.entry(id).expect("a catalog entry").clone()).collect(),
+        dir: dir.to_path_buf(),
+        endpoint: repo.endpoint(),
+        token: None,
+        free_margin: 0,
+    };
+    let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let collected = Arc::clone(&lines);
+    let code = ignis_server::download::command::run(command, &mut std::io::sink(), Arc::new(move |line: &str| collected.lock().unwrap().push(line.to_owned()))).await;
+    let lines = lines.lock().unwrap().clone();
+    (code, lines)
+}
+
+/// GitHub #379: the command refuses an entry the server is downloading,
+/// saying so, and fetches nothing of it; another entry it fetches at the
+/// same time, beside the server's download, which lands as it would have.
+#[tokio::test]
+async fn model_download_refuses_an_entry_the_server_is_downloading_and_fetches_another_meanwhile() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "lock-server-first", &[("acme-a", 32), ("acme-b", 32)]);
+    let (catalog, dir) = (Arc::clone(&models.catalog), models.dir.clone());
+    repo.hold(&files_of("acme-a").artifact.0, 4096);
+    let app = server_with(&loader, models, &config(&repo, &[])).app();
+    let (status, _) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-a" }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    until_row(&app, "acme-a", |row| row["bytes_on_disk"] == json!(1 + 4096)).await;
+
+    let (code, lines) = model_download(&repo, &catalog, &["acme-a"], &dir).await;
+    assert_eq!(code, 1, "{lines:?}");
+    assert!(lines.iter().any(|line| line.starts_with("acme-a: failed: acme-a is already being downloaded")), "{lines:?}");
+    assert_eq!(repo.seen().iter().filter(|seen| seen.file.starts_with("acme-a")).count(), 2, "the command sent nothing for it: {:?}", repo.seen());
+
+    let (code, lines) = model_download(&repo, &catalog, &["acme-b"], &dir).await;
+    assert_eq!(code, 0, "{lines:?}");
+    let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
+    assert_eq!((row(&rows, "acme-a")["download"].clone(), row(&rows, "acme-b")["on_disk"].clone()), (json!("running"), json!("complete")));
+
+    repo.release();
+    let landed = until_row(&app, "acme-a", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
+    assert_eq!(landed["bytes_on_disk"], json!(files_of("acme-a").total()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// GitHub #379: the page refuses an entry the command is downloading with
+/// `409 download_locked`, saying so, and starts another entry meanwhile;
+/// once the command has ended, the entry is free again.
+#[tokio::test]
+async fn the_page_refuses_an_entry_model_download_is_downloading_and_starts_another_meanwhile() {
+    let repo = Repo::start().await;
+    let loader = MockLoader::new();
+    let models = catalog_served(&repo, "lock-command-first", &[("acme-a", 32), ("acme-b", 32)]);
+    let (catalog, dir) = (Arc::clone(&models.catalog), models.dir.clone());
+    repo.hold(&files_of("acme-a").artifact.0, 4096);
+    let app = server_with(&loader, models, &config(&repo, &[])).app();
+
+    let command = model_download(&repo, &catalog, &["acme-a"], &dir);
+    let page = async {
+        // The command's bytes, as the server's catalog reads them.
+        let held = until_row(&app, "acme-a", |row| row["bytes_on_disk"] == json!(1 + 4096)).await;
+        assert_eq!(held["download"], "none", "not the server's download: {held}");
+        let (status, refused) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-a" }))).await;
+        assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert!(message.contains("acme-a is already being downloaded") && message.contains("model download"), "{message}");
+        let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
+        assert!(row(&rows, "acme-a").get("download_reason").is_none(), "a refusal is no failure: {rows}");
+        // Short of room too, it is refused for the lock: a refusal for room
+        // kept on the row would outlive the command that lands the entry.
+        let short = CatalogModels { catalog: Arc::clone(&catalog), dir: dir.clone() };
+        let short = server_with(&loader, short, &config(&repo, &["--download-free-margin", "1000000G"])).app();
+        let (status, refused) = send(&short, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-a" }))).await;
+        assert_eq!((status, refused["error"]["code"].clone()), (StatusCode::CONFLICT, json!("download_locked")), "{refused}");
+        let (_, rows) = send(&short, Method::GET, "/v1/models/catalog", None).await;
+        assert!(row(&rows, "acme-a").get("download_reason").is_none(), "no refusal for room left behind: {rows}");
+
+        let (status, accepted) = send(&app, Method::POST, "/v1/models/download", Some(json!({ "model": "acme-b" }))).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        until_row(&app, "acme-b", |row| row["on_disk"] == "complete" && row["download"] == "none").await;
+        repo.release();
+    };
+    let ((code, lines), ()) = tokio::join!(command, page);
+    assert_eq!(code, 0, "{lines:?}");
+    let (_, rows) = send(&app, Method::GET, "/v1/models/catalog", None).await;
+    assert_eq!(row(&rows, "acme-a")["on_disk"], "complete");
+    let _ = std::fs::remove_dir_all(dir);
 }

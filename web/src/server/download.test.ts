@@ -79,6 +79,13 @@ describe("afterDownload", () => {
     const short = { ok: false as const, status: 507, message: "not enough room for x under ./models: 2147483648 bytes needed", code: "download_no_room" };
     expect(afterDownload(short)).toEqual({ refusal: null, follow: true });
   });
+
+  it("shows why an entry `model download` is fetching is refused, and follows nothing: no row of this server runs", () => {
+    // GitHub #379: the server's refusal names the lock's holder; the command's download is not this server's to follow.
+    const message = "qwen3.8-27b is already being downloaded into ./models, by a server or by `ignis-server model download`, which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends";
+    const locked = { ok: false as const, status: 409, message, code: "download_locked" };
+    expect(afterDownload(locked)).toEqual({ refusal: message, follow: false });
+  });
 });
 
 describe("followDownloads", () => {

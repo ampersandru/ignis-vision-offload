@@ -10,8 +10,9 @@
 //! known model is `complete` when its artifact is a file, else `absent`. No
 //! row carries a path: the page switches by id.
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -142,7 +143,17 @@ fn rows(server: &Server) -> Vec<CatalogRow> {
     // `active` still holds is the torn-down one, so no row is loaded and its
     // model is a way out — "Load" on the unloaded model loads it.
     let serving = !status.no_model_loaded();
-    let size_of = |path: &Path| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len());
+    // Each file's size is read once per listing, and every row is taken from
+    // that one reading: a row's `on_disk` (from `list_rows`) and its
+    // `bytes_on_disk` (read after it) never disagree, as they did when a
+    // download landed files between the two reads (`absent` with bytes).
+    let sizes = RefCell::new(HashMap::<PathBuf, Option<u64>>::new());
+    let size_of = |path: &Path| {
+        *sizes
+            .borrow_mut()
+            .entry(path.to_path_buf())
+            .or_insert_with(|| std::fs::metadata(path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len()))
+    };
     let family_of = |path: &Path| crate::loader::artifact_family(path).ok().flatten();
     let row = |id: &str, source, on_disk: OnDisk, bytes, family, bytes_on_disk| {
         let loaded = serving && id == loaded_id;

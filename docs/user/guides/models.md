@@ -104,6 +104,29 @@ starts a download.
 
 A client configured with two known models reloads the server back and forth: opencode sends its `small_model` requests (titles, summaries) to the id named by `small_model`, so a `model` and a `small_model` naming different ignis ids switch the server on alternate requests, 13-33 s each. The same holds for a front end that picks its ids from `GET /v1/models`, which lists every servable model: Open WebUI's task model (titles, tags, follow-ups) or Hermes set to another listed id than the chat's does it too. Point both at the same id, or start with `--switch-allow-implicit false`. The Playground's chat and Decide never cause a switch: their requests name no model, so the server serves the one loaded, and the header and the context limit follow it, read again from `GET /v1/models` when a turn starts. The Playground switches only when asked to: **Load** on its Server view, **Generate** and **Edit** on its Image view with a text model loaded ([in the Playground](../api/images.md)), the chat's `make_image` tool (to the image model and back), and the chat's picker for the next message's model ([the Playground](../playground/index.md)); each of these switches with `POST /v1/models/switch` or by naming the image model, never by a chat request naming a model.
 
+### One writer per entry
+
+Every fetch of an entry holds the entry's lock for as long as it runs: the
+command's, a server's start, and a server's download from its Server view
+alike. The lock is `<artifact>.lock`, beside the entry's files in the folder
+it fetches into. A second fetch of the same entry into the same folder is
+refused before it fetches anything, so two never write one `.part`:
+
+```
+qwen3.8-27b: failed: qwen3.8-27b is already being downloaded into ./models, by a server or by `ignis-server model download`, which holds ./models/qwen3_8_27b_nvfp4full-v2.ninfer.lock: one writer per entry, so this one fetched nothing; try again once that download ends
+```
+
+The command exits 1, the start is refused, and the Server view's **Download**
+answers `409 download_locked`; try again once the other fetch ends. The
+**Download** answers it even on a disk short of
+[room](#room-on-the-disk---download-free-margin), so no refusal for room stays
+on the row of an entry the other fetch then lands. Two
+different entries are fetched at the same time. The lock is the operating
+system's, `flock` on Linux and `LockFileEx` on Windows: it ends with the
+fetch, whether the fetch verified, failed or was cancelled, and with the
+process holding it, killed or crashed, so it is never cleared by hand. The
+empty `.lock` file stays in the folder for the next fetch of the entry.
+
 ## Downloading from the Server view: `POST /v1/models/download`
 
 A running server downloads a catalog entry itself, while it keeps serving:
@@ -142,6 +165,7 @@ itself at the next start: a partial entry's next download resumes it.
 | `403 download_disabled` | `--download-enabled false` (the server never uses the network) or `--download-from-ui false`; the message names which. |
 | `404 model_not_found` | `model` is not a catalog entry. |
 | `409 download_in_progress` | A download already runs, named in the message: one at a time, never queued. |
+| `409 download_locked` | Another fetch of this entry into `--download-path` holds its lock: `model download`, or another server on the same folder ([one writer per entry](#one-writer-per-entry)). |
 | `409 model_above_card_class` | The entry's `card_class` is above this card's. |
 | `409 model_already_downloaded` | Every file of it is already on disk. |
 | `503 model_switching` | A switch is under way; retry once it lands. |
