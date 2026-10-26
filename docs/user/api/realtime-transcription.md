@@ -121,7 +121,7 @@ first append; under `server_vad` an item is one utterance the server found.
 
 A session holds at most `speech.max_queued_audio_seconds` (120) of audio that
 is not computed yet: received, and still waiting for the speech model's
-windows or the diarizer's steps. An append that would take it past is
+windows or the diarizer's steps, a second that both wait for counted once. An append that would take it past is
 refused with an `error`, `ignis_audio_queue_full`, before any of it is read,
 and the session stays open: send it again once the session catches up. A
 client fed at real time never meets it; one that sends a file flat out paces

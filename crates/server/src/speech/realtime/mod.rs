@@ -264,12 +264,13 @@ enum Outcome {
     Unheard(String),
 }
 
-/// A unit is out of the worker: what it says, if anything, and the samples
-/// it carried.
+/// A unit is out of the worker: what it says, if anything, the samples it
+/// carried, and whether it was the speakers'.
 struct Done {
     item: u64,
     outcome: Option<Outcome>,
     samples: usize,
+    speakers: bool,
 }
 
 /// Why an item failed.
@@ -388,9 +389,10 @@ struct Connection {
     refresh_queued: Instant,
     refresh_hold: Instant,
     /// This socket's units queued on the worker and not yet out of it, and
-    /// the 16 kHz samples they carry.
+    /// the 16 kHz samples they carry: the speech model's, and the speakers'.
     in_worker: usize,
     in_worker_samples: usize,
+    speakers_in_worker_samples: usize,
     outbox: Vec<Value>,
     next_event: u64,
     /// The client's latest text or binary frame, or the end of the latest
@@ -569,6 +571,7 @@ impl Connection {
             refresh_hold: Instant::now(),
             in_worker: 0,
             in_worker_samples: 0,
+            speakers_in_worker_samples: 0,
             outbox: Vec::new(),
             next_event: 0,
             quiet_since: Instant::now(),
@@ -775,16 +778,21 @@ impl Connection {
             match progress {
                 Progress::More => Step::More,
                 Progress::Done(outcome) => {
-                    let _ = results.send(Done { item: seq, outcome, samples });
+                    let _ = results.send(Done { item: seq, outcome, samples, speakers });
                     Step::Done
                 }
             }
         });
         self.in_worker += 1;
-        self.in_worker_samples += samples;
         match speakers {
-            true => self.server.speech.submit_speakers(&self.guard, task),
-            false => self.server.speech.submit_interactive(&self.guard, task),
+            true => {
+                self.speakers_in_worker_samples += samples;
+                self.server.speech.submit_speakers(&self.guard, task);
+            }
+            false => {
+                self.in_worker_samples += samples;
+                self.server.speech.submit_interactive(&self.guard, task);
+            }
         }
     }
 
@@ -1178,7 +1186,10 @@ impl Connection {
     /// A unit is out of the worker.
     fn done(&mut self, done: Done) {
         self.in_worker -= 1;
-        self.in_worker_samples -= done.samples;
+        match done.speakers {
+            true => self.speakers_in_worker_samples -= done.samples,
+            false => self.in_worker_samples -= done.samples,
+        }
         let Some(outcome) = done.outcome else { return };
         let outcome = match outcome {
             Outcome::Opened(due) => return self.speakers_opened(due),
@@ -1399,12 +1410,14 @@ impl Connection {
         self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode == Diarization::File)));
     }
 
-    /// The audio the session holds that is not computed yet: the current
-    /// item's not yet queued, the speakers' not yet sent, and what the units
-    /// in the worker carry.
+    /// The audio the session holds that is not computed yet, each sample
+    /// counted once however many consumers hold it: the larger of the speech
+    /// model's (the current item's samples not yet queued, and its units'
+    /// in the worker) and the speakers' (their samples not yet sent, and
+    /// their units' in the worker).
     fn uncomputed(&self) -> usize {
         let speakers = self.speakers.as_ref().map_or(0, |speakers| speakers.pending.len());
-        self.pending.len() + speakers + self.in_worker_samples
+        (self.pending.len() + self.in_worker_samples).max(speakers + self.speakers_in_worker_samples)
     }
 
     /// Queue the diarizer's next step once the audio it waits for is heard:

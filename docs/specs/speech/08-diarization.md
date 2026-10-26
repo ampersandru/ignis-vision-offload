@@ -371,8 +371,9 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
   (spec 07 numbers the speakers by first appearance).
 - The length guard's pause cut lands at the end of the quiet VAD frame, its timed cut at the end of the frame where the
   item reaches N plus the search; idle-timeout items and items a commit makes are not guarded.
-- **The queue limit counts the audio not yet computed** (samples not yet queued, speaker samples not yet sent, samples
-  in units still in the worker), not the audio since the last `completed`: read literally, a dictation longer than the
+- **The queue limit counts the audio not yet computed**, each sample once: the larger of the speech model's (samples
+  not yet queued and in its units still in the worker) and the speakers' (samples not yet sent and in their units in
+  the worker), not the audio since the last `completed`: read literally, a dictation longer than the
   limit (its guard off) would be refused at real time. (Decision D3.)
 - **ADR 0046's applicability is judged per model slot:** a family judges only the fields of its own slot (the active
   model, or a model loaded beside it, as the speech model and the diarizer are), so a `diarizer.*` value is not

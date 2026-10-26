@@ -324,6 +324,44 @@ async fn an_append_past_the_queued_audio_is_refused_and_the_session_stays_open()
     assert_eq!(executor.samples_pushed(), WINDOW + 16_000 + 32_000, "the refused append went nowhere");
 }
 
+/// The queue limit counts each sample once, however many consumers hold it
+/// (spec speech/08, Q99): the audio the session holds not computed yet is the
+/// larger of the speech model's and the diarizer's. At a file geometry whose
+/// first step needs 83 s, the diarizer computes none of the clip, so the
+/// session holds its 9.06 s (the speech model holds less: the turn and its
+/// leading silence). Under a 10 s limit the whole clip and 0.9 s more are
+/// taken; 0.1 s past them is refused, naming the 10.0 s held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_diarized_session_counts_its_audio_once_against_the_queue_limit() {
+    let executor = Arc::new(FakeExecutor::saying(&["ciao"]));
+    let diarizer = hearing(|_| 0);
+    let (server, _dir) = speech::server_with_diarizer(
+        Arc::clone(&executor),
+        Arc::clone(&diarizer),
+        |group| {
+            group.partial_interval_ms = 60_000;
+            group.max_queued_audio_seconds = 10;
+        },
+        |group| group.file_chunk_frames = 1_000,
+    );
+    let live = live(server).await;
+    let (mut socket, _) = session(&live).await;
+    send(&mut socket, update(json!({ "audio": { "input": { "format": { "type": "audio/pcm", "rate": 16000 } } }, "ignis": { "diarization": "file" } }))).await;
+    assert_eq!(next_event(&mut socket).await["type"], "session.updated");
+    send_clip(&mut socket, 0, 144_960).await;
+    let silence = |samples: usize, id: &str| json!({ "type": "input_audio_buffer.append", "event_id": id, "audio": base64(&vec![0; 2 * samples]) });
+    send(&mut socket, silence(14_400, "fits")).await;
+    send(&mut socket, silence(1_600, "past")).await;
+    let mut events = Vec::new();
+    while of(&events, "error").is_empty() {
+        events.push(next_event(&mut socket).await);
+    }
+    let error = of(&events, "error")[0];
+    assert_eq!((error["error"]["code"].as_str(), error["error"]["event_id"].as_str()), (Some("ignis_audio_queue_full"), Some("past")), "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("holds 10.0 s"), "{message}");
+}
+
 /// AC 10 (Q113): the diarizer's steps rank below the windows and commits and
 /// above the refreshes: a refresh is skipped, never queued, while a step of
 /// its session is in the worker. With a slow speech model and a slower
