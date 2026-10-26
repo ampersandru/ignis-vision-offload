@@ -178,6 +178,7 @@ itself at the next start: a partial entry's next download, the Server view's
 | `409 download_locked` | Another fetch of this entry into `--download-path` holds its lock: `model download`, or another server on the same folder ([one writer per entry](#one-writer-per-entry)). |
 | `409 model_above_card_class` | The entry's `card_class` is above this card's. |
 | `409 model_already_downloaded` | Every file of it is already on disk. |
+| `500 download_failed` | The download could not begin: the server could not build its HTTP client, or could not open the entry's lock file under `--download-path` (a folder it cannot create or write to); the message says which. Nothing was fetched, and the row keeps no reason. |
 | `503 model_switching` | A switch is under way; retry once it lands. |
 | `507 download_no_room` | The models folder's volume has less free space than the entry's bytes still missing plus `--download-free-margin`; the row keeps the reason ([Room on the disk](#room-on-the-disk---download-free-margin)). |
 

@@ -176,6 +176,10 @@ shown in the model band
 - `409 model_already_downloaded`: the entry is on disk; **Load** switches to it.
 - `409 model_above_card_class`: the card cannot load the entry (**Not for this
   card**).
+- `500 download_failed`: the download could not begin, the message says why:
+  most often the entry's `<artifact>.lock` cannot be opened, because the
+  server cannot create or write to `--download-path`. Give the server's user
+  write access to that folder, or point `--download-path` at one it can write.
 - `507 download_no_room`: the models folder has no room for the entry; the
   reason shows under its row instead of the band
   ([`not enough room for … under …`](#not-enough-room-for--under-)).
