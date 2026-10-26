@@ -53,8 +53,9 @@
 //!   speaker inside an item cuts it there, the audio past the change heard
 //!   already moved to the next item and the item decoded again up to it. No
 //!   text is fixed before an item ends; its end sends one delta, its speaker
-//!   and `completed`, once the frames cover it, which a copy of the stream
-//!   finished gives when no more audio comes.
+//!   and `completed`, once the frames cover it. A stream that stalls, no
+//!   audio for as long as its next step still needs at real time and the
+//!   client's last piece again, gets them from a copy of it finished.
 //! - **The length guard** (spec speech/08). An item past
 //!   `speech.max_utterance_seconds` (the session's
 //!   `session.ignis.max_utterance_seconds` first) ends at the VAD's next pause
@@ -125,7 +126,7 @@ Turn detection. Under `server_vad` (the default) the server finds the speech its
 
 The length guard. Under `server_vad`, once an item holds `speech.max_utterance_seconds` (120; `session.ignis.max_utterance_seconds` overrides it, `0` off) of audio, the server ends it at the next 32 ms the VAD hears under `threshold`, or `speech.utterance_cut_search_ms` (2000) later at the latest, where the audio is: `speech_stopped` with `audio_end_ms` at the cut, `committed`, then `speech_started` for a new item with `audio_start_ms` at the cut, which takes no prefix padding and is fed after the leading silence. The search looks forward only.
 
-Speakers. With `session.ignis.diarization` (`\"live\"` or `\"file\"`, the diarizer's geometry; only under `server_vad`) the diarizer, Nemotron 3 Diarization on the CPU, reads the session's audio as the VAD does and tells up to 8 speakers apart, numbered 0 to 7 in the order they first spoke. A change of speaker inside an item ends it at the change, with the events of the length guard's cut at the new speaker's first 80 ms: the item ended is decoded again from its audio up to the change, and the audio from the change on is the new item's. In such a session no text is fixed before an item ends: the provisional tail carries all of it, and the item's end sends one `delta` with the whole transcript, then `ignis.input_audio_transcription.speaker` `{item_id, content_index, speaker}`, then `completed`, once the diarizer's frames cover the item's end (with no more audio, it scores what it heard past its last step at once). An item with no speech gets no speaker. A diarizer that fails is an `error`, `ignis_diarizer_failed`, and the session goes on without speakers.
+Speakers. With `session.ignis.diarization` (`\"live\"` or `\"file\"`, the diarizer's geometry; only under `server_vad`) the diarizer, Nemotron 3 Diarization on the CPU, reads the session's audio as the VAD does and tells up to 8 speakers apart, numbered 0 to 7 in the order they first spoke. A change of speaker inside an item ends it at the change, with the events of the length guard's cut at the new speaker's first 80 ms: the item ended is decoded again from its audio up to the change, and the audio from the change on is the new item's. In such a session no text is fixed before an item ends: the provisional tail carries all of it, and the item's end sends one `delta` with the whole transcript, then `ignis.input_audio_transcription.speaker` `{item_id, content_index, speaker}`, then `completed`, once the diarizer's frames cover the item's end (when no audio comes for as long as the diarizer's next step still needs at real time, and the client's last piece again, it scores what it heard past its last step as if the audio ended there). An item with no speech gets no speaker. A diarizer that fails is an `error`, `ignis_diarizer_failed`, and the session goes on without speakers.
 
 Client events, each a text frame of one JSON object:
 - `session.update` with `session.type: \"transcription\"`, answered `session.updated` with the effective configuration. It names only what it changes; `null` puts a field back to its default; one refused field refuses the whole update. `audio.input.format.rate` is 24000 (resampled to 16 kHz) or 16000 (the model's own, an ignis extension); `audio/pcmu` and `audio/pcma` (G.711) are refused. `transcription.model` is absent, the served id or one of `speech.compat_names`; a text or image model's id is an `error` with `model_kind_mismatch`, any other `model_not_found`. `transcription.prompt` and `transcription.keywords` are the context, prefilled when the update arrives (a change while an item holds audio applies from the next item); `transcription.language` and `transcription.languages` force or detect the language as `POST /v1/audio/transcriptions` does. `transcription.delay` is inert: the live transcript refreshes at most every `speech.partial_interval_ms`. `turn_detection` takes `null` or `{type: \"server_vad\"}` with any of `threshold` (0 to 1), `prefix_padding_ms`, `silence_duration_ms` and `idle_timeout_ms` (each at most `speech.max_clip_seconds`): a field left out keeps its value, `null` is the server's default (no idle timeout); `create_response` and `interrupt_response` are inert, since they belong to conversation sessions; `semantic_vad` is refused. A switch between `null` and `server_vad` while an item holds audio holds from the next item; `server_vad`'s fields hold at once. `noise_reduction` takes `null`; `near_field` and `far_field` are refused. `include: [\"item.input_audio_transcription.logprobs\"]` is refused. `session.ignis.provisional_tail: true` opts in to the provisional tail; `session.ignis.diarization` asks for speakers (above), refused on manual commit naming `turn_detection`, and with the diarizer unavailable refused with the reason (`ignis_diarizer_unavailable`), the session going on without speakers; `session.ignis.max_utterance_seconds` is the length guard's limit (`null` the server's, `0` off); any other key under `session.ignis` is an `error` naming it and the three.
@@ -226,7 +227,7 @@ enum Unit {
     /// Push the stream's next samples, then score its next step.
     Diarize(Vec<f32>),
     /// Push the stream's next samples, then score what it heard past its
-    /// last step on a copy of it, as if it ended now.
+    /// last step on a copy of it, as if it ended now: the stream stalled.
     Tail(Vec<f32>),
 }
 
@@ -264,12 +265,13 @@ enum Outcome {
     Unheard(String),
 }
 
-/// A unit is out of the worker: what it says, if anything, and the samples
-/// it carried.
+/// A unit is out of the worker: what it says, if anything, the samples it
+/// carried, and whether it was the speakers'.
 struct Done {
     item: u64,
     outcome: Option<Outcome>,
     samples: usize,
+    speakers: bool,
 }
 
 /// Why an item failed.
@@ -388,9 +390,10 @@ struct Connection {
     refresh_queued: Instant,
     refresh_hold: Instant,
     /// This socket's units queued on the worker and not yet out of it, and
-    /// the 16 kHz samples they carry.
+    /// the 16 kHz samples they carry: the speech model's, and the speakers'.
     in_worker: usize,
     in_worker_samples: usize,
+    speakers_in_worker_samples: usize,
     outbox: Vec<Value>,
     next_event: u64,
     /// The client's latest text or binary frame, or the end of the latest
@@ -426,38 +429,37 @@ struct Diarized {
     /// A step is in the worker; a tail is.
     stepping: bool,
     tailing: bool,
-    /// The frames scored, and the frames the latest tail covered.
+    /// The frames scored, and the latest tail's: the steps' with the frames
+    /// heard past them, until the steps reach as far.
     frames: Speakers,
-    tail_end: usize,
+    tail: Option<Speakers>,
     /// Set when the speakers stop or the socket ends: its units still queued
     /// do nothing.
     cancel: Arc<AtomicBool>,
     /// The diarizer failed: the session goes on without speakers.
     failed: bool,
     /// What the session's log line says when its speakers end: the channels
-    /// the items were given (a bit each), and the steps' compute times.
+    /// the items were given (a bit each), the steps' compute times, and the
+    /// tails run.
     heard_speakers: u32,
     steps: u32,
     step_total: Duration,
     step_max: Duration,
-    /// When the session had heard so many samples, the latest minute of it,
-    /// and the most a frame waited from its first sample's arrival to its
-    /// step's probabilities: the diarizer's pace (spec speech/08, AC 11).
-    heard_at: VecDeque<(u64, Instant)>,
+    tails: u32,
+    /// When the audio arrived, and the most a frame waited from its first
+    /// sample's arrival to its step's probabilities: the diarizer's pace
+    /// (spec speech/08, AC 11).
+    arrivals: Arrivals,
     lag_max: Duration,
     /// The items given a speaker.
     items: u32,
 }
 
-/// How far back [`Diarized::heard_at`] reaches, in samples: a minute, past the
-/// file geometry's latency.
-const HEARD_AT_SAMPLES: u64 = 60 * TARGET_RATE as u64;
-
 impl Diarized {
     /// The session's one log line about its speakers (spec speech/08, Out of
-    /// Scope): how many were heard, what a step cost on the worker, and how
-    /// long a frame waited for its probabilities, the figures a person tunes
-    /// `diarizer.*` by. Numbers only.
+    /// Scope): how many were heard, what a step cost on the worker, the tails
+    /// run, and how long a frame waited for its probabilities, the figures a
+    /// person tunes `diarizer.*` by. Numbers only.
     fn log(&self, session: &str) {
         let mean = self.step_total.checked_div(self.steps).unwrap_or_default();
         tracing::info!(
@@ -467,15 +469,11 @@ impl Diarized {
             steps = self.steps,
             step_mean_ms = mean.as_secs_f64() * 1000.0,
             step_max_ms = self.step_max.as_secs_f64() * 1000.0,
+            tails = self.tails,
             items = self.items,
             lag_max_ms = self.lag_max.as_secs_f64() * 1000.0,
             "a session with speakers ended"
         );
-    }
-
-    /// When the session's sample `sample` had arrived, while it is recent.
-    fn arrived(&self, sample: u64) -> Option<Instant> {
-        self.heard_at.iter().find(|(heard, _)| *heard >= sample).map(|(_, at)| *at)
     }
 
     /// The frame a session sample is in, from the stream's first: the first
@@ -488,6 +486,62 @@ impl Diarized {
     /// The session sample frame `frame` starts at.
     fn sample(&self, frame: usize) -> u64 {
         self.origin + (frame * FRAME_SAMPLES) as u64
+    }
+
+    /// When the stream has stalled (spec speech/08): its latest audio as long
+    /// ago as the samples its next step still waits for take at real time,
+    /// and its latest piece's again, since a client at real-time pace sends a
+    /// piece that long after the one before. `None` before the stream opens.
+    fn stalls_at(&self) -> Option<Instant> {
+        let due = self.due?;
+        let (at, piece) = self.arrivals.latest();
+        let short = due.saturating_sub(self.sent + self.pending.len() as u64);
+        Some(at + Duration::from_secs_f64((short + piece) as f64 / f64::from(TARGET_RATE)))
+    }
+}
+
+/// When the session had heard so many samples, an entry per piece of audio
+/// heard: when a frame's first sample arrived, for the diarizer's pace (spec
+/// speech/08, AC 11), and when the latest piece did, for its stall. It keeps
+/// what no step has scored yet, at any geometry's latency: audio the queue
+/// limit bounds, with a step.
+struct Arrivals {
+    heard: VecDeque<(u64, Instant)>,
+    /// The samples the latest piece brought.
+    piece: u64,
+}
+
+impl Arrivals {
+    /// The session had heard `heard` samples at `at`, when the speakers
+    /// started.
+    fn new(heard: u64, at: Instant) -> Arrivals {
+        Arrivals { heard: VecDeque::from([(heard, at)]), piece: 0 }
+    }
+
+    /// The session had heard `heard` samples at `at`.
+    fn heard(&mut self, heard: u64, at: Instant) {
+        let (before, _) = self.heard.back().expect("an arrival from the start");
+        self.piece = heard - before;
+        self.heard.push_back((heard, at));
+    }
+
+    /// When the session's sample `sample` had arrived, while it is kept.
+    fn arrived(&self, sample: u64) -> Option<Instant> {
+        self.heard.iter().find(|(heard, _)| *heard >= sample).map(|(_, at)| *at)
+    }
+
+    /// When the latest piece arrived, and the samples it brought.
+    fn latest(&self) -> (Instant, u64) {
+        let (_, at) = self.heard.back().expect("an arrival from the start");
+        (*at, self.piece)
+    }
+
+    /// The steps scored the session's samples before `sample`: the entries
+    /// before the one at or just before it go.
+    fn scored(&mut self, sample: u64) {
+        while self.heard.get(1).is_some_and(|(heard, _)| *heard <= sample) {
+            self.heard.pop_front();
+        }
     }
 }
 
@@ -569,6 +623,7 @@ impl Connection {
             refresh_hold: Instant::now(),
             in_worker: 0,
             in_worker_samples: 0,
+            speakers_in_worker_samples: 0,
             outbox: Vec::new(),
             next_event: 0,
             quiet_since: Instant::now(),
@@ -775,16 +830,21 @@ impl Connection {
             match progress {
                 Progress::More => Step::More,
                 Progress::Done(outcome) => {
-                    let _ = results.send(Done { item: seq, outcome, samples });
+                    let _ = results.send(Done { item: seq, outcome, samples, speakers });
                     Step::Done
                 }
             }
         });
         self.in_worker += 1;
-        self.in_worker_samples += samples;
         match speakers {
-            true => self.server.speech.submit_speakers(&self.guard, task),
-            false => self.server.speech.submit_interactive(&self.guard, task),
+            true => {
+                self.speakers_in_worker_samples += samples;
+                self.server.speech.submit_speakers(&self.guard, task);
+            }
+            false => {
+                self.in_worker_samples += samples;
+                self.server.speech.submit_interactive(&self.guard, task);
+            }
         }
     }
 
@@ -953,10 +1013,7 @@ impl Connection {
         // The diarizer reads what the VAD reads (spec speech/08).
         if let Some(speakers) = self.speakers.as_mut().filter(|speakers| !speakers.failed) {
             speakers.pending.extend_from_slice(&samples);
-            speakers.heard_at.push_back((self.heard, Instant::now()));
-            while speakers.heard_at.front().is_some_and(|(heard, _)| heard + HEARD_AT_SAMPLES < self.heard) {
-                speakers.heard_at.pop_front();
-            }
+            speakers.arrivals.heard(self.heard, Instant::now());
         }
         for event in events {
             self.turn(event);
@@ -1097,7 +1154,7 @@ impl Connection {
             let rest = std::mem::take(&mut self.pending);
             self.queue(Unit::Commit(rest));
         }
-        self.assign_speakers(None);
+        self.assign_speakers();
         self.open_next();
     }
 
@@ -1178,7 +1235,10 @@ impl Connection {
     /// A unit is out of the worker.
     fn done(&mut self, done: Done) {
         self.in_worker -= 1;
-        self.in_worker_samples -= done.samples;
+        match done.speakers {
+            true => self.speakers_in_worker_samples -= done.samples,
+            false => self.in_worker_samples -= done.samples,
+        }
         let Some(outcome) = done.outcome else { return };
         let outcome = match outcome {
             Outcome::Opened(due) => return self.speakers_opened(due),
@@ -1385,26 +1445,29 @@ impl Connection {
             stepping: false,
             tailing: false,
             frames: Speakers::new(f64::from(live.diarizer.min_speaker_seconds) / 1000.0),
-            tail_end: 0,
+            tail: None,
             cancel: Arc::new(AtomicBool::new(false)),
             failed: false,
             heard_speakers: 0,
             steps: 0,
             step_total: Duration::ZERO,
             step_max: Duration::ZERO,
-            heard_at: VecDeque::new(),
+            tails: 0,
+            arrivals: Arrivals::new(self.heard, Instant::now()),
             lag_max: Duration::ZERO,
             items: 0,
         });
-        self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode == Diarization::File)));
+        self.queue_speakers(Unit::Speakers(StreamOpen::of(&live.diarizer, mode)));
     }
 
-    /// The audio the session holds that is not computed yet: the current
-    /// item's not yet queued, the speakers' not yet sent, and what the units
-    /// in the worker carry.
+    /// The audio the session holds that is not computed yet, each sample
+    /// counted once however many consumers hold it: the larger of the speech
+    /// model's (the current item's samples not yet queued, and its units'
+    /// in the worker) and the speakers' (their samples not yet sent, and
+    /// their units' in the worker).
     fn uncomputed(&self) -> usize {
         let speakers = self.speakers.as_ref().map_or(0, |speakers| speakers.pending.len());
-        self.pending.len() + speakers + self.in_worker_samples
+        (self.pending.len() + self.in_worker_samples).max(speakers + self.speakers_in_worker_samples)
     }
 
     /// Queue the diarizer's next step once the audio it waits for is heard:
@@ -1428,20 +1491,29 @@ impl Connection {
         item.stop_refresh = Arc::new(AtomicBool::new(false));
     }
 
-    /// Score what the stream heard past its last step when an item's
-    /// transcript is in and its speaker waits for frames no more audio may
-    /// bring: a file's end, a pause, a commit, a close (spec speech/08). On a
-    /// copy of the stream, one at a time.
-    fn want_tail(&mut self) {
-        let Some(speakers) = self.speakers.as_ref() else { return };
-        if speakers.tailing || speakers.failed || speakers.due.is_none() {
-            return;
+    /// When the speakers' tail falls due (spec speech/08): an item's
+    /// transcript is in and its speaker waits for frames past the steps' and
+    /// the last tail's, no step is in the worker (one that can run is), and
+    /// the stream has stalled. `None` while none is wanted.
+    fn tail_due(&self) -> Option<Instant> {
+        let speakers = self.speakers.as_ref()?;
+        if speakers.tailing || speakers.stepping || speakers.failed {
+            return None;
         }
-        let covered = speakers.frames.len().max(speakers.tail_end);
+        let covered = speakers.frames.len().max(speakers.tail.as_ref().map_or(0, Speakers::len));
         let waits = self.items.iter().any(|item| {
             item.diarized && item.speaker.is_none() && item.transcript.is_some() && item.end.is_some_and(|end| speakers.frame(end) > covered)
         });
-        if !waits {
+        waits.then(|| speakers.stalls_at()).flatten()
+    }
+
+    /// Score what the stream heard past its last step once the tail falls
+    /// due: a file's end, a pause in what the client sends, a commit with no
+    /// more audio (spec speech/08). In a stream that flows, the next step,
+    /// with its look-ahead, covers the item's end instead. On a copy of the
+    /// stream, one at a time.
+    fn want_tail(&mut self) {
+        if !self.tail_due().is_some_and(|at| at <= Instant::now()) {
             return;
         }
         let speakers = self.speakers.as_mut().expect("the speakers are on");
@@ -1472,13 +1544,18 @@ impl Connection {
         speakers.due = Some(due as u64);
         if !frames.probs.is_empty() {
             let first = speakers.sample(speakers.frames.len()) + 1;
-            if let Some(at) = speakers.arrived(first) {
+            if let Some(at) = speakers.arrivals.arrived(first) {
                 speakers.lag_max = speakers.lag_max.max(at.elapsed());
             }
         }
         speakers.frames.push(&frames.probs);
+        let scored = speakers.sample(speakers.frames.len());
+        speakers.arrivals.scored(scored);
+        if speakers.tail.as_ref().is_some_and(|tail| tail.len() <= speakers.frames.len()) {
+            speakers.tail = None;
+        }
         self.speaker_change();
-        self.assign_speakers(None);
+        self.assign_speakers();
         self.complete_ready();
         self.diarize();
         self.want_tail();
@@ -1486,14 +1563,18 @@ impl Connection {
 
     /// A tail's frames: scored with no look-ahead, so they cut nothing and
     /// join no later step's, but they give the items they cover the end of
-    /// their speaker.
+    /// their speaker, those ended since among them, until the steps reach as
+    /// far.
     fn heard_tail(&mut self, tail: Frames) {
         let Some(speakers) = self.speakers.as_mut() else { return };
         speakers.tailing = false;
+        if !tail.probs.is_empty() {
+            speakers.tails += 1;
+        }
         let mut heard = speakers.frames.clone();
         heard.push(tail.probs.get(heard.len().saturating_sub(tail.first)..).unwrap_or_default());
-        speakers.tail_end = heard.len();
-        self.assign_speakers(Some(heard));
+        speakers.tail = Some(heard);
+        self.assign_speakers();
         self.complete_ready();
         self.want_tail();
     }
@@ -1519,18 +1600,18 @@ impl Connection {
         self.complete_ready();
     }
 
-    /// The committed items whose end the frames cover (`heard`, else the
-    /// steps') take their speaker: the one holding most of their speech
-    /// frames (spec speech/08).
-    fn assign_speakers(&mut self, heard: Option<Speakers>) {
+    /// The committed items whose end the frames cover (the steps', else the
+    /// latest tail's) take their speaker: the one holding most of their
+    /// speech frames (spec speech/08).
+    fn assign_speakers(&mut self) {
         let Some(speakers) = self.speakers.as_ref() else { return };
-        let frames = heard.as_ref().unwrap_or(&speakers.frames);
         let mut given = 0u32;
         let mut items = 0;
         for item in self.items.iter_mut().filter(|item| item.diarized && item.speaker.is_none()) {
             let Some(end) = item.end else { continue };
             let (from, to) = (speakers.frame(item.start), speakers.frame(end));
-            if frames.len() >= to {
+            let covering = [Some(&speakers.frames), speakers.tail.as_ref()].into_iter().flatten().find(|frames| frames.len() >= to);
+            if let Some(frames) = covering {
                 item.speaker = Some(frames.speaker_of(from, to));
                 given |= item.speaker.flatten().map_or(0, |speaker| 1 << (speaker as u32));
                 items += 1;
@@ -1574,7 +1655,8 @@ impl Connection {
         }
     }
 
-    /// The timers: the live transcript's refresh, and the items' deadlines.
+    /// The timers: the live transcript's refresh, the items' deadlines, and
+    /// the speakers' tail.
     fn tick(&mut self) {
         let now = Instant::now();
         if self.next_partial.is_some_and(|at| at <= now) {
@@ -1604,6 +1686,7 @@ impl Connection {
             }
             index += 1;
         }
+        self.want_tail();
     }
 
     /// The live `server.socket_idle_close`, when the socket has been idle at
@@ -1616,7 +1699,7 @@ impl Connection {
     }
 
     /// When to look at the timers next: the next refresh, the nearest
-    /// deadline, the idle time, and at least once an
+    /// deadline, the speakers' tail, the idle time, and at least once an
     /// [`IDLE_TICK`](crate::idle::IDLE_TICK), so a live change of a knob
     /// reaches an open socket within one.
     fn next_look(&self) -> Instant {
@@ -1628,6 +1711,9 @@ impl Connection {
             if let (None, Some(deadline)) = (&item.failure, item.deadline) {
                 at = at.min(deadline);
             }
+        }
+        if let Some(tail) = self.tail_due() {
+            at = at.min(tail);
         }
         let after = self.server.live().socket_idle_close;
         if !after.is_zero() && self.items.len() == 1 {
@@ -1757,7 +1843,32 @@ fn push(session: &mut dyn SpeechSession, samples: &[f32]) -> Result<(), super::e
 
 #[cfg(test)]
 mod tests {
-    use super::SinceItem;
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::{Arrivals, SinceItem};
+
+    /// A frame's first sample keeps its arrival until a step scores it,
+    /// however long its geometry makes it wait (the file geometry's latency
+    /// can be set past a minute): 90 s of audio heard, 100 ms a piece, the
+    /// first piece's arrival is still there. Once the steps scored the samples
+    /// before 800,000 (50 s), the entries before the one at it go: the
+    /// earliest kept is that one.
+    #[test]
+    fn a_frames_arrival_is_kept_until_a_step_scores_it() {
+        let start = Instant::now();
+        let at = |piece: u64| start + Duration::from_millis(100 * piece);
+        let mut arrivals = Arrivals::new(0, start);
+        for piece in 1..=900 {
+            arrivals.heard(piece * 1_600, at(piece));
+        }
+        assert_eq!(arrivals.arrived(1), Some(at(1)), "the first sample, 90 s on");
+        assert_eq!(arrivals.arrived(800_001), Some(at(501)));
+        arrivals.scored(800_000);
+        assert_eq!(arrivals.arrived(800_001), Some(at(501)), "what no step scored is kept");
+        assert_eq!(arrivals.arrived(1), Some(at(500)), "the entries before the one at the scored sample went");
+    }
 
     /// The audio heard since the last item stays on the VAD's clock: one
     /// started at a later sample (`server_vad` switched on mid-session), an

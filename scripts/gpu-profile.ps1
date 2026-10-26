@@ -63,6 +63,7 @@ $NotGpuLegs = @(
     "the_smallest_speech_entry_downloads_and_verifies_against_its_pins",
     "the_diarizer_adapter_steps_the_crates_stream_on_the_speech_models_pool",
     "the_diarizer_keeps_up_with_a_conversation_at_real_time_pace",
+    "every_item_of_the_conversations_sends_its_text_whole_at_its_end",
     "a_long_monologue_keeps_its_live_text_with_speakers_on"
 )
 

@@ -399,6 +399,31 @@ produces) is not decoded yet: send WAV, or convert it. A clip longer than
   `speech.model` names a catalog entry that is not a speech model, or a
   `speech.compat_names` entry is an id of the catalog in use (an operator's
   `--download-catalog` among it). The error names the field and the id.
+- An `error` `ignis_audio_queue_full` refusing an append: the session holds
+  `speech.max_queued_audio_seconds` (120) of audio that the speech model or
+  the diarizer has not computed yet, so the client sends faster than this CPU
+  computes. The append went nowhere and the session stays open: send it again
+  once the session catches up, pace the audio nearer real time, or raise the
+  field ([sending audio](api/realtime-transcription.md#sending-audio)).
+- An `error` `ignis_diarizer_unavailable` refusing
+  `session.ignis.diarization`: the diarizer cannot serve, and the message says
+  why (`diarizer.model` is `off`, the catalog has no diarizer entry, its files
+  are not downloaded, the CPU lacks AVX2); `GET /v1/models` carries the same
+  reason in `speech.diarizer`, with the fix for each
+  ([turning it on](api/transcriptions.md#turning-it-on)). The session stays
+  open, without speakers. Refused naming `turn_detection` instead: speakers
+  need `server_vad`, so the session is on manual commit.
+- An `error` `ignis_diarizer_failed`, with a WARN `ignis.speech.diarizer_failed`
+  in the log: the diarizer failed in the middle of a session (its weights would
+  not load, or a step failed); the WARN's `reason` is its own words. The
+  session goes on without speakers, and the items waiting for theirs complete
+  without one. A load that names a file points at the download; anything else,
+  report it with the server's version.
+- The server refuses to start with `ignis.config.diarizer_invalid`:
+  `diarizer.model` names a catalog entry that is not a diarizer (a text, image
+  or speech model's id, in the catalog in use, an operator's
+  `--download-catalog` among it). The error names the field and the id: name a
+  `kind: diarizer` entry, `auto` or `off`.
 
 ### `vision_disabled`, or `media_budget_exceeded`
 

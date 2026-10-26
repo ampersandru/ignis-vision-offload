@@ -43,9 +43,10 @@ fn lines(sink: &MemorySink, name: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Two voices over the clip, a change at 4,000 ms, four steps of 20 ms: the
-/// line names two speakers, four steps and their mean and max, and appears
-/// when the session ends, not before. A session without speakers writes none.
+/// Two voices over the clip, a change at 4,000 ms, four steps of 20 ms and a
+/// tail: the line names two speakers, four steps and their mean and max, one
+/// tail, and appears when the session ends, not before. A session without
+/// speakers writes none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_session_with_speakers_writes_one_line_of_numbers_when_it_ends() {
     let sink = Arc::new(MemorySink::new());
@@ -89,6 +90,8 @@ async fn a_session_with_speakers_writes_one_line_of_numbers_when_it_ends() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     let line = &lines[0];
     assert_eq!((line["speakers"].as_u64(), line["steps"].as_u64()), (Some(2), Some(4)), "{line}");
+    // The second item's end, past the steps, came from a tail once the stream stalled.
+    assert_eq!(line["tails"].as_u64(), Some(1), "{line}");
     let (mean, max) = (line["step_mean_ms"].as_f64().unwrap(), line["step_max_ms"].as_f64().unwrap());
     assert!(mean >= 20.0 && max >= mean, "a step takes its 20 ms delay: {line}");
     // Both items had their speaker; a frame's probabilities wait at least for their step.

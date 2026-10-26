@@ -10,6 +10,8 @@
 //! This is the full-stream pass that the checkpoint's processor reproduces chunk by chunk (its
 //! first chunk centred, the later ones not, the last zero-padded): the same frames, each computed
 //! once. Frame t is final once samples up to 160·t + 200 have arrived, whatever comes after.
+//!
+//! Provenance: the module's (`diarizer/mod.rs`, ADR 0051).
 
 use crate::cpu::Isa;
 use crate::mel::{slaney_filters, N_MELS};

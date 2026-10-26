@@ -12,6 +12,8 @@
 //! probabilities it was scored with; an uncompressed one is scored again by each step.
 //!
 //! The order of equal scores, which torch's top-k leaves undefined, is the lower index first.
+//!
+//! Provenance: the module's (`diarizer/mod.rs`, ADR 0051).
 
 use super::{Constants, Geometry, SPEAKERS};
 

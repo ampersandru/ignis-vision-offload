@@ -142,7 +142,8 @@ available from crates.io.
 
 The diarizer (crates/speech/src/diarizer/, spec speech/08) ports Nemotron 3
 Diarization's graph and streaming state from the checkpoint's Transformers
-code, src/transformers/models/nemotron3_diarization/ of transformers 5.20.2
+code, huggingface/transformers tag v5.20.2 (commit 18329f10),
+src/transformers/models/nemotron3_diarization/
 (Copyright 2026 The HuggingFace Inc. team), which restates the streaming
 Sortformer of NVIDIA NeMo (Copyright NVIDIA CORPORATION), restated in Rust
 rather than copied verbatim (ADR 0051). Both are licensed under the Apache

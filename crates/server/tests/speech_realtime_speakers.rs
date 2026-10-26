@@ -198,6 +198,54 @@ async fn with_speakers_no_delta_goes_before_the_item_ends() {
     assert!(diarizer.calls().last().unwrap().starts_with("tail"), "{:?}", diarizer.calls());
 }
 
+/// A stream that flows needs no tail (spec speech/08): fed at four times real
+/// time, 100 ms of audio every 25 ms, the clip and 2 s of silence after it,
+/// the item's end (frame 107) waits for the step whose look-ahead ends at
+/// 165,120 samples, and the audio brings it: the item has its speaker from
+/// the steps, and no tail runs. A tail spends a forward pass and scores frames
+/// with no look-ahead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flowing_stream_gives_the_speaker_from_its_steps_and_runs_no_tail() {
+    let executor = Arc::new(FakeExecutor::saying(&["ciao"]));
+    let diarizer = hearing(|_| 0);
+    let (mut socket, _, _live, _dir) = opened(&executor, &diarizer, json!({ "ignis": { "diarization": "live" } }), |_| {}).await;
+    let mut audio = clip().to_vec();
+    audio.resize(2 * 176_960, 0);
+    for piece in audio.chunks(3_200) {
+        send(&mut socket, json!({ "type": "input_audio_buffer.append", "audio": base64(piece) })).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(of(&events, SPEAKER)[0]["speaker"], 0, "{events:?}");
+    assert_eq!(diarizer.calls(), ["open 25", "step 0 25", "step 25 25", "step 50 25", "step 75 25", "step 100 25"], "no tail");
+}
+
+/// A stream that stalls gets the tail (spec speech/08): the clip sent at once
+/// and nothing after it, the item's end (frame 107) waits for a step 20,160
+/// samples away, which a client at real time would have sent within 1.26 s
+/// and its next piece. Once that long has passed with no audio, a copy of the
+/// stream finished scores the 14 frames past the last step, and the item has
+/// its speaker. A commit after it, with no more audio, makes an item of the
+/// silence after the turn (frames 107 to 114), which the tail's frames
+/// already cover: it completes, with no speaker since none of them is speech.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_stream_gives_the_speaker_from_a_tail_once_the_next_step_would_have_come() {
+    let executor = Arc::new(FakeExecutor::saying(&["ciao"]));
+    let diarizer = hearing(|_| 0);
+    let (mut socket, _, _live, _dir) = opened(&executor, &diarizer, json!({ "ignis": { "diarization": "live" } }), |_| {}).await;
+    send_clip(&mut socket, 0, 144_960).await;
+    let stalled = std::time::Instant::now();
+    let events = until(&mut socket, COMPLETED).await;
+    let waited = stalled.elapsed();
+    assert_eq!(of(&events, SPEAKER)[0]["speaker"], 0, "{events:?}");
+    assert_eq!(diarizer.calls().last().map(String::as_str), Some("tail 100 14"));
+    assert!(waited >= Duration::from_millis(1_200), "the tail waited for the stall: {waited:?}");
+    send(&mut socket, commit()).await;
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(kinds(&events.iter().collect::<Vec<_>>()), [COMMITTED, DELTA, COMPLETED], "{events:?}");
+    assert_eq!(diarizer.calls().iter().filter(|call| call.starts_with("tail")).count(), 1, "{:?}", diarizer.calls());
+}
+
 /// AC 8: a session that does not opt in gets no speaker, and its deltas are
 /// as before: the stable text while the audio arrives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -322,6 +370,44 @@ async fn an_append_past_the_queued_audio_is_refused_and_the_session_stays_open()
     let events = until(&mut socket, COMPLETED).await;
     assert!(of(&events, "error").is_empty(), "{events:?}");
     assert_eq!(executor.samples_pushed(), WINDOW + 16_000 + 32_000, "the refused append went nowhere");
+}
+
+/// The queue limit counts each sample once, however many consumers hold it
+/// (spec speech/08, Q99): the audio the session holds not computed yet is the
+/// larger of the speech model's and the diarizer's. At a file geometry whose
+/// first step needs 83 s, the diarizer computes none of the clip, so the
+/// session holds its 9.06 s (the speech model holds less: the turn and its
+/// leading silence). Under a 10 s limit the whole clip and 0.9 s more are
+/// taken; 0.1 s past them is refused, naming the 10.0 s held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_diarized_session_counts_its_audio_once_against_the_queue_limit() {
+    let executor = Arc::new(FakeExecutor::saying(&["ciao"]));
+    let diarizer = hearing(|_| 0);
+    let (server, _dir) = speech::server_with_diarizer(
+        Arc::clone(&executor),
+        Arc::clone(&diarizer),
+        |group| {
+            group.partial_interval_ms = 60_000;
+            group.max_queued_audio_seconds = 10;
+        },
+        |group| group.file_chunk_frames = 1_000,
+    );
+    let live = live(server).await;
+    let (mut socket, _) = session(&live).await;
+    send(&mut socket, update(json!({ "audio": { "input": { "format": { "type": "audio/pcm", "rate": 16000 } } }, "ignis": { "diarization": "file" } }))).await;
+    assert_eq!(next_event(&mut socket).await["type"], "session.updated");
+    send_clip(&mut socket, 0, 144_960).await;
+    let silence = |samples: usize, id: &str| json!({ "type": "input_audio_buffer.append", "event_id": id, "audio": base64(&vec![0; 2 * samples]) });
+    send(&mut socket, silence(14_400, "fits")).await;
+    send(&mut socket, silence(1_600, "past")).await;
+    let mut events = Vec::new();
+    while of(&events, "error").is_empty() {
+        events.push(next_event(&mut socket).await);
+    }
+    let error = of(&events, "error")[0];
+    assert_eq!((error["error"]["code"].as_str(), error["error"]["event_id"].as_str()), (Some("ignis_audio_queue_full"), Some("past")), "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("holds 10.0 s"), "{message}");
 }
 
 /// AC 10 (Q113): the diarizer's steps rank below the windows and commits and

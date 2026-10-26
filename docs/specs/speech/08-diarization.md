@@ -348,6 +348,18 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
 - **RAM:** the F16 weights, 199 MB, mapped; a stream holds its speaker cache and FIFO (528 rows of 512, 1 MB) and the
   samples its next step reads; a diarized item keeps its audio for a cut (64 KB/s, 7.7 MB at the 120 s guard).
 
+### The text in a session with speakers (AC 7)
+
+- **AC 7, passed.** `speech_diarizer_study.rs`'s second leg (`--ignored`): the twenty conversations (77 min), each in a
+  session of its own, fed at twice real time with speakers `live`, Qwen3-ASR `qwen3-asr-1.7b` and the diarizer (F16)
+  on the one worker, the test profile, the i9 shared with another session's run: 347 items, 9 of them cut at a change
+  of speaker (conv03, conv05, conv12, conv15 five times, conv20; none by the length guard). No item had a delta before
+  its `committed`; each had at most one delta, its deltas joined equal to its `completed.transcript`, and its speaker
+  after them and before `completed`. No `error`, no `failed`. Speakers heard: 2 to 6 a conversation.
+- The worker ran behind the 2x feed (each conversation's last item completed 77-417 s after its audio ended), so most of
+  the 119 changes the references hold with under 0.5 s of silence were found after their item had ended and split
+  nothing, as designed. A worker that keeps up should cut more of them (not measured here).
+
 ### The length guard (AC 12)
 
 - **Items:** continuous Italian from two VoxPopuli speakers (`long_items.py`): their segments concatenated, every run of
@@ -376,13 +388,22 @@ disk (`H:\speech-study\nemotron-spike\oracle-361\`, `port-361\`, `H:\speech-stud
 - `session.ignis.diarization` changes apply at once while the current item holds no audio, else from the next item;
   a new stream numbers its speakers afresh. A diarizer that fails mid-session is an `error`, `ignis_diarizer_failed`,
   and the session goes on without speakers; an unavailable one refuses the opt-in with `ignis_diarizer_unavailable`.
+- **The tail.** An item's speaker waits for the frames over its end, which in a stream that flows the next step brings
+  with its look-ahead. A stream that stalls, no audio for as long as its next step's missing samples take at real time
+  plus the client's last piece again (a client at real-time pace sends its next piece that long after the last), gets
+  them from a copy of the stream finished: what it heard past its last step, scored with no look-ahead (a file's end,
+  a pause in what the client sends, a commit with no audio after it). The tail's frames cut nothing and serve the
+  items whose end they cover, those ended after it too, until the steps reach as far. The wait is at most the
+  geometry's latency (2.32 s live, 30.4 s file) and the last piece. The log line counts the tails (`tails`) apart from the
+  steps; their compute is not in `step_mean_ms`.
 - A change found only after its item ended does not split it (the item takes its majority speaker). An item with no
   speech gets no speaker event. The speaker is the model's channel, so numbers can skip one the ghost rule held back
   (spec 07 numbers the speakers by first appearance).
 - The length guard's pause cut lands at the end of the quiet VAD frame, its timed cut at the end of the frame where the
   item reaches N plus the search; idle-timeout items and items a commit makes are not guarded.
-- **The queue limit counts the audio not yet computed** (samples not yet queued, speaker samples not yet sent, samples
-  in units still in the worker), not the audio since the last `completed`: read literally, a dictation longer than the
+- **The queue limit counts the audio not yet computed**, each sample once: the larger of the speech model's (samples
+  not yet queued and in its units still in the worker) and the speakers' (samples not yet sent and in their units in
+  the worker), not the audio since the last `completed`: read literally, a dictation longer than the
   limit (its guard off) would be refused at real time. (Decision D3.)
 - **ADR 0046's applicability is judged per model slot:** a family judges only the fields of its own slot (the active
   model, or a model loaded beside it, as the speech model and the diarizer are), so a `diarizer.*` value is not
