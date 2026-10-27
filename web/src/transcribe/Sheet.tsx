@@ -1,5 +1,6 @@
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type Hit, partsOf } from "./search.ts";
+import { type RewriterState, wordDiff } from "./rewrite.ts";
 import { isAtBottom } from "../ui/scroll.ts";
 import { clock, startedLine, startOf } from "./export.ts";
 import type { LiveUtterance, ListeningState } from "./listening.ts";
@@ -42,6 +43,8 @@ export const Sheet = memo(function Sheet({
   deleted,
   hits,
   current,
+  rewrite,
+  canRewrite,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -50,9 +53,12 @@ export const Sheet = memo(function Sheet({
   call: boolean;
   /** The listening appends to this Transcript. */
   here: boolean;
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite">;
   /** The utterance just deleted, while its Undo stands (Q137). */
   deleted: Utterance | null;
+  /** The rewrite under way or proposed in this Transcript (Q138), and whether one can be asked for now. */
+  rewrite: RewriterState | null;
+  canRewrite: boolean;
   /** The search's hits in this Transcript, and the one it stands on (Q136). */
   hits: Hit[];
   current: number;
@@ -104,6 +110,8 @@ export const Sheet = memo(function Sheet({
                   speakers={transcript.speakers}
                   actions={actions}
                   hits={byUtterance.get(u.id)}
+                  rewrite={rewrite?.utterance === u.id ? rewrite : undefined}
+                  canRewrite={canRewrite && !rewrite?.writing}
                 />
               ))}
               {live.map((u) => (
@@ -207,6 +215,72 @@ export function highlighted(text: string, fixed: string[], hits: { start: number
   });
 }
 
+/** A rewrite of an utterance (Q138): under way, proposed with the words it changes, or failed. */
+export function RewritePanel({
+  utterance: u,
+  rewrite,
+  actions,
+}: {
+  utterance: Utterance;
+  rewrite: RewriterState;
+  actions: Pick<TranscribeActions, "acceptRewrite" | "closeRewrite">;
+}) {
+  const unchanged = rewrite.proposal !== null && rewrite.proposal === u.text;
+  return (
+    <div role="status" className="relative mt-2 flex flex-col gap-2 bg-surface/70 py-2.5 pr-3 pl-3.5">
+      <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-[2px] ${rewrite.writing ? "spine-live" : "bg-ember"}`} />
+      {rewrite.writing ? (
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] text-ash">Rebuilding what was said from the conversation around it…</span>
+          <button type="button" onClick={actions.closeRewrite} className="ml-auto font-display text-xs text-ash hover:text-ink">
+            Stop
+          </button>
+        </div>
+      ) : rewrite.failed !== null ? (
+        <div className="flex items-start gap-3">
+          <span className="text-[13px] text-fault">The rewrite failed: {rewrite.failed}</span>
+          <button type="button" onClick={actions.closeRewrite} className="ml-auto font-display text-xs text-ash hover:text-ink">
+            Close
+          </button>
+        </div>
+      ) : unchanged ? (
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] text-ash">The model would leave it as it is.</span>
+          <button type="button" onClick={actions.closeRewrite} className="ml-auto font-display text-xs text-ash hover:text-ink">
+            Close
+          </button>
+        </div>
+      ) : (
+        <>
+          <p className="text-[15px] leading-relaxed text-ink">
+            {wordDiff(u.text, rewrite.proposal ?? "").map((part, i) => (
+              <span key={i}>
+                {i > 0 && " "}
+                {part.kind === "same" ? (
+                  part.text
+                ) : part.kind === "added" ? (
+                  <ins className="text-ink underline decoration-ember decoration-2 underline-offset-4">{part.text}</ins>
+                ) : (
+                  <del className="text-ash decoration-ash/80">{part.text}</del>
+                )}
+              </span>
+            ))}
+          </p>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={actions.acceptRewrite} className="cut bg-ink px-3 py-1 font-display text-xs font-semibold text-ground [--cut-size:6px] hover:bg-ember">
+              Accept
+            </button>
+            <button type="button" onClick={actions.closeRewrite} className="px-1.5 py-1 font-display text-xs text-ash hover:text-ink">
+              Discard
+            </button>
+            <span className="text-xs text-ash">The text as heard is kept: Undo fix brings it back.</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** An utterance of the sheet: drawn again only when it, its speaker or the speakers change. */
 const UtteranceRow = memo(function UtteranceRow({
   utterance: u,
@@ -214,12 +288,16 @@ const UtteranceRow = memo(function UtteranceRow({
   speakers,
   actions,
   hits,
+  rewrite,
+  canRewrite,
 }: {
   utterance: Utterance;
   speaker: Speaker | undefined;
   speakers: Speaker[];
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite">;
   hits: { start: number; end: number; current: boolean }[] | undefined;
+  rewrite: RewriterState | undefined;
+  canRewrite: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -263,12 +341,22 @@ const UtteranceRow = memo(function UtteranceRow({
             />
             <button
               type="button"
+              disabled={!canRewrite}
+              title="The text model rebuilds what was said, from the context and the conversation around it"
+              onClick={() => actions.rewriteUtterance(u.id)}
+              className="cut bg-ember px-3 py-1 font-display text-xs font-semibold text-[#1c2026] [--cut-size:6px] hover:bg-[#ff7a45] disabled:cursor-not-allowed disabled:bg-line disabled:text-ash"
+            >
+              Rewrite
+            </button>
+            <button
+              type="button"
               onClick={() => actions.deleteUtterance(u.id)}
               className="ml-auto font-display text-xs text-ash hover:text-fault"
             >
               Delete
             </button>
           </div>
+          {rewrite && <RewritePanel utterance={u} rewrite={rewrite} actions={actions} />}
         </div>
       ) : (
         <div>
@@ -281,6 +369,7 @@ const UtteranceRow = memo(function UtteranceRow({
           >
             {u.text ? highlighted(u.text, u.fixed ?? [], hits) : <span className="text-ash">(no text)</span>}
           </p>
+          {rewrite && <RewritePanel utterance={u} rewrite={rewrite} actions={actions} />}
           {u.heard !== undefined && (
             <button
               type="button"

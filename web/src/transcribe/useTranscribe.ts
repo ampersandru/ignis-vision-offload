@@ -16,6 +16,7 @@ import { type CallContext, contextTokensOf, DEFAULT_CONTEXT_TOKENS, EMPTY_CONTEX
 import { readConfig } from "../server/routes.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
+import { acceptRewrite, Rewriter, type RewriterHandle } from "./rewrite.ts";
 import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, suggest } from "./suggestions.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
@@ -101,6 +102,12 @@ export type TranscribeActions = {
   /** Deletes an utterance of the open Transcript; Undo puts it back for a few seconds (Q137). */
   deleteUtterance: (utterance: number) => void;
   undoDelete: () => void;
+  /** Asks the text model to rebuild a misheard utterance of the open Transcript (Q138); its proposal waits. */
+  rewriteUtterance: (utterance: number) => void;
+  /** Takes the proposal: the utterance's text, its text as heard kept. */
+  acceptRewrite: () => void;
+  /** Stops the rewrite, or drops its proposal. */
+  closeRewrite: () => void;
   /** The open Transcript's kind of notes, and this browser's next default. */
   setNoteKind: (kind: NoteKind) => void;
   /** Writes the open Transcript's notes now. */
@@ -119,7 +126,7 @@ export type TranscribeActions = {
 };
 
 /** The page's helpers on the text model: the notes' writer and the look for suggestions. */
-export type Assistants = { notes: NotesHandle; analyst: AnalystHandle };
+export type Assistants = { notes: NotesHandle; analyst: AnalystHandle; rewriter: RewriterHandle };
 
 /** The text model, as the notes need it: why none serves, and its context. */
 export type TextModel = { blocked: string | null; contextLimit: number | null };
@@ -197,6 +204,8 @@ export function useTranscribe({
       }),
   );
   useEffect(() => () => analyst.stop(), [analyst]);
+  const [rewriter] = useState(() => new Rewriter());
+  useEffect(() => () => rewriter.close(), [rewriter]);
 
   // Keeping up while listening, a look every few seconds: the languages the server heard, then, while a text model
   // serves, the notes and the look for suggestions, each on its own cadence.
@@ -326,6 +335,19 @@ export function useTranscribe({
         clearTimeout(undoTimer.current);
         undoTimer.current = setTimeout(() => setDeleted(null), UNDO_DELETE_MS);
       },
+      rewriteUtterance: (utterance) => {
+        if (latest.current.text.blocked !== null) return;
+        const t = activeOf(listNow.current);
+        const u = t.utterances.find((x) => x.id === utterance);
+        if (u) void rewriter.rewrite(t, u);
+      },
+      acceptRewrite: () => {
+        const { transcript, utterance, proposal } = rewriter.getState();
+        if (transcript === null || utterance === null || proposal === null) return;
+        change(transcript, (t) => acceptRewrite(t, utterance, proposal));
+        rewriter.close();
+      },
+      closeRewrite: () => rewriter.close(),
       undoDelete: () => {
         const last = deletedNow.current;
         if (!last) return;
@@ -356,7 +378,7 @@ export function useTranscribe({
       setSuggestionsOn: (on) => storeSuggestionsOn(on),
     }),
     // The stored flags' setters are stable for their keys.
-    [controller, writer, analyst, storeHoldMic, storeNotesLive, storeSuggestionsOn],
+    [controller, writer, analyst, rewriter, storeHoldMic, storeNotesLive, storeSuggestionsOn],
   );
 
   return [
@@ -376,6 +398,6 @@ export function useTranscribe({
     },
     actions,
     controller,
-    { notes: writer, analyst },
+    { notes: writer, analyst, rewriter },
   ];
 }

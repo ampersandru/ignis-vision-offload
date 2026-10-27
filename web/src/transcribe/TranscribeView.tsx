@@ -3,6 +3,7 @@ import type { SpeechStatus } from "../api/model.ts";
 import { caption } from "../ui/classes.ts";
 import { IconBell, IconChevron, IconClose, IconDownload, IconPlus, IconSearch, IconTrash } from "../ui/icons.tsx";
 import { hitsIn, matchesOf } from "./search.ts";
+import { useWatched } from "./assist.ts";
 import { ContextCard } from "./Context.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
@@ -63,6 +64,7 @@ export function TranscribeView({
   const hits = useMemo(() => hitsIn(state.active, query), [state.active, query]);
   const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
   const searchField = useRef<HTMLInputElement>(null);
+  const rewrite = useWatched(assistants.rewriter);
   const search = (next: string) => {
     setQuery(next);
     setCurrent(0);
@@ -136,6 +138,8 @@ export function TranscribeView({
           deleted={state.deleted}
           hits={hits}
           current={at}
+          rewrite={rewrite.transcript === state.active.id ? rewrite : null}
+          canRewrite={state.textBlocked === null}
         />
         <Deck
           state={state}

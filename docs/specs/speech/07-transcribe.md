@@ -388,6 +388,14 @@ The owner's third round, after trying the second (grill Q136-Q141), one commit e
   and the arrows, clears with Escape, and brings the current hit into view, no longer following the newest
   words; Ctrl+F (Cmd+F) focuses it while the view shows. The list's field keeps the Transcripts whose utterances
   or title hold the query, each row saying its matches in the ember; opening one carries the query.
+- **Rewrite (Q138).** rewrite.ts: the task in the system prompt; the user turn the context told (told(): languages,
+  topic, anything else, then the keywords as Terms), the conversation around the utterance (20 before, 5 after) and
+  the utterance named last. `reasoning_effort: "low"` on the interactive lane, the owner's choice after a probe on
+  their own misheard line: thinking off rebuilt the product's name 2 times in 3 (once also changing a dialect word),
+  thinking low 3 in 3, the dialect kept, about 2 s. The answer is tidied (a label, a time, the speaker's name,
+  quotes the model added), shown as a word diff (longest common subsequence) with Accept and Discard; accepted,
+  the utterance keeps its text as heard and marks the words put in, so Undo fix and the marks are the fixes'. One
+  rewrite at a time; the button is off while the text model cannot be asked.
 
 ### Not done here
 

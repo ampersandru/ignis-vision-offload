@@ -9,7 +9,7 @@ import type { AnalystState } from "./analyst.ts";
 import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
 import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
-import { Heading, highlighted, Sheet, speakerColor } from "./Sheet.tsx";
+import { Heading, highlighted, RewritePanel, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
 import { fileStem, listMatch, SearchField, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
 import { hitsIn } from "./search.ts";
@@ -54,6 +54,9 @@ const actions: TranscribeActions = {
   undoFixes: none,
   deleteUtterance: none,
   undoDelete: none,
+  rewriteUtterance: none,
+  acceptRewrite: none,
+  closeRewrite: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -66,7 +69,7 @@ function room(): Transcript {
 
 const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
   renderToStaticMarkup(
-    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} />,
+    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite />,
   );
 
 describe("the sheet", () => {
@@ -107,7 +110,7 @@ describe("the sheet", () => {
 
   it("offers Undo for a few seconds after an utterance is deleted (Q137)", () => {
     const t = room();
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite />);
     expect(html).toMatch(/Utterance at <span[^>]*>00:04<\/span> deleted\./);
     expect(html).toContain(">Undo</button>");
   });
@@ -117,10 +120,25 @@ describe("the sheet", () => {
     t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Perché apriamo?", voice: null });
     const hits = hitsIn(t, "apriamo");
     expect(hits).toHaveLength(2);
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite />);
     expect(html).toMatch(/<mark data-hit="other"[^>]*>Apriamo<\/mark>/);
     expect(html).toMatch(/<mark data-hit="current" class="bg-ember[^"]*">apriamo<\/mark>/);
     expect(html).toContain('data-utterance="2"');
+  });
+
+  it("shows a rewrite's proposal under its utterance, the words it adds and drops, with Accept and Discard (Q138)", () => {
+    const t = room();
+    const proposal = { transcript: 1, utterance: 1, writing: false, proposal: "Apriamo. Io ho chiuso ieri.", failed: null };
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite />);
+    expect(html).toMatch(/<ins[^>]*>chiuso<\/ins>/);
+    expect(html).toMatch(/<del[^>]*>finito<\/del>/);
+    expect(html).toContain(">Accept<");
+    expect(html).toContain(">Discard<");
+    const writing = renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={{ ...proposal, writing: true, proposal: null }} actions={actions} />);
+    expect(writing).toContain("spine-live");
+    expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={{ ...proposal, proposal: t.utterances[0].text }} actions={actions} />)).toContain(
+      "The model would leave it as it is.",
+    );
   });
 
   it("marks a split's guessed start with ~ (Q98)", () => {
@@ -373,6 +391,7 @@ const idleHandle = { getState: () => IDLE, subscribe: () => () => {} };
 const assistants = {
   notes: { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} },
   analyst: { getState: (): AnalystState => ({ looking: null, failed: null }), subscribe: () => () => {} },
+  rewriter: { getState: () => ({ transcript: null, utterance: null, writing: false, proposal: null, failed: null }), subscribe: () => () => {} },
 };
 
 describe("the view", () => {

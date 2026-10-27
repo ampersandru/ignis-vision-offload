@@ -185,6 +185,12 @@ Every correction is the page's, and nothing goes back to the server:
   **New speaker**.
 - **Merge** two speakers: **Merge into** on a speaker's row. One name is left,
   and the future utterances of either take it.
+- **Rewrite** an utterance the speech model misheard: click its text, then
+  **Rewrite**. The text model rebuilds what was said from the context, the
+  conversation around it and how the misheard words sound, thinking a little
+  (about two seconds), and proposes it under the utterance with the words it
+  adds underlined and those it drops struck through: **Accept** takes it,
+  keeping the text as heard behind **Undo fix**; **Discard** leaves it.
 - **Delete** an utterance: click its text, then **Delete**. For a few seconds
   **Undo** at the foot of the transcript puts it back where it was.
 - **Split** an utterance where the diarizer missed a change: click its text,
