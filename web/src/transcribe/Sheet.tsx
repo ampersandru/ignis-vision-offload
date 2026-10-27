@@ -1,4 +1,6 @@
 import { Fragment, memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AnswerAside } from "./Ask.tsx";
+import { type Answered, answerAt, type AskerState } from "./ask.ts";
 import { type Hit, type HitSpan, partsOf } from "./search.ts";
 import { type RewriterState, wordDiff } from "./rewrite.ts";
 import { landing, onJump } from "./jump.ts";
@@ -18,7 +20,8 @@ import type { Speaker, Transcript, Utterance } from "./transcript.ts";
 // ember there while it listens. The view follows the newest words until the
 // reader scrolls up, and offers Jump to live then (Q102). Every completed
 // utterance's text is editable inline, and its speaker a menu: a move, a new
-// speaker, and a split at the cursor (Q92, Q96, Q98).
+// speaker, and a split at the cursor (Q92, Q96, Q98). The answers to the
+// questions asked about it stand on the spine where they were asked (Q139).
 
 /** A speaker's hue: Me in ink, Others in ash, each voice one of six (styles.css). */
 export function speakerColor(speaker: Speaker | undefined): string {
@@ -34,7 +37,17 @@ const laneLabel = (lane: LiveUtterance["lane"], call: boolean) => (call ? (lane 
 /** What the sheet does to a Transcript: its corrections, Undo, the rewrite's. */
 export type SheetActions = Pick<
   TranscribeActions,
-  "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete" | "holdUndo" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite"
+  | "moveUtterance"
+  | "splitUtterance"
+  | "editText"
+  | "undoFixes"
+  | "deleteUtterance"
+  | "undoDelete"
+  | "holdUndo"
+  | "rewriteUtterance"
+  | "acceptRewrite"
+  | "closeRewrite"
+  | "forgetAnswer"
 >;
 
 /**
@@ -56,6 +69,7 @@ export const Sheet = memo(function Sheet({
   rewrite,
   canRewrite,
   readTo,
+  asking,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -82,6 +96,8 @@ export const Sheet = memo(function Sheet({
    * when it is not keeping up); `null` before any look.
    */
   readTo: { untilMs: number; nextAt: number | null } | null;
+  /** The question about this Transcript under way or failed (Q139); `null` when there is none, or it is another's. */
+  asking: AskerState | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -113,10 +129,39 @@ export const Sheet = memo(function Sheet({
   }, [lit]);
 
   useLayoutEffect(() => setFollowing(true), [transcript.id]);
+  const answering = asking?.writing ? asking : null;
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && following) el.scrollTop = el.scrollHeight;
-  }, [transcript.utterances, live, following]);
+  }, [transcript.utterances, live, following, answering?.text]);
+
+  // A question just asked: its answer, at the foot above the utterances under way, in view and followed.
+  const asked = answering && `${answering.question}@${answering.untilMs}`;
+  useLayoutEffect(() => {
+    if (asked === null) return;
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    setFollowing(true);
+  }, [asked]);
+
+  // The answers kept, by the utterance each stands before, in the order they were asked.
+  const asides = useMemo(() => {
+    const at = new Map<number, Answered[]>();
+    for (const a of [...(transcript.asked ?? [])].sort((x, y) => x.id - y.id)) {
+      const i = answerAt(transcript.utterances, a.untilMs);
+      at.set(i, [...(at.get(i) ?? []), a]);
+    }
+    return at;
+  }, [transcript.asked, transcript.utterances]);
+  const answeringAt = answering ? answerAt(transcript.utterances, answering.untilMs) : -1;
+  const answersAt = (i: number) => (
+    <>
+      {asides.get(i)?.map((a) => (
+        <AnswerAside key={`answer-${a.id}`} question={a.question} answer={a.answer} untilMs={a.untilMs} onForget={() => actions.forgetAnswer(a.id)} />
+      ))}
+      {answering && answeringAt === i && <AnswerAside question={answering.question} answer={answering.text} untilMs={answering.untilMs} writing />}
+    </>
+  );
 
   // The search's current hit in view when the user searches or steps (`seek`), not when the Transcript changes under
   // it; after the following above, so a query carried into a Transcript just opened lands on its hit.
@@ -155,6 +200,7 @@ export const Sheet = memo(function Sheet({
                 // Keyed by the utterance, so a delete, an Undo or a split keeps every other row as it is.
                 <Fragment key={u.id}>
                 {readTo && i === markAt && i > 0 && <CheckedMark nextAt={readTo.nextAt} fresh={fresh} />}
+                {answersAt(i)}
                 <UtteranceRow
                   key={u.id}
                   utterance={u}
@@ -170,6 +216,7 @@ export const Sheet = memo(function Sheet({
                 </Fragment>
               ))}
               {readTo && markAt === transcript.utterances.length && markAt > 0 && <CheckedMark nextAt={readTo.nextAt} fresh={0} />}
+              {answersAt(transcript.utterances.length)}
               {live.map((u) => (
                 <LiveRow key={u.key} utterance={u} label={laneLabel(u.lane, call)} burning={phase === "listening" || phase === "finishing"} />
               ))}

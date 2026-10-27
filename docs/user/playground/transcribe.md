@@ -13,7 +13,7 @@ text while it listens, have the text model write its notes, then copy the
 transcript, download it, or open it in a new chat. It uses the server's [speech model](../api/transcriptions.md) and,
 for the speakers, its [diarizer](../api/realtime-transcription.md#speakers).
 
-![The Transcribe view: a call with its speakers on the time spine, its notes on the right](../images/playground/transcribe.png)
+![The Transcribe view: a call with its speakers on the time spine, a question's answer standing where it was asked, the questions bar under the transcript, its notes on the right](../images/playground/transcribe.png)
 
 It is laid out like the other views: the **transcripts** on the left; the one
 open in the middle, its title and exports above it and its deck at the foot;
@@ -255,10 +255,15 @@ the action items.
 
 ## Notes
 
-**Ask about this conversation**, at the top of the Notes tab, puts a question
-to the text model about the transcript open: the answer streams in, from the
-transcript alone, in the question's language, and stays with the transcript,
-latest first (the cross forgets one). A moment named as `[mm:ss]`, in an
+The bar under the transcript asks the text model about it, while listening
+too. **What did I miss?** asks what was said in the last five minutes,
+**Decisions** what was decided and what is still open, **Who does what** who
+agreed to do what, each answered in the conversation's language; a question you
+type is answered in its own. The answer streams in on the time spine where you
+asked, after the last utterance it read, that moment's time in orange beside
+it, and stays there while the conversation goes on under it; **Forget** drops
+one. It reads the transcript alone, so a word heard wrong stays wrong in it.
+Answers are not searched, nor exported. A moment named as `[mm:ss]`, in an
 answer or in the notes, is a link: click it and the transcript shows that
 utterance, lit for a moment.
 

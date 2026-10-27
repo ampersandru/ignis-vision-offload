@@ -6,6 +6,7 @@ import { hitsIn, matchesOf } from "./search.ts";
 import { useWatched } from "./assist.ts";
 import { onJump } from "./jump.ts";
 import { ContextCard } from "./Context.tsx";
+import { AskBar } from "./Ask.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
 import { Suggestions } from "./Suggestions.tsx";
@@ -68,6 +69,7 @@ export function TranscribeView({
   const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
   const searchField = useRef<HTMLInputElement>(null);
   const rewrite = useWatched(assistants.rewriter);
+  const asking = useWatched(assistants.asker);
   const looking = useWatched(assistants.analyst);
   const keepingUp = here && listening.phase !== "idle" && state.suggestionsOn;
   // Held still between changes: the sheet is drawn again only when what it is handed changes.
@@ -161,7 +163,9 @@ export function TranscribeView({
           // One rewrite at a time for the page: none while another, in any Transcript, is under way.
           canRewrite={state.textBlocked === null && !rewrite.writing}
           readTo={readTo}
+          asking={asking.transcript === state.active.id ? asking : null}
         />
+        <AskBar transcript={state.active} state={state} actions={actions} asking={asking} />
         <Deck
           state={state}
           listening={listening}
@@ -184,7 +188,7 @@ export function TranscribeView({
             <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} />
           </>
         )}
-        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={assistants.notes} asker={assistants.asker} />}
+        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={assistants.notes} />}
         {tab === "settings" && <Settings state={state} actions={actions} />}
       </Side>
     </div>

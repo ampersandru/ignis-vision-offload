@@ -111,8 +111,8 @@ export type TranscribeActions = {
   acceptRewrite: () => void;
   /** Stops the rewrite, or drops its proposal. */
   closeRewrite: () => void;
-  /** Asks the text model about the open Transcript (Q139); the answer is kept with it. */
-  askAbout: (question: string) => void;
+  /** Asks the text model about the open Transcript (Q139), sending `sent` in the question's place when given; the answer is kept with it. */
+  askAbout: (question: string, sent?: string) => void;
   stopAsking: () => void;
   /** Drops a question and its answer from the open Transcript. */
   forgetAnswer: (id: number) => void;
@@ -221,7 +221,11 @@ export function useTranscribe({
   const [rewriter] = useState(() => new Rewriter());
   useEffect(() => () => rewriter.close(), [rewriter]);
   const [asker] = useState(
-    () => new Asker({ onAnswered: (id, question, answer) => setList((l) => updateTranscript(l, id, (t) => ({ ...t, asked: withAnswer(t.asked, question, answer, Date.now()) }))) }),
+    () =>
+      new Asker({
+        onAnswered: (id, question, answer, untilMs) =>
+          setList((l) => updateTranscript(l, id, (t) => ({ ...t, asked: withAnswer(t.asked, question, answer, Date.now(), untilMs) }))),
+      }),
   );
   useEffect(() => () => asker.stop(), [asker]);
 
@@ -366,9 +370,9 @@ export function useTranscribe({
         rewriter.close();
       },
       closeRewrite: () => rewriter.close(),
-      askAbout: (question) => {
+      askAbout: (question, sent) => {
         const { text: model } = latest.current;
-        if (model.blocked === null) void asker.ask(activeOf(listNow.current), question, model.contextLimit);
+        if (model.blocked === null) void asker.ask(activeOf(listNow.current), question, model.contextLimit, sent);
       },
       stopAsking: () => asker.stop(),
       forgetAnswer: (id) => correct((t) => ({ ...t, asked: (t.asked ?? []).filter((a) => a.id !== id) })),

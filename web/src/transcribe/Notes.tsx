@@ -1,9 +1,7 @@
 import { useId, useState } from "react";
 import { caption } from "../ui/classes.ts";
-import { IconClose } from "../ui/icons.tsx";
 import { Markdown } from "../ui/Markdown.tsx";
 import { Switch } from "../ui/Switch.tsx";
-import type { AskerHandle, AskerState } from "./ask.ts";
 import { useWatched } from "./assist.ts";
 import { jumpOnClick, linkTimes } from "./jump.ts";
 import { kindHint, kindOf, NOTE_KINDS, notesStatus } from "./notes.ts";
@@ -24,108 +22,8 @@ export function notesButton(t: Transcript, writer: NotesWriterState, blocked: st
   return { label, disabled: blocked !== null || nothing || writer.writing !== null, stops: false };
 }
 
-export function Notes({
-  transcript,
-  state,
-  actions,
-  notes,
-  asker,
-}: {
-  transcript: Transcript;
-  state: TranscribeState;
-  actions: TranscribeActions;
-  notes: NotesHandle;
-  asker: AskerHandle;
-}) {
-  return (
-    <>
-      <AskPanel transcript={transcript} state={state} actions={actions} asking={useWatched(asker)} />
-      <NotesPanel transcript={transcript} state={state} actions={actions} writer={useWatched(notes)} />
-    </>
-  );
-}
-
-/** Ask about this conversation (Q139): a question, the answer streaming, the answers kept, latest first. */
-export function AskPanel({ transcript: t, state, actions, asking }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; asking: AskerState }) {
-  const headingId = useId();
-  const [question, setQuestion] = useState("");
-  const here = asking.transcript === t.id;
-  const writing = here && asking.writing;
-  // One question at a time for the page: while another Transcript's is answered, this one waits, its question kept.
-  const elsewhere = asking.writing && !here;
-  const nothing = t.utterances.every((u) => u.text.trim() === "");
-  return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
-      <h2 id={headingId} className={caption}>
-        Ask about this conversation
-      </h2>
-      <form
-        className="flex gap-1.5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (writing) return actions.stopAsking();
-          if (question.trim() === "" || elsewhere) return;
-          actions.askAbout(question);
-          setQuestion("");
-        }}
-      >
-        <input
-          aria-labelledby={headingId}
-          value={question}
-          onChange={(e) => setQuestion(e.currentTarget.value)}
-          placeholder="What was decided about the backup?"
-          className="min-w-0 flex-1 rounded-[2px] border border-line bg-ground px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ash focus:border-ember focus:outline-none disabled:opacity-60"
-        />
-        <button
-          type="submit"
-          disabled={!writing && (state.textBlocked !== null || nothing || question.trim() === "" || elsewhere)}
-          className={`cut px-3 py-1.5 font-display text-[13px] font-semibold [--cut-size:7px] disabled:cursor-not-allowed disabled:opacity-50 ${writing ? "bg-surface text-ink hover:bg-line" : "bg-ink text-ground hover:bg-ember"}`}
-        >
-          {writing ? "Stop" : "Ask"}
-        </button>
-      </form>
-      {elsewhere && <p className="text-xs leading-snug text-ash">A question about another transcript is being answered; ask this one when it is done.</p>}
-      {here && asking.failed && (
-        <p role="status" className="border-l-2 border-fault pl-2 text-xs leading-snug text-fault">
-          No answer: {asking.failed}
-        </p>
-      )}
-      {(writing || (t.asked?.length ?? 0) > 0) && (
-        <ol aria-label="Answers" className="flex flex-col gap-3" onClickCapture={jumpOnClick}>
-          {writing && (
-            <li className="relative flex flex-col gap-1 pl-3.5">
-              <span aria-hidden="true" className="spine-live absolute inset-y-0 left-0 w-[2px]" />
-              <p className="font-display text-[13px] font-semibold leading-snug text-ink">{asking.question}</p>
-              {asking.text === "" ? <p className="text-xs text-ash">The model is reading the transcript.</p> : (
-                <div className="notes notes-answer">
-                  <Markdown text={linkTimes(asking.text)} streaming />
-                </div>
-              )}
-            </li>
-          )}
-          {(t.asked ?? []).map((a) => (
-            <li key={a.id} className="group relative flex flex-col gap-1 pl-3.5">
-              <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[2px] bg-line" />
-              <div className="flex items-start gap-2">
-                <p className="flex-1 font-display text-[13px] font-semibold leading-snug text-ink">{a.question}</p>
-                <button
-                  type="button"
-                  aria-label={`Forget: ${a.question}`}
-                  onClick={() => actions.forgetAnswer(a.id)}
-                  className="text-ash opacity-0 group-hover:opacity-100 hover:text-fault focus-visible:opacity-100 max-lg:opacity-100"
-                >
-                  <IconClose />
-                </button>
-              </div>
-              <div className="notes notes-answer">
-                <Markdown text={linkTimes(a.answer)} />
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
-  );
+export function Notes({ transcript, state, actions, notes }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; notes: NotesHandle }) {
+  return <NotesPanel transcript={transcript} state={state} actions={actions} writer={useWatched(notes)} />;
 }
 
 export function NotesPanel({ transcript: t, state, actions, writer }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; writer: NotesWriterState }) {

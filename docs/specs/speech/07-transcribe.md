@@ -436,6 +436,23 @@ empties 15 of the 17 copies (the two left are `migrazione della`, two words) and
 a second `<asr_text>` marker, which came back as text 4 times in 50 with no context. Not done: dropping the topic or
 rewording the context to copy less is the owner's to decide (Q128); a copied pause that held a real "sì" loses it.
 
+### Ask in the flow (2026-10-27)
+
+The owner, trying Ask in the Notes tab during a call, did not like it, and of three directions picked this one: the
+question asked from a bar under the sheet, the answer standing in the sheet where it was asked. The Notes tab keeps
+only the notes. Ask.tsx: `AskBar` between the sheet and the deck, there once something is heard, with three quick
+questions (What did I miss?, Decisions, Who does what) and the field; while no text model serves, the reason stands in
+place of the quick questions. `AnswerAside` on the spine: the end of the last utterance the answer read
+(`Answered.untilMs`, kept with it; `answerAt` places it before the first utterance that ended after it, an answer
+kept before at the foot) in the time column in the ember, a hollow diamond on the rule, the question and the answer
+in a clipped surface, Forget beside the question; while it streams the rule burns, and the sheet follows its foot,
+where a new question's answer stands. The quick questions are shown in English and sent with "Answer in the language
+of the conversation.", which a probe on :8000 answered in Italian on an Italian call (`.scratch/362/ask_preset_lang.mjs`).
+What did I miss? names the first utterance that ended in the last five minutes by its start (`[05:40]`): asked from
+the end less five minutes, a time that shares the last line's seconds, the model took `[00:52]` for `[05:52]`, said
+nothing came since, and answered in English. Answers are neither searched nor exported, as before; whether they
+should be is the owner's (open item c).
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

@@ -4,7 +4,8 @@ import { SECURE_CONTEXT, TURNED_OFF } from "../speech/availability.ts";
 import { ContextCard } from "./Context.tsx";
 import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft } from "./Deck.tsx";
 import { IDLE, type ListeningState } from "./listening.ts";
-import { AskPanel, NotesPanel, notesButton } from "./Notes.tsx";
+import { AskBar } from "./Ask.tsx";
+import { NotesPanel, notesButton } from "./Notes.tsx";
 import type { AnalystState } from "./analyst.ts";
 import type { AskerState } from "./ask.ts";
 import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
@@ -74,7 +75,7 @@ function room(): Transcript {
 
 const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
   renderToStaticMarkup(
-    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck />,
+    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={null} />,
   );
 
 describe("the sheet", () => {
@@ -115,7 +116,7 @@ describe("the sheet", () => {
 
   it("offers Undo for a few seconds after an utterance is deleted (Q137)", () => {
     const t = room();
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={null} />);
     expect(html).toMatch(/Utterance at <span[^>]*>00:04<\/span> deleted\./);
     expect(html).toMatch(/<button type="button" autofocus=""[^>]*>Undo<\/button>/);
   });
@@ -125,7 +126,7 @@ describe("the sheet", () => {
     t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Perché apriamo?", voice: null });
     const hits = hitsIn(t, "apriamo");
     expect(hits).toHaveLength(2);
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite readTo={null} seek={0} autoCheck />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={null} />);
     expect(html).toMatch(/<mark data-hit="other"[^>]*>Apriamo<\/mark>/);
     expect(html).toMatch(/<mark data-hit="current" class="bg-ember[^"]*">apriamo<\/mark>/);
     expect(html).toContain('data-utterance="2"');
@@ -134,7 +135,7 @@ describe("the sheet", () => {
   it("shows a rewrite's proposal under its utterance, the words it adds and drops, with Accept and Discard (Q138)", () => {
     const t = room();
     const proposal = { transcript: 1, utterance: 1, writing: false, proposal: "Apriamo. Io ho chiuso ieri.", failed: null };
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite readTo={null} seek={0} autoCheck />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite readTo={null} seek={0} autoCheck asking={null} />);
     expect(html).toMatch(/<ins[^>]*>chiuso<\/ins>/);
     expect(html).toMatch(/<del[^>]*>finito<\/del>/);
     expect(html).toContain(">Accept<");
@@ -150,7 +151,7 @@ describe("the sheet", () => {
     let t = room();
     t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Poi?", voice: null });
     const sheetAt = (checked: { untilMs: number; nextAt: number | null } | null) =>
-      renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={checked} seek={0} autoCheck />);
+      renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={checked} seek={0} autoCheck asking={null} />);
     const html = sheetAt({ untilMs: 8_000, nextAt: null });
     expect(html.indexOf("Checked to here")).toBeGreaterThan(html.indexOf("Apriamo."));
     expect(html.indexOf("Checked to here")).toBeLessThan(html.indexOf("Poi?"));
@@ -375,31 +376,71 @@ describe("the suggestions (Q132)", () => {
   });
 });
 
-describe("asking about the conversation (Q139, Q141)", () => {
-  const quiet: AskerState = { transcript: null, question: "", text: "", writing: false, failed: null };
-  const ask = (t: Transcript, asking = quiet, patch: Partial<TranscribeState> = {}) =>
-    renderToStaticMarkup(<AskPanel transcript={t} state={state(patch)} actions={actions} asking={asking} />);
+describe("asking about the conversation, in its flow (Q139, Q141)", () => {
+  const quiet: AskerState = { transcript: null, question: "", untilMs: 0, text: "", writing: false, failed: null };
+  const bar = (t: Transcript, asking = quiet, patch: Partial<TranscribeState> = {}) =>
+    renderToStaticMarkup(<AskBar transcript={t} state={state(patch)} actions={actions} asking={asking} />);
+  /** Two utterances, 4-8 s and 12-15 s. */
+  const two = () => addUtterance(room(), { stream: "mic-1", startMs: 12_000, endMs: 15_000, text: "Poi tocca a te.", voice: { kind: "speaker", index: 0 } });
+  const sheetAsking = (t: Transcript, asking: AskerState | null = null) =>
+    renderToStaticMarkup(
+      <Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={asking} />,
+    );
 
-  it("offers the question, and keeps the answers latest first, their moments as links to them", () => {
-    const t = { ...room(), asked: [{ id: 2, question: "Chi ha finito?", answer: "Lo dice Speaker 1 [00:04].", at: 2 }, { id: 1, question: "Prima?", answer: "Niente.", at: 1 }] };
-    const html = ask(t);
+  it("offers the quick questions and the field under the sheet, once something is heard", () => {
+    const html = bar(room());
+    expect(html).toContain('aria-label="Ask about the conversation"');
+    expect(html).toMatch(/What did I miss\?<span[^>]*>last 5 min<\/span>/);
+    expect(html).toContain(">Decisions<");
+    expect(html).toContain(">Who does what<");
     expect(html).toContain(">Ask<");
-    expect(html.indexOf("Chi ha finito?")).toBeLessThan(html.indexOf("Prima?"));
-    expect(html).toContain('href="#t=00:04"');
-    expect(html).toContain('aria-label="Forget: Chi ha finito?"');
+    expect(bar(createTranscript(4))).toBe("");
   });
 
-  it("streams an answer under the heat, the button a Stop, and says why none came", () => {
-    const t = room();
-    const html = ask(t, { transcript: t.id, question: "Chi?", text: "Speaker 1 [00:04]", writing: true, failed: null });
+  it("stands each answer on the spine after the last utterance it read, the oldest first, its moments as links", () => {
+    const t = {
+      ...two(),
+      asked: [
+        { id: 3, question: "E alla fine?", answer: "Tocca a te [00:12].", at: 3, untilMs: 15_000 },
+        { id: 2, question: "Chi ha finito?", answer: "Speaker 1 [00:04].", at: 2, untilMs: 8_000 },
+        { id: 1, question: "Prima?", answer: "Niente.", at: 1, untilMs: 8_000 },
+      ],
+    };
+    const html = sheetAsking(t);
+    const [apriamo, prima, chi, poi, fine] = ["Apriamo.", "Prima?", "Chi ha finito?", "Poi tocca a te.", "E alla fine?"].map((s) => html.indexOf(s));
+    expect(apriamo).toBeLessThan(prima);
+    expect(prima).toBeLessThan(chi);
+    expect(chi).toBeLessThan(poi);
+    expect(poi).toBeLessThan(fine);
+    // The moment it read up to, in the time column.
+    expect(html).toMatch(/title="It read the conversation up to 00:08"[^>]*>00:08</);
+    expect(html).toContain('href="#t=00:04"');
+    expect(html).toContain('aria-label="Forget: Chi ha finito?"');
+    // One kept before answers had a place stands at the foot.
+    const old = sheetAsking({ ...two(), asked: [{ id: 1, question: "Prima?", answer: "Niente.", at: 1 }] });
+    expect(old.indexOf("Prima?")).toBeGreaterThan(old.indexOf("Poi tocca a te."));
+  });
+
+  it("streams an answer at its place under the heat, the bar's button a Stop, and says why none came", () => {
+    const t = two();
+    const asking: AskerState = { transcript: t.id, question: "Chi?", untilMs: 15_000, text: "Speaker 1 [00:04]", writing: true, failed: null };
+    const html = sheetAsking(t, asking);
+    expect(html).toMatch(/aria-label="Answer to: Chi\?" aria-busy="true"/);
     expect(html).toContain("spine-live");
-    expect(html).toContain(">Stop<");
-    expect(ask(t, { ...quiet, transcript: t.id, failed: "ignis answered 500" })).toContain("No answer: ignis answered 500");
-    expect(ask(t, quiet, { textBlocked: "No text model serves: the notes and the suggestions need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Ask</);
+    expect(html.indexOf("Chi?")).toBeGreaterThan(html.indexOf("Poi tocca a te."));
+    expect(sheetAsking(t, { ...asking, text: "" })).toContain("Reading the conversation up to 00:15.");
+    expect(bar(t, asking)).toContain(">Stop<");
+    expect(bar(t, { ...quiet, transcript: t.id, failed: "ignis answered 500" })).toContain("No answer: ignis answered 500");
+    // No text model: the reason in place of the quick questions, nothing to press.
+    const blocked = bar(t, quiet, { textBlocked: "No text model serves: the notes and the suggestions need one. Load it in the Server view." });
+    expect(blocked).toContain("No text model serves");
+    expect(blocked).not.toContain("Decisions");
+    expect(blocked).toMatch(/disabled=""[^>]*>Ask</);
     // One question at a time for the page: another Transcript's being answered, this one waits and says so.
-    const elsewhere = ask(t, { transcript: 99, question: "Altro?", text: "", writing: true, failed: null });
+    const elsewhere = bar(t, { ...asking, transcript: 99 });
     expect(elsewhere).toContain("A question about another transcript is being answered");
     expect(elsewhere).toMatch(/disabled=""[^>]*>Ask</);
+    expect(elsewhere).toMatch(/disabled=""[^>]*>Decisions</);
   });
 });
 
@@ -453,7 +494,7 @@ const assistants = {
   notes: { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} },
   analyst: { getState: (): AnalystState => ({ looking: null, nextAt: {}, failed: null }), subscribe: () => () => {} },
   rewriter: { getState: () => ({ transcript: null, utterance: null, writing: false, proposal: null, failed: null }), subscribe: () => () => {} },
-  asker: { getState: () => ({ transcript: null, question: "", text: "", writing: false, failed: null }), subscribe: () => () => {} },
+  asker: { getState: () => ({ transcript: null, question: "", untilMs: 0, text: "", writing: false, failed: null }), subscribe: () => () => {} },
 };
 
 describe("the view", () => {
