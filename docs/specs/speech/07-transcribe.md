@@ -341,6 +341,15 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
     TITLE. Asked for the terms alone, the 27B with thinking off copied a misheard name as heard ("Enidesk"); asked
     to check them first, it fixed it and spelled the term AnyDesk, twice out of two at temperature 0.2 (greedy said
     "Eni Desk"). The FIX lines are S6's; S5 reads the rest leniently (bullets, bold, NONE).
+- **S6, the fixes (Q133).** A FIX line (`[mm:ss] heard => meant`, `→` and `->` too) becomes a fix suggestion when
+  both sides are one to four words the server could take as a keyword, differ beyond case, and `heard` stands as
+  words of its own (no letter or digit around it, any case) in at least one utterance: the fix covers every
+  utterance that holds it then. Fixes stand side by side, one card each. Accepted, each of those utterances gets the
+  replacement, keeps `heard` (its text before its first fix) and `fixed` (the words put in, marked dotted in the
+  ember), and the right spelling joins the terms, so the speech model spells it right from the next utterance.
+  Undo fix puts the text back as heard, an edit since with it; a split leaves neither half a way back. The exports,
+  the notes and Open in chat read the fixed text. Always applies the later fixes as they come; only names and terms,
+  never a rephrasing (the task says so, and a side over four words is dropped).
 
 ### Not done here
 

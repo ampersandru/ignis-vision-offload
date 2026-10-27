@@ -3,7 +3,7 @@ import { caption } from "../ui/classes.ts";
 import { IconClose } from "../ui/icons.tsx";
 import { type AnalystHandle, type AnalystState, useAnalyst } from "./analyst.ts";
 import { languageName } from "../speech/languages.ts";
-import { openSuggestions, type Suggestion } from "./suggestions.ts";
+import { fixWhere, openSuggestions, type Suggestion } from "./suggestions.ts";
 import type { Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
@@ -25,6 +25,8 @@ export function suggestionText(s: Suggestion): { headline: string; verb: string 
       return { headline: `Rename to “${s.title}”`, verb: "Rename" };
     case "terms":
       return { headline: s.terms.length === 1 ? "A term to spell right" : "Terms to spell right", verb: s.terms.length === 1 ? "Add it" : "Add them" };
+    case "fix":
+      return { headline: `“${s.from}” is ${s.to}`, verb: "Fix" };
   }
 }
 
@@ -77,7 +79,7 @@ export function SuggestionsPanel({
         <ul className="flex flex-col gap-2">
           {open.map((s) => (
             <li key={s.id}>
-              <Card suggestion={s} actions={actions} />
+              <Card transcript={t} suggestion={s} actions={actions} />
             </li>
           ))}
         </ul>
@@ -91,12 +93,15 @@ export function SuggestionsPanel({
   );
 }
 
-function Card({ suggestion: s, actions }: { suggestion: Suggestion; actions: SuggestionActions }) {
+function Card({ transcript, suggestion: s, actions }: { transcript: Transcript; suggestion: Suggestion; actions: SuggestionActions }) {
   const { headline, verb } = suggestionText(s);
   return (
     <article className="flex flex-col gap-2 border-l-2 border-ember bg-surface px-3 py-2.5">
       <p className="font-display text-[13px] font-semibold leading-snug text-ink">{headline}</p>
       {s.kind === "languages" && <p className="text-xs leading-snug text-ash">{s.why}</p>}
+      {s.kind === "fix" && (
+        <p className="text-xs leading-snug text-ash">Misheard {fixWhere(transcript, s)}. Fixed, it is marked in the transcript and can be undone; {s.to} becomes a term.</p>
+      )}
       {s.kind === "terms" && (
         <ul aria-label="Suggested terms" className="flex flex-wrap gap-1">
           {s.terms.map((term) => (

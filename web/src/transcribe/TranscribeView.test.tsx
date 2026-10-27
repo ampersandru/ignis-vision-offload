@@ -12,7 +12,7 @@ import type { NotesWriterState } from "./notesWriter.ts";
 import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
 import { fileStem, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
-import { addUtterance, createTranscript, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
+import { addUtterance, createTranscript, fixUtterances, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view drawn in its states (spec speech/07): the sheet, the
@@ -50,6 +50,7 @@ const actions: TranscribeActions = {
   suggestNow: none,
   stopSuggesting: none,
   setSuggestionsOn: none,
+  undoFixes: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -82,6 +83,15 @@ describe("the sheet", () => {
     expect(html).toContain('value="25 Oct 15:42 · Microphone"');
     expect(html).toContain("Started 25 Oct 2026, 15:42");
     expect(html).toContain(">Copy</button>");
+  });
+
+  it("marks the words a fix put in, and offers to undo it (Q133)", () => {
+    const html = sheet(fixUtterances(room(), "Apriamo", "Apriremo", [1]));
+    expect(html).toContain("decoration-dotted");
+    expect(html).toMatch(/<mark[^>]*>Apriremo<\/mark>/);
+    expect(html).toContain('title="Heard as: Apriamo. Io ho finito ieri."');
+    expect(html).toContain(">Undo fix<");
+    expect(sheet(room())).not.toContain("Undo fix");
   });
 
   it("marks a split's guessed start with ~ (Q98)", () => {
@@ -247,6 +257,14 @@ describe("the suggestions (Q132)", () => {
     expect(html).toContain(">Add them<");
     expect(html.match(/>Always</g)).toHaveLength(2);
     expect(html.match(/>Dismiss</g)).toHaveLength(2);
+  });
+
+  it("of a fix says where, and that it can be undone", () => {
+    const fixed = suggest(room(), { kind: "fix", from: "Apriamo", to: "Apriremo", utterances: [1] }, 1);
+    const html = panel(fixed);
+    expect(html).toContain("“Apriamo” is Apriremo");
+    expect(html).toContain("Misheard at 00:04.");
+    expect(html).toContain(">Fix<");
   });
 
   it("say what each proposes", () => {

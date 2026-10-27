@@ -36,7 +36,7 @@ describe("a look for suggestions", () => {
     await a.analyze(heard(6, 4), null);
     expect(asked[0].request.settings.systemPrompt).toBe(`${ASSIST_SYSTEM}\n\n${ANALYSIS_TASK}`);
     expect(asked[0].request.turns[0].content.startsWith("27 Oct 15:42 · Call\n\n[00:00] Me: Frase 0.\n")).toBe(true);
-    expect(found).toEqual([[4, { topic: "Supporto IT", title: null, terms: ["AnyDesk"] }]]);
+    expect(found).toEqual([[4, { topic: "Supporto IT", title: null, terms: ["AnyDesk"], fixes: [] }]]);
     expect(a.getState()).toEqual({ looking: null, failed: null });
   });
 

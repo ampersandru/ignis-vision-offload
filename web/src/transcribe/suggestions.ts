@@ -1,18 +1,21 @@
 import type { Settings } from "../api/request.ts";
 import { isSpeechLanguage, languageName } from "../speech/languages.ts";
 import { addTerms, type CallContext, EMPTY_CONTEXT, termProblem } from "./context.ts";
-import { dayAndTime, titleFor, type Transcript } from "./transcript.ts";
+import { clock } from "./export.ts";
+import { dayAndTime, fixUtterances, titleFor, type Transcript, wordsOf } from "./transcript.ts";
 
 // What the Transcribe view suggests for a Transcript (spec speech/07, Q132):
 // the languages, from what the server says of each utterance (no model);
-// the topic, a title and the terms to spell right, from the text model, which
+// the topic, a title, the terms to spell right and the names it misheard
+// (Q133), from the text model, which
 // reads the transcript about every minute and a half while listening, or on
 // Suggest now. A suggestion waits in the Call tab until the user accepts it,
 // dismisses it, or accepts it always: then every later one of its kind, in
 // this Transcript, is applied as it comes. Accepting changes what the
-// Transcript is told (context.ts) or its title; nothing else.
+// Transcript is told (context.ts), its title, or the words a fix replaces in
+// the utterances that hold them, each keeping the text it was heard as.
 
-export type SuggestionKind = "languages" | "topic" | "title" | "terms";
+export type SuggestionKind = "languages" | "topic" | "title" | "terms" | "fix";
 
 type Status = { id: number; status: "open" | "accepted" | "dismissed"; auto?: true };
 
@@ -20,7 +23,9 @@ export type Offer =
   | { kind: "languages"; languages: CallContext["languages"]; why: string }
   | { kind: "topic"; topic: string }
   | { kind: "title"; title: string }
-  | { kind: "terms"; terms: string[] };
+  | { kind: "terms"; terms: string[] }
+  /** `from`, misheard, is `to` in each of `utterances`, where the model found it (Q133). */
+  | { kind: "fix"; from: string; to: string; utterances: number[] };
 
 export type Suggestion = Status & Offer;
 
@@ -46,6 +51,8 @@ function same(a: Offer, b: Offer): boolean {
       return b.kind === "title" && a.title === b.title;
     case "terms":
       return b.kind === "terms" && sameCodes(a.terms, b.terms);
+    case "fix":
+      return b.kind === "fix" && a.from.toLocaleLowerCase() === b.from.toLocaleLowerCase() && a.to.toLocaleLowerCase() === b.to.toLocaleLowerCase();
   }
 }
 
@@ -61,6 +68,11 @@ function applied(t: Transcript, offer: Offer, now: number): Transcript {
       return { ...t, context: { ...context, terms: addTerms(context.terms, offer.terms.join(",")), appliedAt: now } };
     case "title":
       return { ...t, title: offer.title };
+    case "fix": {
+      // The right spelling is a term from now on: the speech model spells it so in what comes next.
+      const fixed = fixUtterances(t, offer.from, offer.to, offer.utterances);
+      return { ...fixed, context: { ...context, terms: addTerms(context.terms, offer.to), appliedAt: now } };
+    }
   }
 }
 
@@ -83,7 +95,8 @@ export function suggest(t: Transcript, offer: Offer, now: number): Transcript {
   } else if (items.some((s) => same(s, offer))) {
     return t;
   }
-  const kept = items.filter((s) => !(s.status === "open" && s.kind === offer.kind));
+  // Fixes stand side by side, one card each; of every other kind the new one takes the open one's place.
+  const kept = offer.kind === "fix" ? items : items.filter((s) => !(s.status === "open" && s.kind === offer.kind));
   if (always.includes(offer.kind)) {
     const done: Suggestion = { ...fresh, id: nextId(items), status: "accepted", auto: true };
     return { ...applied(t, fresh, now), suggestions: { items: [...items, done], always } };
@@ -171,7 +184,7 @@ export function languageOffer(t: Transcript): Offer | null {
 // the misheard names first (FIX lines): without them the 27B, thinking off,
 // copies a misheard name into the terms as it was heard ("Enidesk"); asked to
 // check them first, it fixes it and spells the term right (probed 2026-10-27,
-// at temperature 0.2; greedy did worse). The fixes themselves are S6's.
+// at temperature 0.2; greedy did worse). Each FIX becomes a fix suggestion.
 
 export const ANALYSIS_TASK = [
   "Task: read the transcript and write what it suggests, one item a line, in exactly these forms, in this order, and nothing else:",
@@ -194,14 +207,24 @@ export const ANALYSIS_SETTINGS: Omit<Settings, "systemPrompt"> = {
   laneTag: "agent",
 };
 
+/** A misheard name the model found: at `at` (mm:ss), `from` as the transcript has it, `to` as it was said. */
+export type FoundFix = { at: string; from: string; to: string };
+
 /** What a look found. */
-export type Analysis = { topic: string | null; title: string | null; terms: string[] };
+export type Analysis = { topic: string | null; title: string | null; terms: string[]; fixes: FoundFix[] };
 
 /** The model's lines, read leniently: a bullet or bold around them is fine, a line in no form is dropped. */
 export function readAnalysis(text: string): Analysis {
-  const found: Analysis = { topic: null, title: null, terms: [] };
+  const found: Analysis = { topic: null, title: null, terms: [], fixes: [] };
   for (const raw of text.split("\n")) {
     const line = raw.replace(/^[\s*>-]+/, "").replace(/\*\*/g, "").trim();
+    const fix = /^FIX\s*:\s*\[?~?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*(.+?)\s*(?:=>|→|->)\s*(.+)$/i.exec(line);
+    if (fix) {
+      const [from, to] = [fix[2], fix[3]].map((side) => side.trim().replace(/^["“']|["”']$/g, "").replace(/\.$/, "").trim());
+      const plain = (side: string) => side !== "" && side.length <= 60 && side.split(/\s+/).length <= 4 && termProblem(side) === null;
+      if (plain(from) && plain(to) && from.toLocaleLowerCase() !== to.toLocaleLowerCase() && found.fixes.length < 10) found.fixes.push({ at: fix[1], from, to });
+      continue;
+    }
     const m = /^(TOPIC|TITLE|TERM)\s*:\s*(.+)$/i.exec(line);
     if (!m) continue;
     const value = m[2].trim().replace(/^["“']|["”']$/g, "").replace(/\.$/, "").trim();
@@ -228,7 +251,19 @@ export function analysisOffers(t: Transcript, found: Analysis): Offer[] {
     offers.push({ kind: "title", title: `${day} ${time} · ${found.title}` });
   }
   if (found.terms.length > 0) offers.push({ kind: "terms", terms: found.terms });
+  for (const fix of found.fixes) {
+    // Every utterance that holds the words as words of their own, the one at its time or not; none, no fix.
+    const holding = t.utterances.filter((u) => wordsOf(fix.from).test(u.text)).map((u) => u.id);
+    if (holding.length > 0) offers.push({ kind: "fix", from: fix.from, to: fix.to, utterances: holding });
+  }
   return offers;
+}
+
+/** Where a fix applies, as a card says it: "at 03:12", or "in 3 utterances". */
+export function fixWhere(t: Transcript, s: Offer & { kind: "fix" }): string {
+  const ids = s.utterances.filter((id) => t.utterances.some((u) => u.id === id));
+  if (ids.length !== 1) return `in ${ids.length} utterances`;
+  return `at ${clock(t.utterances.find((u) => u.id === ids[0])!.startMs)}`;
 }
 
 /** Looking for suggestions: the first once this many utterances are in. */
@@ -246,7 +281,7 @@ export function dueForAnalysis({ utterances, analyzed, sinceLastMs, final = fals
   return fresh >= ANALYSIS_FRESH && (sinceLastMs === null || sinceLastMs >= ANALYSIS_GAP_MS);
 }
 
-const KINDS: SuggestionKind[] = ["languages", "topic", "title", "terms"];
+const KINDS: SuggestionKind[] = ["languages", "topic", "title", "terms", "fix"];
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 
 function readOne(value: unknown): Suggestion | null {
@@ -264,6 +299,10 @@ function readOne(value: unknown): Suggestion | null {
       return typeof s.title === "string" ? (s as Suggestion) : null;
     case "terms":
       return strings(s.terms) ? (s as Suggestion) : null;
+    case "fix":
+      return typeof s.from === "string" && typeof s.to === "string" && Array.isArray(s.utterances) && s.utterances.every((id) => typeof id === "number")
+        ? (s as Suggestion)
+        : null;
     default:
       return null;
   }

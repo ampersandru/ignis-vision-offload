@@ -19,7 +19,7 @@ import { accept, analysisOffers, dismiss, dropTerm, languageOffer, suggest } fro
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
-import { addUtterance, beginListening, clockOf, editText, mergeSpeakers, moveUtterance, renameSpeaker, splitUtterance, type Transcript } from "./transcript.ts";
+import { addUtterance, beginListening, clockOf, editText, mergeSpeakers, moveUtterance, renameSpeaker, splitUtterance, type Transcript, undoFixes } from "./transcript.ts";
 
 // The Transcribe view's state (spec speech/07), held by the page and not by
 // the view, as the Image view's is: the header shows a listening from every
@@ -77,6 +77,8 @@ export type TranscribeActions = {
   mergeSpeakers: (from: number, into: number) => void;
   splitUtterance: (utterance: number, at: number, to: number | "new") => void;
   editText: (utterance: number, text: string) => void;
+  /** Puts an utterance's text back as it was heard, before its fixes (Q133). */
+  undoFixes: (utterance: number) => void;
   /** The open Transcript's kind of notes, and this browser's next default. */
   setNoteKind: (kind: NoteKind) => void;
   /** Writes the open Transcript's notes now. */
@@ -276,6 +278,7 @@ export function useTranscribe({
       mergeSpeakers: (from, into) => correct((t) => mergeSpeakers(t, from, into)),
       splitUtterance: (utterance, at, to) => correct((t) => splitUtterance(t, utterance, at, to)),
       editText: (utterance, text) => correct((t) => editText(t, utterance, text)),
+      undoFixes: (utterance) => correct((t) => undoFixes(t, utterance)),
       setNoteKind: (kind) => {
         chooseNoteKind(kind);
         correct((t) => ({ ...t, notes: { ...(t.notes ?? noNotes(kind)), kind } }));

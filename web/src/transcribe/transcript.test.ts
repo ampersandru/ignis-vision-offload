@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { addUtterance, createTranscript, editText, type Heard, mergeSpeakers, moveUtterance, renameSpeaker, splitUtterance, type Transcript } from "./transcript.ts";
+import {
+  addUtterance,
+  createTranscript,
+  editText,
+  fixUtterances,
+  type Heard,
+  mergeSpeakers,
+  moveUtterance,
+  renameSpeaker,
+  splitUtterance,
+  type Transcript,
+  undoFixes,
+} from "./transcript.ts";
 
 // A Transcript (spec speech/07, "Utterances and speakers"): its utterances in
 // time order, each with its speaker, numbered as voices first speak, and the
@@ -8,6 +20,28 @@ import { addUtterance, createTranscript, editText, type Heard, mergeSpeakers, mo
 const heard = (stream: string, startMs: number, text: string, voice: Heard["voice"], endMs = startMs + 1_000): Heard => ({ stream, startMs, endMs, text, voice });
 
 const names = (t: Transcript) => t.utterances.map((u) => [u.text, u.speaker === null ? null : t.speakers.find((s) => s.id === u.speaker)?.name]);
+
+describe("a fix (Q133)", () => {
+  const heard = (text: string) => addUtterance(createTranscript(1), { stream: "s", startMs: 0, endMs: 4_000, text, voice: null });
+
+  it("replaces the words as words of their own, whatever their case, and keeps the text as heard once", () => {
+    let t = fixUtterances(heard("Apri Enidesk, poi enidesk.exe e Enideskx."), "Enidesk", "AnyDesk", [1]);
+    expect(t.utterances[0]).toMatchObject({ text: "Apri AnyDesk, poi AnyDesk.exe e Enideskx.", heard: "Apri Enidesk, poi enidesk.exe e Enideskx.", fixed: ["AnyDesk"] });
+    t = fixUtterances(t, "Apri", "Aprì", [1]);
+    expect(t.utterances[0]).toMatchObject({ heard: "Apri Enidesk, poi enidesk.exe e Enideskx.", fixed: ["AnyDesk", "Aprì"] });
+    expect(fixUtterances(heard("Price $5"), "Price", "Costs $&", [1]).utterances[0].text).toBe("Costs $& $5");
+  });
+
+  it("is undone back to the text as heard, and a split leaves neither half a way back", () => {
+    const t = fixUtterances(heard("Enidesk va. Poi altro."), "Enidesk", "AnyDesk", [1]);
+    expect(undoFixes(t, 1).utterances[0]).toEqual({ id: 1, startMs: 0, endMs: 4_000, speaker: null, text: "Enidesk va. Poi altro." });
+    const split = splitUtterance(t, 1, 11, "new");
+    expect(split.utterances.map((u) => [u.text, u.heard])).toEqual([
+      ["AnyDesk va.", undefined],
+      ["Poi altro.", undefined],
+    ]);
+  });
+});
 
 describe("an utterance's language (Q131)", () => {
   it("is kept as the server said it, and absent when it said none", () => {

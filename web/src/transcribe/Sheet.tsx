@@ -46,7 +46,7 @@ export const Sheet = memo(function Sheet({
   call: boolean;
   /** The listening appends to this Transcript. */
   here: boolean;
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes">;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -149,6 +149,21 @@ function Row({ time, tick, label, children }: { time: string; tick: { color?: st
   );
 }
 
+/** `text` with the words fixes put in it marked (Q133). */
+export function marked(text: string, fixed: string[]): ReactNode {
+  if (fixed.length === 0) return text;
+  const pattern = new RegExp(`(${fixed.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
+  return text.split(pattern).map((part, i) =>
+    fixed.includes(part) ? (
+      <mark key={i} className="bg-transparent text-ink underline decoration-ember decoration-dotted decoration-2 underline-offset-4">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
+}
+
 /** An utterance of the sheet: drawn again only when it, its speaker or the speakers change. */
 const UtteranceRow = memo(function UtteranceRow({
   utterance: u,
@@ -159,7 +174,7 @@ const UtteranceRow = memo(function UtteranceRow({
   utterance: Utterance;
   speaker: Speaker | undefined;
   speakers: Speaker[];
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes">;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -202,15 +217,27 @@ const UtteranceRow = memo(function UtteranceRow({
           />
         </div>
       ) : (
-        <p
-          tabIndex={0}
-          title="Edit the text"
-          onClick={() => setEditing(true)}
-          onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), setEditing(true))}
-          className="cursor-text rounded-[2px] text-[15px] leading-relaxed whitespace-pre-wrap text-ink hover:bg-surface/70"
-        >
-          {u.text || <span className="text-ash">(no text)</span>}
-        </p>
+        <div>
+          <p
+            tabIndex={0}
+            title="Edit the text"
+            onClick={() => setEditing(true)}
+            onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), setEditing(true))}
+            className="cursor-text rounded-[2px] text-[15px] leading-relaxed whitespace-pre-wrap text-ink hover:bg-surface/70"
+          >
+            {u.text ? marked(u.text, u.fixed ?? []) : <span className="text-ash">(no text)</span>}
+          </p>
+          {u.heard !== undefined && (
+            <button
+              type="button"
+              title={`Heard as: ${u.heard}`}
+              onClick={() => actions.undoFixes(u.id)}
+              className="font-display text-xs text-ash hover:text-ember"
+            >
+              Undo fix
+            </button>
+          )}
+        </div>
       )}
     </Row>
   );

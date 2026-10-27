@@ -40,6 +40,10 @@ export type Utterance = {
   text: string;
   /** The language the model heard it in, by ISO code, when the server says (Q131). */
   language?: string;
+  /** Its text as it was before a fix (Q133): absent while none was accepted. */
+  heard?: string;
+  /** The words fixes put in it, to mark them. */
+  fixed?: string[];
 };
 
 export type Transcript = {
@@ -212,7 +216,8 @@ export function splitUtterance(t: Transcript, utterance: number, at: number, to:
   if (first === "" || second === "") return t;
   const label = target(t, to);
   const cut = Math.round(whole.startMs + ((whole.endMs - whole.startMs) * at) / whole.text.length);
-  const { approxEnd, ...start } = whole;
+  // A fix is undone on the whole utterance: its halves keep the text as fixed, not the way back.
+  const { approxEnd, heard: _heard, fixed: _fixed, ...start } = whole;
   const before: Utterance = { ...start, text: first, endMs: cut, approxEnd: true };
   const after: Utterance = {
     id: nextId(label.transcript.utterances),
@@ -227,6 +232,30 @@ export function splitUtterance(t: Transcript, utterance: number, at: number, to:
   const utterances = [...label.transcript.utterances];
   utterances.splice(index, 1, before, after);
   return { ...label.transcript, utterances };
+}
+
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `from` as a word or words of its own, whatever its case: not inside a longer word. */
+export const wordsOf = (from: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escaped(from)}(?![\\p{L}\\p{N}])`, "giu");
+
+/**
+ * A fix (Q133): `from` becomes `to` in each of `utterances` that holds it, as words of their own. Each keeps the
+ * text it had before its first fix, and the words fixed in, to be marked and undone.
+ */
+export function fixUtterances(t: Transcript, from: string, to: string, utterances: number[]): Transcript {
+  return {
+    ...t,
+    utterances: t.utterances.map((u) => {
+      if (!utterances.includes(u.id) || !wordsOf(from).test(u.text)) return u;
+      return { ...u, text: u.text.replace(wordsOf(from), () => to), heard: u.heard ?? u.text, fixed: [...new Set([...(u.fixed ?? []), to])] };
+    }),
+  };
+}
+
+/** Undoes an utterance's fixes: its text as it was heard. An edit since is undone with them. */
+export function undoFixes(t: Transcript, utterance: number): Transcript {
+  return withUtterance(t, utterance, ({ heard, fixed: _fixed, ...u }) => (heard === undefined ? u : { ...u, text: heard }));
 }
 
 export function editText(t: Transcript, utterance: number, text: string): Transcript {

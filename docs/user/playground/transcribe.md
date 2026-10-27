@@ -112,9 +112,17 @@ be told, and a bell beside the tabs counts what waits:
   once six utterances are in, then about every minute and a half while
   something new was said, and once more when the listening ends. It checks the
   names it heard first, so a misheard product comes back spelled right
-  ("Enidesk" as AnyDesk).
+  ("Enidesk" as AnyDesk);
+- **fixes**: a name, product or term the speech model misheard, `“Enidesk” is
+  AnyDesk`, in every utterance that holds it as a word of its own. **Fix**
+  replaces it there, marks it with a dotted orange line, and makes the right
+  spelling a term, so the next utterances get it right from the start; **Undo
+  fix** under an utterance puts its text back as it was heard (an edit made
+  since goes with it). Only names and terms: the model is told never to
+  rephrase.
 
-Each waits as a card: its verb (**Apply**, **Use**, **Rename**, **Add them**)
+Each waits as a card: its verb (**Apply**, **Use**, **Rename**, **Add them**,
+**Fix**)
 accepts it, **Dismiss** drops it for good, and **Always** accepts it and every
 later suggestion of its kind in this transcript without asking. A term you do
 not want is taken out with its cross, and is never suggested again. Accepting
@@ -163,7 +171,8 @@ Every correction is the page's, and nothing goes back to the server:
   time of the split is guessed from the characters and marked `~`.
 
 The text of every completed utterance is editable: click it, even while
-listening. What you edit is what the exports and Open in chat carry.
+listening. What you edit, and what a fix put in, is what the exports, the notes
+and Open in chat carry.
 
 ## The transcript
 
