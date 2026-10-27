@@ -12,7 +12,8 @@ import { decodeFile } from "./file.ts";
 import { filePace } from "./filePace.ts";
 import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
 import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
-import { type CallContext, EMPTY_CONTEXT, told } from "./context.ts";
+import { type CallContext, contextTokensOf, DEFAULT_CONTEXT_TOKENS, EMPTY_CONTEXT, mergeDraft, told } from "./context.ts";
+import { readConfig } from "../server/routes.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
 import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, suggest } from "./suggestions.ts";
@@ -44,8 +45,10 @@ export type TranscribeState = {
   holdMic: boolean;
   /** Keep a listening's notes up as it goes (Q126): this browser's, off at first. */
   notesLive: boolean;
-  /** Why no notes can be written now (notes.ts), `null` while a text model serves; the suggestions' model too. */
-  notesBlocked: string | null;
+  /** Why the notes and the suggestions cannot ask the text model now (notes.ts), `null` while one serves. */
+  textBlocked: string | null;
+  /** What the server reads of a context, `speech.context_max_tokens` (512 until the configuration is read). */
+  contextTokens: number;
   /** Suggest while listening (Q132): this browser's, on at first. */
   suggestionsOn: boolean;
   /** What keeping the Transcripts in this browser ran into. */
@@ -115,8 +118,12 @@ export function useTranscribe({
   onUnavailable: () => void;
 }): [TranscribeState, TranscribeActions, ListeningHandle, Assistants] {
   const [list, setList] = useState<TranscriptList>(() => startList());
-  /** The draft, and the Transcript it is of. */
-  const [drafting, setDrafting] = useState<{ id: number; context: CallContext } | null>(null);
+  /** The draft, the Transcript it is of, and its context when Edit opened it: an Apply merges onto what it holds then. */
+  const [drafting, setDrafting] = useState<{ id: number; base: CallContext; context: CallContext } | null>(null);
+  const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT_TOKENS);
+  useEffect(() => {
+    void readConfig().then((answer) => answer.ok && setContextTokens(contextTokensOf(answer.value)));
+  }, []);
   const draftNow = useRef(drafting);
   draftNow.current = drafting;
   const [speakers, setSpeakers] = useState(true);
@@ -236,7 +243,7 @@ export function useTranscribe({
         const pending = draftNow.current;
         const opened = activeOf(listNow.current);
         // A context being edited is applied by the Start: what it shows is what the listening is told.
-        const t = pending?.id === opened.id ? { ...opened, context: { ...pending.context, appliedAt: Date.now() } } : opened;
+        const t = pending?.id === opened.id ? { ...opened, context: mergeDraft(pending.base, pending.context, opened.context ?? EMPTY_CONTEXT, Date.now()) } : opened;
         if (pending?.id === opened.id) setDrafting(null);
         const start = { source: source.kind, at: new Date(), ...(source.kind === "file" ? { fileName: source.file.name } : {}) };
         setList((l) => updateTranscript(l, t.id, (current) => beginListening({ ...current, context: t.context }, start)));
@@ -255,14 +262,15 @@ export function useTranscribe({
       stop: () => void controller.stop(),
       editContext: () => {
         const t = activeOf(listNow.current);
-        setDrafting({ id: t.id, context: t.context ?? EMPTY_CONTEXT });
+        const base = t.context ?? EMPTY_CONTEXT;
+        setDrafting({ id: t.id, base, context: base });
       },
-      changeContext: (draft) => setDrafting({ id: listNow.current.activeId, context: draft }),
+      changeContext: (draft) => setDrafting((d) => (d && d.id === listNow.current.activeId ? { ...d, context: draft } : d)),
       applyContext: () => {
         const pending = draftNow.current;
         if (!pending) return;
         setDrafting(null);
-        change(pending.id, (t) => ({ ...t, context: { ...pending.context, appliedAt: Date.now() } }));
+        change(pending.id, (t) => ({ ...t, context: mergeDraft(pending.base, pending.context, t.context ?? EMPTY_CONTEXT, Date.now()) }));
       },
       cancelContext: () => setDrafting(null),
       setSpeakers: (on) => setSpeakers(on),
@@ -316,7 +324,8 @@ export function useTranscribe({
       speakersUnavailable: struck,
       holdMic,
       notesLive,
-      notesBlocked: text.blocked,
+      textBlocked: text.blocked,
+      contextTokens,
       suggestionsOn,
       storeError: kept.error,
     },

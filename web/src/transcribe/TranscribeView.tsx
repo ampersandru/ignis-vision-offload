@@ -10,7 +10,7 @@ import { openSuggestions } from "./suggestions.ts";
 import { Switch } from "../ui/Switch.tsx";
 import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
-import { SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
+import { UTTERANCE_SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
 import { type ListeningHandle, type ListeningState, type LiveUtterance, useListening } from "./listening.ts";
 import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
 import { titleOf, type TranscriptList } from "./sessions.ts";
@@ -331,7 +331,7 @@ function Call({ transcript: t, state, actions, live }: { transcript: Transcript;
 
   return (
     <>
-      <ContextCard transcript={t} draft={state.draft} live={live} actions={actions} />
+      <ContextCard transcript={t} draft={state.draft} maxTokens={state.contextTokens} live={live} actions={actions} />
 
       <section aria-labelledby="transcribe-speakers" className="flex flex-col gap-2.5">
         <h2 id="transcribe-speakers" className={caption}>
@@ -408,7 +408,7 @@ function Settings({ state, actions }: { state: TranscribeState; actions: Transcr
           Utterance ends after
         </h2>
         <div role="radiogroup" aria-labelledby="transcribe-silence" className="flex">
-          {SILENCE_CHOICES.map((ms) => (
+          {UTTERANCE_SILENCE_CHOICES.map((ms) => (
             <button
               key={ms}
               type="button"

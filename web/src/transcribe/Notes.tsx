@@ -2,8 +2,9 @@ import { useId, useState } from "react";
 import { caption } from "../ui/classes.ts";
 import { Markdown } from "../ui/Markdown.tsx";
 import { Switch } from "../ui/Switch.tsx";
-import { kindOf, NOTE_KINDS, type NoteKind, notesStatus } from "./notes.ts";
-import { type NotesHandle, type NotesWriterState, useNotesWriter } from "./notesWriter.ts";
+import { useWatched } from "./assist.ts";
+import { kindHint, kindOf, NOTE_KINDS, notesStatus } from "./notes.ts";
+import type { NotesHandle, NotesWriterState } from "./notesWriter.ts";
 import type { Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
@@ -11,14 +12,6 @@ import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 // Q124-Q127): the kind of conversation, the button that writes the notes, the
 // switch that keeps them up while listening, and the notes as the model wrote
 // them, streaming in under the same heat the sheet's live line has.
-
-/** What each kind's tile says under its name: the sections it asks for, in short. */
-const KIND_HINTS: Record<NoteKind, string> = {
-  general: "Summary, key points, next steps",
-  work: "Topics, people, decisions, action items",
-  game: "Games, players, results, highlights",
-  lesson: "Topics, concepts, questions, to review",
-};
 
 /** The notes button: what it says, and why it cannot be pressed when it cannot. */
 export function notesButton(t: Transcript, writer: NotesWriterState, blocked: string | null): { label: string; disabled: boolean; stops: boolean } {
@@ -29,7 +22,7 @@ export function notesButton(t: Transcript, writer: NotesWriterState, blocked: st
 }
 
 export function Notes({ transcript, state, actions, notes }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; notes: NotesHandle }) {
-  return <NotesPanel transcript={transcript} state={state} actions={actions} writer={useNotesWriter(notes)} />;
+  return <NotesPanel transcript={transcript} state={state} actions={actions} writer={useWatched(notes)} />;
 }
 
 export function NotesPanel({ transcript: t, state, actions, writer }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; writer: NotesWriterState }) {
@@ -38,7 +31,7 @@ export function NotesPanel({ transcript: t, state, actions, writer }: { transcri
   const [copied, setCopied] = useState(false);
   const kind = kindOf(t);
   const here = writer.writing === t.id;
-  const button = notesButton(t, writer, state.notesBlocked);
+  const button = notesButton(t, writer, state.textBlocked);
   const kept = t.notes?.text ?? "";
   // While a writing streams, its text; before its first token, the notes it replaces, dimmed.
   const shown = here && writer.text !== "" ? writer.text : kept;
@@ -62,7 +55,7 @@ export function NotesPanel({ transcript: t, state, actions, writer }: { transcri
               className={`flex flex-col gap-0.5 border px-2.5 py-2 text-left ${kind === k.kind ? "border-ember bg-surface" : "border-line hover:border-ash"}`}
             >
               <span className={`font-display text-[13px] font-semibold ${kind === k.kind ? "text-ink" : "text-ink/85"}`}>{k.label}</span>
-              <span className="text-[11.5px] leading-snug text-ash">{KIND_HINTS[k.kind]}</span>
+              <span className="text-[11.5px] leading-snug text-ash">{kindHint(k)}</span>
             </button>
           ))}
         </div>
@@ -101,7 +94,7 @@ export function NotesPanel({ transcript: t, state, actions, writer }: { transcri
             <span className="text-xs leading-snug text-ash">About once a minute while something new is said, and once more at the end.</span>
           </span>
         </div>
-        {state.notesBlocked && <p className="border-l-2 border-ember pl-2 text-xs leading-snug text-ink">{state.notesBlocked}</p>}
+        {state.textBlocked && <p className="border-l-2 border-ember pl-2 text-xs leading-snug text-ink">{state.textBlocked}</p>}
         {failed && (
           <p role="status" className="border-l-2 border-fault pl-2 text-xs leading-snug text-fault">
             The notes were not written: {failed}

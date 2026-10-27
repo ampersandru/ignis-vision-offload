@@ -9,7 +9,7 @@ import type { AnalystState } from "./analyst.ts";
 import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
 import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
-import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
+import { Heading, marked, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
 import { fileStem, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
 import { addUtterance, createTranscript, fixUtterances, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
@@ -94,6 +94,12 @@ describe("the sheet", () => {
     expect(sheet(room())).not.toContain("Undo fix");
   });
 
+  it("marks a fixed word only where it stands as a word of its own, never inside a longer one", () => {
+    const html = renderToStaticMarkup(<p>{marked("SQL e PostgreSQL, poi SQL.", ["SQL"])}</p>);
+    expect(html.match(/<mark/g)).toHaveLength(2);
+    expect(html).toContain("PostgreSQL,");
+  });
+
   it("marks a split's guessed start with ~ (Q98)", () => {
     const t = room();
     const html = sheet(splitUtterance(t, t.utterances[0].id, 9, "new"));
@@ -130,7 +136,7 @@ describe("the speakers' hues", () => {
 
 const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
   const list = startList();
-  return { list, active: list.transcripts[0], draft: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, notesBlocked: null, suggestionsOn: true, storeError: null, ...patch };
+  return { list, active: list.transcripts[0], draft: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, textBlocked: null, contextTokens: 512, suggestionsOn: true, storeError: null, ...patch };
 };
 
 describe("the deck", () => {
@@ -211,13 +217,14 @@ describe("the context (Q128)", () => {
     context: { languages: { mode: "free", codes: [] }, topic: "Supporto IT", terms: ["PostgreSQL", "VPN"], other: "", appliedAt: new Date(2026, 9, 27, 15, 44).getTime() },
   });
   const card = (t: Transcript, draft: TranscribeState["draft"] = null, live = false) =>
-    renderToStaticMarkup(<ContextCard transcript={t} draft={draft} live={live} actions={actions} />);
+    renderToStaticMarkup(<ContextCard transcript={t} draft={draft} maxTokens={512} live={live} actions={actions} />);
 
   it("reads, applied, as a record with when it was applied and what it takes of the server's 512 tokens, and offers Edit", () => {
     const html = card(told(room()));
     expect(html).toContain(">Supporto IT<");
     expect(html).toContain(">PostgreSQL<");
     expect(html).toMatch(/Applied at 15:44 · about \d+ of 512 tokens/);
+    expect(renderToStaticMarkup(<ContextCard transcript={told(room())} draft={null} maxTokens={1024} live={false} actions={actions} />)).toMatch(/of 1024 tokens/);
     expect(html).toContain(">Edit<");
     expect(html).not.toContain(">Apply<");
   });
@@ -290,7 +297,7 @@ describe("the suggestions (Q132)", () => {
     expect(panel(t, { looking: t.id, failed: null })).toContain(">Stop<");
     expect(panel(t, idle, { suggestionsOn: false })).toContain("Suggestions while listening are off in Settings.");
     expect(panel(t, { looking: null, failed: { transcript: t.id, message: "ignis answered 500" } })).toContain("No suggestions: ignis answered 500");
-    expect(panel(t, idle, { notesBlocked: "No text model serves: notes need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Suggest now</);
+    expect(panel(t, idle, { textBlocked: "No text model serves: the notes and the suggestions need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Suggest now</);
   });
 });
 
@@ -331,10 +338,10 @@ describe("the notes", () => {
 
   it("cannot write with no text model, nothing heard, or another Transcript's notes under way, and says why it failed", () => {
     const t = room();
-    expect(notesButton(t, idle, "No text model serves: notes need one. Load it in the Server view.").disabled).toBe(true);
+    expect(notesButton(t, idle, "No text model serves: the notes and the suggestions need one. Load it in the Server view.").disabled).toBe(true);
     expect(notesButton(createTranscript(2), idle, null).disabled).toBe(true);
     expect(notesButton(t, { writing: 9, text: "", failed: null }, null).disabled).toBe(true);
-    expect(panel(t, idle, { notesBlocked: "The image model is loaded: notes need a text model. Switch in the Server view." })).toContain("The image model is loaded");
+    expect(panel(t, idle, { textBlocked: "The image model is loaded: the notes and the suggestions need a text model. Switch in the Server view." })).toContain("The image model is loaded");
     expect(panel(t, { writing: null, text: "", failed: { transcript: t.id, message: "The model wrote nothing." } })).toContain("The notes were not written: The model wrote nothing.");
   });
 });

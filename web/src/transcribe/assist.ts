@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { abortableSleep, isEngineFull } from "../api/busy.ts";
 import type { ConversationRequest, Settings } from "../api/request.ts";
 import { streamChat, type StreamOptions, type StreamResult } from "../api/stream.ts";
@@ -24,7 +25,7 @@ export const ASSIST_SYSTEM = [
 /** The prompt and what a task writes are allowed of the model's context, beside the transcript. */
 const PROMPT_TOKENS = 1_000;
 /** Characters a token is taken to hold, low for safety: an Italian token holds about four. */
-const CHARS_PER_TOKEN = 3;
+export const CHARS_PER_TOKEN = 3;
 
 /**
  * The transcript as the model reads it: the title, then the `.txt`. When the whole would not fit `contextLimit` with
@@ -103,4 +104,28 @@ export class Follower {
     this.ended = null;
     return id === null ? null : { id, final };
   }
+}
+
+/** A state the page watches: the notes' writer's, the look's. */
+export class Watched<S> {
+  private readonly listeners = new Set<() => void>();
+
+  constructor(protected state: S) {}
+
+  getState = (): S => this.state;
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  protected set(state: S) {
+    this.state = state;
+    for (const listener of this.listeners) listener();
+  }
+}
+
+/** A watched state, for what shows it: only that redraws as it changes. */
+export function useWatched<S>(handle: Pick<Watched<S>, "getState" | "subscribe">): S {
+  return useSyncExternalStore(handle.subscribe, handle.getState, handle.getState);
 }

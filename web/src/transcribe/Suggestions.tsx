@@ -1,7 +1,8 @@
 import { useId } from "react";
 import { caption } from "../ui/classes.ts";
 import { IconClose } from "../ui/icons.tsx";
-import { type AnalystHandle, type AnalystState, useAnalyst } from "./analyst.ts";
+import type { AnalystHandle, AnalystState } from "./analyst.ts";
+import { useWatched } from "./assist.ts";
 import { languageName } from "../speech/languages.ts";
 import { fixWhere, openSuggestions, type Suggestion } from "./suggestions.ts";
 import type { Transcript } from "./transcript.ts";
@@ -33,7 +34,7 @@ export function suggestionText(s: Suggestion): { headline: string; verb: string 
 type SuggestionActions = Pick<TranscribeActions, "acceptSuggestion" | "dismissSuggestion" | "dropSuggestedTerm" | "suggestNow" | "stopSuggesting">;
 
 export function Suggestions(props: { transcript: Transcript; state: TranscribeState; actions: SuggestionActions; analyst: AnalystHandle }) {
-  return <SuggestionsPanel {...props} looking={useAnalyst(props.analyst)} />;
+  return <SuggestionsPanel {...props} looking={useWatched(props.analyst)} />;
 }
 
 export function SuggestionsPanel({
@@ -60,7 +61,7 @@ export function SuggestionsPanel({
         </h2>
         <button
           type="button"
-          disabled={!here && (state.notesBlocked !== null || nothing || looking.looking !== null)}
+          disabled={!here && (state.textBlocked !== null || nothing || looking.looking !== null)}
           onClick={here ? actions.stopSuggesting : actions.suggestNow}
           className="font-display text-[13px] font-semibold text-ember hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:no-underline"
         >

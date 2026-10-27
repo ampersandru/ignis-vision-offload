@@ -1,6 +1,6 @@
 import type { Settings } from "../api/request.ts";
 import { isSpeechLanguage, languageName } from "../speech/languages.ts";
-import { addTerms, type CallContext, EMPTY_CONTEXT, termProblem } from "./context.ts";
+import { addTerms, type CallContext, EMPTY_CONTEXT, isStrings, termProblem } from "./context.ts";
 import { clock } from "./export.ts";
 import { dayAndTime, fixUtterances, titleFor, type Transcript, wordsOf } from "./transcript.ts";
 
@@ -170,7 +170,7 @@ export function dropTerm(t: Transcript, id: number, term: string): Transcript {
 export const LANGUAGE_EVIDENCE = 6;
 /** A language of at least this share, with two utterances, is one the conversation is in. */
 const SPOKEN_SHARE = 0.15;
-/** A language this dominant, the others heard only on short utterances, is one to force. */
+/** A language this dominant, the others heard only on short utterances, is one to expect. */
 const DOMINANT_SHARE = 0.7;
 /** An utterance this short is where the model's guess of the language goes astray (2026-10-27). */
 export const SHORT_UTTERANCE_MS = 2_500;
@@ -178,8 +178,10 @@ export const SHORT_UTTERANCE_MS = 2_500;
 const names = (codes: string[]) => codes.map(languageName).join(" and ");
 
 /**
- * What the utterances' languages suggest, or `null`: one language forced when the others came only on short
- * utterances (the model's guess going astray, as on the owner's first call), else the languages spoken, detected.
+ * What the utterances' languages suggest, or `null`: the one language spoken, as a hint, when the others came only
+ * on short utterances (the model's guess going astray, as on the owner's first call), else the languages spoken.
+ * Never Force: measured, the hint fixes the short utterances as forcing does, and forcing translates whatever is
+ * said in another language (docs/findings/2026-10-27-asr-language-hint.md); Force stays the user's, in the form.
  */
 export function languageOffer(t: Transcript): Offer | null {
   const heard = t.utterances.filter((u) => u.language !== undefined && isSpeechLanguage(u.language));
@@ -190,16 +192,16 @@ export function languageOffer(t: Transcript): Offer | null {
   const [top, topCount] = ranked[0];
   const current = t.context?.languages ?? EMPTY_CONTEXT.languages;
   const others = heard.filter((u) => u.language !== top);
+  if (current.mode === "force") return null;
   if (topCount / heard.length >= DOMINANT_SHARE && others.length >= 2 && others.every((u) => u.endMs - u.startMs < SHORT_UTTERANCE_MS)) {
-    if (current.mode === "force" && current.codes[0] === top) return null;
+    if (current.codes.includes(top)) return null;
     const strays = [...new Set(others.map((u) => u.language!))];
     return {
       kind: "languages",
-      languages: { mode: "force", codes: [top] },
+      languages: { mode: "free", codes: [top] },
       why: `${others.length} short utterances came out as ${names(strays)}, among ${topCount} in ${languageName(top)}.`,
     };
   }
-  if (current.mode === "force") return null;
   const spoken = ranked.filter(([, n]) => n >= 2 && n / heard.length >= SPOKEN_SHARE).map(([code]) => code);
   if (spoken.length === 0 || sameCodes([...spoken].sort(), [...current.codes].sort())) return null;
   return {
@@ -311,7 +313,6 @@ export function dueForAnalysis({ utterances, analyzed, sinceLastMs, final = fals
 }
 
 const KINDS: SuggestionKind[] = ["languages", "topic", "title", "terms", "fix"];
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 
 function readOne(value: unknown): Suggestion | null {
   if (typeof value !== "object" || value === null) return null;
@@ -320,14 +321,14 @@ function readOne(value: unknown): Suggestion | null {
   switch (s.kind) {
     case "languages": {
       const l = s.languages as Record<string, unknown> | undefined;
-      return l && (l.mode === "free" || l.mode === "force") && strings(l.codes) && typeof s.why === "string" ? (s as Suggestion) : null;
+      return l && (l.mode === "free" || l.mode === "force") && isStrings(l.codes) && typeof s.why === "string" ? (s as Suggestion) : null;
     }
     case "topic":
       return typeof s.topic === "string" ? (s as Suggestion) : null;
     case "title":
       return typeof s.title === "string" ? (s as Suggestion) : null;
     case "terms":
-      return strings(s.terms) ? (s as Suggestion) : null;
+      return isStrings(s.terms) ? (s as Suggestion) : null;
     case "fix":
       return typeof s.from === "string" && typeof s.to === "string" && Array.isArray(s.utterances) && s.utterances.every((id) => typeof id === "number")
         ? (s as Suggestion)

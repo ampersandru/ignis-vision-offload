@@ -234,10 +234,13 @@ export function splitUtterance(t: Transcript, utterance: number, at: number, to:
   return { ...label.transcript, utterances };
 }
 
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** `from` as a word or words of its own, whatever its case: not inside a longer word. */
-export const wordsOf = (from: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escaped(from)}(?![\\p{L}\\p{N}])`, "giu");
+export const wordsOf = (from: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(from)}(?![\\p{L}\\p{N}])`, "giu");
+
+/** The words fixes put in, each as words of their own and as written: a mark's, not a fix's. */
+export const fixedWordsOf = (fixed: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(${fixed.map(escapeRegExp).join("|")})(?![\\p{L}\\p{N}])`, "gu");
 
 /**
  * A fix (Q133): `from` becomes `to` in each of `utterances` that holds it, as words of their own. Each keeps the

@@ -93,9 +93,10 @@ comma adds one) and **Anything else**. Nothing is sent while you type:
 **Apply** keeps it with the transcript and, while listening, tells the
 sessions in one update, which holds from the next utterance; a Start applies a
 draft left open. Applied, it reads as a record with the time it was applied
-and about how much of the server's context it takes: the server reads 512
-tokens of it and, past that, keeps the last. A speaker's name you give joins
-the terms. The line at the top of the deck says what is told, with **Edit**.
+and about how much of the server's context it takes: the server reads
+`speech.context_max_tokens` of it (512 unless set) and, past that, keeps the
+last. A speaker's name you give joins the terms. An Apply changes only what the
+draft changed, so a suggestion accepted while it was open stays. The line at the top of the deck says what is told, with **Edit**.
 
 The **Languages** are **Detect** unless you pick **Force one**:
 
@@ -118,9 +119,11 @@ While a listening goes on, the Call tab suggests what the transcription could
 be told, and a bell beside the tabs counts what waits:
 
 - **the languages**, from what the server says of each utterance once six are
-  in: **Force** the one spoken when the others came only on short utterances
-  ("2 short utterances came out as Thai and Hindi, among 9 in Italian"), or
-  **Detect** the ones spoken when each holds its share;
+  in: **Detect** the one spoken, as a hint, when the others came only on
+  short utterances ("2 short utterances came out as Thai and Hindi, among 9 in
+  Italian"), or the ones spoken when each holds its share. It never suggests
+  **Force one**: measured, the hint fixes those utterances as well and does not
+  translate what is said in another language;
 - **a topic**, while none is told, **a title**, while the listening's own one
   stands, and **terms to spell right**: the text model reads the transcript
   once six utterances are in, then about every minute and a half while

@@ -75,6 +75,13 @@ export const NOTE_KINDS: NoteKindSpec[] = [
 
 export const specOf = (kind: NoteKind): NoteKindSpec => NOTE_KINDS.find((k) => k.kind === kind) ?? NOTE_KINDS[0];
 
+/** What a kind's tile says under its name: its sections, the summary left out of a long list, four at most. */
+export function kindHint(spec: NoteKindSpec): string {
+  const names = spec.sections.map((s) => s.name).filter((name, _, all) => all.length <= 4 || name !== "Summary");
+  const shown = names.slice(0, 4).map((name, i) => (i === 0 ? name : name.toLocaleLowerCase()));
+  return shown.join(", ");
+}
+
 export const NOTE_KIND_KEY = "ignis.transcribeNoteKind";
 
 /** The kind last picked, this browser's: what a Transcript with no notes yet starts at. General at first. */
@@ -174,13 +181,16 @@ export function notesStatus(notes: Notes | undefined, utterances: number): strin
   return `Written at ${time} from ${counted(notes.covered)}${from}.${fresh > 0 ? ` ${fresh} more since.` : ""}`;
 }
 
-/** Why no notes can be written now; `null` while a text model serves, or would load again on the request. */
-export function notesBlocked(model: ModelState): string | null {
+/**
+ * Why the notes and the suggestions cannot ask the text model now; `null` while one serves, or would load again on
+ * the request.
+ */
+export function textModelBlocked(model: ModelState): string | null {
   if (canChat(model)) return null;
   if (model.state === "reading") return "Reading which model is loaded.";
-  if (imageLoaded(model)) return "The image model is loaded: notes need a text model. Switch in the Server view.";
-  if (loadUnderWay(model)) return "A model is loading: notes can be written once it serves.";
-  return "No text model serves: notes need one. Load it in the Server view.";
+  if (imageLoaded(model)) return "The image model is loaded: the notes and the suggestions need a text model. Switch in the Server view.";
+  if (loadUnderWay(model)) return "A model is loading: the notes and the suggestions wait until it serves.";
+  return "No text model serves: the notes and the suggestions need one. Load it in the Server view.";
 }
 
 /** The model's notes as kept: trimmed, and out of a fence when it wrapped them in one. */

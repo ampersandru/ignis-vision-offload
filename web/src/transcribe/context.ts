@@ -1,5 +1,7 @@
 import { isSpeechLanguage, languageName } from "../speech/languages.ts";
 import type { Told } from "../speech/realtime.ts";
+import type { ConfigDocument } from "../server/routes.ts";
+import { CHARS_PER_TOKEN } from "./assist.ts";
 import type { Speaker } from "./transcript.ts";
 
 // What a Transcript's transcription is told (spec speech/07, Q128, Q130): the
@@ -27,18 +29,14 @@ export type CallContext = {
 
 export const EMPTY_CONTEXT: CallContext = { languages: { mode: "free", codes: [] }, topic: "", terms: [], other: "", appliedAt: null };
 
-/** What the server reads of a prompt and its keywords (`speech.context_max_tokens`); past it, the last tokens. */
-export const CONTEXT_MAX_TOKENS = 512;
-/** Characters a token is taken to hold, low for safety. */
-const CHARS_PER_TOKEN = 3;
+/** What the server reads of a prompt and its keywords, `speech.context_max_tokens`, unless it says otherwise. */
+export const DEFAULT_CONTEXT_TOKENS = 512;
 
-/**
- * Whether the free languages go into the prompt as a hint (Q130): measured on cut Italian speech, `Languages:
- * Italian.` took the shortest pieces from 91 % to 100 % heard as Italian, as forcing does, without forcing's cost on
- * English speech (docs/findings/2026-10-27-asr-language-hint.md). In the model's English names, first, with its
- * period, as it was measured; worded in the call's language it did harm.
- */
-export const LANGUAGE_HINT = true;
+/** The running server's `speech.context_max_tokens` (`GET /v1/config`); past it, the server keeps the last tokens. */
+export function contextTokensOf(config: ConfigDocument | null): number {
+  const value = config?.speech?.context_max_tokens;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : DEFAULT_CONTEXT_TOKENS;
+}
 
 /** The languages with `code` picked: under Force it is the one, under Detect one more. */
 export function pickLanguage(languages: CallContext["languages"], code: string): CallContext["languages"] {
@@ -98,7 +96,11 @@ export function told(context: CallContext | undefined, speakers: Speaker[]): Tol
   const c = context ?? EMPTY_CONTEXT;
   const codes = c.languages.codes.filter(isSpeechLanguage);
   const lines: string[] = [];
-  if (c.languages.mode === "free" && LANGUAGE_HINT && codes.length > 0) lines.push(`Languages: ${codes.map(languageName).join(", ")}.`);
+  // Under Detect, the languages are a hint (Q130): measured on cut Italian speech, `Languages: Italian.` took the
+  // shortest pieces from 91 % to 100 % heard as Italian, as forcing does, without forcing's cost on English speech
+  // (docs/findings/2026-10-27-asr-language-hint.md). In the model's English names, first, with its period, as it was
+  // measured; worded in the call's language it did harm.
+  if (c.languages.mode === "free" && codes.length > 0) lines.push(`Languages: ${codes.map(languageName).join(", ")}.`);
   if (c.topic.trim() !== "") lines.push(`Topic: ${c.topic.trim()}`);
   if (c.other.trim() !== "") lines.push(c.other.trim());
   const keywords = unique([...c.terms, ...namedSpeakers(speakers)].filter((term) => termProblem(term) === null));
@@ -124,7 +126,29 @@ export function contextSummary(c: CallContext | undefined): string {
   return parts.join(" · ");
 }
 
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+export const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+const lower = (terms: string[]) => new Set(terms.map((term) => term.toLocaleLowerCase()));
+
+/**
+ * A draft applied over what the Transcript holds now (Q128): only what the draft changed since `base`, the context
+ * when Edit opened it, so a suggestion accepted or a fix's term added meanwhile is kept. A field edited in the draft
+ * is the draft's; the terms the draft added are added and those it removed are removed.
+ */
+export function mergeDraft(base: CallContext, draft: CallContext, current: CallContext, now: number): CallContext {
+  const sameLanguages = base.languages.mode === draft.languages.mode && base.languages.codes.join() === draft.languages.codes.join();
+  const was = lower(base.terms);
+  const kept = lower(draft.terms);
+  const removed = new Set([...was].filter((term) => !kept.has(term)));
+  const added = draft.terms.filter((term) => !was.has(term.toLocaleLowerCase()));
+  return {
+    languages: sameLanguages ? current.languages : draft.languages,
+    topic: draft.topic === base.topic ? current.topic : draft.topic,
+    terms: addTerms(current.terms.filter((term) => !removed.has(term.toLocaleLowerCase())), added.join(",")),
+    other: draft.other === base.other ? current.other : draft.other,
+    appliedAt: now,
+  };
+}
 
 /** A stored Transcript's context, or `undefined` when it is not one this page wrote. */
 export function readContext(value: unknown): CallContext | undefined {
@@ -135,9 +159,9 @@ export function readContext(value: unknown): CallContext | undefined {
     typeof languages === "object" &&
     languages !== null &&
     (languages.mode === "free" || languages.mode === "force") &&
-    strings(languages.codes) &&
+    isStrings(languages.codes) &&
     typeof c.topic === "string" &&
-    strings(c.terms) &&
+    isStrings(c.terms) &&
     typeof c.other === "string" &&
     (c.appliedAt === null || (typeof c.appliedAt === "number" && Number.isFinite(c.appliedAt)));
   return ok ? (c as CallContext) : undefined;

@@ -3,10 +3,12 @@ import {
   addTerms,
   type CallContext,
   contextSummary,
+  contextTokensOf,
   EMPTY_CONTEXT,
   isBlank,
   languagesLine,
   languagesUnder,
+  mergeDraft,
   namedSpeakers,
   pickLanguage,
   readContext,
@@ -97,6 +99,30 @@ describe("the deck's line", () => {
     expect(contextSummary({ ...EMPTY_CONTEXT, languages: { mode: "force", codes: ["it"] } })).toBe("Italian only");
     expect(contextSummary(undefined)).toBe("Nothing told: the model guesses the languages and spells the names as it hears them.");
     expect(isBlank({ ...EMPTY_CONTEXT, appliedAt: 5 })).toBe(true);
+  });
+});
+
+describe("a draft applied (Q128)", () => {
+  it("changes only what it changed since Edit, keeping a suggestion accepted or a fix's term added meanwhile", () => {
+    const base: CallContext = { languages: { mode: "free", codes: ["it"] }, topic: "IT", terms: ["VPN", "SSH"], other: "", appliedAt: 1 };
+    const draft: CallContext = { ...base, topic: "Supporto IT", terms: ["VPN", "Kubernetes"] };
+    const meanwhile: CallContext = { ...base, languages: { mode: "free", codes: ["it", "en"] }, terms: ["VPN", "SSH", "PostgreSQL"], other: "Da un fix." };
+    expect(mergeDraft(base, draft, meanwhile, 9)).toEqual({
+      languages: { mode: "free", codes: ["it", "en"] },
+      topic: "Supporto IT",
+      terms: ["VPN", "PostgreSQL", "Kubernetes"],
+      other: "Da un fix.",
+      appliedAt: 9,
+    });
+    expect(mergeDraft(base, { ...base, languages: { mode: "force", codes: ["it"] } }, meanwhile, 9).languages).toEqual({ mode: "force", codes: ["it"] });
+  });
+});
+
+describe("the server's context", () => {
+  it("is its speech.context_max_tokens, 512 until it is read or when it says nothing usable", () => {
+    expect(contextTokensOf({ speech: { context_max_tokens: 1_024 } })).toBe(1_024);
+    expect(contextTokensOf({ speech: { context_max_tokens: "lots" } })).toBe(512);
+    expect(contextTokensOf(null)).toBe(512);
   });
 });
 

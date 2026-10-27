@@ -313,6 +313,9 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   left open. The topic and anything else are the `prompt`, the terms and the speakers' names the user gave (never
   "Speaker n", Me or Others) the `keywords`, which the server refuses with `<`, `>` or a line break, so the field
   does too. A rename during a listening is sent as it is made. The deck's first line says what is told, with Edit.
+  After the review: an Apply (or a Start) merges the draft onto what the Transcript holds then, changing only what
+  the draft changed since Edit (`mergeDraft`), so a suggestion accepted or a fix's term added meanwhile is kept;
+  the limit shown is the running server's `speech.context_max_tokens` (`GET /v1/config`), 512 until it is read.
 - **S3, the languages (Q130).** The context's Languages: Detect (the default) lists the expected ones, which go
   into the prompt as `Languages: Italian, English.` and nothing goes to `language`; Force one sends the first as the
   session's `language` and leaves it out of the prompt. Measured first (docs/findings/2026-10-27-asr-language-hint.md):
@@ -334,8 +337,10 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   reads them.
 - **S5, the suggestions (Q132, Q134).** A Transcript keeps its `suggestions` (each open, accepted or dismissed, and
   the kinds accepted always), read back like the notes. The languages come from the utterances' `language` once six
-  are in, no model: Force the top language when it holds 70 % and the others came only on utterances under 2.5 s
-  (the owner's first call), else Detect those with 15 % and two utterances. The topic, a title (only over the
+  are in, no model: Detect the top language, as a hint, when it holds 70 % and the others came only on utterances
+  under 2.5 s (the owner's first call), else Detect those with 15 % and two utterances; never Force (amended after
+  the review: S3 measured the hint as good on those utterances and forcing as translating other speech, and Force
+  stays the user's, in the form). The topic, a title (only over the
   listening's own) and the terms come from a look by the text model: first at six utterances, then 90 s from the
   last look's start with three new, once more at the end (assist.ts's Follower, shared with the notes), a failed look
   waiting the gap; Suggest now on demand. An offer made before, whatever became of it, is not made again; a term

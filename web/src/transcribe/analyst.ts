@@ -1,5 +1,4 @@
-import { useSyncExternalStore } from "react";
-import { type AskDeps, askModel, assistRequest, Follower, transcriptInput } from "./assist.ts";
+import { type AskDeps, askModel, assistRequest, Follower, transcriptInput, Watched } from "./assist.ts";
 import { ANALYSIS_GAP_MS, ANALYSIS_MAX_TOKENS, ANALYSIS_SETTINGS, ANALYSIS_TASK, type Analysis, dueForAnalysis, readAnalysis } from "./suggestions.ts";
 import type { Transcript } from "./transcript.ts";
 
@@ -25,23 +24,16 @@ export type AnalystDeps = AskDeps & {
 
 const IDLE: AnalystState = { looking: null, failed: null };
 
-export class Analyst {
-  private state: AnalystState = IDLE;
-  private readonly listeners = new Set<() => void>();
+export class Analyst extends Watched<AnalystState> {
   private abort: AbortController | null = null;
   /** When each Transcript's last look began, and how many of its utterances it read. */
   private readonly began = new Map<number, number>();
   private readonly read = new Map<number, number>();
   private readonly follower = new Follower();
 
-  constructor(private readonly deps: AnalystDeps) {}
-
-  getState = (): AnalystState => this.state;
-
-  subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  };
+  constructor(private readonly deps: AnalystDeps) {
+    super(IDLE);
+  }
 
   /** Reads `t` now, unless a look is under way. */
   async analyze(t: Transcript, contextLimit: number | null): Promise<void> {
@@ -86,14 +78,7 @@ export class Analyst {
     return t ? this.keepUp(t, contextLimit, { final: next!.final }) : Promise.resolve();
   }
 
-  private set(state: AnalystState) {
-    this.state = state;
-    for (const listener of this.listeners) listener();
-  }
 }
 
+/** The look as the page shows it (assist.ts's useWatched). */
 export type AnalystHandle = Pick<Analyst, "getState" | "subscribe">;
-
-export function useAnalyst(handle: AnalystHandle): AnalystState {
-  return useSyncExternalStore(handle.subscribe, handle.getState, handle.getState);
-}

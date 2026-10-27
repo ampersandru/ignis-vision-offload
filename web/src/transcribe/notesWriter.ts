@@ -1,5 +1,4 @@
-import { useSyncExternalStore } from "react";
-import { type AskDeps, askModel, Follower } from "./assist.ts";
+import { type AskDeps, askModel, Follower, Watched } from "./assist.ts";
 import { dueForUpdate, LIVE_GAP_MS, type NoteKind, type Notes, notesRequest, tidyNotes } from "./notes.ts";
 import type { Transcript } from "./transcript.ts";
 
@@ -31,22 +30,15 @@ export type NotesWriterDeps = AskDeps & {
 
 const IDLE: NotesWriterState = { writing: null, text: "", failed: null };
 
-export class NotesWriter {
-  private state: NotesWriterState = IDLE;
-  private readonly listeners = new Set<() => void>();
+export class NotesWriter extends Watched<NotesWriterState> {
   private abort: AbortController | null = null;
   /** When each Transcript's last writing began: keeping up counts from it. */
   private readonly began = new Map<number, number>();
   private readonly follower = new Follower();
 
-  constructor(private readonly deps: NotesWriterDeps) {}
-
-  getState = (): NotesWriterState => this.state;
-
-  subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  };
+  constructor(private readonly deps: NotesWriterDeps) {
+    super(IDLE);
+  }
 
   /** Writes `t`'s notes as `kind`, unless a writing is under way. */
   async write(t: Transcript, kind: NoteKind, contextLimit: number | null): Promise<void> {
@@ -101,16 +93,7 @@ export class NotesWriter {
     const t = next === null ? undefined : find(next.id);
     return t ? this.keepUp(t, kindOf(t), contextLimit, { final: next!.final }) : Promise.resolve();
   }
-
-  private set(state: NotesWriterState) {
-    this.state = state;
-    for (const listener of this.listeners) listener();
-  }
 }
 
+/** The writer as the page shows it (assist.ts's useWatched): the text streams token by token, and only the notes redraw. */
 export type NotesHandle = Pick<NotesWriter, "getState" | "subscribe">;
-
-/** The writer's state, for what shows it: the text streams token by token, and only the notes redraw. */
-export function useNotesWriter(handle: NotesHandle): NotesWriterState {
-  return useSyncExternalStore(handle.subscribe, handle.getState, handle.getState);
-}

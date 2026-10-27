@@ -39,9 +39,12 @@ describe("the languages suggested (Q130, Q132)", () => {
     expect(languageOffer(heard(italian(5)))).toBeNull();
   });
 
-  it("force the language spoken when the others came only on short utterances, as on the owner's first call", () => {
-    const offer = languageOffer(heard([...italian(8), ["th", 1.2], ["hi", 2], ["it", 4]]));
-    expect(offer).toEqual({ kind: "languages", languages: { mode: "force", codes: ["it"] }, why: "2 short utterances came out as Thai and Hindi, among 9 in Italian." });
+  it("expect the language spoken, as a hint, when the others came only on short utterances, as on the owner's first call; never force it", () => {
+    const t = heard([...italian(8), ["th", 1.2], ["hi", 2], ["it", 4]]);
+    expect(languageOffer(t)).toEqual({ kind: "languages", languages: { mode: "free", codes: ["it"] }, why: "2 short utterances came out as Thai and Hindi, among 9 in Italian." });
+    const hinted = { ...t, context: { languages: { mode: "free" as const, codes: ["it"] }, topic: "", terms: [], other: "", appliedAt: 1 } };
+    expect(languageOffer(hinted)).toBeNull();
+    expect(languageOffer({ ...hinted, context: { ...hinted.context, languages: { mode: "force" as const, codes: ["de"] } } })).toBeNull();
   });
 
   it("detect the languages spoken when they hold their share, and say nothing once the context says the same", () => {
@@ -149,7 +152,7 @@ describe("a fix (Q133)", () => {
     const t = it_call();
     const [offer] = analysisOffers(t, { topic: null, title: null, terms: [], fixes: [{ at: "00:27", from: "Postgress", to: "PostgreSQL" }] });
     expect(offer).toEqual({ kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1, 2] });
-    expect(analysisOffers(t, { topic: null, title: null, terms: [], fixes: [{ at: "00:27", from: "Teamviewer", to: "TeamViewer" }] })).toEqual([]);
+    expect(analysisOffers(t, { topic: null, title: null, terms: [], fixes: [{ at: "00:27", from: "Prometeus", to: "Prometheus" }] })).toEqual([]);
   });
 
   it("accepted, fixes the words, keeps the text as heard, marks what it put in, and makes the right spelling a term", () => {

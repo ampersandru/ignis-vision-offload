@@ -4,17 +4,18 @@ import {
   chooseNoteKind,
   dueForUpdate,
   FIRST_LIVE_UTTERANCES,
+  kindHint,
   kindOf,
   LIVE_GAP_MS,
   NOTE_KIND_KEY,
   NOTE_KINDS,
   noNotes,
-  notesBlocked,
   NOTES_SETTINGS,
   notesRequest,
   notesTask,
   notesStatus,
   readNotes,
+  textModelBlocked,
   reloadNoteKind,
   tidyNotes,
   type Notes,
@@ -41,6 +42,15 @@ afterEach(() => {
 const written = (patch: Partial<Notes> = {}): Notes => ({ kind: "work", text: "## Riassunto\n- ok", writtenAs: "work", covered: 4, writtenAt: new Date(2026, 9, 27, 16, 5).getTime(), fromMs: null, ...patch });
 
 describe("the kinds of conversation", () => {
+  it("show their sections in short on their tiles, a long list without its summary", () => {
+    expect(NOTE_KINDS.map(kindHint)).toEqual([
+      "Summary, key points, next steps",
+      "Topics, people, decisions, action items",
+      "Games, players, results, highlights",
+      "Topics, key concepts, questions, to review",
+    ]);
+  });
+
   it("are General, Work call, Game session and Lesson, each with its sections", () => {
     expect(NOTE_KINDS.map((k) => k.label)).toEqual(["General", "Work call", "Game session", "Lesson"]);
     const sections = (kind: string) => NOTE_KINDS.find((k) => k.kind === kind)?.sections.map((s) => s.name);
@@ -124,14 +134,14 @@ describe("what the panel says", () => {
     expect(notesStatus(undefined, 4)).toBeNull();
   });
 
-  it("says why no notes can be written while no text model serves", () => {
+  it("says why the notes and the suggestions cannot ask the text model", () => {
     const ready: ModelState = { state: "ready", id: "qwen3.8-27b", contextLimit: 262_144, kind: "text" };
-    expect(notesBlocked(ready)).toBeNull();
-    expect(notesBlocked({ state: "unloaded", id: "qwen3.8-27b", contextLimit: null })).toBeNull();
-    expect(notesBlocked({ ...ready, kind: "image" })).toBe("The image model is loaded: notes need a text model. Switch in the Server view.");
-    expect(notesBlocked({ state: "loading", to: "qwen3.8-27b", since: 0 })).toBe("A model is loading: notes can be written once it serves.");
-    expect(notesBlocked({ state: "error", message: "down" })).toBe("No text model serves: notes need one. Load it in the Server view.");
-    expect(notesBlocked({ state: "reading" })).toBe("Reading which model is loaded.");
+    expect(textModelBlocked(ready)).toBeNull();
+    expect(textModelBlocked({ state: "unloaded", id: "qwen3.8-27b", contextLimit: null })).toBeNull();
+    expect(textModelBlocked({ ...ready, kind: "image" })).toBe("The image model is loaded: the notes and the suggestions need a text model. Switch in the Server view.");
+    expect(textModelBlocked({ state: "loading", to: "qwen3.8-27b", since: 0 })).toBe("A model is loading: the notes and the suggestions wait until it serves.");
+    expect(textModelBlocked({ state: "error", message: "down" })).toBe("No text model serves: the notes and the suggestions need one. Load it in the Server view.");
+    expect(textModelBlocked({ state: "reading" })).toBe("Reading which model is loaded.");
   });
 });
 

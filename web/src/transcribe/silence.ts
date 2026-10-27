@@ -7,15 +7,15 @@ import { viewerChoice } from "./viewerChoice.ts";
 // ends an utterance anyway, so the silence only has to end a real pause. A
 // per-viewer setting, this browser's (viewerChoice.ts); a change holds at once.
 
-export const SILENCE_KEY = "ignis.transcribeSilence";
+export const UTTERANCE_SILENCE_KEY = "ignis.transcribeSilence";
 
 /** The choices the view offers, in ms. */
-export const SILENCE_CHOICES = [500, 1_000, 1_500, 2_000];
+export const UTTERANCE_SILENCE_CHOICES = [500, 1_000, 1_500, 2_000];
 
 /** 1.5 s until the viewer says otherwise (owner, 2026-10-27). */
-export const DEFAULT_SILENCE_MS = 1_500;
+export const DEFAULT_UTTERANCE_SILENCE_MS = 1_500;
 
-const silence = viewerChoice({ key: SILENCE_KEY, choices: SILENCE_CHOICES, fallback: DEFAULT_SILENCE_MS });
+const silence = viewerChoice({ key: UTTERANCE_SILENCE_KEY, choices: UTTERANCE_SILENCE_CHOICES, fallback: DEFAULT_UTTERANCE_SILENCE_MS });
 
 /** The silence the next listening asks for. */
 export const utteranceSilence = silence.get;

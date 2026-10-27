@@ -6,10 +6,8 @@ import { Segmented } from "../ui/Segmented.tsx";
 import {
   addTerms,
   type CallContext,
-  CONTEXT_MAX_TOKENS,
   EMPTY_CONTEXT,
   isBlank,
-  LANGUAGE_HINT,
   languagesLine,
   languagesUnder,
   type LanguageMode,
@@ -27,21 +25,24 @@ import type { TranscribeActions } from "./useTranscribe.ts";
 // that nothing sends until Apply — one update, from the next utterance on —
 // and that a Start applies itself.
 
-/** "Applied at 15:44", and how much of the server's context it takes. */
-export function appliedLine(t: Transcript): string {
+/** "Applied at 15:44", and how much of the server's context it takes (`speech.context_max_tokens`, `maxTokens`). */
+export function appliedLine(t: Transcript, maxTokens: number): string {
   const tokens = toldTokens(told(t.context, t.speakers));
   const at = t.context?.appliedAt == null ? "Not applied yet" : `Applied at ${dayAndTime(new Date(t.context.appliedAt)).time}`;
-  return `${at} · about ${tokens} of ${CONTEXT_MAX_TOKENS} tokens`;
+  return `${at} · about ${tokens} of ${maxTokens} tokens`;
 }
 
 export function ContextCard({
   transcript: t,
   draft,
+  maxTokens,
   live,
   actions,
 }: {
   transcript: Transcript;
   draft: CallContext | null;
+  /** What the server reads of a context (`speech.context_max_tokens`). */
+  maxTokens: number;
   /** A listening appends to this Transcript: an Apply holds from its next utterance. */
   live: boolean;
   actions: Pick<TranscribeActions, "editContext" | "changeContext" | "applyContext" | "cancelContext">;
@@ -61,7 +62,7 @@ export function ContextCard({
         )}
       </div>
       {draft !== null ? (
-        <ContextForm transcript={t} draft={draft} live={live} actions={actions} />
+        <ContextForm transcript={t} draft={draft} maxTokens={maxTokens} live={live} actions={actions} />
       ) : isBlank(c) ? (
         <p className="text-xs leading-snug text-ash">
           Nothing told yet. Tell the transcription the topic and the words to spell right: names, products, jargon. It applies from the next utterance.
@@ -100,7 +101,7 @@ export function ContextCard({
               </>
             )}
           </dl>
-          <p className="text-xs text-ash">{appliedLine(t)}</p>
+          <p className="text-xs text-ash">{appliedLine(t, maxTokens)}</p>
         </>
       )}
     </section>
@@ -110,11 +111,13 @@ export function ContextCard({
 function ContextForm({
   transcript: t,
   draft,
+  maxTokens,
   live,
   actions,
 }: {
   transcript: Transcript;
   draft: CallContext;
+  maxTokens: number;
   live: boolean;
   actions: Pick<TranscribeActions, "changeContext" | "applyContext" | "cancelContext">;
 }) {
@@ -187,10 +190,8 @@ function ContextForm({
         />
       </label>
 
-      <p className={`text-xs leading-snug ${tokens > CONTEXT_MAX_TOKENS ? "text-fault" : "text-ash"}`}>
-        {tokens > CONTEXT_MAX_TOKENS
-          ? `About ${tokens} tokens: the server reads the last ${CONTEXT_MAX_TOKENS}, so the start is lost.`
-          : `About ${tokens} of the ${CONTEXT_MAX_TOKENS} tokens the server reads.`}
+      <p className={`text-xs leading-snug ${tokens > maxTokens ? "text-fault" : "text-ash"}`}>
+        {tokens > maxTokens ? `About ${tokens} tokens: the server reads the last ${maxTokens}, so the start is lost.` : `About ${tokens} of the ${maxTokens} tokens the server reads.`}
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -221,9 +222,7 @@ export function languagesHint(languages: CallContext["languages"]): string {
     const name = languages.codes[0] ? languageName(languages.codes[0]) : "one language";
     return `Every utterance is transcribed as ${name}: words of another language come out in its spelling.`;
   }
-  return LANGUAGE_HINT
-    ? "The model detects each utterance's language; the ones listed go into the context as a hint."
-    : "The model detects each utterance's language. The ones listed are kept with the transcript.";
+  return "The model detects each utterance's language; the ones listed go into the context as a hint.";
 }
 
 /** The languages: Detect, with the expected ones, or Force one. */

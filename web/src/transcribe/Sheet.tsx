@@ -4,7 +4,7 @@ import { clock, startedLine, startOf } from "./export.ts";
 import type { LiveUtterance, ListeningState } from "./listening.ts";
 import { titleOf } from "./sessions.ts";
 import type { TranscribeActions } from "./useTranscribe.ts";
-import type { Speaker, Transcript, Utterance } from "./transcript.ts";
+import { fixedWordsOf, type Speaker, type Transcript, type Utterance } from "./transcript.ts";
 
 // The Transcript as it is heard (spec speech/07): its heading (drawn by the
 // view above the sheet, with the exports, so it stays in sight), then its
@@ -149,12 +149,12 @@ function Row({ time, tick, label, children }: { time: string; tick: { color?: st
   );
 }
 
-/** `text` with the words fixes put in it marked (Q133). */
+/** `text` with the words fixes put in it marked (Q133), each where it stands as words of its own. */
 export function marked(text: string, fixed: string[]): ReactNode {
   if (fixed.length === 0) return text;
-  const pattern = new RegExp(`(${fixed.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
-  return text.split(pattern).map((part, i) =>
-    fixed.includes(part) ? (
+  // The pattern's one group makes every odd part a word it matched.
+  return text.split(fixedWordsOf(fixed)).map((part, i) =>
+    i % 2 === 1 ? (
       <mark key={i} className="bg-transparent text-ink underline decoration-ember decoration-dotted decoration-2 underline-offset-4">
         {part}
       </mark>

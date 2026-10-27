@@ -30,7 +30,7 @@ import { lastReply } from "../sessions/sessions.ts";
 import { dictationContext } from "../speech/dictation.ts";
 import { useDictation } from "../speech/useDictation.ts";
 import { type Drawer as TranscribeDrawer, TranscribeView } from "../transcribe/TranscribeView.tsx";
-import { notesBlocked } from "../transcribe/notes.ts";
+import { textModelBlocked } from "../transcribe/notes.ts";
 import { useTranscribe } from "../transcribe/useTranscribe.ts";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
@@ -121,7 +121,7 @@ export function App() {
   const [transcribe, transcribeActions, listening, assistants] = useTranscribe({
     speech: model.speech,
     // The notes go to the text model loaded, never to another: no request of theirs names one.
-    text: { blocked: notesBlocked(model), contextLimit: canChat(model) ? model.contextLimit : null },
+    text: { blocked: textModelBlocked(model), contextLimit: canChat(model) ? model.contextLimit : null },
     onUnavailable: refreshModel,
   });
   // Held here, not in the view: the chat hands pictures to it.
