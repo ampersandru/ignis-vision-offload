@@ -185,6 +185,8 @@ Every correction is the page's, and nothing goes back to the server:
   **New speaker**.
 - **Merge** two speakers: **Merge into** on a speaker's row. One name is left,
   and the future utterances of either take it.
+- **Delete** an utterance: click its text, then **Delete**. For a few seconds
+  **Undo** at the foot of the transcript puts it back where it was.
 - **Split** an utterance where the diarizer missed a change: click its text,
   put the cursor where the second speaker starts, and pick the second half's
   speaker in **Split at the cursor, the rest to…**. No audio is kept, so the

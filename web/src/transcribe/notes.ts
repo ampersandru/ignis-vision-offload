@@ -177,7 +177,7 @@ export function notesStatus(notes: Notes | undefined, utterances: number): strin
     return `Written as ${specOf(notes.writtenAs).label} notes at ${time}. Write notes to redo them as ${specOf(notes.kind).label} notes.`;
   }
   const from = notes.fromMs === null ? "" : `, from ${clock(notes.fromMs)} on: the start did not fit the model's context`;
-  const fresh = utterances - notes.covered;
+  const fresh = Math.max(0, utterances - notes.covered);
   return `Written at ${time} from ${counted(notes.covered)}${from}.${fresh > 0 ? ` ${fresh} more since.` : ""}`;
 }
 

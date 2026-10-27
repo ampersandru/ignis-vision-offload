@@ -376,6 +376,13 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   owner: the first version offered a fix once, so the same misheard word in a later utterance stayed unfixed even
   with Always.
 
+### Search, delete, rewrite, ask (2026-10-27, Q136-Q141)
+
+The owner's third round, after trying the second (grill Q136-Q141), one commit each:
+- **Delete (Q137).** An utterance's editor has Delete; the utterance leaves the Transcript and an Undo stands at the
+  sheet's foot for 8 s (`UNDO_DELETE_MS`), putting it back where its time places it. Nothing else changes: its
+  speaker stays, a fix that names it does nothing to it, and the notes' "more since" never goes below zero.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

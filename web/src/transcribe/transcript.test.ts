@@ -7,7 +7,9 @@ import {
   type Heard,
   mergeSpeakers,
   moveUtterance,
+  removeUtterance,
   renameSpeaker,
+  restoreUtterance,
   splitUtterance,
   type Transcript,
   undoFixes,
@@ -20,6 +22,18 @@ import {
 const heard = (stream: string, startMs: number, text: string, voice: Heard["voice"], endMs = startMs + 1_000): Heard => ({ stream, startMs, endMs, text, voice });
 
 const names = (t: Transcript) => t.utterances.map((u) => [u.text, u.speaker === null ? null : t.speakers.find((s) => s.id === u.speaker)?.name]);
+
+describe("a deleted utterance (Q137)", () => {
+  it("leaves the others as they were, and comes back where its time places it", () => {
+    let t = createTranscript(1);
+    for (const [i, text] of ["Uno.", "Due.", "Tre."].entries()) t = addUtterance(t, { stream: "s", startMs: i * 1_000, endMs: i * 1_000 + 500, text, voice: null });
+    const gone = t.utterances[1];
+    const without = removeUtterance(t, gone.id);
+    expect(without.utterances.map((u) => u.text)).toEqual(["Uno.", "Tre."]);
+    expect(restoreUtterance(without, gone).utterances.map((u) => u.text)).toEqual(["Uno.", "Due.", "Tre."]);
+    expect(restoreUtterance(t, gone)).toBe(t);
+  });
+});
 
 describe("a fix (Q133)", () => {
   const heard = (text: string) => addUtterance(createTranscript(1), { stream: "s", startMs: 0, endMs: 4_000, text, voice: null });

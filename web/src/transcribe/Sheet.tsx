@@ -38,6 +38,7 @@ export const Sheet = memo(function Sheet({
   call,
   here,
   actions,
+  deleted,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -46,7 +47,9 @@ export const Sheet = memo(function Sheet({
   call: boolean;
   /** The listening appends to this Transcript. */
   here: boolean;
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete">;
+  /** The utterance just deleted, while its Undo stands (Q137). */
+  deleted: Utterance | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -83,7 +86,17 @@ export const Sheet = memo(function Sheet({
           )}
         </div>
       </div>
-      {!following && here && phase !== "idle" && (
+      {deleted && (
+        <div role="status" className="cut absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-3 bg-kiln py-2 pr-2 pl-3.5 text-[13px] text-[#eae8e4] [--cut-size:8px]">
+          <span>
+            Utterance at <span className="font-display tabular-nums">{startOf(deleted)}</span> deleted.
+          </span>
+          <button type="button" onClick={actions.undoDelete} className="px-2 py-0.5 font-display font-semibold text-[#ff8a4c] hover:text-[#ffa877]">
+            Undo
+          </button>
+        </div>
+      )}
+      {!deleted && !following && here && phase !== "idle" && (
         <button
           type="button"
           onClick={jump}
@@ -174,7 +187,7 @@ const UtteranceRow = memo(function UtteranceRow({
   utterance: Utterance;
   speaker: Speaker | undefined;
   speakers: Speaker[];
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance">;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -205,16 +218,25 @@ const UtteranceRow = memo(function UtteranceRow({
             onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
             className="w-full resize-none rounded-[2px] border border-line bg-surface px-2.5 py-1.5 text-[15px] leading-relaxed text-ink [field-sizing:content] focus:border-ember focus:outline-none"
           />
-          <SpeakerMenu
-            value={null}
-            speakers={speakers}
-            prompt="Split at the cursor, the rest to…"
-            ariaLabel="Split this utterance at the cursor"
-            onChoose={(to) => {
-              actions.splitUtterance(u.id, cursor.current, to);
-              setEditing(false);
-            }}
-          />
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <SpeakerMenu
+              value={null}
+              speakers={speakers}
+              prompt="Split at the cursor, the rest to…"
+              ariaLabel="Split this utterance at the cursor"
+              onChoose={(to) => {
+                actions.splitUtterance(u.id, cursor.current, to);
+                setEditing(false);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => actions.deleteUtterance(u.id)}
+              className="ml-auto font-display text-xs text-ash hover:text-fault"
+            >
+              Delete
+            </button>
+          </div>
         </div>
       ) : (
         <div>

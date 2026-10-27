@@ -20,7 +20,21 @@ import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, 
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
-import { addUtterance, beginListening, clockOf, editText, mergeSpeakers, moveUtterance, renameSpeaker, splitUtterance, type Transcript, undoFixes } from "./transcript.ts";
+import {
+  addUtterance,
+  beginListening,
+  clockOf,
+  editText,
+  mergeSpeakers,
+  moveUtterance,
+  removeUtterance,
+  renameSpeaker,
+  restoreUtterance,
+  splitUtterance,
+  type Transcript,
+  undoFixes,
+  type Utterance,
+} from "./transcript.ts";
 
 // The Transcribe view's state (spec speech/07), held by the page and not by
 // the view, as the Image view's is: the header shows a listening from every
@@ -39,6 +53,8 @@ export type TranscribeState = {
   draft: CallContext | null;
   /** The Speakers toggle, per listening, on by default (Q112). */
   speakers: boolean;
+  /** The utterance just deleted from the open Transcript, while its Undo stands (Q137). */
+  deleted: Utterance | null;
   /** Why the Speakers toggle is struck, when it is: the diarizer the server reports. */
   speakersUnavailable: string | null;
   /** On a call, hold the mic while the far side speaks (Q121): this browser's, on at first. */
@@ -82,6 +98,9 @@ export type TranscribeActions = {
   editText: (utterance: number, text: string) => void;
   /** Puts an utterance's text back as it was heard, before its fixes (Q133). */
   undoFixes: (utterance: number) => void;
+  /** Deletes an utterance of the open Transcript; Undo puts it back for a few seconds (Q137). */
+  deleteUtterance: (utterance: number) => void;
+  undoDelete: () => void;
   /** The open Transcript's kind of notes, and this browser's next default. */
   setNoteKind: (kind: NoteKind) => void;
   /** Writes the open Transcript's notes now. */
@@ -105,6 +124,9 @@ export type Assistants = { notes: NotesHandle; analyst: AnalystHandle };
 /** The text model, as the notes need it: why none serves, and its context. */
 export type TextModel = { blocked: string | null; contextLimit: number | null };
 
+/** How long a deleted utterance's Undo stands. */
+export const UNDO_DELETE_MS = 8_000;
+
 /** How often keeping the notes up looks whether it is time. */
 const NOTES_LOOK_MS = 5_000;
 
@@ -121,6 +143,12 @@ export function useTranscribe({
   /** The draft, the Transcript it is of, and its context when Edit opened it: an Apply merges onto what it holds then. */
   const [drafting, setDrafting] = useState<{ id: number; base: CallContext; context: CallContext } | null>(null);
   const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT_TOKENS);
+  /** The utterance deleted last, the Transcript it was in, and its Undo's timer. */
+  const [deleted, setDeleted] = useState<{ id: number; utterance: Utterance } | null>(null);
+  const deletedNow = useRef(deleted);
+  deletedNow.current = deleted;
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(undoTimer.current), []);
   useEffect(() => {
     void readConfig().then((answer) => answer.ok && setContextTokens(contextTokensOf(answer.value)));
   }, []);
@@ -289,6 +317,22 @@ export function useTranscribe({
       splitUtterance: (utterance, at, to) => correct((t) => splitUtterance(t, utterance, at, to)),
       editText: (utterance, text) => correct((t) => editText(t, utterance, text)),
       undoFixes: (utterance) => correct((t) => undoFixes(t, utterance)),
+      deleteUtterance: (utterance) => {
+        const t = activeOf(listNow.current);
+        const gone = t.utterances.find((u) => u.id === utterance);
+        if (!gone) return;
+        change(t.id, (x) => removeUtterance(x, utterance));
+        setDeleted({ id: t.id, utterance: gone });
+        clearTimeout(undoTimer.current);
+        undoTimer.current = setTimeout(() => setDeleted(null), UNDO_DELETE_MS);
+      },
+      undoDelete: () => {
+        const last = deletedNow.current;
+        if (!last) return;
+        clearTimeout(undoTimer.current);
+        setDeleted(null);
+        change(last.id, (t) => restoreUtterance(t, last.utterance));
+      },
       setNoteKind: (kind) => {
         chooseNoteKind(kind);
         correct((t) => ({ ...t, notes: { ...(t.notes ?? noNotes(kind)), kind } }));
@@ -320,6 +364,7 @@ export function useTranscribe({
       list,
       active,
       draft: drafting?.id === active.id ? drafting.context : null,
+      deleted: deleted?.id === active.id ? deleted.utterance : null,
       speakers: speakers && struck === null,
       speakersUnavailable: struck,
       holdMic,

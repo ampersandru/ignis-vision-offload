@@ -92,7 +92,15 @@ export function TranscribeView({
             </Heading>
           </div>
         </div>
-        <Sheet transcript={state.active} live={here ? listening.live : NONE_LIVE} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} />
+        <Sheet
+          transcript={state.active}
+          live={here ? listening.live : NONE_LIVE}
+          phase={listening.phase}
+          call={listening.source === "call"}
+          here={here}
+          actions={actions}
+          deleted={state.deleted}
+        />
         <Deck
           state={state}
           listening={listening}

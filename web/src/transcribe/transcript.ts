@@ -261,6 +261,17 @@ export function undoFixes(t: Transcript, utterance: number): Transcript {
   return withUtterance(t, utterance, ({ heard, fixed: _fixed, ...u }) => (heard === undefined ? u : { ...u, text: heard }));
 }
 
+/** Takes an utterance out (Q137); nothing else changes, its speaker kept for the others. */
+export function removeUtterance(t: Transcript, utterance: number): Transcript {
+  return { ...t, utterances: t.utterances.filter((u) => u.id !== utterance) };
+}
+
+/** Puts a removed utterance back where its time places it: what Undo does. */
+export function restoreUtterance(t: Transcript, utterance: Utterance): Transcript {
+  if (t.utterances.some((u) => u.id === utterance.id)) return t;
+  return { ...t, utterances: placed(t.utterances, utterance) };
+}
+
 export function editText(t: Transcript, utterance: number, text: string): Transcript {
   return withUtterance(t, utterance, (u) => ({ ...u, text }));
 }

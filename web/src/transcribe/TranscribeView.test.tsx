@@ -51,6 +51,8 @@ const actions: TranscribeActions = {
   stopSuggesting: none,
   setSuggestionsOn: none,
   undoFixes: none,
+  deleteUtterance: none,
+  undoDelete: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -62,7 +64,9 @@ function room(): Transcript {
 }
 
 const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
-  renderToStaticMarkup(<Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} />);
+  renderToStaticMarkup(
+    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} />,
+  );
 
 describe("the sheet", () => {
   it("hangs each utterance on the spine: its mm:ss, its speaker as a menu in its hue (a move, a new speaker), its text", () => {
@@ -98,6 +102,13 @@ describe("the sheet", () => {
     const html = renderToStaticMarkup(<p>{marked("SQL e PostgreSQL, poi SQL.", ["SQL"])}</p>);
     expect(html.match(/<mark/g)).toHaveLength(2);
     expect(html).toContain("PostgreSQL,");
+  });
+
+  it("offers Undo for a few seconds after an utterance is deleted (Q137)", () => {
+    const t = room();
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} />);
+    expect(html).toMatch(/Utterance at <span[^>]*>00:04<\/span> deleted\./);
+    expect(html).toContain(">Undo</button>");
   });
 
   it("marks a split's guessed start with ~ (Q98)", () => {
@@ -136,7 +147,7 @@ describe("the speakers' hues", () => {
 
 const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
   const list = startList();
-  return { list, active: list.transcripts[0], draft: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, textBlocked: null, contextTokens: 512, suggestionsOn: true, storeError: null, ...patch };
+  return { list, active: list.transcripts[0], draft: null, deleted: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, textBlocked: null, contextTokens: 512, suggestionsOn: true, storeError: null, ...patch };
 };
 
 describe("the deck", () => {
