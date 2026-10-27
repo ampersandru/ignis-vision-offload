@@ -1,5 +1,5 @@
 import type { ConversationRequest, Settings } from "../api/request.ts";
-import { type AskDeps, askModel, assistRequest, transcriptInput, Watched } from "./assist.ts";
+import { type AskDeps, askModel, assistRequest, settle, transcriptInput, Watched } from "./assist.ts";
 import type { Transcript } from "./transcript.ts";
 
 // Ask about this conversation (spec speech/07, Q139): a question about the
@@ -74,14 +74,14 @@ export class Asker extends Watched<AskerState> {
     this.abort = abort;
     this.set({ transcript: t.id, question: question.trim(), text: "", writing: true, failed: null });
     const asked = await askModel(askRequest(t, question, contextLimit), abort.signal, this.deps, (text) => this.set({ ...this.state, text }));
-    if (asked.ok === "stopped") return;
+    const settled = settle(asked);
+    if (settled === "stopped") return;
     this.abort = null;
-    const answer = asked.ok ? asked.text.trim() : "";
-    if (answer === "") {
-      this.set({ ...this.state, writing: false, text: "", failed: asked.ok ? "The model wrote nothing." : asked.message });
+    if ("failed" in settled) {
+      this.set({ ...this.state, writing: false, text: "", failed: settled.failed });
       return;
     }
-    this.deps.onAnswered(t.id, this.state.question, answer);
+    this.deps.onAnswered(t.id, this.state.question, settled.text);
     this.set(IDLE);
   }
 

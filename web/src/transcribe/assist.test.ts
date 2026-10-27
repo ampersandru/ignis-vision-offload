@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StreamOptions, StreamResult } from "../api/stream.ts";
-import { ASSIST_SYSTEM, askModel, assistRequest, transcriptInput } from "./assist.ts";
+import { ASSIST_SYSTEM, askModel, assistRequest, settle, transcriptInput } from "./assist.ts";
 import { addUtterance, createTranscript, type Transcript } from "./transcript.ts";
 
 // What the Transcribe view asks the text model (spec speech/07, Q125, Q134):
@@ -43,6 +43,16 @@ describe("the transcript the model reads", () => {
   it("is the user turn, after the preamble and the task, so a later request of the task begins with an earlier one", () => {
     const settings = { temperature: 0.2, topP: 0.9, maxTokens: 10, reasoningEffort: "none" as const, thinkingBudget: null, laneTag: "agent" as const };
     expect(assistRequest(settings, "Do it.", "T\n")).toEqual({ settings: { ...settings, systemPrompt: `${ASSIST_SYSTEM}\n\nDo it.` }, turns: [{ role: "user", content: "T\n" }] });
+  });
+});
+
+describe("an answer settled", () => {
+  it("is its text tidied, or why there is none, or stopped", () => {
+    expect(settle({ ok: true, text: "  Sì. " })).toEqual({ text: "Sì." });
+    expect(settle({ ok: true, text: "   " })).toEqual({ failed: "The model wrote nothing." });
+    expect(settle({ ok: false, message: "ignis answered 500" })).toEqual({ failed: "ignis answered 500" });
+    expect(settle({ ok: "stopped" })).toBe("stopped");
+    expect(settle({ ok: true, text: "```\nx\n```" }, (text) => text.replaceAll("`", "").trim())).toEqual({ text: "x" });
   });
 });
 

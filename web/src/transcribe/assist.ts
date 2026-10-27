@@ -129,3 +129,14 @@ export class Watched<S> {
 export function useWatched<S>(handle: Pick<Watched<S>, "getState" | "subscribe">): S {
   return useSyncExternalStore(handle.subscribe, handle.getState, handle.getState);
 }
+
+/**
+ * What a side request's answer comes to: stopped (the Stop said so already), the text tidied, or why there is none,
+ * "The model wrote nothing." for an answer that tidied to nothing.
+ */
+export function settle(asked: Asked, tidy: (text: string) => string = (text) => text.trim()): "stopped" | { text: string } | { failed: string } {
+  if (asked.ok === "stopped") return "stopped";
+  if (!asked.ok) return { failed: asked.message };
+  const text = tidy(asked.text);
+  return text === "" ? { failed: "The model wrote nothing." } : { text };
+}

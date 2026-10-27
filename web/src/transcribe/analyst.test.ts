@@ -53,6 +53,18 @@ describe("a look for suggestions", () => {
     expect(asked).toHaveLength(2);
   });
 
+  it("counts what it has not read by time, so a deleted utterance leaves the new ones to read", async () => {
+    let clock = 0;
+    const { a, asked } = analyst(["NONE", "NONE"], () => clock);
+    await a.keepUp(heard(6), null);
+    // Two of the six deleted, then two new ones: the end's look still reads them.
+    const t = heard(8);
+    const after = { ...t, utterances: [t.utterances[0], t.utterances[1], t.utterances[2], t.utterances[3], t.utterances[6], t.utterances[7]] };
+    clock = 1_000;
+    await a.keepUp(after, null, { final: true });
+    expect(asked).toHaveLength(2);
+  });
+
   it("follows a listening and looks once more when it ends", async () => {
     let clock = 0;
     const { a, asked } = analyst(["NONE", "NONE"], () => clock);

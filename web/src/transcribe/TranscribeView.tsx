@@ -62,6 +62,8 @@ export function TranscribeView({
   // The search in the Transcript open (Q136): its query, its hits, the one it stands on.
   const [query, setQuery] = useState("");
   const [current, setCurrent] = useState(0);
+  /** Bumped when the user searches or steps, so only then the sheet brings the hit into view. */
+  const [seek, setSeek] = useState(0);
   const hits = useMemo(() => hitsIn(state.active, query), [state.active, query]);
   const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
   const searchField = useRef<HTMLInputElement>(null);
@@ -71,10 +73,11 @@ export function TranscribeView({
   // Held still between changes: the sheet is drawn again only when what it is handed changes.
   const untilMs = state.active.checkedUntilMs;
   const nextAt = keepingUp ? (looking.nextAt[state.active.id] ?? null) : null;
-  const checked = useMemo(() => (untilMs === undefined ? null : { untilMs, nextAt }), [untilMs, nextAt]);
+  const readTo = useMemo(() => (untilMs === undefined ? null : { untilMs, nextAt }), [untilMs, nextAt]);
   const search = (next: string) => {
     setQuery(next);
     setCurrent(0);
+    setSeek((n) => n + 1);
   };
 
   // Ctrl+F (Cmd+F) searches the transcript while this view shows; the browser's own search otherwise.
@@ -132,7 +135,11 @@ export function TranscribeView({
                 count={hits.length}
                 at={at}
                 onQuery={search}
-                onStep={(by) => hits.length > 0 && setCurrent((at + by + hits.length) % hits.length)}
+                onStep={(by) => {
+                  if (hits.length === 0) return;
+                  setCurrent((at + by + hits.length) % hits.length);
+                  setSeek((n) => n + 1);
+                }}
               />
               <Exports transcript={state.active} onOpenInChat={onOpenInChat} />
             </Heading>
@@ -148,9 +155,12 @@ export function TranscribeView({
           deleted={state.deleted}
           hits={hits}
           current={at}
+          seek={seek}
+          autoCheck={state.suggestionsOn}
           rewrite={rewrite.transcript === state.active.id ? rewrite : null}
-          canRewrite={state.textBlocked === null}
-          checked={checked}
+          // One rewrite at a time for the page: none while another, in any Transcript, is under way.
+          canRewrite={state.textBlocked === null && !rewrite.writing}
+          readTo={readTo}
         />
         <Deck
           state={state}

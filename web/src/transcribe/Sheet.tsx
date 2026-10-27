@@ -1,7 +1,8 @@
-import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { type Hit, partsOf } from "./search.ts";
+import { Fragment, memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type Hit, type HitSpan, partsOf } from "./search.ts";
 import { type RewriterState, wordDiff } from "./rewrite.ts";
 import { landing, onJump } from "./jump.ts";
+import { ANALYSIS_FRESH } from "./suggestions.ts";
 import { isAtBottom } from "../ui/scroll.ts";
 import { clock, startedLine, startOf } from "./export.ts";
 import type { LiveUtterance, ListeningState } from "./listening.ts";
@@ -30,6 +31,12 @@ export function speakerColor(speaker: Speaker | undefined): string {
 /** The label of a call's utterance under way, before the server names its speaker. */
 const laneLabel = (lane: LiveUtterance["lane"], call: boolean) => (call ? (lane === "mic" ? "Me" : "Call") : null);
 
+/** What the sheet does to a Transcript: its corrections, Undo, the rewrite's. */
+export type SheetActions = Pick<
+  TranscribeActions,
+  "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete" | "holdUndo" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite"
+>;
+
 /**
  * The sheet. It is handed only what it draws, not the listening's whole state, and redraws only when that changes:
  * the levels move ten times a second and the clock every second.
@@ -44,9 +51,11 @@ export const Sheet = memo(function Sheet({
   deleted,
   hits,
   current,
+  seek,
+  autoCheck,
   rewrite,
   canRewrite,
-  checked,
+  readTo,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -55,7 +64,7 @@ export const Sheet = memo(function Sheet({
   call: boolean;
   /** The listening appends to this Transcript. */
   here: boolean;
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite">;
+  actions: SheetActions;
   /** The utterance just deleted, while its Undo stands (Q137). */
   deleted: Utterance | null;
   /** The rewrite under way or proposed in this Transcript (Q138), and whether one can be asked for now. */
@@ -64,17 +73,21 @@ export const Sheet = memo(function Sheet({
   /** The search's hits in this Transcript, and the one it stands on (Q136). */
   hits: Hit[];
   current: number;
+  /** Bumped by the view when the user searches or steps: the current hit is brought into view then. */
+  seek: number;
+  /** The automatic check is on (Suggest while listening): a rewrite says when it has not read the utterance yet. */
+  autoCheck: boolean;
   /**
    * Where the text model's look has read up to (Q140), and when it may look next while listening (epoch ms, `null`
    * when it is not keeping up); `null` before any look.
    */
-  checked: { untilMs: number; nextAt: number | null } | null;
+  readTo: { untilMs: number; nextAt: number | null } | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const speakers = new Map(transcript.speakers.map((s) => [s.id, s]));
   const byUtterance = useMemo(() => {
-    const map = new Map<number, { start: number; end: number; current: boolean }[]>();
+    const map = new Map<number, HitSpan[]>();
     hits.forEach((h, i) => map.set(h.utterance, [...(map.get(h.utterance) ?? []), { start: h.start, end: h.end, current: i === current }]));
     return map;
   }, [hits, current]);
@@ -99,20 +112,29 @@ export const Sheet = memo(function Sheet({
     return () => clearTimeout(timer);
   }, [lit]);
 
-  // The search's current hit in view, the newest words no longer followed.
-  useLayoutEffect(() => {
-    const hit = hits[current];
-    const el = hit && scroller.current?.querySelector(`[data-utterance="${hit.utterance}"]`);
-    if (!el) return;
-    setFollowing(false);
-    el.scrollIntoView?.({ block: "center" });
-  }, [hits, current]);
-
   useLayoutEffect(() => setFollowing(true), [transcript.id]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && following) el.scrollTop = el.scrollHeight;
   }, [transcript.utterances, live, following]);
+
+  // The search's current hit in view when the user searches or steps (`seek`), not when the Transcript changes under
+  // it; after the following above, so a query carried into a Transcript just opened lands on its hit.
+  const sought = useRef({ hits, current });
+  sought.current = { hits, current };
+  useLayoutEffect(() => {
+    if (seek === 0) return;
+    const hit = sought.current.hits[sought.current.current];
+    const el = hit && scroller.current?.querySelector(`[data-utterance="${hit.utterance}"]`);
+    if (!el) return;
+    setFollowing(false);
+    el.scrollIntoView?.({ block: "center" });
+  }, [seek]);
+
+  // Where the look stopped reading: before the first utterance it had not read, or after the last when it read all.
+  const unread = readTo === null ? -1 : transcript.utterances.findIndex((u) => u.endMs > readTo.untilMs);
+  const markAt = readTo === null ? -1 : unread === -1 ? transcript.utterances.length : unread;
+  const fresh = readTo === null ? 0 : transcript.utterances.filter((u) => u.endMs > readTo.untilMs).length;
 
   const jump = () => {
     const el = scroller.current;
@@ -129,10 +151,10 @@ export const Sheet = memo(function Sheet({
             <Empty listening={here && phase !== "idle"} />
           ) : (
             <ol aria-label="Utterances">
-              {transcript.utterances.map((u, i) => [
-                checked && i > 0 && transcript.utterances[i - 1].endMs <= checked.untilMs && u.endMs > checked.untilMs && (
-                  <CheckedMark key={`checked-${u.id}`} nextAt={checked.nextAt} />
-                ),
+              {transcript.utterances.map((u, i) => (
+                // Keyed by the utterance, so a delete, an Undo or a split keeps every other row as it is.
+                <Fragment key={u.id}>
+                {readTo && i === markAt && i > 0 && <CheckedMark nextAt={readTo.nextAt} fresh={fresh} />}
                 <UtteranceRow
                   key={u.id}
                   utterance={u}
@@ -142,10 +164,12 @@ export const Sheet = memo(function Sheet({
                   hits={byUtterance.get(u.id)}
                   rewrite={rewrite?.utterance === u.id ? rewrite : undefined}
                   canRewrite={canRewrite && !rewrite?.writing}
-                  unchecked={rewrite?.utterance === u.id && checked !== null && u.endMs > checked.untilMs}
+                  unchecked={rewrite?.utterance === u.id && autoCheck && (readTo === null || u.endMs > readTo.untilMs)}
                   lit={lit === u.id}
-                />,
-              ])}
+                />
+                </Fragment>
+              ))}
+              {readTo && markAt === transcript.utterances.length && markAt > 0 && <CheckedMark nextAt={readTo.nextAt} fresh={0} />}
               {live.map((u) => (
                 <LiveRow key={u.key} utterance={u} label={laneLabel(u.lane, call)} burning={phase === "listening" || phase === "finishing"} />
               ))}
@@ -154,11 +178,19 @@ export const Sheet = memo(function Sheet({
         </div>
       </div>
       {deleted && (
-        <div role="status" className="cut absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-3 bg-kiln py-2 pr-2 pl-3.5 text-[13px] text-[#eae8e4] [--cut-size:8px]">
+        <div
+          role="status"
+          onMouseEnter={() => actions.holdUndo(true)}
+          onMouseLeave={() => actions.holdUndo(false)}
+          onFocus={() => actions.holdUndo(true)}
+          onBlur={() => actions.holdUndo(false)}
+          className="cut absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-3 bg-kiln py-2 pr-2 pl-3.5 text-[13px] text-[#eae8e4] [--cut-size:8px]"
+        >
           <span>
             Utterance at <span className="font-display tabular-nums">{startOf(deleted)}</span> deleted.
           </span>
-          <button type="button" onClick={actions.undoDelete} className="px-2 py-0.5 font-display font-semibold text-[#ff8a4c] hover:text-[#ffa877]">
+          {/* Focus moves here from the row deleted, which is gone. */}
+          <button type="button" autoFocus onClick={actions.undoDelete} className="px-2 py-0.5 font-display font-semibold text-[#ff8a4c] hover:text-[#ffa877]">
             Undo
           </button>
         </div>
@@ -250,7 +282,7 @@ function Row({
  * `text` with the words fixes put in it marked (Q133), each where it stands as words of its own, and the search's
  * hits (Q136), the current one in the ember.
  */
-export function highlighted(text: string, fixed: string[], hits: { start: number; end: number; current: boolean }[] = []): ReactNode {
+export function highlighted(text: string, fixed: string[], hits: HitSpan[] = []): ReactNode {
   if (fixed.length === 0 && hits.length === 0) return text;
   return partsOf(text, fixed, hits).map((part, i) => {
     if (!part.fixed && part.hit === null) return part.text;
@@ -283,10 +315,7 @@ export function RewritePanel({
       <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-[2px] ${rewrite.writing ? "spine-live" : "bg-ember"}`} />
       {rewrite.writing ? (
         <div className="flex items-center gap-3">
-          <span className="text-[13px] text-ash">
-            Rebuilding what was said from the conversation around it…
-            {unchecked && <span className="block text-xs">The automatic check has not read this utterance yet.</span>}
-          </span>
+          <span className="text-[13px] text-ash">Rebuilding what was said from the conversation around it…</span>
           <button type="button" onClick={actions.closeRewrite} className="ml-auto font-display text-xs text-ash hover:text-ink">
             Stop
           </button>
@@ -332,19 +361,23 @@ export function RewritePanel({
           </div>
         </>
       )}
+      {unchecked && rewrite.failed === null && <p className="text-xs leading-snug text-ash">The automatic check has not read this utterance yet: its next look might fix it too.</p>}
     </div>
   );
 }
 
-/** Seconds from now to `at`, as the mark says them: "about 40 s", "any moment". */
-export function nextCheckIn(at: number, now: number): string {
+/**
+ * When the next look comes, as the mark says it: in about 40 s, once more is said (the look waits for three new
+ * utterances, ANALYSIS_FRESH), or any moment.
+ */
+export function nextCheckIn(at: number, now: number, fresh = ANALYSIS_FRESH): string {
   const seconds = Math.round((at - now) / 1_000);
-  if (seconds <= 5) return "next check any moment";
+  if (seconds <= 5) return fresh < ANALYSIS_FRESH ? "next check once more is said" : "next check any moment";
   return seconds >= 60 ? `next check in about ${Math.round(seconds / 60)} min` : `next check in about ${Math.ceil(seconds / 5) * 5} s`;
 }
 
 /** The line across the spine where the text model's look stopped reading (Q140), and when the next may come. */
-function CheckedMark({ nextAt }: { nextAt: number | null }) {
+function CheckedMark({ nextAt, fresh }: { nextAt: number | null; fresh: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (nextAt === null) return;
@@ -352,14 +385,14 @@ function CheckedMark({ nextAt }: { nextAt: number | null }) {
     return () => clearInterval(timer);
   }, [nextAt]);
   return (
-    <li aria-label="Checked by the text model up to here" className="grid grid-cols-[3.75rem_1fr] gap-x-4 sm:grid-cols-[4.5rem_1fr]">
+    <li role="separator" aria-label="Checked by the text model up to here" className="grid grid-cols-[3.75rem_1fr] gap-x-4 sm:grid-cols-[4.5rem_1fr]">
       <span aria-hidden="true" />
       <div className="relative border-l-2 border-line pb-4 pl-4">
         <span aria-hidden="true" className="absolute top-[4px] -left-[5px] size-2 rotate-45 bg-ember" />
         <div className="flex items-center gap-2">
           <span aria-hidden="true" className="h-0 flex-1 border-t border-dashed border-ember/55" />
           <span className="shrink-0 font-display text-[11px] leading-4 text-ember">
-            Checked to here{nextAt !== null && <span className="text-ash"> · {nextCheckIn(nextAt, now)}</span>}
+            Checked to here{nextAt !== null && <span className="text-ash"> · {nextCheckIn(nextAt, now, fresh)}</span>}
           </span>
         </div>
       </div>
@@ -382,8 +415,8 @@ const UtteranceRow = memo(function UtteranceRow({
   utterance: Utterance;
   speaker: Speaker | undefined;
   speakers: Speaker[];
-  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite">;
-  hits: { start: number; end: number; current: boolean }[] | undefined;
+  actions: SheetActions;
+  hits: HitSpan[] | undefined;
   rewrite: RewriterState | undefined;
   canRewrite: boolean;
   /** The text model's look has not read it yet (Q140). */
@@ -433,15 +466,17 @@ const UtteranceRow = memo(function UtteranceRow({
             />
             <button
               type="button"
-              disabled={!canRewrite}
+              aria-disabled={!canRewrite}
               title="The text model rebuilds what was said, from the context and the conversation around it"
-              onClick={() => actions.rewriteUtterance(u.id)}
-              className="cut bg-ember px-3 py-1 font-display text-xs font-semibold text-[#1c2026] [--cut-size:6px] hover:bg-[#ff7a45] disabled:cursor-not-allowed disabled:bg-line disabled:text-ash"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => canRewrite && actions.rewriteUtterance(u.id)}
+              className="cut bg-ember px-3 py-1 font-display text-xs font-semibold text-[#1c2026] [--cut-size:6px] hover:bg-[#ff7a45] aria-disabled:cursor-not-allowed aria-disabled:bg-line aria-disabled:text-ash"
             >
               Rewrite
             </button>
             <button
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => actions.deleteUtterance(u.id)}
               className="ml-auto font-display text-xs text-ash hover:text-fault"
             >

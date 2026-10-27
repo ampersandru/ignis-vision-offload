@@ -51,6 +51,8 @@ export function AskPanel({ transcript: t, state, actions, asking }: { transcript
   const [question, setQuestion] = useState("");
   const here = asking.transcript === t.id;
   const writing = here && asking.writing;
+  // One question at a time for the page: while another Transcript's is answered, this one waits, its question kept.
+  const elsewhere = asking.writing && !here;
   const nothing = t.utterances.every((u) => u.text.trim() === "");
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
@@ -62,7 +64,7 @@ export function AskPanel({ transcript: t, state, actions, asking }: { transcript
         onSubmit={(e) => {
           e.preventDefault();
           if (writing) return actions.stopAsking();
-          if (question.trim() === "") return;
+          if (question.trim() === "" || elsewhere) return;
           actions.askAbout(question);
           setQuestion("");
         }}
@@ -72,17 +74,17 @@ export function AskPanel({ transcript: t, state, actions, asking }: { transcript
           value={question}
           onChange={(e) => setQuestion(e.currentTarget.value)}
           placeholder="What was decided about the backup?"
-          disabled={writing}
           className="min-w-0 flex-1 rounded-[2px] border border-line bg-ground px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ash focus:border-ember focus:outline-none disabled:opacity-60"
         />
         <button
           type="submit"
-          disabled={!writing && (state.textBlocked !== null || nothing || question.trim() === "")}
+          disabled={!writing && (state.textBlocked !== null || nothing || question.trim() === "" || elsewhere)}
           className={`cut px-3 py-1.5 font-display text-[13px] font-semibold [--cut-size:7px] disabled:cursor-not-allowed disabled:opacity-50 ${writing ? "bg-surface text-ink hover:bg-line" : "bg-ink text-ground hover:bg-ember"}`}
         >
           {writing ? "Stop" : "Ask"}
         </button>
       </form>
+      {elsewhere && <p className="text-xs leading-snug text-ash">A question about another transcript is being answered; ask this one when it is done.</p>}
       {here && asking.failed && (
         <p role="status" className="border-l-2 border-fault pl-2 text-xs leading-snug text-fault">
           No answer: {asking.failed}

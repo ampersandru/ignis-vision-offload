@@ -1,4 +1,4 @@
-import { type AskDeps, askModel, assistRequest, Follower, transcriptInput, Watched } from "./assist.ts";
+import { type AskDeps, askModel, assistRequest, Follower, settle, transcriptInput, Watched } from "./assist.ts";
 import { ANALYSIS_GAP_MS, ANALYSIS_MAX_TOKENS, ANALYSIS_SETTINGS, ANALYSIS_TASK, type Analysis, dueForAnalysis, readAnalysis } from "./suggestions.ts";
 import type { Transcript } from "./transcript.ts";
 
@@ -29,9 +29,9 @@ const IDLE: AnalystState = { looking: null, nextAt: {}, failed: null };
 
 export class Analyst extends Watched<AnalystState> {
   private abort: AbortController | null = null;
-  /** When each Transcript's last look began, and how many of its utterances it read. */
+  /** When each Transcript's last look began, and up to where it read (an utterance deleted since changes nothing). */
   private readonly began = new Map<number, number>();
-  private readonly read = new Map<number, number>();
+  private readonly readUntil = new Map<number, number>();
   private readonly follower = new Follower();
 
   constructor(private readonly deps: AnalystDeps) {
@@ -45,19 +45,20 @@ export class Analyst extends Watched<AnalystState> {
     this.abort = abort;
     const began = (this.deps.now ?? Date.now)();
     this.began.set(t.id, began);
-    this.read.set(t.id, t.utterances.length);
     const readUntilMs = Math.max(0, ...t.utterances.map((u) => u.endMs));
+    this.readUntil.set(t.id, readUntilMs);
     this.set({ looking: t.id, nextAt: { ...this.state.nextAt, [t.id]: began + ANALYSIS_GAP_MS }, failed: null });
     const { content } = transcriptInput(t, contextLimit, ANALYSIS_MAX_TOKENS);
     const asked = await askModel(assistRequest(ANALYSIS_SETTINGS, ANALYSIS_TASK, content), abort.signal, this.deps);
-    if (asked.ok === "stopped") return;
+    const settled = settle(asked, (text) => text);
+    if (settled === "stopped") return;
     this.abort = null;
-    if (asked.ok) {
-      this.deps.onFound(t.id, readAnalysis(asked.text), readUntilMs);
-      this.set({ ...this.state, looking: null });
-    } else {
-      this.set({ ...this.state, looking: null, failed: { transcript: t.id, message: asked.message } });
+    if ("failed" in settled) {
+      this.set({ ...this.state, looking: null, failed: { transcript: t.id, message: settled.failed } });
+      return;
     }
+    this.deps.onFound(t.id, readAnalysis(settled.text), readUntilMs);
+    this.set({ ...this.state, looking: null });
   }
 
   stop() {
@@ -72,7 +73,9 @@ export class Analyst extends Watched<AnalystState> {
     const began = this.began.get(t.id);
     const sinceLastMs = began === undefined ? null : (this.deps.now ?? Date.now)() - began;
     if (!final && this.state.failed?.transcript === t.id && sinceLastMs !== null && sinceLastMs < ANALYSIS_GAP_MS) return Promise.resolve();
-    const due = dueForAnalysis({ utterances: t.utterances.length, analyzed: this.read.get(t.id) ?? 0, sinceLastMs, final });
+    const until = this.readUntil.get(t.id);
+    const analyzed = until === undefined ? 0 : t.utterances.filter((u) => u.endMs <= until).length;
+    const due = dueForAnalysis({ utterances: t.utterances.length, analyzed, sinceLastMs, final });
     return due ? this.analyze(t, contextLimit) : Promise.resolve();
   }
 

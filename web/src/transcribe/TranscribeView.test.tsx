@@ -55,6 +55,7 @@ const actions: TranscribeActions = {
   undoFixes: none,
   deleteUtterance: none,
   undoDelete: none,
+  holdUndo: none,
   rewriteUtterance: none,
   acceptRewrite: none,
   closeRewrite: none,
@@ -73,7 +74,7 @@ function room(): Transcript {
 
 const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
   renderToStaticMarkup(
-    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite checked={null} />,
+    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck />,
   );
 
 describe("the sheet", () => {
@@ -114,9 +115,9 @@ describe("the sheet", () => {
 
   it("offers Undo for a few seconds after an utterance is deleted (Q137)", () => {
     const t = room();
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite checked={null} />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck />);
     expect(html).toMatch(/Utterance at <span[^>]*>00:04<\/span> deleted\./);
-    expect(html).toContain(">Undo</button>");
+    expect(html).toMatch(/<button type="button" autofocus=""[^>]*>Undo<\/button>/);
   });
 
   it("lights the search's hits, the one it stands on in the ember (Q136)", () => {
@@ -124,7 +125,7 @@ describe("the sheet", () => {
     t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Perché apriamo?", voice: null });
     const hits = hitsIn(t, "apriamo");
     expect(hits).toHaveLength(2);
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite checked={null} />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite readTo={null} seek={0} autoCheck />);
     expect(html).toMatch(/<mark data-hit="other"[^>]*>Apriamo<\/mark>/);
     expect(html).toMatch(/<mark data-hit="current" class="bg-ember[^"]*">apriamo<\/mark>/);
     expect(html).toContain('data-utterance="2"');
@@ -133,7 +134,7 @@ describe("the sheet", () => {
   it("shows a rewrite's proposal under its utterance, the words it adds and drops, with Accept and Discard (Q138)", () => {
     const t = room();
     const proposal = { transcript: 1, utterance: 1, writing: false, proposal: "Apriamo. Io ho chiuso ieri.", failed: null };
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite checked={null} />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite readTo={null} seek={0} autoCheck />);
     expect(html).toMatch(/<ins[^>]*>chiuso<\/ins>/);
     expect(html).toMatch(/<del[^>]*>finito<\/del>/);
     expect(html).toContain(">Accept<");
@@ -149,23 +150,28 @@ describe("the sheet", () => {
     let t = room();
     t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Poi?", voice: null });
     const sheetAt = (checked: { untilMs: number; nextAt: number | null } | null) =>
-      renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite checked={checked} />);
+      renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={checked} seek={0} autoCheck />);
     const html = sheetAt({ untilMs: 8_000, nextAt: null });
     expect(html.indexOf("Checked to here")).toBeGreaterThan(html.indexOf("Apriamo."));
     expect(html.indexOf("Checked to here")).toBeLessThan(html.indexOf("Poi?"));
-    expect(sheetAt({ untilMs: 9_500, nextAt: null })).not.toContain("Checked to here");
+    expect(html).toContain('role="separator" aria-label="Checked by the text model up to here"');
+    // All read: the line at the foot, after the last utterance.
+    const all = sheetAt({ untilMs: 9_500, nextAt: null });
+    expect(all.indexOf("Checked to here")).toBeGreaterThan(all.indexOf("Poi?"));
     expect(sheetAt(null)).not.toContain("Checked to here");
+    expect(nextCheckIn(1_000, 0, 1)).toBe("next check once more is said");
     expect(nextCheckIn(41_000, 0)).toBe("next check in about 45 s");
     expect(nextCheckIn(90_000, 0)).toBe("next check in about 2 min");
     expect(nextCheckIn(3_000, 0)).toBe("next check any moment");
   });
 
-  it("says, rewriting an utterance the look has not read, that the automatic check has not reached it", () => {
+  it("says, rewriting an utterance the look has not read, that the automatic check has not reached it, the proposal shown or not", () => {
     const t = room();
     const writing = { transcript: 1, utterance: 1, writing: true, proposal: null, failed: null };
-    expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={writing} unchecked actions={actions} />)).toContain(
-      "The automatic check has not read this utterance yet.",
-    );
+    const note = "The automatic check has not read this utterance yet";
+    expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={writing} unchecked actions={actions} />)).toContain(note);
+    expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={{ ...writing, writing: false, proposal: "Apriremo." }} unchecked actions={actions} />)).toContain(note);
+    expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={writing} actions={actions} />)).not.toContain(note);
   });
 
   it("marks a split's guessed start with ~ (Q98)", () => {
@@ -390,6 +396,10 @@ describe("asking about the conversation (Q139, Q141)", () => {
     expect(html).toContain(">Stop<");
     expect(ask(t, { ...quiet, transcript: t.id, failed: "ignis answered 500" })).toContain("No answer: ignis answered 500");
     expect(ask(t, quiet, { textBlocked: "No text model serves: the notes and the suggestions need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Ask</);
+    // One question at a time for the page: another Transcript's being answered, this one waits and says so.
+    const elsewhere = ask(t, { transcript: 99, question: "Altro?", text: "", writing: true, failed: null });
+    expect(elsewhere).toContain("A question about another transcript is being answered");
+    expect(elsewhere).toMatch(/disabled=""[^>]*>Ask</);
   });
 });
 

@@ -301,7 +301,7 @@ export function fixWhere(t: Transcript, s: Offer & { kind: "fix" }): string {
 export const FIRST_ANALYSIS_UTTERANCES = 6;
 /** Looking for suggestions: the least time from one look's start to the next, and what has to be new by then. */
 export const ANALYSIS_GAP_MS = 90_000;
-const ANALYSIS_FRESH = 3;
+export const ANALYSIS_FRESH = 3;
 
 /** Whether a listening looks for suggestions now; `analyzed`, the utterances the last look read. */
 export function dueForAnalysis({ utterances, analyzed, sinceLastMs, final = false }: { utterances: number; analyzed: number; sinceLastMs: number | null; final?: boolean }): boolean {

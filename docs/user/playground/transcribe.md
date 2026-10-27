@@ -148,14 +148,17 @@ later suggestion of its kind in this transcript without asking. A term you do
 not want is taken out with its cross, and is never suggested again. Accepting
 changes the context, which is applied at once, or the title; nothing else.
 **Suggest now** reads the transcript on the spot, a listening or not.
+**Suggest while listening** in Settings, on unless you turn it off (this
+browser keeps the choice), stops the suggestions while listening; the text
+model's go to the model loaded, as the notes do.
 
 A dashed orange line across the time spine, **Checked to here**, shows where
-the text model's last look stopped reading; while listening it says when the
-next may come ("next check in about 45 s"). What is below it has not been
-checked yet: a Rewrite there says so, since the next look might fix it.
-**Suggest while listening** in Settings, on unless you turn it off (this
-browser keeps the choice), stops them; the text model's go to the model loaded,
-as the notes do.
+the text model's last look stopped reading, at the foot once it read
+everything; while listening, with Suggest while listening on, it says when the
+next may come ("next check in
+about 45 s", or "once more is said": a look waits for three new utterances).
+What is below it has not been checked yet: a Rewrite there says so, since the
+next look might fix it.
 
 ## Times and speakers
 
@@ -197,7 +200,8 @@ Every correction is the page's, and nothing goes back to the server:
   adds underlined and those it drops struck through: **Accept** takes it,
   keeping the text as heard behind **Undo fix**; **Discard** leaves it.
 - **Delete** an utterance: click its text, then **Delete**. For a few seconds
-  **Undo** at the foot of the transcript puts it back where it was.
+  **Undo** at the foot of the transcript, which takes the focus and waits while
+  pointed at, puts the last one deleted back where it was.
 - **Split** an utterance where the diarizer missed a change: click its text,
   put the cursor where the second speaker starts, and pick the second half's
   speaker in **Split at the cursor, the rest to…**. No audio is kept, so the
@@ -212,8 +216,9 @@ and Open in chat carry.
 **Search** beside the title (or Ctrl+F while the view shows) lights every
 occurrence in the transcript open, whatever the case and the accents
 ("perche" finds "perché"), the one it stands on in orange, and says where it
-is, "3 of 12". Enter and the arrows go to the next and the previous, Shift+Enter
-back, Escape clears; the view stops following the newest words meanwhile.
+is, "3 of 12". Enter or the arrows beside it go to the next, Shift+Enter or
+the up arrow to the previous, Escape clears; the view stops following the newest
+words meanwhile.
 
 **Search transcripts** above the list keeps the transcripts that hold the query,
 in their text or their title, each with its count of matches; opening one

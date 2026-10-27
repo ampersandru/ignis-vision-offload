@@ -126,6 +126,8 @@ describe("what the panel says", () => {
     expect(notesStatus(written(), 4)).toBe("Written at 16:05 from 4 utterances.");
     expect(notesStatus(written(), 7)).toBe("Written at 16:05 from 4 utterances. 3 more since.");
     expect(notesStatus(written({ covered: 1 }), 2)).toBe("Written at 16:05 from 1 utterance. 1 more since.");
+    // Utterances deleted since leave fewer than the notes covered: nothing came since, never a negative count.
+    expect(notesStatus(written({ covered: 4 }), 2)).toBe("Written at 16:05 from 4 utterances.");
     expect(notesStatus(written({ fromMs: 125_000 }), 4)).toBe("Written at 16:05 from 4 utterances, from 02:05 on: the start did not fit the model's context.");
   });
 

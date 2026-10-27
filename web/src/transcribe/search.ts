@@ -38,6 +38,9 @@ export function matchesOf(t: Transcript, title: string, query: string): { hits: 
   return { hits: hitsIn(t, query).length, title: q !== "" && fold(title).includes(q) };
 }
 
+/** A hit within one utterance's text, and whether the search stands on it. */
+export type HitSpan = { start: number; end: number; current: boolean };
+
 /** A part of an utterance's text as the sheet draws it. */
 export type Part = { text: string; fixed: boolean; hit: "current" | "other" | null };
 
@@ -45,7 +48,7 @@ export type Part = { text: string; fixed: boolean; hit: "current" | "other" | nu
  * `text` in parts: the words fixes put in (`fixed`, as words of their own) and the search's `hits`, `current` the
  * one the search stands on.
  */
-export function partsOf(text: string, fixed: string[], hits: { start: number; end: number; current: boolean }[]): Part[] {
+export function partsOf(text: string, fixed: string[], hits: HitSpan[]): Part[] {
   const fixes: [number, number][] = [];
   if (fixed.length > 0) for (const m of text.matchAll(fixedWordsOf(fixed))) fixes.push([m.index, m.index + m[0].length]);
   const cuts = new Set([0, text.length, ...fixes.flat(), ...hits.flatMap((h) => [h.start, h.end])]);

@@ -1,5 +1,5 @@
 import type { ConversationRequest, Settings } from "../api/request.ts";
-import { type AskDeps, askModel, assistRequest, Watched } from "./assist.ts";
+import { type AskDeps, askModel, assistRequest, settle, Watched } from "./assist.ts";
 import { told } from "./context.ts";
 import { toText } from "./export.ts";
 import type { Transcript, Utterance } from "./transcript.ts";
@@ -125,12 +125,11 @@ export class Rewriter extends Watched<RewriterState> {
     this.abort = abort;
     this.set({ transcript: t.id, utterance: u.id, writing: true, proposal: null, failed: null });
     const asked = await askModel(request, abort.signal, this.deps);
-    if (asked.ok === "stopped") return;
-    this.abort = null;
     const speaker = t.speakers.find((s) => s.id === u.speaker)?.name ?? null;
-    const text = asked.ok ? tidyRewrite(asked.text, speaker) : "";
-    if (text === "") this.set({ ...this.state, writing: false, failed: asked.ok ? "The model wrote nothing." : asked.message });
-    else this.set({ ...this.state, writing: false, proposal: text });
+    const settled = settle(asked, (text) => tidyRewrite(text, speaker));
+    if (settled === "stopped") return;
+    this.abort = null;
+    this.set({ ...this.state, writing: false, ...("failed" in settled ? { failed: settled.failed } : { proposal: settled.text }) });
   }
 
   /** Stops a rewrite under way, or closes the proposal or the failure shown. */

@@ -1,4 +1,4 @@
-import { type AskDeps, askModel, Follower, Watched } from "./assist.ts";
+import { type AskDeps, askModel, Follower, settle, Watched } from "./assist.ts";
 import { dueForUpdate, LIVE_GAP_MS, type NoteKind, type Notes, notesRequest, tidyNotes } from "./notes.ts";
 import type { Transcript } from "./transcript.ts";
 
@@ -51,15 +51,14 @@ export class NotesWriter extends Watched<NotesWriterState> {
     const { request, fromMs } = notesRequest(t, kind, contextLimit);
     const covered = t.utterances.length;
     const asked = await askModel(request, abort.signal, this.deps, (text) => this.set({ ...this.state, text }));
-    // Stopped: the Stop said so already.
-    if (asked.ok === "stopped") return;
+    const settled = settle(asked, tidyNotes);
+    if (settled === "stopped") return;
     this.abort = null;
-    const notes = asked.ok ? tidyNotes(asked.text) : "";
-    if (notes === "") {
-      this.set({ writing: null, text: "", failed: { transcript: t.id, message: asked.ok ? "The model wrote nothing." : asked.message } });
+    if ("failed" in settled) {
+      this.set({ writing: null, text: "", failed: { transcript: t.id, message: settled.failed } });
       return;
     }
-    this.deps.onWritten(t.id, { text: notes, writtenAs: kind, covered, writtenAt: now(), fromMs });
+    this.deps.onWritten(t.id, { text: settled.text, writtenAs: kind, covered, writtenAt: now(), fromMs });
     this.set(IDLE);
   }
 

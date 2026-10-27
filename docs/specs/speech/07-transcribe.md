@@ -408,6 +408,17 @@ The owner's third round, after trying the second (grill Q136-Q141), one commit e
   each `[mm:ss]` that is not already a link's text becomes a link `#t=mm:ss` (jump.ts), styled as a time; a click
   is a jump, which the sheet answers by bringing into view the last utterance that starts within that second, lit
   for 1.6 s, and the right drawer, below `lg`, closes.
+- **The review of this round** found, and the next commit fixed: the search brought its hit back into view at every
+  change of the Transcript (a new utterance, a keystroke in an editor), and a query carried into a Transcript just
+  opened landed at its foot: now only the user's search or step (`seek`) brings it, after the following. The rewrite's
+  "not read yet" note left with the proposal and ignored the switch: it stays, and only with Suggest while listening
+  on. The look counted the utterances it had read, so a delete hid new ones from the last look: it counts by time.
+  Ask and Rewrite are one at a time for the page, and in another Transcript they now say so instead of dropping the
+  click and the question. The line also stands at the foot once everything is read; its next check says "once more
+  is said" while the look waits for three new utterances. Rows are keyed fragments, so a delete or a split remounts
+  no other row; the line is a separator, not an utterance, to a screen reader; Undo takes the focus and waits while
+  pointed at or focused; the editor's buttons keep its focus, so Safari's click lands. The answers' settling is one
+  helper (`settle`).
 
 ### Not done here
 

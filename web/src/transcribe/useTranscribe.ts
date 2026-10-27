@@ -103,6 +103,8 @@ export type TranscribeActions = {
   /** Deletes an utterance of the open Transcript; Undo puts it back for a few seconds (Q137). */
   deleteUtterance: (utterance: number) => void;
   undoDelete: () => void;
+  /** Holds the Undo while it is pointed at or focused, and gives it its time again after. */
+  holdUndo: (hold: boolean) => void;
   /** Asks the text model to rebuild a misheard utterance of the open Transcript (Q138); its proposal waits. */
   rewriteUtterance: (utterance: number) => void;
   /** Takes the proposal: the utterance's text, its text as heard kept. */
@@ -370,6 +372,10 @@ export function useTranscribe({
       },
       stopAsking: () => asker.stop(),
       forgetAnswer: (id) => correct((t) => ({ ...t, asked: (t.asked ?? []).filter((a) => a.id !== id) })),
+      holdUndo: (hold) => {
+        clearTimeout(undoTimer.current);
+        if (!hold && deletedNow.current) undoTimer.current = setTimeout(() => setDeleted(null), UNDO_DELETE_MS);
+      },
       undoDelete: () => {
         const last = deletedNow.current;
         if (!last) return;
