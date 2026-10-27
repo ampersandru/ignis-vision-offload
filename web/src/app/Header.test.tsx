@@ -119,7 +119,7 @@ describe("Header and the Transcribe view", () => {
     const transcribe = renderToStaticMarkup(<Header {...base} view="transcribe" onView={() => {}} />);
     expect(transcribe).toMatch(/aria-current="page"[^>]*>Transcribe</);
     expect(transcribe).toContain('aria-label="Transcripts"');
-    expect(transcribe).toContain('aria-label="Notes"');
+    expect(transcribe).toContain('aria-label="Call"');
   });
 
   it("shows a listening under way from every view, its clock and whether it is paused, and opens the view", () => {

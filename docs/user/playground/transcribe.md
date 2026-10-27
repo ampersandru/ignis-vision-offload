@@ -15,11 +15,11 @@ for the speakers, its [diarizer](../api/realtime-transcription.md#speakers).
 
 ![The Transcribe view: a call with its speakers on the time spine, its notes on the right](../images/playground/transcribe.png)
 
-It is laid out like the other views: the **transcripts** on the left, the one
-open in the middle with its deck at the foot, and on the right two tabs:
-**Notes**, and **Tools** with its speakers, its exports, Open in chat and the
-view's settings. Below 1024 px wide the side columns open from the header as
-drawers.
+It is laid out like the other views: the **transcripts** on the left; the one
+open in the middle, its title and exports above it and its deck at the foot;
+and on the right three tabs: **Call**, what the transcription is told and who
+speaks; **Notes**; and **Settings**, the view's own. Below 1024 px wide the
+side columns open from the header as drawers (**Call** opens the right one).
 
 ## Listening
 
@@ -42,7 +42,7 @@ Pick a source in the deck, then **Start**:
 - **File**: a recording you pick (wav, mp3, ogg, m4a, webm, an mp4's audio:
   whatever the browser decodes). The browser decodes it to 16 kHz mono and
   sends it faster than real time, with a progress bar and the time left. It
-  stays ahead of its transcript by at most the **File pace** on the right (45,
+  stays ahead of its transcript by at most the **File pace** in Settings (45,
   60 or 90 seconds of audio not yet transcribed; 60 unless you pick another,
   kept by this browser); past that it sends an utterance still under way at
   real time, since only more audio can end it, and waits while utterances wait
@@ -68,7 +68,7 @@ stopped.
 
 ## Where an utterance ends
 
-An utterance ends at a silence of **Utterance ends after** on the right: 0.5,
+An utterance ends at a silence of **Utterance ends after** in Settings: 0.5,
 1, 1.5 or 2 s, 1.5 s unless you pick another (this browser keeps it). A change
 holds at once, in a listening too. The server's own default, 0.5 s, cuts a
 speaker at every breath into pieces of a second or two, and the model guesses
@@ -86,7 +86,7 @@ utterance ends, so the whole utterance under way stays light until then.
 The view follows the newest words. Scroll up to read, and it stays where you
 are; **Jump to live** brings it back.
 
-The **context** field above the deck is sent with every utterance's
+The **context** field in the Call tab is sent with every utterance's
 transcription: the topic, the names, the jargon the model should spell right.
 A change while listening holds from the next utterance. No language is ever
 sent: the model detects it per utterance.
@@ -118,7 +118,7 @@ session.
 
 Every correction is the page's, and nothing goes back to the server:
 
-- **Rename** a speaker in the Speakers panel: every one of their utterances,
+- **Rename** a speaker in the Call tab's Speakers: every one of their utterances,
   past and future, takes the name.
 - **Move** an utterance: its speaker is a menu; pick another speaker, or
   **New speaker**.
@@ -144,7 +144,8 @@ listening; so does a lost connection.
 
 ## Out of the view
 
-**Copy** puts it on the clipboard, and the four downloads write it as:
+Beside the title, **Copy** puts it on the clipboard, and **Download** writes it
+as:
 
 | Format | Each utterance |
 |---|---|

@@ -73,7 +73,7 @@ export function Header({
           </button>
         )}
         {sided && (
-          <HeaderButton label={decide ? "Questions" : transcribe ? "Notes" : "Settings"} onClick={() => onOpen("settings")}>
+          <HeaderButton label={decide ? "Questions" : transcribe ? "Call" : "Settings"} onClick={() => onOpen("settings")}>
             <IconSliders />
           </HeaderButton>
         )}

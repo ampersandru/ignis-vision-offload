@@ -1,7 +1,7 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
-import { caption } from "../ui/classes.ts";
-import { IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
+import { caption, field } from "../ui/classes.ts";
+import { IconChevron, IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
 import type { NotesHandle } from "./notesWriter.ts";
@@ -9,15 +9,16 @@ import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
 import { SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
 import { type ListeningHandle, type ListeningState, type LiveUtterance, useListening } from "./listening.ts";
-import { Sheet, speakerColor } from "./Sheet.tsx";
+import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
 import { titleOf, type TranscriptList } from "./sessions.ts";
 import { sessionsWithSpeakers, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view (spec speech/07), in the Decide tab's three-column
-// shape: the Transcripts on the left, the one open in the middle with the deck
-// at its foot, and on the right two tabs: its notes (Notes.tsx), and its
-// speakers, its exports, Open in chat and the view's settings.
+// shape: the Transcripts on the left; the one open in the middle, its heading
+// and exports above the sheet and the deck at its foot; on the right three
+// tabs (Q129): Call, what the transcription is told (the context) and who
+// speaks; Notes (Notes.tsx); Settings, the view's own.
 // Below `lg` the two side columns are drawers the header opens. The state is
 // the page's (useTranscribe.ts): a listening goes on while the view is hidden.
 
@@ -51,6 +52,7 @@ export function TranscribeView({
   const secure = typeof globalThis.isSecureContext === "boolean" ? globalThis.isSecureContext : true;
   const listening = useListening(handle);
   const here = listening.transcript === state.active.id;
+  const [tab, setTab] = useState<SideTab>("call");
 
   useEffect(() => {
     if (!drawer) return;
@@ -80,18 +82,21 @@ export function TranscribeView({
       />
 
       <main aria-label="Transcript" className="flex min-w-0 flex-1 flex-col">
+        <div className="border-b border-line px-4 pt-5 pb-3 md:px-10">
+          <div className="mx-auto w-full max-w-3xl">
+            <Heading transcript={state.active} onRename={(title) => actions.rename(state.active.id, title)}>
+              <Exports transcript={state.active} onOpenInChat={onOpenInChat} />
+            </Heading>
+          </div>
+        </div>
         <Sheet transcript={state.active} live={here ? listening.live : NONE_LIVE} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} />
         <Deck state={state} listening={listening} actions={actions} speech={speech} secure={secure} here={here} />
       </main>
 
-      <Side open={drawer === "settings"}>
-        {(tab) =>
-          tab === "notes" ? (
-            <Notes transcript={state.active} state={state} actions={actions} notes={notes} />
-          ) : (
-            <Tools transcript={state.active} actions={actions} onOpenInChat={onOpenInChat} />
-          )
-        }
+      <Side open={drawer === "settings"} tab={tab} onTab={setTab}>
+        {tab === "call" && <Call transcript={state.active} state={state} actions={actions} />}
+        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={notes} />}
+        {tab === "settings" && <Settings actions={actions} />}
       </Side>
     </div>
   );
@@ -187,18 +192,23 @@ function download(t: Transcript, { extension, type, write }: (typeof EXPORTS)[nu
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-type SideTab = "notes" | "tools";
+export type SideTab = "call" | "notes" | "settings";
 
-/** The right panel, in two tabs as the chat's settings are: Notes and Tools. A drawer below `lg`, shown when `open`. */
-function Side({ open, children }: { open: boolean; children: (tab: SideTab) => ReactNode }) {
-  const [tab, setTab] = useState<SideTab>("notes");
+const SIDE_TABS: [SideTab, string][] = [
+  ["call", "Call"],
+  ["notes", "Notes"],
+  ["settings", "Settings"],
+];
+
+/** The right panel, in tabs as the chat's settings are. A drawer below `lg`, shown when `open`. */
+function Side({ open, tab, onTab, children }: { open: boolean; tab: SideTab; onTab: (tab: SideTab) => void; children: ReactNode }) {
   return (
     <aside
-      aria-label="Notes and tools"
+      aria-label="Call, notes and settings"
       className={`fixed inset-y-0 right-0 z-40 flex w-80 flex-col overflow-y-auto border-l border-line bg-ground px-5 pb-5 transition-transform motion-reduce:transition-none lg:static lg:z-auto lg:translate-x-0 xl:w-96 ${open ? "translate-x-0" : "max-lg:invisible max-lg:translate-x-full"}`}
     >
       <div role="tablist" aria-label="Panel sections" className="sticky top-0 z-10 -mx-5 mb-5 flex gap-5 border-b border-line bg-ground px-5 pt-4">
-        {(["notes", "tools"] as const).map((t) => (
+        {SIDE_TABS.map(([t, label]) => (
           <button
             key={t}
             type="button"
@@ -206,30 +216,99 @@ function Side({ open, children }: { open: boolean; children: (tab: SideTab) => R
             id={`transcribe-tab-${t}`}
             aria-selected={tab === t}
             aria-controls="transcribe-tab-panel"
-            onClick={() => setTab(t)}
+            onClick={() => onTab(t)}
             className={`-mb-px border-b-2 pb-2 font-display text-[13px] font-semibold ${tab === t ? "border-ember text-ink" : "border-transparent text-ash hover:text-ink"}`}
           >
-            {t === "notes" ? "Notes" : "Tools"}
+            {label}
           </button>
         ))}
       </div>
       <div id="transcribe-tab-panel" role="tabpanel" aria-labelledby={`transcribe-tab-${tab}`} className="flex flex-1 flex-col gap-6">
-        {children(tab)}
+        {children}
       </div>
     </aside>
   );
 }
 
-function Tools({ transcript: t, actions, onOpenInChat }: { transcript: Transcript; actions: TranscribeActions; onOpenInChat: (markdown: string) => void }) {
+/** The heading's exports: Copy, the four downloads behind one menu, and Open in chat. */
+function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOpenInChat: (markdown: string) => void }) {
   const [copied, setCopied] = useState(false);
-  const pace = useFilePace();
-  const silence = useUtteranceSilence();
+  const menu = useRef<HTMLDetailsElement>(null);
   const nothing = t.utterances.every((u) => u.text.trim() === "");
+  return (
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
+        disabled={nothing}
+        onClick={() => {
+          void navigator.clipboard?.writeText(toText(t)).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2_000);
+          });
+        }}
+        className="cut bg-ink px-3 py-1.5 font-display text-[13px] font-semibold text-ground [--cut-size:7px] hover:bg-ember disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <details ref={menu} className={`group relative ${nothing ? "pointer-events-none opacity-50" : ""}`}>
+        <summary
+          aria-disabled={nothing}
+          className="flex cursor-pointer list-none items-center gap-1 border border-line px-2.5 py-1.5 font-display text-[13px] font-medium text-ink hover:border-ember [&::-webkit-details-marker]:hidden"
+        >
+          <IconDownload />
+          Download
+          <IconChevron className="transition-transform group-open:rotate-180 motion-reduce:transition-none" />
+        </summary>
+        <ul className="absolute right-0 z-20 mt-1 flex min-w-36 flex-col border border-line bg-surface py-1 shadow-lg">
+          {EXPORTS.map((format) => (
+            <li key={format.extension}>
+              <button
+                type="button"
+                onClick={() => {
+                  download(t, format);
+                  menu.current?.removeAttribute("open");
+                }}
+                className="w-full px-3 py-1.5 text-left font-display text-[13px] text-ink hover:bg-line"
+              >
+                {format.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </details>
+      <button
+        type="button"
+        disabled={nothing}
+        title="A new chat opens with the transcript in its prompt box. Nothing is sent until you press Send."
+        onClick={() => onOpenInChat(toMarkdown(t))}
+        className="px-1.5 font-display text-[13px] font-semibold text-ember hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:no-underline"
+      >
+        Open in chat
+      </button>
+    </div>
+  );
+}
+
+/** The Call tab: what the transcription is told, and who speaks. */
+function Call({ transcript: t, state, actions }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions }) {
+  const contextId = useId();
   const counts = new Map<number, number>();
   for (const u of t.utterances) if (u.speaker !== null) counts.set(u.speaker, (counts.get(u.speaker) ?? 0) + 1);
 
   return (
     <>
+      <label htmlFor={contextId} className="flex flex-col gap-2">
+        <span className={caption}>Context</span>
+        <textarea
+          id={contextId}
+          rows={3}
+          value={state.context}
+          onChange={(e) => actions.setContext(e.currentTarget.value)}
+          placeholder="The topic, the names, the jargon: what the transcription should spell right."
+          className={`${field} max-h-48 resize-none [field-sizing:content]`}
+        />
+      </label>
+
       <section aria-labelledby="transcribe-speakers" className="flex flex-col gap-2.5">
         <h2 id="transcribe-speakers" className={caption}>
           Speakers
@@ -279,49 +358,16 @@ function Tools({ transcript: t, actions, onOpenInChat }: { transcript: Transcrip
           <p className="text-xs leading-snug text-ash">A Resume or a Continue numbers the voices anew: merge a speaker who came back into the one they were.</p>
         )}
       </section>
+    </>
+  );
+}
 
-      <section aria-labelledby="transcribe-export" className="flex flex-col gap-2.5">
-        <h2 id="transcribe-export" className={caption}>
-          Export
-        </h2>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            disabled={nothing}
-            onClick={() => {
-              void navigator.clipboard?.writeText(toText(t)).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2_000);
-              });
-            }}
-            className="cut bg-ink px-3 py-1.5 font-display text-[13px] font-semibold text-ground [--cut-size:7px] hover:bg-ember disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {copied ? "Copied" : "Copy"}
-          </button>
-          {EXPORTS.map((format) => (
-            <button
-              key={format.extension}
-              type="button"
-              disabled={nothing}
-              title={`Download as ${format.label}`}
-              onClick={() => download(t, format)}
-              className="flex items-center gap-1 border border-line px-2.5 py-1.5 font-display text-[13px] font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <IconDownload />
-              {format.label}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          disabled={nothing}
-          onClick={() => onOpenInChat(toMarkdown(t))}
-          className="self-start font-display text-[13px] font-semibold text-ember hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:no-underline"
-        >
-          Open in chat
-        </button>
-        <p className="text-xs leading-snug text-ash">A new chat opens with the transcript in its prompt box. Nothing is sent until you press Send.</p>
-      </section>
+/** The Settings tab: the view's own, this browser's. */
+function Settings({ actions }: { actions: TranscribeActions }) {
+  const pace = useFilePace();
+  const silence = useUtteranceSilence();
+  return (
+    <>
 
       <section aria-labelledby="transcribe-silence" className="flex flex-col gap-2">
         <h2 id="transcribe-silence" className={caption}>

@@ -5,9 +5,9 @@ import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft 
 import { IDLE, type ListeningState } from "./listening.ts";
 import { NotesPanel, notesButton } from "./Notes.tsx";
 import type { NotesWriterState } from "./notesWriter.ts";
-import { Sheet, speakerColor } from "./Sheet.tsx";
+import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
-import { fileStem, transcriptSummary } from "./TranscribeView.tsx";
+import { fileStem, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
 import { addUtterance, createTranscript, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
@@ -58,8 +58,17 @@ describe("the sheet", () => {
     expect(html).toContain('<option value="1" selected="">Speaker 1</option>');
     expect(html).toContain('<option value="new">New speaker</option>');
     expect(html).toContain("Apriamo. Io ho finito ieri.");
+  });
+
+  it("is headed, above it, by the title, the start and the exports (Q129)", () => {
+    const html = renderToStaticMarkup(
+      <Heading transcript={room()} onRename={none}>
+        <button type="button">Copy</button>
+      </Heading>,
+    );
     expect(html).toContain('value="25 Oct 15:42 · Microphone"');
     expect(html).toContain("Started 25 Oct 2026, 15:42");
+    expect(html).toContain(">Copy</button>");
   });
 
   it("marks a split's guessed start with ~ (Q98)", () => {
@@ -105,9 +114,8 @@ describe("the deck", () => {
   const deck = (s: TranscribeState, listening: ListeningState = IDLE) =>
     renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here />);
 
-  it("offers the context, the three sources, the Speakers toggle on by default, and Start, or Continue on a Transcript heard in", () => {
+  it("offers the three sources, the Speakers toggle on by default, and Start, or Continue on a Transcript heard in", () => {
     const html = deck(state());
-    expect(html).toContain(">Context<");
     for (const source of ["Microphone", "Call", "File"]) expect(html).toContain(`>${source}</button>`);
     expect(html).toMatch(/role="switch" aria-checked="true"/);
     expect(html).toContain(">Start</button>");
@@ -216,6 +224,24 @@ describe("the notes", () => {
     expect(notesButton(t, { writing: 9, text: "", failed: null }, null).disabled).toBe(true);
     expect(panel(t, idle, { notesBlocked: "The image model is loaded: notes need a text model. Switch in the Server view." })).toContain("The image model is loaded");
     expect(panel(t, { writing: null, text: "", failed: { transcript: t.id, message: "The model wrote nothing." } })).toContain("The notes were not written: The model wrote nothing.");
+  });
+});
+
+describe("the view", () => {
+  it("heads the transcript with its exports, and opens the right panel on the Call tab, beside Notes and Settings (Q129)", () => {
+    const idleHandle = { getState: () => IDLE, subscribe: () => () => {} };
+    const notesHandle = { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} };
+    const html = renderToStaticMarkup(
+      <TranscribeView state={state({ active: room() })} actions={actions} listening={idleHandle} notes={notesHandle} drawer={null} onDrawer={none} onOpenInChat={none} />,
+    );
+    expect(html.indexOf('aria-label="Transcript title"')).toBeLessThan(html.indexOf(">Download"));
+    expect(html).toContain(">Open in chat<");
+    expect(html).toMatch(/role="tab" id="transcribe-tab-call" aria-selected="true"/);
+    expect(html).toMatch(/role="tab" id="transcribe-tab-notes" aria-selected="false"/);
+    expect(html).toMatch(/role="tab" id="transcribe-tab-settings" aria-selected="false"/);
+    expect(html).toContain(">Context<");
+    expect(html).toContain('id="transcribe-speakers"');
+    expect(html).not.toContain("Utterance ends after");
   });
 });
 

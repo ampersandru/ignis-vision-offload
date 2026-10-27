@@ -6,8 +6,9 @@ import { titleOf } from "./sessions.ts";
 import type { TranscribeActions } from "./useTranscribe.ts";
 import type { Speaker, Transcript, Utterance } from "./transcript.ts";
 
-// The Transcript as it is heard (spec speech/07): its title and start, then
-// its utterances hung on a time spine — each one's mm:ss to the left of the
+// The Transcript as it is heard (spec speech/07): its heading (drawn by the
+// view above the sheet, with the exports, so it stays in sight), then its
+// utterances hung on a time spine — each one's mm:ss to the left of the
 // rule, its speaker's hue as a tick along it — and the utterances under way at
 // the foot, their provisional tail light (Q82), the spine burning with the
 // ember there while it listens. The view follows the newest words until the
@@ -45,7 +46,7 @@ export const Sheet = memo(function Sheet({
   call: boolean;
   /** The listening appends to this Transcript. */
   here: boolean;
-  actions: Pick<TranscribeActions, "rename" | "moveUtterance" | "splitUtterance" | "editText">;
+  actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText">;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -68,11 +69,10 @@ export const Sheet = memo(function Sheet({
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scroller} onScroll={(e) => setFollowing(isAtBottom(e.currentTarget))} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-10">
         <div className="mx-auto w-full max-w-3xl">
-          <Heading transcript={transcript} onRename={(title) => actions.rename(transcript.id, title)} />
           {empty ? (
             <Empty listening={here && phase !== "idle"} />
           ) : (
-            <ol aria-label="Utterances" className="mt-6">
+            <ol aria-label="Utterances">
               {transcript.utterances.map((u) => (
                 <UtteranceRow key={u.id} utterance={u} speaker={u.speaker === null ? undefined : speakers.get(u.speaker)} speakers={transcript.speakers} actions={actions} />
               ))}
@@ -96,18 +96,22 @@ export const Sheet = memo(function Sheet({
   );
 });
 
-function Heading({ transcript, onRename }: { transcript: Transcript; onRename: (title: string) => void }) {
+/** The Transcript's title, editable, its start, what was heard and by how many; `children` at the title's right. */
+export function Heading({ transcript, onRename, children }: { transcript: Transcript; onRename: (title: string) => void; children?: ReactNode }) {
   const speaking = transcript.speakers.length;
   return (
     <header className="flex flex-col gap-1.5">
-      <input
-        key={`${transcript.id}:${transcript.title}`}
-        aria-label="Transcript title"
-        defaultValue={titleOf(transcript)}
-        onBlur={(e) => e.currentTarget.value.trim() !== titleOf(transcript) && onRename(e.currentTarget.value)}
-        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-        className="-ml-1 w-full rounded-[2px] border border-transparent bg-transparent px-1 font-display text-2xl font-semibold text-ink hover:border-line focus:border-ember focus:outline-none"
-      />
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <input
+          key={`${transcript.id}:${transcript.title}`}
+          aria-label="Transcript title"
+          defaultValue={titleOf(transcript)}
+          onBlur={(e) => e.currentTarget.value.trim() !== titleOf(transcript) && onRename(e.currentTarget.value)}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          className="-ml-1 min-w-[12rem] flex-1 rounded-[2px] border border-transparent bg-transparent px-1 font-display text-2xl font-semibold text-ink hover:border-line focus:border-ember focus:outline-none"
+        />
+        {children}
+      </div>
       <p className="flex flex-wrap gap-x-5 gap-y-1 font-display text-[13px] text-ash">
         {transcript.startedAt !== null && <span>{startedLine(transcript.startedAt)}</span>}
         {transcript.clockMs > 0 && <span className="tabular-nums">{clock(transcript.clockMs)} heard</span>}

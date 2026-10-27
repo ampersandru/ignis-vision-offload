@@ -2,7 +2,6 @@ import { useId, useRef, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
 import { SECURE_CONTEXT, unavailable } from "../speech/availability.ts";
 import { HintText, toneClass } from "../speech/Dictation.tsx";
-import { caption, field } from "../ui/classes.ts";
 import { IconPause, IconPlay, IconStopSquare } from "../ui/icons.tsx";
 import { Switch } from "../ui/Switch.tsx";
 import { clock } from "./export.ts";
@@ -11,7 +10,7 @@ import type { SourceKind } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view's deck, at the foot of the sheet as the chat's composer
-// is (spec speech/07): the context field, then, before a listening, the source,
+// is (spec speech/07): before a listening, the source,
 // the Speakers toggle and Start; while one runs, the dictation's kiln strip —
 // each source's level, the clock, Pause or Resume, Stop — or a file's
 // progress and the time left. The hint line under it says what the server or
@@ -65,7 +64,6 @@ export function Deck({
 }) {
   const [source, setSource] = useState<SourceKind>("microphone");
   const picker = useRef<HTMLInputElement>(null);
-  const contextId = useId();
   const speakersId = useId();
   const holdId = useId();
   const idle = listening.phase === "idle";
@@ -82,18 +80,6 @@ export function Deck({
   return (
     <div className="border-t border-line bg-ground px-4 pt-3 pb-3 md:px-10">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2.5">
-        <label htmlFor={contextId} className="flex flex-col gap-1">
-          <span className={caption}>Context</span>
-          <textarea
-            id={contextId}
-            rows={1}
-            value={state.context}
-            onChange={(e) => actions.setContext(e.currentTarget.value)}
-            placeholder="The topic, the names, the jargon: what the transcription should spell right."
-            className={`${field} max-h-24 resize-none [field-sizing:content]`}
-          />
-        </label>
-
         {idle ? (
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
             <div role="radiogroup" aria-label="Source" className="flex">

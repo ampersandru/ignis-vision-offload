@@ -296,6 +296,15 @@ switch. Built as a draft for the owner to try, beyond Q81-Q123 (transcribe/notes
 - Open for the owner: kinds or sections of their own; the notes in the exports and in Open in chat; whether this
   stays in #362 or becomes a ticket of its own.
 
+### The call's context, its languages, suggestions and corrections (2026-10-27, Q128-Q135)
+
+The owner's second round, approved whole (grill Q128-Q135), built in six slices, one commit each:
+- **S2, the panels (Q129).** The right panel's tabs are Call (the context and the speakers), Notes, and Settings
+  (Utterance ends after, File pace); it opens on Call, and the header's drawer button says Call. The title, the
+  start and the exports leave the scroller: a heading above the sheet with Copy, a Download menu (.txt, .md, .srt,
+  .vtt) and Open in chat, so they stay in sight in a long transcript. Hold my mic stays in the deck: it is the
+  listening's.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

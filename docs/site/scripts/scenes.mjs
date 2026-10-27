@@ -374,6 +374,7 @@ export const scenes = [
       await chatReady(page);
       await view(page, "Transcribe");
       await page.getByText("I'll post the notes in the channel.").waitFor();
+      await page.getByRole("tab", { name: "Notes" }).click();
       await page.getByText("Tag at four, then check the download links").waitFor();
     },
   },
