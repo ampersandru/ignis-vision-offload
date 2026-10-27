@@ -102,6 +102,16 @@ with no one speaking, the model can write a line of the context in place of
 what it heard; the server takes such a copy for no speech, so it leaves no
 utterance ([the measurement](../../findings/2026-10-27-asr-context-echo.md)).
 
+A transcript never started is told **your default**, once you save one: **Save
+as default**, beside an applied context or in a draft, keeps it in this
+browser for every new transcript; **Clear the default**, in an empty draft,
+drops it. The first Start of a transcript whose context you have neither
+applied nor opened asks first, your default too: over Start the deck says what
+the call would be told, with **Use the context of** the latest transcript told
+something else, which opens it as a draft, and **Edit the context**, and the
+Call tab frames the context in orange. **Start anyway** goes on. A draft left
+open asks nothing: the Start applies it.
+
 The **Languages** are **Detect** unless you pick **Force one**:
 
 - **Detect**: the model detects each utterance's language, and the ones you

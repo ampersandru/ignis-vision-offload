@@ -2,7 +2,7 @@ import { isSpeechLanguage, languageName } from "../speech/languages.ts";
 import type { Told } from "../speech/realtime.ts";
 import type { ConfigDocument } from "../server/routes.ts";
 import { CHARS_PER_TOKEN } from "./assist.ts";
-import type { Speaker } from "./transcript.ts";
+import type { Speaker, Transcript } from "./transcript.ts";
 
 // What a Transcript's transcription is told (spec speech/07, Q128, Q130): the
 // call's context, kept with the Transcript and applied, not sent as it is
@@ -114,7 +114,7 @@ export const toldTokens = (t: Told): number => Math.ceil((t.prompt.length + t.ke
 export const isBlank = (c: CallContext | undefined): boolean =>
   !c || (c.topic.trim() === "" && c.languages.codes.length === 0 && c.terms.length === 0 && c.other.trim() === "");
 
-/** The deck's line: what the transcription is told, in short. */
+/** What it is told, in short: the line of the first Start's question. */
 export function contextSummary(c: CallContext | undefined): string {
   if (!c || isBlank(c)) return "Nothing told: the model guesses the languages and spells the names as it hears them.";
   const codes = c.languages.codes.filter(isSpeechLanguage);
@@ -125,6 +125,43 @@ export function contextSummary(c: CallContext | undefined): string {
   if (c.other.trim() !== "") parts.push("more");
   return parts.join(" · ");
 }
+
+/** The same told: the languages, the topic, the terms and the rest, whenever each was applied. */
+export const sameContext = (a: CallContext, b: CallContext): boolean =>
+  a.languages.mode === b.languages.mode &&
+  a.languages.codes.join() === b.languages.codes.join() &&
+  a.topic.trim() === b.topic.trim() &&
+  a.terms.join("\n") === b.terms.join("\n") &&
+  a.other.trim() === b.other.trim();
+
+/** The Transcript is told this browser's default, `saved`: it was never started and holds no context of its own. */
+export const fromDefault = (t: Pick<Transcript, "context" | "source">, saved: CallContext | null): boolean =>
+  t.context === undefined && t.source === null && saved !== null;
+
+/** What the Transcript tells: its own context, else the default while it was never started, else nothing. */
+export const contextOf = (t: Pick<Transcript, "context" | "source">, saved: CallContext | null): CallContext =>
+  t.context ?? (t.source === null ? saved : null) ?? EMPTY_CONTEXT;
+
+/**
+ * What a Start tells and the Transcript keeps: a draft open merged onto what it tells, else what it tells, applied
+ * now if it never was, so the default a new Transcript shows is the one sent.
+ */
+export function contextAtStart(
+  t: Pick<Transcript, "context" | "source">,
+  pending: { base: CallContext; context: CallContext } | null,
+  saved: CallContext | null,
+  now: number,
+): CallContext {
+  const held = contextOf(t, saved);
+  return pending ? mergeDraft(pending.base, pending.context, held, now) : { ...held, appliedAt: held.appliedAt ?? now };
+}
+
+/**
+ * The first Start asks before it starts (the owner's word: it costs a click and spares a call told nothing, or
+ * another's): a Transcript never started, its context never applied, none being edited; the default too.
+ */
+export const asksFirst = (t: Pick<Transcript, "context" | "source">, draft: CallContext | null): boolean =>
+  t.source === null && (t.context?.appliedAt ?? null) === null && draft === null;
 
 export const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 

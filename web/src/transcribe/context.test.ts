@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   addTerms,
+  asksFirst,
   type CallContext,
+  contextAtStart,
+  contextOf,
   contextSummary,
   contextTokensOf,
   EMPTY_CONTEXT,
+  fromDefault,
   isBlank,
   languagesLine,
   languagesUnder,
@@ -12,6 +16,7 @@ import {
   namedSpeakers,
   pickLanguage,
   readContext,
+  sameContext,
   termProblem,
   told,
   toldTokens,
@@ -93,7 +98,7 @@ describe("the terms", () => {
   });
 });
 
-describe("the deck's line", () => {
+describe("the line of what is told", () => {
   it("says what is told, in short, or that nothing is", () => {
     expect(contextSummary(it_support)).toBe("Italian, English · Supporto IT informale · 2 terms · more");
     expect(contextSummary({ ...EMPTY_CONTEXT, languages: { mode: "force", codes: ["it"] } })).toBe("Italian only");
@@ -115,6 +120,43 @@ describe("a draft applied (Q128)", () => {
       appliedAt: 9,
     });
     expect(mergeDraft(base, { ...base, languages: { mode: "force", codes: ["it"] } }, meanwhile, 9).languages).toEqual({ mode: "force", codes: ["it"] });
+  });
+});
+
+describe("the default and the first Start (the owner's word)", () => {
+  const saved: CallContext = { ...it_support, appliedAt: null };
+  const fresh = { source: null };
+
+  it("a Transcript never started tells the default, one of its own or once started its own alone", () => {
+    expect(contextOf(fresh, saved)).toBe(saved);
+    expect(fromDefault(fresh, saved)).toBe(true);
+    expect(contextOf(fresh, null)).toEqual(EMPTY_CONTEXT);
+    const own: CallContext = { ...EMPTY_CONTEXT, topic: "Altro", appliedAt: 4 };
+    expect(contextOf({ source: null, context: own }, saved)).toBe(own);
+    expect(fromDefault({ source: null, context: own }, saved)).toBe(false);
+    expect(contextOf({ source: "call" }, saved)).toEqual(EMPTY_CONTEXT);
+  });
+
+  it("a Start keeps what it tells, applied then, or the draft open merged onto it", () => {
+    expect(contextAtStart(fresh, null, saved, 7)).toEqual({ ...saved, appliedAt: 7 });
+    expect(contextAtStart(fresh, null, null, 7)).toEqual({ ...EMPTY_CONTEXT, appliedAt: 7 });
+    expect(contextAtStart({ source: "call", context: it_support }, null, saved, 7)).toEqual(it_support);
+    const draft = { ...saved, topic: "Rilascio" };
+    expect(contextAtStart(fresh, { base: saved, context: draft }, saved, 7)).toEqual({ ...saved, topic: "Rilascio", appliedAt: 7 });
+  });
+
+  it("asks at the first Start alone: nothing applied, nothing being edited", () => {
+    expect(asksFirst(fresh, null)).toBe(true);
+    expect(asksFirst({ source: null, context: { ...saved, appliedAt: null } }, null)).toBe(true);
+    expect(asksFirst(fresh, saved)).toBe(false);
+    expect(asksFirst({ source: null, context: it_support }, null)).toBe(false);
+    expect(asksFirst({ source: "microphone" }, null)).toBe(false);
+  });
+
+  it("tells two contexts the same whenever each was applied", () => {
+    expect(sameContext(it_support, saved)).toBe(true);
+    expect(sameContext(it_support, { ...saved, terms: ["VPN"] })).toBe(false);
+    expect(sameContext(it_support, { ...saved, languages: { mode: "force", codes: ["it"] } })).toBe(false);
   });
 });
 

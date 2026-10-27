@@ -12,7 +12,8 @@ import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
 import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
 import { Heading, highlighted, nextCheckIn, RewritePanel, Sheet, speakerColor } from "./Sheet.tsx";
-import { startList } from "./sessions.ts";
+import { startList, titleOf } from "./sessions.ts";
+import { EMPTY_CONTEXT } from "./context.ts";
 import { fileStem, listMatch, SearchField, Settings, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
 import { hitsIn } from "./search.ts";
 import { addUtterance, createTranscript, fixUtterances, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
@@ -35,6 +36,8 @@ const actions: TranscribeActions = {
   changeContext: none,
   applyContext: none,
   cancelContext: none,
+  copyContext: none,
+  saveDefaultContext: none,
   setSpeakers: none,
   setHoldMic: none,
   setSilence: none,
@@ -325,6 +328,50 @@ describe("the context (Q128)", () => {
   it("offers Add when nothing is told", () => {
     expect(card(room())).toContain(">Add<");
     expect(card(told(room()))).toContain(">Edit<");
+  });
+
+  // The owner's word: a default saved from the card, and a question at the first Start, even with the default.
+  const saved = { ...told(room()).context!, appliedAt: null };
+  const fresh = () => startList().transcripts[0];
+  const asked = (s: TranscribeState, withDefault: typeof saved | null = null) =>
+    renderToStaticMarkup(<Deck state={s} listening={IDLE} actions={actions} secure here saved={withDefault} checking />);
+
+  it("shows the default on a transcript never started, saves one as the default, or says it is, and clears it", () => {
+    const html = renderToStaticMarkup(<ContextCard transcript={fresh()} draft={null} maxTokens={512} live={false} saved={saved} actions={actions} />);
+    expect(html).toContain(">Supporto IT<");
+    expect(html).toMatch(/Not applied yet · about [1-9]\d* of 512 tokens/);
+    expect(html).toContain(">Your default<");
+    expect(card(told(room()))).toContain(">Save as default<");
+    expect(card(room())).not.toContain("default");
+    expect(renderToStaticMarkup(<ContextCard transcript={fresh()} draft={EMPTY_CONTEXT} maxTokens={512} live={false} saved={saved} actions={actions} />)).toContain(">Clear the default<");
+    // A transcript once started tells its own alone.
+    expect(renderToStaticMarkup(<ContextCard transcript={room()} draft={null} maxTokens={512} live={false} saved={saved} actions={actions} />)).toContain(">Add<");
+  });
+
+  it("asks at the first Start what the call is told, over a Start anyway, the card framed meanwhile", () => {
+    const other = { ...told(room()), id: 9 };
+    const s = state({ list: { transcripts: [fresh(), other], activeId: 1 }, active: fresh() });
+    const html = asked(s);
+    expect(html).toContain("Nothing told: the model guesses the languages");
+    expect(html).toContain(`Use the context of ${titleOf(other)}`);
+    expect(html).toContain(">Edit the context<");
+    expect(html).toContain(">Start anyway</button>");
+    // Not raised yet, or for a transcript once started: Start alone.
+    expect(renderToStaticMarkup(<Deck state={s} listening={IDLE} actions={actions} secure here />)).not.toContain("Nothing told");
+    expect(asked(state({ active: room() }))).toContain(">Continue</button>");
+    expect(renderToStaticMarkup(<ContextCard transcript={fresh()} draft={null} maxTokens={512} live={false} flagged actions={actions} />)).toContain("outline-ember");
+  });
+
+  it("asks with the default too, and not once a draft is open, which the Start applies", () => {
+    const withDefault = asked(state(), saved);
+    expect(withDefault).toContain("Your default context: Supporto IT · 2 terms. Is it this call&#x27;s?");
+    expect(withDefault).toContain(">Start anyway</button>");
+    // The default is the context offered: no other's to take that tells the same.
+    const same = asked(state({ list: { transcripts: [fresh(), { ...told(room()), id: 9 }], activeId: 1 } }), saved);
+    expect(same).not.toContain("Use the context of");
+    const drafting = asked(state({ draft: { ...saved, topic: "Rilascio" } }), saved);
+    expect(drafting).toContain("Being edited in the Call tab: Rilascio · 2 terms. Start applies it.");
+    expect(drafting).toContain(">Start</button>");
   });
 });
 

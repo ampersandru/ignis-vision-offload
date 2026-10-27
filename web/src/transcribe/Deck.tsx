@@ -5,9 +5,11 @@ import { SECURE_CONTEXT, unavailable } from "../speech/availability.ts";
 import { HintText, toneClass } from "../speech/Dictation.tsx";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconChevron, IconPause, IconPlay, IconStopSquare } from "../ui/icons.tsx";
+import { asksFirst, type CallContext, contextOf, contextSummary, fromDefault, isBlank, sameContext } from "./context.ts";
 import { clock } from "./export.ts";
 import type { LaneName, ListeningState } from "./listening.ts";
-import type { SourceKind } from "./transcript.ts";
+import { titleOf } from "./sessions.ts";
+import type { SourceKind, Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 import { viewerChoice } from "./viewerChoice.ts";
 
@@ -18,7 +20,12 @@ import { viewerChoice } from "./viewerChoice.ts";
 // left. The hint line says what the server or the browser refused, in spec
 // 04's words, and before a call that headphones keep the far voices out of
 // the microphone (Q93). What it is told and how it listens are set in the
-// panel (the owner's word: the deck's switches came before the panel did).
+// panel (the owner's word: the deck's switches came before the panel did);
+// the first Start of a Transcript whose context was neither applied nor
+// opened asks first, over Start, and a second press goes on.
+
+/** A second press this soon after the first is the same double click, not an answer to the question it raised. */
+const ANSWER_AFTER_MS = 500;
 
 /** Said before a call starts (Q93). */
 export const HEADPHONES = "Use headphones on a call: through speakers, the far voices reach the microphone and are transcribed twice.";
@@ -61,6 +68,10 @@ export function Deck({
   speech,
   secure,
   here,
+  saved = null,
+  checking = false,
+  onCheck = () => {},
+  onEditContext = () => {},
 }: {
   state: TranscribeState;
   listening: ListeningState;
@@ -69,15 +80,30 @@ export function Deck({
   secure: boolean;
   /** The listening, if any, appends to the Transcript open. */
   here: boolean;
+  /** This browser's default context, `null` when none is saved. */
+  saved?: CallContext | null;
+  /** The first Start's question stands for the Transcript open. */
+  checking?: boolean;
+  /** Raises it: the view shows the Call tab, its context framed. */
+  onCheck?: () => void;
+  /** Opens the Call tab on the context's draft. */
+  onEditContext?: () => void;
 }) {
   const source = sourceChoice.use();
   const picker = useRef<HTMLInputElement>(null);
+  const checkedAt = useRef(0);
   const idle = listening.phase === "idle";
   const blocked = startBlocked(source, { secure, speech });
   const continuing = state.active.utterances.length > 0;
+  const asks = asksFirst(state.active, state.draft);
 
   function start() {
     if (blocked) return;
+    if (asks && !checking) {
+      checkedAt.current = Date.now();
+      return onCheck();
+    }
+    if (asks && Date.now() - checkedAt.current < ANSWER_AFTER_MS) return;
     if (source === "file") return picker.current?.click();
     actions.start(source === "call" ? { kind: "call" } : { kind: "microphone" });
   }
@@ -92,11 +118,12 @@ export function Deck({
     // The sheet's gutter, kept for its scrollbar, so Start lines up with the field above it.
     <div className="overflow-y-hidden border-t border-line bg-ground px-4 pt-3 pb-3 [scrollbar-gutter:stable] md:px-10">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2.5">
+        {idle && checking && state.active.source === null && <ContextCheck transcript={state.active} list={state.list.transcripts} draft={state.draft} saved={saved} actions={actions} onEdit={onEditContext} />}
         {idle ? (
           <div className="flex flex-wrap items-center justify-end gap-x-5 gap-y-2.5">
             {hintLine}
             <StartButton
-              label={source === "file" ? (continuing ? "Continue with a file" : "Choose a file") : continuing ? "Continue" : "Start"}
+              label={`${source === "file" ? (continuing ? "Continue with a file" : "Choose a file") : continuing ? "Continue" : "Start"}${asks && checking ? " anyway" : ""}`}
               source={source}
               blocked={blocked !== null}
               onStart={start}
@@ -120,6 +147,52 @@ export function Deck({
             {hintLine}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** What the first Start's question says the call would be told: the draft being edited, the default, or nothing. */
+export function contextQuestion(t: Transcript, draft: CallContext | null, saved: CallContext | null): string {
+  if (draft !== null) return `Being edited in the Call tab: ${contextSummary(draft)}. Start applies it.`;
+  const c = contextOf(t, saved);
+  if (isBlank(c)) return contextSummary(c);
+  return `${fromDefault(t, saved) ? "Your default context" : "Told"}: ${contextSummary(c)}. Is it this call's?`;
+}
+
+/**
+ * The first Start's question, over Start (the owner's word): what the call would be told, the context of the latest
+ * Transcript that had another to take as a draft, and the draft to edit; the Call tab frames the context meanwhile.
+ */
+export function ContextCheck({
+  transcript: t,
+  list,
+  draft,
+  saved,
+  actions,
+  onEdit,
+}: {
+  transcript: Transcript;
+  list: Transcript[];
+  draft: CallContext | null;
+  saved: CallContext | null;
+  actions: Pick<TranscribeActions, "copyContext">;
+  onEdit: () => void;
+}) {
+  const told = contextOf(t, saved);
+  const theirs = draft === null ? list.find((x) => x.id !== t.id && x.context !== undefined && !isBlank(x.context) && !sameContext(x.context, told)) : undefined;
+  return (
+    <div role="status" className="flex flex-col gap-1 border-l-2 border-ember pl-3">
+      <p className="text-[13px] leading-snug text-ink">{contextQuestion(t, draft, saved)}</p>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 font-display text-xs font-semibold text-ember">
+        {theirs && (
+          <button type="button" onClick={() => actions.copyContext(theirs.id)} className="hover:underline">
+            Use the context of {titleOf(theirs)}
+          </button>
+        )}
+        <button type="button" onClick={onEdit} className="hover:underline">
+          Edit the context
+        </button>
       </div>
     </div>
   );

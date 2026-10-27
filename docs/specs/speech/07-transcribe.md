@@ -466,6 +466,20 @@ Start alone: Microphone, Call and File moved into a menu beside it (`StartButton
 to the Settings tab. Speakers is now this browser's too (`ignis.transcribeSpeakers`, on at first), where Q112 had it
 per listening: a switch in Settings that a reload turns back on reads as one that never took.
 
+### The first Start asks (2026-10-28)
+
+With the deck's line of what is told gone, the owner asked for the reminder where it counts: the first Start of a
+Transcript whose context was neither applied nor opened (`asksFirst`: never started, nothing applied, no draft) does
+not start; over Start the deck says what the call would be told (`ContextCheck`, `contextQuestion`), with Use the
+context of the latest Transcript told something else, which opens it as a draft (`copyContext`), and Edit the
+context, the Call tab shows the context framed in the ember, and Start reads Start anyway. The question stays in the
+deck and the Call tab is picked, never the drawer, which below `lg` would cover the deck. A second press within
+500 ms is the first one's double click and starts nothing. A Start applies what it tells (`contextAtStart`), so a
+Continue never asks. Save as default, the owner's addition, keeps a context in this browser
+(`ignis.transcribeContext`, defaultContext.ts); a Transcript never started shows it and is told it, and the first
+Start asks all the same, the owner's word: it costs a click and spares a call told another's context. Clear the
+default, in an empty draft, drops it.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

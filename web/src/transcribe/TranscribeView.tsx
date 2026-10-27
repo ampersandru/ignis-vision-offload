@@ -7,6 +7,8 @@ import { useWatched } from "./assist.ts";
 import { onJump } from "./jump.ts";
 import { ContextCard } from "./Context.tsx";
 import { AskBar } from "./Ask.tsx";
+import type { CallContext } from "./context.ts";
+import { useSavedContext } from "./defaultContext.ts";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
 import { Suggestions } from "./Suggestions.tsx";
@@ -69,6 +71,15 @@ export function TranscribeView({
   const hits = useMemo(() => hitsIn(state.active, query), [state.active, query]);
   const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
   const searchField = useRef<HTMLInputElement>(null);
+  const saved = useSavedContext();
+  // The first Start's question, for the Transcript it was raised on, until it is started (Deck.tsx).
+  const [checking, setChecking] = useState<number | null>(null);
+  const checkingContext = checking === state.active.id && state.active.source === null && listening.phase === "idle";
+  const editContext = () => {
+    setTab("call");
+    onDrawer("settings");
+    if (state.draft === null) actions.editContext();
+  };
   const rewrite = useWatched(assistants.rewriter);
   const asking = useWatched(assistants.asker);
   const looking = useWatched(assistants.analyst);
@@ -174,6 +185,14 @@ export function TranscribeView({
           speech={speech}
           secure={secure}
           here={here}
+          saved={saved}
+          checking={checkingContext}
+          // The Call tab, where the panel stands beside the sheet; below `lg` its drawer would cover the deck.
+          onCheck={() => {
+            setChecking(state.active.id);
+            setTab("call");
+          }}
+          onEditContext={editContext}
         />
       </main>
 
@@ -181,7 +200,7 @@ export function TranscribeView({
         {tab === "call" && (
           <>
             <Suggestions transcript={state.active} state={state} actions={actions} analyst={assistants.analyst} />
-            <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} />
+            <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} saved={saved} flagged={checkingContext} />
           </>
         )}
         {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={assistants.notes} />}
@@ -481,13 +500,27 @@ function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOp
 }
 
 /** The Call tab: what the transcription is told, and who speaks. */
-function Call({ transcript: t, state, actions, live }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; live: boolean }) {
+function Call({
+  transcript: t,
+  state,
+  actions,
+  live,
+  saved,
+  flagged,
+}: {
+  transcript: Transcript;
+  state: TranscribeState;
+  actions: TranscribeActions;
+  live: boolean;
+  saved: CallContext | null;
+  flagged: boolean;
+}) {
   const counts = new Map<number, number>();
   for (const u of t.utterances) if (u.speaker !== null) counts.set(u.speaker, (counts.get(u.speaker) ?? 0) + 1);
 
   return (
     <>
-      <ContextCard transcript={t} draft={state.draft} maxTokens={state.contextTokens} live={live} actions={actions} />
+      <ContextCard transcript={t} draft={state.draft} maxTokens={state.contextTokens} live={live} saved={saved} flagged={flagged} actions={actions} />
 
       <section aria-labelledby="transcribe-speakers" className="flex flex-col gap-2.5">
         <h2 id="transcribe-speakers" className={caption}>

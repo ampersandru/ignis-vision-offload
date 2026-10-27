@@ -6,12 +6,13 @@ import { Segmented } from "../ui/Segmented.tsx";
 import {
   addTerms,
   type CallContext,
-  EMPTY_CONTEXT,
+  contextOf,
   isBlank,
   languagesLine,
   languagesUnder,
   type LanguageMode,
   pickLanguage,
+  sameContext,
   termProblem,
   told,
   toldTokens,
@@ -23,13 +24,26 @@ import type { TranscribeActions } from "./useTranscribe.ts";
 // transcription is told, applied or being edited. Applied, it reads as a
 // record, with when it was applied; Edit opens a draft, framed in the ember,
 // that nothing sends until Apply — one update, from the next utterance on —
-// and that a Start applies itself.
+// and that a Start applies itself. A Transcript never started shows this
+// browser's default, saved from here (the owner's "Save as default").
 
 /** "Applied at 15:44", and how much of the server's context it takes (`speech.context_max_tokens`, `maxTokens`). */
-export function appliedLine(t: Transcript, maxTokens: number): string {
-  const tokens = toldTokens(told(t.context, t.speakers));
-  const at = t.context?.appliedAt == null ? "Not applied yet" : `Applied at ${dayAndTime(new Date(t.context.appliedAt)).time}`;
+export function appliedLine(t: Transcript, maxTokens: number, saved: CallContext | null = null): string {
+  const c = contextOf(t, saved);
+  const tokens = toldTokens(told(c, t.speakers));
+  const at = c.appliedAt == null ? "Not applied yet" : `Applied at ${dayAndTime(new Date(c.appliedAt)).time}`;
   return `${at} · about ${tokens} of ${maxTokens} tokens`;
+}
+
+/** Save as default, for `c`; that it is the default already; or, for nothing told, Clear the default. */
+function SaveDefault({ context: c, saved, onSave }: { context: CallContext; saved: CallContext | null; onSave: (c: CallContext) => void }) {
+  if (saved && sameContext(c, saved)) return <span className="font-display text-xs text-ash">Your default</span>;
+  if (isBlank(c) && !saved) return null;
+  return (
+    <button type="button" onClick={() => onSave(c)} title="What a new transcript is told, in this browser" className="font-display text-xs font-semibold text-ember hover:underline">
+      {isBlank(c) ? "Clear the default" : "Save as default"}
+    </button>
+  );
 }
 
 export function ContextCard({
@@ -37,6 +51,8 @@ export function ContextCard({
   draft,
   maxTokens,
   live,
+  saved = null,
+  flagged = false,
   actions,
 }: {
   transcript: Transcript;
@@ -45,12 +61,16 @@ export function ContextCard({
   maxTokens: number;
   /** A listening appends to this Transcript: an Apply holds from its next utterance. */
   live: boolean;
-  actions: Pick<TranscribeActions, "editContext" | "changeContext" | "applyContext" | "cancelContext">;
+  /** This browser's default context, `null` when none is saved. */
+  saved?: CallContext | null;
+  /** The first Start asks about it: the card is framed in the ember while the question stands. */
+  flagged?: boolean;
+  actions: Pick<TranscribeActions, "editContext" | "changeContext" | "applyContext" | "cancelContext" | "saveDefaultContext">;
 }) {
   const headingId = useId();
-  const c = t.context ?? EMPTY_CONTEXT;
+  const c = contextOf(t, saved);
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
+    <section aria-labelledby={headingId} className={`flex flex-col gap-2.5 ${flagged && draft === null ? "outline-2 outline-offset-[6px] outline-ember" : ""}`}>
       <div className="flex items-baseline justify-between gap-3">
         <h2 id={headingId} className={caption}>
           Context
@@ -62,7 +82,7 @@ export function ContextCard({
         )}
       </div>
       {draft !== null ? (
-        <ContextForm transcript={t} draft={draft} maxTokens={maxTokens} live={live} actions={actions} />
+        <ContextForm transcript={t} draft={draft} maxTokens={maxTokens} live={live} saved={saved} actions={actions} />
       ) : isBlank(c) ? (
         <p className="text-xs leading-snug text-ash">
           Nothing told yet. Tell the transcription the topic and the words to spell right: names, products, jargon. It applies from the next utterance.
@@ -101,7 +121,10 @@ export function ContextCard({
               </>
             )}
           </dl>
-          <p className="text-xs text-ash">{appliedLine(t, maxTokens)}</p>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <p className="text-xs text-ash">{appliedLine(t, maxTokens, saved)}</p>
+            <SaveDefault context={c} saved={saved} onSave={actions.saveDefaultContext} />
+          </div>
         </>
       )}
     </section>
@@ -113,13 +136,15 @@ function ContextForm({
   draft,
   maxTokens,
   live,
+  saved,
   actions,
 }: {
   transcript: Transcript;
   draft: CallContext;
   maxTokens: number;
   live: boolean;
-  actions: Pick<TranscribeActions, "changeContext" | "applyContext" | "cancelContext">;
+  saved: CallContext | null;
+  actions: Pick<TranscribeActions, "changeContext" | "applyContext" | "cancelContext" | "saveDefaultContext">;
 }) {
   const topicId = useId();
   const termsId = useId();
@@ -206,6 +231,9 @@ function ContextForm({
           Cancel
         </button>
         <span className="text-xs text-ash">{live ? "Holds from the next utterance." : "A Start applies it too."}</span>
+        <span className="ml-auto">
+          <SaveDefault context={draft} saved={saved} onSave={actions.saveDefaultContext} />
+        </span>
       </div>
     </div>
   );

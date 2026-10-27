@@ -12,7 +12,8 @@ import { decodeFile } from "./file.ts";
 import { filePace } from "./filePace.ts";
 import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
 import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
-import { type CallContext, contextTokensOf, DEFAULT_CONTEXT_TOKENS, EMPTY_CONTEXT, mergeDraft, told } from "./context.ts";
+import { type CallContext, contextAtStart, contextOf, contextTokensOf, DEFAULT_CONTEXT_TOKENS, mergeDraft, told } from "./context.ts";
+import { savedContext, saveContext } from "./defaultContext.ts";
 import { readConfig } from "../server/routes.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
@@ -89,6 +90,10 @@ export type TranscribeActions = {
   /** Applies the draft: the Transcript keeps it, and a listening into it is told from the next utterance on. */
   applyContext: () => void;
   cancelContext: () => void;
+  /** Opens a draft of the open Transcript's context from Transcript `from`'s, to check before a Start applies it. */
+  copyContext: (from: number) => void;
+  /** Keeps `context` as this browser's default, what a Transcript never started tells; a blank one clears it. */
+  saveDefaultContext: (context: CallContext) => void;
   setSpeakers: (on: boolean) => void;
   setHoldMic: (on: boolean) => void;
   /** The silence that ends an utterance (Q122): the viewer's, and every session's at once. */
@@ -301,9 +306,11 @@ export function useTranscribe({
         if (controller.getState().phase !== "idle") return;
         const pending = draftNow.current;
         const opened = activeOf(listNow.current);
-        // A context being edited is applied by the Start: what it shows is what the listening is told.
-        const t = pending?.id === opened.id ? { ...opened, context: mergeDraft(pending.base, pending.context, opened.context ?? EMPTY_CONTEXT, Date.now()) } : opened;
-        if (pending?.id === opened.id) setDrafting(null);
+        // What the Call tab shows is what the listening is told: a context being edited, else the default a
+        // Transcript never started shows, applied by the Start.
+        const mine = pending?.id === opened.id ? pending : null;
+        const t = { ...opened, context: contextAtStart(opened, mine, savedContext(), Date.now()) };
+        if (mine) setDrafting(null);
         const start = { source: source.kind, at: new Date(), ...(source.kind === "file" ? { fileName: source.file.name } : {}) };
         setList((l) => updateTranscript(l, t.id, (current) => beginListening({ ...current, context: t.context }, start)));
         controller.start({
@@ -321,15 +328,23 @@ export function useTranscribe({
       stop: () => void controller.stop(),
       editContext: () => {
         const t = activeOf(listNow.current);
-        const base = t.context ?? EMPTY_CONTEXT;
+        const base = contextOf(t, savedContext());
         setDrafting({ id: t.id, base, context: base });
       },
+      copyContext: (from) => {
+        const l = listNow.current;
+        const t = activeOf(l);
+        const theirs = l.transcripts.find((x) => x.id === from)?.context;
+        if (!theirs || from === t.id) return;
+        setDrafting({ id: t.id, base: contextOf(t, savedContext()), context: { ...theirs, appliedAt: null } });
+      },
+      saveDefaultContext: (context) => saveContext(context),
       changeContext: (draft) => setDrafting((d) => (d && d.id === listNow.current.activeId ? { ...d, context: draft } : d)),
       applyContext: () => {
         const pending = draftNow.current;
         if (!pending) return;
         setDrafting(null);
-        change(pending.id, (t) => ({ ...t, context: mergeDraft(pending.base, pending.context, t.context ?? EMPTY_CONTEXT, Date.now()) }));
+        change(pending.id, (t) => ({ ...t, context: mergeDraft(pending.base, pending.context, contextOf(t, savedContext()), Date.now()) }));
       },
       cancelContext: () => setDrafting(null),
       setSpeakers: (on) => storeSpeakers(on),
