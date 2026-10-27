@@ -143,7 +143,7 @@ function ContextForm({
             }
           }}
           onBlur={add}
-          placeholder="AnyDesk, VPN, Jira"
+          placeholder="VPN, PostgreSQL, Kubernetes"
           className={field}
         />
         <span className={`text-xs leading-snug ${problem ? "text-fault" : "text-ash"}`}>

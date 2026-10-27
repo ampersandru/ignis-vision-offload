@@ -74,22 +74,22 @@ describe("a suggestion", () => {
   });
 
   it("accepted always, applies every later one of its kind in this Transcript as it comes", () => {
-    const t = accept(suggest(heard(italian(1)), { kind: "terms", terms: ["AnyDesk"] }, 5), 1, 6, { always: true });
+    const t = accept(suggest(heard(italian(1)), { kind: "terms", terms: ["PostgreSQL"] }, 5), 1, 6, { always: true });
     expect(t.suggestions?.always).toEqual(["terms"]);
-    const later = suggest(t, { kind: "terms", terms: ["VPN", "anydesk"] }, 7);
-    expect(later.context?.terms).toEqual(["AnyDesk", "VPN"]);
+    const later = suggest(t, { kind: "terms", terms: ["VPN", "postgresql"] }, 7);
+    expect(later.context?.terms).toEqual(["PostgreSQL", "VPN"]);
     expect(openSuggestions(later)).toEqual([]);
     expect(later.suggestions?.items.at(-1)).toMatchObject({ kind: "terms", terms: ["VPN"], status: "accepted", auto: true });
   });
 
   it("of terms gathers new ones into the open one, and a term taken out is never offered again", () => {
-    let t = suggest(heard(italian(1)), { kind: "terms", terms: ["AnyDesk", "VPN"] }, 5);
-    t = suggest(t, { kind: "terms", terms: ["vpn", "Jira"] }, 6);
+    let t = suggest(heard(italian(1)), { kind: "terms", terms: ["PostgreSQL", "VPN"] }, 5);
+    t = suggest(t, { kind: "terms", terms: ["vpn", "Kubernetes"] }, 6);
     const [open] = openSuggestions(t);
-    expect(open).toMatchObject({ kind: "terms", terms: ["AnyDesk", "VPN", "Jira"] });
-    t = dropTerm(t, open.id, "Jira");
-    expect(openSuggestions(t)).toMatchObject([{ kind: "terms", terms: ["AnyDesk", "VPN"] }]);
-    expect(openSuggestions(suggest(t, { kind: "terms", terms: ["Jira"] }, 7))).toMatchObject([{ terms: ["AnyDesk", "VPN"] }]);
+    expect(open).toMatchObject({ kind: "terms", terms: ["PostgreSQL", "VPN", "Kubernetes"] });
+    t = dropTerm(t, open.id, "Kubernetes");
+    expect(openSuggestions(t)).toMatchObject([{ kind: "terms", terms: ["PostgreSQL", "VPN"] }]);
+    expect(openSuggestions(suggest(t, { kind: "terms", terms: ["Kubernetes"] }, 7))).toMatchObject([{ terms: ["PostgreSQL", "VPN"] }]);
   });
 
   it("of languages applies them as what the Transcript is told", () => {
@@ -100,18 +100,18 @@ describe("a suggestion", () => {
 
 describe("a look's findings", () => {
   it("are read leniently: bullets and bold are fine, NONE and lines in no form are dropped", () => {
-    const text = ["- **TOPIC:** Supporto IT informale.", "TITLE: Assistenza AnyDesk", "TERM: AnyDesk", "* TERM: VPN", "TERM: NONE", "Here are the items:", "TERM: <b>"].join("\n");
-    expect(readAnalysis(text)).toEqual({ topic: "Supporto IT informale", title: "Assistenza AnyDesk", terms: ["AnyDesk", "VPN"], fixes: [] });
+    const text = ["- **TOPIC:** Supporto IT informale.", "TITLE: Assistenza PostgreSQL", "TERM: PostgreSQL", "* TERM: VPN", "TERM: NONE", "Here are the items:", "TERM: <b>"].join("\n");
+    expect(readAnalysis(text)).toEqual({ topic: "Supporto IT informale", title: "Assistenza PostgreSQL", terms: ["PostgreSQL", "VPN"], fixes: [] });
     expect(readAnalysis("NONE")).toEqual({ topic: null, title: null, terms: [], fixes: [] });
   });
 
   it("offer the topic while none is told, a title while the listening's stands, and the terms", () => {
     const t = heard(italian(1));
     expect(autoTitled(t)).toBe(true);
-    expect(analysisOffers(t, { topic: "Supporto IT", title: "Assistenza AnyDesk", terms: ["AnyDesk"], fixes: [] })).toEqual([
+    expect(analysisOffers(t, { topic: "Supporto IT", title: "Assistenza PostgreSQL", terms: ["PostgreSQL"], fixes: [] })).toEqual([
       { kind: "topic", topic: "Supporto IT" },
-      { kind: "title", title: "27 Oct 15:42 · Assistenza AnyDesk" },
-      { kind: "terms", terms: ["AnyDesk"] },
+      { kind: "title", title: "27 Oct 15:42 · Assistenza PostgreSQL" },
+      { kind: "terms", terms: ["PostgreSQL"] },
     ]);
     const renamed = { ...t, title: "Con Marco", context: { languages: { mode: "free" as const, codes: [] }, topic: "IT", terms: [], other: "", appliedAt: 1 } };
     expect(analysisOffers(renamed, { topic: "Supporto IT", title: "Assistenza", terms: [], fixes: [] })).toEqual([]);
@@ -130,47 +130,47 @@ describe("a look's findings", () => {
 describe("a fix (Q133)", () => {
   function it_call(): Transcript {
     let t = beginListening(createTranscript(1), { source: "call", at: STARTED });
-    t = addUtterance(t, { stream: "s", startMs: 27_000, endMs: 31_000, text: "Aspetta che mi riattacco a Enidesk.", voice: { kind: "others" } });
-    t = addUtterance(t, { stream: "s", startMs: 40_000, endMs: 44_000, text: "Su enidesk vedo lo schermo, non su Enideskx.", voice: { kind: "others" } });
+    t = addUtterance(t, { stream: "s", startMs: 27_000, endMs: 31_000, text: "Aspetta che mi ricollego a Postgress.", voice: { kind: "others" } });
+    t = addUtterance(t, { stream: "s", startMs: 40_000, endMs: 44_000, text: "Su postgress vedo i dati, non su Postgressx.", voice: { kind: "others" } });
     t = addUtterance(t, { stream: "s", startMs: 50_000, endMs: 52_000, text: "Ok.", voice: { kind: "me" } });
     return t;
   }
 
   it("is read from a FIX line, its time, the words as heard and as meant; a rephrasing or no change is dropped", () => {
-    const found = readAnalysis(["FIX: [00:27] Enidesk => AnyDesk", "- FIX: 01:05 \"gugol dox\" → Google Docs.", "FIX: [00:40] non su questo schermo vedo => vedo lo schermo bene ora", "FIX: [00:41] VPN => vpn"].join("\n"));
+    const found = readAnalysis(["FIX: [00:27] Postgress => PostgreSQL", "- FIX: 01:05 \"kuber netis\" → Kubernetes.", "FIX: [00:40] non su questo schermo vedo => vedo lo schermo bene ora", "FIX: [00:41] VPN => vpn"].join("\n"));
     expect(found.fixes).toEqual([
-      { at: "00:27", from: "Enidesk", to: "AnyDesk" },
-      { at: "01:05", from: "gugol dox", to: "Google Docs" },
+      { at: "00:27", from: "Postgress", to: "PostgreSQL" },
+      { at: "01:05", from: "kuber netis", to: "Kubernetes" },
     ]);
   });
 
   it("covers every utterance that holds the words as words, whatever their case, and none holding them inside another word", () => {
     const t = it_call();
-    const [offer] = analysisOffers(t, { topic: null, title: null, terms: [], fixes: [{ at: "00:27", from: "Enidesk", to: "AnyDesk" }] });
-    expect(offer).toEqual({ kind: "fix", from: "Enidesk", to: "AnyDesk", utterances: [1, 2] });
+    const [offer] = analysisOffers(t, { topic: null, title: null, terms: [], fixes: [{ at: "00:27", from: "Postgress", to: "PostgreSQL" }] });
+    expect(offer).toEqual({ kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1, 2] });
     expect(analysisOffers(t, { topic: null, title: null, terms: [], fixes: [{ at: "00:27", from: "Teamviewer", to: "TeamViewer" }] })).toEqual([]);
   });
 
   it("accepted, fixes the words, keeps the text as heard, marks what it put in, and makes the right spelling a term", () => {
-    const t = suggest(it_call(), { kind: "fix", from: "Enidesk", to: "AnyDesk", utterances: [1, 2] }, 1);
+    const t = suggest(it_call(), { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1, 2] }, 1);
     const fixed = accept(t, 1, 5);
-    expect(fixed.utterances.map((u) => u.text)).toEqual(["Aspetta che mi riattacco a AnyDesk.", "Su AnyDesk vedo lo schermo, non su Enideskx.", "Ok."]);
-    expect(fixed.utterances[0]).toMatchObject({ heard: "Aspetta che mi riattacco a Enidesk.", fixed: ["AnyDesk"] });
+    expect(fixed.utterances.map((u) => u.text)).toEqual(["Aspetta che mi ricollego a PostgreSQL.", "Su PostgreSQL vedo i dati, non su Postgressx.", "Ok."]);
+    expect(fixed.utterances[0]).toMatchObject({ heard: "Aspetta che mi ricollego a Postgress.", fixed: ["PostgreSQL"] });
     expect(fixed.utterances[2]).not.toHaveProperty("heard");
-    expect(fixed.context?.terms).toEqual(["AnyDesk"]);
+    expect(fixed.context?.terms).toEqual(["PostgreSQL"]);
   });
 
   it("stands beside the other fixes, one card each", () => {
-    let t = suggest(it_call(), { kind: "fix", from: "Enidesk", to: "AnyDesk", utterances: [1] }, 1);
+    let t = suggest(it_call(), { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1] }, 1);
     t = suggest(t, { kind: "fix", from: "Ok", to: "Okay", utterances: [3] }, 2);
     expect(openSuggestions(t).map((s) => s.kind)).toEqual(["fix", "fix"]);
-    expect(suggest(t, { kind: "fix", from: "enidesk", to: "anydesk", utterances: [2] }, 3)).toBe(t);
+    expect(suggest(t, { kind: "fix", from: "postgress", to: "postgresql", utterances: [2] }, 3)).toBe(t);
   });
 });
 
 describe("the suggestions as kept", () => {
   it("read back those this page can read", () => {
-    const fix = { id: 3, kind: "fix", from: "Enidesk", to: "AnyDesk", utterances: [1], status: "accepted" };
+    const fix = { id: 3, kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1], status: "accepted" };
     const kept = { items: [{ id: 1, kind: "topic", topic: "IT", status: "open" }, { id: 2, kind: "party", status: "open" }, fix, { ...fix, id: 4, utterances: ["1"] }], always: ["terms", "jokes", "fix"] };
     expect(readSuggestions(kept)).toEqual({ items: [{ id: 1, kind: "topic", topic: "IT", status: "open" }, fix], always: ["terms", "fix"] });
     expect(readSuggestions("x")).toBeUndefined();

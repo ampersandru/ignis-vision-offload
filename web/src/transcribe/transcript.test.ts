@@ -25,19 +25,19 @@ describe("a fix (Q133)", () => {
   const heard = (text: string) => addUtterance(createTranscript(1), { stream: "s", startMs: 0, endMs: 4_000, text, voice: null });
 
   it("replaces the words as words of their own, whatever their case, and keeps the text as heard once", () => {
-    let t = fixUtterances(heard("Apri Enidesk, poi enidesk.exe e Enideskx."), "Enidesk", "AnyDesk", [1]);
-    expect(t.utterances[0]).toMatchObject({ text: "Apri AnyDesk, poi AnyDesk.exe e Enideskx.", heard: "Apri Enidesk, poi enidesk.exe e Enideskx.", fixed: ["AnyDesk"] });
+    let t = fixUtterances(heard("Apri Postgress, poi postgress.exe e Postgressx."), "Postgress", "PostgreSQL", [1]);
+    expect(t.utterances[0]).toMatchObject({ text: "Apri PostgreSQL, poi PostgreSQL.exe e Postgressx.", heard: "Apri Postgress, poi postgress.exe e Postgressx.", fixed: ["PostgreSQL"] });
     t = fixUtterances(t, "Apri", "Aprì", [1]);
-    expect(t.utterances[0]).toMatchObject({ heard: "Apri Enidesk, poi enidesk.exe e Enideskx.", fixed: ["AnyDesk", "Aprì"] });
+    expect(t.utterances[0]).toMatchObject({ heard: "Apri Postgress, poi postgress.exe e Postgressx.", fixed: ["PostgreSQL", "Aprì"] });
     expect(fixUtterances(heard("Price $5"), "Price", "Costs $&", [1]).utterances[0].text).toBe("Costs $& $5");
   });
 
   it("is undone back to the text as heard, and a split leaves neither half a way back", () => {
-    const t = fixUtterances(heard("Enidesk va. Poi altro."), "Enidesk", "AnyDesk", [1]);
-    expect(undoFixes(t, 1).utterances[0]).toEqual({ id: 1, startMs: 0, endMs: 4_000, speaker: null, text: "Enidesk va. Poi altro." });
-    const split = splitUtterance(t, 1, 11, "new");
+    const t = fixUtterances(heard("Postgress va. Poi altro."), "Postgress", "PostgreSQL", [1]);
+    expect(undoFixes(t, 1).utterances[0]).toEqual({ id: 1, startMs: 0, endMs: 4_000, speaker: null, text: "Postgress va. Poi altro." });
+    const split = splitUtterance(t, 1, 14, "new");
     expect(split.utterances.map((u) => [u.text, u.heard])).toEqual([
-      ["AnyDesk va.", undefined],
+      ["PostgreSQL va.", undefined],
       ["Poi altro.", undefined],
     ]);
   });

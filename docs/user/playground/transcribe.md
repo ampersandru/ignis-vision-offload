@@ -111,10 +111,10 @@ be told, and a bell beside the tabs counts what waits:
   stands, and **terms to spell right**: the text model reads the transcript
   once six utterances are in, then about every minute and a half while
   something new was said, and once more when the listening ends. It checks the
-  names it heard first, so a misheard product comes back spelled right
-  ("Enidesk" as AnyDesk);
-- **fixes**: a name, product or term the speech model misheard, `“Enidesk” is
-  AnyDesk`, in every utterance that holds it as a word of its own. **Fix**
+  names it heard first, so a misheard name comes back spelled right
+  ("Postgress" as PostgreSQL);
+- **fixes**: a name, product or term the speech model misheard, `“Postgress” is
+  PostgreSQL`, in every utterance that holds it as a word of its own. **Fix**
   replaces it there, marks it with a dotted orange line, and makes the right
   spelling a term, so the next utterances get it right from the start; **Undo
   fix** under an utterance puts its text back as it was heard (an edit made

@@ -9,7 +9,7 @@ import type { Speaker } from "./transcript.ts";
 const it_support: CallContext = {
   languages: { mode: "free", codes: ["it", "en"] },
   topic: "Supporto IT informale",
-  terms: ["AnyDesk", "VPN"],
+  terms: ["PostgreSQL", "VPN"],
   other: "Si parla di un portatile aziendale.",
   appliedAt: 1_000,
 };
@@ -25,7 +25,7 @@ describe("what the transcription is told", () => {
   it("is the topic, the free languages as a hint and anything else as the prompt; the terms and the names given as keywords", () => {
     expect(told(it_support, speakers)).toEqual({
       prompt: "Topic: Supporto IT informale\nLanguages: Italian, English\nSi parla di un portatile aziendale.",
-      keywords: ["AnyDesk", "VPN", "Marco"],
+      keywords: ["PostgreSQL", "VPN", "Marco"],
       language: null,
     });
   });
@@ -49,13 +49,13 @@ describe("what the transcription is told", () => {
 
 describe("the terms", () => {
   it("are added comma by comma, trimmed, each once whatever its case", () => {
-    expect(addTerms(["AnyDesk"], " vpn, anydesk ,Jira,, ")).toEqual(["AnyDesk", "vpn", "Jira"]);
+    expect(addTerms(["PostgreSQL"], " vpn, postgresql ,Kubernetes,, ")).toEqual(["PostgreSQL", "vpn", "Kubernetes"]);
   });
 
   it("refuse what the server refuses in a keyword", () => {
     expect(termProblem("<b>")).toBe("A term cannot hold < or >.");
     expect(termProblem("a\nb")).toBe("A term is one line.");
-    expect(termProblem("AnyDesk")).toBeNull();
+    expect(termProblem("PostgreSQL")).toBeNull();
     expect(addTerms([], "<b>, ok")).toEqual(["ok"]);
   });
 });

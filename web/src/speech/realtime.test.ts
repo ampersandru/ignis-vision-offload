@@ -520,9 +520,9 @@ describe("openListening", () => {
 
   it("sends what is told in a session.update of the transcription, null for what is no longer told; changed before the greeting, it is in the configuration", () => {
     const { socket, session } = listen({ context: said("first"), diarization: "live" });
-    session.setContext({ prompt: "second", keywords: ["AnyDesk"], language: "it" });
+    session.setContext({ prompt: "second", keywords: ["PostgreSQL"], language: "it" });
     socket().accept();
-    expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { transcription: { prompt: "second", keywords: ["AnyDesk"], language: "it" } } } } });
+    expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { transcription: { prompt: "second", keywords: ["PostgreSQL"], language: "it" } } } } });
     socket().emit({ type: "session.updated", session: {} });
     session.setContext({ prompt: "Names: Ada.", keywords: ["Ada"], language: null });
     session.setContext({ prompt: "Names: Ada.", keywords: ["Ada"], language: null });

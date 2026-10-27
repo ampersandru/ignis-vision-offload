@@ -338,9 +338,11 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
     prompt, the title and the `.txt` as the user turn; the notes and the suggestions share the shape, not a
     prefix. Measured over HTTP; the socket goes to the same engine.
   - **The look's task asks for the misheard names first** (`FIX: [mm:ss] heard => meant`), then TERM, TOPIC,
-    TITLE. Asked for the terms alone, the 27B with thinking off copied a misheard name as heard ("Enidesk"); asked
-    to check them first, it fixed it and spelled the term AnyDesk, twice out of two at temperature 0.2 (greedy said
-    "Eni Desk"). The FIX lines are S6's; S5 reads the rest leniently (bullets, bold, NONE).
+    TITLE. Asked for the terms alone, the 27B with thinking off copied a misheard product name as heard; asked to
+    check them first, it fixed it and spelled the term right, twice out of two at temperature 0.2 (greedy split
+    the misheard word in two instead). With the task's examples open-source names, a call where two of them were
+    misheard got both fixed three times out of three. Every name in the view's copy, examples and tests is generic
+    or open source: no closed product is named (the owner, 2026-10-27). The FIX lines are S6's; S5 reads the rest leniently (bullets, bold, NONE).
 - **S6, the fixes (Q133).** A FIX line (`[mm:ss] heard => meant`, `→` and `->` too) becomes a fix suggestion when
   both sides are one to four words the server could take as a keyword, differ beyond case, and `heard` stands as
   words of its own (no letter or digit around it, any case) in at least one utterance: the fix covers every

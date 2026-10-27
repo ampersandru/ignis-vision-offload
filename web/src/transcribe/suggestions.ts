@@ -182,13 +182,13 @@ export function languageOffer(t: Transcript): Offer | null {
 
 // --- The topic, a title and the terms, from the text model. The task asks for
 // the misheard names first (FIX lines): without them the 27B, thinking off,
-// copies a misheard name into the terms as it was heard ("Enidesk"); asked to
+// copies a misheard name into the terms as it was heard; asked to
 // check them first, it fixes it and spells the term right (probed 2026-10-27,
 // at temperature 0.2; greedy did worse). Each FIX becomes a fix suggestion.
 
 export const ANALYSIS_TASK = [
   "Task: read the transcript and write what it suggests, one item a line, in exactly these forms, in this order, and nothing else:",
-  'FIX: [mm:ss] heard => meant — first, check every name, product and technical term: where speech recognition misheard one as other words or a wrong spelling ("gugol dox" for Google Docs, "jit hub" for GitHub), write the utterance\'s time, the words exactly as the transcript has them, and the real name. Only names, products and terms, never a rephrasing; at most ten.',
+  'FIX: [mm:ss] heard => meant — first, check every name, product and technical term: where speech recognition misheard one as other words or a wrong spelling ("kuber netis" for Kubernetes, "libre ofis" for LibreOffice), write the utterance\'s time, the words exactly as the transcript has them, and the real name. Only names, products and terms, never a rephrasing; at most ten.',
   "TERM: each name, product or technical term the conversation mentions, spelled correctly, as fixed above (one a line, at most ten)",
   "TOPIC: what the conversation is about, in a few words, in its language",
   "TITLE: a short title for it, at most six words, in its language",

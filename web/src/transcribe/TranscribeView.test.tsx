@@ -208,7 +208,7 @@ describe("the strip", () => {
 describe("the context (Q128)", () => {
   const told = (t: Transcript): Transcript => ({
     ...t,
-    context: { languages: { mode: "free", codes: [] }, topic: "Supporto IT", terms: ["AnyDesk", "VPN"], other: "", appliedAt: new Date(2026, 9, 27, 15, 44).getTime() },
+    context: { languages: { mode: "free", codes: [] }, topic: "Supporto IT", terms: ["PostgreSQL", "VPN"], other: "", appliedAt: new Date(2026, 9, 27, 15, 44).getTime() },
   });
   const card = (t: Transcript, draft: TranscribeState["draft"] = null, live = false) =>
     renderToStaticMarkup(<ContextCard transcript={t} draft={draft} live={live} actions={actions} />);
@@ -216,7 +216,7 @@ describe("the context (Q128)", () => {
   it("reads, applied, as a record with when it was applied and what it takes of the server's 512 tokens, and offers Edit", () => {
     const html = card(told(room()));
     expect(html).toContain(">Supporto IT<");
-    expect(html).toContain(">AnyDesk<");
+    expect(html).toContain(">PostgreSQL<");
     expect(html).toMatch(/Applied at 15:44 · about \d+ of 512 tokens/);
     expect(html).toContain(">Edit<");
     expect(html).not.toContain(">Apply<");
@@ -226,7 +226,7 @@ describe("the context (Q128)", () => {
     const t = told(room());
     const html = card(t, t.context!, true);
     expect(html).toContain('value="Supporto IT"');
-    expect(html).toContain('aria-label="Remove AnyDesk"');
+    expect(html).toContain('aria-label="Remove PostgreSQL"');
     expect(html).toContain(">Apply<");
     expect(html).toContain("Holds from the next utterance.");
     expect(card(t, t.context!, false)).toContain("A Start applies it too.");
@@ -249,11 +249,11 @@ describe("the suggestions (Q132)", () => {
 
   it("wait as cards with what they propose, why, their verb, Always and Dismiss", () => {
     let t = suggest(room(), { kind: "languages", languages: { mode: "force", codes: ["it"] }, why: "2 short utterances came out as Thai and Hindi, among 9 in Italian." }, 1);
-    t = suggest(t, { kind: "terms", terms: ["AnyDesk", "VPN"] }, 2);
+    t = suggest(t, { kind: "terms", terms: ["PostgreSQL", "VPN"] }, 2);
     const html = panel(t);
     expect(html).toContain(">Force Italian<");
     expect(html).toContain("came out as Thai and Hindi");
-    expect(html).toContain('aria-label="Not AnyDesk"');
+    expect(html).toContain('aria-label="Not PostgreSQL"');
     expect(html).toContain(">Add them<");
     expect(html.match(/>Always</g)).toHaveLength(2);
     expect(html.match(/>Dismiss</g)).toHaveLength(2);
@@ -352,7 +352,7 @@ describe("the view", () => {
   });
 
   it("rings the bell with the open Transcript's suggestions waiting (Q132)", () => {
-    const t = suggest(suggest(room(), { kind: "topic", topic: "Supporto IT" }, 1), { kind: "terms", terms: ["AnyDesk"] }, 2);
+    const t = suggest(suggest(room(), { kind: "topic", topic: "Supporto IT" }, 1), { kind: "terms", terms: ["PostgreSQL"] }, 2);
     const html = renderToStaticMarkup(
       <TranscribeView state={state({ active: t })} actions={actions} listening={idleHandle} assistants={assistants} drawer={null} onDrawer={none} onOpenInChat={none} />,
     );
