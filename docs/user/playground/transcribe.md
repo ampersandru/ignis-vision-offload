@@ -118,8 +118,11 @@ be told, and a bell beside the tabs counts what waits:
   replaces it there, marks it with a dotted orange line, and makes the right
   spelling a term, so the next utterances get it right from the start; **Undo
   fix** under an utterance puts its text back as it was heard (an edit made
-  since goes with it). Only names and terms: the model is told never to
-  rephrase.
+  since goes with it). A fix you accepted follows the same misheard words
+  into the utterances heard after it, with no model: they come as a card of
+  their own, or, with **Always**, are fixed as they come; an utterance you
+  undid and a fix you dismissed stay as they are. Only names and terms: the
+  model is told never to rephrase.
 
 Each waits as a card: its verb (**Apply**, **Use**, **Rename**, **Add them**,
 **Fix**)

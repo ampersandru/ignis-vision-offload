@@ -351,7 +351,12 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   ember), and the right spelling joins the terms, so the speech model spells it right from the next utterance.
   Undo fix puts the text back as heard, an edit since with it; a split leaves neither half a way back. The exports,
   the notes and Open in chat read the fixed text. Always applies the later fixes as they come; only names and terms,
-  never a rephrasing (the task says so, and a side over four words is dropped).
+  never a rephrasing (the task says so, and a side over four words is dropped). A fix offered again (by a look, or
+  by `followFixes`, which follows each accepted fix into the utterances heard since, every few seconds and with no
+  model) is offered only for the utterances no fix like it covered, gathered into its open card or, accepted
+  always, applied; dismissed, never again; an utterance undone keeps its text as heard. Found in answering the
+  owner: the first version offered a fix once, so the same misheard word in a later utterance stayed unfixed even
+  with Always.
 
 ### Not done here
 

@@ -81,6 +81,8 @@ const nextId = (items: Suggestion[]) => Math.max(0, ...items.map((s) => s.id)) +
 /**
  * `offer`, among `t`'s suggestions: nothing when one like it was offered before, whatever became of it; in place of
  * an open one of its kind otherwise (the terms gather into one); applied at once when its kind is accepted always.
+ * A fix offered again is offered for the utterances no fix like it covered yet, gathered into its open card; never
+ * once dismissed.
  */
 export function suggest(t: Transcript, offer: Offer, now: number): Transcript {
   const { items, always } = suggestionsOf(t);
@@ -92,6 +94,19 @@ export function suggest(t: Transcript, offer: Offer, now: number): Transcript {
     if (terms.length === 0) return t;
     const open = items.find((s): s is Suggestion & { kind: "terms" } => s.kind === "terms" && s.status === "open");
     fresh = { kind: "terms", terms: [...(open && !always.includes("terms") ? open.terms : []), ...terms] };
+  } else if (offer.kind === "fix") {
+    const alike = items.filter((s) => same(s, offer));
+    if (alike.some((s) => s.status === "dismissed")) return t;
+    // An utterance a fix like it covered, undone since or not, is not offered again.
+    const covered = new Set(alike.flatMap((s) => (s.kind === "fix" ? s.utterances : [])));
+    const uncovered = offer.utterances.filter((id) => !covered.has(id));
+    if (uncovered.length === 0) return t;
+    const open = alike.find((s) => s.status === "open");
+    if (open && open.kind === "fix") {
+      const gathered: Suggestion = { ...open, utterances: [...open.utterances, ...uncovered] };
+      return { ...t, suggestions: { items: items.map((s) => (s.id === open.id ? gathered : s)), always } };
+    }
+    fresh = { ...offer, utterances: uncovered };
   } else if (items.some((s) => same(s, offer))) {
     return t;
   }
@@ -102,6 +117,20 @@ export function suggest(t: Transcript, offer: Offer, now: number): Transcript {
     return { ...applied(t, fresh, now), suggestions: { items: [...items, done], always } };
   }
   return { ...t, suggestions: { items: [...kept, { ...fresh, id: nextId(items), status: "open" }], always } };
+}
+
+/**
+ * The fixes accepted, followed into the utterances heard since that hold the same misheard words: offered for them
+ * (or, accepted always, applied), with no model; called as utterances come.
+ */
+export function followFixes(t: Transcript, now: number): Transcript {
+  let next = t;
+  for (const s of suggestionsOf(t).items) {
+    if (s.kind !== "fix" || s.status !== "accepted") continue;
+    const holding = next.utterances.filter((u) => wordsOf(s.from).test(u.text)).map((u) => u.id);
+    if (holding.length > 0) next = suggest(next, { kind: "fix", from: s.from, to: s.to, utterances: holding }, now);
+  }
+  return next;
 }
 
 /** Accepts a suggestion; `always`, and every later one of its kind in this Transcript. */

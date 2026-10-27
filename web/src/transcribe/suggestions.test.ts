@@ -6,13 +6,14 @@ import {
   dismiss,
   dropTerm,
   dueForAnalysis,
+  followFixes,
   languageOffer,
   openSuggestions,
   readAnalysis,
   readSuggestions,
   suggest,
 } from "./suggestions.ts";
-import { addUtterance, beginListening, createTranscript, type Transcript } from "./transcript.ts";
+import { addUtterance, beginListening, createTranscript, type Transcript, undoFixes } from "./transcript.ts";
 
 // What the Transcribe view suggests for a Transcript (spec speech/07, Q132):
 // the languages from the server's word on each utterance, the topic, a title
@@ -160,11 +161,33 @@ describe("a fix (Q133)", () => {
     expect(fixed.context?.terms).toEqual(["PostgreSQL"]);
   });
 
+  it("reaches the utterances heard after it was accepted: a card for them alone, or applied when accepted always; never once dismissed or undone", () => {
+    const later = (t: Transcript) => addUtterance(t, { stream: "s", startMs: 60_000, endMs: 62_000, text: "Riavvio Postgress.", voice: { kind: "others" } });
+    const offered = suggest(it_call(), { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1, 2] }, 1);
+    const accepted = accept(offered, 1, 2);
+    const asked = followFixes(later(accepted), 3);
+    expect(openSuggestions(asked)).toMatchObject([{ kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [4] }]);
+    expect(followFixes(asked, 4)).toBe(asked);
+    const always = followFixes(later(accept(offered, 1, 2, { always: true })), 3);
+    expect(always.utterances.at(-1)).toMatchObject({ text: "Riavvio PostgreSQL.", heard: "Riavvio Postgress." });
+    expect(openSuggestions(always)).toEqual([]);
+    const undone = undoFixes(accepted, 1);
+    expect(followFixes(undone, 3)).toBe(undone);
+    const dismissed = dismiss(offered, 1);
+    expect(suggest(later(dismissed), { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [4] }, 3).suggestions).toEqual(dismissed.suggestions);
+  });
+
+  it("offered again while its card is open, gathers the new utterances into that card", () => {
+    const t = suggest(it_call(), { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1] }, 1);
+    const again = suggest(t, { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1, 2] }, 2);
+    expect(openSuggestions(again)).toMatchObject([{ id: 1, utterances: [1, 2] }]);
+  });
+
   it("stands beside the other fixes, one card each", () => {
     let t = suggest(it_call(), { kind: "fix", from: "Postgress", to: "PostgreSQL", utterances: [1] }, 1);
     t = suggest(t, { kind: "fix", from: "Ok", to: "Okay", utterances: [3] }, 2);
     expect(openSuggestions(t).map((s) => s.kind)).toEqual(["fix", "fix"]);
-    expect(suggest(t, { kind: "fix", from: "postgress", to: "postgresql", utterances: [2] }, 3)).toBe(t);
+    expect(suggest(t, { kind: "fix", from: "postgress", to: "postgresql", utterances: [1] }, 3)).toBe(t);
   });
 });
 

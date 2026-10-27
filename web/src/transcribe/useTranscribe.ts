@@ -15,7 +15,7 @@ import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
 import { type CallContext, EMPTY_CONTEXT, told } from "./context.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
-import { accept, analysisOffers, dismiss, dropTerm, languageOffer, suggest } from "./suggestions.ts";
+import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, suggest } from "./suggestions.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
@@ -175,6 +175,8 @@ export function useTranscribe({
       const t = on === null ? undefined : find(on);
       const offer = suggestionsOn && t ? languageOffer(t) : null;
       if (t && offer && suggest(t, offer, Date.now()) !== t) setList((l) => updateTranscript(l, t.id, (x) => suggest(x, offer, Date.now())));
+      // A fix accepted reaches the utterances heard since that hold the same misheard words.
+      if (suggestionsOn && t && followFixes(t, Date.now()) !== t) setList((l) => updateTranscript(l, t.id, (x) => followFixes(x, Date.now())));
       if (model.blocked !== null) return;
       if (notesLive) void writer.look(on, find, kindOf, model.contextLimit);
       if (suggestionsOn) void analyst.look(on, find, model.contextLimit);
