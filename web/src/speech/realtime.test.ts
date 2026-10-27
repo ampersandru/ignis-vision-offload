@@ -363,7 +363,7 @@ describe("openListening", () => {
   /** A context of a prompt alone. */
   const said = (prompt: string): Told => ({ prompt, keywords: [], language: null });
 
-  it("asks for server_vad with the view's silence and the server's other lengths, PCM16 at 16 kHz, the context, the provisional tail and the live speakers; no language, no length guard of its own", () => {
+  it("asks for server_vad with the view's silence and the server's other lengths, PCM16 at 16 kHz, the context, the provisional tail, the live speakers and each item's language; no language forced, no length guard of its own", () => {
     const { socket } = listen({ context: said("Standup: Ada, Linus, the vram planner."), diarization: "live", silenceMs: 1_500 });
     socket().accept();
     expect(socket().sent).toEqual([
@@ -380,11 +380,11 @@ describe("openListening", () => {
               turn_detection: { type: "server_vad", silence_duration_ms: 1_500 },
             },
           },
-          ignis: { provisional_tail: true, diarization: "live" },
+          ignis: { provisional_tail: true, diarization: "live", item_language: true },
         },
       },
     ]);
-    expect(JSON.stringify(socket().sent)).not.toContain("language");
+    expect(JSON.stringify(socket().sent)).not.toContain('"language"');
     expect(JSON.stringify(socket().sent)).not.toContain("max_utterance_seconds");
   });
 
@@ -434,6 +434,7 @@ describe("openListening", () => {
     s.emit({ type: "conversation.item.input_audio_transcription.delta", item_id: "item_1", content_index: 0, delta: "Buongiorno a tutti." });
     s.emit({ type: "ignis.input_audio_transcription.provisional", item_id: "item_1", content_index: 0, text: "" });
     s.emit({ type: "ignis.input_audio_transcription.speaker", item_id: "item_1", content_index: 0, speaker: 0 });
+    s.emit({ type: "ignis.input_audio_transcription.language", item_id: "item_1", content_index: 0, language: "it" });
     s.emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", content_index: 0, transcript: "Buongiorno a tutti." });
     s.emit({ type: "input_audio_buffer.speech_stopped", audio_end_ms: 5_120, item_id: "item_2" });
     s.emit({ type: "input_audio_buffer.committed", item_id: "item_2", previous_item_id: "item_1" });
@@ -448,6 +449,7 @@ describe("openListening", () => {
       { type: "delta", item: "item_1", text: "Buongiorno a tutti." },
       { type: "tail", item: "item_1", text: "" },
       { type: "speaker", item: "item_1", speaker: 0 },
+      { type: "language", item: "item_1", language: "it" },
       { type: "completed", item: "item_1", transcript: "Buongiorno a tutti." },
       { type: "stopped", item: "item_2", atMs: 5_120 },
       { type: "committed", item: "item_2" },
@@ -482,6 +484,21 @@ describe("openListening", () => {
     expect(heard).toEqual([
       { type: "error", code: "ignis_diarizer_unavailable", message: "the diarizer is turned off (`diarizer.model` is `off`)", eventId: "listening_configuration" },
     ]);
+  });
+
+  it("configures again without each item's language when a server older than it refuses the key, and says nothing of it (Q131)", () => {
+    const { socket, heard, session } = listen({ context: said(""), diarization: null });
+    socket().accept();
+    session.append(new Int16Array([1]));
+    socket().emit({
+      type: "error",
+      error: { code: "invalid_value", message: "session.ignis.item_language is not an ignis session field", param: "session.ignis.item_language", event_id: "listening_configuration" },
+    });
+    expect(socket().sent[1]).toMatchObject({ type: "session.update", event_id: "listening_configuration", session: { ignis: { provisional_tail: true } } });
+    expect(JSON.stringify(socket().sent[1])).not.toContain("item_language");
+    socket().emit({ type: "session.updated", session: {} });
+    expect(socket().types()).toEqual(["session.update", "session.update", "input_audio_buffer.append"]);
+    expect(heard).toEqual([]);
   });
 
   it("holds the audio until the configuration is taken, then sends it in order, each append with the page's event id", () => {

@@ -37,6 +37,8 @@ export type Utterance = {
   /** Its label; `null` with no speakers. */
   speaker: number | null;
   text: string;
+  /** The language the model heard it in, by ISO code, when the server says (Q131). */
+  language?: string;
 };
 
 export type Transcript = {
@@ -65,7 +67,7 @@ export type Transcript = {
 export type Voice = { kind: "speaker"; index: number } | { kind: "me" } | { kind: "others" };
 
 /** An utterance as the listening hands it over: times on the Transcript's clock. */
-export type Heard = { stream: string; startMs: number; endMs: number; text: string; voice: Voice | null };
+export type Heard = { stream: string; startMs: number; endMs: number; text: string; voice: Voice | null; language?: string };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -150,7 +152,14 @@ export function addUtterance(t: Transcript, heard: Heard): Transcript {
     next = label.transcript;
     speaker = label.id;
   }
-  const utterance: Utterance = { id: nextId(next.utterances), startMs: heard.startMs, endMs: heard.endMs, speaker, text: heard.text };
+  const utterance: Utterance = {
+    id: nextId(next.utterances),
+    startMs: heard.startMs,
+    endMs: heard.endMs,
+    speaker,
+    text: heard.text,
+    ...(heard.language === undefined ? {} : { language: heard.language }),
+  };
   return { ...next, utterances: placed(next.utterances, utterance) };
 }
 

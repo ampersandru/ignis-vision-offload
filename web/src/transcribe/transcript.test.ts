@@ -9,6 +9,14 @@ const heard = (stream: string, startMs: number, text: string, voice: Heard["voic
 
 const names = (t: Transcript) => t.utterances.map((u) => [u.text, u.speaker === null ? null : t.speakers.find((s) => s.id === u.speaker)?.name]);
 
+describe("an utterance's language (Q131)", () => {
+  it("is kept as the server said it, and absent when it said none", () => {
+    const t = addUtterance(createTranscript(1), { stream: "s", startMs: 0, endMs: 1_000, text: "Ciao.", voice: null, language: "it" });
+    const u = addUtterance(t, { stream: "s", startMs: 2_000, endMs: 3_000, text: "Hm.", voice: null });
+    expect(u.utterances.map((x) => x.language)).toEqual(["it", undefined]);
+  });
+});
+
 describe("an utterance heard", () => {
   it("takes Speaker 1, 2… in the order voices first speak, each stream's voices its own", () => {
     let t = createTranscript(1, { source: "microphone", at: new Date(2026, 9, 25, 15, 42) });

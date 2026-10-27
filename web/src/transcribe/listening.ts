@@ -156,7 +156,7 @@ export type StartOptions = {
 /** How a lane's utterances are labelled: a room's by its speakers, a call's Me, a call's far side by its speakers or as Others. */
 type Labels = "room" | "me" | "far";
 
-type Item = { startMs: number; endMs: number | null; open: boolean; stable: string; tail: string; speaker: number | null };
+type Item = { startMs: number; endMs: number | null; open: boolean; stable: string; tail: string; speaker: number | null; language: string | null };
 
 type Lane = {
   name: LaneName;
@@ -564,7 +564,7 @@ export class ListeningController {
   /** The lane's item by its id, made at its first event. */
   private item(lane: Lane, id: string): Item {
     let item = lane.items.get(id);
-    if (!item) lane.items.set(id, (item = { startMs: lane.sentMs, endMs: null, open: true, stable: "", tail: "", speaker: null }));
+    if (!item) lane.items.set(id, (item = { startMs: lane.sentMs, endMs: null, open: true, stable: "", tail: "", speaker: null, language: null }));
     return item;
   }
 
@@ -592,6 +592,9 @@ export class ListeningController {
       case "tail":
         this.item(lane, event.item).tail = event.text;
         return this.showLive();
+      case "language":
+        this.item(lane, event.item).language = event.language;
+        break;
       case "speaker":
         this.item(lane, event.item).speaker = event.speaker;
         return;
@@ -725,6 +728,7 @@ export class ListeningController {
         endMs: origin + (item.endMs ?? lane.sentMs),
         text,
         voice: this.voice(lane, item),
+        ...(item.language === null ? {} : { language: item.language }),
       });
     }
     this.showLive();

@@ -131,8 +131,9 @@ describe("a listening on the microphone", () => {
     s.emit({ type: "delta", item: "item_1", text: "Buongiorno a tutti." });
     s.emit({ type: "tail", item: "item_1", text: "" });
     s.emit({ type: "speaker", item: "item_1", speaker: 1 });
+    s.emit({ type: "language", item: "item_1", language: "it" });
     s.emit({ type: "completed", item: "item_1", transcript: " Buongiorno a tutti. " });
-    expect(h.heard).toEqual([[7, { stream: "mic-1", startMs: 92_480, endMs: 95_040, text: "Buongiorno a tutti.", voice: { kind: "speaker", index: 1 } }]]);
+    expect(h.heard).toEqual([[7, { stream: "mic-1", startMs: 92_480, endMs: 95_040, text: "Buongiorno a tutti.", voice: { kind: "speaker", index: 1 }, language: "it" }]]);
     expect(h.state().live.map((u) => u.key)).toEqual(["mic-1:item_2"]);
   });
 

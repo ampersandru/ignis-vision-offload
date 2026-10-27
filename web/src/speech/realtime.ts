@@ -159,7 +159,8 @@ type ServerEvent = {
   audio_start_ms?: number;
   audio_end_ms?: number;
   speaker?: number;
-  error?: { message?: string; code?: string; event_id?: string | null };
+  language?: string;
+  error?: { message?: string; code?: string; event_id?: string | null; param?: string | null };
 };
 
 export function openTranscription(
@@ -328,6 +329,8 @@ export type ListeningEvent =
   | { type: "delta"; item: string; text: string }
   | { type: "tail"; item: string; text: string }
   | { type: "speaker"; item: string; speaker: number }
+  /** The language the model heard the item in, by ISO code (`session.ignis.item_language`, Q131). */
+  | { type: "language"; item: string; language: string }
   | { type: "completed"; item: string; transcript: string }
   | { type: "item_failed"; item: string; message: string }
   /** The server refused an event of ours; `eventId` is the one the page gave it. The session goes on. */
@@ -370,11 +373,14 @@ export const DIARIZER_FAILED = "ignis_diarizer_failed";
 /** An append past the audio a session may hold not computed yet (spec speech/08): it is refused, not read. */
 export const QUEUE_FULL = "ignis_audio_queue_full";
 
+/** The `param` a server older than the items' language refuses the configuration with: asked again without it. */
+const ITEM_LANGUAGE = "session.ignis.item_language";
+
 /** `server_vad` with the view's silence, the server's threshold and padding. */
 const vad = (silenceMs: number | null | undefined) => (silenceMs == null ? { type: "server_vad" } : { type: "server_vad", silence_duration_ms: silenceMs });
 
-/** A listening's configuration (spec speech/07, "The session"). */
-function listeningConfiguration({ context, diarization, silenceMs }: ListeningOptions) {
+/** A listening's configuration (spec speech/07, "The session"); `languages`, each item's language asked for (Q131). */
+function listeningConfiguration({ context, diarization, silenceMs }: ListeningOptions, languages: boolean) {
   return {
     type: "session.update",
     event_id: CONFIGURATION_EVENT,
@@ -389,7 +395,7 @@ function listeningConfiguration({ context, diarization, silenceMs }: ListeningOp
         },
       },
       // No `max_utterance_seconds`: the server's length guard holds (spec speech/08).
-      ignis: diarization === null ? { provisional_tail: true } : { provisional_tail: true, diarization },
+      ignis: { provisional_tail: true, ...(diarization === null ? {} : { diarization }), ...(languages ? { item_language: true } : {}) },
     },
   };
 }
@@ -408,6 +414,8 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
   const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
   const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
   let context = options.context;
+  /** Each item's language is asked for, until a server older than it refuses the key. */
+  let languages = true;
   /** The page closed it: nothing more is said, a refusal still being asked about included. */
   let closedByPage = false;
   /** The connection is over, by the page or under it. */
@@ -427,7 +435,7 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
     switch (event.type) {
       case "session.created":
         greeted = true;
-        send(listeningConfiguration({ ...options, context, silenceMs }));
+        send(listeningConfiguration({ ...options, context, silenceMs }, languages));
         return;
       case "session.updated":
         if (configured) {
@@ -450,15 +458,25 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
       case "ignis.input_audio_transcription.speaker":
         if (typeof event.speaker === "number") say({ type: "speaker", item, speaker: event.speaker });
         return;
+      case "ignis.input_audio_transcription.language":
+        if (typeof event.language === "string" && event.language !== "") say({ type: "language", item, language: event.language });
+        return;
       case "conversation.item.input_audio_transcription.completed":
         return say({ type: "completed", item, transcript: event.transcript ?? "" });
       case "conversation.item.input_audio_transcription.failed":
         return say({ type: "item_failed", item, message: event.error?.message ?? "the server could not transcribe it" });
       case "error":
+        // A server older than the items' language refuses the key, and the whole update with it: configured again
+        // without it, in silence, the session goes on with no language suggested.
+        if (!configured && event.error?.event_id === CONFIGURATION_EVENT && event.error.param === ITEM_LANGUAGE && languages) {
+          languages = false;
+          send(listeningConfiguration({ ...options, context, silenceMs }, languages));
+          return;
+        }
         // The diarizer refuses the whole update: configured again without speakers, the session goes on.
         if (!configured && event.error?.event_id === CONFIGURATION_EVENT && event.error.code === DIARIZER_UNAVAILABLE && options.diarization !== null) {
           options = { ...options, diarization: null };
-          send(listeningConfiguration({ ...options, context, silenceMs }));
+          send(listeningConfiguration({ ...options, context, silenceMs }, languages));
         }
         return say({
           type: "error",

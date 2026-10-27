@@ -313,6 +313,12 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   left open. The topic and anything else are the `prompt`, the terms and the speakers' names the user gave (never
   "Speaker n", Me or Others) the `keywords`, which the server refuses with `<`, `>` or a line break, so the field
   does too. A rename during a listening is sent as it is made. The deck's first line says what is told, with Edit.
+- **S4, each utterance's language (Q131).** The server sends it on request: `session.ignis.item_language: true`,
+  then `ignis.input_audio_transcription.language {item_id, content_index, language}` (the ISO code the model labelled
+  the item with) after the speaker and before `completed`; none for an item labelled `None`. Every listening asks
+  for it; a server older than it refuses the key with `param: session.ignis.item_language`, and the page configures
+  the session again without it, saying nothing. An utterance keeps its `language`; the language suggestion (S5)
+  reads them.
 
 ### Not done here
 

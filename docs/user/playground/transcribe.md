@@ -243,6 +243,9 @@ Each asks for:
 - **the speakers**, with Speakers on: `session.ignis.diarization: "live"`, or
   `"file"` for a file, the diarizer's geometry for audio sent faster than real
   time. A call's microphone never asks: it is Me;
+- **each utterance's language** (`session.ignis.item_language: true`), which
+  the language suggestion reads; a server older than it refuses the key, and
+  the session is configured again without it;
 - **what it is told**: the topic and anything else as the transcription's
   `prompt`, the terms and the speakers' names you gave as its `keywords`, and a
   `session.update` of them at an Apply or a rename.
