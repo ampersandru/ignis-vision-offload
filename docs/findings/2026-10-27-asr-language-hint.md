@@ -77,8 +77,8 @@ All eight of `none`'s misses are pieces of 1.50 s or less. At 1.5-2.0 s `none` w
 | `The Bennett School.` (English) | `la Bennett School` |
 
 Every hint and `force-it` labelled those seven Italian. The eighth is empty under `none` and under every hint, and
-`force-it` wrote `quattro` for it. No hinted or forced piece came back in a non-Latin script. Under `none` two did:
-the Arabic one, and an Italian one with one stray Devanagari sign, which `force-it` kept.
+`force-it` wrote `quattro` for it. No hinted piece came back in a non-Latin script. Under `none` two did: the Arabic
+one, and an Italian one with one stray Devanagari sign, which `force-it` kept.
 
 A hint is not inert: `Languages: Italian.` changed the text of 112 of 240 pieces and 11 of 60 clips, while word
 agreement and WER stayed where they were. `force-it` changed the text only of the 8 pieces that `none` did not label
@@ -144,6 +144,11 @@ Inferred:
   hint fixes everything that forcing fixes. It does not translate English speech, which forcing did in roughly a
   quarter of the English clips. The hint is worth writing: it is the difference between 91% and 100% on the
   1.0-1.5 s pieces.
+- The pre-registered rule asked that `hint-it-en` keep English WER within about a point of `none`'s. It missed:
+  9.6% against 5.9%, +3.7 points, with intervals that overlap. The one clip it translated accounts for all 23 net
+  extra edits; its other two changes cancel out. The single-language
+  hint met the clause (5.7%). Forcing costs +18.5 points and translates 7 clips, so the decision holds. That a
+  two-language hint costs nothing on English speech is not established.
 - The hint names the languages by their English names, which are the model's own labels (`Languages: Italian.`,
   `Languages: Italian, English.`), and never in the call's language.
 
