@@ -433,7 +433,9 @@ words are a whole line of the context as the model read it (after the token cap)
 more of one line's words in a row, a leading `Label:` read with and without, for no speech: empty, labelled only by
 a forced language, for partials and commits alike. One word is never a copy. Applied to the probe's answers it
 empties 15 of the 17 copies (the two left are `migrazione della`, two words) and nothing else. The parser also drops
-a second `<asr_text>` marker, which came back as text 4 times in 50 with no context. Not done: dropping the topic or
+a second `<asr_text>` marker, which came back as text 4 times in 50 with no context. A partial is emptied only when
+the whole of it is a copy, so a live row can show the first two words of one (`migrazione della`) before its commit
+empties it and the row goes. Not done: dropping the topic or
 rewording the context to copy less is the owner's to decide (Q128); a copied pause that held a real "sì" loses it.
 
 ### Ask in the flow (2026-10-27)

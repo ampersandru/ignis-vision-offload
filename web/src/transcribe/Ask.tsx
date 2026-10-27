@@ -38,7 +38,8 @@ export function AskBar({
         {state.textBlocked ? (
           <p className="border-l-2 border-ember pl-2 text-xs leading-snug text-ink">{state.textBlocked}</p>
         ) : (
-          <div className="flex flex-wrap gap-1.5">
+          // One row on a phone, scrolled sideways inside the bar, so the sheet keeps its height.
+          <div className="flex flex-wrap gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto">
             {quickQuestions(t).map((q) => (
               <button
                 key={q.label}
@@ -46,7 +47,7 @@ export function AskBar({
                 title={q.question}
                 disabled={writing || cannot}
                 onClick={() => actions.askAbout(q.question, q.sent)}
-                className="border border-line px-2.5 py-1 font-display text-xs font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
+                className="shrink-0 border border-line px-2.5 py-1 font-display text-xs font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {q.label}
                 {q.detail && <span className="ml-1.5 font-normal text-ash">{q.detail}</span>}
