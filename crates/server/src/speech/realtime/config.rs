@@ -113,6 +113,9 @@ pub(crate) struct SessionConfig {
     /// `session.ignis.max_utterance_seconds`: the length guard's limit, `0`
     /// off; `None` is the server's `speech.max_utterance_seconds`.
     pub max_utterance_seconds: Option<u32>,
+    /// `session.ignis.item_language`: each item's language is sent (spec
+    /// speech/07).
+    pub item_language: bool,
     /// `turn_detection`: `server_vad`, or `None` for manual commit.
     pub turn_detection: Option<ServerVad>,
     /// What `server_vad`'s fields take when unset or `null`.
@@ -147,15 +150,15 @@ impl From<FieldRefusal> for Refusal {
 
 const TRANSCRIPTION: &str = "session.audio.input.transcription";
 
-/// The keys `session.ignis` takes (spec speech/08).
-const IGNIS_KEYS: [&str; 3] = ["provisional_tail", "diarization", "max_utterance_seconds"];
+/// The keys `session.ignis` takes (spec speech/08, speech/07).
+const IGNIS_KEYS: [&str; 4] = ["provisional_tail", "diarization", "max_utterance_seconds", "item_language"];
 
 const DIARIZATION: &str = "session.ignis.diarization";
 
 impl SessionConfig {
     /// A session as it opens: 24 kHz, the speech model, no context, the
-    /// language detected, no provisional tail, `server_vad` at the server's
-    /// defaults (spec speech/05, Q22).
+    /// language detected, no provisional tail and no item's language,
+    /// `server_vad` at the server's defaults (spec speech/05, Q22).
     pub fn new(model: String, vad_defaults: VadDefaults) -> Self {
         Self {
             rate: OPENAI_RATE,
@@ -169,6 +172,7 @@ impl SessionConfig {
             provisional_tail: false,
             diarization: None,
             max_utterance_seconds: None,
+            item_language: false,
             turn_detection: Some(vad_defaults.server_vad()),
             vad_defaults,
         }
@@ -228,6 +232,12 @@ impl SessionConfig {
                 Some(Value::Null) => next.provisional_tail = false,
                 Some(Value::Bool(on)) => next.provisional_tail = *on,
                 Some(_) => return Err(Refusal::invalid("session.ignis.provisional_tail must be true or false", "session.ignis.provisional_tail")),
+            }
+            match ignis.get("item_language") {
+                None => {}
+                Some(Value::Null) => next.item_language = false,
+                Some(Value::Bool(on)) => next.item_language = *on,
+                Some(_) => return Err(Refusal::invalid("session.ignis.item_language must be true or false", "session.ignis.item_language")),
             }
             match ignis.get("diarization") {
                 None => {}
@@ -321,6 +331,7 @@ impl SessionConfig {
                     provisional_tail: self.provisional_tail,
                     diarization: self.diarization,
                     max_utterance_seconds: self.max_utterance_seconds,
+                    item_language: self.item_language,
                     turn_detection: self.turn_detection.take(),
                     ..Self::new(model, self.vad_defaults)
                 };
@@ -450,6 +461,7 @@ impl SessionConfig {
                 "provisional_tail": self.provisional_tail,
                 "diarization": self.diarization.map(Diarization::as_str),
                 "max_utterance_seconds": self.max_utterance_seconds,
+                "item_language": self.item_language,
             },
         })
     }
@@ -625,7 +637,7 @@ mod tests {
             json!({ "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 500, "idle_timeout_ms": null })
         );
         assert!(effective["audio"]["input"]["noise_reduction"].is_null());
-        assert_eq!(effective["ignis"], json!({ "provisional_tail": false, "diarization": null, "max_utterance_seconds": null }));
+        assert_eq!(effective["ignis"], json!({ "provisional_tail": false, "diarization": null, "max_utterance_seconds": null, "item_language": false }));
         let other = SessionConfig::new(SERVED.to_owned(), VadDefaults { threshold: 0.25, prefix_padding_ms: 100, silence_duration_ms: 800, ..DEFAULTS });
         let detection = &other.effective("s")["audio"]["input"]["turn_detection"];
         assert_eq!((detection["threshold"].as_f64(), detection["prefix_padding_ms"].as_u64(), detection["silence_duration_ms"].as_u64()), (Some(0.25), Some(100), Some(800)));
@@ -769,15 +781,40 @@ mod tests {
         assert_eq!(refused.param.as_deref(), Some("session.ignis.provisional_tail"));
     }
 
+    /// Spec speech/07: each item's language is opt-in under `session.ignis`,
+    /// declared in the effective configuration; `null` or `false` turns it
+    /// off, a reset transcription keeps it, and anything else is refused.
+    #[test]
+    fn the_items_language_is_opt_in() {
+        assert!(!fresh().item_language);
+        let on = update(&fresh(), json!({ "type": "transcription", "ignis": { "item_language": true } })).unwrap();
+        assert!(on.item_language);
+        assert_eq!(on.effective("s")["ignis"]["item_language"], true);
+        let kept = update(&on, input(json!({ "transcription": { "prompt": "x" } }))).unwrap();
+        assert!(kept.item_language, "an update that does not name it keeps it");
+        assert!(update(&on, input(json!({ "transcription": null }))).unwrap().item_language, "a reset transcription keeps it");
+        for off in [json!(null), json!(false)] {
+            let off = update(&on, json!({ "ignis": { "item_language": off } })).unwrap();
+            assert!(!off.item_language);
+            assert_eq!(off.effective("s")["ignis"]["item_language"], false);
+        }
+        for bad in [json!("yes"), json!(1), json!({})] {
+            let refused = update(&on, json!({ "ignis": { "item_language": bad } })).unwrap_err();
+            assert_eq!(refused.param.as_deref(), Some("session.ignis.item_language"), "{bad}");
+        }
+    }
+
     /// Honoured or refused (spec server/09): a key under `session.ignis` that
-    /// is not one of ignis's is refused naming it and the three it takes
-    /// (spec speech/08), the update not applied.
+    /// is not one of ignis's is refused naming it and the four it takes
+    /// (spec speech/08, speech/07), the update not applied.
     #[test]
     fn an_unknown_ignis_key_is_refused_naming_it() {
         let refused = update(&fresh(), json!({ "ignis": { "provisional_tial": true } })).unwrap_err();
         assert_eq!(refused.param.as_deref(), Some("session.ignis.provisional_tial"));
         assert!(refused.message.contains("provisional_tial") && refused.message.contains("provisional_tail"), "{}", refused.message);
-        assert!(refused.message.ends_with("session.ignis takes provisional_tail, diarization, max_utterance_seconds"), "{}", refused.message);
+        assert!(refused.message.ends_with("session.ignis takes provisional_tail, diarization, max_utterance_seconds, item_language"), "{}", refused.message);
+        let refused = update(&fresh(), json!({ "ignis": { "item_languages": true } })).unwrap_err();
+        assert_eq!(refused.param.as_deref(), Some("session.ignis.item_languages"));
         let refused = update(&fresh(), json!({ "ignis": { "provisional_tail": true, "extra": 1 } })).unwrap_err();
         assert_eq!(refused.param.as_deref(), Some("session.ignis.extra"));
     }

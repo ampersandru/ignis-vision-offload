@@ -32,6 +32,7 @@ const STOPPED: &str = "input_audio_buffer.speech_stopped";
 const COMMITTED: &str = "input_audio_buffer.committed";
 const SPEAKER: &str = "ignis.input_audio_transcription.speaker";
 const PROVISIONAL: &str = "ignis.input_audio_transcription.provisional";
+const LANGUAGE: &str = "ignis.input_audio_transcription.language";
 
 /// The clip's PCM16 bytes: its `data` chunk.
 fn clip() -> &'static [u8] {
@@ -244,6 +245,22 @@ async fn a_stalled_stream_gives_the_speaker_from_a_tail_once_the_next_step_would
     let events = until(&mut socket, COMPLETED).await;
     assert_eq!(kinds(&events.iter().collect::<Vec<_>>()), [COMMITTED, DELTA, COMPLETED], "{events:?}");
     assert_eq!(diarizer.calls().iter().filter(|call| call.starts_with("tail")).count(), 1, "{:?}", diarizer.calls());
+}
+
+/// Spec speech/07: in a session with speakers that opted in to the item's
+/// language, an item's end sends its delta, its speaker, its language, then
+/// `completed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_items_language_comes_after_its_speaker_and_before_completed() {
+    let executor = Arc::new(FakeExecutor::saying(&["ciao"]));
+    let diarizer = hearing(|_| 0);
+    let fields = json!({ "ignis": { "diarization": "live", "item_language": true } });
+    let (mut socket, updated, _live, _dir) = opened(&executor, &diarizer, fields, |_| {}).await;
+    assert_eq!(updated["session"]["ignis"]["item_language"], true);
+    send_clip(&mut socket, 0, 144_960).await;
+    let events = until(&mut socket, COMPLETED).await;
+    assert_eq!(kinds(&events.iter().collect::<Vec<_>>()), [STARTED, STOPPED, COMMITTED, DELTA, SPEAKER, LANGUAGE, COMPLETED], "{events:?}");
+    assert_eq!((of(&events, SPEAKER)[0]["speaker"].as_u64(), of(&events, LANGUAGE)[0]["language"].as_str()), (Some(0), Some("en")));
 }
 
 /// AC 8: a session that does not opt in gets no speaker, and its deltas are

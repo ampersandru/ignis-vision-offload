@@ -64,7 +64,8 @@ The first event is `session.created`, with the configuration in effect:
       "turn_detection": { "type": "server_vad", "threshold": 0.5,
         "prefix_padding_ms": 300, "silence_duration_ms": 500, "idle_timeout_ms": null } } },
     "include": [],
-    "ignis": { "provisional_tail": false, "diarization": null, "max_utterance_seconds": null } } }
+    "ignis": { "provisional_tail": false, "diarization": null, "max_utterance_seconds": null,
+      "item_language": false } } }
 ```
 
 A session that sends no `turn_detection` runs **`server_vad`**, as OpenAI's
@@ -92,7 +93,7 @@ with an `error`, the session keeping the configuration it had.
 | `audio.input.format` | `{type: "audio/pcm", rate: 24000}`, OpenAI's, resampled to 16 kHz; or `rate: 16000`, the model's own rate, an ignis extension that skips the resampling. `audio/pcmu` and `audio/pcma` (G.711) are refused. |
 | `audio.input.transcription.model` | Absent, the speech model's id, or one of `speech.compat_names` (`gpt-4o-transcribe`, `whisper-1`, ...): the session reports the speech model's id. A text or image model's id is an `error` with `model_kind_mismatch`; any other name `model_not_found`. |
 | `audio.input.transcription.prompt`, `.keywords` | The context, as for [a transcription](transcriptions.md#the-request): names and terms to spell right. It is **prefilled when the update arrives**, so it costs nothing at the commit. A change while an item holds audio applies from the next item. |
-| `audio.input.transcription.language`, `.languages` | As for a transcription: one language forces it, several detect among them, both together are refused. Leave it off unless the model guesses wrong. |
+| `audio.input.transcription.language`, `.languages` | As for a transcription: one language forces it; several are each checked (one outside the 30 is an `error`), but the model then detects over all its 30 languages, since it cannot be held to a list; both together are refused. Leave it off unless the model guesses wrong. |
 | `audio.input.transcription.delay` | Accepted and inert: the live text refreshes at most every `speech.partial_interval_ms` (2000). |
 | `audio.input.turn_detection` | `{type: "server_vad", ...}`, the default, or `null` for manual commit: [turn detection](#turn-detection). `semantic_vad` is refused. |
 | `audio.input.noise_reduction` | `null`. `near_field` and `far_field` are refused. |
@@ -100,9 +101,10 @@ with an `error`, the session keeping the configuration it had.
 | `ignis.provisional_tail` | `true` to receive the provisional tail, below. |
 | `ignis.diarization` | `"live"` or `"file"` to label each item with its [speaker](#speakers), `null` (the default) for none. Only under `server_vad`: on a manual-commit session it is an `error` naming `turn_detection`, and so is a switch to manual commit while it is on. With the diarizer unavailable it is an `error`, `ignis_diarizer_unavailable`, with the reason, and the session goes on without speakers. A change while an item holds audio holds from the next item. |
 | `ignis.max_utterance_seconds` | The [length guard](#long-utterances)'s limit for this session: `null` (the default) is the server's `speech.max_utterance_seconds`, `0` turns it off, otherwise whole seconds up to `speech.max_clip_seconds`. Declared as set. |
+| `ignis.item_language` | `true` to receive each item's language, below; `false` or `null` (the default) for none. |
 
-`ignis` takes those three keys; any other is an `error` naming it and the
-three.
+`ignis` takes those four keys; any other is an `error` naming it and the
+four.
 
 `transcription_session.update`, the retired beta's event, is an `error` naming
 `session.update`, and every conversation event (`response.create`,
@@ -277,6 +279,23 @@ after each refresh that changed them: the whole current tail, which replaces
 the previous one, and `""` when the item ends. Show the deltas, then the tail
 greyed after them. A session that does not opt in never receives the event, so
 a client that rejects unknown events is safe.
+
+**The item's language** is ignis's too. Qwen3-ASR writes the language it heard
+before each transcript, and a session that set `ignis.item_language: true`
+receives it for each item, as its ISO 639 code:
+
+```json
+{ "type": "ignis.input_audio_transcription.language", "item_id": "item_…", "content_index": 0, "language": "it" }
+```
+
+It comes right before the item's `completed`, after its
+[speaker](#speakers) in a session with speakers. Each item's language is
+guessed from its own audio, so the items of a conversation show the languages
+it is held in, and a short item the model mislabels shows up as a language
+nobody spoke. Under a forced language the event carries that one. An item the
+model labelled `None` (no speech) gets no event, and neither does one whose
+label is not one of the model's 30 languages. A session that does not opt in
+never receives it.
 
 ## Speakers
 

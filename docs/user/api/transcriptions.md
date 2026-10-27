@@ -89,7 +89,7 @@ weak CPU is `speech.model: qwen3-asr-0.6b`.
 | `prompt` | Context: names and terms the model should spell right. It is the model's system turn. |
 | `keywords[]` | Words to spell right, joined after the prompt as one line. A keyword holding `<`, `>` or a line break is a `400`. |
 | `language` | Forces the language: one of the model's 30, by ISO code (`it`) or English name (`Italian`). **Leave it off unless the model guesses wrong**: forcing Italian on a sentence with English jargon Italianises the jargon. |
-| `languages[]` | One entry forces it; several mean "detect among these". Not together with `language`. |
+| `languages[]` | One entry forces it. Several are each checked (one outside the 30 is a `400`), but the model then detects over all its 30 languages: it cannot be held to a list. Not together with `language`. |
 | `response_format` | `json` (default), `text` or `verbose_json`. `srt`, `vtt` and `diarized_json` are refused. |
 | `timestamp_granularities[]` | `segment`, with `verbose_json`. `word` is refused: there is no aligner. |
 | `stream` | `true` for Server-Sent Events. |
