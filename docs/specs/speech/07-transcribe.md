@@ -402,6 +402,12 @@ The owner's third round, after trying the second (grill Q136-Q141), one commit e
   listening keeps up with suggestions, "next check in about 45 s" (the last look's start and the 90 s gap, redrawn
   every 5 s). A rewrite of an utterance below it says the automatic check has not read it yet. The line is not drawn
   before any look, nor once everything was read.
+- **Ask, and the moments as links (Q139, Q141).** ask.ts: the task in the system prompt, the transcript and the
+  question last, on the interactive lane, thinking off, 800 tokens; the answer streams, and lands on the Transcript
+  asked about (`asked`, latest first, read back like the rest; a cross forgets one). In the notes and the answers,
+  each `[mm:ss]` that is not already a link's text becomes a link `#t=mm:ss` (jump.ts), styled as a time; a click
+  is a jump, which the sheet answers by bringing into view the last utterance that starts within that second, lit
+  for 1.6 s, and the right drawer, below `lg`, closes.
 
 ### Not done here
 

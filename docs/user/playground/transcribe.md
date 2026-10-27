@@ -247,6 +247,13 @@ the action items.
 
 ## Notes
 
+**Ask about this conversation**, at the top of the Notes tab, puts a question
+to the text model about the transcript open: the answer streams in, from the
+transcript alone, in the question's language, and stays with the transcript,
+latest first (the cross forgets one). A moment named as `[mm:ss]`, in an
+answer or in the notes, is a link: click it and the transcript shows that
+utterance, lit for a moment.
+
 The **Notes** tab has the text model loaded read the transcript and write its
 notes. Pick the **kind of conversation** first; each asks for its own sections:
 

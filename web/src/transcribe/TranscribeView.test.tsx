@@ -4,8 +4,9 @@ import { SECURE_CONTEXT, TURNED_OFF } from "../speech/availability.ts";
 import { ContextCard } from "./Context.tsx";
 import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft } from "./Deck.tsx";
 import { IDLE, type ListeningState } from "./listening.ts";
-import { NotesPanel, notesButton } from "./Notes.tsx";
+import { AskPanel, NotesPanel, notesButton } from "./Notes.tsx";
 import type { AnalystState } from "./analyst.ts";
+import type { AskerState } from "./ask.ts";
 import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
 import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
@@ -57,6 +58,9 @@ const actions: TranscribeActions = {
   rewriteUtterance: none,
   acceptRewrite: none,
   closeRewrite: none,
+  askAbout: none,
+  stopAsking: none,
+  forgetAnswer: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -365,6 +369,30 @@ describe("the suggestions (Q132)", () => {
   });
 });
 
+describe("asking about the conversation (Q139, Q141)", () => {
+  const quiet: AskerState = { transcript: null, question: "", text: "", writing: false, failed: null };
+  const ask = (t: Transcript, asking = quiet, patch: Partial<TranscribeState> = {}) =>
+    renderToStaticMarkup(<AskPanel transcript={t} state={state(patch)} actions={actions} asking={asking} />);
+
+  it("offers the question, and keeps the answers latest first, their moments as links to them", () => {
+    const t = { ...room(), asked: [{ id: 2, question: "Chi ha finito?", answer: "Lo dice Speaker 1 [00:04].", at: 2 }, { id: 1, question: "Prima?", answer: "Niente.", at: 1 }] };
+    const html = ask(t);
+    expect(html).toContain(">Ask<");
+    expect(html.indexOf("Chi ha finito?")).toBeLessThan(html.indexOf("Prima?"));
+    expect(html).toContain('href="#t=00:04"');
+    expect(html).toContain('aria-label="Forget: Chi ha finito?"');
+  });
+
+  it("streams an answer under the heat, the button a Stop, and says why none came", () => {
+    const t = room();
+    const html = ask(t, { transcript: t.id, question: "Chi?", text: "Speaker 1 [00:04]", writing: true, failed: null });
+    expect(html).toContain("spine-live");
+    expect(html).toContain(">Stop<");
+    expect(ask(t, { ...quiet, transcript: t.id, failed: "ignis answered 500" })).toContain("No answer: ignis answered 500");
+    expect(ask(t, quiet, { textBlocked: "No text model serves: the notes and the suggestions need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Ask</);
+  });
+});
+
 describe("the notes", () => {
   const idle: NotesWriterState = { writing: null, text: "", failed: null };
   const written = (t: Transcript): Transcript => ({
@@ -415,6 +443,7 @@ const assistants = {
   notes: { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} },
   analyst: { getState: (): AnalystState => ({ looking: null, nextAt: {}, failed: null }), subscribe: () => () => {} },
   rewriter: { getState: () => ({ transcript: null, utterance: null, writing: false, proposal: null, failed: null }), subscribe: () => () => {} },
+  asker: { getState: () => ({ transcript: null, question: "", text: "", writing: false, failed: null }), subscribe: () => () => {} },
 };
 
 describe("the view", () => {

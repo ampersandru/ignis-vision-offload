@@ -17,6 +17,7 @@ import { readConfig } from "../server/routes.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
 import { acceptRewrite, Rewriter, type RewriterHandle } from "./rewrite.ts";
+import { Asker, type AskerHandle, withAnswer } from "./ask.ts";
 import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, suggest } from "./suggestions.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
@@ -108,6 +109,11 @@ export type TranscribeActions = {
   acceptRewrite: () => void;
   /** Stops the rewrite, or drops its proposal. */
   closeRewrite: () => void;
+  /** Asks the text model about the open Transcript (Q139); the answer is kept with it. */
+  askAbout: (question: string) => void;
+  stopAsking: () => void;
+  /** Drops a question and its answer from the open Transcript. */
+  forgetAnswer: (id: number) => void;
   /** The open Transcript's kind of notes, and this browser's next default. */
   setNoteKind: (kind: NoteKind) => void;
   /** Writes the open Transcript's notes now. */
@@ -126,7 +132,7 @@ export type TranscribeActions = {
 };
 
 /** The page's helpers on the text model: the notes' writer and the look for suggestions. */
-export type Assistants = { notes: NotesHandle; analyst: AnalystHandle; rewriter: RewriterHandle };
+export type Assistants = { notes: NotesHandle; analyst: AnalystHandle; rewriter: RewriterHandle; asker: AskerHandle };
 
 /** The text model, as the notes need it: why none serves, and its context. */
 export type TextModel = { blocked: string | null; contextLimit: number | null };
@@ -212,6 +218,10 @@ export function useTranscribe({
   useEffect(() => () => analyst.stop(), [analyst]);
   const [rewriter] = useState(() => new Rewriter());
   useEffect(() => () => rewriter.close(), [rewriter]);
+  const [asker] = useState(
+    () => new Asker({ onAnswered: (id, question, answer) => setList((l) => updateTranscript(l, id, (t) => ({ ...t, asked: withAnswer(t.asked, question, answer, Date.now()) }))) }),
+  );
+  useEffect(() => () => asker.stop(), [asker]);
 
   // Keeping up while listening, a look every few seconds: the languages the server heard, then, while a text model
   // serves, the notes and the look for suggestions, each on its own cadence.
@@ -354,6 +364,12 @@ export function useTranscribe({
         rewriter.close();
       },
       closeRewrite: () => rewriter.close(),
+      askAbout: (question) => {
+        const { text: model } = latest.current;
+        if (model.blocked === null) void asker.ask(activeOf(listNow.current), question, model.contextLimit);
+      },
+      stopAsking: () => asker.stop(),
+      forgetAnswer: (id) => correct((t) => ({ ...t, asked: (t.asked ?? []).filter((a) => a.id !== id) })),
       undoDelete: () => {
         const last = deletedNow.current;
         if (!last) return;
@@ -384,7 +400,7 @@ export function useTranscribe({
       setSuggestionsOn: (on) => storeSuggestionsOn(on),
     }),
     // The stored flags' setters are stable for their keys.
-    [controller, writer, analyst, rewriter, storeHoldMic, storeNotesLive, storeSuggestionsOn],
+    [controller, writer, analyst, rewriter, asker, storeHoldMic, storeNotesLive, storeSuggestionsOn],
   );
 
   return [
@@ -404,6 +420,6 @@ export function useTranscribe({
     },
     actions,
     controller,
-    { notes: writer, analyst, rewriter },
+    { notes: writer, analyst, rewriter, asker },
   ];
 }

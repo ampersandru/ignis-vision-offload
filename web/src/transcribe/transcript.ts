@@ -17,6 +17,7 @@
 //
 // Every function returns a new Transcript and leaves the one it was given alone.
 
+import type { Answered } from "./ask.ts";
 import type { CallContext } from "./context.ts";
 import type { Notes } from "./notes.ts";
 import type { Suggestions } from "./suggestions.ts";
@@ -70,6 +71,8 @@ export type Transcript = {
   suggestions?: Suggestions;
   /** Up to where the text model's look last read it (Q140): the end of the last utterance it had, on its clock. */
   checkedUntilMs?: number;
+  /** The questions asked about it and their answers, latest first (Q139). */
+  asked?: Answered[];
 };
 
 /** Who an utterance's audio is, as the listening knows it. */

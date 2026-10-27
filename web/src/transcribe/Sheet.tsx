@@ -1,6 +1,7 @@
 import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type Hit, partsOf } from "./search.ts";
 import { type RewriterState, wordDiff } from "./rewrite.ts";
+import { landing, onJump } from "./jump.ts";
 import { isAtBottom } from "../ui/scroll.ts";
 import { clock, startedLine, startOf } from "./export.ts";
 import type { LiveUtterance, ListeningState } from "./listening.ts";
@@ -78,6 +79,26 @@ export const Sheet = memo(function Sheet({
     return map;
   }, [hits, current]);
 
+  // A jump from the notes or an answer (Q141): the utterance of that moment in view, lit for a moment.
+  const [lit, setLit] = useState<number | null>(null);
+  useEffect(
+    () =>
+      onJump((ms) => {
+        const id = landing(transcript.utterances, ms);
+        const el = id === null ? null : scroller.current?.querySelector(`[data-utterance="${id}"]`);
+        if (!el) return;
+        setFollowing(false);
+        el.scrollIntoView?.({ block: "center" });
+        setLit(id);
+      }),
+    [transcript.utterances],
+  );
+  useEffect(() => {
+    if (lit === null) return;
+    const timer = setTimeout(() => setLit(null), 1_600);
+    return () => clearTimeout(timer);
+  }, [lit]);
+
   // The search's current hit in view, the newest words no longer followed.
   useLayoutEffect(() => {
     const hit = hits[current];
@@ -122,6 +143,7 @@ export const Sheet = memo(function Sheet({
                   rewrite={rewrite?.utterance === u.id ? rewrite : undefined}
                   canRewrite={canRewrite && !rewrite?.writing}
                   unchecked={rewrite?.utterance === u.id && checked !== null && u.endMs > checked.untilMs}
+                  lit={lit === u.id}
                 />,
               ])}
               {live.map((u) => (
@@ -190,9 +212,26 @@ function Empty({ listening }: { listening: boolean }) {
 }
 
 /** The spine and the time beside it: one row of the sheet. */
-function Row({ time, tick, label, id, children }: { time: string; tick: { color?: string; burning?: boolean }; label: ReactNode; id?: number; children: ReactNode }) {
+function Row({
+  time,
+  tick,
+  label,
+  id,
+  lit = false,
+  children,
+}: {
+  time: string;
+  tick: { color?: string; burning?: boolean };
+  label: ReactNode;
+  id?: number;
+  lit?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <li data-utterance={id} className="grid grid-cols-[3.75rem_1fr] gap-x-4 sm:grid-cols-[4.5rem_1fr]">
+    <li
+      data-utterance={id}
+      className={`grid grid-cols-[3.75rem_1fr] gap-x-4 transition-colors duration-700 motion-reduce:transition-none sm:grid-cols-[4.5rem_1fr] ${lit ? "bg-ember/12" : ""}`}
+    >
       <span className="pt-[3px] text-right font-display text-[13px] text-ash tabular-nums">{time}</span>
       <div className="relative border-l-2 border-line pb-5 pl-4">
         <span
@@ -338,6 +377,7 @@ const UtteranceRow = memo(function UtteranceRow({
   rewrite,
   canRewrite,
   unchecked,
+  lit,
 }: {
   utterance: Utterance;
   speaker: Speaker | undefined;
@@ -348,6 +388,8 @@ const UtteranceRow = memo(function UtteranceRow({
   canRewrite: boolean;
   /** The text model's look has not read it yet (Q140). */
   unchecked: boolean;
+  /** A jump just landed on it (Q141). */
+  lit: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -362,7 +404,7 @@ const UtteranceRow = memo(function UtteranceRow({
     />
   );
   return (
-    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id}>
+    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id} lit={lit}>
       {editing ? (
         <div className="flex flex-col gap-1.5">
           <textarea

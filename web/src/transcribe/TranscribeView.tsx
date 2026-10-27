@@ -4,6 +4,7 @@ import { caption } from "../ui/classes.ts";
 import { IconBell, IconChevron, IconClose, IconDownload, IconPlus, IconSearch, IconTrash } from "../ui/icons.tsx";
 import { hitsIn, matchesOf } from "./search.ts";
 import { useWatched } from "./assist.ts";
+import { onJump } from "./jump.ts";
 import { ContextCard } from "./Context.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
@@ -90,6 +91,9 @@ export function TranscribeView({
     return () => window.removeEventListener("keydown", find);
   }, []);
 
+  // A jump to a moment from the notes or an answer (Q141): the drawer it came from gives way to the sheet.
+  useEffect(() => onJump(() => onDrawer(null)), [onDrawer]);
+
   useEffect(() => {
     if (!drawer) return;
     const close = (e: globalThis.KeyboardEvent) => e.key === "Escape" && onDrawer(null);
@@ -170,7 +174,7 @@ export function TranscribeView({
             <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} />
           </>
         )}
-        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={assistants.notes} />}
+        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={assistants.notes} asker={assistants.asker} />}
         {tab === "settings" && <Settings state={state} actions={actions} />}
       </Side>
     </div>

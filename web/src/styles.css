@@ -581,6 +581,21 @@
   .notes .md ol {
     padding-left: 1.1em;
   }
+  .notes-answer .md {
+    font-size: 13px;
+  }
+  /* A moment named as [mm:ss]: a link to the utterance (jump.ts), in the time's own face. */
+  .notes .md a[href^="#t="] {
+    padding: 0 0.25em;
+    font-family: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.92em;
+    font-variant-numeric: tabular-nums;
+    text-decoration: none;
+    background: color-mix(in oklab, var(--ember) 14%, transparent);
+  }
+  .notes .md a[href^="#t="]:hover {
+    background: color-mix(in oklab, var(--ember) 28%, transparent);
+  }
 }
 
 /* The memory sheet (MemoryManager.tsx): it rises as it opens, the rule under

@@ -1,4 +1,5 @@
 import { restoreOrder, type Stamp } from "../store/docs.ts";
+import { readAnswered } from "./ask.ts";
 import { readContext } from "./context.ts";
 import { readNotes } from "./notes.ts";
 import { readSuggestions } from "./suggestions.ts";
@@ -47,7 +48,7 @@ export function restoreTranscripts(values: unknown[], nextId: number): { transcr
   const docs = values.map(readStored).filter((d): d is StoredTranscript => d !== null);
   const ordered = restoreOrder(docs, nextId);
   const stamps = new Map<number, Stamp>();
-  const transcripts = ordered.items.map(({ version: _version, key, order, notes, context, suggestions, ...t }): Transcript => {
+  const transcripts = ordered.items.map(({ version: _version, key, order, notes, context, suggestions, asked, ...t }): Transcript => {
     stamps.set(t.id, { key, order });
     // Notes, a context or suggestions this page cannot read are dropped, not the Transcript they hang on.
     const readN = readNotes(notes);
@@ -55,7 +56,15 @@ export function restoreTranscripts(values: unknown[], nextId: number): { transcr
     const readS = readSuggestions(suggestions);
     const checked = typeof t.checkedUntilMs === "number" && Number.isFinite(t.checkedUntilMs) ? { checkedUntilMs: t.checkedUntilMs } : {};
     const { checkedUntilMs: _checked, ...rest } = t;
-    return { ...rest, ...checked, ...(readN ? { notes: readN } : {}), ...(readC ? { context: readC } : {}), ...(readS ? { suggestions: readS } : {}) };
+    const readA = readAnswered(asked);
+    return {
+      ...rest,
+      ...checked,
+      ...(readN ? { notes: readN } : {}),
+      ...(readC ? { context: readC } : {}),
+      ...(readS ? { suggestions: readS } : {}),
+      ...(readA ? { asked: readA } : {}),
+    };
   });
   return { transcripts, stamps, nextId: ordered.nextId };
 }
