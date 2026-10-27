@@ -33,10 +33,32 @@ export const CONTEXT_MAX_TOKENS = 512;
 const CHARS_PER_TOKEN = 3;
 
 /**
- * Whether the free languages go into the prompt as a hint. On until the S3 measurement says the hint does nothing
- * (docs/findings/2026-10-27-asr-language-hint.md).
+ * Whether the free languages go into the prompt as a hint (Q130): measured on cut Italian speech, `Languages:
+ * Italian.` took the shortest pieces from 91 % to 100 % heard as Italian, as forcing does, without forcing's cost on
+ * English speech (docs/findings/2026-10-27-asr-language-hint.md). In the model's English names, first, with its
+ * period, as it was measured; worded in the call's language it did harm.
  */
 export const LANGUAGE_HINT = true;
+
+/** The languages with `code` picked: under Force it is the one, under Detect one more. */
+export function pickLanguage(languages: CallContext["languages"], code: string): CallContext["languages"] {
+  if (!isSpeechLanguage(code)) return languages;
+  if (languages.mode === "force") return { mode: "force", codes: [code] };
+  return languages.codes.includes(code) ? languages : { mode: "free", codes: [...languages.codes, code] };
+}
+
+/** The languages under `mode`: Force keeps the first alone. */
+export const languagesUnder = (languages: CallContext["languages"], mode: LanguageMode): CallContext["languages"] => ({
+  mode,
+  codes: mode === "force" ? languages.codes.slice(0, 1) : languages.codes,
+});
+
+/** "Italian, English (detected)" or "Italian (forced)"; `null` with none. */
+export function languagesLine(languages: CallContext["languages"]): string | null {
+  const codes = languages.codes.filter(isSpeechLanguage);
+  if (codes.length === 0) return null;
+  return languages.mode === "force" ? `${languageName(codes[0])} (forced)` : `${codes.map(languageName).join(", ")} (detected)`;
+}
 
 /** The names the page gives a speaker: never a term. */
 const GIVEN_NAME = /^(Speaker \d+|Me|Others)$/;
@@ -76,8 +98,8 @@ export function told(context: CallContext | undefined, speakers: Speaker[]): Tol
   const c = context ?? EMPTY_CONTEXT;
   const codes = c.languages.codes.filter(isSpeechLanguage);
   const lines: string[] = [];
+  if (c.languages.mode === "free" && LANGUAGE_HINT && codes.length > 0) lines.push(`Languages: ${codes.map(languageName).join(", ")}.`);
   if (c.topic.trim() !== "") lines.push(`Topic: ${c.topic.trim()}`);
-  if (c.languages.mode === "free" && LANGUAGE_HINT && codes.length > 0) lines.push(`Languages: ${codes.map(languageName).join(", ")}`);
   if (c.other.trim() !== "") lines.push(c.other.trim());
   const keywords = unique([...c.terms, ...namedSpeakers(speakers)].filter((term) => termProblem(term) === null));
   return { prompt: lines.join("\n"), keywords, language: c.languages.mode === "force" ? (codes[0] ?? null) : null };

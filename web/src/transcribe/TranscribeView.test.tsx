@@ -232,6 +232,17 @@ describe("the context (Q128)", () => {
     expect(card(t, t.context!, false)).toContain("A Start applies it too.");
   });
 
+  it("detects the languages by default and forces one on request, saying what each does (Q130)", () => {
+    const t = told(room());
+    const detect = card(t, { ...t.context!, languages: { mode: "free", codes: ["it", "en"] } });
+    expect(detect).toMatch(/type="radio"[^>]*checked=""[^>]*\/><span[^>]*>Detect</);
+    expect(detect).toContain('aria-label="Remove English"');
+    expect(detect).toContain("The model detects each utterance");
+    const force = card(t, { ...t.context!, languages: { mode: "force", codes: ["it"] } });
+    expect(force).toContain("Every utterance is transcribed as Italian");
+    expect(card({ ...t, context: { ...t.context!, languages: { mode: "force", codes: ["it"] } } })).toContain("Italian (forced)");
+  });
+
   it("offers Add when nothing is told, and the deck says so in a line with Edit", () => {
     expect(card(room())).toContain(">Add<");
     const deckLine = renderToStaticMarkup(<Deck state={state({ active: told(room()) })} listening={IDLE} actions={actions} secure here onEditContext={none} />);

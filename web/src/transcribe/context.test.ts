@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { addTerms, type CallContext, contextSummary, EMPTY_CONTEXT, isBlank, namedSpeakers, readContext, termProblem, told, toldTokens } from "./context.ts";
+import {
+  addTerms,
+  type CallContext,
+  contextSummary,
+  EMPTY_CONTEXT,
+  isBlank,
+  languagesLine,
+  languagesUnder,
+  namedSpeakers,
+  pickLanguage,
+  readContext,
+  termProblem,
+  told,
+  toldTokens,
+} from "./context.ts";
 import type { Speaker } from "./transcript.ts";
 
 // What a Transcript's transcription is told (spec speech/07, Q128, Q130): the
@@ -22,9 +36,9 @@ const speakers: Speaker[] = [
 ];
 
 describe("what the transcription is told", () => {
-  it("is the topic, the free languages as a hint and anything else as the prompt; the terms and the names given as keywords", () => {
+  it("is the free languages as a hint, first, in the model's names, as measured, then the topic and anything else, as the prompt; the terms and the names given as keywords", () => {
     expect(told(it_support, speakers)).toEqual({
-      prompt: "Topic: Supporto IT informale\nLanguages: Italian, English\nSi parla di un portatile aziendale.",
+      prompt: "Languages: Italian, English.\nTopic: Supporto IT informale\nSi parla di un portatile aziendale.",
       keywords: ["PostgreSQL", "VPN", "Marco"],
       language: null,
     });
@@ -44,6 +58,23 @@ describe("what the transcription is told", () => {
 
   it("counts about a token for three characters, against the server's 512", () => {
     expect(toldTokens({ prompt: "a".repeat(30), keywords: ["bb", "cc"], language: null })).toBe(12);
+  });
+});
+
+describe("the languages (Q130)", () => {
+  it("are several under Detect and one under Force, the first kept when Force is picked", () => {
+    const detect = pickLanguage(pickLanguage({ mode: "free", codes: [] }, "it"), "en");
+    expect(detect).toEqual({ mode: "free", codes: ["it", "en"] });
+    expect(pickLanguage(detect, "it")).toBe(detect);
+    expect(languagesUnder(detect, "force")).toEqual({ mode: "force", codes: ["it"] });
+    expect(pickLanguage({ mode: "force", codes: ["it"] }, "de")).toEqual({ mode: "force", codes: ["de"] });
+    expect(pickLanguage(detect, "xx")).toBe(detect);
+  });
+
+  it("read as the model's names, detected or forced", () => {
+    expect(languagesLine({ mode: "free", codes: ["it", "en"] })).toBe("Italian, English (detected)");
+    expect(languagesLine({ mode: "force", codes: ["it"] })).toBe("Italian (forced)");
+    expect(languagesLine({ mode: "free", codes: [] })).toBeNull();
   });
 });
 

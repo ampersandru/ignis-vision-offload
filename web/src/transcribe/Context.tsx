@@ -1,7 +1,23 @@
 import { useId, useState } from "react";
+import { SPEECH_LANGUAGES, languageName } from "../speech/languages.ts";
 import { caption, field } from "../ui/classes.ts";
 import { IconClose } from "../ui/icons.tsx";
-import { addTerms, type CallContext, CONTEXT_MAX_TOKENS, EMPTY_CONTEXT, isBlank, termProblem, told, toldTokens } from "./context.ts";
+import { Segmented } from "../ui/Segmented.tsx";
+import {
+  addTerms,
+  type CallContext,
+  CONTEXT_MAX_TOKENS,
+  EMPTY_CONTEXT,
+  isBlank,
+  LANGUAGE_HINT,
+  languagesLine,
+  languagesUnder,
+  type LanguageMode,
+  pickLanguage,
+  termProblem,
+  told,
+  toldTokens,
+} from "./context.ts";
 import { dayAndTime, type Transcript } from "./transcript.ts";
 import type { TranscribeActions } from "./useTranscribe.ts";
 
@@ -53,6 +69,12 @@ export function ContextCard({
       ) : (
         <>
           <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-2 border-l-2 border-line pl-3 text-[13px]">
+            {languagesLine(c.languages) !== null && (
+              <>
+                <dt className="font-display text-xs text-ash">Languages</dt>
+                <dd className="text-ink">{languagesLine(c.languages)}</dd>
+              </>
+            )}
             {c.topic.trim() !== "" && (
               <>
                 <dt className="font-display text-xs text-ash">Topic</dt>
@@ -111,6 +133,8 @@ function ContextForm({
 
   return (
     <div className="flex flex-col gap-3 border border-ember/70 bg-surface/40 p-3">
+      <Languages languages={draft.languages} onChange={(languages) => set({ languages })} />
+
       <label htmlFor={topicId} className="flex flex-col gap-1">
         <span className="font-display text-xs text-ash">Topic</span>
         <input id={topicId} value={draft.topic} onChange={(e) => set({ topic: e.currentTarget.value })} placeholder="An informal IT support call" className={field} />
@@ -182,6 +206,68 @@ function ContextForm({
         </button>
         <span className="text-xs text-ash">{live ? "Holds from the next utterance." : "A Start applies it too."}</span>
       </div>
+    </div>
+  );
+}
+
+const MODES: { value: LanguageMode; label: string }[] = [
+  { value: "free", label: "Detect" },
+  { value: "force", label: "Force one" },
+];
+
+/** What each mode does, as the field says it. */
+export function languagesHint(languages: CallContext["languages"]): string {
+  if (languages.mode === "force") {
+    const name = languages.codes[0] ? languageName(languages.codes[0]) : "one language";
+    return `Every utterance is transcribed as ${name}: words of another language come out in its spelling.`;
+  }
+  return LANGUAGE_HINT
+    ? "The model detects each utterance's language; the ones listed go into the context as a hint."
+    : "The model detects each utterance's language. The ones listed are kept with the transcript.";
+}
+
+/** The languages: Detect, with the expected ones, or Force one. */
+function Languages({ languages, onChange }: { languages: CallContext["languages"]; onChange: (languages: CallContext["languages"]) => void }) {
+  const pickId = useId();
+  const offered = SPEECH_LANGUAGES.filter((l) => languages.mode === "force" || !languages.codes.includes(l.code));
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-display text-xs text-ash">Languages</span>
+      <Segmented legend="Languages" legendHidden name="transcribe-language-mode" value={languages.mode} options={MODES} onChange={(mode) => onChange(languagesUnder(languages, mode))} />
+      <div className="flex flex-wrap items-center gap-1">
+        {languages.codes.map((code) => (
+          <span key={code} className="flex items-center border border-line bg-surface font-display text-xs text-ink">
+            <span className="py-px pl-1.5">{languageName(code)}</span>
+            <button
+              type="button"
+              aria-label={`Remove ${languageName(code)}`}
+              onClick={() => onChange({ ...languages, codes: languages.codes.filter((c) => c !== code) })}
+              className="px-1 text-ash hover:text-fault"
+            >
+              <IconClose />
+            </button>
+          </span>
+        ))}
+        <label htmlFor={pickId} className="sr-only">
+          {languages.mode === "force" ? "The language to force" : "Add a language"}
+        </label>
+        <select
+          id={pickId}
+          value=""
+          onChange={(e) => e.currentTarget.value !== "" && onChange(pickLanguage(languages, e.currentTarget.value))}
+          className="cursor-pointer rounded-[2px] border border-line bg-ground px-1.5 py-0.5 font-display text-xs text-ash hover:text-ink focus:border-ember focus:outline-none"
+        >
+          <option value="" disabled>
+            {languages.mode === "force" ? (languages.codes.length ? "Another" : "Pick one") : "Add"}
+          </option>
+          {offered.map((l) => (
+            <option key={l.code} value={l.code}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <span className="text-xs leading-snug text-ash">{languagesHint(languages)}</span>
     </div>
   );
 }

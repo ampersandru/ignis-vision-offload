@@ -313,6 +313,19 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   left open. The topic and anything else are the `prompt`, the terms and the speakers' names the user gave (never
   "Speaker n", Me or Others) the `keywords`, which the server refuses with `<`, `>` or a line break, so the field
   does too. A rename during a listening is sent as it is made. The deck's first line says what is told, with Edit.
+- **S3, the languages (Q130).** The context's Languages: Detect (the default) lists the expected ones, which go
+  into the prompt as `Languages: Italian, English.` and nothing goes to `language`; Force one sends the first as the
+  session's `language` and leaves it out of the prompt. Measured first (docs/findings/2026-10-27-asr-language-hint.md):
+  on 240 pieces of 1 to 2.5 s cut from Italian FLEURS, none heard 96.7 % as Italian (91.0 % under 1.5 s), the hint
+  `Languages: Italian.` 100 %, `Languages: Italian, English.` 99.6 %, forced 100 %; worded in Italian (`Lingua:
+  italiano.`) it did harm (the word echoed as a transcript, a label `italiano`). On 30 English clips: no hint 5.9 %
+  WER, the Italian hint 5.7 %, the two-language hint 9.6 % (one clip translated), forced Italian 24.4 % (seven
+  translated). So Detect with the hint in the model's English names, first and with its period as measured, is the
+  default (`LANGUAGE_HINT`); Force one is for one language that still flips. Caveats: FLEURS is clean read speech,
+  the pieces are cut, not a VAD's, and only the file route was measured (the Realtime context goes through the same
+  `route::context_of`); under a hint an English utterance can be labelled Italian (4 to 7 of 30), so the language
+  suggestion's count leans to the languages already listed. The guide's `languages[]` sentence ("detect among
+  these") was wrong and is fixed in S4 (several entries detect over all 30).
 - **S4, each utterance's language (Q131).** The server sends it on request: `session.ignis.item_language: true`,
   then `ignis.input_audio_transcription.language {item_id, content_index, language}` (the ISO code the model labelled
   the item with) after the speaker and before `completed`; none for an item labelled `None`. Every listening asks

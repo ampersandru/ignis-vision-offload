@@ -88,7 +88,7 @@ are; **Jump to live** brings it back.
 
 The **Context** in the Call tab is what the transcription is told, and each
 transcript keeps its own. **Add** or **Edit** opens a draft, framed in orange:
-a **Topic**, the **Terms to spell right** (names, products, jargon; Enter or a
+the **Languages**, a **Topic**, the **Terms to spell right** (names, products, jargon; Enter or a
 comma adds one) and **Anything else**. Nothing is sent while you type:
 **Apply** keeps it with the transcript and, while listening, tells the
 sessions in one update, which holds from the next utterance; a Start applies a
@@ -96,7 +96,21 @@ draft left open. Applied, it reads as a record with the time it was applied
 and about how much of the server's context it takes: the server reads 512
 tokens of it and, past that, keeps the last. A speaker's name you give joins
 the terms. The line at the top of the deck says what is told, with **Edit**.
-No language is sent: the model detects it per utterance.
+
+The **Languages** are **Detect** unless you pick **Force one**:
+
+- **Detect**: the model detects each utterance's language, and the ones you
+  list go first into the context as a hint (`Languages: Italian.`). Measured on
+  read Italian cut into pieces of 1 to 2.5 s, the hint took the shortest from
+  91 % to 100 % heard as Italian, as forcing does, while English speech under
+  an Italian hint stayed English text ([the
+  measurement](../../findings/2026-10-27-asr-language-hint.md)). Two languages
+  listed help as much on Italian, but one English clip in thirty came out
+  translated into Italian.
+- **Force one**: every utterance is transcribed as that language (the
+  session's `language`): measured, seven English clips in thirty came out
+  translated into Italian under Italian forced. For a conversation in one
+  language whose short utterances still come out in another.
 
 ## Suggestions
 
