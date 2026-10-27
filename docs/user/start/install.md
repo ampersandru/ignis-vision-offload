@@ -208,3 +208,25 @@ podman run --rm -p 8000:8000 ghcr.io/gpillon/ignis:latest --download-enabled fal
 Its `artifacts` stage is what CI exports the Linux tarball from, so the release
 binaries and the image binaries are the same build
 ([ADR 0032](../../adr/0032-release-through-the-container-build.md)).
+
+### With docker compose
+
+[`docker-compose.yml.example`](../../../docker-compose.yml.example), at the
+root of the repository, is the same container as a compose service: the card
+through the NVIDIA container toolkit, the model downloaded into `./models` and
+kept there, the API and the Playground on `127.0.0.1:8000`, and a stop grace
+period long enough for the drain. Its comments carry the alternatives: a model
+you already have, an API key, the metrics port, and the CDI device for podman.
+
+```
+curl -fLo docker-compose.yml https://raw.githubusercontent.com/gpillon/ignis/main/docker-compose.yml.example
+mkdir -p models && sudo chown 10001 models
+docker compose up -d
+docker compose logs -f ignis
+```
+
+The port is published on the host's loopback only, since the API has no key
+until one is set: to reach it from other machines, set `IGNIS_SERVER_API_KEY`
+([access](../configuration/access.md)) and drop `127.0.0.1:` from `ports`.
+`docker compose down` stops the server, after the drain, and leaves the model
+in `./models`.

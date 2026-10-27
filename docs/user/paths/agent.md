@@ -111,7 +111,9 @@ Ask before the install does anything large or visible:
    ([Get a model](../guides/models.md#fetching-one-ignis-server-model-download)).
 
 For the container, [Quick start](../start/quick-start.md) has the command, with
-the model directory mounted and kept.
+the model directory mounted and kept; under docker compose,
+[`docker-compose.yml.example`](../start/install.md#with-docker-compose) is the
+same container as a service.
 
 ## Start it, and see it serve
 

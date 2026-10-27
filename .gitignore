@@ -33,6 +33,9 @@ __pycache__/
 # per-machine Makefile overrides (template: local.mk.example)
 local.mk
 
+# a local compose file (template: docker-compose.yml.example)
+/docker-compose.yml
+
 # the scratchpad: temporary artifacts, experiments, raw logs, workflow output
 # and the server pid/logs from `make start`. Local to each clone; durable
 # material belongs in docs/ (see AGENTS.md, Scratch).

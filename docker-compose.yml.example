@@ -1,0 +1,61 @@
+# ignis under docker compose: the GPU server with the Playground, the model
+# kept in a directory on the host. Copy it and start:
+#
+#   cp docker-compose.yml.example docker-compose.yml
+#   mkdir -p models && sudo chown 10001 models
+#   docker compose up -d
+#   docker compose logs -f ignis
+#
+# The host needs the NVIDIA driver (nvidia-smi reads `CUDA Version: 13.x` or
+# later) and the NVIDIA container toolkit; the image runs only on an SM120a
+# card (RTX 5090, RTX PRO 6000, the 16 GB RTX 50 class). With no model in
+# ./models the first start downloads the default one for the card (18.1 GiB,
+# 12.5 GiB on a 16 GB card) and keeps it there for the next start. Then the
+# Playground is at http://127.0.0.1:8000/ui/ and the API at
+# http://127.0.0.1:8000/v1; /health and /ready are the probes.
+#
+# Every setting is an IGNIS_* variable under `environment`, or a flag under
+# `command` (the image's entrypoint is the server); `docker compose run --rm
+# ignis help --fields` lists them. docs/user/start/install.md, "The container
+# image", says the rest.
+
+services:
+  ignis:
+    image: ghcr.io/gpillon/ignis:latest
+    restart: unless-stopped
+    # Loopback only: the API has no key until IGNIS_SERVER_API_KEY sets one.
+    # To reach it from other machines, set the key and drop `127.0.0.1:`.
+    ports:
+      - "127.0.0.1:8000:8000"
+      # Prometheus, with IGNIS_SERVER_METRICS_BIND below (it asks for no key):
+      # - "127.0.0.1:9464:9464"
+    # The server runs as uid 10001, never as root, so the directory must be
+    # writable by it: the download lands there, and the n-gram cache and the
+    # KV-disk tier write beside the artifact. Rootless podman maps uids:
+    # `podman unshare chown 10001 models`. A named volume is created
+    # root-owned, and the download fails on it.
+    volumes:
+      - ./models:/models
+    environment:
+      IGNIS_DOWNLOAD_PATH: /models
+      # A model you already have, in place of the download:
+      # IGNIS_MODEL_ARTIFACT: /models/qwen3_8_27b_nvfp4full-v2.ninfer
+      # Every /v1 request then sends `Authorization: Bearer <key>`; `auto`
+      # generates one at start and prints it in the log, once.
+      # IGNIS_SERVER_API_KEY: <your-key>
+      # IGNIS_SERVER_METRICS_BIND: 0.0.0.0:9464
+    # docker: the whole card through the NVIDIA container toolkit. Under
+    # podman compose, if the card does not reach the container, give it the
+    # CDI device in place of `deploy`:
+    #   devices:
+    #     - nvidia.com/gpu=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # On SIGTERM the server finishes the requests in flight and unloads the
+    # model before it exits; compose's 10 s would kill it mid-drain.
+    stop_grace_period: 2m
