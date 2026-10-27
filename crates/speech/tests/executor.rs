@@ -445,6 +445,20 @@ fn a_forced_language_is_the_official_prefill() {
     assert_eq!(transcribe(None).language, None);
 }
 
+/// #362: a transcript is checked for a copy of the context the model read, which past the cap
+/// is only the context's last `max_context` tokens.
+#[test]
+fn the_prompt_keeps_the_context_the_model_reads() {
+    let files = synthetic::pair("context-read");
+    let model = Model::load(&files.decoder, &files.encoder, false).unwrap();
+    let text = &model.text;
+    let context = "Topic: the release plan.\nalpha, beta, gamma, delta";
+    assert_eq!(Prompt::new(text, context, 512, None).context, context);
+    let cut = Prompt::new(text, context, 4, None);
+    assert_eq!(cut.context_tokens, 4);
+    assert!(!cut.context.is_empty() && cut.context.len() < context.len() && context.ends_with(&cut.context), "{:?}", cut.context);
+}
+
 /// Acceptance 20: `auto` is the physical cores less one, an explicit count is used as given.
 #[test]
 fn threads_resolve_auto_and_counts() {

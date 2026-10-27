@@ -101,7 +101,14 @@ Every field is honoured, inert, or refused with a `400` naming it in `param`;
 none is dropped in silence.
 
 `prompt` and `keywords[]` together are read up to `speech.context_max_tokens`
-(512) tokens; past that the **last** ones are kept. A clip longer than
+(512) tokens; past that the **last** ones are kept.
+
+On a clip with little or no speech, a pause's room noise or a short "yes", the
+model can write a line of the context instead of what it heard ([the
+measurement](../../findings/2026-10-27-asr-context-echo.md)). A transcript that
+only repeats a line of the context, the whole line or three or more of its
+words in a row, is taken for no speech: the text comes back empty, with no
+language. One word is kept, since a name the context lists is said alone too. A clip longer than
 `speech.max_clip_seconds` (1200, the model's limit) is a `400` naming the
 limit, and is never split. The body limit is 384 MiB, enough for 20 minutes of
 48 kHz stereo WAV.

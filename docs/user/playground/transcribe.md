@@ -96,7 +96,10 @@ draft left open. Applied, it reads as a record with the time it was applied
 and about how much of the server's context it takes: the server reads
 `speech.context_max_tokens` of it (512 unless set) and, past that, keeps the
 last. A speaker's name you give joins the terms. An Apply changes only what the
-draft changed, so a suggestion accepted while it was open stays. The line at the top of the deck says what is told, with **Edit**.
+draft changed, so a suggestion accepted while it was open stays. On a pause
+with no one speaking, the model can write a line of the context in place of
+what it heard; the server takes such a copy for no speech, so it leaves no
+utterance ([the measurement](../../findings/2026-10-27-asr-context-echo.md)). The line at the top of the deck says what is told, with **Edit**.
 
 The **Languages** are **Detect** unless you pick **Force one**:
 

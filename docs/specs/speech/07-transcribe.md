@@ -422,6 +422,20 @@ The owner's third round, after trying the second (grill Q136-Q141), one commit e
   pointed at or focused; the editor's buttons keep its focus, so Safari's click lands. The answers' settling is one
   helper (`settle`).
 
+### A pause written as the context (2026-10-27)
+
+The owner, on a live call with a context applied: utterances, often, were the keyword line whole. The speech model,
+given a VAD cut with little or no speech, writes a line of its system turn instead of what it heard. A probe
+(docs/findings/2026-10-27-asr-context-echo.md) reproduced it on AMI's silent gaps and short turns: no copy with no
+context or with the language hint alone, 3 to 10 in 50 with a topic and terms; digital silence and white noise never.
+The fix is the server's, so every client has it: `copies_context` (crates/speech/src/text.rs) takes a transcript whose
+words are a whole line of the context as the model read it (after the token cap) of two words or more, or three or
+more of one line's words in a row, a leading `Label:` read with and without, for no speech: empty, labelled only by
+a forced language, for partials and commits alike. One word is never a copy. Applied to the probe's answers it
+empties 15 of the 17 copies (the two left are `migrazione della`, two words) and nothing else. The parser also drops
+a second `<asr_text>` marker, which came back as text 4 times in 50 with no context. Not done: dropping the topic or
+rewording the context to copy less is the owner's to decide (Q128); a copied pause that held a real "sì" loses it.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

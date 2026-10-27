@@ -129,6 +129,8 @@ pub struct Prompt {
     pub tail: Vec<u32>,
     /// Context tokens in the head (after the cap).
     pub context_tokens: usize,
+    /// The context as the model reads it: its last `max_context` tokens.
+    pub context: String,
 }
 
 impl Prompt {
@@ -137,13 +139,13 @@ impl Prompt {
         let ctx = text.encode(context);
         // The rendered template tokenizes "system\n{context}" as one span; over the cap the kept
         // tail of the context follows "system\n" on its own.
-        let (system, context_tokens) = if ctx.len() <= max_context {
+        let (system, context_tokens, read) = if ctx.len() <= max_context {
             let s = text.encode(&format!("system\n{context}"));
-            (s, ctx.len())
+            (s, ctx.len(), context.to_string())
         } else {
             let mut s = text.encode("system\n");
             s.extend_from_slice(&ctx[ctx.len() - max_context..]);
-            (s, max_context)
+            (s, max_context, text.decode(&ctx[ctx.len() - max_context..]))
         };
         let nl = text.encode("\n");
         let mut head = vec![text.im_start];
@@ -163,7 +165,7 @@ impl Prompt {
             }
             None => tail.extend(text.encode("assistant\n")),
         }
-        Prompt { head, tail, context_tokens }
+        Prompt { head, tail, context_tokens, context: read }
     }
 
     /// Text tokens around the audio.
@@ -183,19 +185,20 @@ pub struct Parsed {
 /// Splits `language X<asr_text>text` into X and the text, as the checkpoint's own parser does:
 /// `language None` followed by text is speech (the text is kept), `language None` alone is no
 /// speech (an empty transcript), and output without the marker is all text. A forced language's
-/// prefill is not part of the output, so its `forced` name is the label.
+/// prefill is not part of the output, so its `forced` name is the label. A marker the model
+/// writes again after the first is no text (on noise it can write `<asr_text>` twice, #362).
 pub fn parse(output: &str, forced: Option<&str>) -> Parsed {
     const MARKER: &str = "<asr_text>";
     let s = output.trim();
     if let Some(l) = forced {
         let t = s.split_once(MARKER).map_or(s, |(_, t)| t);
-        return Parsed { language: Some(l.to_string()), text: t.trim().to_string() };
+        return Parsed { language: Some(l.to_string()), text: t.replace(MARKER, "").trim().to_string() };
     }
     let Some((prefix, text)) = s.split_once(MARKER) else {
         return Parsed { language: None, text: s.to_string() };
     };
     let prefix = prefix.trim();
-    let text = text.trim().to_string();
+    let text = text.replace(MARKER, "").trim().to_string();
     if prefix.eq_ignore_ascii_case("language none") {
         return Parsed { language: None, text };
     }
@@ -206,6 +209,29 @@ pub fn parse(output: &str, forced: Option<&str>) -> Parsed {
     }
     .filter(|l| !l.is_empty());
     Parsed { language, text }
+}
+
+/// Whether a transcript only repeats its context (#362). Given little or no speech, a VAD's cut
+/// of room noise or a backchannel, the model can write a line of its system turn instead of what
+/// it heard: the topic, the keyword line. A transcript is taken for such a copy when its words
+/// (letters and digits, lower-cased) are a whole line of the context of two words or more, or
+/// three or more of one line's words in a row; a line's leading `Label:` is read with and without
+/// it. A single word never is: a name the context lists is said alone too.
+pub fn copies_context(context: &str, transcript: &str) -> bool {
+    let said = words(transcript);
+    if said.len() < 2 {
+        return false;
+    }
+    context.lines().any(|line| {
+        std::iter::once(line).chain(line.split_once(':').map(|(_, rest)| rest)).any(|line| {
+            let line = words(line);
+            said == line || (said.len() >= 3 && line.windows(said.len()).any(|run| run == said))
+        })
+    })
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
 }
 
 #[cfg(test)]
@@ -226,5 +252,39 @@ mod tests {
         // A forced language: the output has no header, and the forced name is the label.
         assert_eq!(parse("Buongiorno a tutti.", Some("Italian")), Parsed { language: Some("Italian".into()), text: "Buongiorno a tutti.".into() });
         assert_eq!(parse("language English<asr_text>", None), Parsed { language: Some("English".into()), text: String::new() });
+        // The marker written twice, as on noise: no text, never the marker's spelling.
+        assert_eq!(parse("language None<asr_text><asr_text>", None), Parsed { language: None, text: String::new() });
+        assert_eq!(parse("<asr_text>", Some("Italian")), Parsed { language: Some("Italian".into()), text: String::new() });
+    }
+
+    /// The Playground's context, shaped as in #362's probe: the language hint, the topic, the keyword line.
+    const CONTEXT: &str = "Languages: Italian.\nTopic: migrazione della pila software verso GitOps.\n\
+        pila software, Argo CD, Forgejo Enterprise, GitOps, Forgejo Apps, Tekton, pull mode, OKD, Fedora, OCM, Jenkins, Helm Chart, Harbor, Gen Two, Marta, Paolo";
+
+    #[test]
+    fn a_transcript_that_only_repeats_a_line_of_the_context_is_a_copy() {
+        // The keyword line whole, as the model wrote it on a pause.
+        let line = CONTEXT.lines().last().unwrap();
+        assert!(copies_context(CONTEXT, line));
+        // The topic, with or without its label, its period or not, and its head.
+        assert!(copies_context(CONTEXT, "migrazione della pila software verso GitOps."));
+        assert!(copies_context(CONTEXT, "Topic: migrazione della pila software verso GitOps"));
+        assert!(copies_context(CONTEXT, "Migrazione della pila"));
+        // Three of the keyword line's words in a row.
+        assert!(copies_context(CONTEXT, "Jenkins, Helm Chart"));
+        // A context cut by its token cap: the lines the model read.
+        assert!(copies_context("ra della pila software verso GitOps.\npila software, Argo CD", "pila software, Argo CD"));
+    }
+
+    #[test]
+    fn a_transcript_that_says_something_of_its_own_is_no_copy() {
+        // Two words of a longer line, and one word, are said for real too.
+        assert!(!copies_context(CONTEXT, "migrazione della"));
+        assert!(!copies_context(CONTEXT, "Marta?"));
+        assert!(!copies_context(CONTEXT, "Italian."));
+        // A sentence that names what the context lists.
+        assert!(!copies_context(CONTEXT, "Marta ha aggiornato la Helm Chart ieri."));
+        assert!(!copies_context(CONTEXT, "la migrazione della pila software parte lunedì"));
+        assert!(!copies_context("", "migrazione della pila software"));
     }
 }

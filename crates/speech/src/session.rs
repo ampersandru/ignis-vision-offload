@@ -41,7 +41,7 @@ use crate::decoder::{self, argmax, Cache, Logits};
 use crate::encoder::encode_window;
 use crate::executor::{Core, Loaded, PrefixEntry, SessionTuning};
 use crate::mel::{self, audio_tokens, frames_of, normalise, CHUNK_FRAMES, HOP, MIN_SAMPLES, N_FFT, N_MELS, WINDOW_CHUNKS};
-use crate::text::{parse, Prompt};
+use crate::text::{copies_context, parse, Prompt};
 
 const WINDOW_FRAMES: usize = CHUNK_FRAMES * WINDOW_CHUNKS;
 const WINDOW_TOKENS: usize = 104;
@@ -370,6 +370,9 @@ impl Session {
             return (String::new(), None);
         }
         let p = parse(&text.decode(ids), self.language.as_deref());
+        if copies_context(&self.prompt.context, &p.text) {
+            return (String::new(), None);
+        }
         (p.text, p.language)
     }
 
@@ -575,6 +578,8 @@ impl Commit {
         let all: Vec<u32> = [&s.stable[..], &d.out[..]].concat();
         let text = &s.loaded.model.text;
         let p = parse(&text.decode(&all), s.language.as_deref());
-        Ok(Some(Transcript { text: p.text, language: p.language, audio_seconds: s.seconds(), audio_tokens: audio_tokens(total), tokens: all }))
+        // A copy of the context is no speech: an empty transcript, labelled only by a forced language.
+        let (said, language) = if copies_context(&s.prompt.context, &p.text) { (String::new(), s.language.clone()) } else { (p.text, p.language) };
+        Ok(Some(Transcript { text: said, language, audio_seconds: s.seconds(), audio_tokens: audio_tokens(total), tokens: all }))
     }
 }
