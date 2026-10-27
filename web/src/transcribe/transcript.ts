@@ -17,6 +17,8 @@
 //
 // Every function returns a new Transcript and leaves the one it was given alone.
 
+import type { Notes } from "./notes.ts";
+
 export type SourceKind = "microphone" | "call" | "file";
 
 /** A label: a voice the diarizer told apart, or a call's Me and Others. */
@@ -52,6 +54,8 @@ export type Transcript = {
   channels: Record<string, number>;
   /** The voices numbered so far: the next is Speaker `voices + 1`, whatever was merged or renamed since. */
   voices: number;
+  /** Its notes (notes.ts): absent until a kind is picked or notes are written. */
+  notes?: Notes;
 };
 
 /** Who an utterance's audio is, as the listening knows it. */

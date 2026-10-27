@@ -357,8 +357,8 @@ export const scenes = [
   },
   {
     // A call written down (spec speech/07). Neither the mock nor a picture run records one, so the scene puts a
-    // made-up transcript in the page's store, reloads, and opens the view; the server is said to have its speech
-    // model and its diarizer, so the deck can start. No real conversation reaches the guide.
+    // made-up transcript in the page's store, with its notes, reloads, and opens the view; the server is said to
+    // have its speech model and its diarizer, so the deck can start. No real conversation reaches the guide.
     name: "transcribe",
     before: async (page) => {
       await page.route("**/v1/models", async (route) => {
@@ -374,6 +374,7 @@ export const scenes = [
       await chatReady(page);
       await view(page, "Transcribe");
       await page.getByText("I'll post the notes in the channel.").waitFor();
+      await page.getByText("Tag at four, then check the download links").waitFor();
     },
   },
 ];
@@ -406,6 +407,15 @@ function sceneTranscript() {
     ],
     channels: { me: 1, "shared-2:0": 2, "shared-2:1": 3 },
     voices: 2,
+    // As the Notes tab keeps them (web/src/transcribe/notes.ts): a Work call's, written from all eight utterances.
+    notes: {
+      kind: "work",
+      text: "## Summary\nA short release check: the overnight build passed, so the tag goes out today at four; two screenshots and a changelog line are left on the docs side.\n\n## Topics\n- **Release**: the build passed on both runners [00:09].\n- **Docs**: two pages need new screenshots, the changelog a line for the speech view [00:20].\n\n## People\n- **Me**: runs the call and sets the time of the tag.\n- **Speaker 1**: raised the docs work, posts the notes.\n- **Speaker 2**: reported the build, takes the screenshots.\n\n## Decisions\n- Tag at four, then check the download links [00:31].\n\n## Action items\n- [ ] Speaker 2: take the screenshots this afternoon [00:27].\n- [ ] Speaker 1: post the notes in the channel [00:38].\n- [ ] Me: check the download links after the tag [00:31].\n\n## Open questions\n—",
+      writtenAs: "work",
+      covered: 8,
+      writtenAt: new Date(2026, 9, 25, 15, 43).getTime(),
+      fromMs: null,
+    },
   };
 }
 

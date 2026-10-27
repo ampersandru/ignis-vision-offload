@@ -549,6 +549,40 @@
   }
 }
 
+/* A Transcript's notes (transcribe/Notes.tsx): the panel's measure, and each
+   section's heading in the display face behind an ember square. */
+@layer components {
+  .notes .md {
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .notes .md h2 {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin-top: 1.3em;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .notes .md h2::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    background: var(--ember);
+  }
+  .notes .md > h2:first-child {
+    margin-top: 0;
+  }
+  .notes .md h2 + * {
+    margin-top: 0.35em;
+  }
+  .notes .md ul,
+  .notes .md ol {
+    padding-left: 1.1em;
+  }
+}
+
 /* The memory sheet (MemoryManager.tsx): it rises as it opens, the rule under
    its title runs from ember into the kiln line, and a note just saved or
    edited flares white-hot and cools back to its heat. */

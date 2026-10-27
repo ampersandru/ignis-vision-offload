@@ -263,6 +263,39 @@ The first try on a call (grill Q121-Q123):
   server change), or nothing more. `transcription.languages` with several entries is no help: the server detects
   among all thirty then.
 
+### Notes (2026-10-27, Q124-Q127)
+
+The owner asked, after the first live check, for the view to sum a conversation up as it goes: a kind of meeting
+chosen, the model estimating what that kind wants (a work call's topics, people, actions; a game's games and wins),
+in a tab of the right panel as the chat's General and Tools are, kept up during a call, each feature behind a
+switch. Built as a draft for the owner to try, beyond Q81-Q123 (transcribe/notes.ts, notesWriter.ts, Notes.tsx):
+- **Q124: a Notes tab** beside Tools, open by default (the header's right drawer is "Notes"). Four kinds, each its
+  sections: General (Summary, Key points, Next steps), Work call (Summary, Topics, People, Decisions, Action items,
+  Open questions), Game session (Games, Players, Results, Highlights), Lesson (Topics, Key concepts, Questions,
+  To review). Write notes / Update notes / Stop, Copy notes. The notes and their kind live on the Transcript
+  (`notes`, under version 1: a field the page cannot read is dropped on restore, not the Transcript); a new one
+  starts at the kind picked last (`ignis.transcribeNoteKind`). Nothing goes to the model before a press or the
+  switch below.
+- **Q125: the request keeps the prefix.** The system prompt is the kind's alone and constant; the user turn is the
+  title and the transcript's `.txt`, which a listening only appends to. The notes written before are not sent back:
+  each writing starts from the transcript, so a correction holds and an error does not compound. The headings stay
+  as the prompt writes them and the text is in the transcript's language: probed on the 27B (2026-10-27), asking for
+  the headings in the conversation's language turned the whole notes English, while "keep each heading as given,
+  the text in the transcript's language, a transcript in Italian gets notes in Italian" wrote Italian notes under
+  the English headings. A kind that does not fit writes a dash in every section (a Game session on a work call).
+- **Q126: Keep updating while listening**, a per-viewer switch, off by default (`ignis.transcribeNotesLive`). A
+  look every 5 s: the first notes once 3 utterances are in, then at least 60 s from the last writing's start while
+  something new was said, a writing at once when another kind is picked, and one more when the listening ends,
+  after the writing under way.
+- **Q127: the model.** The model loaded, never named, so no request switches (the image model loaded, or none
+  serving, strikes the tab with its reason); `class: "agent"`, `reasoning_effort: "none"`, temperature 0.3, top_p
+  0.9, at most 1,500 tokens; a full engine is waited out a second at a time, up to 60 times (api/busy.ts, now
+  shared with the agents and the safety check). A transcript past the model's context is sent from where its tail
+  fits (3 characters a token, 2,500 tokens kept for the prompt and the notes), and the line says from when. The
+  probe on the 27B: 6 utterances, 517 prompt tokens, 355 written, 2 s.
+- Open for the owner: kinds or sections of their own; the notes in the exports and in Open in chat; whether this
+  stays in #362 or becomes a ticket of its own.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

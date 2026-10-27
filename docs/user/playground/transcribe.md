@@ -1,6 +1,6 @@
 ---
 title: "Transcribe"
-description: "The Transcribe view: a conversation heard from the microphone, a call or a file, written down utterance by utterance with its speakers, corrected live and exported."
+description: "The Transcribe view: a conversation heard from the microphone, a call or a file, written down utterance by utterance with its speakers, corrected live, summed up in notes by the text model and exported."
 sidebar:
   order: 8
 ---
@@ -9,16 +9,17 @@ The **Transcribe** view writes a whole conversation down: a meeting in the
 room, a call on this computer, or a recording. What it hears becomes a
 **transcript**, its **utterances** in order, each with its time, its
 **speaker** and its text. You can rename and correct the speakers and edit the
-text while it listens, then copy the transcript, download it, or open it in a
-new chat. It uses the server's [speech model](../api/transcriptions.md) and,
+text while it listens, have the text model write its notes, then copy the
+transcript, download it, or open it in a new chat. It uses the server's [speech model](../api/transcriptions.md) and,
 for the speakers, its [diarizer](../api/realtime-transcription.md#speakers).
 
-![The Transcribe view: a call with its speakers on the time spine, the speakers and exports on the right](../images/playground/transcribe.png)
+![The Transcribe view: a call with its speakers on the time spine, its notes on the right](../images/playground/transcribe.png)
 
 It is laid out like the other views: the **transcripts** on the left, the one
-open in the middle with its deck at the foot, and on the right its
-**speakers**, its **exports** and **Open in chat**. Below 1024 px wide the side
-columns open from the header as drawers.
+open in the middle with its deck at the foot, and on the right two tabs:
+**Notes**, and **Tools** with its speakers, its exports, Open in chat and the
+view's settings. Below 1024 px wide the side columns open from the header as
+drawers.
 
 ## Listening
 
@@ -155,6 +156,43 @@ listening; so does a lost connection.
 **Open in chat** opens a new chat with the transcript as Markdown in its prompt
 box. Nothing is sent until you press Send: ask for a summary, the decisions,
 the action items.
+
+## Notes
+
+The **Notes** tab has the text model loaded read the transcript and write its
+notes. Pick the **kind of conversation** first; each asks for its own sections:
+
+| Kind | Sections |
+|---|---|
+| General | Summary, Key points, Next steps |
+| Work call | Summary, Topics, People, Decisions, Action items, Open questions |
+| Game session | Games, Players, Results, Highlights |
+| Lesson | Topics, Key concepts, Questions, To review |
+
+**Write notes** sends the transcript as it stands, and the notes stream in
+under those headings, as written above; the text under them is in the
+transcript's language, a moment is pointed at as `[mm:ss]`, and a section with
+nothing in it is a dash. **Update notes** writes them again from the whole
+transcript, so a correction holds; **Stop** leaves the notes there were. The
+line under them says when they were written, from how many utterances, and how
+many came since. **Copy notes** puts them on the clipboard as Markdown. Each
+transcript keeps its notes and its kind; a new one starts at the kind picked
+last (this browser keeps it).
+
+**Keep updating while listening**, off unless you turn it on (this browser
+keeps the choice), writes them by itself while a listening goes on: the first
+once three utterances are in, then about once a minute while something new is
+said, and once more when the listening ends. Picking another kind meanwhile
+writes them again straight away.
+
+Nothing goes to the model before a press or the switch. The notes go to the
+model loaded and name none, so they never switch models: with the image model
+loaded, or none serving, the tab says so and writes nothing. Each writing is a
+chat completion on an agent's lane (`class: "agent"`), thinking off, that waits
+while every lane is taken; the transcript is its user message after the title,
+so the next writing reuses what the server has already read. A transcript too
+long for the model's context is sent from where its tail fits, and the line
+says from when.
 
 ## While it listens
 

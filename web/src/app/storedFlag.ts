@@ -19,6 +19,8 @@ export const STORED_FLAGS = {
   imageEnhance: "ignis.imageEnhance",
   /** On a call, the Transcribe view holds the mic while the far side speaks (spec speech/07, Q121). On at first. */
   transcribeHoldMic: "ignis.transcribeHoldMic",
+  /** The Transcribe view keeps a listening's notes up as it goes (spec speech/07, Q126). Off at first. */
+  transcribeNotesLive: "ignis.transcribeNotesLive",
 } as const;
 
 /**

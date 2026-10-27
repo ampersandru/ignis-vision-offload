@@ -11,6 +11,8 @@ import { useStoredSessions } from "../store/useStoredSessions.ts";
 import { decodeFile } from "./file.ts";
 import { filePace } from "./filePace.ts";
 import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
+import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
+import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
@@ -34,6 +36,10 @@ export type TranscribeState = {
   speakersUnavailable: string | null;
   /** On a call, hold the mic while the far side speaks (Q121): this browser's, on at first. */
   holdMic: boolean;
+  /** Keep a listening's notes up as it goes (Q126): this browser's, off at first. */
+  notesLive: boolean;
+  /** Why no notes can be written now (notes.ts), `null` while a text model serves. */
+  notesBlocked: string | null;
   /** What keeping the Transcripts in this browser ran into. */
   storeError: string | null;
 };
@@ -58,9 +64,29 @@ export type TranscribeActions = {
   mergeSpeakers: (from: number, into: number) => void;
   splitUtterance: (utterance: number, at: number, to: number | "new") => void;
   editText: (utterance: number, text: string) => void;
+  /** The open Transcript's kind of notes, and this browser's next default. */
+  setNoteKind: (kind: NoteKind) => void;
+  /** Writes the open Transcript's notes now. */
+  writeNotes: () => void;
+  stopNotes: () => void;
+  setNotesLive: (on: boolean) => void;
 };
 
-export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus; onUnavailable: () => void }): [TranscribeState, TranscribeActions, ListeningHandle] {
+/** The text model, as the notes need it: why none serves, and its context. */
+export type TextModel = { blocked: string | null; contextLimit: number | null };
+
+/** How often keeping the notes up looks whether it is time. */
+const NOTES_LOOK_MS = 5_000;
+
+export function useTranscribe({
+  speech,
+  text,
+  onUnavailable,
+}: {
+  speech?: SpeechStatus;
+  text: TextModel;
+  onUnavailable: () => void;
+}): [TranscribeState, TranscribeActions, ListeningHandle, NotesHandle] {
   const [list, setList] = useState<TranscriptList>(() => startList());
   const [context, setContextText] = useState("");
   const [speakers, setSpeakers] = useState(true);
@@ -69,8 +95,9 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
   holdMicRef.current = holdMic;
   const listNow = useRef(list);
   listNow.current = list;
-  const latest = useRef({ onUnavailable });
-  latest.current = { onUnavailable };
+  const latest = useRef({ onUnavailable, text });
+  latest.current = { onUnavailable, text };
+  const [notesLive, storeNotesLive] = useStoredFlag(STORED_FLAGS.transcribeNotesLive, false);
 
   const [controller] = useState(
     () =>
@@ -88,6 +115,28 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
       }),
   );
   useEffect(() => () => controller.dispose(), [controller]);
+
+  const [writer] = useState(
+    () =>
+      new NotesWriter({
+        onWritten: (id, written) => setList((l) => updateTranscript(l, id, (t) => ({ ...t, notes: { ...(t.notes ?? noNotes(written.writtenAs ?? "general")), ...written } }))),
+      }),
+  );
+  useEffect(() => () => writer.stop(), [writer]);
+
+  // Keeping the notes up: a look every few seconds at the listening and its Transcript, while a text model serves.
+  useEffect(() => {
+    if (!notesLive) return;
+    const look = () => {
+      const { text: model } = latest.current;
+      if (model.blocked !== null) return;
+      const listening = controller.getState();
+      const on = listening.phase === "idle" ? null : listening.transcript;
+      void writer.look(on, (id) => listNow.current.transcripts.find((t) => t.id === id), kindOf, model.contextLimit);
+    };
+    const timer = setInterval(look, NOTES_LOOK_MS);
+    return () => clearInterval(timer);
+  }, [notesLive, controller, writer]);
 
   const kept = useStoredSessions({
     store: pageStore(),
@@ -166,10 +215,27 @@ export function useTranscribe({ speech, onUnavailable }: { speech?: SpeechStatus
       mergeSpeakers: (from, into) => correct((t) => mergeSpeakers(t, from, into)),
       splitUtterance: (utterance, at, to) => correct((t) => splitUtterance(t, utterance, at, to)),
       editText: (utterance, text) => correct((t) => editText(t, utterance, text)),
+      setNoteKind: (kind) => {
+        chooseNoteKind(kind);
+        correct((t) => ({ ...t, notes: { ...(t.notes ?? noNotes(kind)), kind } }));
+      },
+      writeNotes: () => {
+        const { text: model } = latest.current;
+        if (model.blocked !== null) return;
+        const t = activeOf(listNow.current);
+        void writer.write(t, kindOf(t), model.contextLimit);
+      },
+      stopNotes: () => writer.stop(),
+      setNotesLive: (on) => storeNotesLive(on),
     }),
-    // `storeHoldMic` is stable for its key.
-    [controller, storeHoldMic],
+    // `storeHoldMic` and `storeNotesLive` are stable for their keys.
+    [controller, writer, storeHoldMic, storeNotesLive],
   );
 
-  return [{ list, active, context, speakers: speakers && struck === null, speakersUnavailable: struck, holdMic, storeError: kept.error }, actions, controller];
+  return [
+    { list, active, context, speakers: speakers && struck === null, speakersUnavailable: struck, holdMic, notesLive, notesBlocked: text.blocked, storeError: kept.error },
+    actions,
+    controller,
+    writer,
+  ];
 }

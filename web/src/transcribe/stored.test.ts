@@ -71,6 +71,17 @@ describe("a Transcript in the store", () => {
     expect(JSON.stringify(stored)).not.toMatch(/audio|pcm/i);
   });
 
+  it("keeps its notes (Q124), and drops notes it cannot read without dropping the Transcript", () => {
+    const notes = { kind: "work" as const, text: "## Riassunto\n- Si parte dal budget.", writtenAs: "work" as const, covered: 2, writtenAt: 1_761_580_000_000, fromMs: null };
+    const original = { ...heardTwice(), notes };
+    const [back] = restoreTranscripts([toStored(original, { key: "k", order: 1 })], 1).transcripts;
+    expect(back.notes).toEqual(notes);
+    const garbled = { ...toStored(original, { key: "k", order: 1 }), notes: { kind: "party", text: 3 } };
+    const [kept] = restoreTranscripts([garbled], 1).transcripts;
+    expect(kept.utterances).toHaveLength(2);
+    expect(kept).not.toHaveProperty("notes");
+  });
+
   it("is worth keeping once an utterance is heard in it", () => {
     expect(worthKeeping(createTranscript(1))).toBe(false);
     expect(worthKeeping(heardTwice())).toBe(true);

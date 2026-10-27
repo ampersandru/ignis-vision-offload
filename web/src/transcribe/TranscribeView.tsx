@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
 import { caption } from "../ui/classes.ts";
 import { IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Deck } from "./Deck.tsx";
+import { Notes } from "./Notes.tsx";
+import type { NotesHandle } from "./notesWriter.ts";
 import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
 import { SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
@@ -14,7 +16,8 @@ import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view (spec speech/07), in the Decide tab's three-column
 // shape: the Transcripts on the left, the one open in the middle with the deck
-// at its foot, and on the right its speakers, its exports and Open in chat.
+// at its foot, and on the right two tabs: its notes (Notes.tsx), and its
+// speakers, its exports, Open in chat and the view's settings.
 // Below `lg` the two side columns are drawers the header opens. The state is
 // the page's (useTranscribe.ts): a listening goes on while the view is hidden.
 
@@ -28,6 +31,7 @@ export function TranscribeView({
   state,
   actions,
   listening: handle,
+  notes,
   speech,
   drawer,
   onDrawer,
@@ -36,6 +40,7 @@ export function TranscribeView({
   state: TranscribeState;
   actions: TranscribeActions;
   listening: ListeningHandle;
+  notes: NotesHandle;
   speech?: SpeechStatus;
   drawer: Drawer;
   onDrawer: (drawer: Drawer) => void;
@@ -79,7 +84,15 @@ export function TranscribeView({
         <Deck state={state} listening={listening} actions={actions} speech={speech} secure={secure} here={here} />
       </main>
 
-      <Tools transcript={state.active} actions={actions} open={drawer === "settings"} onOpenInChat={onOpenInChat} />
+      <Side open={drawer === "settings"}>
+        {(tab) =>
+          tab === "notes" ? (
+            <Notes transcript={state.active} state={state} actions={actions} notes={notes} />
+          ) : (
+            <Tools transcript={state.active} actions={actions} onOpenInChat={onOpenInChat} />
+          )
+        }
+      </Side>
     </div>
   );
 }
@@ -174,17 +187,40 @@ function download(t: Transcript, { extension, type, write }: (typeof EXPORTS)[nu
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function Tools({
-  transcript: t,
-  actions,
-  open,
-  onOpenInChat,
-}: {
-  transcript: Transcript;
-  actions: TranscribeActions;
-  open: boolean;
-  onOpenInChat: (markdown: string) => void;
-}) {
+type SideTab = "notes" | "tools";
+
+/** The right panel, in two tabs as the chat's settings are: Notes and Tools. A drawer below `lg`, shown when `open`. */
+function Side({ open, children }: { open: boolean; children: (tab: SideTab) => ReactNode }) {
+  const [tab, setTab] = useState<SideTab>("notes");
+  return (
+    <aside
+      aria-label="Notes and tools"
+      className={`fixed inset-y-0 right-0 z-40 flex w-80 flex-col overflow-y-auto border-l border-line bg-ground px-5 pb-5 transition-transform motion-reduce:transition-none lg:static lg:z-auto lg:translate-x-0 xl:w-96 ${open ? "translate-x-0" : "max-lg:invisible max-lg:translate-x-full"}`}
+    >
+      <div role="tablist" aria-label="Panel sections" className="sticky top-0 z-10 -mx-5 mb-5 flex gap-5 border-b border-line bg-ground px-5 pt-4">
+        {(["notes", "tools"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            id={`transcribe-tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls="transcribe-tab-panel"
+            onClick={() => setTab(t)}
+            className={`-mb-px border-b-2 pb-2 font-display text-[13px] font-semibold ${tab === t ? "border-ember text-ink" : "border-transparent text-ash hover:text-ink"}`}
+          >
+            {t === "notes" ? "Notes" : "Tools"}
+          </button>
+        ))}
+      </div>
+      <div id="transcribe-tab-panel" role="tabpanel" aria-labelledby={`transcribe-tab-${tab}`} className="flex flex-1 flex-col gap-6">
+        {children(tab)}
+      </div>
+    </aside>
+  );
+}
+
+function Tools({ transcript: t, actions, onOpenInChat }: { transcript: Transcript; actions: TranscribeActions; onOpenInChat: (markdown: string) => void }) {
   const [copied, setCopied] = useState(false);
   const pace = useFilePace();
   const silence = useUtteranceSilence();
@@ -193,10 +229,7 @@ function Tools({
   for (const u of t.utterances) if (u.speaker !== null) counts.set(u.speaker, (counts.get(u.speaker) ?? 0) + 1);
 
   return (
-    <aside
-      aria-label="Speakers and export"
-      className={`fixed inset-y-0 right-0 z-40 flex w-72 flex-col gap-6 overflow-y-auto border-l border-line bg-ground px-5 py-5 transition-transform motion-reduce:transition-none lg:static lg:z-auto lg:w-72 lg:translate-x-0 ${open ? "translate-x-0" : "max-lg:invisible max-lg:translate-x-full"}`}
-    >
+    <>
       <section aria-labelledby="transcribe-speakers" className="flex flex-col gap-2.5">
         <h2 id="transcribe-speakers" className={caption}>
           Speakers
@@ -331,6 +364,6 @@ function Tools({
         </div>
         <p className="text-xs leading-snug text-ash">How far ahead of its transcript a file is sent. Further ahead finishes sooner and holds more of the server's queue.</p>
       </section>
-    </aside>
+    </>
   );
 }

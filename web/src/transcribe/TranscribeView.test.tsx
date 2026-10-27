@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { SECURE_CONTEXT, TURNED_OFF } from "../speech/availability.ts";
 import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft } from "./Deck.tsx";
 import { IDLE, type ListeningState } from "./listening.ts";
+import { NotesPanel, notesButton } from "./Notes.tsx";
+import type { NotesWriterState } from "./notesWriter.ts";
 import { Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
 import { fileStem, transcriptSummary } from "./TranscribeView.tsx";
@@ -31,6 +33,10 @@ const actions: TranscribeActions = {
   mergeSpeakers: none,
   splitUtterance: none,
   editText: none,
+  setNoteKind: none,
+  writeNotes: none,
+  stopNotes: none,
+  setNotesLive: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -90,11 +96,12 @@ describe("the speakers' hues", () => {
   });
 });
 
+const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
+  const list = startList();
+  return { list, active: list.transcripts[0], context: "", speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, notesBlocked: null, storeError: null, ...patch };
+};
+
 describe("the deck", () => {
-  const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
-    const list = startList();
-    return { list, active: list.transcripts[0], context: "", speakers: true, speakersUnavailable: null, holdMic: true, storeError: null, ...patch };
-  };
   const deck = (s: TranscribeState, listening: ListeningState = IDLE) =>
     renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here />);
 
@@ -164,6 +171,51 @@ describe("the strip", () => {
     expect(strip(at({ phase: "waiting" }))).toContain(">Cancel<");
     expect(stripStatus(at({ phase: "finishing" }))).toBe("Finishing the last words");
     expect(timeLeft(40_000)).toBe("about 40 s left");
+  });
+});
+
+describe("the notes", () => {
+  const idle: NotesWriterState = { writing: null, text: "", failed: null };
+  const written = (t: Transcript): Transcript => ({
+    ...t,
+    notes: { kind: "work", text: "## Riassunto\n- Si apre.", writtenAs: "work", covered: 1, writtenAt: new Date(2026, 9, 27, 16, 5).getTime(), fromMs: null },
+  });
+  const panel = (t: Transcript, writer: NotesWriterState = idle, patch: Partial<TranscribeState> = {}) =>
+    renderToStaticMarkup(<NotesPanel transcript={t} state={state(patch)} actions={actions} writer={writer} />);
+
+  it("offers the four kinds, Write notes, and says nothing goes to the model before a press (Q124)", () => {
+    const html = panel(room());
+    expect(html).toMatch(/role="radio" aria-checked="true"[^>]*><span[^>]*>General<\/span>/);
+    expect(html).toContain("Game session");
+    expect(html).toContain(">Write notes<");
+    expect(html).toContain("Nothing goes to it until you press Write notes");
+    expect(html).toMatch(/role="switch" aria-checked="false"[^>]*>.*Keep updating while listening/);
+  });
+
+  it("shows the notes written, when and from how much, and offers to update them", () => {
+    const html = panel(addUtterance(written(room()), { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Poi?", voice: null }));
+    expect(html).toContain("<h2>Riassunto</h2>");
+    expect(html).toContain("Written at 16:05 from 1 utterance. 1 more since.");
+    expect(html).toContain(">Update notes<");
+    expect(html).toMatch(/role="radio" aria-checked="true"[^>]*><span[^>]*>Work call<\/span>/);
+  });
+
+  it("streams a writing under the heat, the button a Stop", () => {
+    const t = written(room());
+    const html = panel(t, { writing: t.id, text: "## Argomenti\n- Il budget", failed: null });
+    expect(html).toContain("spine-live");
+    expect(html).toContain("<h2>Argomenti</h2>");
+    expect(html).not.toContain("Riassunto");
+    expect(notesButton(t, { writing: t.id, text: "", failed: null }, null)).toEqual({ label: "Stop", disabled: false, stops: true });
+  });
+
+  it("cannot write with no text model, nothing heard, or another Transcript's notes under way, and says why it failed", () => {
+    const t = room();
+    expect(notesButton(t, idle, "No text model serves: notes need one. Load it in the Server view.").disabled).toBe(true);
+    expect(notesButton(createTranscript(2), idle, null).disabled).toBe(true);
+    expect(notesButton(t, { writing: 9, text: "", failed: null }, null).disabled).toBe(true);
+    expect(panel(t, idle, { notesBlocked: "The image model is loaded: notes need a text model. Switch in the Server view." })).toContain("The image model is loaded");
+    expect(panel(t, { writing: null, text: "", failed: { transcript: t.id, message: "The model wrote nothing." } })).toContain("The notes were not written: The model wrote nothing.");
   });
 });
 

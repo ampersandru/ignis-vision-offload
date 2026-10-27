@@ -30,6 +30,7 @@ import { lastReply } from "../sessions/sessions.ts";
 import { dictationContext } from "../speech/dictation.ts";
 import { useDictation } from "../speech/useDictation.ts";
 import { type Drawer as TranscribeDrawer, TranscribeView } from "../transcribe/TranscribeView.tsx";
+import { notesBlocked } from "../transcribe/notes.ts";
 import { useTranscribe } from "../transcribe/useTranscribe.ts";
 import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
@@ -117,7 +118,12 @@ export function App() {
   // header shows a listening from every view.
   const [transcribeOpened, setTranscribeOpened] = useState(false);
   const [transcribeDrawer, setTranscribeDrawer] = useState<TranscribeDrawer>(null);
-  const [transcribe, transcribeActions, listening] = useTranscribe({ speech: model.speech, onUnavailable: refreshModel });
+  const [transcribe, transcribeActions, listening, notesWriter] = useTranscribe({
+    speech: model.speech,
+    // The notes go to the text model loaded, never to another: no request of theirs names one.
+    text: { blocked: notesBlocked(model), contextLimit: canChat(model) ? model.contextLimit : null },
+    onUnavailable: refreshModel,
+  });
   // Held here, not in the view: the chat hands pictures to it.
   // Each keeps the pictures the other names when it deletes a session: the store holds both views' pictures once.
   const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures });
@@ -308,6 +314,7 @@ export function App() {
             state={transcribe}
             actions={transcribeActions}
             listening={listening}
+            notes={notesWriter}
             speech={model.speech}
             drawer={transcribeDrawer}
             onDrawer={setTranscribeDrawer}
