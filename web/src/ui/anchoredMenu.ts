@@ -9,13 +9,14 @@ import { useEffect, useRef, useState } from "react";
  */
 export function useAnchoredMenu<B extends HTMLElement = HTMLButtonElement>() {
   const [open, setOpen] = useState(false);
-  const [at, setAt] = useState({ left: 0, bottom: 0 });
+  const [at, setAt] = useState({ left: 0, right: 0, bottom: 0 });
   const button = useRef<B>(null);
   const menu = useRef<HTMLDivElement>(null);
 
   function place() {
     const box = button.current?.getBoundingClientRect();
-    if (box) setAt({ left: box.left, bottom: window.innerHeight - box.top + 8 });
+    // `right` for a menu that ends where its button does, at the page's right.
+    if (box) setAt({ left: box.left, right: window.innerWidth - box.right, bottom: window.innerHeight - box.top + 8 });
   }
 
   useEffect(() => {

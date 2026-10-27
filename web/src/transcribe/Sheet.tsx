@@ -190,7 +190,11 @@ export const Sheet = memo(function Sheet({
   const empty = transcript.utterances.length === 0 && live.length === 0;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={scroller} onScroll={(e) => setFollowing(isAtBottom(e.currentTarget))} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-10">
+      <div
+        ref={scroller}
+        onScroll={(e) => setFollowing(isAtBottom(e.currentTarget))}
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-6 [scrollbar-gutter:stable] md:px-10"
+      >
         <div className="mx-auto w-full max-w-3xl">
           {empty ? (
             <Empty listening={here && phase !== "idle"} />
@@ -224,6 +228,8 @@ export const Sheet = memo(function Sheet({
           )}
         </div>
       </div>
+      {/* The text goes under the foot rather than to a rule: the ask bar below has none. */}
+      <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-ground" />
       {deleted && (
         <div
           role="status"

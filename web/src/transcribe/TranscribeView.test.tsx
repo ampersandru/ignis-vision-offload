@@ -13,7 +13,7 @@ import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
 import { Heading, highlighted, nextCheckIn, RewritePanel, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
-import { fileStem, listMatch, SearchField, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
+import { fileStem, listMatch, SearchField, Settings, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
 import { hitsIn } from "./search.ts";
 import { addUtterance, createTranscript, fixUtterances, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
@@ -216,28 +216,25 @@ const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
 
 describe("the deck", () => {
   const deck = (s: TranscribeState, listening: ListeningState = IDLE) =>
-    renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here onEditContext={none} />);
+    renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here />);
 
-  it("offers the three sources, the Speakers toggle on by default, and Start, or Continue on a Transcript heard in", () => {
+  it("offers Start, or Continue on a Transcript heard in, with what it listens to beside it and the three sources in its menu", () => {
     const html = deck(state());
-    for (const source of ["Microphone", "Call", "File"]) expect(html).toContain(`>${source}</button>`);
-    expect(html).toMatch(/role="switch" aria-checked="true"/);
     expect(html).toContain(">Start</button>");
+    // The three sources are its menu's, opened by the button: the microphone until this browser picks another.
+    expect(html).toMatch(/aria-haspopup="menu" aria-expanded="false" aria-label="Source: Microphone"/);
     expect(deck(state({ active: room() }))).toContain(">Continue</button>");
   });
 
-  it("strikes the Speakers toggle with the diarizer's reason (Q112)", () => {
-    const html = deck(state({ speakers: false, speakersUnavailable: "Speakers are turned off on this server (`diarizer.model = off`)." }));
-    expect(html).toContain("line-through");
-    expect(html).toContain('aria-disabled="true"');
-    expect(html).toContain("Speakers are turned off on this server");
-  });
-
-  it("offers to hold the mic on a call (Q121), and says when it is held", () => {
+  it("keeps the settings to the panel: no context line, no Speakers, no mic held", () => {
+    const html = deck(state({ active: { ...room(), context: { languages: { mode: "free", codes: [] }, topic: "Supporto IT", terms: [], other: "", appliedAt: 1 } } }));
+    expect(html).not.toContain("Told");
+    expect(html).not.toContain("Supporto IT");
+    expect(html).not.toContain('role="switch"');
     const call = deck(state(), at({ phase: "listening", source: "call", transcript: 1, held: true, levels: { mic: [0], shared: [0.6] } }));
-    expect(call).toMatch(/role="switch" aria-checked="true"[^>]*>.*Hold my mic while they speak/);
+    expect(call).not.toContain("Hold my mic");
+    // The strip still marks the mic held.
     expect(call).toMatch(/Mic<span class="ml-1 text-\[#ff8a4c\]">held<\/span>/);
-    expect(deck(state())).not.toContain("Hold my mic");
   });
 
   it("is the kiln strip while a listening runs", () => {
@@ -325,13 +322,29 @@ describe("the context (Q128)", () => {
     expect(card({ ...t, context: { ...t.context!, languages: { mode: "force", codes: ["it"] } } })).toContain("Italian (forced)");
   });
 
-  it("offers Add when nothing is told, and the deck says so in a line with Edit", () => {
+  it("offers Add when nothing is told", () => {
     expect(card(room())).toContain(">Add<");
-    const deckLine = renderToStaticMarkup(<Deck state={state({ active: told(room()) })} listening={IDLE} actions={actions} secure here onEditContext={none} />);
-    expect(deckLine).toContain("Supporto IT · 2 terms");
-    expect(renderToStaticMarkup(<Deck state={state({ draft: told(room()).context! })} listening={IDLE} actions={actions} secure here onEditContext={none} />)).toContain(
-      "Being edited: a Start applies it.",
-    );
+    expect(card(told(room()))).toContain(">Edit<");
+  });
+});
+
+describe("the Settings tab", () => {
+  const settings = (patch: Partial<TranscribeState> = {}) => renderToStaticMarkup(<Settings state={state(patch)} actions={actions} />);
+
+  it("holds the Speakers toggle, on by default, read at the next Start (Q112)", () => {
+    expect(settings()).toMatch(/role="switch" aria-checked="true"[^>]*>.*Speakers<\/span><span[^>]*>The diarizer tells the voices apart/);
+  });
+
+  it("strikes the Speakers toggle with the diarizer's reason", () => {
+    const html = settings({ speakers: false, speakersUnavailable: "Speakers are turned off on this server (`diarizer.model = off`)." });
+    expect(html).toContain("line-through");
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain("Speakers are turned off on this server (<code");
+  });
+
+  it("offers to hold the mic on a call (Q121), on unless turned off", () => {
+    expect(settings()).toMatch(/role="switch" aria-checked="true"[^>]*>.*Hold my mic while they speak/);
+    expect(settings({ holdMic: false })).toContain("With headphones, nothing comes back");
   });
 });
 

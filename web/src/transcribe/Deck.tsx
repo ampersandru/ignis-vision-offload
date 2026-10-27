@@ -1,22 +1,24 @@
-import { useId, useRef, useState } from "react";
+import { useRef } from "react";
+import { createPortal } from "react-dom";
 import type { SpeechStatus } from "../api/model.ts";
 import { SECURE_CONTEXT, unavailable } from "../speech/availability.ts";
 import { HintText, toneClass } from "../speech/Dictation.tsx";
-import { IconPause, IconPlay, IconStopSquare } from "../ui/icons.tsx";
-import { Switch } from "../ui/Switch.tsx";
-import { contextSummary } from "./context.ts";
+import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
+import { IconChevron, IconPause, IconPlay, IconStopSquare } from "../ui/icons.tsx";
 import { clock } from "./export.ts";
 import type { LaneName, ListeningState } from "./listening.ts";
 import type { SourceKind } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
+import { viewerChoice } from "./viewerChoice.ts";
 
 // The Transcribe view's deck, at the foot of the sheet as the chat's composer
-// is (spec speech/07): before a listening, the source,
-// the Speakers toggle and Start; while one runs, the dictation's kiln strip —
-// each source's level, the clock, Pause or Resume, Stop — or a file's
-// progress and the time left. The hint line under it says what the server or
-// the browser refused, in spec 04's words, and before a call that headphones
-// keep the far voices out of the microphone (Q93).
+// is (spec speech/07): before a listening, Start with what it listens to
+// beside it; while one runs, the dictation's kiln strip — each source's
+// level, the clock, Pause or Resume, Stop — or a file's progress and the time
+// left. The hint line says what the server or the browser refused, in spec
+// 04's words, and before a call that headphones keep the far voices out of
+// the microphone (Q93). What it is told and how it listens are set in the
+// panel (the owner's word: the deck's switches came before the panel did).
 
 /** Said before a call starts (Q93). */
 export const HEADPHONES = "Use headphones on a call: through speakers, the far voices reach the microphone and are transcribed twice.";
@@ -24,11 +26,16 @@ export const HEADPHONES = "Use headphones on a call: through speakers, the far v
 /** The files a pick offers: what `decodeAudioData` reads in a browser, an mp4's audio included (Q94). */
 export const AUDIO_FILES = "audio/*,video/mp4,video/webm,.m4a,.mp3,.ogg,.opus,.wav,.webm,.mp4";
 
-const SOURCES: [SourceKind, string][] = [
-  ["microphone", "Microphone"],
-  ["call", "Call"],
-  ["file", "File"],
+const SOURCES: { kind: SourceKind; label: string; detail: string }[] = [
+  { kind: "microphone", label: "Microphone", detail: "The room" },
+  { kind: "call", label: "Call", detail: "Your mic and a shared tab, window or screen" },
+  { kind: "file", label: "File", detail: "A recording, faster than real time" },
 ];
+
+/** What Start listens to, as this browser last picked it. */
+export const SOURCE_KEY = "ignis.transcribeSource";
+
+const sourceChoice = viewerChoice<SourceKind>({ key: SOURCE_KEY, choices: SOURCES.map((s) => s.kind), fallback: "microphone" });
 
 /** Why Start cannot start a listening from `source`, or `null`. A file needs no microphone, so no secure context. */
 export function startBlocked(source: SourceKind, { secure, speech }: { secure: boolean; speech?: SpeechStatus }): string | null {
@@ -54,7 +61,6 @@ export function Deck({
   speech,
   secure,
   here,
-  onEditContext,
 }: {
   state: TranscribeState;
   listening: ListeningState;
@@ -63,13 +69,9 @@ export function Deck({
   secure: boolean;
   /** The listening, if any, appends to the Transcript open. */
   here: boolean;
-  /** Opens the Call tab on the context's draft. */
-  onEditContext: () => void;
 }) {
-  const [source, setSource] = useState<SourceKind>("microphone");
+  const source = sourceChoice.use();
   const picker = useRef<HTMLInputElement>(null);
-  const speakersId = useId();
-  const holdId = useId();
   const idle = listening.phase === "idle";
   const blocked = startBlocked(source, { secure, speech });
   const continuing = state.active.utterances.length > 0;
@@ -81,56 +83,25 @@ export function Deck({
   }
 
   const hint = deckHint({ notice: listening.notice, idle, blocked, source });
+  const hintLine = hint && (
+    <p role="status" className={`min-w-0 text-xs leading-snug ${toneClass(hint.tone)} ${idle ? "flex-1 basis-60" : ""}`}>
+      <HintText text={hint.text} />
+    </p>
+  );
   return (
-    <div className="border-t border-line bg-ground px-4 pt-3 pb-3 md:px-10">
+    // The sheet's gutter, kept for its scrollbar, so Start lines up with the field above it.
+    <div className="overflow-y-hidden border-t border-line bg-ground px-4 pt-3 pb-3 [scrollbar-gutter:stable] md:px-10">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2.5">
-        <p className="flex min-w-0 items-baseline gap-2 text-xs">
-          <span className="shrink-0 font-display text-ash">Told</span>
-          <span className="min-w-0 truncate text-ink/85">
-            {contextSummary(state.active.context)}
-            {state.draft !== null && <span className="ml-2 text-ember">Being edited: a Start applies it.</span>}
-          </span>
-          <button type="button" onClick={onEditContext} className="shrink-0 font-display font-semibold text-ember hover:underline">
-            Edit
-          </button>
-        </p>
         {idle ? (
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
-            <div role="radiogroup" aria-label="Source" className="flex">
-              {SOURCES.map(([kind, label]) => (
-                <button
-                  key={kind}
-                  type="button"
-                  role="radio"
-                  aria-checked={source === kind}
-                  onClick={() => setSource(kind)}
-                  className={`border border-line px-3 py-1.5 font-display text-[13px] font-medium not-first:-ml-px ${source === kind ? "relative z-10 border-ember bg-surface text-ink" : "bg-ground text-ash hover:text-ink"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-2.5">
-              {state.speakersUnavailable ? (
-                <span aria-disabled="true" className="pointer-events-none flex opacity-45">
-                  <Switch on={false} onChange={() => {}} labelledBy={speakersId} />
-                </span>
-              ) : (
-                <Switch on={state.speakers} onChange={actions.setSpeakers} labelledBy={speakersId} />
-              )}
-              <span id={speakersId} className={`font-display text-[13px] font-medium ${state.speakersUnavailable ? "text-ash line-through" : "text-ink"}`}>
-                Speakers
-              </span>
-            </div>
-            <button
-              type="button"
-              disabled={blocked !== null}
-              onClick={start}
-              className="cut ml-auto flex items-center gap-2 bg-[#ff5a1f] px-5 py-2.5 font-display text-sm font-semibold text-[#1c2026] [--cut-size:10px] hover:bg-[#ff7a45] disabled:cursor-not-allowed disabled:bg-line disabled:text-ash"
-            >
-              <IconPlay />
-              {source === "file" ? (continuing ? "Continue with a file" : "Choose a file") : continuing ? "Continue" : "Start"}
-            </button>
+          <div className="flex flex-wrap items-center justify-end gap-x-5 gap-y-2.5">
+            {hintLine}
+            <StartButton
+              label={source === "file" ? (continuing ? "Continue with a file" : "Choose a file") : continuing ? "Continue" : "Start"}
+              source={source}
+              blocked={blocked !== null}
+              onStart={start}
+              onSource={sourceChoice.choose}
+            />
             <input
               ref={picker}
               type="file"
@@ -144,34 +115,87 @@ export function Deck({
             />
           </div>
         ) : (
-          <Strip listening={listening} here={here} actions={actions} />
-        )}
-
-        {(idle ? source === "call" : listening.source === "call") && (
-          <div className="flex items-center gap-2.5">
-            <Switch on={state.holdMic} onChange={actions.setHoldMic} labelledBy={holdId} />
-            <span id={holdId} className="font-display text-[13px] font-medium text-ink">
-              Hold my mic while they speak
-            </span>
-            <span className="text-xs text-ash">{state.holdMic ? "The call's voices coming back into the mic are not transcribed as you." : "With headphones, nothing comes back: you can speak over them."}</span>
-          </div>
-        )}
-
-        {(hint || (idle && state.speakersUnavailable)) && (
-          <div className="flex flex-col gap-0.5 text-xs leading-snug">
-            {hint && (
-              <p role="status" className={toneClass(hint.tone)}>
-                <HintText text={hint.text} />
-              </p>
-            )}
-            {idle && state.speakersUnavailable && (
-              <p className="text-ash">
-                <HintText text={state.speakersUnavailable} />
-              </p>
-            )}
-          </div>
+          <>
+            <Strip listening={listening} here={here} actions={actions} />
+            {hintLine}
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Start, and beside it what it listens to: a menu over the deck, this browser's pick, in a portal since the deck
+ * clips what overflows it. The menu opens while Start cannot start, so a page without a microphone can still pick a
+ * file.
+ */
+export function StartButton({
+  label,
+  source,
+  blocked,
+  onStart,
+  onSource,
+}: {
+  label: string;
+  source: SourceKind;
+  blocked: boolean;
+  onStart: () => void;
+  onSource: (source: SourceKind) => void;
+}) {
+  const menu = useAnchoredMenu();
+  const current = SOURCES.find((s) => s.kind === source) ?? SOURCES[0];
+  const tone = blocked ? "bg-line text-ash" : "bg-[#ff5a1f] text-[#1c2026] hover:bg-[#ff7a45]";
+  return (
+    <div className="flex items-stretch">
+      <button
+        type="button"
+        disabled={blocked}
+        onClick={onStart}
+        className={`cut flex items-center gap-2 py-2.5 pr-4 pl-5 font-display text-sm font-semibold [--cut-size:10px] disabled:cursor-not-allowed ${tone}`}
+      >
+        <IconPlay />
+        {label}
+      </button>
+      <button
+        ref={menu.button}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={menu.open}
+        aria-label={`Source: ${current.label}`}
+        title="What Start listens to"
+        onClick={menu.toggle}
+        className={`flex items-center gap-1.5 border-l border-[#1c2026]/25 px-3 font-display text-[13px] font-medium ${blocked ? "bg-line text-ink hover:bg-surface" : tone}`}
+      >
+        {current.label}
+        <IconChevron className={`transition-transform motion-reduce:transition-none ${menu.open ? "rotate-180" : ""}`} />
+      </button>
+      {menu.open &&
+        createPortal(
+          <div
+            ref={menu.menu}
+            role="menu"
+            aria-label="Source"
+            style={{ right: menu.at.right, bottom: menu.at.bottom }}
+            className="fixed z-40 flex w-64 max-w-[calc(100vw-2rem)] flex-col border border-line bg-surface py-1 shadow-[0_8px_24px_rgba(28,32,38,0.28)]"
+            onClick={menu.close}
+          >
+            {SOURCES.map((s) => (
+              <button
+                key={s.kind}
+                type="button"
+                role="menuitemradio"
+                aria-checked={source === s.kind}
+                onClick={() => onSource(s.kind)}
+                className={`flex flex-col gap-0.5 border-l-2 py-1.5 pr-3 pl-2.5 text-left hover:bg-line ${source === s.kind ? "border-ember" : "border-transparent"}`}
+              >
+                <span className="font-display text-[13px] font-medium text-ink">{s.label}</span>
+                <span className="text-xs leading-snug text-ash">{s.detail}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

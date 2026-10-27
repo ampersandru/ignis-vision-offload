@@ -23,7 +23,8 @@ side columns open from the header as drawers (**Call** opens the right one).
 
 ## Listening
 
-Pick a source in the deck, then **Start**:
+**Start** stands in the deck at the foot, with what it listens to beside it:
+press that to pick from its menu (this browser keeps the pick).
 
 - **Microphone**: a conversation in the room, one session on the server.
 - **Call**: the microphone plus one tab, window or screen the browser offers
@@ -33,8 +34,8 @@ Pick a source in the deck, then **Start**:
   later). The microphone and the shared audio are **two sessions, never
   mixed**: the microphone's voice is **Me**, and the shared audio's voices are
   its speakers. Through speakers, the far voices reach the microphone too:
-  **Hold my mic while they speak**, on unless you turn it off (this browser
-  keeps the choice), sends the microphone's session silence while the shared
+  **Hold my mic while they speak** in Settings, on unless you turn it off (this
+  browser keeps the choice, and a change holds at once), sends the microphone's session silence while the shared
   audio is loud and for half a second after, so those voices are never
   transcribed as Me; the strip marks the mic **held** meanwhile. What you say
   over the other side is lost then, so with headphones turn it off. The
@@ -99,7 +100,7 @@ last. A speaker's name you give joins the terms. An Apply changes only what the
 draft changed, so a suggestion accepted while it was open stays. On a pause
 with no one speaking, the model can write a line of the context in place of
 what it heard; the server takes such a copy for no speech, so it leaves no
-utterance ([the measurement](../../findings/2026-10-27-asr-context-echo.md)). The line at the top of the deck says what is told, with **Edit**.
+utterance ([the measurement](../../findings/2026-10-27-asr-context-echo.md)).
 
 The **Languages** are **Detect** unless you pick **Force one**:
 
@@ -170,13 +171,14 @@ hour. An utterance starts where its speech starts and ends at the silence, the
 change of speaker or the length limit that ended it. A live transcript shows
 when it started; a paused listening's time stands still.
 
-With **Speakers** on (the default), the diarizer tells the voices apart and
+With **Speakers** on in Settings (the default; this browser keeps it, and the
+next Start reads it), the diarizer tells the voices apart and
 the view names them **Speaker 1, 2…** in the order they first speak, each in a
 hue of its own along the time spine. Up to eight voices are told apart. On a
 call the microphone's utterances are **Me**, and the shared audio's are its
 speakers, or **Others** with Speakers off. With Speakers off, the room and a
 file have no labels. When the server has no diarizer to offer, the toggle is
-struck and the line under the deck says why: turned off (`diarizer.model =
+struck and says why under it: turned off (`diarizer.model =
 off`), its files missing (with the `ignis-server model download` command), or
 the server's reason. A diarizer the server refuses or loses during a listening
 turns Speakers off for it, with its reason, and the listening goes on.
@@ -255,8 +257,8 @@ the action items.
 
 ## Notes
 
-The bar under the transcript asks the text model about it, while listening
-too. **What did I miss?** asks what was said in the last five minutes,
+The field at the foot of the transcript, over the deck, asks the text model
+about it, while listening too. **What did I miss?** asks what was said in the last five minutes,
 **Decisions** what was decided and what is still open, **Who does what** who
 agreed to do what, each answered in the conversation's language; a question you
 type is answered in its own. The answer streams in on the time spine where you

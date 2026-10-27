@@ -32,60 +32,66 @@ export function AskBar({
   const cannot = state.textBlocked !== null || elsewhere;
   // Nothing heard, nothing to ask about: the bar comes with the first utterance.
   if (t.utterances.every((u) => u.text.trim() === "")) return null;
+  // The sheet's foot, not a band of its own: no rule (the deck's is the footer's one), and from `sm` the field in
+  // the sheet's text column, where its answer will stand, the quick questions beside it. It keeps the gutter the
+  // sheet keeps for its scrollbar, so the two columns line up.
   return (
-    <section aria-label="Ask about the conversation" className="border-t border-line bg-ground px-4 pt-2.5 pb-3 md:px-10">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
-        {state.textBlocked ? (
-          <p className="border-l-2 border-ember pl-2 text-xs leading-snug text-ink">{state.textBlocked}</p>
-        ) : (
-          // One row on a phone, scrolled sideways inside the bar, so the sheet keeps its height.
-          <div className="flex flex-wrap gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto">
-            {quickQuestions(t).map((q) => (
+    <section aria-label="Ask about the conversation" className="overflow-y-hidden bg-ground px-4 pt-1.5 pb-3 [scrollbar-gutter:stable] md:px-10">
+      <div className="mx-auto w-full max-w-3xl sm:grid sm:grid-cols-[4.5rem_1fr] sm:gap-x-4">
+        <div className="flex min-w-0 flex-col gap-2 sm:col-start-2 sm:pl-[18px]">
+          {state.textBlocked && <p className="border-l-2 border-ember pl-2 text-xs leading-snug text-ink">{state.textBlocked}</p>}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <form
+              className="flex min-w-[min(100%,16rem)] flex-1 gap-1.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (writing) return actions.stopAsking();
+                if (question.trim() === "" || cannot) return;
+                actions.askAbout(question);
+                setQuestion("");
+              }}
+            >
+              <input
+                aria-label="Question about the conversation"
+                value={question}
+                onChange={(e) => setQuestion(e.currentTarget.value)}
+                placeholder="Ask about the conversation"
+                className="min-w-0 flex-1 rounded-[2px] border border-line bg-surface px-2.5 py-1.5 text-[14px] text-ink placeholder:text-ash focus:border-ember focus:outline-none"
+              />
               <button
-                key={q.label}
-                type="button"
-                title={q.question}
-                disabled={writing || cannot}
-                onClick={() => actions.askAbout(q.question, q.sent)}
-                className="shrink-0 border border-line px-2.5 py-1 font-display text-xs font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
+                type="submit"
+                disabled={!writing && (cannot || question.trim() === "")}
+                className={`cut px-3.5 py-1.5 font-display text-[13px] font-semibold [--cut-size:7px] disabled:cursor-not-allowed disabled:opacity-50 ${writing ? "bg-surface text-ink hover:bg-line" : "bg-ink text-ground hover:bg-ember"}`}
               >
-                {q.label}
-                {q.detail && <span className="ml-1.5 font-normal text-ash">{q.detail}</span>}
+                {writing ? "Stop" : "Ask"}
               </button>
-            ))}
+            </form>
+            {!state.textBlocked && (
+              // On a phone one row under the field, scrolled sideways, so the sheet keeps its height.
+              <div className="flex gap-1.5 max-sm:w-full max-sm:overflow-x-auto">
+                {quickQuestions(t).map((q) => (
+                  <button
+                    key={q.label}
+                    type="button"
+                    title={q.question}
+                    disabled={writing || cannot}
+                    onClick={() => actions.askAbout(q.question, q.sent)}
+                    className="shrink-0 border border-line px-2.5 py-1 font-display text-xs font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {q.label}
+                    {q.detail && <span className="ml-1.5 font-normal text-ash">{q.detail}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-        <form
-          className="flex gap-1.5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (writing) return actions.stopAsking();
-            if (question.trim() === "" || cannot) return;
-            actions.askAbout(question);
-            setQuestion("");
-          }}
-        >
-          <input
-            aria-label="Question about the conversation"
-            value={question}
-            onChange={(e) => setQuestion(e.currentTarget.value)}
-            placeholder="Ask about the conversation"
-            className="min-w-0 flex-1 rounded-[2px] border border-line bg-surface px-2.5 py-1.5 text-[14px] text-ink placeholder:text-ash focus:border-ember focus:outline-none"
-          />
-          <button
-            type="submit"
-            disabled={!writing && (cannot || question.trim() === "")}
-            className={`cut px-3.5 py-1.5 font-display text-[13px] font-semibold [--cut-size:7px] disabled:cursor-not-allowed disabled:opacity-50 ${writing ? "bg-surface text-ink hover:bg-line" : "bg-ink text-ground hover:bg-ember"}`}
-          >
-            {writing ? "Stop" : "Ask"}
-          </button>
-        </form>
-        {elsewhere && <p className="text-xs leading-snug text-ash">A question about another transcript is being answered; ask this one when it is done.</p>}
-        {here && asking.failed && (
-          <p role="status" className="border-l-2 border-fault pl-2 text-xs leading-snug text-fault">
-            No answer: {asking.failed}
-          </p>
-        )}
+          {elsewhere && <p className="text-xs leading-snug text-ash">A question about another transcript is being answered; ask this one when it is done.</p>}
+          {here && asking.failed && (
+            <p role="status" className="border-l-2 border-fault pl-2 text-xs leading-snug text-fault">
+              No answer: {asking.failed}
+            </p>
+          )}
+        </div>
       </div>
     </section>
   );

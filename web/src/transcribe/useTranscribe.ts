@@ -53,7 +53,7 @@ export type TranscribeState = {
    * `active.context`. A Start applies it first.
    */
   draft: CallContext | null;
-  /** The Speakers toggle, per listening, on by default (Q112). */
+  /** The Speakers toggle, read at a Start (Q112): this browser's, on at first. */
   speakers: boolean;
   /** The utterance just deleted from the open Transcript, while its Undo stands (Q137). */
   deleted: Utterance | null;
@@ -169,7 +169,7 @@ export function useTranscribe({
   }, []);
   const draftNow = useRef(drafting);
   draftNow.current = drafting;
-  const [speakers, setSpeakers] = useState(true);
+  const [speakers, storeSpeakers] = useStoredFlag(STORED_FLAGS.transcribeSpeakers, true);
   const [holdMic, storeHoldMic] = useStoredFlag(STORED_FLAGS.transcribeHoldMic, true);
   const holdMicRef = useRef(holdMic);
   holdMicRef.current = holdMic;
@@ -332,7 +332,7 @@ export function useTranscribe({
         change(pending.id, (t) => ({ ...t, context: mergeDraft(pending.base, pending.context, t.context ?? EMPTY_CONTEXT, Date.now()) }));
       },
       cancelContext: () => setDrafting(null),
-      setSpeakers: (on) => setSpeakers(on),
+      setSpeakers: (on) => storeSpeakers(on),
       setHoldMic: (on) => {
         holdMicRef.current = on;
         storeHoldMic(on);
@@ -410,7 +410,7 @@ export function useTranscribe({
       setSuggestionsOn: (on) => storeSuggestionsOn(on),
     }),
     // The stored flags' setters are stable for their keys.
-    [controller, writer, analyst, rewriter, asker, storeHoldMic, storeNotesLive, storeSuggestionsOn],
+    [controller, writer, analyst, rewriter, asker, storeSpeakers, storeHoldMic, storeNotesLive, storeSuggestionsOn],
   );
 
   return [

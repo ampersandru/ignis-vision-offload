@@ -455,6 +455,17 @@ the end less five minutes, a time that shares the last line's seconds, the model
 nothing came since, and answered in English. Answers are neither searched nor exported, as before; whether they
 should be is the owner's (open item c).
 
+### One footer (2026-10-28)
+
+The owner found the two bands at the foot, the ask bar and the deck, each with its rule, not pretty, and saw the
+deck's switches as settings left from before the side panel. The ask bar lost its rule: it is the sheet's foot, a
+fade above it, and from `sm` its field stands in the sheet's text column, where its answer will, the quick questions
+beside it on one row (the bar and the sheet keep the same scrollbar gutter, so the columns line up). The deck is
+Start alone: Microphone, Call and File moved into a menu beside it (`StartButton`, this browser's pick under
+`ignis.transcribeSource`), the line of what is told went (the Call tab shows it), and Speakers and Hold my mic moved
+to the Settings tab. Speakers is now this browser's too (`ignis.transcribeSpeakers`, on at first), where Q112 had it
+per listening: a switch in Settings that a reload turns back on reads as one that never took.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

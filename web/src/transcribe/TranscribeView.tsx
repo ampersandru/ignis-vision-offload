@@ -12,6 +12,7 @@ import { Notes } from "./Notes.tsx";
 import { Suggestions } from "./Suggestions.tsx";
 import { openSuggestions } from "./suggestions.ts";
 import { Switch } from "../ui/Switch.tsx";
+import { HintText } from "../speech/Dictation.tsx";
 import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
 import { UTTERANCE_SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
@@ -173,11 +174,6 @@ export function TranscribeView({
           speech={speech}
           secure={secure}
           here={here}
-          onEditContext={() => {
-            setTab("call");
-            onDrawer("settings");
-            if (state.draft === null) actions.editContext();
-          }}
         />
       </main>
 
@@ -546,12 +542,46 @@ function Call({ transcript: t, state, actions, live }: { transcript: Transcript;
   );
 }
 
-/** The Settings tab: the view's own, this browser's. */
-function Settings({ state, actions }: { state: TranscribeState; actions: TranscribeActions }) {
+/**
+ * The Settings tab: the view's own, this browser's. Speakers and the mic held on a call stood in the deck until the
+ * owner moved them here (the deck's switches came before the panel did).
+ */
+export function Settings({ state, actions }: { state: TranscribeState; actions: TranscribeActions }) {
   const pace = useFilePace();
   const silence = useUtteranceSilence();
+  const struck = state.speakersUnavailable;
   return (
     <>
+      <div className="flex items-start gap-2.5">
+        {struck ? (
+          <span aria-disabled="true" className="pointer-events-none flex opacity-45">
+            <Switch on={false} onChange={() => {}} labelledBy="transcribe-speakers-switch" />
+          </span>
+        ) : (
+          <Switch on={state.speakers} onChange={actions.setSpeakers} labelledBy="transcribe-speakers-switch" />
+        )}
+        <span className="flex flex-col gap-0.5">
+          <span id="transcribe-speakers-switch" className={`font-display text-[13px] font-medium ${struck ? "text-ash line-through" : "text-ink"}`}>
+            Speakers
+          </span>
+          <span className="text-xs leading-snug text-ash">
+            {struck ? <HintText text={struck} /> : "The diarizer tells the voices apart, Speaker 1, 2 and on. From the next Start."}
+          </span>
+        </span>
+      </div>
+
+      <div className="flex items-start gap-2.5">
+        <Switch on={state.holdMic} onChange={actions.setHoldMic} labelledBy="transcribe-hold-switch" />
+        <span className="flex flex-col gap-0.5">
+          <span id="transcribe-hold-switch" className="font-display text-[13px] font-medium text-ink">
+            Hold my mic while they speak
+          </span>
+          <span className="text-xs leading-snug text-ash">
+            On a call. {state.holdMic ? "The call's voices coming back into the mic are not transcribed as you." : "With headphones, nothing comes back: you can speak over them."}
+          </span>
+        </span>
+      </div>
+
       <div className="flex items-start gap-2.5">
         <Switch on={state.suggestionsOn} onChange={actions.setSuggestionsOn} labelledBy="transcribe-suggestions-switch" />
         <span className="flex flex-col gap-0.5">
