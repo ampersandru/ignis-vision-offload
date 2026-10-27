@@ -354,7 +354,9 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
     the task in the system prompt with the transcript after it, which a listening only appends to, reused 448 of
     565 on the next request. Each task keeps its own chain: assist.ts's preamble and the task as the system
     prompt, the title and the `.txt` as the user turn; the notes and the suggestions share the shape, not a
-    prefix. Measured over HTTP; the socket goes to the same engine.
+    prefix. Measured over HTTP, and again over the Responses socket on the branch's server: the notes' request with
+    the transcript grown by two lines reused 448 of 556 tokens on a new stream (`cached_tokens`, and
+    `reused_prompt_tokens` in the server's log).
   - **The look's task asks for the misheard names first** (`FIX: [mm:ss] heard => meant`), then TERM, TOPIC,
     TITLE. Asked for the terms alone, the 27B with thinking off copied a misheard product name as heard; asked to
     check them first, it fixed it and spelled the term right, twice out of two at temperature 0.2 (greedy split
