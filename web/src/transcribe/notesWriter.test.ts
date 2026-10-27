@@ -121,6 +121,18 @@ describe("keeping the notes up", () => {
     expect(fake.asked).toHaveLength(3);
   });
 
+  it("waits the gap after a writing that failed, even where the cadence would write at once", async () => {
+    let clock = 0;
+    const { w, fake } = writer([{ result: { ok: false, message: "ignis answered 500" } }, { chunks: ["## B"] }], () => clock);
+    await w.keepUp(heard(3), "general", null);
+    clock = 5_000;
+    await w.keepUp(heard(3), "general", null);
+    expect(fake.asked).toHaveLength(1);
+    clock = LIVE_GAP_MS;
+    await w.keepUp(heard(3), "general", null);
+    expect(fake.asked).toHaveLength(2);
+  });
+
   it("follows a listening, and writes once more when it ends, after the writing under way", async () => {
     let clock = 0;
     const { w, fake } = writer([{ chunks: ["## A"], hold: true }, { chunks: ["## B"] }], () => clock);

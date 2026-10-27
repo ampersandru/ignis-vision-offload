@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { abortableSleep, isEngineFull } from "../api/busy.ts";
 import { streamChat, type StreamOptions, type StreamResult } from "../api/stream.ts";
-import { dueForUpdate, type NoteKind, type Notes, notesInput, notesSettings, tidyNotes } from "./notes.ts";
+import { dueForUpdate, LIVE_GAP_MS, type NoteKind, type Notes, notesInput, notesSettings, tidyNotes } from "./notes.ts";
 import type { Transcript } from "./transcript.ts";
 
 // The notes' writer (spec speech/07, Q124-Q127): one writing at a time, on
@@ -106,10 +106,15 @@ export class NotesWriter {
     this.set(IDLE);
   }
 
-  /** Writes `t`'s notes if keeping up says it is time (notes.ts); `final` as the listening ends. */
+  /**
+   * Writes `t`'s notes if keeping up says it is time (notes.ts); `final` as the listening ends. A writing of `t` that
+   * failed waits the gap before the next, whatever the cadence says: a first writing or another kind is otherwise due
+   * at every look.
+   */
   keepUp(t: Transcript, kind: NoteKind, contextLimit: number | null, { final = false } = {}): Promise<void> {
     const began = this.began.get(t.id);
     const now = (this.deps.now ?? Date.now)();
+    if (!final && this.state.failed?.transcript === t.id && began !== undefined && now - began < LIVE_GAP_MS) return Promise.resolve();
     const due = dueForUpdate({ notes: t.notes && { ...t.notes, kind }, utterances: t.utterances.length, sinceLastMs: began === undefined ? null : now - began, final });
     return due ? this.write(t, kind, contextLimit) : Promise.resolve();
   }

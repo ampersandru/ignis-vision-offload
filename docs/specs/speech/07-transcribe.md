@@ -286,7 +286,7 @@ switch. Built as a draft for the owner to try, beyond Q81-Q123 (transcribe/notes
 - **Q126: Keep updating while listening**, a per-viewer switch, off by default (`ignis.transcribeNotesLive`). A
   look every 5 s: the first notes once 3 utterances are in, then at least 60 s from the last writing's start while
   something new was said, a writing at once when another kind is picked, and one more when the listening ends,
-  after the writing under way.
+  after the writing under way. A writing that failed waits the 60 s before the next, whatever the cadence says.
 - **Q127: the model.** The model loaded, never named, so no request switches (the image model loaded, or none
   serving, strikes the tab with its reason); `class: "agent"`, `reasoning_effort: "none"`, temperature 0.3, top_p
   0.9, at most 1,500 tokens; a full engine is waited out a second at a time, up to 60 times (api/busy.ts, now

@@ -190,7 +190,8 @@ model loaded and name none, so they never switch models: with the image model
 loaded, or none serving, the tab says so and writes nothing. Each writing is a
 chat completion on an agent's lane (`class: "agent"`), thinking off, that waits
 while every lane is taken; the transcript is its user message after the title,
-so the next writing reuses what the server has already read. A transcript too
+so a later writing starts with the text the last one sent, which the server can
+reuse. A transcript too
 long for the model's context is sent from where its tail fits, and the line
 says from when.
 

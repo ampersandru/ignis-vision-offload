@@ -192,6 +192,7 @@ export function notesStatus(notes: Notes | undefined, utterances: number): strin
 /** Why no notes can be written now; `null` while a text model serves, or would load again on the request. */
 export function notesBlocked(model: ModelState): string | null {
   if (canChat(model)) return null;
+  if (model.state === "reading") return "Reading which model is loaded.";
   if (imageLoaded(model)) return "The image model is loaded: notes need a text model. Switch in the Server view.";
   if (loadUnderWay(model)) return "A model is loading: notes can be written once it serves.";
   return "No text model serves: notes need one. Load it in the Server view.";

@@ -149,6 +149,7 @@ describe("what the panel says", () => {
     expect(notesBlocked({ ...ready, kind: "image" })).toBe("The image model is loaded: notes need a text model. Switch in the Server view.");
     expect(notesBlocked({ state: "loading", to: "qwen3.8-27b", since: 0 })).toBe("A model is loading: notes can be written once it serves.");
     expect(notesBlocked({ state: "error", message: "down" })).toBe("No text model serves: notes need one. Load it in the Server view.");
+    expect(notesBlocked({ state: "reading" })).toBe("Reading which model is loaded.");
   });
 });
 
