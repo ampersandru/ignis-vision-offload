@@ -416,6 +416,17 @@ function sceneTranscript() {
       other: "",
       appliedAt: new Date(2026, 9, 25, 15, 41).getTime(),
     },
+    // The text model's look read the call up to Speaker 2's offer (web/src/transcribe/analyst.ts), and one question
+    // was asked about it (web/src/transcribe/ask.ts).
+    checkedUntilMs: 30_900,
+    asked: [
+      {
+        id: 1,
+        question: "What is left before the tag?",
+        answer: "Two pages need new screenshots and the changelog a line for the speech view [00:20]; Speaker 2 takes the screenshots this afternoon [00:27].",
+        at: new Date(2026, 9, 25, 15, 44).getTime(),
+      },
+    ],
     // As the Notes tab keeps them (web/src/transcribe/notes.ts): a Work call's, written from all eight utterances.
     notes: {
       kind: "work",
