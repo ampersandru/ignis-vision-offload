@@ -292,7 +292,7 @@ function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOp
         >
           <IconDownload />
           Download
-          <IconChevron className="transition-transform group-open:rotate-180 motion-reduce:transition-none" />
+          <IconChevron className="rotate-180 transition-transform group-open:rotate-0 motion-reduce:transition-none" />
         </summary>
         <ul className="absolute right-0 z-20 mt-1 flex min-w-36 flex-col border border-line bg-surface py-1 shadow-lg">
           {EXPORTS.map((format) => (

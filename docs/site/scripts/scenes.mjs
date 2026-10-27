@@ -408,6 +408,14 @@ function sceneTranscript() {
     ],
     channels: { me: 1, "shared-2:0": 2, "shared-2:1": 3 },
     voices: 2,
+    // What the transcription is told (web/src/transcribe/context.ts), applied before the call.
+    context: {
+      languages: { mode: "free", codes: ["en"] },
+      topic: "Weekly release check",
+      terms: ["changelog", "runners"],
+      other: "",
+      appliedAt: new Date(2026, 9, 25, 15, 41).getTime(),
+    },
     // As the Notes tab keeps them (web/src/transcribe/notes.ts): a Work call's, written from all eight utterances.
     notes: {
       kind: "work",
