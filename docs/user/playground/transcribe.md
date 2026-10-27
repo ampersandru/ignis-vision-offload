@@ -196,6 +196,18 @@ The text of every completed utterance is editable: click it, even while
 listening. What you edit, and what a fix put in, is what the exports, the notes
 and Open in chat carry.
 
+## Searching
+
+**Search** beside the title (or Ctrl+F while the view shows) lights every
+occurrence in the transcript open, whatever the case and the accents
+("perche" finds "perché"), the one it stands on in orange, and says where it
+is, "3 of 12". Enter and the arrows go to the next and the previous, Shift+Enter
+back, Escape clears; the view stops following the newest words meanwhile.
+
+**Search transcripts** above the list keeps the transcripts that hold the query,
+in their text or their title, each with its count of matches; opening one
+carries the query into its own search.
+
 ## The transcript
 
 Each transcript is kept in this browser as each utterance completes, with its

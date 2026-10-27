@@ -190,3 +190,13 @@ export function IconBell() {
     </svg>
   );
 }
+
+/** Search (the Transcribe view's heading and list). */
+export function IconSearch() {
+  return (
+    <svg {...icon} strokeLinecap="round">
+      <circle cx="7" cy="7" r="4.25" />
+      <path d="M10.25 10.25l3.25 3.25" />
+    </svg>
+  );
+}

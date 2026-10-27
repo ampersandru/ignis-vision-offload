@@ -1,7 +1,8 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useMemo, useRef, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
 import { caption } from "../ui/classes.ts";
-import { IconBell, IconChevron, IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
+import { IconBell, IconChevron, IconClose, IconDownload, IconPlus, IconSearch, IconTrash } from "../ui/icons.tsx";
+import { hitsIn, matchesOf } from "./search.ts";
 import { ContextCard } from "./Context.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
@@ -56,6 +57,30 @@ export function TranscribeView({
   const listening = useListening(handle);
   const here = listening.transcript === state.active.id;
   const [tab, setTab] = useState<SideTab>("call");
+  // The search in the Transcript open (Q136): its query, its hits, the one it stands on.
+  const [query, setQuery] = useState("");
+  const [current, setCurrent] = useState(0);
+  const hits = useMemo(() => hitsIn(state.active, query), [state.active, query]);
+  const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
+  const searchField = useRef<HTMLInputElement>(null);
+  const search = (next: string) => {
+    setQuery(next);
+    setCurrent(0);
+  };
+
+  // Ctrl+F (Cmd+F) searches the transcript while this view shows; the browser's own search otherwise.
+  useEffect(() => {
+    const find = (e: globalThis.KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
+      const field = searchField.current;
+      if (!field || field.offsetParent === null) return;
+      e.preventDefault();
+      field.focus();
+      field.select();
+    };
+    window.addEventListener("keydown", find);
+    return () => window.removeEventListener("keydown", find);
+  }, []);
 
   useEffect(() => {
     if (!drawer) return;
@@ -77,8 +102,9 @@ export function TranscribeView({
           actions.newTranscript();
           onDrawer(null);
         }}
-        onSelect={(id) => {
+        onSelect={(id, carried) => {
           actions.select(id);
+          if (carried !== undefined) search(carried);
           onDrawer(null);
         }}
         onRemove={actions.remove}
@@ -88,6 +114,14 @@ export function TranscribeView({
         <div className="border-b border-line px-4 pt-5 pb-3 md:px-10">
           <div className="mx-auto w-full max-w-3xl">
             <Heading transcript={state.active} onRename={(title) => actions.rename(state.active.id, title)}>
+              <SearchField
+                inputRef={searchField}
+                query={query}
+                count={hits.length}
+                at={at}
+                onQuery={search}
+                onStep={(by) => hits.length > 0 && setCurrent((at + by + hits.length) % hits.length)}
+              />
               <Exports transcript={state.active} onOpenInChat={onOpenInChat} />
             </Heading>
           </div>
@@ -100,6 +134,8 @@ export function TranscribeView({
           here={here}
           actions={actions}
           deleted={state.deleted}
+          hits={hits}
+          current={at}
         />
         <Deck
           state={state}
@@ -137,6 +173,67 @@ export function transcriptSummary(t: Transcript, listening: ListeningState): str
   return n === 0 ? "Nothing heard yet" : n === 1 ? "1 utterance" : `${n} utterances`;
 }
 
+/** The heading's search (Q136): the query, "3 of 12", the previous and the next hit; Enter steps, Escape clears. */
+export function SearchField({
+  inputRef,
+  query,
+  count,
+  at,
+  onQuery,
+  onStep,
+}: {
+  inputRef?: Ref<HTMLInputElement>;
+  query: string;
+  count: number;
+  at: number;
+  onQuery: (query: string) => void;
+  onStep: (by: number) => void;
+}) {
+  const searching = query.trim() !== "";
+  return (
+    <div role="search" className={`flex h-[34px] items-center gap-1 border bg-ground pr-1 pl-2 ${searching ? "border-ember/70" : "border-line"} focus-within:border-ember`}>
+      <span className="text-ash" aria-hidden="true">
+        <IconSearch />
+      </span>
+      <input
+        ref={inputRef}
+        type="search"
+        aria-label="Search the transcript"
+        value={query}
+        placeholder="Search"
+        onChange={(e) => onQuery(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.preventDefault(), onStep(e.shiftKey ? -1 : 1));
+          if (e.key === "Escape") onQuery("");
+        }}
+        className="w-28 min-w-0 bg-transparent font-display text-[13px] text-ink placeholder:text-ash focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+      />
+      {searching && (
+        <>
+          <span aria-live="polite" className={`shrink-0 font-display text-xs tabular-nums ${count === 0 ? "text-fault" : "text-ash"}`}>
+            {count === 0 ? "None" : `${at + 1} of ${count}`}
+          </span>
+          <button type="button" aria-label="Previous match" disabled={count === 0} onClick={() => onStep(-1)} className="grid size-6 place-items-center text-ash hover:text-ink disabled:opacity-40">
+            <IconChevron />
+          </button>
+          <button type="button" aria-label="Next match" disabled={count === 0} onClick={() => onStep(1)} className="grid size-6 place-items-center text-ash hover:text-ink disabled:opacity-40">
+            <IconChevron className="rotate-180" />
+          </button>
+          <button type="button" aria-label="Clear the search" onClick={() => onQuery("")} className="grid size-6 place-items-center text-ash hover:text-ink">
+            <IconClose />
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** What a Transcript's row says while the list is searched: its hits, or that its title holds the query. */
+export function listMatch(hits: number): string {
+  if (hits === 0) return "In the title";
+  return hits === 1 ? "1 match" : `${hits} matches`;
+}
+
 function Transcripts({
   list,
   listening,
@@ -151,9 +248,13 @@ function Transcripts({
   open: boolean;
   notice: string | null;
   onNew: () => void;
-  onSelect: (id: number) => void;
+  /** `carried`, the list's query, for the Transcript's own search. */
+  onSelect: (id: number, carried?: string) => void;
   onRemove: (id: number) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const searching = query.trim() !== "";
+  const rows = list.transcripts.map((t) => ({ t, match: searching ? matchesOf(t, titleOf(t), query) : null })).filter(({ match }) => !match || match.hits > 0 || match.title);
   return (
     <aside
       aria-label="Transcripts"
@@ -165,17 +266,39 @@ function Transcripts({
           New transcript
         </button>
       </div>
+      <div className="px-3 pb-2">
+        <label className={`flex h-8 items-center gap-1.5 border bg-ground px-2 ${searching ? "border-ember/70" : "border-line"} focus-within:border-ember`}>
+          <span className="text-ash" aria-hidden="true">
+            <IconSearch />
+          </span>
+          <input
+            type="search"
+            aria-label="Search the transcripts"
+            value={query}
+            placeholder="Search transcripts"
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink placeholder:text-ash focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+          />
+        </label>
+      </div>
+      {searching && rows.length === 0 && <p className="px-6 py-2 text-xs leading-snug text-ash">No transcript holds “{query.trim()}”.</p>}
       <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-3">
-        {list.transcripts.map((t) => {
+        {rows.map(({ t, match }) => {
           const active = t.id === list.activeId;
           const heard = listening.transcript === t.id;
           return (
             <li key={t.id} className={`group relative flex items-stretch ${active ? "bg-surface shadow-[inset_2px_0_0_var(--ember)]" : "hover:bg-surface/60"}`}>
-              <button type="button" aria-current={active ? "true" : undefined} className="flex min-w-0 flex-1 flex-col gap-0.5 px-3 py-2 text-left" onClick={() => onSelect(t.id)}>
+              <button
+                type="button"
+                aria-current={active ? "true" : undefined}
+                className="flex min-w-0 flex-1 flex-col gap-0.5 px-3 py-2 text-left"
+                onClick={() => onSelect(t.id, match && match.hits > 0 ? query.trim() : undefined)}
+              >
                 <span className={`truncate text-sm ${active ? "text-ink" : "text-ink/85"}`}>{titleOf(t)}</span>
-                <span className="flex items-center gap-1.5 font-display text-xs text-ash">
+                <span className={`flex items-center gap-1.5 font-display text-xs ${match ? "text-ember" : "text-ash"}`}>
                   {heard && <span className="cut size-2 bg-ember [--cut-size:3px]" aria-hidden />}
-                  {transcriptSummary(t, listening)}
+                  {match ? listMatch(match.hits) : transcriptSummary(t, listening)}
                 </span>
               </button>
               <button

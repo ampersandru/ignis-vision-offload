@@ -9,9 +9,10 @@ import type { AnalystState } from "./analyst.ts";
 import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
 import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
-import { Heading, marked, Sheet, speakerColor } from "./Sheet.tsx";
+import { Heading, highlighted, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
-import { fileStem, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
+import { fileStem, listMatch, SearchField, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
+import { hitsIn } from "./search.ts";
 import { addUtterance, createTranscript, fixUtterances, sessionsWithSpeakers, splitUtterance, type Transcript } from "./transcript.ts";
 import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
@@ -65,7 +66,7 @@ function room(): Transcript {
 
 const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
   renderToStaticMarkup(
-    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} />,
+    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} />,
   );
 
 describe("the sheet", () => {
@@ -99,16 +100,27 @@ describe("the sheet", () => {
   });
 
   it("marks a fixed word only where it stands as a word of its own, never inside a longer one", () => {
-    const html = renderToStaticMarkup(<p>{marked("SQL e PostgreSQL, poi SQL.", ["SQL"])}</p>);
+    const html = renderToStaticMarkup(<p>{highlighted("SQL e PostgreSQL, poi SQL.", ["SQL"])}</p>);
     expect(html.match(/<mark/g)).toHaveLength(2);
     expect(html).toContain("PostgreSQL,");
   });
 
   it("offers Undo for a few seconds after an utterance is deleted (Q137)", () => {
     const t = room();
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} />);
     expect(html).toMatch(/Utterance at <span[^>]*>00:04<\/span> deleted\./);
     expect(html).toContain(">Undo</button>");
+  });
+
+  it("lights the search's hits, the one it stands on in the ember (Q136)", () => {
+    let t = room();
+    t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Perché apriamo?", voice: null });
+    const hits = hitsIn(t, "apriamo");
+    expect(hits).toHaveLength(2);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} />);
+    expect(html).toMatch(/<mark data-hit="other"[^>]*>Apriamo<\/mark>/);
+    expect(html).toMatch(/<mark data-hit="current" class="bg-ember[^"]*">apriamo<\/mark>/);
+    expect(html).toContain('data-utterance="2"');
   });
 
   it("marks a split's guessed start with ~ (Q98)", () => {
@@ -388,6 +400,23 @@ describe("the view", () => {
       <TranscribeView state={state({ active: t })} actions={actions} listening={idleHandle} assistants={assistants} drawer={null} onDrawer={none} onOpenInChat={none} />,
     );
     expect(html).toContain('aria-label="2 suggestions"');
+  });
+});
+
+describe("the search (Q136)", () => {
+  const field = (query: string, count: number, at = 0) => renderToStaticMarkup(<SearchField query={query} count={count} at={at} onQuery={none} onStep={none} />);
+
+  it("says where it stands among the hits, offers the previous and the next, and says when there are none", () => {
+    expect(field("budget", 12, 2)).toContain(">3 of 12<");
+    expect(field("budget", 12, 2)).toContain('aria-label="Next match"');
+    expect(field("budget", 0)).toContain(">None<");
+    expect(field("", 0)).not.toContain("of");
+  });
+
+  it("names a listed Transcript's matches, or that its title holds the query", () => {
+    expect(listMatch(1)).toBe("1 match");
+    expect(listMatch(4)).toBe("4 matches");
+    expect(listMatch(0)).toBe("In the title");
   });
 });
 

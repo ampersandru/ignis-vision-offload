@@ -1,10 +1,11 @@
-import { memo, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type Hit, partsOf } from "./search.ts";
 import { isAtBottom } from "../ui/scroll.ts";
 import { clock, startedLine, startOf } from "./export.ts";
 import type { LiveUtterance, ListeningState } from "./listening.ts";
 import { titleOf } from "./sessions.ts";
 import type { TranscribeActions } from "./useTranscribe.ts";
-import { fixedWordsOf, type Speaker, type Transcript, type Utterance } from "./transcript.ts";
+import type { Speaker, Transcript, Utterance } from "./transcript.ts";
 
 // The Transcript as it is heard (spec speech/07): its heading (drawn by the
 // view above the sheet, with the exports, so it stays in sight), then its
@@ -39,6 +40,8 @@ export const Sheet = memo(function Sheet({
   here,
   actions,
   deleted,
+  hits,
+  current,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -50,10 +53,27 @@ export const Sheet = memo(function Sheet({
   actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete">;
   /** The utterance just deleted, while its Undo stands (Q137). */
   deleted: Utterance | null;
+  /** The search's hits in this Transcript, and the one it stands on (Q136). */
+  hits: Hit[];
+  current: number;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const speakers = new Map(transcript.speakers.map((s) => [s.id, s]));
+  const byUtterance = useMemo(() => {
+    const map = new Map<number, { start: number; end: number; current: boolean }[]>();
+    hits.forEach((h, i) => map.set(h.utterance, [...(map.get(h.utterance) ?? []), { start: h.start, end: h.end, current: i === current }]));
+    return map;
+  }, [hits, current]);
+
+  // The search's current hit in view, the newest words no longer followed.
+  useLayoutEffect(() => {
+    const hit = hits[current];
+    const el = hit && scroller.current?.querySelector(`[data-utterance="${hit.utterance}"]`);
+    if (!el) return;
+    setFollowing(false);
+    el.scrollIntoView?.({ block: "center" });
+  }, [hits, current]);
 
   useLayoutEffect(() => setFollowing(true), [transcript.id]);
   useLayoutEffect(() => {
@@ -77,7 +97,14 @@ export const Sheet = memo(function Sheet({
           ) : (
             <ol aria-label="Utterances">
               {transcript.utterances.map((u) => (
-                <UtteranceRow key={u.id} utterance={u} speaker={u.speaker === null ? undefined : speakers.get(u.speaker)} speakers={transcript.speakers} actions={actions} />
+                <UtteranceRow
+                  key={u.id}
+                  utterance={u}
+                  speaker={u.speaker === null ? undefined : speakers.get(u.speaker)}
+                  speakers={transcript.speakers}
+                  actions={actions}
+                  hits={byUtterance.get(u.id)}
+                />
               ))}
               {live.map((u) => (
                 <LiveRow key={u.key} utterance={u} label={laneLabel(u.lane, call)} burning={phase === "listening" || phase === "finishing"} />
@@ -145,9 +172,9 @@ function Empty({ listening }: { listening: boolean }) {
 }
 
 /** The spine and the time beside it: one row of the sheet. */
-function Row({ time, tick, label, children }: { time: string; tick: { color?: string; burning?: boolean }; label: ReactNode; children: ReactNode }) {
+function Row({ time, tick, label, id, children }: { time: string; tick: { color?: string; burning?: boolean }; label: ReactNode; id?: number; children: ReactNode }) {
   return (
-    <li className="grid grid-cols-[3.75rem_1fr] gap-x-4 sm:grid-cols-[4.5rem_1fr]">
+    <li data-utterance={id} className="grid grid-cols-[3.75rem_1fr] gap-x-4 sm:grid-cols-[4.5rem_1fr]">
       <span className="pt-[3px] text-right font-display text-[13px] text-ash tabular-nums">{time}</span>
       <div className="relative border-l-2 border-line pb-5 pl-4">
         <span
@@ -162,19 +189,22 @@ function Row({ time, tick, label, children }: { time: string; tick: { color?: st
   );
 }
 
-/** `text` with the words fixes put in it marked (Q133), each where it stands as words of its own. */
-export function marked(text: string, fixed: string[]): ReactNode {
-  if (fixed.length === 0) return text;
-  // The pattern's one group makes every odd part a word it matched.
-  return text.split(fixedWordsOf(fixed)).map((part, i) =>
-    i % 2 === 1 ? (
-      <mark key={i} className="bg-transparent text-ink underline decoration-ember decoration-dotted decoration-2 underline-offset-4">
-        {part}
+/**
+ * `text` with the words fixes put in it marked (Q133), each where it stands as words of its own, and the search's
+ * hits (Q136), the current one in the ember.
+ */
+export function highlighted(text: string, fixed: string[], hits: { start: number; end: number; current: boolean }[] = []): ReactNode {
+  if (fixed.length === 0 && hits.length === 0) return text;
+  return partsOf(text, fixed, hits).map((part, i) => {
+    if (!part.fixed && part.hit === null) return part.text;
+    const fix = part.fixed ? "underline decoration-ember decoration-dotted decoration-2 underline-offset-4" : "";
+    const hit = part.hit === "current" ? "bg-ember text-[#1c2026]" : part.hit === "other" ? "bg-ember/25 text-ink" : "bg-transparent text-ink";
+    return (
+      <mark key={i} data-hit={part.hit ?? undefined} className={`${hit} ${fix}`}>
+        {part.text}
       </mark>
-    ) : (
-      part
-    ),
-  );
+    );
+  });
 }
 
 /** An utterance of the sheet: drawn again only when it, its speaker or the speakers change. */
@@ -183,11 +213,13 @@ const UtteranceRow = memo(function UtteranceRow({
   speaker,
   speakers,
   actions,
+  hits,
 }: {
   utterance: Utterance;
   speaker: Speaker | undefined;
   speakers: Speaker[];
   actions: Pick<TranscribeActions, "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance">;
+  hits: { start: number; end: number; current: boolean }[] | undefined;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -202,7 +234,7 @@ const UtteranceRow = memo(function UtteranceRow({
     />
   );
   return (
-    <Row time={startOf(u)} tick={{ color }} label={label}>
+    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id}>
       {editing ? (
         <div className="flex flex-col gap-1.5">
           <textarea
@@ -247,7 +279,7 @@ const UtteranceRow = memo(function UtteranceRow({
             onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), setEditing(true))}
             className="cursor-text rounded-[2px] text-[15px] leading-relaxed whitespace-pre-wrap text-ink hover:bg-surface/70"
           >
-            {u.text ? marked(u.text, u.fixed ?? []) : <span className="text-ash">(no text)</span>}
+            {u.text ? highlighted(u.text, u.fixed ?? [], hits) : <span className="text-ash">(no text)</span>}
           </p>
           {u.heard !== undefined && (
             <button

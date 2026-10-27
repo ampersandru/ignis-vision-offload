@@ -382,6 +382,12 @@ The owner's third round, after trying the second (grill Q136-Q141), one commit e
 - **Delete (Q137).** An utterance's editor has Delete; the utterance leaves the Transcript and an Undo stands at the
   sheet's foot for 8 s (`UNDO_DELETE_MS`), putting it back where its time places it. Nothing else changes: its
   speaker stays, a fix that names it does nothing to it, and the notes' "more since" never goes below zero.
+- **Search (Q136).** search.ts folds case and accents one character for one, so a hit's offsets are the text's.
+  The heading's field lights every hit in the open Transcript (the one it stands on in the ember, the others a
+  wash of it, over a fixed word's dotted line where both fall), counts "3 of 12", steps with Enter, Shift+Enter
+  and the arrows, clears with Escape, and brings the current hit into view, no longer following the newest
+  words; Ctrl+F (Cmd+F) focuses it while the view shows. The list's field keeps the Transcripts whose utterances
+  or title hold the query, each row saying its matches in the ember; opening one carries the query.
 
 ### Not done here
 
