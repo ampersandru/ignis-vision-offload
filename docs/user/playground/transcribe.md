@@ -148,6 +148,11 @@ later suggestion of its kind in this transcript without asking. A term you do
 not want is taken out with its cross, and is never suggested again. Accepting
 changes the context, which is applied at once, or the title; nothing else.
 **Suggest now** reads the transcript on the spot, a listening or not.
+
+A dashed orange line across the time spine, **Checked to here**, shows where
+the text model's last look stopped reading; while listening it says when the
+next may come ("next check in about 45 s"). What is below it has not been
+checked yet: a Rewrite there says so, since the next look might fix it.
 **Suggest while listening** in Settings, on unless you turn it off (this
 browser keeps the choice), stops them; the text model's go to the model loaded,
 as the notes do.

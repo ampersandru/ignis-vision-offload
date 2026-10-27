@@ -396,6 +396,12 @@ The owner's third round, after trying the second (grill Q136-Q141), one commit e
   quotes the model added), shown as a word diff (longest common subsequence) with Accept and Discard; accepted,
   the utterance keeps its text as heard and marks the words put in, so Undo fix and the marks are the fixes'. One
   rewrite at a time; the button is off while the text model cannot be asked.
+- **Checked to here (Q140).** A look hands back up to where it read (the end of the last utterance it had), which
+  the Transcript keeps as `checkedUntilMs`, a malformed one dropped on restore. The sheet draws a dashed ember line
+  with a diamond on the spine between the last utterance read and the next, labelled Checked to here and, while a
+  listening keeps up with suggestions, "next check in about 45 s" (the last look's start and the 90 s gap, redrawn
+  every 5 s). A rewrite of an utterance below it says the automatic check has not read it yet. The line is not drawn
+  before any look, nor once everything was read.
 
 ### Not done here
 

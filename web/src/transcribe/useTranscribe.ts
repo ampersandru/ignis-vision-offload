@@ -200,7 +200,13 @@ export function useTranscribe({
   const [analyst] = useState(
     () =>
       new Analyst({
-        onFound: (id, found) => setList((l) => updateTranscript(l, id, (t) => analysisOffers(t, found).reduce((x, offer) => suggest(x, offer, Date.now()), t))),
+        onFound: (id, found, readUntilMs) =>
+          setList((l) =>
+            updateTranscript(l, id, (t) => ({
+              ...analysisOffers(t, found).reduce((x, offer) => suggest(x, offer, Date.now()), t),
+              checkedUntilMs: Math.max(t.checkedUntilMs ?? 0, readUntilMs),
+            })),
+          ),
       }),
   );
   useEffect(() => () => analyst.stop(), [analyst]);

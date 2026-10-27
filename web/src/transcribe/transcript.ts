@@ -68,6 +68,8 @@ export type Transcript = {
   context?: CallContext;
   /** What was suggested for it, and what became of each (suggestions.ts). */
   suggestions?: Suggestions;
+  /** Up to where the text model's look last read it (Q140): the end of the last utterance it had, on its clock. */
+  checkedUntilMs?: number;
 };
 
 /** Who an utterance's audio is, as the listening knows it. */

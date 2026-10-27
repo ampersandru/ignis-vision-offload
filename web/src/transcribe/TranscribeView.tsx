@@ -65,6 +65,12 @@ export function TranscribeView({
   const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
   const searchField = useRef<HTMLInputElement>(null);
   const rewrite = useWatched(assistants.rewriter);
+  const looking = useWatched(assistants.analyst);
+  const keepingUp = here && listening.phase !== "idle" && state.suggestionsOn;
+  // Held still between changes: the sheet is drawn again only when what it is handed changes.
+  const untilMs = state.active.checkedUntilMs;
+  const nextAt = keepingUp ? (looking.nextAt[state.active.id] ?? null) : null;
+  const checked = useMemo(() => (untilMs === undefined ? null : { untilMs, nextAt }), [untilMs, nextAt]);
   const search = (next: string) => {
     setQuery(next);
     setCurrent(0);
@@ -140,6 +146,7 @@ export function TranscribeView({
           current={at}
           rewrite={rewrite.transcript === state.active.id ? rewrite : null}
           canRewrite={state.textBlocked === null}
+          checked={checked}
         />
         <Deck
           state={state}

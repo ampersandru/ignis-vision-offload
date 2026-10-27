@@ -9,7 +9,7 @@ import type { AnalystState } from "./analyst.ts";
 import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
 import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
-import { Heading, highlighted, RewritePanel, Sheet, speakerColor } from "./Sheet.tsx";
+import { Heading, highlighted, nextCheckIn, RewritePanel, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
 import { fileStem, listMatch, SearchField, TranscribeView, transcriptSummary } from "./TranscribeView.tsx";
 import { hitsIn } from "./search.ts";
@@ -69,7 +69,7 @@ function room(): Transcript {
 
 const sheet = (t: Transcript, listening: ListeningState = IDLE, here = false) =>
   renderToStaticMarkup(
-    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite />,
+    <Sheet transcript={t} live={here ? listening.live : []} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite checked={null} />,
   );
 
 describe("the sheet", () => {
@@ -110,7 +110,7 @@ describe("the sheet", () => {
 
   it("offers Undo for a few seconds after an utterance is deleted (Q137)", () => {
     const t = room();
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={t.utterances[0]} hits={[]} current={0} rewrite={null} canRewrite checked={null} />);
     expect(html).toMatch(/Utterance at <span[^>]*>00:04<\/span> deleted\./);
     expect(html).toContain(">Undo</button>");
   });
@@ -120,7 +120,7 @@ describe("the sheet", () => {
     t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Perché apriamo?", voice: null });
     const hits = hitsIn(t, "apriamo");
     expect(hits).toHaveLength(2);
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={hits} current={1} rewrite={null} canRewrite checked={null} />);
     expect(html).toMatch(/<mark data-hit="other"[^>]*>Apriamo<\/mark>/);
     expect(html).toMatch(/<mark data-hit="current" class="bg-ember[^"]*">apriamo<\/mark>/);
     expect(html).toContain('data-utterance="2"');
@@ -129,7 +129,7 @@ describe("the sheet", () => {
   it("shows a rewrite's proposal under its utterance, the words it adds and drops, with Accept and Discard (Q138)", () => {
     const t = room();
     const proposal = { transcript: 1, utterance: 1, writing: false, proposal: "Apriamo. Io ho chiuso ieri.", failed: null };
-    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite />);
+    const html = renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={proposal} canRewrite checked={null} />);
     expect(html).toMatch(/<ins[^>]*>chiuso<\/ins>/);
     expect(html).toMatch(/<del[^>]*>finito<\/del>/);
     expect(html).toContain(">Accept<");
@@ -138,6 +138,29 @@ describe("the sheet", () => {
     expect(writing).toContain("spine-live");
     expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={{ ...proposal, proposal: t.utterances[0].text }} actions={actions} />)).toContain(
       "The model would leave it as it is.",
+    );
+  });
+
+  it("draws where the text model's look stopped reading, and when the next may come (Q140)", () => {
+    let t = room();
+    t = addUtterance(t, { stream: "mic-1", startMs: 9_000, endMs: 9_500, text: "Poi?", voice: null });
+    const sheetAt = (checked: { untilMs: number; nextAt: number | null } | null) =>
+      renderToStaticMarkup(<Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite checked={checked} />);
+    const html = sheetAt({ untilMs: 8_000, nextAt: null });
+    expect(html.indexOf("Checked to here")).toBeGreaterThan(html.indexOf("Apriamo."));
+    expect(html.indexOf("Checked to here")).toBeLessThan(html.indexOf("Poi?"));
+    expect(sheetAt({ untilMs: 9_500, nextAt: null })).not.toContain("Checked to here");
+    expect(sheetAt(null)).not.toContain("Checked to here");
+    expect(nextCheckIn(41_000, 0)).toBe("next check in about 45 s");
+    expect(nextCheckIn(90_000, 0)).toBe("next check in about 2 min");
+    expect(nextCheckIn(3_000, 0)).toBe("next check any moment");
+  });
+
+  it("says, rewriting an utterance the look has not read, that the automatic check has not reached it", () => {
+    const t = room();
+    const writing = { transcript: 1, utterance: 1, writing: true, proposal: null, failed: null };
+    expect(renderToStaticMarkup(<RewritePanel utterance={t.utterances[0]} rewrite={writing} unchecked actions={actions} />)).toContain(
+      "The automatic check has not read this utterance yet.",
     );
   });
 
@@ -302,7 +325,7 @@ describe("the context (Q128)", () => {
 });
 
 describe("the suggestions (Q132)", () => {
-  const idle: AnalystState = { looking: null, failed: null };
+  const idle: AnalystState = { looking: null, nextAt: {}, failed: null };
   const panel = (t: Transcript, looking: AnalystState = idle, patch: Partial<TranscribeState> = {}) =>
     renderToStaticMarkup(<SuggestionsPanel transcript={t} state={state(patch)} actions={actions} looking={looking} />);
 
@@ -334,10 +357,10 @@ describe("the suggestions (Q132)", () => {
 
   it("say when the text model is reading, when they are off, and why a look failed; Suggest now waits for a text model", () => {
     const t = room();
-    expect(panel(t, { looking: t.id, failed: null })).toContain("The text model is reading the transcript.");
-    expect(panel(t, { looking: t.id, failed: null })).toContain(">Stop<");
+    expect(panel(t, { looking: t.id, nextAt: {}, failed: null })).toContain("The text model is reading the transcript.");
+    expect(panel(t, { looking: t.id, nextAt: {}, failed: null })).toContain(">Stop<");
     expect(panel(t, idle, { suggestionsOn: false })).toContain("Suggestions while listening are off in Settings.");
-    expect(panel(t, { looking: null, failed: { transcript: t.id, message: "ignis answered 500" } })).toContain("No suggestions: ignis answered 500");
+    expect(panel(t, { looking: null, nextAt: {}, failed: { transcript: t.id, message: "ignis answered 500" } })).toContain("No suggestions: ignis answered 500");
     expect(panel(t, idle, { textBlocked: "No text model serves: the notes and the suggestions need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Suggest now</);
   });
 });
@@ -390,7 +413,7 @@ describe("the notes", () => {
 const idleHandle = { getState: () => IDLE, subscribe: () => () => {} };
 const assistants = {
   notes: { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} },
-  analyst: { getState: (): AnalystState => ({ looking: null, failed: null }), subscribe: () => () => {} },
+  analyst: { getState: (): AnalystState => ({ looking: null, nextAt: {}, failed: null }), subscribe: () => () => {} },
   rewriter: { getState: () => ({ transcript: null, utterance: null, writing: false, proposal: null, failed: null }), subscribe: () => () => {} },
 };
 

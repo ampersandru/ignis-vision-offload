@@ -53,7 +53,9 @@ export function restoreTranscripts(values: unknown[], nextId: number): { transcr
     const readN = readNotes(notes);
     const readC = readContext(context);
     const readS = readSuggestions(suggestions);
-    return { ...t, ...(readN ? { notes: readN } : {}), ...(readC ? { context: readC } : {}), ...(readS ? { suggestions: readS } : {}) };
+    const checked = typeof t.checkedUntilMs === "number" && Number.isFinite(t.checkedUntilMs) ? { checkedUntilMs: t.checkedUntilMs } : {};
+    const { checkedUntilMs: _checked, ...rest } = t;
+    return { ...rest, ...checked, ...(readN ? { notes: readN } : {}), ...(readC ? { context: readC } : {}), ...(readS ? { suggestions: readS } : {}) };
   });
   return { transcripts, stamps, nextId: ordered.nextId };
 }

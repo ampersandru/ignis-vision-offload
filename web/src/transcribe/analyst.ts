@@ -13,16 +13,19 @@ import type { Transcript } from "./transcript.ts";
 export type AnalystState = {
   /** The Transcript being read. */
   looking: number | null;
+  /** When the next look while listening may come, by Transcript (epoch ms): the last look's start and the gap. */
+  nextAt: Record<number, number>;
   /** The last look that failed, and why. */
   failed: { transcript: number; message: string } | null;
 };
 
 export type AnalystDeps = AskDeps & {
-  onFound: (transcript: number, found: Analysis) => void;
+  /** What a look found, and up to where it read (the end of the last utterance it had, ms on the Transcript's clock). */
+  onFound: (transcript: number, found: Analysis, readUntilMs: number) => void;
   now?: () => number;
 };
 
-const IDLE: AnalystState = { looking: null, failed: null };
+const IDLE: AnalystState = { looking: null, nextAt: {}, failed: null };
 
 export class Analyst extends Watched<AnalystState> {
   private abort: AbortController | null = null;
@@ -40,18 +43,20 @@ export class Analyst extends Watched<AnalystState> {
     if (this.state.looking !== null) return;
     const abort = new AbortController();
     this.abort = abort;
-    this.began.set(t.id, (this.deps.now ?? Date.now)());
+    const began = (this.deps.now ?? Date.now)();
+    this.began.set(t.id, began);
     this.read.set(t.id, t.utterances.length);
-    this.set({ looking: t.id, failed: null });
+    const readUntilMs = Math.max(0, ...t.utterances.map((u) => u.endMs));
+    this.set({ looking: t.id, nextAt: { ...this.state.nextAt, [t.id]: began + ANALYSIS_GAP_MS }, failed: null });
     const { content } = transcriptInput(t, contextLimit, ANALYSIS_MAX_TOKENS);
     const asked = await askModel(assistRequest(ANALYSIS_SETTINGS, ANALYSIS_TASK, content), abort.signal, this.deps);
     if (asked.ok === "stopped") return;
     this.abort = null;
     if (asked.ok) {
-      this.deps.onFound(t.id, readAnalysis(asked.text));
-      this.set(IDLE);
+      this.deps.onFound(t.id, readAnalysis(asked.text), readUntilMs);
+      this.set({ ...this.state, looking: null });
     } else {
-      this.set({ looking: null, failed: { transcript: t.id, message: asked.message } });
+      this.set({ ...this.state, looking: null, failed: { transcript: t.id, message: asked.message } });
     }
   }
 
@@ -59,7 +64,7 @@ export class Analyst extends Watched<AnalystState> {
     if (!this.abort) return;
     this.abort.abort();
     this.abort = null;
-    this.set(IDLE);
+    this.set({ ...this.state, looking: null });
   }
 
   /** Reads `t` if keeping up says it is time; `final` as the listening ends. A failed look waits the gap. */

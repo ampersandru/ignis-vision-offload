@@ -1,4 +1,4 @@
-import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type Hit, partsOf } from "./search.ts";
 import { type RewriterState, wordDiff } from "./rewrite.ts";
 import { isAtBottom } from "../ui/scroll.ts";
@@ -45,6 +45,7 @@ export const Sheet = memo(function Sheet({
   current,
   rewrite,
   canRewrite,
+  checked,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -62,6 +63,11 @@ export const Sheet = memo(function Sheet({
   /** The search's hits in this Transcript, and the one it stands on (Q136). */
   hits: Hit[];
   current: number;
+  /**
+   * Where the text model's look has read up to (Q140), and when it may look next while listening (epoch ms, `null`
+   * when it is not keeping up); `null` before any look.
+   */
+  checked: { untilMs: number; nextAt: number | null } | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -102,7 +108,10 @@ export const Sheet = memo(function Sheet({
             <Empty listening={here && phase !== "idle"} />
           ) : (
             <ol aria-label="Utterances">
-              {transcript.utterances.map((u) => (
+              {transcript.utterances.map((u, i) => [
+                checked && i > 0 && transcript.utterances[i - 1].endMs <= checked.untilMs && u.endMs > checked.untilMs && (
+                  <CheckedMark key={`checked-${u.id}`} nextAt={checked.nextAt} />
+                ),
                 <UtteranceRow
                   key={u.id}
                   utterance={u}
@@ -112,8 +121,9 @@ export const Sheet = memo(function Sheet({
                   hits={byUtterance.get(u.id)}
                   rewrite={rewrite?.utterance === u.id ? rewrite : undefined}
                   canRewrite={canRewrite && !rewrite?.writing}
-                />
-              ))}
+                  unchecked={rewrite?.utterance === u.id && checked !== null && u.endMs > checked.untilMs}
+                />,
+              ])}
               {live.map((u) => (
                 <LiveRow key={u.key} utterance={u} label={laneLabel(u.lane, call)} burning={phase === "listening" || phase === "finishing"} />
               ))}
@@ -219,10 +229,13 @@ export function highlighted(text: string, fixed: string[], hits: { start: number
 export function RewritePanel({
   utterance: u,
   rewrite,
+  unchecked = false,
   actions,
 }: {
   utterance: Utterance;
   rewrite: RewriterState;
+  /** The automatic look has not read this utterance yet (Q140): said, since it might have fixed it by itself. */
+  unchecked?: boolean;
   actions: Pick<TranscribeActions, "acceptRewrite" | "closeRewrite">;
 }) {
   const unchanged = rewrite.proposal !== null && rewrite.proposal === u.text;
@@ -231,7 +244,10 @@ export function RewritePanel({
       <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-[2px] ${rewrite.writing ? "spine-live" : "bg-ember"}`} />
       {rewrite.writing ? (
         <div className="flex items-center gap-3">
-          <span className="text-[13px] text-ash">Rebuilding what was said from the conversation around it…</span>
+          <span className="text-[13px] text-ash">
+            Rebuilding what was said from the conversation around it…
+            {unchecked && <span className="block text-xs">The automatic check has not read this utterance yet.</span>}
+          </span>
           <button type="button" onClick={actions.closeRewrite} className="ml-auto font-display text-xs text-ash hover:text-ink">
             Stop
           </button>
@@ -281,6 +297,37 @@ export function RewritePanel({
   );
 }
 
+/** Seconds from now to `at`, as the mark says them: "about 40 s", "any moment". */
+export function nextCheckIn(at: number, now: number): string {
+  const seconds = Math.round((at - now) / 1_000);
+  if (seconds <= 5) return "next check any moment";
+  return seconds >= 60 ? `next check in about ${Math.round(seconds / 60)} min` : `next check in about ${Math.ceil(seconds / 5) * 5} s`;
+}
+
+/** The line across the spine where the text model's look stopped reading (Q140), and when the next may come. */
+function CheckedMark({ nextAt }: { nextAt: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (nextAt === null) return;
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, [nextAt]);
+  return (
+    <li aria-label="Checked by the text model up to here" className="grid grid-cols-[3.75rem_1fr] gap-x-4 sm:grid-cols-[4.5rem_1fr]">
+      <span aria-hidden="true" />
+      <div className="relative border-l-2 border-line pb-4 pl-4">
+        <span aria-hidden="true" className="absolute top-[4px] -left-[5px] size-2 rotate-45 bg-ember" />
+        <div className="flex items-center gap-2">
+          <span aria-hidden="true" className="h-0 flex-1 border-t border-dashed border-ember/55" />
+          <span className="shrink-0 font-display text-[11px] leading-4 text-ember">
+            Checked to here{nextAt !== null && <span className="text-ash"> · {nextCheckIn(nextAt, now)}</span>}
+          </span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 /** An utterance of the sheet: drawn again only when it, its speaker or the speakers change. */
 const UtteranceRow = memo(function UtteranceRow({
   utterance: u,
@@ -290,6 +337,7 @@ const UtteranceRow = memo(function UtteranceRow({
   hits,
   rewrite,
   canRewrite,
+  unchecked,
 }: {
   utterance: Utterance;
   speaker: Speaker | undefined;
@@ -298,6 +346,8 @@ const UtteranceRow = memo(function UtteranceRow({
   hits: { start: number; end: number; current: boolean }[] | undefined;
   rewrite: RewriterState | undefined;
   canRewrite: boolean;
+  /** The text model's look has not read it yet (Q140). */
+  unchecked: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -356,7 +406,7 @@ const UtteranceRow = memo(function UtteranceRow({
               Delete
             </button>
           </div>
-          {rewrite && <RewritePanel utterance={u} rewrite={rewrite} actions={actions} />}
+          {rewrite && <RewritePanel utterance={u} rewrite={rewrite} unchecked={unchecked} actions={actions} />}
         </div>
       ) : (
         <div>
@@ -369,7 +419,7 @@ const UtteranceRow = memo(function UtteranceRow({
           >
             {u.text ? highlighted(u.text, u.fixed ?? [], hits) : <span className="text-ash">(no text)</span>}
           </p>
-          {rewrite && <RewritePanel utterance={u} rewrite={rewrite} actions={actions} />}
+          {rewrite && <RewritePanel utterance={u} rewrite={rewrite} unchecked={unchecked} actions={actions} />}
           {u.heard !== undefined && (
             <button
               type="button"

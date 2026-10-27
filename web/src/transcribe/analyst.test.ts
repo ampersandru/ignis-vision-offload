@@ -17,7 +17,7 @@ function heard(n: number, id = 1): Transcript {
 
 function analyst(answers: (string | Error)[], now = () => 0) {
   const asked: StreamOptions[] = [];
-  const found: [number, Analysis][] = [];
+  const found: [number, Analysis, number][] = [];
   const stream = async (options: StreamOptions): Promise<StreamResult> => {
     asked.push(options);
     const answer = answers.shift() ?? "NONE";
@@ -26,7 +26,7 @@ function analyst(answers: (string | Error)[], now = () => 0) {
     options.onEvent({ kind: "content", text: answer });
     return { ok: true, timeline };
   };
-  const a = new Analyst({ stream, now, sleep: async () => {}, onFound: (id, f) => found.push([id, f]) });
+  const a = new Analyst({ stream, now, sleep: async () => {}, onFound: (id, f, until) => found.push([id, f, until]) });
   return { a, asked, found };
 }
 
@@ -36,8 +36,8 @@ describe("a look for suggestions", () => {
     await a.analyze(heard(6, 4), null);
     expect(asked[0].request.settings.systemPrompt).toBe(`${ASSIST_SYSTEM}\n\n${ANALYSIS_TASK}`);
     expect(asked[0].request.turns[0].content.startsWith("27 Oct 15:42 · Call\n\n[00:00] Me: Frase 0.\n")).toBe(true);
-    expect(found).toEqual([[4, { topic: "Supporto IT", title: null, terms: ["PostgreSQL"], fixes: [] }]]);
-    expect(a.getState()).toEqual({ looking: null, failed: null });
+    expect(found).toEqual([[4, { topic: "Supporto IT", title: null, terms: ["PostgreSQL"], fixes: [] }, 27_000]]);
+    expect(a.getState()).toEqual({ looking: null, nextAt: { 4: ANALYSIS_GAP_MS }, failed: null });
   });
 
   it("says why one failed, and waits the gap before the next while listening", async () => {

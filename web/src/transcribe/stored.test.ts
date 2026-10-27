@@ -91,6 +91,13 @@ describe("a Transcript in the store", () => {
     expect(kept).not.toHaveProperty("context");
   });
 
+  it("keeps where the text model's look read it up to (Q140)", () => {
+    const [back] = restoreTranscripts([toStored({ ...heardTwice(), checkedUntilMs: 2_000 }, { key: "k", order: 1 })], 1).transcripts;
+    expect(back.checkedUntilMs).toBe(2_000);
+    const [none] = restoreTranscripts([{ ...toStored(heardTwice(), { key: "k", order: 1 }), checkedUntilMs: "x" }], 1).transcripts;
+    expect(none).not.toHaveProperty("checkedUntilMs");
+  });
+
   it("is worth keeping once an utterance is heard in it", () => {
     expect(worthKeeping(createTranscript(1))).toBe(false);
     expect(worthKeeping(heardTwice())).toBe(true);
