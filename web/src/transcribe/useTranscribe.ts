@@ -12,6 +12,7 @@ import { decodeFile } from "./file.ts";
 import { filePace } from "./filePace.ts";
 import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
 import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
+import { type CallContext, EMPTY_CONTEXT, told } from "./context.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
@@ -28,8 +29,11 @@ import { addUtterance, beginListening, clockOf, editText, mergeSpeakers, moveUtt
 export type TranscribeState = {
   list: TranscriptList;
   active: Transcript;
-  /** The context field: sent as the prompt at the start, and by a session.update when changed (Q87). */
-  context: string;
+  /**
+   * The open Transcript's context as it is being edited, `null` when it is not (Q128): its own, applied, is
+   * `active.context`. A Start applies it first.
+   */
+  draft: CallContext | null;
   /** The Speakers toggle, per listening, on by default (Q112). */
   speakers: boolean;
   /** Why the Speakers toggle is struck, when it is: the diarizer the server reports. */
@@ -54,7 +58,12 @@ export type TranscribeActions = {
   pause: () => void;
   resume: () => void;
   stop: () => void;
-  setContext: (context: string) => void;
+  /** Edits the open Transcript's context: a draft, from what it was told. */
+  editContext: () => void;
+  changeContext: (draft: CallContext) => void;
+  /** Applies the draft: the Transcript keeps it, and a listening into it is told from the next utterance on. */
+  applyContext: () => void;
+  cancelContext: () => void;
   setSpeakers: (on: boolean) => void;
   setHoldMic: (on: boolean) => void;
   /** The silence that ends an utterance (Q122): the viewer's, and every session's at once. */
@@ -88,7 +97,10 @@ export function useTranscribe({
   onUnavailable: () => void;
 }): [TranscribeState, TranscribeActions, ListeningHandle, NotesHandle] {
   const [list, setList] = useState<TranscriptList>(() => startList());
-  const [context, setContextText] = useState("");
+  /** The draft, and the Transcript it is of. */
+  const [drafting, setDrafting] = useState<{ id: number; context: CallContext } | null>(null);
+  const draftNow = useRef(drafting);
+  draftNow.current = drafting;
   const [speakers, setSpeakers] = useState(true);
   const [holdMic, storeHoldMic] = useStoredFlag(STORED_FLAGS.transcribeHoldMic, true);
   const holdMicRef = useRef(holdMic);
@@ -158,8 +170,15 @@ export function useTranscribe({
   });
 
   const struck = speech ? speakersUnavailable(speech) : null;
-  // Read at the press: the toggle as struck by the server's word, the context as typed.
-  const contextRef = useRef(context);
+  // A listening is told what its Transcript holds, applied or renamed since: each session sends a change alone.
+  useEffect(() => {
+    const listening = controller.getState();
+    if (listening.phase === "idle") return;
+    const t = list.transcripts.find((x) => x.id === listening.transcript);
+    if (t) controller.setContext(told(t.context, t.speakers));
+  }, [list, controller]);
+
+  // Read at the press: the toggle as struck by the server's word.
   const speakersRef = useRef(speakers && struck === null);
   speakersRef.current = speakers && struck === null;
   const active = activeOf(list);
@@ -179,15 +198,19 @@ export function useTranscribe({
       },
       start: (source) => {
         if (controller.getState().phase !== "idle") return;
-        const t = activeOf(listNow.current);
+        const pending = draftNow.current;
+        const opened = activeOf(listNow.current);
+        // A context being edited is applied by the Start: what it shows is what the listening is told.
+        const t = pending?.id === opened.id ? { ...opened, context: { ...pending.context, appliedAt: Date.now() } } : opened;
+        if (pending?.id === opened.id) setDrafting(null);
         const start = { source: source.kind, at: new Date(), ...(source.kind === "file" ? { fileName: source.file.name } : {}) };
-        setList((l) => updateTranscript(l, t.id, (current) => beginListening(current, start)));
+        setList((l) => updateTranscript(l, t.id, (current) => beginListening({ ...current, context: t.context }, start)));
         controller.start({
           transcript: t.id,
           clockMs: clockOf(t),
           source,
           speakers: speakersRef.current,
-          context: contextRef.current,
+          context: told(t.context, t.speakers),
           silenceMs: utteranceSilence(),
           holdMic: holdMicRef.current,
         });
@@ -195,11 +218,18 @@ export function useTranscribe({
       pause: () => controller.pause(),
       resume: () => controller.resume(),
       stop: () => void controller.stop(),
-      setContext: (text) => {
-        contextRef.current = text;
-        setContextText(text);
-        controller.setContext(text);
+      editContext: () => {
+        const t = activeOf(listNow.current);
+        setDrafting({ id: t.id, context: t.context ?? EMPTY_CONTEXT });
       },
+      changeContext: (draft) => setDrafting({ id: listNow.current.activeId, context: draft }),
+      applyContext: () => {
+        const pending = draftNow.current;
+        if (!pending) return;
+        setDrafting(null);
+        change(pending.id, (t) => ({ ...t, context: { ...pending.context, appliedAt: Date.now() } }));
+      },
+      cancelContext: () => setDrafting(null),
       setSpeakers: (on) => setSpeakers(on),
       setHoldMic: (on) => {
         holdMicRef.current = on;
@@ -233,7 +263,7 @@ export function useTranscribe({
   );
 
   return [
-    { list, active, context, speakers: speakers && struck === null, speakersUnavailable: struck, holdMic, notesLive, notesBlocked: text.blocked, storeError: kept.error },
+    { list, active, draft: drafting?.id === active.id ? drafting.context : null, speakers: speakers && struck === null, speakersUnavailable: struck, holdMic, notesLive, notesBlocked: text.blocked, storeError: kept.error },
     actions,
     controller,
     writer,

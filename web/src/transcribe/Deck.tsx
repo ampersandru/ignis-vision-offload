@@ -4,6 +4,7 @@ import { SECURE_CONTEXT, unavailable } from "../speech/availability.ts";
 import { HintText, toneClass } from "../speech/Dictation.tsx";
 import { IconPause, IconPlay, IconStopSquare } from "../ui/icons.tsx";
 import { Switch } from "../ui/Switch.tsx";
+import { contextSummary } from "./context.ts";
 import { clock } from "./export.ts";
 import type { LaneName, ListeningState } from "./listening.ts";
 import type { SourceKind } from "./transcript.ts";
@@ -53,6 +54,7 @@ export function Deck({
   speech,
   secure,
   here,
+  onEditContext,
 }: {
   state: TranscribeState;
   listening: ListeningState;
@@ -61,6 +63,8 @@ export function Deck({
   secure: boolean;
   /** The listening, if any, appends to the Transcript open. */
   here: boolean;
+  /** Opens the Call tab on the context's draft. */
+  onEditContext: () => void;
 }) {
   const [source, setSource] = useState<SourceKind>("microphone");
   const picker = useRef<HTMLInputElement>(null);
@@ -80,6 +84,16 @@ export function Deck({
   return (
     <div className="border-t border-line bg-ground px-4 pt-3 pb-3 md:px-10">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2.5">
+        <p className="flex min-w-0 items-baseline gap-2 text-xs">
+          <span className="shrink-0 font-display text-ash">Told</span>
+          <span className="min-w-0 truncate text-ink/85">
+            {contextSummary(state.active.context)}
+            {state.draft !== null && <span className="ml-2 text-ember">Being edited: a Start applies it.</span>}
+          </span>
+          <button type="button" onClick={onEditContext} className="shrink-0 font-display font-semibold text-ember hover:underline">
+            Edit
+          </button>
+        </p>
         {idle ? (
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
             <div role="radiogroup" aria-label="Source" className="flex">

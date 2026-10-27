@@ -82,6 +82,15 @@ describe("a Transcript in the store", () => {
     expect(kept).not.toHaveProperty("notes");
   });
 
+  it("keeps what it is told (Q128), and drops a context it cannot read without dropping the Transcript", () => {
+    const context = { languages: { mode: "force" as const, codes: ["it"] }, topic: "Supporto IT", terms: ["AnyDesk"], other: "", appliedAt: 1_761_580_000_000 };
+    const [back] = restoreTranscripts([toStored({ ...heardTwice(), context }, { key: "k", order: 1 })], 1).transcripts;
+    expect(back.context).toEqual(context);
+    const [kept] = restoreTranscripts([{ ...toStored(heardTwice(), { key: "k", order: 1 }), context: "Standup." }], 1).transcripts;
+    expect(kept.utterances).toHaveLength(2);
+    expect(kept).not.toHaveProperty("context");
+  });
+
   it("is worth keeping once an utterance is heard in it", () => {
     expect(worthKeeping(createTranscript(1))).toBe(false);
     expect(worthKeeping(heardTwice())).toBe(true);

@@ -31,7 +31,7 @@ nothing is sent to the server for safekeeping.
 | Chat sessions: every message, its reasoning, tool runs, figures and log, attached files | IndexedDB `ignis-playground`, collection `chat-sessions` | yes |
 | Decide's decisions: drafts, evidence, answers | same database, `decide-sessions` | yes |
 | Image sessions and their steps | same database, `image-sessions` | yes |
-| Transcripts: each utterance's text, times and speaker, the speakers' names and the corrections, the notes, never audio | same database, `transcribe-sessions` | yes; a listening under way ends, its completed utterances kept |
+| Transcripts: each utterance's text, times and speaker, the speakers' names and the corrections, the context it is told, the notes, never audio | same database, `transcribe-sessions` | yes; a listening under way ends, its completed utterances kept |
 | Pictures (sent in the chat, made, marked), stored once and shared | same database, `images` and `bytes` | yes |
 | The session that was open, per view | same database, `active-session` | yes |
 | The API key | `localStorage` `ignis.apiKey` | yes |

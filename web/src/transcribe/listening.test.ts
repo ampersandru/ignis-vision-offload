@@ -3,9 +3,12 @@ import { CallNotShared, type Capture, MicBlocked, NoSharedAudio } from "../speec
 import { MIC_BLOCKED, TURNED_OFF } from "../speech/availability.ts";
 import { BUSY_RETRY_SECONDS } from "../speech/dictation.ts";
 import { listening } from "../speech/listening.ts";
-import type { Listening, ListeningEvent, ListeningOptions } from "../speech/realtime.ts";
+import { type Listening, type ListeningEvent, type ListeningOptions, NOTHING_TOLD, type Told } from "../speech/realtime.ts";
 import { busyRetry, CALL_NOT_SHARED, HOLD_AFTER_MS, fileDone, CONNECTION_LOST, itemFailed, NO_WEBSOCKET, speakersOff, STILL_BUSY, ListeningController, type ListeningDeps, type ListeningState, cannotStart, NO_SHARED_AUDIO, SHARING_ENDED } from "./listening.ts";
 import type { Heard } from "./transcript.ts";
+
+/** A context of a prompt alone. */
+const said = (prompt: string): Told => ({ prompt, keywords: [], language: null });
 
 // A listening in the Transcribe view (spec speech/07) through the controller
 // the view reads: the Realtime sessions, the captures, the file's decoder and
@@ -18,7 +21,7 @@ type FakeSession = {
   appended: { samples: number; eventId?: string }[];
   /** Every append's audio, to tell sound from silence. */
   pcm: Int16Array[];
-  contexts: string[];
+  contexts: Told[];
   silences: number[];
 };
 type FakeCapture = { chunk: (samples: number, value?: number) => void; stopped: boolean };
@@ -101,11 +104,11 @@ afterEach(() => {
 describe("a listening on the microphone", () => {
   it("opens one session with the context and the live speakers, takes the mic, and holds the page's speech", async () => {
     const h = harness();
-    h.controller.start({ transcript: 7, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "Standup." });
+    h.controller.start({ transcript: 7, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: said("Standup.") });
     expect(h.state().phase).toBe("listening");
     expect(listening()).toBe(true);
     expect(h.sessions).toHaveLength(1);
-    expect(h.session().options).toEqual({ context: "Standup.", diarization: "live", silenceMs: null });
+    expect(h.session().options).toEqual({ context: said("Standup."), diarization: "live", silenceMs: null });
     await settle();
     h.mics[0].chunk(1_600);
     expect(h.session().appended).toEqual([{ samples: 1_600 }]);
@@ -113,7 +116,7 @@ describe("a listening on the microphone", () => {
 
   it("shows each utterance under way, then hands it to its Transcript on the clock from the listening's start", async () => {
     const h = harness();
-    h.controller.start({ transcript: 7, clockMs: 90_000, source: { kind: "microphone" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 7, clockMs: 90_000, source: { kind: "microphone" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     // The mic's first audio comes 2 s after the press: the session's 0 is there.
     vi.advanceTimersByTime(2_100);
@@ -135,7 +138,7 @@ describe("a listening on the microphone", () => {
 
   it("drops an utterance with no words, and one with no speaker has none", async () => {
     const h = harness();
-    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     h.mics[0].chunk(1_600);
     const s = h.session();
@@ -150,7 +153,7 @@ describe("a listening on the microphone", () => {
 
   it("asks for no speakers with Speakers off", async () => {
     const h = harness();
-    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: false, context: "" });
+    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: false, context: NOTHING_TOLD });
     expect(h.session().options.diarization).toBeNull();
   });
 });
@@ -158,7 +161,7 @@ describe("a listening on the microphone", () => {
 describe("Pause, Resume and Stop (Q97)", () => {
   async function talking() {
     const h = harness();
-    h.controller.start({ transcript: 3, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 3, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     h.mics[0].chunk(1_600);
     return h;
@@ -283,11 +286,11 @@ describe("Pause, Resume and Stop (Q97)", () => {
 describe("a call (Q93, Q112)", () => {
   it("asks for the pick and the mic at the press, and opens two sessions, never mixed: the mic's with no speakers, the shared audio's with them", async () => {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "Weekly." });
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: said("Weekly.") });
     expect(h.events).toEqual(["pick", "mic"]);
     expect(h.sessions.map((s) => s.options)).toEqual([
-      { context: "Weekly.", diarization: null, silenceMs: null },
-      { context: "Weekly.", diarization: "live", silenceMs: null },
+      { context: said("Weekly."), diarization: null, silenceMs: null },
+      { context: said("Weekly."), diarization: "live", silenceMs: null },
     ]);
     await settle();
     h.mics[0].chunk(1_600);
@@ -298,7 +301,7 @@ describe("a call (Q93, Q112)", () => {
   it("labels the mic Me, and the shared audio by its speakers or, with Speakers off, Others; both on one clock", async () => {
     for (const speakers of [true, false]) {
       const h = harness();
-      h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers, context: "" });
+      h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers, context: NOTHING_TOLD });
       await settle();
       vi.advanceTimersByTime(1_100);
       h.mics[0].chunk(1_600);
@@ -322,7 +325,7 @@ describe("a call (Q93, Q112)", () => {
 
   it("keeps the pick across a Pause: Resume needs no new one", async () => {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     h.controller.pause();
     expect(h.shared[0].stopped).toBe(true);
@@ -334,7 +337,7 @@ describe("a call (Q93, Q112)", () => {
 
   it("stops when the browser's own Stop sharing ends the shared audio", async () => {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     h.endSharing();
     await settle();
@@ -346,7 +349,7 @@ describe("a call (Q93, Q112)", () => {
 
   it("says the sharing ended when it ends while a busy server is waited on", async () => {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     h.session().emit({ type: "refused", refusal: { kind: "busy" } });
     h.endSharing();
@@ -359,7 +362,7 @@ describe("a call (Q93, Q112)", () => {
       [new NoSharedAudio("no audio"), NO_SHARED_AUDIO],
     ] as const) {
       const h = harness({ refusePick: refusal });
-      h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "" });
+      h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD });
       await settle();
       expect(h.state().phase).toBe("idle");
       expect(h.state().notice).toEqual({ text: sentence, tone: "ash" });
@@ -373,12 +376,12 @@ describe("a call (Q93, Q112)", () => {
 describe("a microphone the browser refuses", () => {
   it("ends the listening before it starts, saying why", async () => {
     const blocked = harness({ refuseMic: new MicBlocked("denied") });
-    blocked.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "" });
+    blocked.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     expect(blocked.state().phase).toBe("idle");
     expect(blocked.state().notice).toEqual({ text: MIC_BLOCKED, tone: "ash" });
     const busy = harness({ refuseMic: Object.assign(new Error("Could not start audio source"), { name: "NotReadableError" }) });
-    busy.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "" });
+    busy.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: NOTHING_TOLD });
     await settle();
     expect(busy.state().notice).toEqual({ text: cannotStart("Could not start audio source"), tone: "fault" });
   });
@@ -386,7 +389,7 @@ describe("a microphone the browser refuses", () => {
 
 describe("what the server refuses (AC 15: spec speech/04's states)", () => {
   const start = (h: ReturnType<typeof harness>, kind: "microphone" | "call" = "microphone") =>
-    h.controller.start({ transcript: 2, clockMs: 0, source: kind === "call" ? { kind: "call" } : { kind: "microphone" }, speakers: true, context: "" });
+    h.controller.start({ transcript: 2, clockMs: 0, source: kind === "call" ? { kind: "call" } : { kind: "microphone" }, speakers: true, context: NOTHING_TOLD });
 
   it("a busy server: waits, counting down, then tries once more; still busy, says so", async () => {
     const h = harness();
@@ -490,9 +493,9 @@ describe("what the server refuses (AC 15: spec speech/04's states)", () => {
 describe("the context (Q87)", () => {
   it("changed mid-listening goes to every session, from the next utterance", async () => {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "" });
-    h.controller.setContext("Names: Ada.");
-    expect(h.sessions.map((s) => s.contexts)).toEqual([["Names: Ada."], ["Names: Ada."]]);
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD });
+    h.controller.setContext(said("Names: Ada."));
+    expect(h.sessions.map((s) => s.contexts)).toEqual([[said("Names: Ada.")], [said("Names: Ada.")]]);
   });
 });
 
@@ -504,7 +507,7 @@ describe("a file (Q94, Q99)", () => {
 
   async function feeding(options: { speakers?: boolean; clockMs?: number } = {}) {
     const h = harness({ decoded: 120 * SECONDS, pace: 60 });
-    h.controller.start({ transcript: 5, clockMs: options.clockMs ?? 0, source: { kind: "file", file }, speakers: options.speakers ?? true, context: "" });
+    h.controller.start({ transcript: 5, clockMs: options.clockMs ?? 0, source: { kind: "file", file }, speakers: options.speakers ?? true, context: NOTHING_TOLD });
     await settle();
     return h;
   }
@@ -590,7 +593,7 @@ describe("a file (Q94, Q99)", () => {
   it("keeps a file decoded while a busy server is waited on, and sends it once the retry opens", async () => {
     let decoded!: () => void;
     const h = harness({ decoded: 120 * SECONDS, pace: 60, decodeGate: new Promise<void>((resolve) => (decoded = resolve)) });
-    h.controller.start({ transcript: 5, clockMs: 0, source: { kind: "file", file }, speakers: true, context: "" });
+    h.controller.start({ transcript: 5, clockMs: 0, source: { kind: "file", file }, speakers: true, context: NOTHING_TOLD });
     h.session().emit({ type: "refused", refusal: { kind: "busy" } });
     decoded();
     await settle();
@@ -631,7 +634,7 @@ describe("a file (Q94, Q99)", () => {
 
   it("says when the browser cannot decode the file", async () => {
     const h = harness();
-    h.controller.start({ transcript: 5, clockMs: 0, source: { kind: "file", file }, speakers: true, context: "" });
+    h.controller.start({ transcript: 5, clockMs: 0, source: { kind: "file", file }, speakers: true, context: NOTHING_TOLD });
     await settle();
     expect(h.state()).toMatchObject({ phase: "idle", notice: { text: cannotStart("The browser could not decode this file as audio."), tone: "fault" } });
     expect(h.session().calls).toEqual(["close"]);
@@ -641,7 +644,7 @@ describe("a file (Q94, Q99)", () => {
 describe("the silence that ends an utterance (Q122)", () => {
   it("goes to every session at the start, and to every session when it changes", () => {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "", silenceMs: 1_500 });
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD, silenceMs: 1_500 });
     expect(h.sessions.map((s) => s.options.silenceMs)).toEqual([1_500, 1_500]);
     h.controller.setSilence(2_000);
     expect(h.sessions.map((s) => s.silences)).toEqual([[2_000], [2_000]]);
@@ -653,7 +656,7 @@ describe("a call holds the mic while the far side speaks (Q121)", () => {
 
   async function call(holdMic: boolean) {
     const h = harness();
-    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: "", holdMic });
+    h.controller.start({ transcript: 4, clockMs: 0, source: { kind: "call" }, speakers: true, context: NOTHING_TOLD, holdMic });
     await settle();
     return h;
   }
@@ -694,7 +697,7 @@ describe("a call holds the mic while the far side speaks (Q121)", () => {
 
   it("never holds a room's mic", async () => {
     const h = harness();
-    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: "", holdMic: true });
+    h.controller.start({ transcript: 1, clockMs: 0, source: { kind: "microphone" }, speakers: true, context: NOTHING_TOLD, holdMic: true });
     await settle();
     h.mics[0].chunk(1_600, 3_000);
     expect(silent(h.session().pcm[0])).toBe(false);

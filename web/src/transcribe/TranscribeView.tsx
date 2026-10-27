@@ -1,7 +1,8 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
-import { caption, field } from "../ui/classes.ts";
+import { caption } from "../ui/classes.ts";
 import { IconChevron, IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
+import { ContextCard } from "./Context.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
 import type { NotesHandle } from "./notesWriter.ts";
@@ -90,11 +91,23 @@ export function TranscribeView({
           </div>
         </div>
         <Sheet transcript={state.active} live={here ? listening.live : NONE_LIVE} phase={listening.phase} call={listening.source === "call"} here={here} actions={actions} />
-        <Deck state={state} listening={listening} actions={actions} speech={speech} secure={secure} here={here} />
+        <Deck
+          state={state}
+          listening={listening}
+          actions={actions}
+          speech={speech}
+          secure={secure}
+          here={here}
+          onEditContext={() => {
+            setTab("call");
+            onDrawer("settings");
+            if (state.draft === null) actions.editContext();
+          }}
+        />
       </main>
 
       <Side open={drawer === "settings"} tab={tab} onTab={setTab}>
-        {tab === "call" && <Call transcript={state.active} state={state} actions={actions} />}
+        {tab === "call" && <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} />}
         {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={notes} />}
         {tab === "settings" && <Settings actions={actions} />}
       </Side>
@@ -290,24 +303,13 @@ function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOp
 }
 
 /** The Call tab: what the transcription is told, and who speaks. */
-function Call({ transcript: t, state, actions }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions }) {
-  const contextId = useId();
+function Call({ transcript: t, state, actions, live }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; live: boolean }) {
   const counts = new Map<number, number>();
   for (const u of t.utterances) if (u.speaker !== null) counts.set(u.speaker, (counts.get(u.speaker) ?? 0) + 1);
 
   return (
     <>
-      <label htmlFor={contextId} className="flex flex-col gap-2">
-        <span className={caption}>Context</span>
-        <textarea
-          id={contextId}
-          rows={3}
-          value={state.context}
-          onChange={(e) => actions.setContext(e.currentTarget.value)}
-          placeholder="The topic, the names, the jargon: what the transcription should spell right."
-          className={`${field} max-h-48 resize-none [field-sizing:content]`}
-        />
-      </label>
+      <ContextCard transcript={t} draft={state.draft} live={live} actions={actions} />
 
       <section aria-labelledby="transcribe-speakers" className="flex flex-col gap-2.5">
         <h2 id="transcribe-speakers" className={caption}>

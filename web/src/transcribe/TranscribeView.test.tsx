@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SECURE_CONTEXT, TURNED_OFF } from "../speech/availability.ts";
+import { ContextCard } from "./Context.tsx";
 import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft } from "./Deck.tsx";
 import { IDLE, type ListeningState } from "./listening.ts";
 import { NotesPanel, notesButton } from "./Notes.tsx";
@@ -24,7 +25,10 @@ const actions: TranscribeActions = {
   pause: none,
   resume: none,
   stop: none,
-  setContext: none,
+  editContext: none,
+  changeContext: none,
+  applyContext: none,
+  cancelContext: none,
   setSpeakers: none,
   setHoldMic: none,
   setSilence: none,
@@ -107,12 +111,12 @@ describe("the speakers' hues", () => {
 
 const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
   const list = startList();
-  return { list, active: list.transcripts[0], context: "", speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, notesBlocked: null, storeError: null, ...patch };
+  return { list, active: list.transcripts[0], draft: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, notesBlocked: null, storeError: null, ...patch };
 };
 
 describe("the deck", () => {
   const deck = (s: TranscribeState, listening: ListeningState = IDLE) =>
-    renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here />);
+    renderToStaticMarkup(<Deck state={s} listening={listening} actions={actions} speech={{ available: true }} secure here onEditContext={none} />);
 
   it("offers the three sources, the Speakers toggle on by default, and Start, or Continue on a Transcript heard in", () => {
     const html = deck(state());
@@ -179,6 +183,43 @@ describe("the strip", () => {
     expect(strip(at({ phase: "waiting" }))).toContain(">Cancel<");
     expect(stripStatus(at({ phase: "finishing" }))).toBe("Finishing the last words");
     expect(timeLeft(40_000)).toBe("about 40 s left");
+  });
+});
+
+describe("the context (Q128)", () => {
+  const told = (t: Transcript): Transcript => ({
+    ...t,
+    context: { languages: { mode: "free", codes: [] }, topic: "Supporto IT", terms: ["AnyDesk", "VPN"], other: "", appliedAt: new Date(2026, 9, 27, 15, 44).getTime() },
+  });
+  const card = (t: Transcript, draft: TranscribeState["draft"] = null, live = false) =>
+    renderToStaticMarkup(<ContextCard transcript={t} draft={draft} live={live} actions={actions} />);
+
+  it("reads, applied, as a record with when it was applied and what it takes of the server's 512 tokens, and offers Edit", () => {
+    const html = card(told(room()));
+    expect(html).toContain(">Supporto IT<");
+    expect(html).toContain(">AnyDesk<");
+    expect(html).toMatch(/Applied at 15:44 · about \d+ of 512 tokens/);
+    expect(html).toContain(">Edit<");
+    expect(html).not.toContain(">Apply<");
+  });
+
+  it("is a draft once edited, applied by Apply, from the next utterance while listening", () => {
+    const t = told(room());
+    const html = card(t, t.context!, true);
+    expect(html).toContain('value="Supporto IT"');
+    expect(html).toContain('aria-label="Remove AnyDesk"');
+    expect(html).toContain(">Apply<");
+    expect(html).toContain("Holds from the next utterance.");
+    expect(card(t, t.context!, false)).toContain("A Start applies it too.");
+  });
+
+  it("offers Add when nothing is told, and the deck says so in a line with Edit", () => {
+    expect(card(room())).toContain(">Add<");
+    const deckLine = renderToStaticMarkup(<Deck state={state({ active: told(room()) })} listening={IDLE} actions={actions} secure here onEditContext={none} />);
+    expect(deckLine).toContain("Supporto IT · 2 terms");
+    expect(renderToStaticMarkup(<Deck state={state({ draft: told(room()).context! })} listening={IDLE} actions={actions} secure here onEditContext={none} />)).toContain(
+      "Being edited: a Start applies it.",
+    );
   });
 });
 

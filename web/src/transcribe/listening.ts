@@ -12,8 +12,10 @@ import {
   type Listening,
   type ListeningEvent,
   type ListeningOptions,
+  NOTHING_TOLD,
   QUEUE_FULL,
   type Refusal,
+  type Told,
 } from "../speech/realtime.ts";
 import { allowance, backlogMs, estimate } from "./pacing.ts";
 import type { Heard, SourceKind, Voice } from "./transcript.ts";
@@ -143,7 +145,8 @@ export type StartOptions = {
   clockMs: number;
   source: ListeningSource;
   speakers: boolean;
-  context: string;
+  /** What the transcription is told (context.ts). */
+  context: Told;
   /** The silence that ends an utterance, in ms (Q122); absent or `null`, the server's. */
   silenceMs?: number | null;
   /** On a call, hold the mic while the far side speaks (Q121). */
@@ -219,7 +222,7 @@ export class ListeningController {
   private backoffUntil = 0;
   /** Bumped by every start and every end, so a late answer from an earlier one is dropped. */
   private attempt = 0;
-  private context = "";
+  private context: Told = NOTHING_TOLD;
   private silenceMs: number | null = null;
   private holdMic = false;
   /** Until when the far side's last loud chunk holds the mic. */
@@ -293,8 +296,8 @@ export class ListeningController {
     else this.run();
   }
 
-  /** The context from the next utterance on, in every session (Q87). */
-  setContext(context: string) {
+  /** What the transcription is told, from the next utterance on, in every session (Q87, Q128). */
+  setContext(context: Told) {
     this.context = context;
     for (const lane of this.lanes) lane.session?.setContext(context);
   }

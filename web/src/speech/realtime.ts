@@ -288,8 +288,32 @@ export function openTranscription(
 /** The speakers' geometry a listening asks for (spec speech/08): `"live"` for audio at real time, `"file"` for a file. */
 export type Diarization = "live" | "file";
 
+/**
+ * What a listening's transcription is told (spec speech/07, Q128, Q130): the context as its `prompt`, the terms as
+ * its `keywords`, and a `language` to force; `""`, none and `null` send nothing.
+ */
+export type Told = { prompt: string; keywords: string[]; language: string | null };
+
+export const NOTHING_TOLD: Told = { prompt: "", keywords: [], language: null };
+
+/** The configuration's `transcription`: only what is told. */
+const transcriptionOf = ({ prompt, keywords, language }: Told) => ({
+  ...(prompt === "" ? {} : { prompt }),
+  ...(keywords.length === 0 ? {} : { keywords }),
+  ...(language === null ? {} : { language }),
+});
+
+/** An update's `transcription`: every field, `null` putting back what is no longer told. */
+const transcriptionUpdate = ({ prompt, keywords, language }: Told) => ({
+  prompt: prompt === "" ? null : prompt,
+  keywords: keywords.length === 0 ? null : keywords,
+  language,
+});
+
+const sameTold = (a: Told, b: Told) => a.prompt === b.prompt && a.language === b.language && a.keywords.join("\n") === b.keywords.join("\n");
+
 export type ListeningOptions = {
-  context: string;
+  context: Told;
   /** `null`: no speakers (Speakers off, or a call's microphone, which is "Me"). */
   diarization: Diarization | null;
   /** The silence that ends an utterance, in ms (Q122); absent or `null`, the server's `speech.vad_silence_duration_ms`. */
@@ -317,8 +341,8 @@ export type ListeningEvent =
 export type Listening = {
   /** `eventId` comes back on the `error` that refuses this append (spec speech/08's queue limit). */
   append: (pcm: Int16Array, eventId?: string) => void;
-  /** The context from the next utterance on (Q87). */
-  setContext: (context: string) => void;
+  /** What the transcription is told, from the next utterance on (Q87, Q128). */
+  setContext: (context: Told) => void;
   /** The silence that ends an utterance, at once (`server_vad`'s fields hold at once: spec speech/05). */
   setSilence: (silenceMs: number) => void;
   /** Ends the utterance under way: its transcript follows. */
@@ -359,7 +383,7 @@ function listeningConfiguration({ context, diarization, silenceMs }: ListeningOp
       audio: {
         input: {
           format: { type: "audio/pcm", rate: TARGET_RATE },
-          transcription: context === "" ? {} : { prompt: context },
+          transcription: transcriptionOf(context),
           // The server's `speech.vad_*` fields, but for the silence the view sets (Q122), never the dictation's (Q80).
           turn_detection: vad(silenceMs),
         },
@@ -483,12 +507,12 @@ export function openListening(asked: ListeningOptions, onEvent: (event: Listenin
       sendConfigured({ type: "input_audio_buffer.append", audio: pcmBase64(pcm), ...(eventId === undefined ? {} : { event_id: eventId }) });
     },
     setContext(next) {
-      if (ended || next === context) return;
+      if (ended || sameTold(next, context)) return;
       context = next;
       // Not greeted yet: the configuration carries it.
       if (!greeted) return;
       updates.push("setting");
-      sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: next === "" ? null : next } } } } });
+      sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { transcription: transcriptionUpdate(next) } } } });
     },
     setSilence(next) {
       if (ended || next === silenceMs) return;

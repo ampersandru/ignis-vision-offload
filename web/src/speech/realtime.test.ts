@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { forgetKey, saveKey } from "../api/auth.ts";
 import type { SocketLike } from "../api/socket.ts";
-import { type ListeningEvent, openListening, openTranscription, type Refusal, type TranscriptionHandlers } from "./realtime.ts";
+import { type ListeningEvent, openListening, openTranscription, type Refusal, type Told, type TranscriptionHandlers } from "./realtime.ts";
 
 // One dictation's Realtime transcription session (spec speech/04, spec
 // speech/03 for the wire) through its public contract: a fake WebSocket plays
@@ -360,8 +360,11 @@ describe("openListening", () => {
     return { socket: () => sockets[0], heard, session };
   }
 
+  /** A context of a prompt alone. */
+  const said = (prompt: string): Told => ({ prompt, keywords: [], language: null });
+
   it("asks for server_vad with the view's silence and the server's other lengths, PCM16 at 16 kHz, the context, the provisional tail and the live speakers; no language, no length guard of its own", () => {
-    const { socket } = listen({ context: "Standup: Ada, Linus, the vram planner.", diarization: "live", silenceMs: 1_500 });
+    const { socket } = listen({ context: said("Standup: Ada, Linus, the vram planner."), diarization: "live", silenceMs: 1_500 });
     socket().accept();
     expect(socket().sent).toEqual([
       {
@@ -386,14 +389,14 @@ describe("openListening", () => {
   });
 
   it("leaves the silence to the server when the view names none", () => {
-    const { socket } = listen({ context: "", diarization: null, silenceMs: null });
+    const { socket } = listen({ context: said(""), diarization: null, silenceMs: null });
     socket().accept();
     expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { turn_detection: { type: "server_vad" } } } } });
     expect(JSON.stringify(socket().sent[0])).not.toContain("silence_duration_ms");
   });
 
   it("sends a changed silence in a session.update of the turn detection alone, which holds at once", () => {
-    const { socket, heard, session } = listen({ context: "", diarization: null, silenceMs: 1_500 });
+    const { socket, heard, session } = listen({ context: said(""), diarization: null, silenceMs: 1_500 });
     socket().accept();
     socket().emit({ type: "session.updated", session: {} });
     session.setSilence(2_000);
@@ -409,17 +412,17 @@ describe("openListening", () => {
   });
 
   it("asks for no speakers with Speakers off or on a call's microphone, and for the file geometry on a file", () => {
-    const off = listen({ context: "", diarization: null });
+    const off = listen({ context: said(""), diarization: null });
     off.socket().accept();
     expect(off.socket().sent[0]).toMatchObject({ session: { ignis: { provisional_tail: true }, audio: { input: { transcription: {} } } } });
     expect(JSON.stringify(off.socket().sent[0])).not.toContain("diarization");
-    const file = listen({ context: "", diarization: "file" });
+    const file = listen({ context: said(""), diarization: "file" });
     file.socket().accept();
     expect(file.socket().sent[0]).toMatchObject({ session: { ignis: { diarization: "file" } } });
   });
 
   it("hears every commit as an utterance of its own, each item's events by its id, the next starting before the last completes", () => {
-    const { socket, heard } = listen({ context: "", diarization: "live" });
+    const { socket, heard } = listen({ context: said(""), diarization: "live" });
     socket().accept();
     socket().emit({ type: "session.updated", session: {} });
     const s = socket();
@@ -454,7 +457,7 @@ describe("openListening", () => {
   });
 
   it("reports a failed item by its id, and a refused event with its code and the event id the page gave it", () => {
-    const { socket, heard } = listen({ context: "", diarization: "live" });
+    const { socket, heard } = listen({ context: said(""), diarization: "live" });
     socket().accept();
     socket().emit({ type: "conversation.item.input_audio_transcription.failed", item_id: "item_4", content_index: 0, error: { code: "engine_error", message: "the speech model failed" } });
     socket().emit({ type: "error", error: { type: "invalid_request_error", code: "ignis_audio_queue_full", message: "the session holds 120.0 s", param: "audio", event_id: "audio_37" } });
@@ -467,7 +470,7 @@ describe("openListening", () => {
   });
 
   it("configures again without speakers when the diarizer is unavailable, which refuses the whole update, and says why", () => {
-    const { socket, heard, session } = listen({ context: "", diarization: "live" });
+    const { socket, heard, session } = listen({ context: said(""), diarization: "live" });
     socket().accept();
     session.append(new Int16Array([1]));
     expect(socket().sent[0]).toMatchObject({ event_id: "listening_configuration" });
@@ -482,7 +485,7 @@ describe("openListening", () => {
   });
 
   it("holds the audio until the configuration is taken, then sends it in order, each append with the page's event id", () => {
-    const { socket, session } = listen({ context: "", diarization: null });
+    const { socket, session } = listen({ context: said(""), diarization: null });
     session.append(new Int16Array([1, -2, 256]), "audio_1");
     socket().accept();
     session.append(new Int16Array([3]), "audio_2");
@@ -498,17 +501,18 @@ describe("openListening", () => {
     ]);
   });
 
-  it("sends a changed context in a session.update of the prompt alone, null once cleared; changed before the greeting, it is in the configuration", () => {
-    const { socket, session } = listen({ context: "first", diarization: "live" });
-    session.setContext("second");
+  it("sends what is told in a session.update of the transcription, null for what is no longer told; changed before the greeting, it is in the configuration", () => {
+    const { socket, session } = listen({ context: said("first"), diarization: "live" });
+    session.setContext({ prompt: "second", keywords: ["AnyDesk"], language: "it" });
     socket().accept();
-    expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { transcription: { prompt: "second" } } } } });
+    expect(socket().sent[0]).toMatchObject({ session: { audio: { input: { transcription: { prompt: "second", keywords: ["AnyDesk"], language: "it" } } } } });
     socket().emit({ type: "session.updated", session: {} });
-    session.setContext("Names: Ada.");
-    session.setContext("");
+    session.setContext({ prompt: "Names: Ada.", keywords: ["Ada"], language: null });
+    session.setContext({ prompt: "Names: Ada.", keywords: ["Ada"], language: null });
+    session.setContext(said(""));
     expect(socket().sent.slice(1)).toEqual([
-      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: "Names: Ada." } } } } },
-      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: null } } } } },
+      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: "Names: Ada.", keywords: ["Ada"], language: null } } } } },
+      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: null, keywords: null, language: null } } } } },
     ]);
     // The answer to a context's update is not the configuration's: nothing waits on it.
     socket().emit({ type: "session.updated", session: {} });
@@ -516,15 +520,15 @@ describe("openListening", () => {
   });
 
   it("flushes: an empty session.update whose answer comes once the server has read every append before it, a context's answer not counted", () => {
-    const { socket, heard, session } = listen({ context: "", diarization: null });
+    const { socket, heard, session } = listen({ context: said(""), diarization: null });
     socket().accept();
     socket().emit({ type: "session.updated", session: {} });
     session.append(new Int16Array([1]));
-    session.setContext("Names.");
+    session.setContext(said("Names."));
     session.flush();
     expect(socket().sent.slice(1)).toEqual([
       { type: "input_audio_buffer.append", audio: "AQA=" },
-      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: "Names." } } } } },
+      { type: "session.update", session: { type: "transcription", audio: { input: { transcription: { prompt: "Names.", keywords: null, language: null } } } } },
       { type: "session.update", event_id: "listening_flush", session: { type: "transcription" } },
     ]);
     socket().emit({ type: "session.updated", session: {} });
@@ -534,12 +538,12 @@ describe("openListening", () => {
   });
 
   it("says when the connection closes under it, and nothing once the page has closed it", () => {
-    const dropped = listen({ context: "", diarization: null });
+    const dropped = listen({ context: said(""), diarization: null });
     dropped.socket().accept();
     dropped.socket().drop();
     expect(dropped.heard).toEqual([{ type: "closed" }]);
 
-    const closed = listen({ context: "", diarization: null });
+    const closed = listen({ context: said(""), diarization: null });
     closed.socket().accept();
     closed.session.close();
     closed.socket().emit({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", transcript: "late" });
@@ -550,7 +554,7 @@ describe("openListening", () => {
   });
 
   it("asks the route why a refused upgrade was refused, as a dictation does", async () => {
-    const { socket, heard } = listen({ context: "", diarization: null }, answering(503, { error: { code: "engine_full", message: "full" } }));
+    const { socket, heard } = listen({ context: said(""), diarization: null }, answering(503, { error: { code: "engine_full", message: "full" } }));
     socket().refuse();
     await settle();
     expect(heard).toEqual([{ type: "refused", refusal: { kind: "busy" } }]);

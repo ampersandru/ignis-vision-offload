@@ -304,6 +304,15 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   start and the exports leave the scroller: a heading above the sheet with Copy, a Download menu (.txt, .md, .srt,
   .vtt) and Open in chat, so they stay in sight in a long transcript. Hold my mic stays in the deck: it is the
   listening's.
+- **S1, the context (Q128).** A Transcript keeps what its transcription is told, `context` under version 1
+  (topic, terms, anything else, the languages, `appliedAt`), read back like the notes. The Call tab shows it
+  applied, as a record with its time and its share of `speech.context_max_tokens` (512, about three characters a
+  token, the server keeping the last), or a draft framed in the ember after Edit: nothing goes out as it is typed,
+  where every keystroke was a `session.update` and a prefill before. Apply sends one update (prompt, keywords,
+  language; `null` clears what is no longer told), which holds from the next utterance; a Start applies a draft
+  left open. The topic and anything else are the `prompt`, the terms and the speakers' names the user gave (never
+  "Speaker n", Me or Others) the `keywords`, which the server refuses with `<`, `>` or a line break, so the field
+  does too. A rename during a listening is sent as it is made. The deck's first line says what is told, with Edit.
 
 ### Not done here
 

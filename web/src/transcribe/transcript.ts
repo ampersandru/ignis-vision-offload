@@ -17,6 +17,7 @@
 //
 // Every function returns a new Transcript and leaves the one it was given alone.
 
+import type { CallContext } from "./context.ts";
 import type { Notes } from "./notes.ts";
 
 export type SourceKind = "microphone" | "call" | "file";
@@ -56,6 +57,8 @@ export type Transcript = {
   voices: number;
   /** Its notes (notes.ts): absent until a kind is picked or notes are written. */
   notes?: Notes;
+  /** What its transcription is told (context.ts), as last applied: absent until it is. */
+  context?: CallContext;
 };
 
 /** Who an utterance's audio is, as the listening knows it. */

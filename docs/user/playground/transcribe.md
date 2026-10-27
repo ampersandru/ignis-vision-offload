@@ -86,10 +86,17 @@ utterance ends, so the whole utterance under way stays light until then.
 The view follows the newest words. Scroll up to read, and it stays where you
 are; **Jump to live** brings it back.
 
-The **context** field in the Call tab is sent with every utterance's
-transcription: the topic, the names, the jargon the model should spell right.
-A change while listening holds from the next utterance. No language is ever
-sent: the model detects it per utterance.
+The **Context** in the Call tab is what the transcription is told, and each
+transcript keeps its own. **Add** or **Edit** opens a draft, framed in orange:
+a **Topic**, the **Terms to spell right** (names, products, jargon; Enter or a
+comma adds one) and **Anything else**. Nothing is sent while you type:
+**Apply** keeps it with the transcript and, while listening, tells the
+sessions in one update, which holds from the next utterance; a Start applies a
+draft left open. Applied, it reads as a record with the time it was applied
+and about how much of the server's context it takes: the server reads 512
+tokens of it and, past that, keeps the last. A speaker's name you give joins
+the terms. The line at the top of the deck says what is told, with **Edit**.
+No language is sent: the model detects it per utterance.
 
 ## Times and speakers
 
@@ -236,8 +243,9 @@ Each asks for:
 - **the speakers**, with Speakers on: `session.ignis.diarization: "live"`, or
   `"file"` for a file, the diarizer's geometry for audio sent faster than real
   time. A call's microphone never asks: it is Me;
-- **the context**, as the transcription's `prompt`, and a `session.update` of
-  it when it changes.
+- **what it is told**: the topic and anything else as the transcription's
+  `prompt`, the terms and the speakers' names you gave as its `keywords`, and a
+  `session.update` of them at an Apply or a rename.
 
 It sends no `session.ignis.max_utterance_seconds`, so the server's length guard
 (`speech.max_utterance_seconds`, 120 s) cuts a long utterance at its weakest
