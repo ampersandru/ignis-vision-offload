@@ -319,6 +319,28 @@ The owner's second round, approved whole (grill Q128-Q135), built in six slices,
   for it; a server older than it refuses the key with `param: session.ignis.item_language`, and the page configures
   the session again without it, saying nothing. An utterance keeps its `language`; the language suggestion (S5)
   reads them.
+- **S5, the suggestions (Q132, Q134).** A Transcript keeps its `suggestions` (each open, accepted or dismissed, and
+  the kinds accepted always), read back like the notes. The languages come from the utterances' `language` once six
+  are in, no model: Force the top language when it holds 70 % and the others came only on utterances under 2.5 s
+  (the owner's first call), else Detect those with 15 % and two utterances. The topic, a title (only over the
+  listening's own) and the terms come from a look by the text model: first at six utterances, then 90 s from the
+  last look's start with three new, once more at the end (assist.ts's Follower, shared with the notes), a failed look
+  waiting the gap; Suggest now on demand. An offer made before, whatever became of it, is not made again; a term
+  taken out is dismissed alone. Always applies every later one of its kind in that Transcript at once. Accepting
+  tells the context (applied, so sent) or renames. The bell beside the tabs counts what waits. Suggest while
+  listening, a per-viewer switch in Settings, on by default (they only propose).
+  - **Q134 measured, and amended.** The engine reuses an earlier prompt only whole (the checkpoint match is
+    all-or-nothing at its length, `crates/core/src/checkpoint.rs`): on the 27B a request whose prompt began with
+    the last one's reused 559 of 563 tokens, two tasks after one transcript 64 (the system prompt's first page),
+    the transcript in its own message 64 too. So a task after the transcript, or a task shared, is never reused;
+    the task in the system prompt with the transcript after it, which a listening only appends to, reused 448 of
+    565 on the next request. Each task keeps its own chain: assist.ts's preamble and the task as the system
+    prompt, the title and the `.txt` as the user turn; the notes and the suggestions share the shape, not a
+    prefix. Measured over HTTP; the socket goes to the same engine.
+  - **The look's task asks for the misheard names first** (`FIX: [mm:ss] heard => meant`), then TERM, TOPIC,
+    TITLE. Asked for the terms alone, the 27B with thinking off copied a misheard name as heard ("Enidesk"); asked
+    to check them first, it fixed it and spelled the term AnyDesk, twice out of two at temperature 0.2 (greedy said
+    "Eni Desk"). The FIX lines are S6's; S5 reads the rest leniently (bullets, bold, NONE).
 
 ### Not done here
 

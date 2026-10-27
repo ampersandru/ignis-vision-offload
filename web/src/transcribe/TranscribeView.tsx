@@ -1,11 +1,13 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
 import { caption } from "../ui/classes.ts";
-import { IconChevron, IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
+import { IconBell, IconChevron, IconDownload, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { ContextCard } from "./Context.tsx";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
-import type { NotesHandle } from "./notesWriter.ts";
+import { Suggestions } from "./Suggestions.tsx";
+import { openSuggestions } from "./suggestions.ts";
+import { Switch } from "../ui/Switch.tsx";
 import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
 import { SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
@@ -13,7 +15,7 @@ import { type ListeningHandle, type ListeningState, type LiveUtterance, useListe
 import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
 import { titleOf, type TranscriptList } from "./sessions.ts";
 import { sessionsWithSpeakers, type Transcript } from "./transcript.ts";
-import type { TranscribeActions, TranscribeState } from "./useTranscribe.ts";
+import type { Assistants, TranscribeActions, TranscribeState } from "./useTranscribe.ts";
 
 // The Transcribe view (spec speech/07), in the Decide tab's three-column
 // shape: the Transcripts on the left; the one open in the middle, its heading
@@ -33,7 +35,7 @@ export function TranscribeView({
   state,
   actions,
   listening: handle,
-  notes,
+  assistants,
   speech,
   drawer,
   onDrawer,
@@ -42,7 +44,7 @@ export function TranscribeView({
   state: TranscribeState;
   actions: TranscribeActions;
   listening: ListeningHandle;
-  notes: NotesHandle;
+  assistants: Assistants;
   speech?: SpeechStatus;
   drawer: Drawer;
   onDrawer: (drawer: Drawer) => void;
@@ -106,10 +108,15 @@ export function TranscribeView({
         />
       </main>
 
-      <Side open={drawer === "settings"} tab={tab} onTab={setTab}>
-        {tab === "call" && <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} />}
-        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={notes} />}
-        {tab === "settings" && <Settings actions={actions} />}
+      <Side open={drawer === "settings"} tab={tab} onTab={setTab} waiting={openSuggestions(state.active).length}>
+        {tab === "call" && (
+          <>
+            <Suggestions transcript={state.active} state={state} actions={actions} analyst={assistants.analyst} />
+            <Call transcript={state.active} state={state} actions={actions} live={here && listening.phase !== "idle"} />
+          </>
+        )}
+        {tab === "notes" && <Notes transcript={state.active} state={state} actions={actions} notes={assistants.notes} />}
+        {tab === "settings" && <Settings state={state} actions={actions} />}
       </Side>
     </div>
   );
@@ -213,8 +220,11 @@ const SIDE_TABS: [SideTab, string][] = [
   ["settings", "Settings"],
 ];
 
-/** The right panel, in tabs as the chat's settings are. A drawer below `lg`, shown when `open`. */
-function Side({ open, tab, onTab, children }: { open: boolean; tab: SideTab; onTab: (tab: SideTab) => void; children: ReactNode }) {
+/**
+ * The right panel, in tabs as the chat's settings are, the bell counting the open Transcript's suggestions `waiting`
+ * (Q132). A drawer below `lg`, shown when `open`.
+ */
+function Side({ open, tab, onTab, waiting, children }: { open: boolean; tab: SideTab; onTab: (tab: SideTab) => void; waiting: number; children: ReactNode }) {
   return (
     <aside
       aria-label="Call, notes and settings"
@@ -235,6 +245,18 @@ function Side({ open, tab, onTab, children }: { open: boolean; tab: SideTab; onT
             {label}
           </button>
         ))}
+        {waiting > 0 && (
+          <button
+            type="button"
+            aria-label={waiting === 1 ? "1 suggestion" : `${waiting} suggestions`}
+            title="Suggestions, in the Call tab"
+            onClick={() => onTab("call")}
+            className="-mb-px ml-auto flex items-center gap-1 pb-2 font-display text-xs font-semibold text-ember tabular-nums hover:text-ink"
+          >
+            <IconBell />
+            {waiting}
+          </button>
+        )}
       </div>
       <div id="transcribe-tab-panel" role="tabpanel" aria-labelledby={`transcribe-tab-${tab}`} className="flex flex-1 flex-col gap-6">
         {children}
@@ -365,11 +387,21 @@ function Call({ transcript: t, state, actions, live }: { transcript: Transcript;
 }
 
 /** The Settings tab: the view's own, this browser's. */
-function Settings({ actions }: { actions: TranscribeActions }) {
+function Settings({ state, actions }: { state: TranscribeState; actions: TranscribeActions }) {
   const pace = useFilePace();
   const silence = useUtteranceSilence();
   return (
     <>
+      <div className="flex items-start gap-2.5">
+        <Switch on={state.suggestionsOn} onChange={actions.setSuggestionsOn} labelledBy="transcribe-suggestions-switch" />
+        <span className="flex flex-col gap-0.5">
+          <span id="transcribe-suggestions-switch" className="font-display text-[13px] font-medium text-ink">
+            Suggest while listening
+          </span>
+          <span className="text-xs leading-snug text-ash">The languages the server heard, and about every minute and a half the text model's topic, title and terms.</span>
+        </span>
+      </div>
+
 
       <section aria-labelledby="transcribe-silence" className="flex flex-col gap-2">
         <h2 id="transcribe-silence" className={caption}>

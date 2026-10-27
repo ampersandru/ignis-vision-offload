@@ -14,6 +14,8 @@ import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
 import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
 import { type CallContext, EMPTY_CONTEXT, told } from "./context.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
+import { Analyst, type AnalystHandle } from "./analyst.ts";
+import { accept, analysisOffers, dismiss, dropTerm, languageOffer, suggest } from "./suggestions.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
 import { restoreTranscripts, TRANSCRIBE_SESSIONS, toStored, worthKeeping } from "./stored.ts";
@@ -42,8 +44,10 @@ export type TranscribeState = {
   holdMic: boolean;
   /** Keep a listening's notes up as it goes (Q126): this browser's, off at first. */
   notesLive: boolean;
-  /** Why no notes can be written now (notes.ts), `null` while a text model serves. */
+  /** Why no notes can be written now (notes.ts), `null` while a text model serves; the suggestions' model too. */
   notesBlocked: string | null;
+  /** Suggest while listening (Q132): this browser's, on at first. */
+  suggestionsOn: boolean;
   /** What keeping the Transcripts in this browser ran into. */
   storeError: string | null;
 };
@@ -79,7 +83,19 @@ export type TranscribeActions = {
   writeNotes: () => void;
   stopNotes: () => void;
   setNotesLive: (on: boolean) => void;
+  /** The open Transcript's suggestion accepted; `always`, and every later one of its kind (Q132). */
+  acceptSuggestion: (id: number, always?: boolean) => void;
+  dismissSuggestion: (id: number) => void;
+  /** Takes a term out of a terms suggestion, never to be offered again. */
+  dropSuggestedTerm: (id: number, term: string) => void;
+  /** Reads the open Transcript for suggestions now. */
+  suggestNow: () => void;
+  stopSuggesting: () => void;
+  setSuggestionsOn: (on: boolean) => void;
 };
+
+/** The page's helpers on the text model: the notes' writer and the look for suggestions. */
+export type Assistants = { notes: NotesHandle; analyst: AnalystHandle };
 
 /** The text model, as the notes need it: why none serves, and its context. */
 export type TextModel = { blocked: string | null; contextLimit: number | null };
@@ -95,7 +111,7 @@ export function useTranscribe({
   speech?: SpeechStatus;
   text: TextModel;
   onUnavailable: () => void;
-}): [TranscribeState, TranscribeActions, ListeningHandle, NotesHandle] {
+}): [TranscribeState, TranscribeActions, ListeningHandle, Assistants] {
   const [list, setList] = useState<TranscriptList>(() => startList());
   /** The draft, and the Transcript it is of. */
   const [drafting, setDrafting] = useState<{ id: number; context: CallContext } | null>(null);
@@ -110,6 +126,7 @@ export function useTranscribe({
   const latest = useRef({ onUnavailable, text });
   latest.current = { onUnavailable, text };
   const [notesLive, storeNotesLive] = useStoredFlag(STORED_FLAGS.transcribeNotesLive, false);
+  const [suggestionsOn, storeSuggestionsOn] = useStoredFlag(STORED_FLAGS.transcribeSuggestions, true);
 
   const [controller] = useState(
     () =>
@@ -136,19 +153,33 @@ export function useTranscribe({
   );
   useEffect(() => () => writer.stop(), [writer]);
 
-  // Keeping the notes up: a look every few seconds at the listening and its Transcript, while a text model serves.
+  const [analyst] = useState(
+    () =>
+      new Analyst({
+        onFound: (id, found) => setList((l) => updateTranscript(l, id, (t) => analysisOffers(t, found).reduce((x, offer) => suggest(x, offer, Date.now()), t))),
+      }),
+  );
+  useEffect(() => () => analyst.stop(), [analyst]);
+
+  // Keeping up while listening, a look every few seconds: the languages the server heard, then, while a text model
+  // serves, the notes and the look for suggestions, each on its own cadence.
   useEffect(() => {
-    if (!notesLive) return;
+    if (!notesLive && !suggestionsOn) return;
     const look = () => {
       const { text: model } = latest.current;
-      if (model.blocked !== null) return;
       const listening = controller.getState();
       const on = listening.phase === "idle" ? null : listening.transcript;
-      void writer.look(on, (id) => listNow.current.transcripts.find((t) => t.id === id), kindOf, model.contextLimit);
+      const find = (id: number) => listNow.current.transcripts.find((t) => t.id === id);
+      const t = on === null ? undefined : find(on);
+      const offer = suggestionsOn && t ? languageOffer(t) : null;
+      if (t && offer && suggest(t, offer, Date.now()) !== t) setList((l) => updateTranscript(l, t.id, (x) => suggest(x, offer, Date.now())));
+      if (model.blocked !== null) return;
+      if (notesLive) void writer.look(on, find, kindOf, model.contextLimit);
+      if (suggestionsOn) void analyst.look(on, find, model.contextLimit);
     };
     const timer = setInterval(look, NOTES_LOOK_MS);
     return () => clearInterval(timer);
-  }, [notesLive, controller, writer]);
+  }, [notesLive, suggestionsOn, controller, writer, analyst]);
 
   const kept = useStoredSessions({
     store: pageStore(),
@@ -257,15 +288,35 @@ export function useTranscribe({
       },
       stopNotes: () => writer.stop(),
       setNotesLive: (on) => storeNotesLive(on),
+      acceptSuggestion: (id, always = false) => correct((t) => accept(t, id, Date.now(), { always })),
+      dismissSuggestion: (id) => correct((t) => dismiss(t, id)),
+      dropSuggestedTerm: (id, term) => correct((t) => dropTerm(t, id, term)),
+      suggestNow: () => {
+        const { text: model } = latest.current;
+        if (model.blocked === null) void analyst.analyze(activeOf(listNow.current), model.contextLimit);
+      },
+      stopSuggesting: () => analyst.stop(),
+      setSuggestionsOn: (on) => storeSuggestionsOn(on),
     }),
-    // `storeHoldMic` and `storeNotesLive` are stable for their keys.
-    [controller, writer, storeHoldMic, storeNotesLive],
+    // The stored flags' setters are stable for their keys.
+    [controller, writer, analyst, storeHoldMic, storeNotesLive, storeSuggestionsOn],
   );
 
   return [
-    { list, active, draft: drafting?.id === active.id ? drafting.context : null, speakers: speakers && struck === null, speakersUnavailable: struck, holdMic, notesLive, notesBlocked: text.blocked, storeError: kept.error },
+    {
+      list,
+      active,
+      draft: drafting?.id === active.id ? drafting.context : null,
+      speakers: speakers && struck === null,
+      speakersUnavailable: struck,
+      holdMic,
+      notesLive,
+      notesBlocked: text.blocked,
+      suggestionsOn,
+      storeError: kept.error,
+    },
     actions,
     controller,
-    writer,
+    { notes: writer, analyst },
   ];
 }

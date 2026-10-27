@@ -1,6 +1,7 @@
 import { restoreOrder, type Stamp } from "../store/docs.ts";
 import { readContext } from "./context.ts";
 import { readNotes } from "./notes.ts";
+import { readSuggestions } from "./suggestions.ts";
 import { isEmpty } from "./sessions.ts";
 import type { Transcript } from "./transcript.ts";
 
@@ -46,12 +47,13 @@ export function restoreTranscripts(values: unknown[], nextId: number): { transcr
   const docs = values.map(readStored).filter((d): d is StoredTranscript => d !== null);
   const ordered = restoreOrder(docs, nextId);
   const stamps = new Map<number, Stamp>();
-  const transcripts = ordered.items.map(({ version: _version, key, order, notes, context, ...t }): Transcript => {
+  const transcripts = ordered.items.map(({ version: _version, key, order, notes, context, suggestions, ...t }): Transcript => {
     stamps.set(t.id, { key, order });
-    // Notes or a context this page cannot read are dropped, not the Transcript they hang on.
+    // Notes, a context or suggestions this page cannot read are dropped, not the Transcript they hang on.
     const readN = readNotes(notes);
     const readC = readContext(context);
-    return { ...t, ...(readN ? { notes: readN } : {}), ...(readC ? { context: readC } : {}) };
+    const readS = readSuggestions(suggestions);
+    return { ...t, ...(readN ? { notes: readN } : {}), ...(readC ? { context: readC } : {}), ...(readS ? { suggestions: readS } : {}) };
   });
   return { transcripts, stamps, nextId: ordered.nextId };
 }

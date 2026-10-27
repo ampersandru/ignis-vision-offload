@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { abortableSleep, isEngineFull } from "../api/busy.ts";
-import { streamChat, type StreamOptions, type StreamResult } from "../api/stream.ts";
-import { dueForUpdate, LIVE_GAP_MS, type NoteKind, type Notes, notesInput, notesSettings, tidyNotes } from "./notes.ts";
+import { type AskDeps, askModel, Follower } from "./assist.ts";
+import { dueForUpdate, LIVE_GAP_MS, type NoteKind, type Notes, notesRequest, tidyNotes } from "./notes.ts";
 import type { Transcript } from "./transcript.ts";
 
 // The notes' writer (spec speech/07, Q124-Q127): one writing at a time, on
@@ -25,17 +24,12 @@ export type NotesWriterState = {
 /** What a finished writing puts in a Transcript's notes. */
 export type Written = Pick<Notes, "text" | "writtenAs" | "covered" | "writtenAt" | "fromMs">;
 
-export type NotesWriterDeps = {
+export type NotesWriterDeps = AskDeps & {
   onWritten: (transcript: number, written: Written) => void;
-  stream?: (options: StreamOptions) => Promise<StreamResult>;
-  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
 };
 
 const IDLE: NotesWriterState = { writing: null, text: "", failed: null };
-
-/** How many times a full engine is waited out before the writing says so. */
-const BUSY_TRIES = 60;
 
 export class NotesWriter {
   private state: NotesWriterState = IDLE;
@@ -43,9 +37,7 @@ export class NotesWriter {
   private abort: AbortController | null = null;
   /** When each Transcript's last writing began: keeping up counts from it. */
   private readonly began = new Map<number, number>();
-  /** The Transcript a listening appended to at the last look, and one whose listening ended since, owed its last notes. */
-  private followed: number | null = null;
-  private ended: number | null = null;
+  private readonly follower = new Follower();
 
   constructor(private readonly deps: NotesWriterDeps) {}
 
@@ -60,42 +52,23 @@ export class NotesWriter {
   async write(t: Transcript, kind: NoteKind, contextLimit: number | null): Promise<void> {
     if (this.state.writing !== null) return;
     const now = this.deps.now ?? Date.now;
-    const stream = this.deps.stream ?? streamChat;
-    const sleep = this.deps.sleep ?? abortableSleep;
     const abort = new AbortController();
     this.abort = abort;
     this.began.set(t.id, now());
     this.set({ writing: t.id, text: "", failed: null });
-    const { content, fromMs } = notesInput(t, contextLimit);
+    const { request, fromMs } = notesRequest(t, kind, contextLimit);
     const covered = t.utterances.length;
-    const request = { settings: notesSettings(kind), turns: [{ role: "user" as const, content }] };
-    for (let attempt = 1; ; attempt++) {
-      let text = "";
-      const result = await stream({
-        request,
-        signal: abort.signal,
-        onEvent: (event) => {
-          if (event.kind !== "content" || this.abort !== abort) return;
-          text += event.text;
-          this.set({ ...this.state, text });
-        },
-      });
-      // Stopped: the Stop said so already.
-      if (this.abort !== abort) return;
-      if (!result.ok && isEngineFull(result.message) && attempt < BUSY_TRIES) {
-        await sleep(1_000, abort.signal);
-        continue;
-      }
-      this.abort = null;
-      const notes = result.ok ? tidyNotes(text) : "";
-      if (notes === "") {
-        this.set({ writing: null, text: "", failed: { transcript: t.id, message: result.ok ? "The model wrote nothing." : result.message } });
-        return;
-      }
-      this.deps.onWritten(t.id, { text: notes, writtenAs: kind, covered, writtenAt: now(), fromMs });
-      this.set(IDLE);
+    const asked = await askModel(request, abort.signal, this.deps, (text) => this.set({ ...this.state, text }));
+    // Stopped: the Stop said so already.
+    if (asked.ok === "stopped") return;
+    this.abort = null;
+    const notes = asked.ok ? tidyNotes(asked.text) : "";
+    if (notes === "") {
+      this.set({ writing: null, text: "", failed: { transcript: t.id, message: asked.ok ? "The model wrote nothing." : asked.message } });
       return;
     }
+    this.deps.onWritten(t.id, { text: notes, writtenAs: kind, covered, writtenAt: now(), fromMs });
+    this.set(IDLE);
   }
 
   /** Stops the writing under way; the notes there were stay. */
@@ -124,14 +97,9 @@ export class NotesWriter {
    * When its listening ends, the notes are written once more as soon as no writing is under way.
    */
   look(on: number | null, find: (id: number) => Transcript | undefined, kindOf: (t: Transcript) => NoteKind, contextLimit: number | null): Promise<void> {
-    if (this.followed !== null && this.followed !== on) this.ended = this.followed;
-    this.followed = on;
-    if (this.state.writing !== null) return Promise.resolve();
-    const final = this.ended !== null;
-    const id = this.ended ?? on;
-    this.ended = null;
-    const t = id === null ? undefined : find(id);
-    return t ? this.keepUp(t, kindOf(t), contextLimit, { final }) : Promise.resolve();
+    const next = this.follower.next(on, this.state.writing !== null);
+    const t = next === null ? undefined : find(next.id);
+    return t ? this.keepUp(t, kindOf(t), contextLimit, { final: next!.final }) : Promise.resolve();
   }
 
   private set(state: NotesWriterState) {

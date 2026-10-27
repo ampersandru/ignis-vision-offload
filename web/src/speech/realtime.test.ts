@@ -492,7 +492,7 @@ describe("openListening", () => {
     session.append(new Int16Array([1]));
     socket().emit({
       type: "error",
-      error: { code: "invalid_value", message: "session.ignis.item_language is not an ignis session field", param: "session.ignis.item_language", event_id: "listening_configuration" },
+      error: { code: "invalid_request_error", message: "session.ignis.item_language is not an ignis session field", param: "session.ignis.item_language", event_id: "listening_configuration" },
     });
     expect(socket().sent[1]).toMatchObject({ type: "session.update", event_id: "listening_configuration", session: { ignis: { provisional_tail: true } } });
     expect(JSON.stringify(socket().sent[1])).not.toContain("item_language");

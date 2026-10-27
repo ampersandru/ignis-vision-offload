@@ -118,7 +118,7 @@ export function App() {
   // header shows a listening from every view.
   const [transcribeOpened, setTranscribeOpened] = useState(false);
   const [transcribeDrawer, setTranscribeDrawer] = useState<TranscribeDrawer>(null);
-  const [transcribe, transcribeActions, listening, notesWriter] = useTranscribe({
+  const [transcribe, transcribeActions, listening, assistants] = useTranscribe({
     speech: model.speech,
     // The notes go to the text model loaded, never to another: no request of theirs names one.
     text: { blocked: notesBlocked(model), contextLimit: canChat(model) ? model.contextLimit : null },
@@ -314,7 +314,7 @@ export function App() {
             state={transcribe}
             actions={transcribeActions}
             listening={listening}
-            notes={notesWriter}
+            assistants={assistants}
             speech={model.speech}
             drawer={transcribeDrawer}
             onDrawer={setTranscribeDrawer}

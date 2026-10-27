@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ChunkEvent } from "../api/sse.ts";
 import type { StreamOptions, StreamResult } from "../api/stream.ts";
-import { LIVE_GAP_MS, notesPrompt, type Notes } from "./notes.ts";
+import { ASSIST_SYSTEM } from "./assist.ts";
+import { LIVE_GAP_MS, notesTask, type Notes } from "./notes.ts";
 import { NotesWriter, type Written } from "./notesWriter.ts";
 import { addUtterance, createTranscript, type Transcript } from "./transcript.ts";
 
@@ -56,7 +57,7 @@ describe("writing a Transcript's notes", () => {
     const seen: string[] = [];
     w.subscribe(() => seen.push(w.getState().text));
     await w.write(heard(3, 7), "work", null);
-    expect(fake.asked[0].request.settings.systemPrompt).toBe(notesPrompt("work"));
+    expect(fake.asked[0].request.settings.systemPrompt).toBe(`${ASSIST_SYSTEM}\n\n${notesTask("work")}`);
     expect(fake.asked[0].request.turns).toEqual([{ role: "user", content: "27 Oct 15:42 · Call\n\n[00:00] Me: Frase 0.\n[00:05] Me: Frase 1.\n[00:10] Me: Frase 2.\n" }]);
     expect(seen).toContain("## Riassunto\n- Si parte.");
     expect(written).toEqual([[7, { text: "## Riassunto\n- Si parte.", writtenAs: "work", covered: 3, writtenAt: 1_000, fromMs: null }]]);

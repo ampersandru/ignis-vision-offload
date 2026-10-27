@@ -5,6 +5,9 @@ import { ContextCard } from "./Context.tsx";
 import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft } from "./Deck.tsx";
 import { IDLE, type ListeningState } from "./listening.ts";
 import { NotesPanel, notesButton } from "./Notes.tsx";
+import type { AnalystState } from "./analyst.ts";
+import { SuggestionsPanel, suggestionText } from "./Suggestions.tsx";
+import { suggest } from "./suggestions.ts";
 import type { NotesWriterState } from "./notesWriter.ts";
 import { Heading, Sheet, speakerColor } from "./Sheet.tsx";
 import { startList } from "./sessions.ts";
@@ -41,6 +44,12 @@ const actions: TranscribeActions = {
   writeNotes: none,
   stopNotes: none,
   setNotesLive: none,
+  acceptSuggestion: none,
+  dismissSuggestion: none,
+  dropSuggestedTerm: none,
+  suggestNow: none,
+  stopSuggesting: none,
+  setSuggestionsOn: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -111,7 +120,7 @@ describe("the speakers' hues", () => {
 
 const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
   const list = startList();
-  return { list, active: list.transcripts[0], draft: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, notesBlocked: null, storeError: null, ...patch };
+  return { list, active: list.transcripts[0], draft: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, notesBlocked: null, suggestionsOn: true, storeError: null, ...patch };
 };
 
 describe("the deck", () => {
@@ -223,6 +232,39 @@ describe("the context (Q128)", () => {
   });
 });
 
+describe("the suggestions (Q132)", () => {
+  const idle: AnalystState = { looking: null, failed: null };
+  const panel = (t: Transcript, looking: AnalystState = idle, patch: Partial<TranscribeState> = {}) =>
+    renderToStaticMarkup(<SuggestionsPanel transcript={t} state={state(patch)} actions={actions} looking={looking} />);
+
+  it("wait as cards with what they propose, why, their verb, Always and Dismiss", () => {
+    let t = suggest(room(), { kind: "languages", languages: { mode: "force", codes: ["it"] }, why: "2 short utterances came out as Thai and Hindi, among 9 in Italian." }, 1);
+    t = suggest(t, { kind: "terms", terms: ["AnyDesk", "VPN"] }, 2);
+    const html = panel(t);
+    expect(html).toContain(">Force Italian<");
+    expect(html).toContain("came out as Thai and Hindi");
+    expect(html).toContain('aria-label="Not AnyDesk"');
+    expect(html).toContain(">Add them<");
+    expect(html.match(/>Always</g)).toHaveLength(2);
+    expect(html.match(/>Dismiss</g)).toHaveLength(2);
+  });
+
+  it("say what each proposes", () => {
+    expect(suggestionText({ id: 1, status: "open", kind: "languages", languages: { mode: "free", codes: ["it", "en"] }, why: "" })).toEqual({ headline: "Detect Italian and English", verb: "Apply" });
+    expect(suggestionText({ id: 1, status: "open", kind: "title", title: "27 Oct 15:42 · Assistenza" })).toEqual({ headline: "Rename to “27 Oct 15:42 · Assistenza”", verb: "Rename" });
+    expect(suggestionText({ id: 1, status: "open", kind: "topic", topic: "IT" }).verb).toBe("Use");
+  });
+
+  it("say when the text model is reading, when they are off, and why a look failed; Suggest now waits for a text model", () => {
+    const t = room();
+    expect(panel(t, { looking: t.id, failed: null })).toContain("The text model is reading the transcript.");
+    expect(panel(t, { looking: t.id, failed: null })).toContain(">Stop<");
+    expect(panel(t, idle, { suggestionsOn: false })).toContain("Suggestions while listening are off in Settings.");
+    expect(panel(t, { looking: null, failed: { transcript: t.id, message: "ignis answered 500" } })).toContain("No suggestions: ignis answered 500");
+    expect(panel(t, idle, { notesBlocked: "No text model serves: notes need one. Load it in the Server view." })).toMatch(/disabled=""[^>]*>Suggest now</);
+  });
+});
+
 describe("the notes", () => {
   const idle: NotesWriterState = { writing: null, text: "", failed: null };
   const written = (t: Transcript): Transcript => ({
@@ -268,12 +310,16 @@ describe("the notes", () => {
   });
 });
 
+const idleHandle = { getState: () => IDLE, subscribe: () => () => {} };
+const assistants = {
+  notes: { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} },
+  analyst: { getState: (): AnalystState => ({ looking: null, failed: null }), subscribe: () => () => {} },
+};
+
 describe("the view", () => {
   it("heads the transcript with its exports, and opens the right panel on the Call tab, beside Notes and Settings (Q129)", () => {
-    const idleHandle = { getState: () => IDLE, subscribe: () => () => {} };
-    const notesHandle = { getState: () => ({ writing: null, text: "", failed: null }), subscribe: () => () => {} };
     const html = renderToStaticMarkup(
-      <TranscribeView state={state({ active: room() })} actions={actions} listening={idleHandle} notes={notesHandle} drawer={null} onDrawer={none} onOpenInChat={none} />,
+      <TranscribeView state={state({ active: room() })} actions={actions} listening={idleHandle} assistants={assistants} drawer={null} onDrawer={none} onOpenInChat={none} />,
     );
     expect(html.indexOf('aria-label="Transcript title"')).toBeLessThan(html.indexOf(">Download"));
     expect(html).toContain(">Open in chat<");
@@ -283,6 +329,16 @@ describe("the view", () => {
     expect(html).toContain(">Context<");
     expect(html).toContain('id="transcribe-speakers"');
     expect(html).not.toContain("Utterance ends after");
+    expect(html).toContain(">Suggest now<");
+    expect(html).not.toContain("suggestions waiting");
+  });
+
+  it("rings the bell with the open Transcript's suggestions waiting (Q132)", () => {
+    const t = suggest(suggest(room(), { kind: "topic", topic: "Supporto IT" }, 1), { kind: "terms", terms: ["AnyDesk"] }, 2);
+    const html = renderToStaticMarkup(
+      <TranscribeView state={state({ active: t })} actions={actions} listening={idleHandle} assistants={assistants} drawer={null} onDrawer={none} onOpenInChat={none} />,
+    );
+    expect(html).toContain('aria-label="2 suggestions"');
   });
 });
 

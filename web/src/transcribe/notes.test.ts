@@ -10,9 +10,9 @@ import {
   NOTE_KINDS,
   noNotes,
   notesBlocked,
-  notesInput,
-  notesPrompt,
-  notesSettings,
+  NOTES_SETTINGS,
+  notesRequest,
+  notesTask,
   notesStatus,
   readNotes,
   reloadNoteKind,
@@ -64,8 +64,8 @@ describe("the kinds of conversation", () => {
     expect(kindOf(t)).toBe("general");
   });
 
-  it("ask the model for their sections in order, under the headings as given, in the transcript's language, and nothing it did not hear", () => {
-    const prompt = notesPrompt("work");
+  it("ask the model for their sections in order, under the headings as given, in the transcript's language", () => {
+    const prompt = notesTask("work");
     const at = (heading: string) => prompt.indexOf(`## ${heading}\n`);
     expect(at("Summary")).toBeGreaterThan(0);
     expect(at("Summary")).toBeLessThan(at("Topics"));
@@ -76,35 +76,17 @@ describe("the kinds of conversation", () => {
   });
 
   it("send no thinking, on the agent lane, and never at greedy with a top_p ignis would refuse", () => {
-    const settings = notesSettings("game");
-    expect(settings).toMatchObject({ systemPrompt: notesPrompt("game"), reasoningEffort: "none", laneTag: "agent", thinkingBudget: null });
-    expect(settings.temperature === 0 && settings.topP !== 1).toBe(false);
-  });
-});
-
-describe("what the model reads", () => {
-  it("is the title and the transcript as its .txt, so a later request only appends", () => {
-    const t = call([
-      ["me", "Partiamo dal budget."],
-      ["others", "Va bene."],
-    ]);
-    expect(notesInput(t, null)).toEqual({ content: "27 Oct 15:42 · Call\n\n[00:00] Me: Partiamo dal budget.\n[00:10] Others: Va bene.\n", fromMs: null });
-    const longer = notesInput(addUtterance(t, { stream: "s", startMs: 20_000, endMs: 21_000, text: "Poi?", voice: { kind: "me" } }), null);
-    expect(longer.content.startsWith(notesInput(t, null).content)).toBe(true);
+    expect(NOTES_SETTINGS).toMatchObject({ reasoningEffort: "none", laneTag: "agent", thinkingBudget: null });
+    expect(NOTES_SETTINGS.temperature === 0 && NOTES_SETTINGS.topP !== 1).toBe(false);
   });
 
-  it("is the transcript's tail when the whole would not fit the model's context, and says where it starts", () => {
-    const t = call([
-      ["me", "a".repeat(3_000)],
-      ["others", "b".repeat(3_000)],
-      ["me", "c".repeat(3_000)],
-    ]);
-    // 1,500 tokens for the notes and 1,000 for the prompt leave 2,500 tokens: about 7,500 characters.
-    const { content, fromMs } = notesInput(t, 5_000);
-    expect(fromMs).toBe(10_000);
-    expect(content).not.toContain("aaa");
-    expect(content).toContain("[00:10] Others: bbb");
-    expect(notesInput(t, 100_000).fromMs).toBeNull();
+  it("are the kind's task in the system prompt and the transcript after it, so a later writing begins with an earlier one (Q134)", () => {
+    const t = call([["me", "Partiamo dal budget."]]);
+    const first = notesRequest(t, "work", null).request;
+    const later = notesRequest(addUtterance(t, { stream: "s", startMs: 20_000, endMs: 21_000, text: "Poi?", voice: { kind: "me" } }), "work", null).request;
+    expect(first.settings.systemPrompt.endsWith(notesTask("work"))).toBe(true);
+    expect(later.settings.systemPrompt).toBe(first.settings.systemPrompt);
+    expect(later.turns[0].content.startsWith(first.turns[0].content)).toBe(true);
   });
 });
 

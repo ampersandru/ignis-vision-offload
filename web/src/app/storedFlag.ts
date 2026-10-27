@@ -21,6 +21,8 @@ export const STORED_FLAGS = {
   transcribeHoldMic: "ignis.transcribeHoldMic",
   /** The Transcribe view keeps a listening's notes up as it goes (spec speech/07, Q126). Off at first. */
   transcribeNotesLive: "ignis.transcribeNotesLive",
+  /** The Transcribe view suggests the languages, the topic, a title and terms while listening (Q132). On at first. */
+  transcribeSuggestions: "ignis.transcribeSuggestions",
 } as const;
 
 /**

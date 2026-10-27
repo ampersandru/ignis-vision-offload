@@ -19,6 +19,7 @@
 
 import type { CallContext } from "./context.ts";
 import type { Notes } from "./notes.ts";
+import type { Suggestions } from "./suggestions.ts";
 
 export type SourceKind = "microphone" | "call" | "file";
 
@@ -61,6 +62,8 @@ export type Transcript = {
   notes?: Notes;
   /** What its transcription is told (context.ts), as last applied: absent until it is. */
   context?: CallContext;
+  /** What was suggested for it, and what became of each (suggestions.ts). */
+  suggestions?: Suggestions;
 };
 
 /** Who an utterance's audio is, as the listening knows it. */

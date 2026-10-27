@@ -98,6 +98,32 @@ tokens of it and, past that, keeps the last. A speaker's name you give joins
 the terms. The line at the top of the deck says what is told, with **Edit**.
 No language is sent: the model detects it per utterance.
 
+## Suggestions
+
+While a listening goes on, the Call tab suggests what the transcription could
+be told, and a bell beside the tabs counts what waits:
+
+- **the languages**, from what the server says of each utterance once six are
+  in: **Force** the one spoken when the others came only on short utterances
+  ("2 short utterances came out as Thai and Hindi, among 9 in Italian"), or
+  **Detect** the ones spoken when each holds its share;
+- **a topic**, while none is told, **a title**, while the listening's own one
+  stands, and **terms to spell right**: the text model reads the transcript
+  once six utterances are in, then about every minute and a half while
+  something new was said, and once more when the listening ends. It checks the
+  names it heard first, so a misheard product comes back spelled right
+  ("Enidesk" as AnyDesk).
+
+Each waits as a card: its verb (**Apply**, **Use**, **Rename**, **Add them**)
+accepts it, **Dismiss** drops it for good, and **Always** accepts it and every
+later suggestion of its kind in this transcript without asking. A term you do
+not want is taken out with its cross, and is never suggested again. Accepting
+changes the context, which is applied at once, or the title; nothing else.
+**Suggest now** reads the transcript on the spot, a listening or not.
+**Suggest while listening** in Settings, on unless you turn it off (this
+browser keeps the choice), stops them; the text model's go to the model loaded,
+as the notes do.
+
 ## Times and speakers
 
 Times run from the start of the transcript: `mm:ss`, and `h:mm:ss` past an

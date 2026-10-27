@@ -1,6 +1,7 @@
 import { canChat, imageLoaded, loadUnderWay, type ModelState } from "../api/model.ts";
-import type { Settings } from "../api/request.ts";
-import { clock, toText } from "./export.ts";
+import type { ConversationRequest, Settings } from "../api/request.ts";
+import { assistRequest, transcriptInput } from "./assist.ts";
+import { clock } from "./export.ts";
 import { dayAndTime, type Transcript } from "./transcript.ts";
 import { viewerChoice } from "./viewerChoice.ts";
 
@@ -10,11 +11,12 @@ import { viewerChoice } from "./viewerChoice.ts";
 // written on a press, or kept up while listening: about once a minute while
 // something new was said, and once more at the end.
 //
-// The request keeps the engine a prefix to reuse: the system prompt is the
-// kind's alone, constant, and the user turn is the title and the transcript as
-// its `.txt`, which a listening only appends to. The notes written before are
-// not sent back: each writing starts from the transcript, so a correction
-// holds in the next one and nothing the model got wrong compounds.
+// The request is assist.ts's shape, which the suggestions share (Q134): the
+// preamble and this kind's sections as the system prompt, the title and the
+// transcript as its `.txt` as the user turn, which a listening only appends
+// to, so the next writing reuses what the engine read. The notes written
+// before are not sent back: each writing starts from the transcript, so a
+// correction holds in the next one and nothing the model got wrong compounds.
 
 export type NoteKind = "general" | "work" | "game" | "lesson";
 
@@ -103,57 +105,40 @@ export type Notes = {
   fromMs: number | null;
 };
 
-/** The system prompt: the kind's alone, so every writing of a kind starts with the same tokens. */
-export function notesPrompt(kind: NoteKind): string {
+/** The task: the kind's sections and how to write them (assist.ts). */
+export function notesTask(kind: NoteKind): string {
   const spec = specOf(kind);
   const sections = spec.sections.map((s) => `## ${s.name}\n${s.ask}.`).join("\n\n");
   return [
-    `You keep the notes of ${spec.about}, from its transcript. The transcript comes from speech recognition, one utterance a line: \`[mm:ss] Speaker: text\`. Expect misheard words. Speakers are labels such as "Speaker 1", "Me" or "Others" unless someone named them; a name said aloud may be a speaker's.`,
-    `Write these sections, in this order, each under a level-2 Markdown heading (\`## \`):`,
+    `Write the notes of ${spec.about}: these sections, in this order, each under a level-2 Markdown heading (\`## \`):`,
     sections,
     [
       "Rules:",
       "- Keep each heading exactly as given. Write the text under them in the same language as the transcript: a transcript in Italian gets notes in Italian, one in German notes in German.",
       "- Short bullet points. No preamble, no closing remark, nothing outside the sections.",
-      "- Only what the transcript says: never invent names, numbers or outcomes. A section with nothing in it yet is `—` alone.",
+      "- A section with nothing in it yet is `—` alone.",
       "- Point at a moment by its time, as [mm:ss].",
-      "- The conversation may still be going on: write the notes as of its last line.",
+      "- Write the notes as of the transcript's last line.",
     ].join("\n"),
   ].join("\n\n");
 }
 
-/** The tokens a writing may take, and what the prompt and the title are allowed. */
+/** The tokens a writing may take. */
 export const NOTES_MAX_TOKENS = 1_500;
-const PROMPT_TOKENS = 1_000;
-/** Characters a token is taken to hold, low for safety: an Italian token holds about four. */
-const CHARS_PER_TOKEN = 3;
 
-export function notesSettings(kind: NoteKind): Settings {
-  return {
-    systemPrompt: notesPrompt(kind),
-    temperature: 0.3,
-    topP: 0.9,
-    maxTokens: NOTES_MAX_TOKENS,
-    reasoningEffort: "none",
-    thinkingBudget: null,
-    laneTag: "agent",
-  };
-}
+export const NOTES_SETTINGS: Omit<Settings, "systemPrompt"> = {
+  temperature: 0.3,
+  topP: 0.9,
+  maxTokens: NOTES_MAX_TOKENS,
+  reasoningEffort: "none",
+  thinkingBudget: null,
+  laneTag: "agent",
+};
 
-/**
- * The user turn: the title, then the transcript as its `.txt`. When the whole would not fit `contextLimit`, the tail
- * that does, and `fromMs` the start of its first utterance.
- */
-export function notesInput(t: Transcript, contextLimit: number | null): { content: string; fromMs: number | null } {
-  const header = `${t.title}\n\n`;
-  const budget = contextLimit === null ? Infinity : Math.max(0, (contextLimit - NOTES_MAX_TOKENS - PROMPT_TOKENS) * CHARS_PER_TOKEN) - header.length;
-  const lines = t.utterances.map((u) => ({ u, line: toText({ ...t, utterances: [u] }) }));
-  let used = 0;
-  let first = lines.length;
-  while (first > 0 && used + lines[first - 1].line.length <= budget) used += lines[--first].line.length;
-  const kept = lines.slice(first);
-  const cut = kept.length < lines.length && lines.slice(0, first).some((l) => l.line !== "");
-  return { content: header + kept.map((l) => l.line).join(""), fromMs: cut && kept.length > 0 ? kept[0].u.startMs : null };
+/** A writing of `t`'s notes as `kind`, and where its transcript starts when the start did not fit. */
+export function notesRequest(t: Transcript, kind: NoteKind, contextLimit: number | null): { request: ConversationRequest; fromMs: number | null } {
+  const { content, fromMs } = transcriptInput(t, contextLimit, NOTES_MAX_TOKENS);
+  return { request: assistRequest(NOTES_SETTINGS, notesTask(kind), content), fromMs };
 }
 
 /** Keeping up: the first notes once this many utterances are in. */

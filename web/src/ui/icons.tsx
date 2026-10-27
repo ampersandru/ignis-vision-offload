@@ -180,3 +180,13 @@ export function IconStopSquare() {
     </svg>
   );
 }
+
+/** Suggestions waiting (the Transcribe view's Call tab). */
+export function IconBell() {
+  return (
+    <svg {...icon} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1.25 1.25H2.75z" />
+      <path d="M6.5 14.25a1.6 1.6 0 0 0 3 0" />
+    </svg>
+  );
+}
