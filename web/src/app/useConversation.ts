@@ -586,12 +586,14 @@ export function useConversation({
             waiting.current.set(key, settle);
           }),
       );
+    // The agents hear the workspace's files as a chat's first turn does: the workspace prompt they share says a notice brings them.
+    const agentFiles = tasks.length > 0 && tools.enabled && tools.workspace && local.workspace ? await noticeFiles(workspaces, local.workspace.chat.bound()) : undefined;
     await Promise.all([
       runAgents(tasks, {
         settings: requestSettings,
         streamId: sessionStream(sessionId),
         tools: agentTools,
-        notice: agentNotice(tools, browserMemory.list()),
+        notice: agentNotice(tools, browserMemory.list(), agentFiles),
         tavilyKey: getTavilyKey(),
         local,
         maxRounds,

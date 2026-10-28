@@ -93,10 +93,13 @@ export function turnNotice(
 }
 
 /**
- * The notice an agent's one prompt goes out behind: every title, as a chat's
- * first turn hears them, or undefined when there is none to tell. No moment:
- * an agent keeps the session's in its system prompt (`agentExtras`).
+ * The notice an agent's one prompt goes out behind: every title, and every
+ * file of the chat's workspace (`files`, as noticeFiles reads them), as a
+ * chat's first turn hears them, or undefined when there is none to tell. No
+ * moment: an agent keeps the session's in its system prompt (`agentExtras`).
  */
-export function agentNotice(tools: ToolsState, notes: MemoryNote[]): string | undefined {
-  return tools.enabled && tools.memory ? noticeText({ memory: memoryNotice(undefined, notes).text }) : undefined;
+export function agentNotice(tools: ToolsState, notes: MemoryNote[], files?: WorkspaceFile[]): string | undefined {
+  const memory = tools.enabled && tools.memory ? memoryNotice(undefined, notes).text : undefined;
+  const workspace = tools.enabled && tools.workspace && files ? workspaceNotice(undefined, files).text : undefined;
+  return noticeText({ memory, files: workspace });
 }

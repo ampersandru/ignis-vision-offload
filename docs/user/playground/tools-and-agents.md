@@ -139,7 +139,8 @@ later request sends it again byte for byte; what it told is kept with it, so
 the next notice after a reload tells only what changed since. A chat saved
 before the notice sends the moments its prompts carry as it always did, and
 its next prompt hears every title and every file. An agent gets every title
-in a notice ahead of its task, and no file: it lists them with `list_files`.
+in a notice ahead of its task and, with **Workspace** on, every file of the
+chat's workspace, as a chat's first prompt hears them.
 A server whose
 `--server-developer-message-policy` joins or gathers developer messages
 (`into-system`, `after-system`, `one-after-system`,
