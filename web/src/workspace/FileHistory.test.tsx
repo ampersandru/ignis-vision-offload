@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
-import { DiffSheet, DiffView, FileEditor, FileHistory } from "./FileHistory.tsx";
+import { changeKey, DiffSheet, DiffView, FileEditor, FileHistory } from "./FileHistory.tsx";
 import { authorName } from "./panel.ts";
 
 // A text file's editor, and any file's history with the diff between two
@@ -176,7 +176,7 @@ describe("the full-screen diff", () => {
 
   it("heads the sheet with the file, both version selects, the count, the layouts, Show all lines, the changes and Close", () => {
     const html = sheet();
-    expect(html).toMatch(/role="dialog"[^>]*aria-modal="true"/);
+    expect(html).toMatch(/role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Differences in notes.md"[^>]*tabindex="-1"/);
     expect(html).toContain(">notes.md</h2>");
     expect(html).toMatch(/<select[^>]*aria-label="Compare from version"[^>]*>/);
     expect(html).toMatch(/<select[^>]*aria-label="Compare to version"[^>]*>/);
@@ -233,5 +233,30 @@ describe("the full-screen diff", () => {
     expect(sheet({ versions: same })).not.toContain("Show all lines");
     const eol = [v(1, USER, "a\r\nb\r\n"), v(2, THIS, "a\nb")];
     expect(sheet({ versions: eol })).toContain("The two versions differ only in their line endings, or the newline at the end.");
+  });
+});
+
+describe("the full-screen diff's keys", () => {
+  const press = (key: string, over: { tag?: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {}) => ({
+    key,
+    target: { tagName: over.tag ?? "DIV" },
+    ctrlKey: !!over.ctrlKey,
+    metaKey: !!over.metaKey,
+    altKey: !!over.altKey,
+  });
+
+  it("goes to the next change block on n and the previous on p, while there is one", () => {
+    expect(changeKey(press("n"), 0, 3)).toBe(1);
+    expect(changeKey(press("p"), 2, 3)).toBe(1);
+    expect(changeKey(press("n"), 2, 3)).toBeNull();
+    expect(changeKey(press("p"), 0, 3)).toBeNull();
+    expect(changeKey(press("x"), 1, 3)).toBeNull();
+  });
+
+  it("leaves the keys typed in a version picker, and those with a modifier, to the browser", () => {
+    expect(changeKey(press("n", { tag: "SELECT" }), 0, 3)).toBeNull();
+    expect(changeKey(press("n", { ctrlKey: true }), 0, 3)).toBeNull();
+    expect(changeKey(press("p", { metaKey: true }), 1, 3)).toBeNull();
+    expect(changeKey(press("n", { altKey: true }), 0, 3)).toBeNull();
   });
 });

@@ -165,6 +165,12 @@ versions ([below](#editing-by-hand-history-and-restore)).
   model sees it in `list_files`, and `read_file` answers that it cannot read
   it.
 
+A full screen, a page's preview, a text file's or a diff's, holds the
+keyboard while it is open: the focus moves into it, Tab reaches nothing
+behind it, and Esc closes it and nothing else, a drawer or a dictation under
+way staying as they were. The focus then goes back to the button that opened
+it.
+
 What you do here is yours: each version it makes is authored by you.
 
 - **New file** makes an empty text file under the name you type, `/` making

@@ -1,7 +1,7 @@
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { caption } from "../ui/classes.ts";
-import { IconClose } from "../ui/icons.tsx";
+import { SHEET_BUTTON, Sheet, underlined } from "../ui/Sheet.tsx";
 import { type Cell, changeAnchors, changeCounts, type DiffRow, folded, lineDiff, type SideRow, sideBySide } from "./diff.ts";
 import { type Author, latest, timeLabel, type Version, type WorkspaceFile } from "./files.ts";
 import { type Draft, editing, sizeLabel } from "./panel.ts";
@@ -249,10 +249,6 @@ const LAYOUTS: { id: DiffLayout; label: string }[] = [
   { id: "unified", label: "Unified" },
 ];
 
-export const SHEET_BUTTON = "font-display text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-40";
-
-export const underlined = (on: boolean) => `border-b-2 pb-0.5 ${on ? "border-[#ff5a1f] text-[#eae8e4]" : "border-transparent text-[#939ba4] hover:text-[#eae8e4]"}`;
-
 /** The rows the full-screen diff shows: the lines in two columns or one, folded unless `showAll`. */
 function sheetRows(lines: ReturnType<typeof lineDiff>, layout: DiffLayout, showAll: boolean): DiffRow[] | SideRow[] {
   return layout === "split" ? sideBySide(lines, showAll) : showAll ? lines : folded(lines);
@@ -268,7 +264,7 @@ type SheetProps = {
   onClose: () => void;
 };
 
-/** The full-screen diff's sheet, header and body, as props: the state and the key handling are `DiffFullscreen`'s. */
+/** The full-screen diff's sheet, header and body, as props: the state, and the keys but Esc (`onKey`), are `DiffFullscreen`'s. */
 export function DiffSheet({
   name,
   versions,
@@ -283,6 +279,7 @@ export function DiffSheet({
   at,
   onGo,
   onClose,
+  onKey,
   bodyRef,
 }: SheetProps & {
   layout: DiffLayout;
@@ -292,6 +289,7 @@ export function DiffSheet({
   /** The change block last visited, from 0. */
   at: number;
   onGo: (block: number) => void;
+  onKey?: (event: KeyboardEvent<HTMLDivElement>) => void;
   bodyRef?: RefObject<HTMLDivElement | null>;
 }) {
   const textOf = (n: number) => versions.find((v) => v.n === n)?.text ?? "";
@@ -311,73 +309,79 @@ export function DiffSheet({
       ))}
     </select>
   );
-  return (
-    <div role="dialog" aria-modal="true" aria-label={`Differences in ${name}`} className="memory-sheet fixed inset-0 z-[60] flex flex-col bg-kiln text-[#eae8e4]">
-      <header className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-kiln-line px-4 py-2.5 md:px-6">
-        <h2 className="min-w-0 truncate font-display text-[15px] font-semibold">{name}</h2>
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#939ba4]">
-          {select("Compare from version", 0, from)}
-          to
-          {select("Compare to version", 1, to)}
-        </div>
-        {!same && <p className="text-xs text-[#939ba4]">{countLabel(removed, added)}</p>}
-        {!same && (
-          <>
-            <div role="radiogroup" aria-label="Layout" className="flex gap-4 font-display text-[13px] font-medium">
-              {LAYOUTS.map((l) => (
-                <button key={l.id} type="button" role="radio" aria-checked={layout === l.id} onClick={() => onLayout(l.id)} className={underlined(layout === l.id)}>
-                  {l.label}
-                </button>
-              ))}
-            </div>
-            <button type="button" aria-pressed={showAll} onClick={() => onShowAll(!showAll)} className={`${SHEET_BUTTON} ${underlined(showAll)}`}>
-              Show all lines
-            </button>
-            <div className="flex gap-4">
-              <button type="button" title="Previous change (p)" disabled={at <= 0} onClick={() => onGo(at - 1)} className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}>
-                Previous change
-              </button>
-              <button
-                type="button"
-                title="Next change (n)"
-                disabled={at >= blocks - 1}
-                onClick={() => onGo(at + 1)}
-                className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}
-              >
-                Next change
-              </button>
-            </div>
-          </>
-        )}
-        <button
-          type="button"
-          aria-label="Close the diff"
-          title="Close (Esc)"
-          onClick={onClose}
-          className="-mr-2 ml-auto grid size-9 place-items-center text-[#939ba4] hover:bg-kiln-line hover:text-white"
-        >
-          <IconClose />
-        </button>
-      </header>
-      <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto bg-[#12151a] p-3 md:p-5">
-        {same ? (
-          <SameText before={before} after={after} />
-        ) : layout === "split" ? (
-          <SideTable rows={rows as SideRow[]} />
-        ) : (
-          <UnifiedTable rows={rows as DiffRow[]} sheet />
-        )}
+  const controls = (
+    <>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#939ba4]">
+        {select("Compare from version", 0, from)}
+        to
+        {select("Compare to version", 1, to)}
       </div>
-    </div>
+      {!same && <p className="text-xs text-[#939ba4]">{countLabel(removed, added)}</p>}
+      {!same && (
+        <>
+          <div role="radiogroup" aria-label="Layout" className="flex gap-4 font-display text-[13px] font-medium">
+            {LAYOUTS.map((l) => (
+              <button key={l.id} type="button" role="radio" aria-checked={layout === l.id} onClick={() => onLayout(l.id)} className={underlined(layout === l.id)}>
+                {l.label}
+              </button>
+            ))}
+          </div>
+          <button type="button" aria-pressed={showAll} onClick={() => onShowAll(!showAll)} className={`${SHEET_BUTTON} ${underlined(showAll)}`}>
+            Show all lines
+          </button>
+          <div className="flex gap-4">
+            <button type="button" title="Previous change (p)" disabled={at <= 0} onClick={() => onGo(at - 1)} className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}>
+              Previous change
+            </button>
+            <button
+              type="button"
+              title="Next change (n)"
+              disabled={at >= blocks - 1}
+              onClick={() => onGo(at + 1)}
+              className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}
+            >
+              Next change
+            </button>
+          </div>
+        </>
+      )}
+    </>
   );
+  return (
+    <Sheet label={`Differences in ${name}`} title={name} controls={controls} closeLabel="Close the diff" onClose={onClose} onKey={onKey} bodyRef={bodyRef}>
+      {same ? (
+        <SameText before={before} after={after} />
+      ) : layout === "split" ? (
+        <SideTable rows={rows as SideRow[]} />
+      ) : (
+        <UnifiedTable rows={rows as DiffRow[]} sheet />
+      )}
+    </Sheet>
+  );
+}
+
+/** A key the full-screen diff reads: what it was pressed in, and its modifiers. */
+type ChangeKeyEvent = { key: string; target: unknown; ctrlKey: boolean; metaKey: boolean; altKey: boolean };
+
+/**
+ * The change block a key goes to from `block`, of `blocks`: n the next, p the
+ * previous, while there is one; none for a key typed in a field (a version
+ * picker) or pressed with a modifier, which stay the browser's.
+ */
+export function changeKey(event: ChangeKeyEvent, block: number, blocks: number): number | null {
+  const typing = /^(SELECT|INPUT|TEXTAREA)$/.test((event.target as { tagName?: string } | null)?.tagName ?? "");
+  if (typing || event.ctrlKey || event.metaKey || event.altKey) return null;
+  if (event.key === "n" && block < blocks - 1) return block + 1;
+  if (event.key === "p" && block > 0) return block - 1;
+  return null;
 }
 
 /**
  * The diff over the whole window, in a portal as the preview is: Side by side
- * at first, the first change in view; p and n visit the changes, Esc closes.
+ * at first, the first change in view; p and n visit the changes (`changeKey`).
  */
 function DiffFullscreen(props: SheetProps) {
-  const { versions, from, to, onClose } = props;
+  const { versions, from, to } = props;
   const [layout, setLayout] = useState<DiffLayout>("split");
   const [showAll, setShowAll] = useState(false);
   const [at, setAt] = useState(0);
@@ -394,17 +398,13 @@ function DiffFullscreen(props: SheetProps) {
   // The first change is in view when the sheet opens, and again whenever what it shows changes.
   useEffect(() => go(0), [layout, showAll, from, to]);
 
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") return onClose();
-      const typing = e.target instanceof HTMLElement && /^(SELECT|INPUT|TEXTAREA)$/.test(e.target.tagName);
-      if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key === "n" && at < anchors.length - 1) go(at + 1);
-      else if (e.key === "p" && at > 0) go(at - 1);
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  });
+  const key = (e: KeyboardEvent<HTMLDivElement>) => {
+    const block = changeKey(e, at, anchors.length);
+    if (block !== null) go(block);
+  };
 
-  return createPortal(<DiffSheet {...props} layout={layout} onLayout={setLayout} showAll={showAll} onShowAll={setShowAll} at={at} onGo={go} bodyRef={body} />, document.body);
+  return createPortal(
+    <DiffSheet {...props} layout={layout} onLayout={setLayout} showAll={showAll} onShowAll={setShowAll} at={at} onGo={go} onKey={key} bodyRef={body} />,
+    document.body,
+  );
 }

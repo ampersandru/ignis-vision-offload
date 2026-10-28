@@ -23,6 +23,7 @@ import { useImageSessions } from "../image/useImageSessions.ts";
 import { ServerView } from "../server/ServerView.tsx";
 import { useServer, useTick } from "../server/useServer.ts";
 import { DEFAULT_SETTINGS, type PlaygroundSettings } from "../settings/defaults.ts";
+import { escapeFree } from "../ui/Sheet.tsx";
 import type { ImageId } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { SettingsPanel } from "../settings/SettingsPanel.tsx";
@@ -158,7 +159,8 @@ export function App() {
 
   useEffect(() => {
     if (!drawer) return;
-    const close = (e: globalThis.KeyboardEvent) => e.key === "Escape" && setDrawer(null);
+    // An Esc a full screen took closes that alone.
+    const close = (e: globalThis.KeyboardEvent) => escapeFree(e) && setDrawer(null);
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [drawer]);

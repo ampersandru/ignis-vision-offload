@@ -1,6 +1,6 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { createPortal } from "react-dom";
-import { IconClose } from "./icons.tsx";
+import { Sheet, underlined } from "./Sheet.tsx";
 
 // HTML the model wrote, shown two ways: rendered in a sandboxed iframe, or as
 // its source. The frame runs scripts but gets an opaque origin (no
@@ -85,58 +85,35 @@ function HtmlFullscreen({ html, title, onClose }: { html: string; title: string;
   const [width, setWidth] = useState<(typeof WIDTHS)[number]["id"]>("full");
   const px = WIDTHS.find((w) => w.id === width)?.px ?? null;
 
-  useEffect(() => {
-    const close = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
-
-  return createPortal(
-    <div role="dialog" aria-modal="true" aria-label={title} className="memory-sheet fixed inset-0 z-[60] flex flex-col bg-kiln text-[#eae8e4]">
-      <header className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-kiln-line px-4 py-2.5 md:px-6">
-        <h2 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold">{title}</h2>
-        <div role="radiogroup" aria-label="Preview width" className="flex gap-4 font-display text-[13px] font-medium">
-          {WIDTHS.map((w) => (
-            <button
-              key={w.id}
-              type="button"
-              role="radio"
-              aria-checked={width === w.id}
-              onClick={() => setWidth(w.id)}
-              className={`border-b-2 pb-0.5 ${width === w.id ? "border-[#ff5a1f] text-[#eae8e4]" : "border-transparent text-[#939ba4] hover:text-[#eae8e4]"}`}
-            >
-              {w.label}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          title={PDF_HINT}
-          onClick={() => saveAsPdf(html, title)}
-          className="cut bg-[#ff5a1f] px-3 py-1.5 font-display text-xs font-semibold text-[#1c2026] [--cut-size:6px] hover:bg-[#ff7a45]"
-        >
-          Save as PDF
-        </button>
-        <button
-          type="button"
-          aria-label="Close the preview"
-          title="Close (Esc)"
-          onClick={onClose}
-          className="-mr-2 grid size-9 place-items-center text-[#939ba4] hover:bg-kiln-line hover:text-white"
-        >
-          <IconClose />
-        </button>
-      </header>
-      <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-[#12151a] p-3 md:p-5">
-        <iframe
-          title={title}
-          sandbox={SANDBOX}
-          srcDoc={html}
-          style={px ? { width: px } : undefined}
-          className={`block h-full shrink-0 border-0 bg-white shadow-[0_24px_60px_rgb(0_0_0/0.45)] ${px ? "max-w-none" : "w-full"}`}
-        />
+  const controls = (
+    <>
+      <div role="radiogroup" aria-label="Preview width" className="flex gap-4 font-display text-[13px] font-medium">
+        {WIDTHS.map((w) => (
+          <button key={w.id} type="button" role="radio" aria-checked={width === w.id} onClick={() => setWidth(w.id)} className={underlined(width === w.id)}>
+            {w.label}
+          </button>
+        ))}
       </div>
-    </div>,
+      <button
+        type="button"
+        title={PDF_HINT}
+        onClick={() => saveAsPdf(html, title)}
+        className="cut bg-[#ff5a1f] px-3 py-1.5 font-display text-xs font-semibold text-[#1c2026] [--cut-size:6px] hover:bg-[#ff7a45]"
+      >
+        Save as PDF
+      </button>
+    </>
+  );
+  return createPortal(
+    <Sheet label={title} title={title} titleFills controls={controls} closeLabel="Close the preview" onClose={onClose} bodyClass="flex justify-center">
+      <iframe
+        title={title}
+        sandbox={SANDBOX}
+        srcDoc={html}
+        style={px ? { width: px } : undefined}
+        className={`block h-full shrink-0 border-0 bg-white shadow-[0_24px_60px_rgb(0_0_0/0.45)] ${px ? "max-w-none" : "w-full"}`}
+      />
+    </Sheet>,
     document.body,
   );
 }
