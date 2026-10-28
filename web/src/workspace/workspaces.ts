@@ -311,7 +311,7 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
         const text = latest(file).text ?? "";
         let at = occurrences(text, old);
         let swap = [old, replacement];
-        // read_file shows a file's lines without their "\r": a passage over several lines of a file with Windows line endings matches as it would have read.
+        // read_file shows a file's lines without their "\r": a passage over several lines of a file with CRLF line endings matches as it would have read.
         if (at.length === 0 && text.includes("\r\n") && old.includes("\n")) {
           swap = [old, replacement].map((s) => s.replace(/\r?\n/g, "\r\n"));
           at = occurrences(text, swap[0]);

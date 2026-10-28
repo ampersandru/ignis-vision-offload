@@ -254,7 +254,7 @@ describe("edit_file", () => {
     expect((await workspaces.files(a.bound()!))[0].versions).toHaveLength(1);
   });
 
-  it("matches a passage over several lines of a file with Windows line endings, as read_file shows it", async () => {
+  it("matches a passage over several lines of a file with CRLF line endings, as read_file shows it", async () => {
     const workspaces = module();
     const a = chat(workspaces);
     const id = await a.access.chat.workspace();
