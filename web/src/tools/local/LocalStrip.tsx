@@ -7,6 +7,8 @@ import type { AgentStatus } from "../agents/agents.ts";
 import { StatusMark } from "../agents/status.tsx";
 import {
   CREATE_FILE,
+  DELETE_FILE,
+  EDIT_FILE,
   type LocalRun,
   LIST_FILES,
   MEMORY_DELETE,
@@ -20,8 +22,8 @@ import {
 } from "./local.ts";
 
 // The local tool calls a reply made, inside the reply: a plan as a checklist,
-// a file it wrote with its download (the workspace's version that reply
-// wrote, or an older chat's create_file kept in the run), run_js with its
+// a file it wrote or edited with its download (the workspace's version that
+// reply made, or an older chat's create_file kept in the run), run_js with its
 // code, safety check and output, and a line for the rest.
 
 const MARK: Record<LocalRun["status"], AgentStatus> = {
@@ -47,7 +49,7 @@ export function LocalStrip({ runs }: { runs: LocalRun[] }) {
 function LocalItem({ run }: { run: LocalRun }) {
   if (run.tool === UPDATE_PLAN && run.steps) return <PlanCard steps={run.steps} />;
   if (run.tool === CREATE_FILE && run.file) return <FileCard name={run.file.name} content={run.file.content} />;
-  if (run.tool === WRITE_FILE && run.written) return <WrittenCard written={run.written} />;
+  if ((run.tool === WRITE_FILE || run.tool === EDIT_FILE) && run.written) return <WrittenCard written={run.written} />;
   if (run.tool === RUN_JS && run.code !== undefined) return <JsRow run={run} />;
   return <SimpleRow run={run} />;
 }
@@ -127,8 +129,9 @@ function PlanCard({ steps }: { steps: PlanStep[] }) {
 }
 
 /**
- * The card of a version a write_file call made: that version, read from the
- * workspace, and once a newer one exists a mark saying so with the way to it.
+ * The card of a version a write_file or edit_file call made: that version,
+ * read from the workspace, and once a newer one exists a mark saying so with
+ * the way to it.
  */
 function WrittenCard({ written }: { written: Written }) {
   const file = useWorkspaceFile(written.workspace, written.file);
@@ -211,7 +214,7 @@ function FileCard({ name, content, version, note }: { name: string; content: str
 
 function SimpleRow({ run }: { run: LocalRun }) {
   const label =
-    { [MEMORY_SAVE]: "Remembered", [MEMORY_READ]: "Recalled", [MEMORY_DELETE]: "Forgot", [READ_FILE]: "Read", [LIST_FILES]: "Listed", [WRITE_FILE]: "Write" }[run.tool] ??
+    { [MEMORY_SAVE]: "Remembered", [MEMORY_READ]: "Recalled", [MEMORY_DELETE]: "Forgot", [READ_FILE]: "Read", [LIST_FILES]: "Listed", [WRITE_FILE]: "Write", [EDIT_FILE]: "Edit", [DELETE_FILE]: "Delete" }[run.tool] ??
     run.tool;
   const unit = run.read?.lines ? "lines" : "characters";
   const detail = run.note
@@ -222,6 +225,10 @@ function SimpleRow({ run }: { run: LocalRun }) {
       ? run.deletedId
       : run.read
         ? `${run.read.name}, ${unit} ${run.read.from.toLocaleString()}–${run.read.to.toLocaleString()} of ${run.read.total.toLocaleString()}`
+        : run.seen
+        ? `${run.seen.name}, version ${run.seen.version}`
+        : run.written
+        ? run.written.name
         : run.listed !== undefined
           ? `${run.listed.toLocaleString()} ${run.listed === 1 ? "file" : "files"}`
           : "";

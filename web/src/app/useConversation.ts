@@ -47,6 +47,7 @@ import { agentNotice, turnNotice } from "../tools/notice.ts";
 import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
 import { type AttachedFile, attachedChip, commitAttached, fromLegacy, readAttached, withAttached } from "../workspace/attach.ts";
+import { seenIn } from "../workspace/tools.ts";
 import { type ChatBinding, pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
 
 // The conversation loop: the sessions, the replies streaming into them, and
@@ -220,9 +221,10 @@ export function useConversation({
   /**
    * The session's hold on its workspace, as the chat its store key names: its
    * own, or one born with the first file and named after the chat (`title`
-   * when it is not named yet).
+   * when it is not named yet). The chat's reader has seen what `history`
+   * read or made of the files, the turn's model having that in its context.
    */
-  function chatBinding(sessionId: number, title?: string): ChatBinding {
+  function chatBinding(sessionId: number, history: Message[], title?: string): ChatBinding {
     const now = () => listNow.current.sessions.find((s) => s.id === sessionId);
     return workspaces.chat(storage.keyOf(sessionId), {
       bound: () => now()?.workspaceId ?? born.current.get(sessionId),
@@ -232,6 +234,7 @@ export function useConversation({
         born.current.set(sessionId, id);
         setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, id) }));
       },
+      seen: seenIn(history),
     });
   }
 
@@ -304,7 +307,7 @@ export function useConversation({
       prompt !== null && history.length === 0
         ? titleOf({ id: 0, role: "user", content: prompt, images, attached: files.add.map((f) => f.name), reasoning: "", streaming: false })
         : undefined;
-    const chat = chatBinding(sessionId, firstTitle);
+    const chat = chatBinding(sessionId, history, firstTitle);
     const local: Omit<LocalContext, "settings" | "signal"> = {
       jsSafetyCheck: tools.jsSafetyCheck,
       workspace: { workspaces, chat },
@@ -728,7 +731,7 @@ export function useConversation({
     attach,
     detach,
     /** The chat on screen's hold on its workspace: what the workspace panel makes files through. */
-    binding: () => chatBinding(active.id),
+    binding: () => chatBinding(active.id, active.messages),
     bindTo,
     deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */

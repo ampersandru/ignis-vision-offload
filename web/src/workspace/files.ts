@@ -33,7 +33,18 @@ export type FileKind = "text" | "pdf" | "picture" | "audio" | "other";
  */
 export type Author = { by: "user" } | { by: "chat"; chat: string; agent?: { call: string; name: string } };
 
-export const USER: Author = { by: "user" };
+/** An author on the model's side: a chat, or a sub-agent of a chat. */
+export type ChatAuthor = Extract<Author, { by: "chat" }>;
+
+export const USER: { by: "user" } = { by: "user" };
+
+/** `author` as the reader `reader` hears it named: the user, you, the chat or one of its sub-agents, or another chat. */
+export function authorLabel(author: Author, reader: ChatAuthor): string {
+  if (author.by === "user") return "the user";
+  if (author.chat !== reader.chat) return "another chat";
+  if ((author.agent?.call ?? null) === (reader.agent?.call ?? null)) return "you";
+  return author.agent ? `the sub-agent ${author.agent.name}` : "the conversation that started you";
+}
 
 /** Bytes kept in the page's store rather than inline: a picture in the image store (#394), anything else as a blob. */
 export type StoredBytes = { store: "blob"; id: BlobId; type: string; size: number } | { store: "image"; id: ImageId; type: string; size: number };

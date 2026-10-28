@@ -130,7 +130,7 @@ for the moment.
 ## Workspace
 
 **Workspace** lets the model work on the files of the
-[chat's workspace](chat.md#the-chats-workspace), with three tools, declared
+[chat's workspace](chat.md#the-chats-workspace), with five tools, declared
 whenever the switch is on, whether the chat has a file yet or not:
 
 - `list_files`: each file's name, kind (text, PDF, picture, audio or other),
@@ -138,33 +138,66 @@ whenever the switch is on, whether the chat has a file yet or not:
   or another chat.
 - `read_file`: a text file as numbered lines, a range at a time (`offset` is
   the first line, `limit` the most lines), up to 20,000 characters a call; a
-  PDF reads as its text, the same way.
+  PDF reads as its text, the same way. A file of a kind it cannot read
+  answers with its kind and size.
 - `write_file`: creates a text file or replaces it whole. A name may hold `/`
   for folders, as in `site/index.html`, and is unique in its workspace.
+- `edit_file`: replaces one passage of a text file (`old`) with another
+  (`new`), so that a small change to a large file costs little. The passage
+  must occur exactly once: one that occurs nowhere, or several times, is
+  refused, and the refusal says which, with the lines where it occurs.
+- `delete_file`: deletes a file. It leaves the workspace's list, and its
+  history keeps it.
 
-Every write is a new version of the file, with its author and time; the
-earlier versions are kept. The model's first file creates the workspace.
-Agents get the same tools, and their writes are their own. A file you attach
-with **File** in the prompt box becomes a file of the workspace when the
-prompt is sent, and the prompt says so after your words:
-`[Attached to the workspace: brief.pdf]`. You see the files, and add, rename,
-delete and download them, in the
+Every write, edit and deletion is a new version of the file, with its author
+and time; the earlier versions are kept, and a deletion is a version that
+marks the file deleted. The model's first file creates the workspace. Agents
+get the same five tools, each as a reader of its own
+([below](#changes-the-model-has-not-seen)). A file you attach with **File** in
+the prompt box becomes a file of the workspace when the prompt is sent, and
+the prompt says so after your words: `[Attached to the workspace: brief.pdf]`.
+You see the files, and add, rename, delete and download them, in the
 [workspace panel](chat.md#the-workspace-panel).
 
-A file the model writes shows in its reply as a card: its name, the version
-that reply wrote, its size, **Preview** and **Download**. An HTML file opens on
-a live preview in a sandboxed frame (scripts run, no access to the page), with
-its source, **Save as PDF** and a full-screen view at desktop, tablet or phone
-width.
+A file the model writes or edits shows in its reply as a card: its name, the
+version that call made, its size, **Preview** and **Download**; a deletion is
+a row naming the file. An HTML file opens on a live preview in a sandboxed
+frame (scripts run, no access to the page), with its source, **Save as PDF**
+and a full-screen view at desktop, tablet or phone width.
 
 ![An HTML file the model made, previewed](../images/playground/html-file.png)
 
-The ignis system prompt's workspace part and the three tools are the same in
+The ignis system prompt's workspace part and the five tools are the same in
 every chat, whatever the workspace holds and whatever you attach, so a file
 never changes the head of the prompt ([the turn notice](#the-turn-notice)).
 With the switch off the model has no workspace tool and **File** leaves the
 prompt box's **+** menu; pictures can still be attached, and the files stay in
 this browser.
+
+### Changes the model has not seen
+
+The model never overwrites a change it has not seen. Each reader, the chat
+and each of its agents apart, has the version of each file it last read or
+wrote, and its `write_file` over an existing file, its `edit_file` or its
+`delete_file` is refused when the file is at another version now: you changed
+it, another chat working in the same workspace did, or another agent did. The
+refusal names the file, says who changed it, and tells the model to read it
+again; the model reads it, and makes its change on what the file holds now.
+
+- A file the reader never read is refused the same way, a file you attached
+  included: the model reads it before it rewrites or deletes it.
+- A reader's own write counts as its read: the model edits a file it just
+  wrote without reading it back.
+- A new file has no guard, and a deleted file the reader never knew is a new
+  file to it: writing it makes its next version. A file deleted since the
+  reader read it is refused until the model reads it again.
+- A chat's reads go with the replies that made them, kept with the chat: they
+  hold across a reload, a fork has read what the turns it copies read, and a
+  reply regenerated, or a prompt edited and sent again, leaves out the reads
+  of the replies it drops.
+- An agent starts having read nothing, whatever the conversation read, and
+  its reads end with its run.
+- Your own changes are never refused.
 
 ## Pictures
 

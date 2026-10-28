@@ -31,7 +31,10 @@ describe("deleting a file", () => {
     const [notes, todo] = await workspaces.add(w.id, [{ name: "notes.md", kind: "text", text: "# Trip" }, { name: "todo.txt", kind: "text", text: "pack" }], USER);
     const byUser = await workspaces.deleteFile(w.id, notes.file, USER);
     expect(byUser).toEqual({ ok: true, written: { workspace: w.id, file: notes.file, name: "notes.md", version: 2 } });
-    const byChat = await workspaces.deleteFile(w.id, todo.file, CHAT);
+    // The model deletes as the chat's reader, which has read the file (the guard, workspace.test.ts).
+    const chat = workspaces.chat(CHAT.chat, { bound: () => w.id, name: () => "Trip", onBorn: () => {} }).reader;
+    workspaces.read(chat, (await workspaces.file(w.id, todo.file))!);
+    const byChat = await workspaces.deleteFile(w.id, todo.file, chat);
     expect(byChat).toMatchObject({ ok: true, written: { name: "todo.txt", version: 2 } });
     const [a, b] = await workspaces.files(w.id);
     expect(a.versions.map((v) => [v.n, v.author, v.text, v.deleted])).toEqual([
@@ -148,7 +151,7 @@ describe("a workspace and its chats", () => {
     // Chat 1 is born into a workspace with its first file, then deleted.
     let list = { sessions: [createSession(1)], activeId: 1 };
     const first = workspaces.chat("key-1", { bound: () => list.sessions.find((s) => s.id === 1)?.workspaceId, name: () => "Trip plan", onBorn: (id) => (list = { ...list, sessions: bindWorkspace(list.sessions, 1, id) }) });
-    await workspaces.writeText(await first.workspace(), "notes.md", "# Trip", { by: "chat", chat: "key-1" });
+    await workspaces.writeText(await first.workspace(), "notes.md", "# Trip", first.reader);
     list = openSession(removeSession(list, 1, 2), 3);
     const [kept] = await workspaces.list();
     expect(kept).toMatchObject({ name: "Trip plan" });
@@ -168,7 +171,8 @@ describe("a workspace and its chats", () => {
     await uploadFiles(workspaces, chat, [new File([new Uint8Array([80, 75, 3, 4, 0])], "sheet.xlsx")]);
     const listed = await runWorkspaceTool("list_files", {}, { workspaces, chat });
     expect(listed.ok && listed.run.result).toContain("- sheet.xlsx: other, 5 bytes;");
-    expect(await runWorkspaceTool("read_file", { name: "sheet.xlsx" }, { workspaces, chat })).toEqual({ ok: false, error: "sheet.xlsx is a file of a kind read_file cannot read." });
+    const read = await runWorkspaceTool("read_file", { name: "sheet.xlsx" }, { workspaces, chat });
+    expect(read.ok && read.run.result).toBe("[sheet.xlsx, version 1: a file of a kind read_file cannot read; 5 bytes.]");
   });
 });
 
