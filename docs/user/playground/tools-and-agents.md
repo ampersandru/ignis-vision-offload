@@ -1,11 +1,11 @@
 ---
 title: "Tools and agents"
-description: "The chat's tools: subagents on agent lanes, web search, questions to you, JavaScript, a plan, memory, files, pictures and attachments."
+description: "The chat's tools: subagents on agent lanes, web search, questions to you, JavaScript, a plan, memory, the workspace's files and pictures."
 sidebar:
   order: 4
 ---
 
-The chat gives the model ten tools, all on by default
+The chat gives the model nine tools, all on by default
 ([Settings](settings.md#tools)). The tools run **in the browser**: the server
 only sees the model decide to call one and, on the next request, the result.
 That makes the Playground an agent loop you can watch: a turn streams a reply,
@@ -100,7 +100,7 @@ live in this browser's `localStorage`, never on the server.
 ## The turn notice
 
 The ignis system prompt and the tools block are the same in every chat,
-whatever the memory holds, so the server reuses a conversation's prefix
+whatever the memory and the workspace hold, so the server reuses a conversation's prefix
 instead of prefilling it again ([when reuse
 misses](../concepts/kv-cache-and-prompt-reuse.md#when-reuse-misses)). What
 changes from turn to turn rides in the **turn notice** instead: a developer
@@ -127,14 +127,42 @@ title in a notice ahead of its task. A server whose
 [prompting](../configuration/prompting.md)) loses the reuse for it, as it does
 for the moment.
 
-## Create files
+## Workspace
 
-**Create files** lets the model hand you a text file: a card with its name and
-size, **Preview** and **Download**. An HTML file opens on a live preview in a
-sandboxed frame (scripts run, no access to the page), with its source, **Save
-as PDF** and a full-screen view at desktop, tablet or phone width.
+**Workspace** lets the model work on the files of the
+[chat's workspace](chat.md#the-chats-workspace), with three tools, declared
+whenever the switch is on, whether the chat has a file yet or not:
+
+- `list_files`: each file's name, kind (text, PDF, picture, audio or other),
+  size, last change and who made it: you, the chat itself, one of its agents,
+  or another chat.
+- `read_file`: a text file as numbered lines, a range at a time (`offset` is
+  the first line, `limit` the most lines), up to 20,000 characters a call; a
+  PDF reads as its text, the same way.
+- `write_file`: creates a text file or replaces it whole. A name may hold `/`
+  for folders, as in `site/index.html`, and is unique in its workspace.
+
+Every write is a new version of the file, with its author and time; the
+earlier versions are kept. The model's first file creates the workspace.
+Agents get the same tools, and their writes are their own. A file you attach
+with **File** in the prompt box becomes a file of the workspace when the
+prompt is sent, and the prompt says so after your words:
+`[Attached to the workspace: brief.pdf]`.
+
+A file the model writes shows in its reply as a card: its name, the version
+that reply wrote, its size, **Preview** and **Download**. An HTML file opens on
+a live preview in a sandboxed frame (scripts run, no access to the page), with
+its source, **Save as PDF** and a full-screen view at desktop, tablet or phone
+width.
 
 ![An HTML file the model made, previewed](../images/playground/html-file.png)
+
+The ignis system prompt's workspace part and the three tools are the same in
+every chat, whatever the workspace holds and whatever you attach, so a file
+never changes the head of the prompt ([the turn notice](#the-turn-notice)).
+With the switch off the model has no workspace tool and **File** leaves the
+prompt box's **+** menu; pictures can still be attached, and the files stay in
+this browser.
 
 ## Pictures
 
@@ -147,13 +175,6 @@ sent), size and seed, not what it looks like. A picture can be marked, opened
 full screen, downloaded, or opened in the [Image studio](image-studio.md).
 Agents do not get this tool. The weights are for non-commercial use only
 ([images](../api/images.md)).
-
-## Attachments
-
-**Attachments** adds **File** to the prompt box's **+** menu: a text or PDF
-file attached to the session, which the model reads in pieces of up to 20,000
-characters with its `read_file` tool. The tool is declared only while the
-session has a file. Attached files are kept with the session.
 
 ## Read more
 

@@ -4,6 +4,7 @@ import { contextUsage } from "../metrics/context.ts";
 import { SECURE_CONTEXT } from "../speech/availability.ts";
 import { type DictationState, LISTENING } from "../speech/dictation.ts";
 import { fixedDictation } from "../speech/fixture.ts";
+import type { AttachedChip } from "../workspace/attach.ts";
 import { Composer, IDLE_HINT as IDLE } from "./Composer.tsx";
 
 // The chat's prompt box with dictation (spec speech/04): the mic beside Send,
@@ -12,7 +13,10 @@ import { Composer, IDLE_HINT as IDLE } from "./Composer.tsx";
 
 const none = () => {};
 
-function render(state: Partial<DictationState> = {}, extra: { value?: string; busy?: boolean } = {}) {
+function render(
+  state: Partial<DictationState> = {},
+  extra: { value?: string; busy?: boolean; canAttach?: boolean; attachments?: AttachedChip[] } = {},
+) {
   return renderToStaticMarkup(
     <Composer
       value={extra.value ?? "Prima di toccare il piano:"}
@@ -23,8 +27,8 @@ function render(state: Partial<DictationState> = {}, extra: { value?: string; bu
       usage={contextUsage([], null, null)}
       onSend={none}
       onStop={none}
-      canAttach={false}
-      attachments={[]}
+      canAttach={extra.canAttach ?? false}
+      attachments={extra.attachments ?? []}
       attachError={null}
       onAttach={none}
       onDetach={none}
@@ -81,5 +85,26 @@ describe("the chat's prompt box with dictation", () => {
 
   it("keeps the other session's streaming note over the idle words", () => {
     expect(render({}, { busy: true })).toContain("A reply is streaming in another session. Send works again once it ends.");
+  });
+});
+
+describe("the chat's prompt box and the workspace", () => {
+  const brief: AttachedChip = { name: "brief.pdf", kind: "pdf", characters: 1200 };
+
+  it("attaches files into the workspace while the Workspace switch is on, and a file alone is a prompt", () => {
+    const html = render({}, { value: "", canAttach: true, attachments: [brief] });
+    expect(html).toContain('name="attachments"');
+    expect(html).toContain("brief.pdf");
+    expect(html).toContain('aria-label="Remove brief.pdf"');
+    expect(send(html)).not.toContain('disabled=""');
+    expect(send(render({}, { value: "", canAttach: true }))).toContain('disabled=""');
+  });
+
+  it("offers pictures only while the Workspace switch is off", () => {
+    const html = render({}, { value: "", canAttach: false, attachments: [brief] });
+    expect(html).not.toContain('name="attachments"');
+    expect(html).not.toContain("brief.pdf");
+    expect(html).toContain('name="images"');
+    expect(send(html)).toContain('disabled=""');
   });
 });

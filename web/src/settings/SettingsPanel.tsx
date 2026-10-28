@@ -2,7 +2,6 @@ import { useState } from "react";
 import { REASONING_EFFORTS } from "../api/request.ts";
 import { chooseTransport, useTransport } from "../api/transport.ts";
 import { ignisPrompt, setAllTools, type ToolsState, toolsInUse } from "../tools/index.ts";
-import type { Attachment } from "../tools/local/attachments.ts";
 import { useMemoryNotes } from "../tools/local/memory.ts";
 import { setTavilyKey, useTavilyKey } from "../tools/web/tavilyKey.ts";
 import { caption, field } from "../ui/classes.ts";
@@ -27,8 +26,6 @@ export function SettingsPanel(props: {
   onMarkdownChange: (on: boolean) => void;
   parallel: boolean;
   onParallelChange: (on: boolean) => void;
-  /** The active session's files, which the ignis prompt lists. */
-  attachments: Attachment[];
   onOpenMemory: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("general");
@@ -75,7 +72,6 @@ function GeneralSettings(props: {
   onMarkdownChange: (on: boolean) => void;
   parallel: boolean;
   onParallelChange: (on: boolean) => void;
-  attachments: Attachment[];
 }) {
   const { settings, set } = props;
   // ignis refuses greedy sampling with a top_p it would ignore.
@@ -85,7 +81,7 @@ function GeneralSettings(props: {
       <SystemPromptField
         value={settings.systemPrompt}
         onChange={(v) => set("systemPrompt", v)}
-        ignis={ignisPrompt(props.tools, { attachments: props.attachments })}
+        ignis={ignisPrompt(props.tools)}
       />
 
       <div className="flex flex-col gap-4">
@@ -261,11 +257,11 @@ export function ToolsSetting({
           />
           {tools.memory && <MemorySummary onOpen={onOpenMemory} />}
           <ToolRow
-            id="files"
-            label="Create files"
-            on={tools.files}
-            onChange={(files) => onChange({ ...tools, files })}
-            description="The model can hand you a text file to download."
+            id="workspace"
+            label="Workspace"
+            on={tools.workspace}
+            onChange={(workspace) => onChange({ ...tools, workspace })}
+            description="The model lists, reads and writes the files of the chat's workspace, and the prompt box attaches text and PDF files to it. Off, the files stay yours."
           />
           <ToolRow
             id="images"
@@ -273,13 +269,6 @@ export function ToolsSetting({
             on={tools.images}
             onChange={(images) => onChange({ ...tools, images })}
             description="The model can make and edit pictures with the image model. Each reply that does unloads the text model for about half a minute: there, and back."
-          />
-          <ToolRow
-            id="read-files"
-            label="Attachments"
-            on={tools.readFiles}
-            onChange={(readFiles) => onChange({ ...tools, readFiles })}
-            description="Attach text or PDF files to a session; the model reads them in pieces."
           />
         </div>
       )}
