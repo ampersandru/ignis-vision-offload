@@ -22,6 +22,8 @@ const file = (versions: Version[]): WorkspaceFile => ({ format: 1, id: "f1", wor
 const actions: PanelActions = {
   create: async () => null,
   upload: () => {},
+  exportZip: () => {},
+  importZip: () => {},
   rename: async () => null,
   remove: () => {},
   download: () => {},

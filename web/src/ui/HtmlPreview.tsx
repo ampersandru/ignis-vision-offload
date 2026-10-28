@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { IconClose } from "./icons.tsx";
 
@@ -141,8 +141,8 @@ function HtmlFullscreen({ html, title, onClose }: { html: string; title: string;
   );
 }
 
-/** A tab strip over the preview or the source; the preview comes first. */
-export function HtmlPreview({ html, name }: { html: string; name: string }) {
+/** A tab strip over a file rendered or its source; the rendered one comes first. */
+export function Previewed({ name, rendered, source }: { name: string; rendered: ReactNode; source: string }) {
   const [tab, setTab] = useState<"preview" | "source">("preview");
   return (
     <div className="flex flex-col gap-2">
@@ -161,12 +161,17 @@ export function HtmlPreview({ html, name }: { html: string; name: string }) {
         ))}
       </div>
       {tab === "preview" ? (
-        <HtmlFrame html={html} title={name} />
+        rendered
       ) : (
         <pre className="max-h-96 overflow-auto bg-ground px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink">
-          {html}
+          {source}
         </pre>
       )}
     </div>
   );
+}
+
+/** The page in its frame, or its source. `shown` is the page the frame runs when that is not the file's own text (a site's files put into it). */
+export function HtmlPreview({ html, name, shown }: { html: string; name: string; shown?: string }) {
+  return <Previewed name={name} rendered={<HtmlFrame html={shown ?? html} title={name} />} source={html} />;
 }

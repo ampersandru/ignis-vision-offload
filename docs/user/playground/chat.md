@@ -104,7 +104,19 @@ versions ([below](#editing-by-hand-history-and-restore)).
 
 - An HTML file opens in the same sandboxed preview as a reply's card, with
   its source, **Save as PDF** and the full-screen view; **Edit** beside it
-  opens its text in the editor.
+  opens its text in the editor. A site of several files shows whole: the
+  page's `<link rel="stylesheet" href>`, `<script src>` and `<img src>`
+  that name files of the same workspace are put into the page, each name read
+  from the HTML file's own folder (`css/main.css` beside `site/index.html` is
+  `site/css/main.css`; `../` goes up a folder, and a leading `/` starts at
+  the workspace's top). Nothing else is looked up: a CSS `url()`, a
+  `fetch`, a link, a `srcset`, an address on the web or a name that is not
+  a file here stays as written, and the page stays in the sandbox, with no
+  access to the Playground.
+- A Markdown file opens drawn as a reply is, an SVG file as the picture it
+  draws (without running the scripts it may hold), and a CSV file as a table
+  whose first row is the header, up to 500 rows. **Edit** beside the drawing
+  is the file's text.
 - Any other text file opens in the editor.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click
@@ -125,6 +137,15 @@ What you do here is yours: each version it makes is authored by you.
   most browsers) is kept as bytes of a kind the model cannot read.
 - **Record** records from the microphone into a new audio file
   ([recording](#recording-into-the-workspace)).
+- **Export zip** saves the workspace as a zip named after it: each file's
+  latest version under its name, `/` making folders in the zip too. Deleted
+  files and the history are not in it. **Import zip** reads a zip, one made
+  here or by any other tool, into a new workspace named after it without
+  `.zip`: every file starts at version 1, yours, and its kind is recognised as
+  on upload, a picture the browser already holds is not stored twice, and
+  folder entries are skipped. A zip that cannot be read is said so in the
+  panel and makes no workspace. The new workspace is one to pick in the
+  Workspace menu of a chat that has none yet.
 - On each file's row, the pencil renames it, the arrow downloads its latest
   version under the last part of its name, and the bin deletes it. A name
   another file holds, a deleted one included, is refused; a rename keeps the
