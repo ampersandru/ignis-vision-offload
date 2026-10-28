@@ -22,6 +22,10 @@ export async function sendFile(workspaces: Workspaces, destination: Destination,
   return { workspace: (await workspaces.get(workspace.id)) ?? workspace, written };
 }
 
+/** The line under a send: what was added where, or why nothing was. */
+export const sentLine = (outcome: { ok: true; file: string; workspace: string } | { ok: false; error: string }): string =>
+  outcome.ok ? `Added ${outcome.file} to ${outcome.workspace}` : `Not sent: ${outcome.error}`;
+
 /** The text as a file of the destination. */
 export const sendText = (workspaces: Workspaces, destination: Destination, file: { name: string; text: string }): Promise<Sent> =>
   sendFile(workspaces, destination, { name: file.name, kind: "text", text: file.text });

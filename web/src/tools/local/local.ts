@@ -3,7 +3,7 @@ import type { ToolCall } from "../../api/sse.ts";
 import type { streamChat } from "../../api/stream.ts";
 import type { PromptImage } from "../../conversation/images.ts";
 import type { Figures } from "../../metrics/figures.ts";
-import type { Written } from "../../workspace/workspaces.ts";
+import type { FileAt, Written } from "../../workspace/workspaces.ts";
 import { runWorkspaceTool, WORKSPACE_TOOL_NAMES, type WorkspaceAccess } from "../../workspace/tools.ts";
 import { browserMemory, type MemoryNote, type MemoryStore } from "./memory.ts";
 import { checkJs, type JsCheck, JS_OUTPUT_LIMIT, JS_TIMEOUT_MS, runJs, type WorkerFactory } from "./runjs.ts";
@@ -128,7 +128,7 @@ export type LocalRun = {
   /** The version a write_file, edit_file or delete_file call made, which a write's or an edit's card opens. */
   written?: Written;
   /** The version of a file a read_file call showed the model: the chat's reader has seen it (seenIn). */
-  seen?: Written;
+  seen?: FileAt;
   /** How many files a list_files call found. */
   listed?: number;
   /** What a read_file call read: lines from and to, or — in an older chat's run — characters. */

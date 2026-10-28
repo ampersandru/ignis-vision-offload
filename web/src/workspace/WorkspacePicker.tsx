@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconChevron } from "../ui/icons.tsx";
-import { present, type Workspace, type WorkspaceFile, type WorkspaceId } from "./files.ts";
+import { present, timeLabel, type Workspace, type WorkspaceFile, type WorkspaceId } from "./files.ts";
 import { NameField } from "./WorkspacePanel.tsx";
 
 // The picker in the chat's header (spec #170): the workspace the chat works
@@ -14,13 +14,6 @@ import { NameField } from "./WorkspacePanel.tsx";
 export type PickerMode = "choices" | "actions" | "rename" | "confirm";
 
 const MENU_ROW = "flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-line";
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-function when(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 const count = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "file" : "files"}`;
 
@@ -214,7 +207,7 @@ export function WorkspaceChoices({
       ) : list.length === 0 ? (
         <p className="px-3 py-2 text-xs text-ash">No other workspace yet.</p>
       ) : (
-        list.map((w) => row(w.id, w.name, `changed ${when(w.updated)}`))
+        list.map((w) => row(w.id, w.name, `changed ${timeLabel(w.updated)}`))
       )}
     </div>
   );

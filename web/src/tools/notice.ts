@@ -1,7 +1,7 @@
 import { keptMessages, type Message } from "../sessions/sessions.ts";
 import type { WorkspaceFile } from "../workspace/files.ts";
 import { type FileMark, workspaceNotice } from "../workspace/notice.ts";
-import type { Written } from "../workspace/workspaces.ts";
+import type { FileAt } from "../workspace/workspaces.ts";
 import { type ToolsState, turnDateTime } from "./index.ts";
 import { MEMORY_DELETE, MEMORY_SAVE } from "./local/local.ts";
 import { markOf, type MemoryNote, memoryNotice, type NoteMark } from "./local/memory.ts";
@@ -57,7 +57,7 @@ export function knownNotesOf(history: Message[]): NoteMark[] | undefined {
  */
 export function knownFilesOf(history: Message[]): FileMark[] | undefined {
   let known: Map<string, FileMark> | undefined;
-  const learn = (v: Written | undefined) => {
+  const learn = (v: FileAt | undefined) => {
     const was = v && known?.get(v.file);
     if (v && (!was || was.version <= v.version)) known?.set(v.file, { id: v.file, name: v.name, version: v.version });
   };

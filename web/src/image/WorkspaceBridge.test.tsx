@@ -2,10 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { createMemoryStore } from "../store/memory.ts";
 import { WORKSPACE_FORMAT, type Workspace } from "../workspace/files.ts";
+import { sentLine } from "../workspace/send.ts";
 import { createWorkspaces } from "../workspace/workspaces.ts";
 import { StaticPictures } from "./pictures.tsx";
 import { addToPool, newSession } from "./sessions.ts";
-import { SendToWorkspace, sentLine, WorkspacePictures } from "./WorkspaceBridge.tsx";
+import { SendToWorkspace, WorkspacePictures } from "./WorkspaceBridge.tsx";
 
 // The two actions in the components (static markup, as the repo tests views):
 // "Send to workspace" on a viewer picture, and "From a workspace" among the

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { caption } from "../ui/classes.ts";
 import { folded, lineDiff } from "./diff.ts";
-import { type Author, latest, type Version, type WorkspaceFile } from "./files.ts";
-import { type Draft, editing, sizeLabel, timeLabel } from "./panel.ts";
+import { type Author, latest, timeLabel, type Version, type WorkspaceFile } from "./files.ts";
+import { type Draft, editing, sizeLabel } from "./panel.ts";
 
 // A file of the workspace panel by hand (spec #170): a text file's editor,
 // whose Save makes one version authored by the user and whose typing makes

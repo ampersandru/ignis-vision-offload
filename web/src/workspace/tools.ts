@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "../api/request.ts";
 import { keptMessages, type Message } from "../sessions/sessions.ts";
 import type { LocalRun } from "../tools/local/local.ts";
-import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, type Version, type WorkspaceFile } from "./files.ts";
+import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, timeLabel, type Version, type WorkspaceFile } from "./files.ts";
 import type { ChatBinding, Reader, Seen, Workspaces } from "./workspaces.ts";
 
 // The model's entrance to the workspace module: list_files, read_file,
@@ -107,14 +107,6 @@ const DELETED = "This chat's workspace was deleted: a new one is created with th
 
 const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** A moment as a list line gives it, in the page's own time. */
-function moment(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 /** The reader calling: the sub-agent's own, or the chat's. */
 const readerOf = (access: WorkspaceAccess): Reader => access.reader ?? access.chat.reader;
 
@@ -130,7 +122,7 @@ export function sizeOf(version: Version): string {
 
 const fileLine = (file: WorkspaceFile, access: WorkspaceAccess) => {
   const v = latest(file);
-  return `- ${file.name}: ${KIND_LABEL[file.kind]}, ${sizeOf(v)}; version ${v.n}, changed ${moment(v.at)} by ${authorLabel(v.author, readerOf(access).author)}`;
+  return `- ${file.name}: ${KIND_LABEL[file.kind]}, ${sizeOf(v)}; version ${v.n}, changed ${timeLabel(v.at)} by ${authorLabel(v.author, readerOf(access).author)}`;
 };
 
 /** The workspace's file named `name`, or a deleted file of that name, or why there is none. */
@@ -255,7 +247,7 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       const outcome: WorkspaceOutcome = version.deleted
         ? {
             ok: true,
-            run: { result: `[${tag}: deleted by ${authorLabel(version.author, reader.author)}, ${moment(version.at)}. Its history keeps the versions before it; write_file creates the file again.]` },
+            run: { result: `[${tag}: deleted by ${authorLabel(version.author, reader.author)}, ${timeLabel(version.at)}. Its history keeps the versions before it; write_file creates the file again.]` },
           }
         : file.kind === "picture" && version.bytes?.store === "image"
           ? await readPicture(access, file.name, version, version.bytes)

@@ -109,6 +109,14 @@ export function kindOf(name: string, type = ""): FileKind {
   return "text";
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** A moment as the workspace's lines give it, a file's version or a workspace's last change: the local date and time to the minute. */
+export function timeLabel(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /** What the page says when the browser's store refused a change. */
 export const refusal = (err: unknown) => `Not saved in this browser: ${err instanceof Error ? err.message : String(err)}`;
 

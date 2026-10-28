@@ -58,8 +58,11 @@ export const WORKSPACES = "workspaces";
 /** The collection holding a workspace's files, one document per file, keyed by the file's id. */
 export const filesCollection = (workspace: WorkspaceId) => `workspace-files/${workspace}`;
 
-/** A version a write or an addition made, as a reply's card names it: by the file's id, with its name then. */
-export type Written = { workspace: WorkspaceId; file: string; name: string; version: number };
+/** A file at one of its versions, by the file's id, with its name then: one a read showed, or one a change made (`Written`). */
+export type FileAt = { workspace: WorkspaceId; file: string; name: string; version: number };
+
+/** A version a write or an addition made, as a reply's card names it. */
+export type Written = FileAt;
 
 /** A file the user brings: its text inline, or its bytes with the text derived from them. */
 export type Incoming = { name: string; kind: FileKind; text?: string; blob?: Blob; derived?: string };

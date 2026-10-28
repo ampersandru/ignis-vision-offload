@@ -1,4 +1,4 @@
-import { newestFitting } from "../tools/local/memory.ts";
+import { CHANGED_SINCE, newestFitting, noticeSection } from "../tools/local/memory.ts";
 import { KIND_LABEL, latest, present, type WorkspaceFile, type WorkspaceId } from "./files.ts";
 import { sizeOf } from "./tools.ts";
 import type { Workspaces } from "./workspaces.ts";
@@ -19,13 +19,16 @@ export const fileMarkOf = (file: WorkspaceFile): FileMark => ({ id: file.id, nam
 
 const facts = (file: WorkspaceFile) => `${KIND_LABEL[file.kind]}, ${sizeOf(latest(file))}`;
 
+/** The file lines a turn notice lists, cut to this many characters in all, as the memory titles are to theirs. */
+export const NOTICE_FILES_LIMIT = 4000;
+
 /** The lines that fit, as the memory titles do: in the order the files last changed, the newest kept first. */
 function fitting(lines: { at: number; line: string }[]) {
-  return newestFitting([...lines].sort((a, b) => a.at - b.at).map((l) => l.line));
+  return newestFitting([...lines].sort((a, b) => a.at - b.at).map((l) => l.line), NOTICE_FILES_LIMIT);
 }
 
 /** The workspace section's text: its heading, what the lines are, the lines, and what was left out, if anything. */
-const section = (what: string, lines: string[], leftOut: string) => ["# Workspace files", what, ...lines, ...(leftOut ? [leftOut] : [])].join("\n");
+const section = (what: string, lines: string[], leftOut: string) => noticeSection("# Workspace files", what, lines, leftOut);
 
 const sameMarks = (a: FileMark[], b: FileMark[]) => {
   const byId = new Map(a.map((m) => [m.id, m]));
@@ -74,8 +77,7 @@ export function workspaceNotice(known: FileMark[] | undefined, files: WorkspaceF
   for (const was of before.values()) changes.push({ at: 0, line: `- deleted ${was.name}` });
   if (changes.length === 0) return sameMarks(known, marks) ? {} : { known: marks };
   const { listed, left } = fitting(changes);
-  const what = "Changed by the user or another chat since the last notice:";
-  return { text: section(what, listed, left > 0 ? `(${left} older changes not listed.)` : ""), known: marks };
+  return { text: section(CHANGED_SINCE, listed, left > 0 ? `(${left} older changes not listed.)` : ""), known: marks };
 }
 
 /**
