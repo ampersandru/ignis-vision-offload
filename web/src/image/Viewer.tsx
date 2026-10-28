@@ -4,6 +4,8 @@ import { IconBrush, IconChevron, IconClose, IconDownload, IconReference, IconReg
 import { Picture, usePictureUrl } from "./pictures.tsx";
 import { type ImageSession, inputNumbers, pictureName, type PoolImage, pictureOf } from "./sessions.ts";
 import type { ImageSessionsActions } from "./useImageSessions.ts";
+import type { Workspaces } from "../workspace/workspaces.ts";
+import { SendToWorkspace } from "./WorkspaceBridge.tsx";
 
 // One pool picture full-screen on the kiln, at its own resolution: what made
 // it, and the ways on from it. The arrows walk the pool; Escape closes. A
@@ -14,11 +16,13 @@ export function Viewer({
   n,
   actions,
   onSendToChat,
+  workspaces,
 }: {
   session: ImageSession;
   n: number;
   actions: ImageSessionsActions;
   onSendToChat?: (picture: PoolImage) => void;
+  workspaces?: Workspaces;
 }) {
   const p = pictureOf(s, n);
   const url = usePictureUrl();
@@ -44,7 +48,7 @@ export function Viewer({
   const step = p.step !== undefined ? s.steps.find((st) => st.n === p.step) : undefined;
   const input = inputNumbers(s, s.draft.inputs).find((i) => i.n === p.n);
   const full = url(p.id, "full");
-  const origin = { upload: p.name ? `Uploaded: ${p.name}` : "Uploaded", made: step ? `Made by step ${step.n}` : "Made", marked: p.markup ? `#${p.markup.source} marked` : "Marked", chat: "From the chat" }[p.origin];
+  const origin = { upload: p.name ? `Uploaded: ${p.name}` : "Uploaded", made: step ? `Made by step ${step.n}` : "Made", marked: p.markup ? `#${p.markup.source} marked` : "Marked", chat: "From the chat", workspace: p.name ? `From a workspace: ${p.name}` : "From a workspace" }[p.origin];
   const tool = "flex items-center gap-1.5 px-3 py-2 font-display text-[13px] font-medium text-[#b9bec4] hover:bg-[#2e343c] hover:text-white";
   return createPortal(
     <div ref={dialog} role="dialog" aria-modal="true" aria-label={`#${p.n}`} tabIndex={-1} className="monitor-kiln fixed inset-0 z-50 flex flex-col text-[#eae8e4] outline-none">
@@ -115,6 +119,7 @@ export function Viewer({
             Send to the chat
           </button>
         )}
+        <SendToWorkspace session={s} picture={p} tool={tool} workspaces={workspaces} />
       </div>
     </div>,
     document.body,
