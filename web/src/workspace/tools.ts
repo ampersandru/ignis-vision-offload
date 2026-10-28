@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../api/request.ts";
 import type { LocalRun } from "../tools/local/local.ts";
-import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, readableText, type StoredBytes, type Version, type WorkspaceFile } from "./files.ts";
+import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, type Version, type WorkspaceFile } from "./files.ts";
 import type { ChatBinding, Reader, Seen, Workspaces } from "./workspaces.ts";
 
 // The model's entrance to the workspace module: list_files, read_file,
@@ -50,7 +50,7 @@ export const LIST_FILES_TOOL = tool(LIST_FILES, "List the files of the chat's wo
 
 export const READ_FILE_TOOL = tool(
   READ_FILE,
-  `Read a file of the workspace as numbered lines: a text file, or a PDF's text. Returns up to ${READ_LIMIT.toLocaleString("en-US")} characters at a time, and where to go on. A picture comes back as the picture itself when you can see pictures, else as its size.`,
+  `Read a file of the workspace as numbered lines: a text file, a PDF's text, or an audio file's transcript (no speakers). Returns up to ${READ_LIMIT.toLocaleString("en-US")} characters at a time, and where to go on. A picture comes back as the picture itself when you can see pictures, else as its size.`,
   {
     name: { type: "string", description: "The file's name, as list_files gives it." },
     offset: { type: "integer", description: "The first line to read, from 1; 1 by default." },
@@ -90,15 +90,15 @@ export const DELETE_FILE_TOOL = tool(
 export const WORKSPACE_PROMPT = `# Workspace
 The chat can have a workspace: files you and the user work on together, which stay across turns and chats. It is created with its first file, which you write or the user attaches; a file the user attaches is named in their message.
 - See what it holds with \`list_files\`: each file's name, kind, size, last change and author.
-- Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text, and a picture is shown to you when you can see pictures. Read a file before you rely on it or change it.
+- Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text, an audio file as its transcript, without speakers, and a picture is shown to you when you can see pictures. Read a file before you rely on it or change it.
 - Write a text file with \`write_file\`: code, a document, data — anything worth keeping. It creates the file or replaces it whole. Mention the file in your reply instead of repeating its content.
 - Change part of a text file with \`edit_file\`: it replaces one passage, which must occur exactly once in the file. Prefer it to rewriting a file whole for a small change.
 - Delete a file that is no longer needed with \`delete_file\`; its history keeps it.
 - You change a file only as you last read or wrote it: when the user, another chat or an agent has changed it since, your change is refused. Read the file again, then make yours.
 - A name may hold \`/\` for folders, like \`site/index.html\`.`;
 
-/** What a workspace call does: the change to its run, or why it failed. */
-export type WorkspaceOutcome = { ok: true; run: Partial<LocalRun> & { result: string } } | { ok: false; error: string };
+/** What a workspace call does: the change to its run, or why it failed, with what the failed run still records. */
+export type WorkspaceOutcome = { ok: true; run: Partial<LocalRun> & { result: string } } | { ok: false; error: string; run?: Partial<LocalRun> };
 
 const NO_WORKSPACE = "This chat has no workspace yet: it is created with the first file you write or the user attaches.";
 
@@ -212,7 +212,7 @@ async function readPicture(access: WorkspaceAccess, name: string, version: Versi
 }
 
 /** Runs one workspace call: `name` is the tool, `args` its parsed arguments. */
-export async function runWorkspaceTool(name: string, args: Record<string, unknown>, access: WorkspaceAccess): Promise<WorkspaceOutcome> {
+export async function runWorkspaceTool(name: string, args: Record<string, unknown>, access: WorkspaceAccess, signal?: AbortSignal): Promise<WorkspaceOutcome> {
   const reader = readerOf(access);
   const named = typeof args.name === "string" ? args.name.trim() : "";
   const needsName = 'The call needs the "name" of a file, as list_files gives it.';
@@ -238,7 +238,15 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       const { file } = found;
       const version = latest(file);
       const tag = `${file.name}, version ${version.n}`;
-      const text = readableText(version);
+      const seen = { workspace: file.workspace, file: file.id, name: file.name, version: version.n };
+      // A PDF's text or an audio file's transcript is computed on the version's first read, and kept with it.
+      const readable = await access.workspaces.readable(file, version, signal);
+      if (!readable.ok) {
+        // Shown the version it cannot have the text of now, as with any file it cannot read: the reader may delete it.
+        access.workspaces.read(reader, file);
+        return { ok: false, error: readable.error, run: { seen } };
+      }
+      const text = readable.text;
       const outcome: WorkspaceOutcome = version.deleted
         ? {
             ok: true,
@@ -246,7 +254,7 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
           }
         : file.kind === "picture" && version.bytes?.store === "image"
           ? await readPicture(access, file.name, version, version.bytes)
-          : (file.kind !== "text" && file.kind !== "pdf") || text === undefined
+          : (file.kind !== "text" && file.kind !== "pdf" && file.kind !== "audio") || text === undefined
           ? {
               ok: true,
               run: { result: `[${tag}: ${file.kind === "other" ? "a file of a kind" : `a ${KIND_LABEL[file.kind]} file, which`} read_file cannot read; ${sizeOf(version)}.]` },
@@ -255,7 +263,7 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       if (!outcome.ok) return outcome;
       // Whatever the call showed of the file, the reader has seen that version, and may change it next.
       access.workspaces.read(reader, file);
-      return { ok: true, run: { ...outcome.run, seen: { workspace: file.workspace, file: file.id, name: file.name, version: version.n } } };
+      return { ok: true, run: { ...outcome.run, seen } };
     }
     case WRITE_FILE: {
       const raw = typeof args.name === "string" ? args.name : "";
