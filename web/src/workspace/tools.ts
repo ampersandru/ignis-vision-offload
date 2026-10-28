@@ -86,8 +86,8 @@ The chat can have a workspace: files you and the user work on together, which st
 - You change a file only as you last read or wrote it: when the user, another chat or an agent has changed it since, your change is refused. Read the file again, then make yours.
 - A name may hold \`/\` for folders, like \`site/index.html\`.`;
 
-/** What a workspace call does: the change to its run, or why it failed. */
-export type WorkspaceOutcome = { ok: true; run: Partial<LocalRun> & { result: string } } | { ok: false; error: string };
+/** What a workspace call does: the change to its run, or why it failed, with what the failed run still records. */
+export type WorkspaceOutcome = { ok: true; run: Partial<LocalRun> & { result: string } } | { ok: false; error: string; run?: Partial<LocalRun> };
 
 const NO_WORKSPACE = "This chat has no workspace yet: it is created with the first file you write or the user attaches.";
 
@@ -198,9 +198,14 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       const { file } = found;
       const version = latest(file);
       const tag = `${file.name}, version ${version.n}`;
+      const seen = { workspace: file.workspace, file: file.id, name: file.name, version: version.n };
       // A PDF's text or an audio file's transcript is computed on the version's first read, and kept with it.
       const readable = await access.workspaces.readable(file, version, signal);
-      if (!readable.ok) return { ok: false, error: readable.error };
+      if (!readable.ok) {
+        // Shown the version it cannot have the text of now, as with any file it cannot read: the reader may delete it.
+        access.workspaces.read(reader, file);
+        return { ok: false, error: readable.error, run: { seen } };
+      }
       const text = readable.text;
       const outcome: WorkspaceOutcome = version.deleted
         ? {
@@ -216,7 +221,7 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       if (!outcome.ok) return outcome;
       // Whatever the call showed of the file, the reader has seen that version, and may change it next.
       access.workspaces.read(reader, file);
-      return { ok: true, run: { ...outcome.run, seen: { workspace: file.workspace, file: file.id, name: file.name, version: version.n } } };
+      return { ok: true, run: { ...outcome.run, seen } };
     }
     case WRITE_FILE: {
       const raw = typeof args.name === "string" ? args.name : "";

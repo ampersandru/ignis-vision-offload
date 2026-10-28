@@ -142,8 +142,9 @@ whenever the switch is on, whether the chat has a file yet or not:
   A PDF's text and a transcript are computed on the first read of a version
   and kept with it; a transcript comes from the server's speech model, and
   without one the call answers why
-  ([audio in the workspace](chat.md#audio-in-the-workspace)). A file of a
-  kind it cannot read answers with its kind and size.
+  ([audio in the workspace](chat.md#audio-in-the-workspace)), the model
+  still free to delete the file. A file of a kind it cannot read answers with
+  its kind and size.
 - `write_file`: creates a text file or replaces it whole. A name may hold `/`
   for folders, as in `site/index.html`, and is unique in its workspace.
 - `edit_file`: replaces one passage of a text file (`old`) with another

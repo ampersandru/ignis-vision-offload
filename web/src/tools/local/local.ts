@@ -182,7 +182,7 @@ async function runLocal(call: ToolCall, context: LocalContext, onUpdate: (run: L
     onUpdate(run);
     return run;
   };
-  const fail = (error: string) => update({ status: "failed", error, result: `The ${call.name} call failed: ${error}` });
+  const fail = (error: string, run: Partial<LocalRun> = {}) => update({ status: "failed", error, result: `The ${call.name} call failed: ${error}`, ...run });
   const args = parseArgs(call);
   if (!args) return fail("The call's arguments are not a JSON object.");
   const text = (key: string) => (typeof args[key] === "string" ? (args[key] as string) : "");
@@ -257,7 +257,7 @@ async function runLocal(call: ToolCall, context: LocalContext, onUpdate: (run: L
       if (!context.workspace) return fail("The workspace is not available here.");
       try {
         const outcome = await runWorkspaceTool(call.name, args, context.workspace, signal);
-        return outcome.ok ? update({ status: "done", ...outcome.run }) : fail(outcome.error);
+        return outcome.ok ? update({ status: "done", ...outcome.run }) : fail(outcome.error, outcome.run);
       } catch (err) {
         // The store refused: the reply says so, and the model hears the same.
         return fail(`The browser's store refused the workspace: ${err instanceof Error ? err.message : String(err)}`);

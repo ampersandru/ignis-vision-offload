@@ -98,6 +98,18 @@ describe("read_file of an audio file", () => {
     expect(latest((await workspaces.files(id))[0]).derived).toBeUndefined();
   });
 
+  it("still shows the model the version it could not transcribe, so that the model may delete the file", async () => {
+    const { derive } = deriving({ available: false, reason: "the speech model is turned off (speech.model is off)" });
+    const { workspaces, access } = setup(derive);
+    await withMemo(workspaces, access);
+    const ran = await read(access, "memo.wav");
+    expect(ran.status).toBe("failed");
+    expect(ran.seen).toMatchObject({ name: "memo.wav", version: 1 });
+    const call = { id: `c${++callN}`, name: "delete_file", arguments: JSON.stringify({ name: "memo.wav" }) };
+    const [deleted] = await runLocalCalls([call], { settings, signal: new AbortController().signal, jsSafetyCheck: false, workspace: access }, () => {});
+    expect(deleted.status).toBe("done");
+  });
+
   it("says so too when the server says nothing of speech", async () => {
     const { derive, asked } = deriving(null);
     const { workspaces, access } = setup(derive);
