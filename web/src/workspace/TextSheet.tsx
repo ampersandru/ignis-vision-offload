@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { isHtmlName } from "../ui/HtmlPreview.tsx";
 import { Markdown } from "../ui/Markdown.tsx";
 import { SHEET_BUTTON, Sheet, underlined } from "../ui/Sheet.tsx";
+import { latest, type WorkspaceFile } from "./files.ts";
 import { CsvTable } from "./previews.tsx";
 import { isCsvName, isMarkdownName, isSvgName, svgDataUrl } from "./site.ts";
 
@@ -19,6 +20,18 @@ export function textKind(name: string): TextKind | null {
   if (isCsvName(name)) return "csv";
   if (isSvgName(name)) return "svg";
   return "text";
+}
+
+/**
+ * The full screen's state once its file changed: still open, on the name it
+ * opened on (`open`), while the file holds text under that name of a kind the
+ * sheet draws, the new version it shows; closed (null) once the file is
+ * deleted or renamed, so that a later restore, or a rename back, does not
+ * open it again unasked.
+ */
+export function sheetAfter(open: string | null, file: WorkspaceFile): string | null {
+  const v = latest(file);
+  return open === file.name && !v.deleted && v.text !== undefined && textKind(file.name) !== null ? open : null;
 }
 
 export type TextView = "drawn" | "source";

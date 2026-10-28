@@ -155,7 +155,10 @@ versions ([below](#editing-by-hand-history-and-restore)).
   numbered lines; **Full width** lets the page fill the window; Esc closes it),
   read-only: editing stays in **Edit**.
 - Any other text file opens in the editor; **Expand**, above it, opens its
-  newest saved version full screen with numbered lines.
+  newest saved version full screen with numbered lines. A text file's full
+  screen shows a new version as it is saved, and closes for good when the
+  file is deleted or renamed: restoring it, or renaming it back, leaves it
+  closed until **Expand**.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click
   opens it full screen.

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
 import type { PanelActions } from "./WorkspacePanel.tsx";
 import { FileViewer } from "./WorkspacePanel.tsx";
-import { TextSheet, type TextKind, type TextView, textKind } from "./TextSheet.tsx";
+import { sheetAfter, TextSheet, type TextKind, type TextView, textKind } from "./TextSheet.tsx";
 
 // The full-screen text as the page renders it: the sheet's markup per kind
 // and the Expand button on the viewer. Clicks and Esc are not exercised: there
@@ -101,5 +101,31 @@ describe("the Expand button on the viewer", () => {
     const bytes = { n: 1, author: USER, at, bytes: { store: "image" as const, id: "sha", type: "image/png", size: 3 } };
     expect(viewer(file("a.png", "picture", bytes))).not.toContain(">Expand<");
     expect(viewer(file("a.wav", "audio", { n: 1, author: USER, at, bytes: { store: "blob" as never, id: "x", type: "audio/wav", size: 3 } as never }))).not.toContain(">Expand<");
+  });
+});
+
+describe("the full screen once its file changes", () => {
+  const notes = file("notes.md", "text", text("# Trip\n"));
+  const later = (f: WorkspaceFile, change: Partial<Version>): WorkspaceFile => ({ ...f, versions: [...f.versions, { n: f.versions.length + 3, author: USER, at, ...change }] });
+  /** The sheet's state after each of the file's states in turn, from open on `notes.md`. */
+  const after = (states: WorkspaceFile[]) => states.reduce<string | null>((open, f) => sheetAfter(open, f), "notes.md");
+
+  it("stays open on a new version, which it then shows", () => {
+    expect(after([later(notes, { text: "# Trip\n- Rome\n" })])).toBe("notes.md");
+  });
+
+  it("closes when the file is deleted, and a restore then does not open it again", () => {
+    const deleted = later(notes, { deleted: true });
+    expect(after([deleted])).toBeNull();
+    expect(after([deleted, later(deleted, { text: "# Trip\n" })])).toBeNull();
+  });
+
+  it("closes on a rename, and renaming to HTML and back does not open it again", () => {
+    expect(after([{ ...notes, name: "trip.md" }])).toBeNull();
+    expect(after([{ ...notes, name: "notes.html" }, notes])).toBeNull();
+  });
+
+  it("stays closed until Expand opens it", () => {
+    expect(sheetAfter(null, notes)).toBeNull();
   });
 });
