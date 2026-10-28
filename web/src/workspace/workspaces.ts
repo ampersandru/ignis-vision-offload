@@ -1,4 +1,4 @@
-import type { ImageStore } from "../store/imageStore.ts";
+import type { ImageId, ImageStore } from "../store/imageStore.ts";
 import { newKey } from "../store/docs.ts";
 import { pageStore } from "../store/index.ts";
 import {
@@ -7,6 +7,7 @@ import {
   type ChatAuthor,
   cleanName,
   type FileKind,
+  freedBy,
   KIND_LABEL,
   kindOf,
   latest,
@@ -94,6 +95,9 @@ export type BindingOptions = {
 
 export type WriteOutcome = { ok: true; written: Written; version: Version; created: boolean; workspace: Workspace } | { ok: false; error: string };
 
+/** What a change to one file did: the version it made, or why it made none. */
+export type FileOutcome = { ok: true; written: Written } | { ok: false; error: string };
+
 export type Workspaces = {
   /** Every workspace, the last changed first. */
   list(): Promise<Workspace[]>;
@@ -101,7 +105,17 @@ export type Workspaces = {
   /** A workspace's files, deleted ones included, by name. */
   files(id: WorkspaceId): Promise<WorkspaceFile[]>;
   file(workspace: WorkspaceId, id: string): Promise<WorkspaceFile | null>;
+  /** A version's content, as a download gives it: its text, or its bytes; null when the page holds no bytes of it. */
+  content(version: Version): Promise<Blob | null>;
   create(name: string): Promise<Workspace>;
+  rename(id: WorkspaceId, name: string): Promise<{ ok: true; workspace: Workspace } | { ok: false; error: string }>;
+  /**
+   * Deletes a workspace with its files and every version, and frees the bytes
+   * nothing else holds: no other workspace, nor among the pictures `elsewhere`
+   * names (the chats' and the image sessions'; null while not known, and then
+   * no picture is freed). The chats that worked in it are the caller's.
+   */
+  remove(id: WorkspaceId, elsewhere: Iterable<ImageId> | null): Promise<{ files: number }>;
   /** A chat's hold on its workspace, for its turns. */
   chat(key: string, options: BindingOptions): ChatBinding;
   /** The file's newest version, as `reader` receives it: from then on the guard holds it as the version that reader read. */
@@ -110,10 +124,20 @@ export type Workspaces = {
   writeText(workspace: WorkspaceId, name: string, text: string, by: Changer): Promise<WriteOutcome>;
   /** Replaces the one occurrence of `old` in the text file `file` (its id) with `replacement`, as a new version. */
   editText(workspace: WorkspaceId, file: string, old: string, replacement: string, by: Changer): Promise<WriteOutcome>;
-  /** Marks the file `file` (its id) deleted, as a new version: it leaves the workspace, and its history keeps it. */
-  remove(workspace: WorkspaceId, file: string, by: Changer): Promise<WriteOutcome>;
   /** Files the user brings, each a new file under a name no other file of the workspace holds. */
   add(workspace: WorkspaceId, files: Incoming[], author: Author): Promise<Written[]>;
+  /**
+   * Deletes a file: a new version by `by` marking it deleted, the versions
+   * before it kept in its history. The one way to delete, the user's and the
+   * model's; a reader's deletion is under the guard.
+   */
+  deleteFile(workspace: WorkspaceId, file: string, by: Changer): Promise<FileOutcome>;
+  /**
+   * Gives a file another name, unique in its workspace, deleted files' names
+   * included: their history keeps them. The content is not changed, so no
+   * version is made; the file keeps its id and its kind.
+   */
+  renameFile(workspace: WorkspaceId, file: string, name: string): Promise<FileOutcome>;
   /** Called after every change, with the workspace and the file it touched. */
   subscribe(listener: (change: { workspace: WorkspaceId; file?: string }) => void): () => void;
 };
@@ -150,6 +174,8 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
   const listeners = new Set<(change: { workspace: WorkspaceId; file?: string }) => void>();
   // The workspace each chat's first file is creating, by the chat's key, kept once born.
   const births = new Map<string, Promise<WorkspaceId>>();
+  // The same once born, read without waiting: deleting a workspace forgets the births into it.
+  const bornTo = new Map<string, WorkspaceId>();
   // The guard's memory: for each reader, the newest version of each file (by its id) it read or made.
   const seen = new WeakMap<Reader, Map<string, number>>();
   let queue: Promise<unknown> = Promise.resolve();
@@ -234,9 +260,11 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
   /** The file `id` of `workspace` as it is now, with the version `by` adds to it, or why `by` may not change it. */
   async function next(workspace: WorkspaceId, id: string, by: Changer): Promise<{ file: WorkspaceFile; n: number } | { error: string }> {
     const value = await store.getDoc<unknown>(filesCollection(workspace), id);
-    if (!isFile(value)) return { error: "The file is no longer in the workspace." };
+    if (!isFile(value)) return { error: "The workspace has no such file." };
     const newest = latest(value);
-    if (newest.deleted) return { error: `${value.name} was deleted${isReader(by) ? ` by ${authorLabel(newest.author, by.author)}` : ""} (version ${newest.n}).` };
+    if (newest.deleted) {
+      return { error: isReader(by) ? `${value.name} was deleted by ${authorLabel(newest.author, by.author)} (version ${newest.n}).` : `${value.name} is already deleted.` };
+    }
     const refused = guard(by, value);
     return refused ? { error: refused } : { file: value, n: newest.n + 1 };
   }
@@ -252,7 +280,42 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
       const value = await store.getDoc<unknown>(filesCollection(workspace), id);
       return isFile(value) ? value : null;
     },
+    async content(version) {
+      if (version.text !== undefined) return new Blob([version.text], { type: "text/plain;charset=utf-8" });
+      if (!version.bytes) return null;
+      return version.bytes.store === "image" ? store.getImage(version.bytes.id) : store.getBlob(version.bytes.id);
+    },
     create,
+    rename(id, raw) {
+      return serial(async () => {
+        const name = raw.trim();
+        if (!name) return { ok: false as const, error: "A workspace needs a name." };
+        const workspace = await get(id);
+        if (!workspace) return { ok: false as const, error: "That workspace was deleted." };
+        const renamed = { ...workspace, name, updated: now() };
+        await store.putDoc(WORKSPACES, id, renamed);
+        notify({ workspace: id });
+        return { ok: true as const, workspace: renamed };
+      });
+    },
+    remove(id, elsewhere) {
+      return serial(async () => {
+        const gone = await files(id);
+        const others: WorkspaceFile[] = [];
+        for (const w of await store.listDocs<unknown>(WORKSPACES)) if (isWorkspace(w) && w.id !== id) others.push(...(await files(w.id)));
+        const freed = freedBy(gone, others, elsewhere);
+        for (const file of gone) await store.deleteDoc(filesCollection(id), file.id);
+        await store.deleteDoc(WORKSPACES, id);
+        // A chat born into it starts again with its next file.
+        for (const [key, born] of bornTo) if (born === id) births.delete(key), bornTo.delete(key);
+        // What the store fails to free stays in it, unnamed; the workspace is gone either way.
+        for (const blob of freed.blobs) await store.deleteBlob(blob).catch(() => {});
+        for (const image of freed.images) await store.deleteImage(image).catch(() => {});
+        for (const file of gone) notify({ workspace: id, file: file.id });
+        notify({ workspace: id });
+        return { files: gone.length };
+      });
+    },
     chat(key, binding) {
       return {
         key,
@@ -265,6 +328,7 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
           let birth = births.get(key);
           if (!birth) {
             birth = create(binding.name()).then((workspace) => {
+              bornTo.set(key, workspace.id);
               binding.onBorn(workspace.id);
               return workspace.id;
             });
@@ -335,15 +399,6 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
         return commit({ ...file, versions: [...file.versions, version] }, version, by, false);
       });
     },
-    remove(workspace, id, by) {
-      return serial(async (): Promise<WriteOutcome> => {
-        const found = await next(workspace, id, by);
-        if ("error" in found) return { ok: false, error: found.error };
-        const { file, n } = found;
-        const version: Version = { n, author: authorOf(by), at: now(), deleted: true };
-        return commit({ ...file, versions: [...file.versions, version] }, version, by, false);
-      });
-    },
     add(workspace, incoming, author) {
       return serial(async () => {
         const taken = (await files(workspace)).map((f) => f.name);
@@ -368,6 +423,36 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
         if (written.length > 0) await touch(workspace, now());
         for (const w of written) notify({ workspace, file: w.file });
         return written;
+      });
+    },
+    deleteFile(workspace, id, by) {
+      return serial(async (): Promise<FileOutcome> => {
+        const found = await next(workspace, id, by);
+        if ("error" in found) return { ok: false, error: found.error };
+        const { file, n } = found;
+        const version: Version = { n, author: authorOf(by), at: now(), deleted: true };
+        const outcome = await commit({ ...file, versions: [...file.versions, version] }, version, by, false);
+        return outcome.ok ? { ok: true, written: outcome.written } : outcome;
+      });
+    },
+    renameFile(workspace, id, raw) {
+      return serial(async (): Promise<FileOutcome> => {
+        const name = cleanName(raw);
+        if (!name) return { ok: false, error: `"${raw.trim()}" is not a file name.` };
+        const all = await files(workspace);
+        const file = all.find((f) => f.id === id);
+        if (!file) return { ok: false, error: "The workspace has no such file." };
+        if (!present(file)) return { ok: false, error: `${file.name} is deleted.` };
+        const written: Written = { workspace, file: id, name, version: latest(file).n };
+        if (name === file.name) return { ok: true, written };
+        const holder = all.find((f) => f.name === name);
+        if (holder) {
+          return { ok: false, error: present(holder) ? `A file named ${name} is already in the workspace.` : `A deleted file named ${name} keeps that name in its history.` };
+        }
+        await store.putDoc(filesCollection(workspace), id, { ...file, name });
+        await touch(workspace, now());
+        notify({ workspace, file: id });
+        return { ok: true, written };
       });
     },
     subscribe(listener) {

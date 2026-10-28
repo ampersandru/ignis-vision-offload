@@ -1,4 +1,4 @@
-import type { BlobId, ImageId } from "../store/imageStore.ts";
+import { type BlobId, type ImageId, unreferenced } from "../store/imageStore.ts";
 
 // What a workspace is made of (spec #170, ADR 0073): a named set of files the
 // user and the model work on together, kept by the page. A file has a name
@@ -130,6 +130,29 @@ export function uniqueName(name: string, taken: Iterable<string>): string {
     const candidate = `${name.slice(0, cut)} (${n})${name.slice(cut)}`;
     if (!names.has(candidate)) return candidate;
   }
+}
+
+/** The bytes files hold in the page's store, every version's: what deleting them may free, and what deleting anything else must keep. */
+export function bytesOf(files: Iterable<WorkspaceFile>): { blobs: Set<BlobId>; images: Set<ImageId> } {
+  const held = { blobs: new Set<BlobId>(), images: new Set<ImageId>() };
+  for (const file of files)
+    for (const v of file.versions) if (v.bytes) (v.bytes.store === "image" ? held.images : held.blobs).add(v.bytes.id);
+  return held;
+}
+
+/**
+ * The bytes deleting the files `gone` frees: those no file of the `others`
+ * holds. Blobs belong to workspaces alone; a picture may also be named by a
+ * chat or an image session, which `elsewhere` lists, and none is freed while
+ * `elsewhere` cannot say yet (null).
+ */
+export function freedBy(gone: Iterable<WorkspaceFile>, others: Iterable<WorkspaceFile>, elsewhere: Iterable<ImageId> | null): { blobs: BlobId[]; images: ImageId[] } {
+  const own = bytesOf(gone);
+  const kept = bytesOf(others);
+  return {
+    blobs: [...own.blobs].filter((id) => !kept.blobs.has(id)),
+    images: elsewhere === null ? [] : unreferenced(own.images, new Set([...kept.images, ...elsewhere])),
+  };
 }
 
 /** A text's lines as a reader counts them: a final newline ends the last line rather than starting another. */

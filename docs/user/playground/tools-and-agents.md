@@ -156,6 +156,8 @@ get the same five tools, each as a reader of its own
 ([below](#changes-the-model-has-not-seen)). A file you attach with **File** in
 the prompt box becomes a file of the workspace when the prompt is sent, and
 the prompt says so after your words: `[Attached to the workspace: brief.pdf]`.
+You see the files, and add, rename, delete and download them, in the
+[workspace panel](chat.md#the-workspace-panel).
 
 A file the model writes or edits shows in its reply as a card: its name, the
 version that call made, its size, **Preview** and **Download**; a deletion is

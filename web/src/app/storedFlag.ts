@@ -25,6 +25,8 @@ export const STORED_FLAGS = {
   transcribeNotesLive: "ignis.transcribeNotesLive",
   /** The Transcribe view suggests the languages, the topic, a title and terms while listening (Q132). On at first. */
   transcribeSuggestions: "ignis.transcribeSuggestions",
+  /** The Chat view's workspace panel is open (spec #170). Closed at first. */
+  workspacePanel: "ignis.workspacePanel",
 } as const;
 
 /**

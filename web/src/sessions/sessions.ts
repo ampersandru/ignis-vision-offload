@@ -137,6 +137,15 @@ export function bindWorkspace(sessions: Session[], sessionId: number, workspaceI
   return sessions.map((s) => (s.id === sessionId && s.workspaceId === undefined ? { ...s, workspaceId } : s));
 }
 
+/** The chats of a workspace that was deleted, unbound: each may bind again, to a new workspace or another one. */
+export function unbindWorkspace(sessions: Session[], workspaceId: string): Session[] {
+  return sessions.map((s) => {
+    if (s.workspaceId !== workspaceId) return s;
+    const { workspaceId: _gone, ...rest } = s;
+    return rest;
+  });
+}
+
 /** An older chat's attachments, gone once they are files of its workspace. */
 export function clearAttachments(sessions: Session[], sessionId: number): Session[] {
   return sessions.map((s) => (s.id === sessionId && s.attachments.length > 0 ? { ...s, attachments: [] } : s));
@@ -174,7 +183,8 @@ export function titleOf(first: Message): string {
  */
 export function openSession(list: SessionList, newId: number): SessionList {
   const active = list.sessions.find((s) => s.id === list.activeId);
-  if (active && active.messages.length === 0) return list;
+  // An empty chat already bound to a workspace is a choice made for it, not a blank one to reuse.
+  if (active && active.messages.length === 0 && active.workspaceId === undefined) return list;
   return { sessions: [createSession(newId), ...list.sessions], activeId: newId };
 }
 

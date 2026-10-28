@@ -317,10 +317,10 @@ describe("delete_file", () => {
     const a = chat(workspaces);
     await run(a.access, "write_file", { name: "draft.md", content: "one" });
     const [draft] = await workspaces.files(a.bound()!);
-    const outcome = await workspaces.remove(a.bound()!, draft.id, USER);
-    expect(outcome).toMatchObject({ ok: true, written: { name: "draft.md", version: 2 }, created: false });
+    const outcome = await workspaces.deleteFile(a.bound()!, draft.id, USER);
+    expect(outcome).toEqual({ ok: true, written: { workspace: a.bound(), file: draft.id, name: "draft.md", version: 2 } });
     expect(latest((await workspaces.files(a.bound()!))[0])).toMatchObject({ n: 2, author: USER, deleted: true });
-    expect(await workspaces.remove(a.bound()!, draft.id, USER)).toEqual({ ok: false, error: "draft.md was deleted (version 2)." });
+    expect(await workspaces.deleteFile(a.bound()!, draft.id, USER)).toEqual({ ok: false, error: "draft.md is already deleted." });
   });
 
   it("deletes a file of a kind the model cannot read, once it has read what it is", async () => {
@@ -392,13 +392,13 @@ describe("the guard", () => {
 
   it("refuses to write again a file deleted since the reader read it, until it reads the deletion; a deleted file it never knew is new to it", async () => {
     const { workspaces, a, id, file } = await written();
-    await workspaces.remove(id, file.id, USER);
+    await workspaces.deleteFile(id, file.id, USER);
     expect((await run(a.access, "write_file", { name: "notes.md", content: "- Bari\n" })).error).toBe(
       "notes.md was deleted by the user since you last read it (version 2). Read it again with read_file before you write it.",
     );
     expect((await run(a.access, "read_file", { name: "notes.md" })).result).toContain("deleted by the user");
     expect((await run(a.access, "write_file", { name: "notes.md", content: "- Bari\n" })).written).toMatchObject({ version: 3 });
-    await workspaces.remove(id, file.id, USER);
+    await workspaces.deleteFile(id, file.id, USER);
     const b = chat(workspaces, "chat-b", "Other");
     b.bind(id);
     expect((await run(b.access, "write_file", { name: "notes.md", content: "- Lecce\n" })).written).toMatchObject({ version: 5 });

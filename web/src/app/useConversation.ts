@@ -30,6 +30,8 @@ import {
   titleOf,
   truncateFrom,
   type TurnSwitch,
+  unbindWorkspace,
+  UNTITLED,
   updateMessage,
 } from "../sessions/sessions.ts";
 import { CHAT_SESSIONS, freedBy, keepPictures, picturesOf, restoreChats, toStored, withPictures, worthKeeping } from "../sessions/stored.ts";
@@ -226,13 +228,36 @@ export function useConversation({
     const now = () => listNow.current.sessions.find((s) => s.id === sessionId);
     return workspaces.chat(storage.keyOf(sessionId), {
       bound: () => now()?.workspaceId ?? born.current.get(sessionId),
-      name: () => title ?? now()?.title ?? "",
+      // A chat not named yet leaves the workspace the module's own name.
+      name: () => title ?? (now()?.title === UNTITLED ? "" : (now()?.title ?? "")),
       onBorn: (id) => {
         born.current.set(sessionId, id);
         setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, id) }));
       },
       seen: seenIn(history),
     });
+  }
+
+  /** Binds the chat on screen to an existing workspace, the picker's choice before its first file; a bound chat stays where it is. */
+  function bindTo(workspaceId: string) {
+    const sessionId = active.id;
+    if (active.workspaceId !== undefined || born.current.has(sessionId)) return;
+    setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, workspaceId) }));
+  }
+
+  /**
+   * Deletes a workspace, freeing the pictures neither a chat nor an image
+   * session names (none while either has not read its sessions), and lets
+   * go of the chats that worked in it: their messages stay, and their next
+   * file starts a new workspace. A store that refuses the delete rejects, and
+   * the chats stay bound.
+   */
+  async function deleteWorkspace(workspaceId: string) {
+    const chats = pictures();
+    const images = live ? live() : [];
+    await workspaces.remove(workspaceId, chats === null || images === null ? null : [...chats, ...images]);
+    for (const [sessionId, id] of born.current) if (id === workspaceId) born.current.delete(sessionId);
+    setList((l) => ({ ...l, sessions: unbindWorkspace(l.sessions, workspaceId) }));
   }
 
   function deleteSession(sessionId: number) {
@@ -705,6 +730,10 @@ export function useConversation({
     answer,
     attach,
     detach,
+    /** The chat on screen's hold on its workspace: what the workspace panel makes files through. */
+    binding: () => chatBinding(active.id, active.messages),
+    bindTo,
+    deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */
     attachments: [...attached, ...active.attachments.map(fromLegacy)].map(attachedChip),
     attachError,

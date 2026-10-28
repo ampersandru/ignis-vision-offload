@@ -253,7 +253,7 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       if (!named) return { ok: false, error: needsName };
       const found = await find(access, named);
       if ("error" in found) return { ok: false, error: found.error };
-      const outcome = await access.workspaces.remove(found.file.workspace, found.file.id, reader);
+      const outcome = await access.workspaces.deleteFile(found.file.workspace, found.file.id, reader);
       if (!outcome.ok) return { ok: false, error: outcome.error };
       const { written } = outcome;
       return {

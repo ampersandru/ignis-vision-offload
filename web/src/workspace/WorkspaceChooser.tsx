@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
 import type { Workspace } from "./files.ts";
 import type { Destination } from "./send.ts";
+import { useWorkspaceList } from "./useWorkspaces.ts";
 import type { Workspaces } from "./workspaces.ts";
 
 // The small question "which workspace?": a new one named after what is sent,
@@ -49,18 +49,7 @@ export function WorkspaceChooser({
   );
 }
 
-/** The question over the page's workspaces, read when it opens. */
+/** The question over the page's workspaces, read when it opens, as the chat's picker reads them. */
 export function StoreWorkspaceChooser({ source, ...rest }: { source: Workspaces } & Omit<Parameters<typeof WorkspaceChooser>[0], "workspaces">) {
-  const [list, setList] = useState<Workspace[] | null>(null);
-  useEffect(() => {
-    let live = true;
-    source.list().then(
-      (all) => live && setList(all),
-      () => live && setList([]),
-    );
-    return () => {
-      live = false;
-    };
-  }, [source]);
-  return <WorkspaceChooser workspaces={list} {...rest} />;
+  return <WorkspaceChooser workspaces={useWorkspaceList(source)} {...rest} />;
 }
