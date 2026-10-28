@@ -9,7 +9,7 @@ import { ContextCard } from "./Context.tsx";
 import { AskBar } from "./Ask.tsx";
 import type { CallContext } from "./context.ts";
 import { useSavedContext } from "./defaultContext.ts";
-import { missedSince } from "./missed.ts";
+import { escapeClears, missedSince } from "./missed.ts";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
 import { Suggestions } from "./Suggestions.tsx";
@@ -82,11 +82,7 @@ export function TranscribeView({
   );
   useEffect(() => {
     if (missedFrom === null) return;
-    const back = (e: globalThis.KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const typing = target?.closest("input, textarea, select, [contenteditable]");
-      if (e.key === "Escape" && !typing && !drawer) actions.clearMissed();
-    };
+    const back = (e: globalThis.KeyboardEvent) => escapeClears(e.key, e.target as HTMLElement | null, drawer !== null) && actions.clearMissed();
     window.addEventListener("keydown", back);
     return () => window.removeEventListener("keydown", back);
   }, [missedFrom, drawer, actions]);
@@ -195,6 +191,7 @@ export function TranscribeView({
           readTo={readTo}
           asking={asking.transcript === state.active.id ? asking : null}
           readingFrom={readingFrom}
+          canAsk={state.textBlocked === null}
         />
         <AskBar transcript={state.active} state={state} actions={actions} asking={asking} onPreview={setPreviewing} />
         <Deck
@@ -519,21 +516,7 @@ function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOp
 }
 
 /** The Call tab: what the transcription is told, and who speaks. */
-function Call({
-  transcript: t,
-  state,
-  actions,
-  live,
-  saved,
-  flagged,
-}: {
-  transcript: Transcript;
-  state: TranscribeState;
-  actions: TranscribeActions;
-  live: boolean;
-  saved: CallContext | null;
-  flagged: boolean;
-}) {
+function Call({ transcript: t, state, actions, live, saved, flagged }: { transcript: Transcript; state: TranscribeState; actions: TranscribeActions; live: boolean; saved: CallContext | null; flagged: boolean }) {
   const counts = new Map<number, number>();
   for (const u of t.utterances) if (u.speaker !== null) counts.set(u.speaker, (counts.get(u.speaker) ?? 0) + 1);
 

@@ -12,13 +12,13 @@ import { decodeFile } from "./file.ts";
 import { filePace } from "./filePace.ts";
 import { chooseUtteranceSilence, utteranceSilence } from "./silence.ts";
 import { chooseNoteKind, kindOf, type NoteKind, noNotes } from "./notes.ts";
-import { type CallContext, contextAtStart, contextOf, contextTokensOf, DEFAULT_CONTEXT_TOKENS, mergeDraft, told } from "./context.ts";
+import { type CallContext, contextAtStart, contextOf, contextTokensOf, copiedDraft, DEFAULT_CONTEXT_TOKENS, mergeDraft, told } from "./context.ts";
 import { savedContext, saveContext } from "./defaultContext.ts";
 import { readConfig } from "../server/routes.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
 import { acceptRewrite, Rewriter, type RewriterHandle } from "./rewrite.ts";
-import { Asker, type AskerHandle, readUntil, withAnswer } from "./ask.ts";
+import { Asker, type AskerHandle, withAnswer } from "./ask.ts";
 import { AwayWatch, type MissedFrom, pickFrom } from "./missed.ts";
 import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, suggest } from "./suggestions.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
@@ -29,6 +29,7 @@ import {
   beginListening,
   clockOf,
   editText,
+  heardUntil,
   mergeSpeakers,
   moveUtterance,
   removeUtterance,
@@ -233,11 +234,7 @@ export function useTranscribe({
   const [rewriter] = useState(() => new Rewriter());
   useEffect(() => () => rewriter.close(), [rewriter]);
   const [asker] = useState(
-    () =>
-      new Asker({
-        onAnswered: (id, question, answer, untilMs) =>
-          setList((l) => updateTranscript(l, id, (t) => ({ ...t, asked: withAnswer(t.asked, question, answer, Date.now(), untilMs) }))),
-      }),
+    () => new Asker({ onAnswered: (id, question, answer, untilMs) => setList((l) => updateTranscript(l, id, (t) => ({ ...t, asked: withAnswer(t.asked, question, answer, Date.now(), untilMs) }))) }),
   );
   useEffect(() => () => asker.stop(), [asker]);
 
@@ -249,7 +246,7 @@ export function useTranscribe({
     const leave = () => {
       const listening = controller.getState();
       const t = listening.phase === "listening" ? listNow.current.transcripts.find((x) => x.id === listening.transcript) : undefined;
-      if (t) watch.leave(Date.now(), t.id, readUntil(t));
+      if (t) watch.leave(Date.now(), t.id, heardUntil(t.utterances));
     };
     const back = () => {
       if (document.visibilityState === "hidden") return;
@@ -368,8 +365,7 @@ export function useTranscribe({
         const l = listNow.current;
         const t = activeOf(l);
         const theirs = l.transcripts.find((x) => x.id === from)?.context;
-        if (!theirs || from === t.id) return;
-        setDrafting({ id: t.id, base: contextOf(t, savedContext()), context: { ...theirs, appliedAt: null } });
+        if (theirs && from !== t.id) setDrafting({ id: t.id, ...copiedDraft(t, theirs, savedContext()) });
       },
       saveDefaultContext: (context) => saveContext(context),
       changeContext: (draft) => setDrafting((d) => (d && d.id === listNow.current.activeId ? { ...d, context: draft } : d)),

@@ -156,6 +156,12 @@ export function contextAtStart(
   return pending ? mergeDraft(pending.base, pending.context, held, now) : { ...held, appliedAt: held.appliedAt ?? now };
 }
 
+/** A draft of `t`'s context from another Transcript's, `theirs`, never applied: what Use the context of opens. */
+export const copiedDraft = (t: Pick<Transcript, "context" | "source">, theirs: CallContext, saved: CallContext | null): { base: CallContext; context: CallContext } => ({
+  base: contextOf(t, saved),
+  context: { ...theirs, appliedAt: null },
+});
+
 /**
  * The first Start asks before it starts (the owner's word: it costs a click and spares a call told nothing, or
  * another's): a Transcript never started, its context never applied, none being edited; the default too.

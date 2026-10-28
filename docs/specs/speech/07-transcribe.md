@@ -445,7 +445,8 @@ question asked from a bar under the sheet, the answer standing in the sheet wher
 only the notes. Ask.tsx: `AskBar` between the sheet and the deck, there once something is heard, with three quick
 questions (What did I miss?, Decisions, Who does what) and the field; while no text model serves, the reason stands in
 place of the quick questions. `AnswerAside` on the spine: the end of the last utterance the answer read
-(`Answered.untilMs`, kept with it; `answerAt` places it before the first utterance that ended after it, an answer
+(`Answered.untilMs`, kept with it; `answerAt` places it after the last utterance that had ended by then, so on a
+call an utterance of the other lane begun before the question and ended after it stands above it, unread; an answer
 kept before at the foot) in the time column in the ember, a hollow diamond on the rule, the question and the answer
 in a clipped surface, Forget beside the question; while it streams the rule burns, and the sheet follows its foot,
 where a new question's answer stands. The quick questions are shown in English and sent with "Answer in the language
@@ -486,13 +487,14 @@ The owner asked for other spans than five minutes, without more buttons, and the
 at one height (all 32 px now). What did I miss? reads from a point (missed.ts, `MissedFrom`): the last five minutes by
 default; after the page was hidden or its window left for a minute or more while listening (`AwayWatch`, on the
 page's state, so another view counts as present), from the first utterance that ended after what the user had seen;
-or from an utterance picked by its time on the spine, the time a button now. The button says since when
-(`missedSince`: "since 12:40 · 8 min"); a second press on the time picked, or Escape outside a field, puts back the
-five minutes, and so does asking it. The spine and the times from that utterance on are in the ember while the point
+or from an utterance picked by its time on the spine, the time a button now while a text model serves. The button says
+since when (`missedSince`: "since 12:40 · 8 min"); a second press on the time picked, or Escape outside a field (a
+drawer out takes the first Escape), puts back the five minutes, and so does asking it. The spine and the times from that utterance on are in the ember while the point
 stands or the button is pointed at. Decisions and Who does what read the whole call, as before.
 
 ### Not done here
 
-- No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live
-  check (a room, a call, a file; a long session) is the test of the whole.
+- The view was built against fakes and the dev mock, which has no Realtime socket. The owner used it live on calls
+  on 2026-10-27 and 2026-10-28 (an hour and more, four voices, Ask during the call), which found the context echo;
+  a room and a file were not reported checked live.
 - The picture of the guide shows a made-up call the scene puts in the page's store; no recording reaches the guide.

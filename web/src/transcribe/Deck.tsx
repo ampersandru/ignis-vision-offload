@@ -25,7 +25,14 @@ import { viewerChoice } from "./viewerChoice.ts";
 // opened asks first, over Start, and a second press goes on.
 
 /** A second press this soon after the first is the same double click, not an answer to the question it raised. */
-const ANSWER_AFTER_MS = 500;
+export const ANSWER_AFTER_MS = 500;
+
+/** What a press on Start does: raise the first Start's question, start, or nothing, the double click that raised it. */
+export function startPress({ asks, checking, checkedAt, now }: { asks: boolean; checking: boolean; checkedAt: number; now: number }): "check" | "start" | null {
+  if (!asks) return "start";
+  if (!checking) return "check";
+  return now - checkedAt < ANSWER_AFTER_MS ? null : "start";
+}
 
 /** Said before a call starts (Q93). */
 export const HEADPHONES = "Use headphones on a call: through speakers, the far voices reach the microphone and are transcribed twice.";
@@ -99,11 +106,12 @@ export function Deck({
 
   function start() {
     if (blocked) return;
-    if (asks && !checking) {
+    const press = startPress({ asks, checking, checkedAt: checkedAt.current, now: Date.now() });
+    if (press === "check") {
       checkedAt.current = Date.now();
       return onCheck();
     }
-    if (asks && Date.now() - checkedAt.current < ANSWER_AFTER_MS) return;
+    if (press === null) return;
     if (source === "file") return picker.current?.click();
     actions.start(source === "call" ? { kind: "call" } : { kind: "microphone" });
   }

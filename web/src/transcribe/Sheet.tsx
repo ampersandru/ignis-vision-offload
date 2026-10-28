@@ -37,18 +37,7 @@ const laneLabel = (lane: LiveUtterance["lane"], call: boolean) => (call ? (lane 
 /** What the sheet does to a Transcript: its corrections, Undo, the rewrite's. */
 export type SheetActions = Pick<
   TranscribeActions,
-  | "moveUtterance"
-  | "splitUtterance"
-  | "editText"
-  | "undoFixes"
-  | "deleteUtterance"
-  | "undoDelete"
-  | "holdUndo"
-  | "rewriteUtterance"
-  | "acceptRewrite"
-  | "closeRewrite"
-  | "forgetAnswer"
-  | "askFrom"
+  "moveUtterance" | "splitUtterance" | "editText" | "undoFixes" | "deleteUtterance" | "undoDelete" | "holdUndo" | "rewriteUtterance" | "acceptRewrite" | "closeRewrite" | "forgetAnswer" | "askFrom"
 >;
 
 /**
@@ -72,6 +61,7 @@ export const Sheet = memo(function Sheet({
   readTo,
   asking,
   readingFrom = null,
+  canAsk = false,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -102,6 +92,8 @@ export const Sheet = memo(function Sheet({
   asking: AskerState | null;
   /** What did I miss? reads from this utterance on (missed.ts): the spine is tinted from it; `null`, not shown. */
   readingFrom?: number | null;
+  /** A text model serves: each time picks where What did I miss? reads from. */
+  canAsk?: boolean;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -194,11 +186,7 @@ export const Sheet = memo(function Sheet({
   const empty = transcript.utterances.length === 0 && live.length === 0;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scroller}
-        onScroll={(e) => setFollowing(isAtBottom(e.currentTarget))}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-6 [scrollbar-gutter:stable] md:px-10"
-      >
+      <div ref={scroller} onScroll={(e) => setFollowing(isAtBottom(e.currentTarget))} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 [scrollbar-gutter:stable] md:px-10">
         <div className="mx-auto w-full max-w-3xl">
           {empty ? (
             <Empty listening={here && phase !== "idle"} />
@@ -221,6 +209,7 @@ export const Sheet = memo(function Sheet({
                   unchecked={rewrite?.utterance === u.id && autoCheck && (readTo === null || u.endMs > readTo.untilMs)}
                   lit={lit === u.id}
                   missed={readingFrom === null || i < readingFrom ? null : i === readingFrom ? "from" : "in"}
+                  askable={canAsk}
                 />
                 </Fragment>
               ))}
@@ -489,6 +478,7 @@ const UtteranceRow = memo(function UtteranceRow({
   unchecked,
   lit,
   missed,
+  askable,
 }: {
   utterance: Utterance;
   speaker: Speaker | undefined;
@@ -503,6 +493,8 @@ const UtteranceRow = memo(function UtteranceRow({
   lit: boolean;
   /** What did I miss? reads from it, or it is among those it reads. */
   missed: "from" | "in" | null;
+  /** Its time picks it as where What did I miss? reads from. */
+  askable: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -517,7 +509,7 @@ const UtteranceRow = memo(function UtteranceRow({
     />
   );
   return (
-    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id} lit={lit} missed={missed} onTime={() => actions.askFrom(u.startMs)}>
+    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id} lit={lit} missed={missed} onTime={askable ? () => actions.askFrom(u.startMs) : undefined}>
       {editing ? (
         <div className="flex flex-col gap-1.5">
           <textarea

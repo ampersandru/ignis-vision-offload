@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AWAY_MS, AwayWatch, missedSince, pickFrom } from "./missed.ts";
+import { AWAY_MS, AwayWatch, escapeClears, missedSince, pickFrom } from "./missed.ts";
 import type { Utterance } from "./transcript.ts";
 
 // Where "What did I miss?" reads from (spec speech/07, the owner's pick): the last five minutes, from where the user
@@ -26,6 +26,19 @@ describe("what What did I miss? reads", () => {
     expect(pickFrom(null, 240_000)).toEqual({ kind: "picked", startMs: 240_000 });
     expect(pickFrom({ kind: "picked", startMs: 240_000 }, 240_000)).toBeNull();
     expect(pickFrom({ kind: "away", seenUntilMs: 1 }, 240_000)).toEqual({ kind: "picked", startMs: 240_000 });
+  });
+});
+
+describe("Escape", () => {
+  const page = { closest: () => null };
+  const field = { closest: (selector: string) => (selector.includes("input") ? {} : null) };
+
+  it("puts back the last five minutes, but not from a field, nor while a drawer is out", () => {
+    expect(escapeClears("Escape", page, false)).toBe(true);
+    expect(escapeClears("Escape", null, false)).toBe(true);
+    expect(escapeClears("Escape", field, false)).toBe(false);
+    expect(escapeClears("Escape", page, true)).toBe(false);
+    expect(escapeClears("Enter", page, false)).toBe(false);
   });
 });
 

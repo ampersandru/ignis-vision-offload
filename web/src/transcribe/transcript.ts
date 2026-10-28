@@ -156,6 +156,9 @@ function placed(utterances: Utterance[], utterance: Utterance): Utterance[] {
   return at === -1 ? [...utterances, utterance] : [...utterances.slice(0, at), utterance, ...utterances.slice(at)];
 }
 
+/** The end of the last utterance heard: what a look at the Transcript now reads up to. */
+export const heardUntil = (utterances: Utterance[]): number => Math.max(0, ...utterances.map((u) => u.endMs));
+
 export function addUtterance(t: Transcript, heard: Heard): Transcript {
   let next = t;
   let speaker: number | null = null;

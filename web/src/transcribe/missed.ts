@@ -1,5 +1,5 @@
 import { clock } from "./export.ts";
-import type { Utterance } from "./transcript.ts";
+import { heardUntil, type Utterance } from "./transcript.ts";
 
 // Where "What did I miss?" reads from (spec speech/07, the owner's pick): the
 // last five minutes, unless the user was away — the page hidden or its window
@@ -20,7 +20,7 @@ export type MissedFrom = { kind: "away"; seenUntilMs: number } | { kind: "picked
 export type MissedSince = { index: number; startMs: number; detail: string };
 
 export function missedSince(utterances: Utterance[], from: MissedFrom | null): MissedSince {
-  const end = Math.max(0, ...utterances.map((u) => u.endMs));
+  const end = heardUntil(utterances);
   const index =
     from?.kind === "picked"
       ? utterances.findIndex((u) => u.startMs >= from.startMs)
@@ -31,6 +31,13 @@ export function missedSince(utterances: Utterance[], from: MissedFrom | null): M
   const minutes = Math.round((end - startMs) / 60_000);
   return { index: at, startMs, detail: minutes >= 1 ? `since ${clock(startMs)} · ${minutes} min` : `since ${clock(startMs)}` };
 }
+
+/**
+ * Escape puts back the last five minutes, but not from a field, whose Escape is its own, nor while a drawer is out,
+ * which it closes first.
+ */
+export const escapeClears = (key: string, target: { closest?: (selector: string) => unknown } | null, drawerOut: boolean): boolean =>
+  key === "Escape" && !drawerOut && !target?.closest?.("input, textarea, select, [contenteditable]");
 
 /** The point a time on the spine picks: that one, or none again when it is the one picked already. */
 export function pickFrom(current: MissedFrom | null, startMs: number): MissedFrom | null {

@@ -7,6 +7,7 @@ import {
   contextOf,
   contextSummary,
   contextTokensOf,
+  copiedDraft,
   EMPTY_CONTEXT,
   fromDefault,
   isBlank,
@@ -151,6 +152,12 @@ describe("the default and the first Start (the owner's word)", () => {
     expect(asksFirst(fresh, saved)).toBe(false);
     expect(asksFirst({ source: null, context: it_support }, null)).toBe(false);
     expect(asksFirst({ source: "microphone" }, null)).toBe(false);
+  });
+
+  it("opens another Transcript's context as a draft never applied, over what this one tells", () => {
+    const other: CallContext = { ...EMPTY_CONTEXT, topic: "Rilascio", terms: ["Tekton"], appliedAt: 3 };
+    expect(copiedDraft(fresh, other, saved)).toEqual({ base: saved, context: { ...other, appliedAt: null } });
+    expect(copiedDraft(fresh, other, null).base).toEqual(EMPTY_CONTEXT);
   });
 
   it("tells two contexts the same whenever each was applied", () => {

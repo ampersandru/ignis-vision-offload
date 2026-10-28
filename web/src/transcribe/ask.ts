@@ -2,7 +2,7 @@ import type { ConversationRequest, Settings } from "../api/request.ts";
 import { type AskDeps, askModel, assistRequest, settle, transcriptInput, Watched } from "./assist.ts";
 import { clock } from "./export.ts";
 import { type MissedFrom, missedSince } from "./missed.ts";
-import type { Transcript, Utterance } from "./transcript.ts";
+import { heardUntil, type Transcript, type Utterance } from "./transcript.ts";
 
 // Ask about this conversation (spec speech/07, Q139): a question about the
 // Transcript, answered by the text model from the transcript alone, streamed,
@@ -66,16 +66,14 @@ export function quickQuestions(t: Transcript, from: MissedFrom | null = null): Q
   ];
 }
 
-/** Where an answer stands among the utterances: before the first that ended after what it read, else at the foot. */
+/**
+ * Where an answer stands among the utterances: after the last it read, the last that had ended by `untilMs`; at the
+ * foot for one kept before answers had a place. In time order by start, a call's two lanes can hold an utterance
+ * that began before the question and ended after it: it stands above the answer, unread, not the other way round.
+ */
 export function answerAt(utterances: Utterance[], untilMs: number | undefined): number {
   if (untilMs === undefined) return utterances.length;
-  const after = utterances.findIndex((u) => u.endMs > untilMs);
-  return after === -1 ? utterances.length : after;
-}
-
-/** The end of the last utterance a question asked now reads. */
-export function readUntil(t: Transcript): number {
-  return Math.max(0, ...t.utterances.map((u) => u.endMs));
+  return utterances.reduce((at, u, i) => (u.endMs <= untilMs ? i + 1 : at), 0);
 }
 
 /** `answered`'s next, latest first. */
@@ -122,7 +120,7 @@ export class Asker extends Watched<AskerState> {
     if (this.state.writing || question.trim() === "") return;
     const abort = new AbortController();
     this.abort = abort;
-    this.set({ transcript: t.id, question: question.trim(), untilMs: readUntil(t), text: "", writing: true, failed: null });
+    this.set({ transcript: t.id, question: question.trim(), untilMs: heardUntil(t.utterances), text: "", writing: true, failed: null });
     const asked = await askModel(askRequest(t, sent ?? question, contextLimit), abort.signal, this.deps, (text) => this.set({ ...this.state, text }));
     const settled = settle(asked);
     if (settled === "stopped") return;

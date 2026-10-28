@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SECURE_CONTEXT, TURNED_OFF } from "../speech/availability.ts";
 import { ContextCard } from "./Context.tsx";
-import { Deck, deckHint, HEADPHONES, startBlocked, Strip, stripStatus, timeLeft } from "./Deck.tsx";
+import { ANSWER_AFTER_MS, Deck, deckHint, HEADPHONES, startBlocked, startPress, Strip, stripStatus, timeLeft } from "./Deck.tsx";
 import { IDLE, type ListeningState } from "./listening.ts";
 import { AskBar } from "./Ask.tsx";
 import { NotesPanel, notesButton } from "./Notes.tsx";
@@ -364,6 +364,13 @@ describe("the context (Q128)", () => {
     expect(renderToStaticMarkup(<ContextCard transcript={fresh()} draft={null} maxTokens={512} live={false} flagged actions={actions} />)).toContain("outline-ember");
   });
 
+  it("asks at the first press, starts at the next, and takes the double click that asked for no answer", () => {
+    expect(startPress({ asks: false, checking: false, checkedAt: 0, now: 1 })).toBe("start");
+    expect(startPress({ asks: true, checking: false, checkedAt: 0, now: 1 })).toBe("check");
+    expect(startPress({ asks: true, checking: true, checkedAt: 1_000, now: 1_000 + ANSWER_AFTER_MS - 1 })).toBeNull();
+    expect(startPress({ asks: true, checking: true, checkedAt: 1_000, now: 1_000 + ANSWER_AFTER_MS })).toBe("start");
+  });
+
   it("asks with the default too, and not once a draft is open, which the Start applies", () => {
     const withDefault = asked(state(), saved);
     expect(withDefault).toContain("Your default context: Supporto IT · 2 terms. Is it this call&#x27;s?");
@@ -454,13 +461,15 @@ describe("asking about the conversation, in its flow (Q139, Q141)", () => {
     expect(bar(t, quiet, { missedFrom: { kind: "picked", startMs: 12_000 } })).toMatch(/What did I miss\?<span[^>]*>since 00:12<\/span>/);
     expect(bar(t, quiet, { missedFrom: { kind: "away", seenUntilMs: 8_000 } })).toMatch(/What did I miss\?<span[^>]*>since 00:12<\/span>/);
     const tinted = renderToStaticMarkup(
-      <Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={null} readingFrom={1} />,
+      <Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={null} readingFrom={1} canAsk />,
     );
     // Each time picks its utterance; from the one read from on, the time and the spine in the ember.
     expect(tinted).toMatch(/aria-label="Ask what was said from 00:04"[^>]*class="[^"]*text-ash/);
     expect(tinted).toMatch(/aria-label="Ask what was said from 00:12"[^>]*class="[^"]*text-ember /);
     expect(tinted.match(/border-ember\/45/g)).toHaveLength(1);
     expect(sheetAsking(t)).not.toContain("border-ember/45");
+    // With no text model to ask, a time is a time.
+    expect(sheetAsking(t)).not.toContain("Ask what was said from");
   });
 
   it("gives the field, Ask and the quick questions one height", () => {

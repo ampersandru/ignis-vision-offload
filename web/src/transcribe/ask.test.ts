@@ -39,12 +39,20 @@ describe("the answers", () => {
     expect(readAnswered([{ ...placed[0], untilMs: "x" }])).toEqual([{ id: 1, question: "Quando?", answer: "Venerdì.", at: 1 }]);
   });
 
-  it("stand before the first utterance that ended after what they read, or at the foot", () => {
+  it("stand after the last utterance they read, or at the foot", () => {
     const t = addUtterance(heard(), { stream: "s", startMs: 10_000, endMs: 12_000, text: "Poi?", voice: { kind: "me" } });
     expect(answerAt(t.utterances, 6_000)).toBe(1);
     expect(answerAt(t.utterances, 12_000)).toBe(2);
     expect(answerAt(t.utterances, 0)).toBe(0);
     expect(answerAt(t.utterances, undefined)).toBe(2);
+  });
+
+  it("stand below every utterance they read on a call, one of the other lane begun before and ended after above them", () => {
+    // In time order by start: Me at 4-6 s, the far side's long one at 5-20 s, Me again at 10-12 s; asked at 12 s.
+    let t = addUtterance(heard(), { stream: "c", startMs: 5_000, endMs: 20_000, text: "Allora, per il rilascio…", voice: { kind: "speaker", index: 0 } });
+    t = addUtterance(t, { stream: "s", startMs: 10_000, endMs: 12_000, text: "Poi?", voice: { kind: "me" } });
+    expect(t.utterances.map((u) => u.startMs)).toEqual([4_000, 5_000, 10_000]);
+    expect(answerAt(t.utterances, 12_000)).toBe(3);
   });
 
   it("stream, and land on the Transcript asked about, with up to where they read", async () => {
