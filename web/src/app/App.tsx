@@ -36,7 +36,11 @@ import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
 import { AGENT_SYSTEM_PROMPT, type AgentRun } from "../tools/agents/agents.ts";
 import { ALL_TOOLS, type ToolsState } from "../tools/index.ts";
+import { refusal } from "../workspace/panel.ts";
+import { useWorkspace, useWorkspaceList } from "../workspace/useWorkspaces.ts";
 import { StoreWorkspaceFiles } from "../workspace/WorkspaceFiles.tsx";
+import { WorkspacePanel } from "../workspace/WorkspacePanel.tsx";
+import { ChatWorkspaceBar } from "../workspace/WorkspacePicker.tsx";
 import { pageWorkspaces } from "../workspace/workspaces.ts";
 import { Header, type View } from "./Header.tsx";
 import { KeyPage } from "./KeyPage.tsx";
@@ -98,6 +102,12 @@ export function App() {
   const studioPictures = useRef<() => Iterable<ImageId> | null>(() => null);
   const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel, live: () => studioPictures.current() });
   const { active } = chat;
+  // The chat's workspace (spec #170): its picker in the chat's header, and the panel of its files on the right.
+  const workspaces = pageWorkspaces();
+  const chatWorkspace = useWorkspace(workspaces, active.workspaceId);
+  const workspaceList = useWorkspaceList(workspaces);
+  const [workspaceOpen, setWorkspaceOpen] = useStoredFlag(STORED_FLAGS.workspacePanel, false);
+  const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
   // Dictation into the prompt (spec speech/04): opened with the last reply and the prompt as it stands, in that order.
   const dictation = useDictation({
     onChange: setInput,
@@ -351,6 +361,30 @@ export function App() {
           />
 
           <main className="flex min-w-0 flex-1 flex-col">
+            <ChatWorkspaceBar
+              workspace={chatWorkspace.workspace}
+              files={chatWorkspace.files}
+              list={workspaceList}
+              onPick={chat.bindTo}
+              onRename={async (name) => {
+                const id = chatWorkspace.workspace?.id;
+                if (!id) return null;
+                try {
+                  const renamed = await workspaces.rename(id, name);
+                  return renamed.ok ? null : renamed.error;
+                } catch (err) {
+                  return refusal(err);
+                }
+              }}
+              onDelete={() => {
+                const id = chatWorkspace.workspace?.id;
+                setWorkspaceNotice(null);
+                if (id) void chat.deleteWorkspace(id).catch((err) => setWorkspaceNotice(refusal(err)));
+              }}
+              open={workspaceOpen}
+              onToggle={() => setWorkspaceOpen(!workspaceOpen)}
+              notice={workspaceNotice}
+            />
             <Transcript
               session={active}
               model={model}
@@ -388,6 +422,8 @@ export function App() {
               dictation={dictation}
             />
           </main>
+
+          {workspaceOpen && <WorkspacePanel workspaces={workspaces} view={chatWorkspace} chat={chat.binding} onClose={() => setWorkspaceOpen(false)} />}
 
           <SettingsPanel
             open={drawer === "settings"}

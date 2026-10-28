@@ -29,7 +29,7 @@ nothing is sent to the server for safekeeping.
 | What | Where | Survives a reload |
 |---|---|---|
 | Chat sessions: every message, its reasoning, tool runs, figures and log, the workspace it is in | IndexedDB `ignis-playground`, collection `chat-sessions` | yes |
-| Workspaces: their names, and every file with every version and its author | same database, `workspaces`, and `workspace-files/<id>` for each one's files | yes; deleting a chat keeps its workspace |
+| Workspaces: their names, and every file with every version and its author | same database, `workspaces`, and `workspace-files/<id>` for each one's files | yes; deleting a chat keeps its workspace, which goes only when you [delete it](chat.md#the-workspace-picker) |
 | Decide's decisions: drafts, evidence, answers | same database, `decide-sessions` | yes |
 | Image sessions and their steps | same database, `image-sessions` | yes |
 | Transcripts: each utterance's text, times and speaker, the speakers' names and the corrections, the context it is told, the suggestions and what became of them, how far the text model has checked it, the notes, the questions asked and their answers, never audio | same database, `transcribe-sessions` | yes; a listening under way ends, its completed utterances kept |
@@ -38,6 +38,7 @@ nothing is sent to the server for safekeeping.
 | The session that was open, per view | same database, `active-session` | yes |
 | The API key | `localStorage` `ignis.apiKey` | yes |
 | Parallel sessions, the HTTP transport | `localStorage` `ignis.parallelSessions`, `ignis.httpTransport` | yes |
+| The workspace panel, open or closed | `localStorage` `ignis.workspacePanel` | yes |
 | The Tavily key, memory notes, the image view's "Enhance the prompt" | `localStorage` `ignis.tavilyKey`, `ignis.memory`, `ignis.imageEnhance` | yes |
 | The Transcribe view's file pace, its silence, its Hold my mic, its notes' kind and Keep updating, Suggest while listening | `localStorage` `ignis.transcribeFilePace`, `ignis.transcribeSilence`, `ignis.transcribeHoldMic`, `ignis.transcribeNoteKind`, `ignis.transcribeNotesLive`, `ignis.transcribeSuggestions` | yes |
 | Settings, tool switches, the prompt box, the Server view's draft, the Monitor's history | memory only | no |

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryStore } from "../store/memory.ts";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { attachedChip, commitAttached, fromLegacy, readAttached, withAttached } from "./attach.ts";
+import { attachedChip, commitAttached, fromLegacy, readAttached, readUpload, withAttached } from "./attach.ts";
 import { latest } from "./files.ts";
 import { createWorkspaces } from "./workspaces.ts";
 
@@ -79,6 +79,24 @@ describe("attaching files", () => {
       { name: "notes.txt", kind: "text", characters: 5 },
       { name: "brief.pdf", kind: "pdf", characters: 18 },
     ]);
+  });
+
+  it("keeps a file of any kind the panel takes in: text and a PDF read as here, any other bytes as they are", async () => {
+    expect(await readUpload(new File(["hello\n"], "notes.txt", { type: "text/plain" }), pdfReader)).toEqual({ name: "notes.txt", kind: "text", text: "hello\n" });
+    const pdf = await readUpload(new File([new Uint8Array([37, 80, 68, 70])], "brief.pdf", { type: "application/pdf" }), pdfReader);
+    expect(pdf).toMatchObject({ name: "brief.pdf", kind: "pdf", derived: "[Page 1]\nThe brief" });
+    expect(pdf.blob?.size).toBe(4);
+    expect(await readUpload(new File(["let x = 1;"], "app.ts", { type: "video/mp2t" }), pdfReader)).toEqual({ name: "app.ts", kind: "text", text: "let x = 1;" });
+    for (const [name, type, kind] of [["data.bin", "", "other"], ["core", "", "other"], ["photo.png", "image/png", "picture"], ["memo.wav", "audio/wav", "audio"], ["sheet.xlsx", "", "other"]] as const) {
+      const read = await readUpload(new File([new Uint8Array([0, 1, 2])], name, { type }), pdfReader);
+      expect(read).toMatchObject({ name, kind });
+      expect(read.text).toBeUndefined();
+      expect(read.blob?.size).toBe(3);
+    }
+    // A PDF that cannot be read is still kept, with no text.
+    const broken = await readUpload(new File([new Uint8Array([1])], "bad.pdf"), async () => Promise.reject(new Error("bad XRef")));
+    expect(broken).toMatchObject({ name: "bad.pdf", kind: "pdf" });
+    expect(broken.derived).toBeUndefined();
   });
 
   it("adds nothing, and births nothing, when nothing is attached", async () => {
