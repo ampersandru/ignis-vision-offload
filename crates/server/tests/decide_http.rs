@@ -1509,7 +1509,10 @@ async fn a_wave_wider_than_the_engine_is_retried_rather_than_failed() {
     //
     // An engine that admits two at a time while it says eight stands in for
     // a busy one: the wave of seven followers cannot fit, and every question
-    // must still be answered.
+    // must still be answered. Whether the two admitted are still running when
+    // the third comes is the runner's timing, so the third is turned away
+    // once whatever it is: a CI runner fast enough to finish the first two
+    // first saw no `Full` at all (the v0.9.0 tag's runs).
     const QUESTIONS: usize = 8;
     let compute = Arc::new(MockCompute::new());
     let full = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1517,6 +1520,8 @@ async fn a_wave_wider_than_the_engine_is_retried_rather_than_failed() {
         inner: scheduler_admitting(compute.clone() as Arc<dyn ignis_core::Compute>, 2),
         full: full.clone(),
         claims_in_flight: Some(8),
+        submits: 0,
+        busy_at: Some(2),
     };
     let app = Server::new(Engine::new(Box::new(scheduler)), Box::new(DecidingTemplate)).app();
 
@@ -1555,6 +1560,11 @@ struct CountingFull {
     /// What the engine says it admits: `None`, the scheduler's own cap; a
     /// wider one stands in for an engine somebody else already uses.
     claims_in_flight: Option<usize>,
+    /// The submissions so far.
+    submits: usize,
+    /// The submission, counted from 0, turned away once as `Full` whatever
+    /// the engine holds then: a busy engine at a known moment.
+    busy_at: Option<usize>,
 }
 
 impl ignis_core::Scheduler for CountingFull {
@@ -1567,7 +1577,9 @@ impl ignis_core::Scheduler for CountingFull {
         input: ignis_core::types::RequestInput,
         class: ignis_core::types::RequestClass,
     ) -> Result<ignis_core::RequestId, ignis_core::SubmitError> {
-        let submitted = self.inner.submit(input, class);
+        let at = self.submits;
+        self.submits += 1;
+        let submitted = if self.busy_at == Some(at) { Err(ignis_core::SubmitError::Full) } else { self.inner.submit(input, class) };
         if matches!(submitted, Err(ignis_core::SubmitError::Full)) {
             self.full.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1630,6 +1642,8 @@ async fn a_wave_is_no_wider_than_the_engine_admits() {
         inner: scheduler_admitting(compute.clone() as Arc<dyn ignis_core::Compute>, 2),
         full: full.clone(),
         claims_in_flight: None,
+        submits: 0,
+        busy_at: None,
     };
     let app = Server::new(Engine::new(Box::new(scheduler)), Box::new(DecidingTemplate)).app();
 
