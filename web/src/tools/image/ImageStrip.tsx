@@ -160,7 +160,9 @@ function Shown({ picture, url, id, gone, onPicture }: { picture: MadePicture; ur
           <button
             type="button"
             className="ml-auto flex items-center gap-1.5 font-display font-medium text-[#b9bec4] hover:text-white"
-            onClick={() => downloadImage({ id: 0, url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })}
+            onClick={() =>
+              downloadImage({ id: 0, url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })
+            }
           >
             <IconDownload />
             PNG
