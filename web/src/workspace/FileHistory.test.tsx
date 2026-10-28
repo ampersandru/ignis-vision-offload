@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
-import { DiffView, FileEditor, FileHistory } from "./FileHistory.tsx";
+import { DiffSheet, DiffView, FileEditor, FileHistory } from "./FileHistory.tsx";
 import { authorName } from "./panel.ts";
 
 // A text file's editor, and any file's history with the diff between two
@@ -135,5 +135,103 @@ describe("the diff between two versions", () => {
   it("says when two versions hold the same text, or differ only in their line endings", () => {
     expect(render("a\nb\n", "a\nb\n")).toContain("The two versions hold the same text.");
     expect(render("a\r\nb\r\n", "a\nb")).toContain("The two versions differ only in their line endings, or the newline at the end.");
+  });
+});
+
+describe("the Expand button of the panel's diff", () => {
+  it("opens the diff full screen from beside the count, and the panel keeps its unified table", () => {
+    const html = renderToStaticMarkup(<FileHistory file={notes} whom={whom} onRestore={() => {}} />);
+    expect(html).toMatch(/<p[^>]*>1 line removed, 1 added<\/p><button[^>]*>Expand<\/button>/);
+    expect(html).toContain('data-diff="removed"');
+    expect(html).not.toContain('role="dialog"');
+  });
+
+  it("is not in a diff of two equal texts, nor without a handler", () => {
+    expect(renderToStaticMarkup(<DiffView before="a\n" after="a\n" onExpand={() => {}} />)).not.toContain("Expand");
+    expect(renderToStaticMarkup(<DiffView before="a\n" after="b\n" />)).not.toContain("Expand");
+  });
+});
+
+describe("the full-screen diff", () => {
+  const versions = [v(1, USER, "# Trip\n- Rome\n- Pisa\n"), v(2, THIS, "# Trip\n- Naples\n- Bari\n- Pisa\n")];
+  const sheet = (over: Partial<Parameters<typeof DiffSheet>[0]> = {}) =>
+    renderToStaticMarkup(
+      <DiffSheet
+        name="notes.md"
+        versions={versions}
+        whom={whom}
+        from={1}
+        to={2}
+        onChoose={() => {}}
+        layout="split"
+        onLayout={() => {}}
+        showAll={false}
+        onShowAll={() => {}}
+        at={0}
+        onGo={() => {}}
+        onClose={() => {}}
+        {...over}
+      />,
+    );
+
+  it("heads the sheet with the file, both version selects, the count, the layouts, Show all lines, the changes and Close", () => {
+    const html = sheet();
+    expect(html).toMatch(/role="dialog"[^>]*aria-modal="true"/);
+    expect(html).toContain(">notes.md</h2>");
+    expect(html).toMatch(/<select[^>]*aria-label="Compare from version"[^>]*>/);
+    expect(html).toMatch(/<select[^>]*aria-label="Compare to version"[^>]*>/);
+    expect(html).toContain("1 line removed, 2 added");
+    expect(html).toMatch(/role="radiogroup"[^>]*aria-label="Layout"/);
+    expect(html).toMatch(/<button[^>]*role="radio"[^>]*aria-checked="true"[^>]*>Side by side<\/button>/);
+    expect(html).toMatch(/<button[^>]*role="radio"[^>]*aria-checked="false"[^>]*>Unified<\/button>/);
+    expect(html).toMatch(/<button[^>]*aria-pressed="false"[^>]*>Show all lines<\/button>/);
+    expect(html).toMatch(/<button[^>]*title="Previous change \(p\)"[^>]*disabled=""[^>]*>Previous change<\/button>/);
+    expect(html).toMatch(/<button[^>]*title="Next change \(n\)"[^>]*disabled=""[^>]*>Next change<\/button>/);
+    expect(html).toContain('title="Close (Esc)"');
+  });
+
+  it("lays the versions side by side: before left, after right, a removed line facing the added one, the shorter side padded", () => {
+    const html = sheet();
+    expect(html).toMatch(/<tr[^>]*data-diff="changed"[^>]*><td[^>]*>2<\/td><td[^>]*>- Rome<\/td><td[^>]*>2<\/td><td[^>]*>- Naples<\/td><\/tr>/);
+    expect(html).toMatch(/<tr[^>]*data-diff="changed"[^>]*><td[^>]*><\/td><td[^>]*><\/td><td[^>]*>3<\/td><td[^>]*>- Bari<\/td><\/tr>/);
+    expect(html).toMatch(/<tr[^>]*data-diff="same"[^>]*><td[^>]*>3<\/td><td[^>]*>- Pisa<\/td><td[^>]*>4<\/td><td[^>]*>- Pisa<\/td><\/tr>/);
+    expect(html).toContain("whitespace-pre-wrap break-all");
+    expect((html.match(/data-anchor/g) ?? []).length).toBe(1);
+  });
+
+  it("lays them in one table when Unified is chosen, with the sign column", () => {
+    const html = sheet({ layout: "unified" });
+    expect(html).toMatch(/<button[^>]*aria-checked="true"[^>]*>Unified<\/button>/);
+    expect(html).toMatch(/<tr[^>]*data-diff="removed"[^>]*><td[^>]*>2<\/td><td[^>]*><\/td><td[^>]*>-<\/td><td[^>]*>- Rome<\/td><\/tr>/);
+    expect(html).toMatch(/<tr[^>]*data-diff="added"[^>]*><td[^>]*><\/td><td[^>]*>3<\/td><td[^>]*>\+<\/td><td[^>]*>- Bari<\/td><\/tr>/);
+  });
+
+  it("folds the unchanged lines across both columns, unless Show all lines is on", () => {
+    const long = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+    const two = [v(1, USER, long.join("\n")), v(2, THIS, [...long.slice(0, 19), "the end"].join("\n"))];
+    expect(sheet({ versions: two })).toMatch(/<td colSpan="4"[^>]*>16 unchanged lines<\/td>/);
+    const all = sheet({ versions: two, showAll: true });
+    expect(all).not.toContain("unchanged lines");
+    expect(all).toContain(">line 1<");
+    expect(all).toMatch(/<button[^>]*aria-pressed="true"[^>]*>Show all lines<\/button>/);
+  });
+
+  it("enables Next change while more changes follow, and Previous change after the first", () => {
+    const long = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+    const edited = long.map((l, i) => (i === 2 || i === 25 ? `${l}!` : l));
+    const two = [v(1, USER, long.join("\n")), v(2, THIS, edited.join("\n"))];
+    const first = sheet({ versions: two });
+    expect(first).not.toMatch(/title="Next change \(n\)"[^>]*disabled=""/);
+    expect(first).toMatch(/title="Previous change \(p\)"[^>]*disabled=""/);
+    expect((first.match(/data-anchor/g) ?? []).length).toBe(2);
+    expect(sheet({ versions: two, at: 1 })).toMatch(/title="Next change \(n\)"[^>]*disabled=""/);
+  });
+
+  it("says when two versions hold the same text, or differ only in their line endings", () => {
+    const same = [v(1, USER, "a\nb\n"), v(2, THIS, "a\nb\n")];
+    expect(sheet({ versions: same })).toContain("The two versions hold the same text.");
+    expect(sheet({ versions: same })).not.toContain("Show all lines");
+    const eol = [v(1, USER, "a\r\nb\r\n"), v(2, THIS, "a\nb")];
+    expect(sheet({ versions: eol })).toContain("The two versions differ only in their line endings, or the newline at the end.");
   });
 });

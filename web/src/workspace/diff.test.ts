@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type DiffLine, folded, lineDiff } from "./diff.ts";
+import { changeAnchors, type DiffLine, folded, lineDiff, sideBySide } from "./diff.ts";
 
 // The line diff between two versions of a text file, as the panel's history
 // shows it: each line kept, removed or added, with its numbers in the version
@@ -135,5 +135,63 @@ describe("the folded diff", () => {
 
   it("folds two equal texts whole", () => {
     expect(folded(lineDiff(ten.join("\n"), ten.join("\n")), 3)).toEqual([{ kind: "skipped", count: 10 }]);
+  });
+});
+
+// The two-column layout and the blocks previous and next visit.
+
+/** Side-by-side rows written as the sheet reads them: "before | after", with the numbers, or "(n unchanged)". */
+const cells = (rows: ReturnType<typeof sideBySide>) =>
+  rows.map((r) => (r.kind === "skipped" ? `(${r.count} unchanged)` : `${r.left ? `${r.left.n} ${r.left.text}` : "-"} | ${r.right ? `${r.right.n} ${r.right.text}` : "-"}`));
+
+describe("the side-by-side diff", () => {
+  it("faces a kept line with itself, numbered in each version", () => {
+    expect(cells(sideBySide(lineDiff("a\nb\n", "a\nb\n"), true))).toEqual(["1 a | 1 a", "2 b | 2 b"]);
+  });
+
+  it("pairs a run of removed lines with the run of added lines row by row", () => {
+    const rows = sideBySide(lineDiff("k\nx\ny\nk2\n", "k\nX\nY\nk2\n"));
+    expect(cells(rows)).toEqual(["1 k | 1 k", "2 x | 2 X", "3 y | 3 Y", "4 k2 | 4 k2"]);
+    expect(rows.map((r) => r.kind === "pair" && r.changed)).toEqual([false, true, true, false]);
+  });
+
+  it("pads the shorter side with empty cells", () => {
+    expect(cells(sideBySide(lineDiff("k\nx\ny\nz\nk2\n", "k\nX\nk2\n")))).toEqual(["1 k | 1 k", "2 x | 2 X", "3 y | -", "4 z | -", "5 k2 | 3 k2"]);
+    expect(cells(sideBySide(lineDiff("k\nk2\n", "k\nA\nB\nk2\n")))).toEqual(["1 k | 1 k", "- | 2 A", "- | 3 B", "2 k2 | 4 k2"]);
+  });
+
+  const long = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+  const lines = lineDiff(long.join("\n"), [...long.slice(0, 19), "the end"].join("\n"));
+
+  it("folds the kept lines far from a change across both columns", () => {
+    const rows = cells(sideBySide(lines));
+    expect(rows[0]).toBe("(16 unchanged)");
+    expect(rows).toContain("17 line 17 | 17 line 17");
+    expect(rows.at(-1)).toBe("20 line 20 | 20 the end");
+  });
+
+  it("shows every line when asked to show all", () => {
+    const rows = sideBySide(lines, true);
+    expect(rows).toHaveLength(20);
+    expect(rows.some((r) => r.kind === "skipped")).toBe(false);
+  });
+});
+
+describe("the change anchors", () => {
+  const before = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n";
+  const after = "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\nK\nL\n";
+
+  it("names the first row of each block of changed rows, in the unified rows", () => {
+    const rows = folded(lineDiff(before, after));
+    expect(rows.map((r) => r.kind)).toEqual(["same", "removed", "added", "same", "same", "same", "skipped", "same", "same", "same", "removed", "added", "added"]);
+    expect(changeAnchors(rows)).toEqual([1, 10]);
+  });
+
+  it("names the same blocks in the side-by-side rows", () => {
+    expect(changeAnchors(sideBySide(lineDiff(before, after)))).toEqual([1, 9]);
+  });
+
+  it("has none for two equal texts", () => {
+    expect(changeAnchors(sideBySide(lineDiff("a\n", "a\n")))).toEqual([]);
   });
 });

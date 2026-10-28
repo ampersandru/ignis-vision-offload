@@ -224,7 +224,11 @@ new name.
   version. Unchanged lines further than three lines from a change fold into a
   row that counts them. Two versions that differ by more than 1,000 lines
   removed and added show the lines between the start and the end they share
-  removed whole, then added.
+  removed whole, then added. **Expand**, beside the count, opens the diff full
+  screen: the two versions side by side (or **Unified**), the same two version
+  pickers, **Show all lines** to unfold the unchanged ones, and **Previous
+  change** / **Next change** (the `p` and `n` keys) to step through the
+  changes. Esc closes it.
 - **Restore**, on any version but the newest, makes a new version with that
   version's content, authored by you; the versions in between stay. A
   restore is undone by another one.
