@@ -21,7 +21,7 @@
 
 #![cfg(feature = "cuda")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ignis_artifact::{
