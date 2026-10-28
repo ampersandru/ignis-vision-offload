@@ -35,8 +35,11 @@ export type PromptImage = {
   kept?: { full?: ImageId; markup?: { source: ImageId; region: ImageId; marks: Mark[]; keepOutside: boolean } };
 };
 
-/** A picture of the conversation as its actions take it: the user's, or one the picture tool made. */
-export type ChatPicture = { name: string; url: string; full?: Blob };
+/**
+ * A picture of the conversation as its actions take it: the user's, or one the picture tool made. `id` names it in
+ * the page's store when it is shown from there (a workspace's picture, #394) rather than from a data URL.
+ */
+export type ChatPicture = { name: string; url: string; full?: Blob; id?: ImageId };
 
 /** What can be done with a picture of the conversation: mark it into the prompt box, or open it in the Image view. */
 export type PictureAction = "mark" | "image";
@@ -96,6 +99,13 @@ export async function imageFromFile(file: File): Promise<{ ok: true; image: Prom
   } catch (err) {
     return { ok: false, error: `${named} could not be read: ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/** A picture redrawn for the model as an attached one is, a workspace's that it reads (#394); rejects with why it cannot be. */
+export async function redrawn(blob: Blob, name: string): Promise<{ url: string; width: number; height: number }> {
+  const read = await imageFromFile(new File([blob], name, { type: imageMime(blob.type, "image/png") }));
+  if (!read.ok) throw new Error(read.error);
+  return { url: read.image.url, width: read.image.width, height: read.image.height };
 }
 
 /** `width` by `height` scaled down to fit `MAX_EDGE`: never up, never below one pixel. */

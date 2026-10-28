@@ -129,8 +129,11 @@ export function useImageSessions(
   model: ModelState,
   refreshModel: () => void,
   visible: boolean,
-  /** `live`: the store's pictures the chat's sessions name now, or null while it has not read them — then no picture goes. */
-  options: { store?: ImageStore; live?: () => Iterable<ImageId> | null } = {},
+  /**
+   * `live`: the store's pictures the chat's sessions name now, or null while it has not read them — then no picture
+   * goes. `held`: the pictures the workspaces hold (#394), read when a session is deleted; a failed read frees none.
+   */
+  options: { store?: ImageStore; live?: () => Iterable<ImageId> | null; held?: () => Promise<Iterable<ImageId>> } = {},
 ): [ImageSessionsState, ImageSessionsActions] {
   const store = options.store ?? pageStore();
   const [enhanceDefault, rememberEnhance] = useStoredFlag(STORED_FLAGS.imageEnhance, false);
@@ -439,10 +442,11 @@ export function useImageSessions(
     if (activeNow.current === id) setActiveId(list.current[0].id);
     try {
       await store.deleteDoc(SESSIONS, id);
-      // Only what no other session names, and nothing the chat holds now, goes with it.
+      // Only what no other session names, and nothing the chat or a workspace holds now, goes with it.
       const live = options.live ? options.live() : [];
-      const keep = new Set<ImageId>([...list.current.flatMap((s) => [...imagesOf(s)]), ...(live ?? [])]);
-      if (live !== null) for (const image of unreferenced(imagesOf(gone), keep)) await store.deleteImage(image);
+      const held = options.held ? await options.held().catch(() => null) : [];
+      const keep = new Set<ImageId>([...list.current.flatMap((s) => [...imagesOf(s)]), ...(live ?? []), ...(held ?? [])]);
+      if (live !== null && held !== null) for (const image of unreferenced(imagesOf(gone), keep)) await store.deleteImage(image);
     } finally {
       refreshUsage();
     }

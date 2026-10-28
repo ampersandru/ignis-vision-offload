@@ -1,6 +1,7 @@
 import type { Settings, ToolDefinition } from "../../api/request.ts";
 import type { ToolCall } from "../../api/sse.ts";
 import type { streamChat } from "../../api/stream.ts";
+import type { PromptImage } from "../../conversation/images.ts";
 import type { Figures } from "../../metrics/figures.ts";
 import type { Written } from "../../workspace/workspaces.ts";
 import { runWorkspaceTool, WORKSPACE_TOOL_NAMES, type WorkspaceAccess } from "../../workspace/tools.ts";
@@ -132,6 +133,13 @@ export type LocalRun = {
   listed?: number;
   /** What a read_file call read: lines from and to, or — in an older chat's run — characters. */
   read?: { name: string; from: number; to: number; total: number; lines?: true };
+  /** The picture a read_file call read, and whether the model was shown it (only with vision). */
+  picture?: { name: string; seen: boolean };
+  /**
+   * The pictures the model receives beside `result`, redrawn for it: they
+   * ride on the tool's result, which keeps them, and not in the run (`shownRun`).
+   */
+  images?: PromptImage[];
   error?: string;
   /** What the model receives, once the call ends. */
   result?: string;
@@ -162,6 +170,12 @@ export function runLocalCalls(calls: ToolCall[], context: LocalContext, onUpdate
 
 /** The tool result the model receives for an ended run. */
 export const localToolResult = (run: LocalRun) => run.result ?? `The ${run.tool} call did not finish.`;
+
+/** The pictures the model receives with an ended run's result: a picture read_file read with vision. */
+export const localToolImages = (run: LocalRun): PromptImage[] => run.images ?? [];
+
+/** A run as a reply shows and keeps it: its pictures are its result's, kept once there. */
+export const shownRun = ({ images: _images, ...run }: LocalRun): LocalRun => run;
 
 const cut = (text: string) =>
   text.length > JS_OUTPUT_LIMIT ? `${text.slice(0, JS_OUTPUT_LIMIT)}\n[Cut: ${text.length} characters in all.]` : text;
