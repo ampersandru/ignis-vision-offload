@@ -6,6 +6,7 @@ import type { ImageRun } from "../tools/image/image.ts";
 import { LocalStrip } from "../tools/local/LocalStrip.tsx";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
 import { StaticWorkspaceFiles } from "./WorkspaceFiles.tsx";
+import { authorName } from "./panel.ts";
 import { FileViewer, type PanelActions } from "./WorkspacePanel.tsx";
 
 // Pictures of the workspace as the page shows them (#394): the panel's viewer,
@@ -18,13 +19,27 @@ const picture = (n: number, id: string): Version => ({ n, author: { by: "chat", 
 
 const file = (versions: Version[]): WorkspaceFile => ({ format: 1, id: "f1", workspace: "w1", name: "made-1.png", kind: "picture", versions });
 
-const actions: PanelActions = { create: async () => null, upload: () => {}, exportZip: () => {}, importZip: () => {}, rename: async () => null, remove: () => {}, download: () => {}, content: async () => null, derive: async () => null };
+const actions: PanelActions = {
+  create: async () => null,
+  upload: () => {},
+  exportZip: () => {},
+  importZip: () => {},
+  rename: async () => null,
+  remove: () => {},
+  download: () => {},
+  save: async () => ({ ok: true, version: 2 }),
+  restore: () => {},
+  content: async () => null,
+  derive: async () => null,
+};
+
+const whom = (author: Version["author"]) => authorName(author, { here: (key) => key === "k", title: () => undefined });
 
 describe("the panel's picture viewer", () => {
   it("shows the picture's latest version from the page's store, with its size in pixels, and opens it full screen", () => {
     const html = renderToStaticMarkup(
       <StaticPictures urls={{ "full:p2": "blob:two" }}>
-        <FileViewer file={file([picture(1, "p1"), picture(2, "p2")])} onBack={() => {}} actions={actions} />
+        <FileViewer file={file([picture(1, "p1"), picture(2, "p2")])} whom={whom} onBack={() => {}} actions={actions} />
       </StaticPictures>,
     );
     expect(html).toMatch(/<img[^>]*src="blob:two"/);
@@ -37,7 +52,7 @@ describe("the panel's picture viewer", () => {
   it("holds the picture's place while its bytes are read", () => {
     const html = renderToStaticMarkup(
       <StaticPictures urls={{}}>
-        <FileViewer file={file([picture(1, "p1")])} onBack={() => {}} actions={actions} />
+        <FileViewer file={file([picture(1, "p1")])} whom={whom} onBack={() => {}} actions={actions} />
       </StaticPictures>,
     );
     expect(html).not.toContain("<img");

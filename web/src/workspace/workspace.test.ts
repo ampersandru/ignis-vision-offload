@@ -6,6 +6,7 @@ import { runAgents } from "../tools/agents/agents.ts";
 import { agentExtras, NO_TOOLS } from "../tools/index.ts";
 import { type LocalRun, runLocalCalls } from "../tools/local/local.ts";
 import { latest, USER } from "./files.ts";
+import { saveText } from "./panel.ts";
 import { READ_LIMIT, seenIn, type WorkspaceAccess } from "./tools.ts";
 import { createWorkspaces, type Workspaces } from "./workspaces.ts";
 
@@ -492,6 +493,51 @@ describe("the guard", () => {
     await run(a.access, "read_file", { name: "notes.md" });
     expect((await run(a.access, "edit_file", { name: "notes.md", old: "Roma", new: "Rome" })).status).toBe("done");
     expect((await run(b.access, "delete_file", { name: "notes.md" })).error).toContain("it is at version 3, by another chat, and you last read version 2");
+  });
+});
+
+describe("the user's hand edits", () => {
+  it("are a version of the user's per save, and the model's write, edit or deletion is refused until it reads the file again", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "notes.md", content: "- Rome\n" });
+    const id = a.bound()!;
+    const before = (await workspaces.files(id))[0];
+    // The editor's Save, as the panel calls it.
+    expect(await saveText(workspaces, before, "- Rome\n- Venice\n")).toMatchObject({ ok: true, written: { name: "notes.md", version: 2 } });
+    const saved = (await workspaces.files(id))[0];
+    expect(saved.versions.map((v) => [v.n, v.author.by, v.text])).toEqual([
+      [1, "chat", "- Rome\n"],
+      [2, "user", "- Rome\n- Venice\n"],
+    ]);
+    for (const [tool, args] of [
+      ["write_file", { name: "notes.md", content: "- Bari\n" }],
+      ["edit_file", { name: "notes.md", old: "- Rome", new: "- Bari" }],
+      ["delete_file", { name: "notes.md" }],
+    ] as const) {
+      expect((await run(a.access, tool, args)).error).toBe(
+        "notes.md changed since you last read it: it is at version 2, by the user, and you last read version 1. Read it again with read_file before you change it.",
+      );
+    }
+    expect((await workspaces.files(id))[0].versions).toHaveLength(2);
+    expect((await run(a.access, "read_file", { name: "notes.md" })).result).toContain("- Venice");
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "- Venice", new: "- Venice\n- Bari" })).status).toBe("done");
+    expect(latest((await workspaces.files(id))[0])).toMatchObject({ n: 3, text: "- Rome\n- Venice\n- Bari\n" });
+  });
+
+  it("include a restore, which the model reads before it changes the file", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "notes.md", content: "- Rome\n" });
+    await run(a.access, "write_file", { name: "notes.md", content: "- Turin\n" });
+    const id = a.bound()!;
+    const [file] = await workspaces.files(id);
+    await workspaces.restore(id, file.id, 1);
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "Rome", new: "Roma" })).error).toBe(
+      "notes.md changed since you last read it: it is at version 3, by the user, and you last read version 2. Read it again with read_file before you change it.",
+    );
+    await run(a.access, "read_file", { name: "notes.md" });
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "Rome", new: "Roma" })).status).toBe("done");
   });
 });
 

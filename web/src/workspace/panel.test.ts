@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryStore } from "../store/memory.ts";
 import { latest, USER, type Version, type WorkspaceFile } from "./files.ts";
-import { createFile, downloadName, fileTree, refusal, sizeLabel, uploadFiles } from "./panel.ts";
+import { authorName, createFile, downloadName, editing, fileTree, refusal, saveText, sizeLabel, uploadFiles } from "./panel.ts";
 import { createWorkspaces } from "./workspaces.ts";
 
 // What the workspace panel does, apart from how it looks: its tree of the
@@ -30,6 +30,56 @@ describe("the panel's tree", () => {
 
   it("is empty for a workspace with no files", () => {
     expect(fileTree([])).toEqual([]);
+  });
+
+  it("holds the deleted files too when they are shown, in their places", () => {
+    const tree = fileTree([file("notes.md"), file("site/old.html", [text("x"), { n: 2, author: USER, at: 1, deleted: true }]), file("gone.txt", [text("x"), { n: 2, author: USER, at: 1, deleted: true }])], true);
+    const shape = (nodes: ReturnType<typeof fileTree>): unknown[] =>
+      nodes.map((n) => (n.kind === "folder" ? { [n.path]: shape(n.children) } : n.file.name));
+    expect(shape(tree)).toEqual([{ site: ["site/old.html"] }, "gone.txt", "notes.md"]);
+  });
+});
+
+describe("who the panel says made a version", () => {
+  const chats = { here: (key: string) => key === "chat-a", title: (key: string) => ({ "chat-b": "Budget" })[key] };
+
+  it("is you, this chat or one of its sub-agents, or another chat by its title", () => {
+    expect(authorName(USER, chats)).toBe("you");
+    expect(authorName({ by: "chat", chat: "chat-a" }, chats)).toBe("this chat");
+    expect(authorName({ by: "chat", chat: "chat-a", agent: { call: "c1", name: "researcher" } }, chats)).toBe("this chat's sub-agent researcher");
+    expect(authorName({ by: "chat", chat: "chat-b" }, chats)).toBe("the chat “Budget”");
+    expect(authorName({ by: "chat", chat: "chat-b", agent: { call: "c2", name: "writer" } }, chats)).toBe("the sub-agent writer of the chat “Budget”");
+    // A chat the page no longer has, deleted since.
+    expect(authorName({ by: "chat", chat: "chat-z" }, chats)).toBe("another chat");
+  });
+});
+
+describe("the editor over the file as it is now", () => {
+  const by = { by: "chat" as const, chat: "chat-a" };
+  const v = (n: number, t: string, author: Version["author"] = USER): Version => ({ n, author, at: n, text: t });
+  const notes = (...versions: Version[]) => file("notes.md", versions);
+
+  it("is unchanged while its text is the version it opened", () => {
+    expect(editing(notes(v(1, "a")), { base: 1, text: "a" })).toEqual({ base: 1, text: "a", dirty: false, since: null });
+    expect(editing(notes(v(1, "a")), { base: 1, text: "ab" })).toEqual({ base: 1, text: "ab", dirty: true, since: null });
+  });
+
+  it("follows a newer version while nothing is typed", () => {
+    expect(editing(notes(v(1, "a"), v(2, "b", by)), { base: 1, text: "a" })).toEqual({ base: 2, text: "b", dirty: false, since: null });
+  });
+
+  it("keeps what is typed when a newer version lands, and names it", () => {
+    const file = notes(v(1, "a"), v(2, "b", by));
+    expect(editing(file, { base: 1, text: "ax" })).toEqual({ base: 1, text: "ax", dirty: true, since: file.versions[1] });
+  });
+
+  it("is unchanged once the version it saved is read back, and while it is not yet", () => {
+    expect(editing(notes(v(1, "a"), v(2, "ax")), { base: 1, text: "ax" })).toEqual({ base: 2, text: "ax", dirty: false, since: null });
+    expect(editing(notes(v(1, "a")), { base: 2, text: "ax" })).toEqual({ base: 2, text: "ax", dirty: false, since: null });
+  });
+
+  it("counts no change in the line endings the text box takes away", () => {
+    expect(editing(notes(v(1, "a\r\nb\r\n")), { base: 1, text: "a\nb\n" })).toMatchObject({ dirty: false });
   });
 });
 
@@ -94,5 +144,29 @@ describe("the panel's actions", () => {
       ["data.zip", "other", USER],
     ]);
     expect(await uploadFiles(workspaces, chat, [], async () => "")).toEqual([]);
+  });
+});
+
+describe("the editor's Save", () => {
+  it("makes one version of the user's per save", async () => {
+    const { workspaces, chat, bound } = binding();
+    await createFile(workspaces, chat, "notes.md");
+    const at = async () => (await workspaces.files(bound()!))[0];
+    expect(await saveText(workspaces, await at(), "one")).toMatchObject({ ok: true, written: { version: 2 } });
+    expect(await saveText(workspaces, await at(), "two")).toMatchObject({ ok: true, written: { version: 3 } });
+    expect((await at()).versions.map((v) => [v.n, v.author, v.text])).toEqual([
+      [1, USER, ""],
+      [2, USER, "one"],
+      [3, USER, "two"],
+    ]);
+  });
+
+  it("keeps a file's CRLF line endings, which the browser's text box turns into LF", async () => {
+    const { workspaces, chat, bound } = binding();
+    const id = await chat.workspace();
+    await workspaces.add(id, [{ name: "list.txt", kind: "text", text: "a\r\nb\r\n" }], USER);
+    const [file] = await workspaces.files(bound()!);
+    await saveText(workspaces, file, "a\nb\nc\n");
+    expect(latest((await workspaces.files(id))[0]).text).toBe("a\r\nb\r\nc\r\n");
   });
 });
