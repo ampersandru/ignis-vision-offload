@@ -34,6 +34,10 @@ describe("ToolsSetting", () => {
     expect(html).not.toContain("Attachments");
     expect(ALL_TOOLS.workspace).toBe(true);
   });
+
+  it("says the prompt box attaches every kind the workspace takes from it: text, PDF and audio files, and pictures", () => {
+    expect(render(ALL_TOOLS)).toContain("the prompt box attaches text, PDF and audio files, and pictures, to it");
+  });
 });
 
 // The thinking budget sits beside the effort it caps (spec playground/04):
