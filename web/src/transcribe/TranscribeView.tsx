@@ -16,7 +16,11 @@ import { Suggestions } from "./Suggestions.tsx";
 import { openSuggestions } from "./suggestions.ts";
 import { Switch } from "../ui/Switch.tsx";
 import { HintText } from "../speech/Dictation.tsx";
-import { toMarkdown, toSrt, toText, toVtt } from "./export.ts";
+import { fileStem, toMarkdown, toSrt, toText, toVtt } from "./export.ts";
+import { StoreWorkspaceChooser } from "../workspace/WorkspaceChooser.tsx";
+import type { Destination } from "../workspace/send.ts";
+import { pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
+import { sendTranscript, workspaceNameFor } from "./toWorkspace.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
 import { UTTERANCE_SILENCE_CHOICES, useUtteranceSilence } from "./silence.ts";
 import { type ListeningHandle, type ListeningState, type LiveUtterance, useListening } from "./listening.ts";
@@ -48,6 +52,7 @@ export function TranscribeView({
   drawer,
   onDrawer,
   onOpenInChat,
+  workspaces,
 }: {
   state: TranscribeState;
   actions: TranscribeActions;
@@ -58,6 +63,8 @@ export function TranscribeView({
   onDrawer: (drawer: Drawer) => void;
   /** A new chat, its composer seeded with the Transcript as Markdown; nothing sent (Q89). */
   onOpenInChat: (markdown: string) => void;
+  /** The page's workspaces, where Send to workspace adds the Transcript; the page's own when left out. */
+  workspaces?: Workspaces;
 }) {
   // Outside https and localhost the browser gives no page a microphone; a test has no such flag.
   const secure = typeof globalThis.isSecureContext === "boolean" ? globalThis.isSecureContext : true;
@@ -169,7 +176,7 @@ export function TranscribeView({
                   setSeek((n) => n + 1);
                 }}
               />
-              <Exports transcript={state.active} onOpenInChat={onOpenInChat} />
+              <Exports transcript={state.active} onOpenInChat={onOpenInChat} workspaces={workspaces} />
             </Heading>
           </div>
         </div>
@@ -384,8 +391,7 @@ function Transcripts({
   );
 }
 
-/** A file name from a title: what the downloads are saved as. */
-export const fileStem = (title: string) => title.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "transcript";
+export { fileStem };
 
 const EXPORTS: { label: string; extension: string; type: string; write: (t: Transcript) => string }[] = [
   { label: ".txt", extension: "txt", type: "text/plain", write: toText },
@@ -457,8 +463,10 @@ function Side({ open, tab, onTab, waiting, children }: { open: boolean; tab: Sid
 }
 
 /** The heading's exports: Copy, the four downloads behind one menu, and Open in chat. */
-function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOpenInChat: (markdown: string) => void }) {
+function Exports({ transcript: t, onOpenInChat, workspaces }: { transcript: Transcript; onOpenInChat: (markdown: string) => void; workspaces?: Workspaces }) {
   const [copied, setCopied] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
   const menu = useRef<HTMLDetailsElement>(null);
   const nothing = t.utterances.every((u) => u.text.trim() === "");
   return (
@@ -511,6 +519,39 @@ function Exports({ transcript: t, onOpenInChat }: { transcript: Transcript; onOp
       >
         Open in chat
       </button>
+      <div className="relative">
+        <button
+          type="button"
+          disabled={nothing}
+          title="Adds the transcript, as Markdown, to a workspace the model can read. The transcript stays here."
+          onClick={() => {
+            setSent(null);
+            setChoosing(!choosing);
+          }}
+          className="px-1.5 font-display text-[13px] font-semibold text-ember hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:no-underline"
+        >
+          Send to workspace
+        </button>
+        {choosing && (
+          <StoreWorkspaceChooser
+            source={workspaces ?? pageWorkspaces()}
+            newName={workspaceNameFor(t)}
+            onCancel={() => setChoosing(false)}
+            onChoose={(destination: Destination) => {
+              setChoosing(false);
+              sendTranscript(workspaces ?? pageWorkspaces(), t, destination).then(
+                (done) => setSent(`Added ${done.written.name} to ${done.workspace.name}`),
+                (err: unknown) => setSent(`Not sent: ${err instanceof Error ? err.message : String(err)}`),
+              );
+            }}
+          />
+        )}
+        {sent && (
+          <p role="status" className="absolute right-0 z-20 mt-1 w-64 border border-line bg-surface px-3 py-1.5 text-xs text-ink shadow-lg">
+            {sent}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
