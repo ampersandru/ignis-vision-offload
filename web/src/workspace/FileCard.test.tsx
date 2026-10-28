@@ -54,6 +54,15 @@ describe("a reply's file card", () => {
     expect(html).not.toContain("Open the latest");
   });
 
+  it("keeps opening the version in its own workspace once the chat moved to another, whatever that one holds", () => {
+    // The chat moved to w2 after the reply; w2 holds a file under the same name and, here, the same id.
+    const elsewhere: WorkspaceFile = { ...page([version(1, "<p>Elsewhere</p>"), version(2, "<p>Later</p>")]), workspace: "w2" };
+    const html = render([wrote(1)], [elsewhere, page([version(1, "<p>One</p>")])]);
+    expect(html).toContain("&lt;p&gt;One&lt;/p&gt;");
+    expect(html).not.toContain("Elsewhere");
+    expect(html).not.toContain("Superseded");
+  });
+
   it("says so when the workspace no longer has the file", () => {
     expect(render([wrote(2)], [])).toContain("site/index.html, version 2: no longer in the workspace.");
   });

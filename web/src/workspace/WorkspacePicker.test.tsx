@@ -5,7 +5,8 @@ import { ChatWorkspaceBar, DeleteWorkspaceConfirm, PickerMenu, WorkspaceChoices,
 
 // The picker in the chat's header as it renders: before the chat binds, a new
 // workspace or one of the existing ones; after, the workspace's name with
-// rename and delete, and the confirmation a delete asks for.
+// rename, a move to another workspace (#404) and delete, and the
+// confirmation a delete asks for.
 
 const at = new Date(2026, 9, 27, 9, 30).getTime();
 const trip: Workspace = { format: 1, id: "w1", name: "Trip plan", created: at, updated: at };
@@ -49,12 +50,19 @@ describe("the workspace picker", () => {
     expect(html).toContain("changed 2026-10-27 09:31");
   });
 
-  it("offers only a new workspace to a chat whose workspace was deleted, saying why", () => {
-    const html = menu({ mode: "choices", canPick: false });
-    expect(html).toContain("New workspace");
-    expect(html).not.toContain("Small site");
-    expect(html).not.toContain("Trip plan");
-    expect(html).toContain("This chat&#x27;s workspace was deleted: its next file starts a new one. It picks no other, so that its history never mixes two.");
+  it("offers a chat whose workspace was deleted a new one, its default, or a move to an existing one, saying so", () => {
+    const html = menu({ mode: "choices", deleted: true });
+    expect(html).toMatch(/role="menuitemradio" aria-checked="true"[^>]*>.*New workspace/);
+    expect(html).toContain("Small site");
+    expect(html).toContain("Trip plan");
+    expect(html).toContain("This chat&#x27;s workspace was deleted: its next file starts a new one, or pick one to move the chat there.");
+    expect(html).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it("holds a deleted workspace's chat where it is while a reply runs: the existing workspaces wait", () => {
+    const html = menu({ mode: "choices", deleted: true, canMove: false });
+    expect(html.match(/<button[^>]*disabled=""[^>]*>/g)).toHaveLength(2);
+    expect(html).toMatch(/<button[^>]*aria-checked="true"(?![^>]*disabled="")[^>]*>/);
   });
 
   it("says when there is no workspace to pick yet", () => {
@@ -62,11 +70,33 @@ describe("the workspace picker", () => {
     expect(menu({ mode: "choices", list: null })).toContain("Reading the workspaces…");
   });
 
-  it("offers rename and delete once the chat is bound", () => {
+  it("offers rename, a move and delete once the chat is bound", () => {
     const html = menu({ mode: "actions", workspace: trip, files: [file("a.md")] });
     expect(html).toMatch(/role="menuitem"[^>]*>Rename<\/button>/);
+    expect(html).toMatch(/<button type="button" role="menuitem"[^>]*>Move to…<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Move to…/);
     expect(html).toMatch(/role="menuitem"[^>]*>Delete workspace…<\/button>/);
     expect(html).not.toContain("menuitemradio");
+  });
+
+  it("disables the move while a reply runs, saying why", () => {
+    const html = menu({ mode: "actions", workspace: trip, files: [file("a.md")], canMove: false });
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="A chat moves once its reply ends."[^>]*>Move to…<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Rename/);
+  });
+
+  it("moves the chat to one of the other workspaces, or out to a new one, saying the files stay", () => {
+    const html = menu({ mode: "move", workspace: trip, files: [file("a.md")] });
+    expect(html).toContain('aria-label="Move this chat to"');
+    const order = ["New workspace", "Small site"].map((s) => html.indexOf(s));
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(order[0]).toBeGreaterThan(-1);
+    expect(html.match(/role="menuitem"/g)).toHaveLength(2);
+    expect(html).not.toMatch(/>Trip plan</);
+    expect(html).toContain("The chat leaves “Trip plan”: its next file starts a new workspace, named after the chat.");
+    expect(html).toContain("The files stay where they are. The model hears of the move with the next prompt.");
+    expect(menu({ mode: "move", workspace: trip, list: [trip] })).toContain("No other workspace yet.");
+    expect(menu({ mode: "move", workspace: trip, list: null })).toContain("Reading the workspaces…");
   });
 
   it("renames in a field holding the name", () => {

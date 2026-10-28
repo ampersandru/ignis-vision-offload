@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Settings } from "../api/request.ts";
 import type { StreamOptions, StreamResult } from "../api/stream.ts";
-import type { Message } from "../sessions/sessions.ts";
+import { bornInto, createSession, type Message, moveWorkspace, type Session } from "../sessions/sessions.ts";
 import { createMemoryStore } from "../store/memory.ts";
 import { runAgents } from "../tools/agents/agents.ts";
 import { agentExtras, NO_TOOLS } from "../tools/index.ts";
@@ -610,6 +610,110 @@ describe("a chat's reads across turns", () => {
     const read = (file: string): LocalRun => ({ callId: `r-${file}`, tool: "read_file", status: "done", seen: { workspace: "w1", file, name: `${file}.md`, version: 1 } });
     const messages = [prompt("Read both."), reply([read("f1")]), reply([read("f2")], { error: "503: engine full" })];
     expect(seenIn(messages)).toEqual([{ file: "f1", version: 1 }]);
+  });
+});
+
+describe("a chat moved to another workspace (#404)", () => {
+  let messageN = 100;
+  const prompt = (content: string): Message => ({ id: ++messageN, role: "user", content, reasoning: "", streaming: false });
+  const reply = (local: LocalRun[], more: Partial<Message> = {}): Message => ({
+    id: ++messageN,
+    role: "assistant",
+    content: "",
+    reasoning: "",
+    streaming: false,
+    toolCalls: local.map((r) => ({ id: r.callId, name: r.tool, arguments: "{}" })),
+    local,
+    ...more,
+  });
+
+  /**
+   * Chat 1 in a list of sessions, as the conversation loop holds it: each turn binds it afresh, its reader starting
+   * from what its history read, and a workspace born for it binds it in place of a deleted one.
+   */
+  function chats(workspaces: Workspaces, sessions: Session[]) {
+    let list = sessions;
+    const turn = (history: Message[]): WorkspaceAccess => ({
+      workspaces,
+      chat: workspaces.chat("chat-a", {
+        bound: () => list.find((s) => s.id === 1)?.workspaceId,
+        name: () => "Trip plan",
+        onBorn: (id, replaced) => (list = bornInto(list, 1, id, replaced)),
+        seen: seenIn(history),
+      }),
+    });
+    return { turn, list: () => list, move: (to: string | undefined) => (list = moveWorkspace(list, 1, to, { at: 0, name: "Trip" })) };
+  }
+
+  /** The workspaces Trip and Site, each holding a notes.md, a plan.md and a todo.md of the user's. */
+  async function twoWorkspaces(workspaces: Workspaces) {
+    const files = (place: string) => ["notes.md", "plan.md", "todo.md"].map((name) => ({ name, kind: "text" as const, text: `${place} ${name}` }));
+    const trip = await workspaces.create("Trip");
+    await workspaces.add(trip.id, files("Trip"), USER);
+    const site = await workspaces.create("Site");
+    await workspaces.add(site.id, files("Site"), USER);
+    return { trip: trip.id, site: site.id };
+  }
+
+  it("has read nothing in the workspace it moves to: a write, edit or delete there is refused until the model reads the file", async () => {
+    const workspaces = module();
+    const { trip, site } = await twoWorkspaces(workspaces);
+    const c = chats(workspaces, [{ ...createSession(1), workspaceId: trip }]);
+    // In Trip, the chat reads two files and rewrites one; a sub-agent of it reads and edits the third.
+    const first = c.turn([]);
+    const helper: WorkspaceAccess = { ...first, reader: first.chat.agent({ call: "a1", name: "helper" }) };
+    const own = [
+      await run(first, "read_file", { name: "notes.md" }),
+      await run(first, "read_file", { name: "plan.md" }),
+      await run(first, "write_file", { name: "plan.md", content: "Trip plan" }),
+    ];
+    const agents = [await run(helper, "read_file", { name: "todo.md" }), await run(helper, "edit_file", { name: "todo.md", old: "Trip", new: "Rome" })];
+    expect([...own, ...agents].map((r) => [r.status, r.written?.workspace ?? r.seen?.workspace])).toEqual(Array(5).fill(["done", trip]));
+    const history = [prompt("Plan the trip."), reply(own), reply([], { agents: [{ callId: "a1", name: "helper", prompt: "", status: "done", reasoning: "", content: "", local: agents }] })];
+    c.move(site);
+    // The next turn, in Site, where the same names are other files.
+    const next = c.turn(history);
+    const notRead = (name: string) => `${name} is a file you have not read: it is at version 1, by the user. Read it with read_file before you change it.`;
+    expect((await run(next, "write_file", { name: "plan.md", content: "Site plan" })).error).toBe(notRead("plan.md"));
+    expect((await run(next, "edit_file", { name: "notes.md", old: "Site", new: "Small site" })).error).toBe(notRead("notes.md"));
+    expect((await run(next, "delete_file", { name: "todo.md" })).error).toBe(notRead("todo.md"));
+    // Its sub-agents of this turn work in Site, and have read nothing there either.
+    const agent: WorkspaceAccess = { ...next, reader: next.chat.agent({ call: "a2", name: "helper" }) };
+    expect((await run(agent, "edit_file", { name: "todo.md", old: "Site", new: "Rome" })).error).toBe(notRead("todo.md"));
+    expect((await run(agent, "write_file", { name: "found.md", content: "facts" })).written?.workspace).toBe(site);
+    // Once read, each change is taken, in Site.
+    await run(next, "read_file", { name: "notes.md" });
+    const edited = await run(next, "edit_file", { name: "notes.md", old: "Site", new: "Small site" });
+    expect(edited.written).toMatchObject({ workspace: site, name: "notes.md", version: 2 });
+    // Trip keeps its files as the chat left them.
+    expect((await workspaces.files(trip)).map((f) => [f.name, latest(f).text])).toEqual([
+      ["notes.md", "Trip notes.md"],
+      ["plan.md", "Trip plan"],
+      ["todo.md", "Rome todo.md"],
+    ]);
+  });
+
+  it("out of its own, starts a new workspace named after the chat with its next file; the one it left keeps its files and its other chats", async () => {
+    const workspaces = module();
+    const c = chats(workspaces, [createSession(1)]);
+    // The chat's first file gives it a workspace.
+    const first = c.turn([]);
+    const wrote = await run(first, "write_file", { name: "notes.md", content: "# Trip" });
+    const born = c.list()[0].workspaceId!;
+    expect(wrote.written?.workspace).toBe(born);
+    // Another chat works in it.
+    const other = workspaces.chat("chat-b", { bound: () => born, name: () => "", onBorn: () => {} });
+    c.move(undefined);
+    expect(c.list()[0].workspaceId).toBeUndefined();
+    const next = c.turn([prompt("Notes."), reply([wrote])]);
+    expect((await run(next, "list_files", {})).result).toBe("This chat has no workspace yet: it is created with the first file you write or the user attaches.");
+    const again = await run(next, "write_file", { name: "plan.md", content: "- Rome" });
+    const [now] = (await workspaces.list()).filter((w) => w.id !== born);
+    expect(again.written?.workspace).toBe(now.id);
+    expect(now.name).toBe("Trip plan");
+    expect(c.list()[0].workspaceId).toBe(now.id);
+    expect((await workspaces.files(born)).map((f) => f.name)).toEqual(["notes.md"]);
+    expect((await run({ workspaces, chat: other }, "list_files", {})).result).toMatch(/^The workspace "Trip plan" holds 1 file:\n- notes\.md: text/);
   });
 });
 

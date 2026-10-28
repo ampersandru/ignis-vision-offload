@@ -61,8 +61,9 @@ first file, a file you attach, make in the [panel](#the-workspace-panel) or
 one the model writes, and takes the chat's title as its name; a chat that
 makes no file has none, unless you pick an existing workspace for it
 ([the picker](#the-workspace-picker)). A first file the browser refuses to
-store leaves no workspace behind. The chat stays in that workspace until the
-workspace is deleted, a fork shares it, and deleting the chat keeps it.
+store leaves no workspace behind. The chat stays in that workspace until you
+move it ([the picker](#the-workspace-picker)), a fork shares it, and deleting
+the chat keeps it.
 
 A prompt that attached files lists them under its text, by the names they
 took in the workspace: a name the workspace already holds gets a number,
@@ -91,22 +92,34 @@ and the model is not told of them.
 The bar above the conversation names the chat's workspace. Before the chat
 has one it reads **New workspace**, the default: a workspace born with the
 chat's first file. Open it to pick one of the existing workspaces instead,
-the last changed first; the chat works in that one from then on, with the
-files it holds. To work in another workspace, start a new chat: **New
-session** opens a new one rather than reuse an empty chat already given a
-workspace.
+the last changed first; the chat works in that one, with the files it holds.
+**New session** opens a new chat rather than reuse an empty one already given
+a workspace.
 
 Once the chat has a workspace, the picker shows its name and offers
-**Rename** and **Delete workspace…**. A delete asks first, naming how many
-files go. It removes the workspace, its files and every version, and frees
-what nothing else uses: the bytes no other workspace holds, and the pictures
-no chat, image session or other workspace names. It cannot be undone. The
-chats that worked in it keep their messages, and their next file starts a new
-workspace, named after the chat; until then the picker reads **New
-workspace** and offers no existing one, so that a chat's history never mixes
-two workspaces. A chat whose workspace another tab deleted is the same, and
-the model's `list_files` says the workspace was deleted. Deleting a chat never
-deletes its workspace.
+**Rename**, **Move to…** and **Delete workspace…**. **Move to…** lists the
+other workspaces and **New workspace**: an existing one moves the chat there,
+and **New workspace** takes it out of its own, its next file then starting a
+new workspace named after the chat. Only the chat moves: no file is copied,
+moved or deleted, and the workspace it leaves keeps its files and its other
+chats. The model hears of the move in the next prompt's [turn
+notice](tools-and-agents.md#the-turn-notice), and what the chat and its
+agents read in the workspace it left does not count in the new one, so the
+model reads a file there before it changes it ([Changes the model has not
+seen](tools-and-agents.md#changes-the-model-has-not-seen)). A reply's card
+keeps opening the version in the workspace that reply wrote it in. **Move
+to…** waits while a reply of the chat runs, and a fork works in the
+workspace its chat is in when you fork it.
+
+A delete asks first, naming how many files go. It removes the workspace, its
+files and every version, and frees what nothing else uses: the bytes no other
+workspace holds, and the pictures no chat, image session or other workspace
+names. It cannot be undone. The chats that worked in it keep their messages,
+and their next file starts a new workspace, named after the chat; until then
+the picker reads **New workspace**, and offers the existing workspaces too,
+to move the chat to one of them as **Move to…** does. A chat whose workspace
+another tab deleted is the same, and the model's `list_files` says the
+workspace was deleted. Deleting a chat never deletes its workspace.
 
 ### The workspace panel
 

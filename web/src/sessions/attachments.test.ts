@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { bindWorkspace, bornInto, clearAttachments, createSession, forkSession, mayPickWorkspace, openSession, removeAttachment, type Session } from "./sessions.ts";
+import { bindWorkspace, bornInto, clearAttachments, createSession, forkSession, type Message, moveWorkspace, openSession, removeAttachment, type Session, untoldMove } from "./sessions.ts";
 
 // A chat's files: an older chat's attachments, kept with it until its next
 // turn makes them files of its workspace, and the workspace it binds to.
@@ -19,7 +19,7 @@ describe("a chat's files", () => {
     expect(clearAttachments(sessions, 1)[0].attachments).toEqual([]);
   });
 
-  it("binds a chat to its workspace once, and never moves it", () => {
+  it("binds a chat with no workspace to the one picked for it, and leaves a bound chat to a move", () => {
     let sessions = [createSession(1), createSession(2)];
     sessions = bindWorkspace(sessions, 1, "w1");
     expect(sessions.map((s) => s.workspaceId)).toEqual(["w1", undefined]);
@@ -27,15 +27,90 @@ describe("a chat's files", () => {
     expect(same[0].workspaceId).toBe("w1");
     expect(same[0]).toBe(sessions[0]);
   });
+});
 
-  it("lets a chat pick an existing workspace only before it has one: never again once its workspace is deleted", () => {
-    const fresh = createSession(1);
-    expect(mayPickWorkspace(fresh)).toBe(true);
-    const [bound] = bindWorkspace([fresh], 1, "w1");
-    expect(mayPickWorkspace(bound)).toBe(false);
-    // Its workspace deleted, here or in another tab, the chat still names it: picking another is refused.
-    expect(bindWorkspace([bound], 1, "w2")[0]).toBe(bound);
+/** A prompt and its reply, as a chat's history holds them. */
+const exchange = (id: number): Message[] => [
+  { id, role: "user", content: "q", reasoning: "", streaming: false },
+  { id: id + 1, role: "assistant", content: "a", reasoning: "", streaming: false },
+];
+
+/** A chat bound to `workspaceId` that has talked: its model knows that workspace. */
+const talked = (id: number, workspaceId: string): Session => ({ ...createSession(id), workspaceId, messages: exchange(10 * id) });
+
+describe("a chat's move to another workspace (#404)", () => {
+  it("changes the chat's binding alone, and keeps the move, naming the workspace left, for its next notice", () => {
+    const sessions = [talked(1, "w1"), talked(2, "w1")];
+    const moved = moveWorkspace(sessions, 1, "w2", { at: 100, name: "Trip plan" });
+    expect(moved[0]).toEqual({ ...sessions[0], workspaceId: "w2", moved: { from: "w1", name: "Trip plan", at: 100 } });
+    // The workspace's other chat stays in it.
+    expect(moved[1]).toBe(sessions[1]);
   });
+
+  it("leaves the chat with no workspace on a move to a new one: its next file starts it, in no one's place", () => {
+    const [left] = moveWorkspace([talked(1, "w1")], 1, undefined, { at: 100, name: "Trip plan" });
+    expect(left.workspaceId).toBeUndefined();
+    expect("workspaceId" in left).toBe(false);
+    expect(left.moved).toEqual({ from: "w1", name: "Trip plan", at: 100 });
+    expect(bornInto([left], 1, "w3")[0].workspaceId).toBe("w3");
+  });
+
+  it("moves a chat whose workspace was deleted to an existing one, the name of the one it left unknown", () => {
+    // Deleted here or in another tab, the workspace is still the one the chat names.
+    const [moved] = moveWorkspace([talked(1, "gone")], 1, "w2", { at: 100 });
+    expect(moved.workspaceId).toBe("w2");
+    expect(moved.moved).toEqual({ from: "gone", at: 100 });
+  });
+
+  it("keeps the workspace first left while the move is untold, and keeps nothing when the chat moves back to it", () => {
+    const [once] = moveWorkspace([talked(1, "w1")], 1, "w2", { at: 100, name: "Trip plan" });
+    const [twice] = moveWorkspace([once], 1, "w3", { at: 200, name: "Small site" });
+    expect(twice.workspaceId).toBe("w3");
+    expect(twice.moved).toEqual({ from: "w1", name: "Trip plan", at: 100 });
+    const [back] = moveWorkspace([twice], 1, "w1", { at: 300, name: "Fox" });
+    expect(back.workspaceId).toBe("w1");
+    expect("moved" in back).toBe(false);
+  });
+
+  it("starts a new move from where a told one left the chat", () => {
+    const [once] = moveWorkspace([talked(1, "w1")], 1, "w2", { at: 100, name: "Trip plan" });
+    expect(untoldMove(once.messages, once.moved)).toEqual(once.moved);
+    // The next prompt's notice told the model of it.
+    const told: Session = { ...once, messages: [...once.messages, { ...exchange(20)[0], moved: once.moved }, exchange(20)[1]] };
+    expect(untoldMove(told.messages, told.moved)).toBeUndefined();
+    const [again] = moveWorkspace([told], 1, "w3", { at: 200, name: "Small site" });
+    expect(again.moved).toEqual({ from: "w2", name: "Small site", at: 200 });
+  });
+
+  it("counts a move told by a prompt the model never read as untold: the prompt dropped with its failed reply", () => {
+    const [once] = moveWorkspace([talked(1, "w1")], 1, "w2", { at: 100, name: "Trip plan" });
+    const failed: Message[] = [{ ...exchange(20)[0], moved: once.moved }, { ...exchange(20)[1], error: "the engine is full" }];
+    expect(untoldMove([...once.messages, ...failed], once.moved)).toEqual(once.moved);
+  });
+
+  it("keeps no move for a chat with no message yet, nor for one with no workspace, which simply binds", () => {
+    const empty = { ...createSession(1), workspaceId: "w1" };
+    expect(moveWorkspace([empty], 1, "w2", { at: 100, name: "Trip plan" })[0]).toEqual({ ...empty, workspaceId: "w2" });
+    const [bound] = moveWorkspace([{ ...createSession(2), messages: exchange(20) }], 2, "w2", { at: 100 });
+    expect(bound.workspaceId).toBe("w2");
+    expect("moved" in bound).toBe(false);
+  });
+
+  it("changes nothing for a move to where the chat already is", () => {
+    const sessions = [talked(1, "w1"), createSession(2)];
+    expect(moveWorkspace(sessions, 1, "w1", { at: 100, name: "Trip plan" })[0]).toBe(sessions[0]);
+    expect(moveWorkspace(sessions, 2, undefined, { at: 100 })[1]).toBe(sessions[1]);
+  });
+
+  it("is copied by a fork as it stands at the fork, binding and untold move", () => {
+    const [moved] = moveWorkspace([talked(1, "w1")], 1, "w2", { at: 100, name: "Trip plan" });
+    const fork = forkSession({ sessions: [moved], activeId: 1 }, 1, 10, 9).sessions[0];
+    expect(fork.workspaceId).toBe("w2");
+    expect(fork.moved).toEqual({ from: "w1", name: "Trip plan", at: 100 });
+  });
+});
+
+describe("a chat and the workspace born for it", () => {
 
   it("binds the workspace born with a chat's next file in place of the deleted one it named, and keeps a pick made meanwhile", () => {
     const sessions = [...bindWorkspace([createSession(1)], 1, "gone"), createSession(2), ...bindWorkspace([createSession(3)], 3, "picked")];

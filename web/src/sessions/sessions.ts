@@ -82,6 +82,8 @@ export type Message = {
    * prompt attached some. What the next turn's notice compares the files with.
    */
   knownFiles?: FileMark[];
+  /** The chat's move to another workspace this prompt's notice told the model of (#404): from then on it is told. */
+  moved?: WorkspaceMove;
   /**
    * A prompt sent before the turn notice kept only the moment it was sent, as
    * the date and time tool wrote it while it updated every prompt. It goes out
@@ -124,12 +126,15 @@ export type Session = {
   attachments: Attachment[];
   /**
    * The chat's workspace (spec #170): set when its first file is created, or
-   * when the user picks one before that, and never changed afterwards but by
-   * a deletion. A chat with no file has none. A chat whose workspace was
-   * deleted, in this tab or another, still names it: it picks no other, and
-   * its next file starts a new one, which takes its place (`bornInto`).
+   * when the user picks one before that, and changed afterwards only when the
+   * user moves the chat (#404), to another workspace or out to none. A chat
+   * with no file has none. A chat whose workspace was deleted, in this tab or
+   * another, still names it until it moves, and its next file starts a new
+   * one, which takes its place (`bornInto`).
    */
   workspaceId?: string;
+  /** The chat's last move to another workspace (#404): its next turn notice tells the model of it, if no prompt it read has (`untoldMove`). */
+  moved?: WorkspaceMove;
   /**
    * When this conversation began: the moment the date and time tool writes
    * into its system prompt, the same for every turn. A fork inherits it, so
@@ -149,15 +154,44 @@ export function createSession(id: number, startedAt = new Date()): Session {
 }
 
 /**
- * Whether the chat may pick an existing workspace: only before it has one,
- * so that its history never mixes two. A chat whose workspace was deleted
- * still names it, and picks no other.
+ * A chat's move out of a workspace its model knew (#404): the one it left,
+ * by its id and by the name it had then (none once deleted), and when.
  */
-export const mayPickWorkspace = (s: Session): boolean => s.workspaceId === undefined;
+export type WorkspaceMove = { from: string; name?: string; at: number };
 
-/** Binds a session to the workspace picked for it, while it may pick one: a chat never changes workspace. */
+const sameMove = (a: WorkspaceMove | undefined, b: WorkspaceMove) => a !== undefined && a.from === b.from && a.at === b.at;
+
+/**
+ * The chat's move (`Session.moved`) while no prompt the model reads in
+ * `history` has told it: a prompt dropped with its failed reply, or by a
+ * rerun from before it, told the model nothing.
+ */
+export const untoldMove = (history: Message[], moved: WorkspaceMove | undefined): WorkspaceMove | undefined =>
+  moved && !keptMessages(history).some((m) => sameMove(m.moved, moved)) ? moved : undefined;
+
+/** Binds a chat with no workspace to the one picked for it; a chat that has one moves instead (`moveWorkspace`). */
 export function bindWorkspace(sessions: Session[], sessionId: number, workspaceId: string): Session[] {
-  return sessions.map((s) => (s.id === sessionId && mayPickWorkspace(s) ? { ...s, workspaceId } : s));
+  return sessions.map((s) => (s.id === sessionId && s.workspaceId === undefined ? { ...s, workspaceId } : s));
+}
+
+/**
+ * The picker's choice for a chat (#404): the existing workspace `to`, or none,
+ * its next file then starting a new one named after the chat. A chat with no
+ * workspace binds to the one picked; one with a workspace, deleted or not,
+ * moves. Only the binding changes: the files stay where they are, and the
+ * workspace left keeps them and its other chats. A chat that has talked keeps
+ * the move, with `left.name`, the name of the workspace it leaves, until a
+ * notice tells its model; moving again before that keeps the workspace first
+ * left, and moving back to it leaves nothing to tell.
+ */
+export function moveWorkspace(sessions: Session[], sessionId: number, to: string | undefined, left: { at: number; name?: string }): Session[] {
+  return sessions.map((s) => {
+    if (s.id !== sessionId || s.workspaceId === to) return s;
+    const { workspaceId: from, moved: _told, ...rest } = s;
+    const leaving = from !== undefined && s.messages.length > 0 ? { from, ...(left.name !== undefined ? { name: left.name } : {}), at: left.at } : undefined;
+    const move = untoldMove(s.messages, s.moved) ?? leaving;
+    return { ...rest, ...(to !== undefined ? { workspaceId: to } : {}), ...(move && move.from !== to ? { moved: move } : {}) };
+  });
 }
 
 /**
@@ -166,7 +200,7 @@ export function bindWorkspace(sessions: Session[], sessionId: number, workspaceI
  * it meanwhile stays.
  */
 export function bornInto(sessions: Session[], sessionId: number, workspaceId: string, replaced?: string): Session[] {
-  return sessions.map((s) => (s.id === sessionId && (mayPickWorkspace(s) || s.workspaceId === replaced) ? { ...s, workspaceId } : s));
+  return sessions.map((s) => (s.id === sessionId && (s.workspaceId === undefined || s.workspaceId === replaced) ? { ...s, workspaceId } : s));
 }
 
 /** An older chat's attachments, gone once they are files of its workspace. */
@@ -274,6 +308,7 @@ export function forkSession(list: SessionList, sessionId: number, messageId: num
     log: [],
     attachments: source.attachments,
     ...(source.workspaceId !== undefined ? { workspaceId: source.workspaceId } : {}),
+    ...(source.moved ? { moved: source.moved } : {}),
     startedAt: source.startedAt,
   };
   return { sessions: [fork, ...list.sessions], activeId: newId };

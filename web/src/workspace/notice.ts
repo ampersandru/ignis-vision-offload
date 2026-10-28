@@ -1,3 +1,4 @@
+import type { WorkspaceMove } from "../sessions/sessions.ts";
 import { CHANGED_SINCE, newestFitting, noticeSection } from "../tools/local/memory.ts";
 import { KIND_LABEL, latest, present, type WorkspaceFile, type WorkspaceId } from "./files.ts";
 import { sizeOf } from "./tools.ts";
@@ -11,6 +12,9 @@ import type { Workspaces } from "./workspaces.ts";
 // knows (knownFilesOf): a file at the version and under the name the chat
 // knows is no news, whoever made that version. A file the turn's prompt
 // attaches is named by the prompt (`withAttached`) and not told again here.
+// A chat the user moved to another workspace, or out of its own (#404),
+// hears at its next turn which one it left, then the one it works in now
+// whole, as a first turn does.
 
 /** A workspace file as a chat knows it: what a later turn's notice compares the files with. */
 export type FileMark = { id: string; name: string; version: number };
@@ -36,22 +40,44 @@ const sameMarks = (a: FileMark[], b: FileMark[]) => {
 };
 
 /**
+ * What a notice says of the chat's move out of the workspace its model knew
+ * (#404): the workspace left, by the name it had, or as deleted.
+ */
+const leftLine = (move: WorkspaceMove) =>
+  move.name !== undefined
+    ? `This chat moved out of the workspace "${move.name}": its files are no longer this chat's.`
+    : "This chat moved out of its workspace, which was deleted: its files are no longer this chat's.";
+
+/**
  * The workspace section of a turn notice, and the files the chat knows once
  * it has read it. `files` are the workspace's now, deleted ones included
  * (none while the chat has no workspace); `attached`, the names the turn's
  * prompt gives the files it attaches. A chat told nothing yet (`known`
  * undefined) hears every file, as many as fit; with none to tell it now
  * knows that. A chat told before hears only the changes to what it knows,
- * and nothing at all when there are none.
+ * and nothing at all when there are none. A chat that `moved` out of the
+ * workspace it was told of hears that, then every file of the one it works
+ * in now, as a chat told nothing yet does, or that it has none.
  */
-export function workspaceNotice(known: FileMark[] | undefined, files: WorkspaceFile[], attached: readonly string[] = []): { text?: string; known?: FileMark[] } {
+export function workspaceNotice(known: FileMark[] | undefined, files: WorkspaceFile[], attached: readonly string[] = [], moved?: WorkspaceMove): { text?: string; known?: FileMark[] } {
   const marks = files.filter(present).map(fileMarkOf);
   const told = (file: WorkspaceFile) => !attached.includes(file.name);
+  /** Every file, as many as fit, and the line counting the others. */
+  const whole = () => {
+    const { listed, left } = fitting(files.filter((f) => present(f) && told(f)).map((f) => ({ at: latest(f).at, line: `- ${f.name}: ${facts(f)}` })));
+    return { listed, leftOut: left > 0 ? `(${left} older files not listed; list_files lists them all.)` : "" };
+  };
+  // A chat never told of a workspace has none it moved out of: the files it works in now say it all.
   if (known === undefined) {
-    const listed = files.filter((f) => present(f) && told(f)).map((f) => ({ at: latest(f).at, line: `- ${f.name}: ${facts(f)}` }));
-    if (listed.length === 0) return { known: marks };
-    const { listed: lines, left } = fitting(listed);
-    return { text: section("Files in the chat's workspace:", lines, left > 0 ? `(${left} older files not listed; list_files lists them all.)` : ""), known: marks };
+    const { listed, leftOut } = whole();
+    return listed.length === 0 ? { known: marks } : { text: section("Files in the chat's workspace:", listed, leftOut), known: marks };
+  }
+  if (moved) {
+    const { listed, leftOut } = whole();
+    if (listed.length > 0) return { text: section(`${leftLine(moved)}\nFiles in the chat's workspace now:`, listed, leftOut), known: marks };
+    // Files the prompt attaches are in its workspace, and the prompt names them.
+    const none = marks.length > 0 ? [] : files.length > 0 ? ["The chat's workspace holds no files."] : ["The chat has no workspace now: one is created with the next file written or attached."];
+    return { text: section(leftLine(moved), none, ""), known: marks };
   }
   const before = new Map(known.map((m) => [m.id, m]));
   const changes: { at: number; line: string }[] = [];

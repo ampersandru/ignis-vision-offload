@@ -127,6 +127,13 @@ message the page puts right before your prompt, after the conversation so far
   same workspace; a workspace you delete reads as its files deleted. What
   this chat's own calls wrote, edited, deleted or read, its agents' and
   `make_image`'s included, is not repeated to it.
+- After you [move the chat](chat.md#the-workspace-picker) to another
+  workspace, the next notice says so: it names the workspace the chat left,
+  or says it was deleted, and that its files are no longer this chat's, then
+  lists the files of the one it works in now as a first prompt does. After a
+  move to **New workspace** it says the chat has no workspace. The prompts
+  after it hear only others' changes again, and a move made while
+  **Workspace** is off is told at the first prompt with the switch back on.
 - A file the prompt attaches is not in its notice, since the prompt names it
   (`[Attached to the workspace: brief.pdf]`), and later notices count it as
   told. With **Workspace** off the notice names no file.
@@ -244,6 +251,10 @@ again; the model reads it, and makes its change on what the file holds now.
 - A new file has no guard, and a deleted file the reader never knew is a new
   file to it: writing it makes its next version. A file deleted since the
   reader read it is refused until the model reads it again.
+- A read counts for the file it read, in that file's workspace: once the chat
+  [moves](chat.md#the-workspace-picker) to another workspace, the model has
+  read none of the files there, one named as a file it read in the workspace
+  it left included, and the agents of its later turns work in the new one.
 - A chat's reads go with the replies that made them, kept with the chat: they
   hold across a reload, a fork has read what the turns it copies read, and a
   reply regenerated, or a prompt edited and sent again, leaves out the reads

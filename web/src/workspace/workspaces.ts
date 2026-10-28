@@ -506,9 +506,10 @@ export function createWorkspaces(
           return serial(async () => {
             const bound = binding.bound();
             if (bound !== undefined && (await home(bound))) return bound;
-            // A reservation whose first file the store refused waits for the next one.
+            // A reservation whose first file the store refused waits for the next one; once kept, it is the chat's
+            // binding, and a chat that moved out of it (#404) gets a new one.
             const reserved = reservations.get(key);
-            if (reserved !== undefined && (await home(reserved))) return reserved;
+            if (reserved !== undefined && pending.has(reserved)) return reserved;
             // None yet, or the one the chat names is gone: a new one, kept with its first file.
             const workspace = reserve(binding.name(), (id) => binding.onBorn(id, bound));
             reservations.set(key, workspace.id);
