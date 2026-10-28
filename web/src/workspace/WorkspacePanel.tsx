@@ -14,6 +14,7 @@ import { CsvTable, MarkdownPreview, SitePreview, SvgPreview } from "./previews.t
 import { isCsvName, isMarkdownName, isSvgName } from "./site.ts";
 import { authorName, type ChatNames, createFile, downloadName, fileTree, refusal, saveText, sizeLabel, timeLabel, type TreeNode, uploadFiles } from "./panel.ts";
 import { createRecorder } from "./recorder.ts";
+import { exportWorkspace, importWorkspace } from "./transfer.ts";
 import type { WorkspaceView } from "./useWorkspaces.ts";
 import type { ChatBinding, Workspaces } from "./workspaces.ts";
 
@@ -31,6 +32,10 @@ import type { ChatBinding, Workspaces } from "./workspaces.ts";
 export type PanelActions = {
   create: (name: string) => Promise<string | null>;
   upload: (files: File[]) => void;
+  /** Saves the workspace as a zip. */
+  exportZip: () => void;
+  /** Makes a new workspace of a zip; the refusal, or what it made. */
+  importZip: (zip: File) => void;
   rename: (file: string, name: string) => Promise<string | null>;
   remove: (file: string) => void;
   download: (file: WorkspaceFile) => void;
@@ -70,6 +75,7 @@ export function WorkspacePanel({
   onClose: () => void;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
+  const [made, setMade] = useState<string | null>(null);
   const id = view.workspace?.id;
   const [recorder] = useState(() => createRecorder());
   // A recording under way when the panel closes is saved, not lost.
@@ -78,6 +84,7 @@ export function WorkspacePanel({
   /** `job`, with what the store refused said in the panel. */
   async function attempt<T>(job: () => Promise<T>): Promise<T | { refused: string }> {
     setNotice(null);
+    setMade(null);
     try {
       return await job();
     } catch (err) {
@@ -93,6 +100,19 @@ export function WorkspacePanel({
   const actions: PanelActions = {
     create: async (name) => fieldError(await attempt(() => createFile(workspaces, chat(), name))),
     upload: (files) => void attempt(() => uploadFiles(workspaces, chat(), files)),
+    exportZip: () =>
+      void attempt(async () => {
+        if (!view.workspace) return;
+        const out = await exportWorkspace(workspaces, view.workspace, view.files);
+        save(out.zip, out.name);
+        if (out.left.length > 0) setNotice(`Left out of the zip, because an older chat kept no bytes of them: ${out.left.join(", ")}.`);
+      }),
+    importZip: (zip) =>
+      void attempt(async () => {
+        const out = await importWorkspace(workspaces, zip);
+        if (!out.ok) setNotice(out.error);
+        else setMade(`Imported ${out.files} ${out.files === 1 ? "file" : "files"} as the new workspace ${out.workspace.name}. Pick it in the Workspace menu of a chat that has none yet.`);
+      }),
     rename: async (file, name) => (id ? fieldError(await attempt(() => workspaces.renameFile(id, file, name))) : null),
     remove: (file) => {
       if (!id) return;
@@ -135,6 +155,7 @@ export function WorkspacePanel({
       files={view.files}
       chats={chats}
       notice={notice}
+      made={made}
       onClose={onClose}
       actions={actions}
       speech={speech}
@@ -158,6 +179,7 @@ export function PanelView({
   files,
   chats,
   notice,
+  made,
   onClose,
   actions,
   speech,
@@ -167,6 +189,8 @@ export function PanelView({
   files: WorkspaceFile[];
   chats: ChatNames;
   notice?: string | null;
+  /** What an import made, said beside the notice. */
+  made?: string | null;
   onClose: () => void;
   actions: PanelActions;
   speech?: SpeechStatus;
@@ -239,6 +263,25 @@ export function PanelView({
               />
             </label>
             {recording}
+            <label className={`${BUTTON} cursor-pointer`} title="Make a new workspace of a zip">
+              Import zip
+              <input
+                type="file"
+                name="workspace-zip"
+                accept=".zip,application/zip"
+                className="sr-only"
+                onChange={(e) => {
+                  const picked = e.currentTarget.files?.[0];
+                  e.currentTarget.value = "";
+                  if (picked) actions.importZip(picked);
+                }}
+              />
+            </label>
+            {tree.length > 0 && (
+              <button type="button" className={BUTTON} title="Save the workspace as a zip" onClick={actions.exportZip}>
+                Export zip
+              </button>
+            )}
             <span className="text-xs text-ash">or drop files here</span>
             {deleted > 0 && (
               <button
@@ -269,6 +312,11 @@ export function PanelView({
         </div>
       )}
 
+      {made && (
+        <p role="status" className="border-t border-line px-4 py-2 text-xs leading-snug text-ash">
+          {made}
+        </p>
+      )}
       {notice && (
         <p role="status" className="border-t border-line px-4 py-2 text-xs leading-snug text-fault">
           {notice}
