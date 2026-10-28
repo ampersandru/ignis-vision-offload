@@ -530,6 +530,8 @@ struct ignis_model {
   // context -- and so the room `scratch` holds for its scores and rows.
   uint32_t attention_text_max_keys = 0;
   VisionWeights vision{};
+  uint32_t vision_residency = 0;
+  uint64_t vision_transient_bytes = 0;
   // GitHub #243: the embedding pool, carved into fixed-width column pages.
   // Where the reference (and GitHub #178 after it) keeps one output
   // transient, this holds as many embeddings as their own columns fit --
@@ -574,4 +576,6 @@ struct ignis_media_embedding {
 // `segments` segments -- the reference's `build_workspace_layout`, shared by
 // the load's reservation (kernel/src/model.cu) and the encode that runs out
 // of it (kernel/src/vision_encode.cu), so the two cannot drift.
+std::size_t ignis_vision_weight_bytes(const VisionWeights &weights);
+
 std::size_t ignis_vision_workspace_bytes(std::int32_t tokens, std::int32_t segments);

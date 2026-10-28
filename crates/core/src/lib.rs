@@ -110,6 +110,7 @@ pub(crate) mod step_abi;
 pub mod trellis;
 pub mod types;
 pub mod vision;
+pub mod vision_cpu;
 pub mod vram;
 
 pub use admission::{

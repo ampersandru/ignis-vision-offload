@@ -62,6 +62,9 @@ ENV IGNIS_KERNEL_BUILD_JOBS=${KERNEL_BUILD_JOBS}
 # (cargo has no host condition for build.target -- GitHub #167).
 RUN cargo build --release --locked --target x86_64-unknown-linux-gnu \
         --workspace --features ignis-server/cuda \
+    && cargo build --release --locked --target x86_64-unknown-linux-gnu \
+        --package ignis-server --bin ignis-server --features cuda \
+    && ldd target/x86_64-unknown-linux-gnu/release/ignis-server | grep 'libcudart.so' \
     && strip target/x86_64-unknown-linux-gnu/release/ignis-server \
              target/x86_64-unknown-linux-gnu/release/ignis-bench \
              target/x86_64-unknown-linux-gnu/release/ignis-artifact-inspect

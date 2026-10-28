@@ -316,7 +316,7 @@ fn the_drafter_follows_an_image_prompt_and_its_text_stays_the_decode_rounds_text
 
     // --- AC 1: the two load options together -----------------------------
     let (plan, handles) =
-        bind_model_scope_27b_with(&reader, ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: false })
+        bind_model_scope_27b_with(&reader, ModelScope { draft: Some(DraftModule::Dflash2), vision: true, vision_on_host: false, fp8_exceptions: false })
             .unwrap_or_else(|e| panic!("bind with the drafter and vision: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,

@@ -30,7 +30,9 @@ function Import-Vcvars {
     Write-Host "[ignis-kernel] imported MSVC env from $vcvars"
 }
 
-Import-Vcvars
+# An existing developer environment already supplies cl, LIB and INCLUDE;
+# it need not have a Visual Studio instance registered with vswhere.
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { Import-Vcvars }
 
 # Ninja (standalone install, NINFER_WINDOWS_BUILD_NOTES section 10).
 if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {

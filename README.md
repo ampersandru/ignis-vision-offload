@@ -2,7 +2,13 @@
   <img src="web/assets/images/logo-trasparent.png" alt="Ignis" width="140">
 </p>
 
-<h1 align="center">Ignis</h1>
+<h1 align="center">Ignis — experimental vision-offload fork</h1>
+
+This fork adds **CPU vision encoding** and **RAM-resident tower weights with
+per-image GPU encoding/unload** for Qwen3.8-27B. The text model stays on GPU.
+See [setup, tradeoffs and validation status](docs/user/guides/vision-offload.md).
+Resident GPU vision remains the default. The new paths need real-model GPU
+validation before they can be considered production-ready.
 
 <p align="center">
   <b>A single-GPU inference engine for Qwen3.8 (the 27B and the 125B Flash-Next MoE) and Qwen-Image-2.1, built for the load an agent makes.</b>

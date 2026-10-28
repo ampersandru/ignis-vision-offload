@@ -579,6 +579,11 @@ config_group! {
 config_group! {
     /// The 27B's vision tower.
     VisionGroup = "vision" {
+        /// Tower placement: resident GPU, cpu encoding in host RAM, or
+        /// on-demand GPU encoding with weights/workspace freed after each image.
+        residency: Text = "resident".to_owned(), NO_RULE, QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
+        /// CPU encoder workers; 0 selects available CPU parallelism.
+        cpu_threads: Tokens = 0, between(0, 256), QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
         /// Load the vision tower and reserve its workspace.
         enabled: Bool = false, NO_RULE, QWEN38_ONLY, [Visible, Patchable, ReloadRequired];
         /// Merged vision tokens per request. An image over it is shrunk to

@@ -186,7 +186,7 @@ fn the_consumed_capture_reads_what_hq_attention_read() {
     let frontend = FrontendSet::from_reader(&reader).unwrap_or_else(|e| panic!("frontend: {e}"));
     let processor = frontend.vision_processor().unwrap_or_else(|e| panic!("vision processor: {e}"));
     let tokenizer = frontend.tokenizer();
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true, fp8_exceptions: false })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true, vision_on_host: false, fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind with vision: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,

@@ -195,7 +195,7 @@ fn attention_over_a_text_state_is_dumped_for_calibration() {
         AnswerAlphabet::from_tokenizer(tokenizer).tokens().iter().map(|t| t.label.clone()).collect();
     let thinking = ThinkingOptions { enable_thinking: false, ..ThinkingOptions::default() };
 
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: false, fp8_exceptions: false })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: false, vision_on_host: false, fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(d) => d,

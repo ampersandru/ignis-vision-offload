@@ -357,6 +357,8 @@ struct ignis_model_load_options {
    * Fixed for the life of the load. IGNIS_PREFILL_ATTENTION_FP8 on
    * Flash-Next, whose attention is QSA. */
   uint32_t prefill_attention;
+  /* 0 resident GPU, 1 host CPU, 2 host RAM / ephemeral GPU encode. */
+  uint32_t vision_residency;
 };
 
 /* The widest vision envelope a load accepts, in merged tokens: 4x that many

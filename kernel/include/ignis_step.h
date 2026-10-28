@@ -355,6 +355,10 @@ struct ignis_media_encode_input {
 int32_t ignis_media_encode(struct ignis_model *model, const struct ignis_media_encode_input *input,
                            struct ignis_media_embedding **out_embedding);
 
+/* Upload CPU-encoded BF16 columns into the model's embedding pool. */
+int32_t ignis_media_upload(struct ignis_model *model, const uint16_t *columns,
+                          uint32_t count, struct ignis_media_embedding **out_embedding);
+
 /* The embedding's merged columns. 0 for NULL. */
 uint32_t ignis_media_embedding_columns(const struct ignis_media_embedding *embedding);
 

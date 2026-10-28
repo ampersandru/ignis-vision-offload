@@ -15,8 +15,8 @@
 //!   params `a_log` / `dt_bias`, the `*_input_scale_divisor` scalars — the
 //!   kernels consume the format directly).
 //! - **W8 / Q4 / Q5 / Q6** (`row-split-k128-v1`): the *exceptional* formats
-//!   — **dequantized to bf16** by [`normalize_tensor`] (not yet wired to a
-//!   consumer for the mtp weights / vision backbone). The two W8G32 text
+//!   — **dequantized to bf16** by [`normalize_tensor`] (also consumed by
+//!   this fork's host vision encoder). The two W8G32 text
 //!   endpoints (`text/token_embedding` + `text/output_head`) are the one
 //!   case this rule no longer applies to: P1-17 (GitHub #53) exports them
 //!   as device views like every other text-scope tensor instead of a

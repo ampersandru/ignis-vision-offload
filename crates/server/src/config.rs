@@ -1528,6 +1528,11 @@ fn derive_speculation(
 /// rather than refused here.
 fn derive_vision(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> String) -> Result<Option<Vision>, ConfigError> {
     let s = &resolution.settings.vision;
+    let residency = ignis_core::vision::VisionResidency::parse(&s.residency)
+        .map_err(ConfigError)?;
+    if !s.enabled && (residency != ignis_core::vision::VisionResidency::Resident || s.cpu_threads != 0) {
+        return Err(ConfigError("vision residency/cpu_threads require --vision-enabled".into()));
+    }
     if !s.enabled {
         for (name, value) in [
             ("max_tokens", resolution.explicit("vision", "max_tokens").then(|| s.max_tokens.to_string())),
@@ -1542,7 +1547,9 @@ fn derive_vision(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> Strin
         }
         return Ok(None);
     }
-    let vision = Vision::new(s.max_tokens).map_err(|_| {
+    let max_tokens = if residency == ignis_core::vision::VisionResidency::Cpu
+        && !resolution.explicit("vision", "max_tokens") { 256 } else { s.max_tokens };
+    let vision = Vision::new(max_tokens).map_err(|_| {
         ConfigError(format!(
             "`{}` must be in 1..={VISION_MAX_TOKENS_LIMIT}, got {}",
             spelled("vision", "max_tokens"),
@@ -1552,7 +1559,7 @@ fn derive_vision(resolution: &Resolution, spelled: &impl Fn(&str, &str) -> Strin
     Ok(Some(match s.embedding_pool_mib {
         Some(mib) => vision.with_pool_bytes(mib * 1024 * 1024),
         None => vision,
-    }))
+    }.with_residency(residency, s.cpu_threads)))
 }
 
 /// `--media-allow-private-network` and `--media-cache-mib` (GitHub #179).

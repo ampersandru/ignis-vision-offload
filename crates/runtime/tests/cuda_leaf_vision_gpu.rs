@@ -173,14 +173,22 @@ struct Loaded {
 
 /// Load the model with vision, or `None` where the profile allows a skip.
 fn load() -> Option<Loaded> {
-    let path = Path::new(ARTIFACT);
+    load_residency(ignis_core::vision::VisionResidency::Resident)
+}
+
+fn load_residency(residency: ignis_core::vision::VisionResidency) -> Option<Loaded> {
+    let artifact = std::env::var_os("IGNIS_TEST_ARTIFACT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(ARTIFACT));
+    let path = artifact.as_path();
     if !path.exists() && gpu_profile::skip_or_fail(&format!("artifact absent: {ARTIFACT}")) {
         return None;
     }
     let reader = Reader::open(path).unwrap_or_else(|e| panic!("open artifact: {e}"));
     let frontend = FrontendSet::from_reader(&reader).unwrap_or_else(|e| panic!("frontend: {e}"));
     let eos = frontend.eos_token_id().expect("eos");
-    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true, fp8_exceptions: false })
+    let (plan, handles) = bind_model_scope_27b_with(&reader, ModelScope { draft: None, vision: true,
+        vision_on_host: residency != ignis_core::vision::VisionResidency::Resident,
+        fp8_exceptions: false })
         .unwrap_or_else(|e| panic!("bind: {e}"));
     let mut device = match CudaDevice::create(0) {
         Ok(device) => device,
@@ -204,7 +212,11 @@ fn load() -> Option<Loaded> {
         max_context_tokens: MAX_CONTEXT,
         kv_format: KvFormat::Bf16,
         kv_pool_bytes: ignis_runtime::auto_kv_pool_bytes(KvFormat::Bf16, MAX_CONTEXT),
-        vision: Some(Vision::default()),
+        vision: Some(if residency == ignis_core::vision::VisionResidency::Resident {
+            Vision::default()
+        } else {
+            Vision::new(256).unwrap().with_residency(residency, 4)
+        }),
         ..CudaLeafConfig::default()
     };
     // GitHub #213: the eviction leg below pushes a sequence to KV-RAM, which
@@ -390,4 +402,38 @@ fn an_image_request_evicted_to_kv_ram_continues_as_if_never_evicted() {
     eprintln!("evicted image answer: {:?}", frontend.tokenizer().decode(&actual).expect("decode"));
     assert_eq!(actual, expected, "an image request restored from KV-RAM must continue exactly");
     assert_eq!(compute.live_media(), 0);
+}
+
+
+/// Both offloaded modes must answer the real image canary repeatedly without
+/// retaining temporary encoder allocations after the request completes.
+#[test]
+#[ignore = "GPU profile only: scripts/gpu-profile.ps1; real artifact required"]
+fn offloaded_towers_answer_images_and_release_encode_memory() {
+    use ignis_core::vision::VisionResidency;
+    for residency in [VisionResidency::OnDemand, VisionResidency::Cpu] {
+        let Some(Loaded { compute, frontend, pages, model }) = load_residency(residency) else { return; };
+        let image = image();
+        let mut baseline = None;
+        for round in 0..4 {
+            // Use a different image digest to force a fresh encode rather than
+            // accepting a cache hit as evidence for the unload path.
+            let mut input = image_input(&frontend, &image);
+            let mm = Arc::make_mut(input.multimodal.as_mut().unwrap());
+            mm.media[0].content_digest[0] ^= round + 1;
+            let (ids, events) = run(&compute, pages, vec![input], 0, Vec::new());
+            let answer = frontend.tokenizer().decode(&generated(&events, ids[0])).expect("decode");
+            assert!(answer.contains("47"), "{residency:?} image answer: {answer:?}");
+            assert_eq!(compute.live_media(), 0);
+            assert_eq!(compute.live_sequences(), 0);
+            let (free, _) = CudaDevice::nvml_memory(0).expect("NVML memory");
+            if let Some(before) = baseline {
+                assert!(free + (16 << 20) >= before,
+                    "{residency:?} retained encode VRAM: before {before}, now {free}");
+            }
+            baseline = Some(free);
+        }
+        drop(compute);
+        drop(model);
+    }
 }

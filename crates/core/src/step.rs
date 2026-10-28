@@ -265,6 +265,9 @@ pub(crate) mod ffi {
             out_embedding: *mut *mut IgnisMediaEmbedding,
         ) -> i32;
 
+        pub fn ignis_media_upload(model: *mut IgnisModel, columns: *const u16, count: u32,
+            out_embedding: *mut *mut IgnisMediaEmbedding) -> i32;
+
         pub fn ignis_media_embedding_columns(embedding: *const IgnisMediaEmbedding) -> u32;
 
         pub fn ignis_media_embedding_release(embedding: *mut IgnisMediaEmbedding);
@@ -1703,6 +1706,18 @@ pub fn encode_media<'m>(
         handle,
         _model: PhantomData,
     })
+}
+
+/// Publish a CPU tower's token-major BF16 output to the text model.
+pub fn upload_media<'m>(model: &'m Model, columns: &[u16]) -> Result<MediaEmbedding<'m>, (i32, String)> {
+    const HIDDEN: usize = 5120;
+    if columns.is_empty() || columns.len() % HIDDEN != 0 || columns.len() / HIDDEN > u32::MAX as usize {
+        return Err((-1, "CPU vision output must be [tokens, 5120] BF16".into()));
+    }
+    let mut handle = std::ptr::null_mut();
+    let rc = unsafe { ffi::ignis_media_upload(model.handle(), columns.as_ptr(), (columns.len() / HIDDEN) as u32, &mut handle) };
+    if rc != 0 { return Err((rc, media_last_error())); }
+    Ok(MediaEmbedding { handle, _model: PhantomData })
 }
 
 /// One span of a multimodal prompt for [`prefill_program_multimodal`]

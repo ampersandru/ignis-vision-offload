@@ -5,6 +5,14 @@ sidebar:
   order: 10
 ---
 
+This experimental fork also offers [CPU vision and per-image GPU staging](../guides/vision-offload.md).
+Both require `--vision-enabled`.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--vision-residency resident\|cpu\|on-demand` | `IGNIS_VISION_RESIDENCY` | `resident` | Tower placement and encoder device. |
+| `--vision-cpu-threads <n>` | `IGNIS_VISION_CPU_THREADS` | `0` | CPU workers; zero selects available parallelism. CPU mode defaults to 256 image tokens unless overridden. |
+
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
 | `--vision-enabled` | `IGNIS_VISION_ENABLED` | off | Load the vision tower and reserve its workspace. Without it every `image_url` part is refused with `vision_disabled`, whatever the artifact holds. |

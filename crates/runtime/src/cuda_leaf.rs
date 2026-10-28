@@ -391,6 +391,7 @@ pub struct PlannedReservations {
 pub struct CudaModel {
     model: CoreModel,
     pool: SeqPool,
+    cpu_vision: Option<ignis_core::vision_cpu::CpuVision>,
 }
 
 // These wrap raw FFI pointers with no synchronization of their own. That is
@@ -457,7 +458,14 @@ impl StepLeaf for CudaLeaf {
 
     fn encode_media(&self, model: &Self::Model, item: &MediaItem) -> Result<Self::Media, i32> {
         let control = ignis_core::vision::vision_item_control(item.grid);
-        let embedding = step::encode_media(&model.model, item.grid, &item.patches, &control)
+        let encoded = match &model.cpu_vision {
+            Some(encoder) => {
+                let columns = encoder.encode(item).map_err(|e| leaf_error("CPU vision", e))?;
+                step::upload_media(&model.model, &columns)
+            }
+            None => step::encode_media(&model.model, item.grid, &item.patches, &control),
+        };
+        let embedding = encoded
             // GitHub #243: a full pool is not a leaf error — it is the leaf
             // telling the caller to release an embedding and call again, and
             // `RuntimeCompute` does exactly that. Logging it as an error
@@ -640,7 +648,16 @@ impl StepLeaf for CudaLeaf {
                 "decode graph capture: not all widths ready"
             );
         }
-        Ok(CudaModel { model, pool })
+        let cpu_vision = match self.config.vision {
+            Some(v) if v.residency() == ignis_core::vision::VisionResidency::Cpu => {
+                let encoder = ignis_core::vision_cpu::CpuVision::load(&self.reader, v.cpu_threads())
+                    .map_err(|e| leaf_error("CPU vision load", e))?;
+                tracing::info!(name: "ignis.vision.cpu_loaded", host_bytes = encoder.host_bytes(), "CPU vision tower ready");
+                Some(encoder)
+            }
+            _ => None,
+        };
+        Ok(CudaModel { model, pool, cpu_vision })
     }
 
     fn release_model(&self, _model: Self::Model) {

@@ -321,7 +321,7 @@ pub fn bind_model_scope_27b(
     reader: &Reader,
     draft: Option<DraftModule>,
 ) -> Result<(MaterializationPlan, Vec<ObjectHandle>)> {
-    bind_model_scope_27b_with(reader, ModelScope { draft, vision: false, fp8_exceptions: false })
+    bind_model_scope_27b_with(reader, ModelScope { draft, vision: false, vision_on_host: false, fp8_exceptions: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +394,8 @@ pub fn vision_scope_27b() -> Vec<InventoryEntry> {
 pub struct ModelScope {
     pub draft: Option<DraftModule>,
     pub vision: bool,
+    /// Offloaded towers live in pinned host RAM, not the text weight arena.
+    pub vision_on_host: bool,
     /// GitHub #341: the nine BF16 exception tensors -- the fused attention
     /// projection of GQA layers 3-23, the attention output of GQA layers 3
     /// and 7, the GDN output of layer 4 -- held on the device in FP8,
@@ -423,7 +425,10 @@ fn with_modules(text: Vec<InventoryEntry>, scope: ModelScope) -> Vec<InventoryEn
         }
     }
     if scope.vision {
-        entries.extend(vision_scope_27b());
+        entries.extend(vision_scope_27b().into_iter().map(|entry| {
+            if scope.vision_on_host { InventoryEntry { residence: Residence::HostMapped, ..entry } }
+            else { entry }
+        }));
     }
     if scope.fp8_exceptions {
         for entry in &mut entries {
@@ -524,6 +529,18 @@ pub fn bind_model_scope_27b_on_device(
 /// `entries`, every one on the device.
 fn all_on_device(entries: &[InventoryEntry]) -> Vec<InventoryEntry> {
     entries.iter().map(|e| InventoryEntry { residence: Residence::Device, ..*e }).collect()
+}
+
+#[cfg(test)]
+#[test]
+fn offloaded_vision_leaves_text_placements_unchanged() {
+    let resident = model_scope_27b_with(ModelScope { vision: true, ..Default::default() });
+    let host = model_scope_27b_with(ModelScope { vision: true, vision_on_host: true, ..Default::default() });
+    assert_eq!(resident.len(), host.len());
+    for (r, h) in resident.iter().zip(&host) {
+        if h.name.starts_with("vision/") { assert_eq!(h.residence, Residence::HostMapped); }
+        else { assert_eq!(r, h); }
+    }
 }
 
 /// Require and place each entry where it lives, in order.
@@ -713,7 +730,7 @@ mod tests {
     fn the_token_embedding_is_the_one_host_mapped_tensor_of_every_scope() {
         for scope in [
             ModelScope::default(),
-            ModelScope { draft: Some(DraftModule::Dflash2ShortlistHead), vision: true, fp8_exceptions: false },
+            ModelScope { draft: Some(DraftModule::Dflash2ShortlistHead), vision: true, vision_on_host: false, fp8_exceptions: false },
         ] {
             let host: Vec<&str> = model_scope_27b_with(scope)
                 .iter()
@@ -766,9 +783,9 @@ mod tests {
     #[test]
     fn fp8_exceptions_convert_exactly_the_nine_bf16_exception_tensors() {
         for draft in [None, Some(DraftModule::Dflash2)] {
-            let plain = model_scope_27b_with(ModelScope { draft, vision: true, fp8_exceptions: false });
+            let plain = model_scope_27b_with(ModelScope { draft, vision: true, vision_on_host: false, fp8_exceptions: false });
             assert!(plain.iter().all(|e| e.encoding == DeviceEncoding::Stored));
-            let fp8 = model_scope_27b_with(ModelScope { draft, vision: true, fp8_exceptions: true });
+            let fp8 = model_scope_27b_with(ModelScope { draft, vision: true, vision_on_host: false, fp8_exceptions: true });
             assert_eq!(fp8.len(), plain.len(), "the same tensors");
             let converted: Vec<&InventoryEntry> = fp8.iter().filter(|e| e.encoding != DeviceEncoding::Stored).collect();
             let names: Vec<&str> = converted.iter().map(|e| e.name).collect();
@@ -941,11 +958,11 @@ mod tests {
         let text = text_scope_27b();
         let vision = vision_scope_27b();
 
-        let only_vision = model_scope_27b_with(ModelScope { draft: None, vision: true, fp8_exceptions: false });
+        let only_vision = model_scope_27b_with(ModelScope { draft: None, vision: true, vision_on_host: false, fp8_exceptions: false });
         assert_eq!(&only_vision[..text.len()], text.as_slice());
         assert_eq!(&only_vision[text.len()..], vision.as_slice());
 
-        let both = model_scope_27b_with(ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: false });
+        let both = model_scope_27b_with(ModelScope { draft: Some(DraftModule::Dflash2), vision: true, vision_on_host: false, fp8_exceptions: false });
         let with_drafter = model_scope_27b(Some(DraftModule::Dflash2));
         assert_eq!(&both[..with_drafter.len()], with_drafter.as_slice());
         assert_eq!(&both[with_drafter.len()..], vision.as_slice());
@@ -1094,7 +1111,7 @@ mod tests {
     fn fp8_exceptions_never_reencode_a_trellis_matrix() {
         let k3 = |_: &str| Some(NumericFormat::TrellisMul1K3);
         for draft in [None, Some(DraftModule::Dflash2ShortlistHead)] {
-            let scope = ModelScope { draft, vision: true, fp8_exceptions: true };
+            let scope = ModelScope { draft, vision: true, vision_on_host: false, fp8_exceptions: true };
             let trellis = with_modules(text_scope_27b_trellis(k3).unwrap(), scope);
             assert!(trellis.iter().all(|e| e.encoding == DeviceEncoding::Stored), "{draft:?}");
             assert_eq!(trellis.len(), with_modules(text_scope_27b_trellis(k3).unwrap(), ModelScope { fp8_exceptions: false, ..scope }).len());

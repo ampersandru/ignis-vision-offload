@@ -68,6 +68,29 @@ pub struct Vision {
     /// The most merged tokens one item may hold; 0 = none named, which the
     /// leaf reads as the envelope.
     item_max_tokens: u32,
+    residency: VisionResidency,
+    cpu_threads: u32,
+}
+
+/// Where the 27B's tower is held and evaluated. Codes cross the kernel ABI.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum VisionResidency {
+    #[default]
+    Resident = 0,
+    Cpu = 1,
+    OnDemand = 2,
+}
+
+impl VisionResidency {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "resident" => Ok(Self::Resident),
+            "cpu" => Ok(Self::Cpu),
+            "on-demand" => Ok(Self::OnDemand),
+            _ => Err("vision.residency must be resident, cpu, or on-demand".into()),
+        }
+    }
 }
 
 /// A vision envelope outside `1..=VISION_MAX_TOKENS_LIMIT`.
@@ -92,11 +115,19 @@ impl Default for Vision {
             max_tokens: DEFAULT_VISION_MAX_TOKENS,
             pool_bytes: DEFAULT_EMBEDDING_POOL_BYTES,
             item_max_tokens: 0,
+            residency: VisionResidency::Resident,
+            cpu_threads: 0,
         }
     }
 }
 
 impl Vision {
+    pub fn with_residency(self, residency: VisionResidency, cpu_threads: u32) -> Self {
+        Self { residency, cpu_threads, ..self }
+    }
+    pub fn residency(&self) -> VisionResidency { self.residency }
+    pub fn cpu_threads(&self) -> u32 { self.cpu_threads }
+
     /// An envelope of `max_tokens` merged vision tokens per request, with the
     /// default embedding pool.
     pub fn new(max_tokens: u32) -> Result<Self, VisionEnvelopeOutOfRange> {
@@ -107,6 +138,8 @@ impl Vision {
             max_tokens,
             pool_bytes: DEFAULT_EMBEDDING_POOL_BYTES,
             item_max_tokens: 0,
+            residency: VisionResidency::Resident,
+            cpu_threads: 0,
         })
     }
 

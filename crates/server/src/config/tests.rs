@@ -15,6 +15,24 @@ fn no_env(_: &str) -> Option<String> {
     None
 }
 
+#[test]
+fn vision_residency_flags_and_environment_reach_the_load() {
+    use ignis_core::vision::VisionResidency;
+    let cpu = config(&["--vision-enabled", "--vision-residency", "cpu", "--vision-cpu-threads", "4"]);
+    let v = cpu.vision.unwrap();
+    assert_eq!(v.residency(), VisionResidency::Cpu);
+    assert_eq!(v.max_tokens(), 256);
+    assert_eq!(v.cpu_threads(), 4);
+    let large = config(&["--vision-enabled", "--vision-residency", "cpu", "--vision-max-tokens", "1024"]);
+    assert_eq!(large.vision.unwrap().max_tokens(), 1024);
+    let flags = args(&["--vision-enabled"]);
+    let env = env_map(&[("IGNIS_VISION_RESIDENCY", "on-demand")]);
+    let dynamic = expect_config(resolve(&flags, env).unwrap());
+    assert_eq!(dynamic.vision.unwrap().residency(), VisionResidency::OnDemand);
+    assert!(refused(&["--vision-residency", "cpu"]).contains("--vision-enabled"));
+    assert!(refused(&["--vision-enabled", "--vision-residency", "unknown"]).contains("resident, cpu, or on-demand"));
+}
+
 fn env_map(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
     move |key| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string())
 }

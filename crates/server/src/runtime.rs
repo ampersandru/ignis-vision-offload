@@ -1048,8 +1048,13 @@ pub fn qwen27b_load(
     // unplanned, as Flash-Next does.
     let mut host_planned = None;
     if let Some(available) = ignis_core::residency::available_physical_bytes() {
-        let request =
+        let mut request =
             qwen27b_host_request(available, plan.host_mapped_capacity_bytes, reservations.retained_host_bytes, &shape);
+        if shape.vision.is_some_and(|v| v.residency() == ignis_core::vision::VisionResidency::Cpu) {
+            request.margin_bytes = request.margin_bytes.checked_add(
+                ignis_core::vision_cpu::CpuVision::planned_host_bytes())
+                .ok_or_else(|| "CPU vision host budget overflow".to_string())?;
+        }
         let host = ignis_core::residency::plan_host(&request).map_err(|refusal| {
             log_qwen27b_host_plan_refused(&refusal);
             Qwen27bLoadError::HostPlan(refusal)

@@ -110,6 +110,7 @@ pub(crate) mod ffi {
         /// [`crate::prefill_attention::PrefillAttention::abi_code`]: 0 = 8-bit,
         /// 1 = FP16 accumulate. Flash-Next's attention is QSA and takes 0.
         pub prefill_attention: u32,
+        pub vision_residency: u32,
     }
 
     /// 1:1 with `struct ignis_moe_slot` (`kernel/include/ignis_moe.h`): an
@@ -344,6 +345,7 @@ pub fn model_scope(speculation: Option<Speculation>, vision: Option<Vision>, exc
     ModelScope {
         draft: draft_module(speculation),
         vision: vision.is_some(),
+        vision_on_host: vision.is_some_and(|v| v.residency() != crate::vision::VisionResidency::Resident),
         fp8_exceptions: exceptions.is_fp8(),
     }
 }
@@ -401,6 +403,7 @@ fn load_options(
             draft_row_budget: 0,
             mtp_expert_slots: std::ptr::null(),
             prefill_attention: prefill_attention.abi_code(),
+            vision_residency: vision.map_or(0, |v| v.residency() as u32),
         }
     })
 }
@@ -971,6 +974,7 @@ fn flash_next_options(
         draft_row_budget: speculation.map_or(0, |s| s.row_budget()),
         mtp_expert_slots: std::ptr::null(),
         prefill_attention: PrefillAttention::default().abi_code(),
+        vision_residency: 0,
     }
 }
 
@@ -1286,12 +1290,12 @@ mod tests {
         let vision = Vision::default();
         assert_eq!(
             model_scope(None, Some(vision), ExceptionWeights::Bf16),
-            ModelScope { draft: None, vision: true, fp8_exceptions: false }
+            ModelScope { draft: None, vision: true, vision_on_host: false, fp8_exceptions: false }
         );
         let spec = Speculation::new(SpeculativeBackend::Dflash2, 3).unwrap();
         assert_eq!(
             model_scope(Some(spec), Some(vision), ExceptionWeights::Fp8),
-            ModelScope { draft: Some(DraftModule::Dflash2), vision: true, fp8_exceptions: true }
+            ModelScope { draft: Some(DraftModule::Dflash2), vision: true, vision_on_host: false, fp8_exceptions: true }
         );
     }
 
@@ -1329,6 +1333,13 @@ mod tests {
         assert_eq!(options.speculative_backend, 0);
         assert_eq!(options.draft_tokens, 0);
         assert_eq!(options.vision_max_tokens, 8192);
+        for residency in [crate::vision::VisionResidency::Cpu, crate::vision::VisionResidency::OnDemand] {
+            let vision = Vision::new(256).unwrap().with_residency(residency, 4);
+            let scope = model_scope(None, Some(vision), ExceptionWeights::default());
+            assert!(scope.vision && scope.vision_on_host);
+            let options = load_options(None, Some(vision), RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).unwrap();
+            assert_eq!(options.vision_residency, residency as u32);
+        }
 
         let spec = Speculation::new(SpeculativeBackend::Dflash2, 7).unwrap();
         let without_vision = load_options(Some(spec), None, RopeScaling::NONE, 0, PrefillAttention::Fp8, LANES).expect("options");
@@ -1432,6 +1443,7 @@ mod tests {
         // to the pointer's alignment.
         assert_eq!(std::mem::size_of::<ffi::IgnisModelLoadOptions>(), 88);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, prefill_attention), 80);
+        assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, vision_residency), 84);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, decode_lanes), 48);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, residency), 56);
         assert_eq!(std::mem::offset_of!(ffi::IgnisModelLoadOptions, draft_row_budget), 64);

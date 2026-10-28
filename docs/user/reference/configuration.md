@@ -931,6 +931,33 @@ The drafter's proposal head: `full` (the target's output head), `shortlist` (the
 
 ## vision
 
+### `vision.residency`
+
+| | |
+|---|---|
+| Flag | `--vision-residency` |
+| Env var | `IGNIS_VISION_RESIDENCY` |
+| Kind | `text` |
+| Default | `resident` |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+Tower placement: resident GPU, cpu encoding in host RAM, or on-demand GPU encoding with weights/workspace freed after each image.
+
+### `vision.cpu_threads`
+
+| | |
+|---|---|
+| Flag | `--vision-cpu-threads` |
+| Env var | `IGNIS_VISION_CPU_THREADS` |
+| Kind | `tokens` |
+| Default | `0` |
+| Rule | 0..=256 |
+| Models | Qwen3.8-27B |
+| `/v1/config` | shown by `GET`, patchable, with a model reload |
+
+CPU encoder workers; 0 selects available CPU parallelism.
+
 ### `vision.enabled`
 
 | | |

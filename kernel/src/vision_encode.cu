@@ -156,6 +156,25 @@ void copy_host(const void *src, ninfer::Tensor &dst, cudaStream_t stream, const 
   }
 }
 
+// Visit each tensor in exactly the same order for sizing and staging.
+template <class F> void visit_weights(VisionWeights &w, F visit) {
+  visit(w.patch_embedding); visit(w.patch_embedding_bias); visit(w.position_embedding);
+  for (auto &b : w.layers) {
+    visit(b.qkv); visit(b.qkv_bias); visit(b.output); visit(b.output_bias);
+    visit(b.fc1); visit(b.fc1_bias); visit(b.fc2); visit(b.fc2_bias);
+    visit(b.norm1_weight); visit(b.norm1_bias); visit(b.norm2_weight); visit(b.norm2_bias);
+  }
+  visit(w.merger_fc1); visit(w.merger_fc1_bias); visit(w.merger_fc2);
+  visit(w.merger_fc2_bias); visit(w.merger_norm_weight); visit(w.merger_norm_bias);
+}
+
+// Nothing in this guard persists on the model. Synchronize before its device
+// weights/workspace can be released, including an exception after a launch.
+struct StreamDrain {
+  cudaStream_t stream;
+  ~StreamDrain() { cudaStreamSynchronize(stream); }
+};
+
 // A merger: the tower's, whose LayerNorm runs over the hidden before the
 // 2x2 view, or a DeepStack one (GitHub #320), whose LayerNorm runs over the
 // merged width after it (transformers' `use_postshuffle_norm`).
@@ -514,6 +533,16 @@ std::string image_vision_refusal(const ignis_image_vision_weights *weights,
 
 } // namespace
 
+std::size_t ignis_vision_weight_bytes(const VisionWeights &weights) {
+  VisionWeights copy = weights;
+  std::size_t bytes = 0;
+  visit_weights(copy, [&](ninfer::Weight &w) {
+    bytes = (bytes + kVisionWorkspaceAlignment - 1) / kVisionWorkspaceAlignment * kVisionWorkspaceAlignment;
+    bytes += w.payload_bytes;
+  });
+  return bytes;
+}
+
 std::size_t ignis_vision_workspace_bytes(std::int32_t tokens, std::int32_t segments) {
   return build_workspace_layout(tokens * kVisionMergeUnit, tokens, segments).bytes;
 }
@@ -531,6 +560,10 @@ extern "C" int32_t ignis_media_encode(struct ignis_model *model,
   if (input->size != sizeof(struct ignis_media_encode_input)) {
     set_error("ignis_media_encode: unrecognized ignis_media_encode_input size " +
               std::to_string(input->size));
+    return -1;
+  }
+  if (model->vision_residency == 1) {
+    set_error("ignis_media_encode: CPU residency requires the host encoder and embedding upload");
     return -1;
   }
   if (!model->vision_pool.present()) {
@@ -568,7 +601,7 @@ extern "C" int32_t ignis_media_encode(struct ignis_model *model,
     const auto patches = static_cast<std::int32_t>(tokens * kVisionMergeUnit);
     const VisionWorkspaceLayout layout = build_workspace_layout(
         patches, static_cast<std::int32_t>(tokens), static_cast<std::int32_t>(t));
-    if (layout.bytes > model->scratch->capacity()) {
+    if (model->vision_residency == 0 && layout.bytes > model->scratch->capacity()) {
       throw std::runtime_error("the item needs " + std::to_string(layout.bytes) +
                                " workspace bytes, the load reserved " +
                                std::to_string(model->scratch->capacity()));
@@ -608,9 +641,35 @@ extern "C" int32_t ignis_media_encode(struct ignis_model *model,
     } guard{pool, embedding->pages, handed_over};
     // Held until the stream has drained: nothing else may take these bytes
     // while the encoder's kernels still run on them.
-    ninfer::DeviceArena::Scope scope = model->scratch->scope();
-    const ninfer::DeviceSpan backing =
-        model->scratch->alloc_bytes(layout.bytes, kVisionWorkspaceAlignment);
+    std::unique_ptr<ninfer::DeviceBuffer> staged_weights;
+    std::unique_ptr<ninfer::DeviceArena> temporary_workspace;
+    VisionWeights weights = model->vision;
+    if (model->vision_residency == 2) {
+      staged_weights = std::make_unique<ninfer::DeviceBuffer>(ignis_vision_weight_bytes(weights));
+      temporary_workspace = std::make_unique<ninfer::DeviceArena>(layout.bytes);
+    }
+    // Declared after the allocations so it drains before either allocation
+    // is destroyed. Every partial-copy and encoder exception takes this path.
+    StreamDrain drain{model->stream};
+    if (staged_weights) {
+      std::size_t offset = 0;
+      visit_weights(weights, [&](ninfer::Weight &w) {
+        offset = (offset + kVisionWorkspaceAlignment - 1) / kVisionWorkspaceAlignment * kVisionWorkspaceAlignment;
+        auto *dst = static_cast<unsigned char *>(staged_weights->p) + offset;
+        const auto *src = static_cast<const unsigned char *>(w.payload);
+        const auto rebase = [&](const void *pointer) -> const void * {
+          return pointer == nullptr ? nullptr : dst + (static_cast<const unsigned char *>(pointer) - src);
+        };
+        const auto error = cudaMemcpyAsync(dst, src, w.payload_bytes, cudaMemcpyDefault, model->stream);
+        if (error != cudaSuccess) { throw std::runtime_error(cudaGetErrorString(error)); }
+        w.qdata = rebase(w.qdata); w.qhigh = rebase(w.qhigh); w.scales = rebase(w.scales);
+        w.payload = dst;
+        offset += w.payload_bytes;
+      });
+    }
+    ninfer::DeviceArena *arena = temporary_workspace ? temporary_workspace.get() : model->scratch.get();
+    ninfer::DeviceArena::Scope scope = arena->scope();
+    const ninfer::DeviceSpan backing = arena->alloc_bytes(layout.bytes, kVisionWorkspaceAlignment);
     VisionEncodeCall call;
     call.patches = input->patches;
     call.position_ids = input->position_ids;
@@ -622,7 +681,7 @@ extern "C" int32_t ignis_media_encode(struct ignis_model *model,
     for (const std::int32_t page : embedding->pages) {
       call.pages.push_back(pool.page_ptr(page));
     }
-    encode(model->vision, call, layout, backing, patches, static_cast<std::int32_t>(tokens),
+    encode(weights, call, layout, backing, patches, static_cast<std::int32_t>(tokens),
            model->stream);
     const cudaError_t err = cudaStreamSynchronize(model->stream);
     if (err != cudaSuccess) {
@@ -635,6 +694,50 @@ extern "C" int32_t ignis_media_encode(struct ignis_model *model,
     return 0;
   } catch (const std::exception &e) {
     set_error(std::string("ignis_media_encode: ") + e.what());
+    return -1;
+  }
+}
+
+// CPU output is token-major BF16, exactly the column order the text prefill
+// consumes. Only the finished embedding is copied to persistent device pages.
+extern "C" int32_t ignis_media_upload(struct ignis_model *model, const uint16_t *columns,
+                                      uint32_t count, struct ignis_media_embedding **out) {
+  if (out != nullptr) { *out = nullptr; }
+  if (model == nullptr || columns == nullptr || out == nullptr || count == 0 ||
+      !model->vision_pool.present() || count > std::min(model->vision_item_max_tokens, model->max_context_tokens)) {
+    set_error("ignis_media_upload: invalid model, columns or vision bound");
+    return -1;
+  }
+  try {
+    auto embedding = std::make_unique<ignis_media_embedding>();
+    embedding->model = model;
+    embedding->columns = static_cast<int32_t>(count);
+    auto &pool = model->vision_pool;
+    embedding->pages = pool.take(pool.pages_for(embedding->columns), embedding.get());
+    if (embedding->pages.empty()) {
+      set_error("ignis_media_upload: embedding pool full");
+      return IGNIS_MEDIA_ENCODE_POOL_FULL;
+    }
+    bool success = false;
+    struct GiveBack {
+      VisionEmbeddingPool &pool;
+      std::vector<int32_t> &pages;
+      bool &success;
+      ~GiveBack() { if (!success) pool.give(pages); }
+    } guard{pool, embedding->pages, success};
+    for (std::size_t page = 0; page < embedding->pages.size(); ++page) {
+      const auto first = static_cast<uint32_t>(page * pool.page_columns);
+      const auto take = std::min<uint32_t>(pool.page_columns, count - first);
+      const auto bytes = static_cast<std::size_t>(take) * model->hidden * sizeof(uint16_t);
+      const auto err = cudaMemcpy(pool.page_ptr(embedding->pages[page]),
+          columns + static_cast<std::size_t>(first) * model->hidden, bytes, cudaMemcpyHostToDevice);
+      if (err != cudaSuccess) { set_error(cudaGetErrorString(err)); return -1; }
+    }
+    success = true;
+    *out = embedding.release();
+    return 0;
+  } catch (const std::exception &e) {
+    set_error(std::string("ignis_media_upload: ") + e.what());
     return -1;
   }
 }

@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+matrixmultiply = "0.3"
+libm = "0.2"
 ignis-artifact = { path = "../artifact" }
 # Request-lifecycle span tree (GitHub #81, ADR 0012): admission / prefill /
 # decode-round / completion spans, all keyed by `request_id`. No call site

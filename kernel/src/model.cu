@@ -999,6 +999,7 @@ struct LoadOptions {
   int32_t speculative_backend = IGNIS_SPECULATIVE_NONE;
   uint32_t draft_tokens = 0;
   uint32_t vision_max_tokens = 0;
+  uint32_t vision_residency = 0;
   // The most merged tokens one item may hold, already resolved against the
   // envelope by `validate_and_bind` (never above it; the envelope itself
   // when the caller named no bound). 0 without vision.
@@ -1169,6 +1170,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   int32_t speculative_backend = IGNIS_SPECULATIVE_NONE;
   uint32_t draft_tokens = 0;
   uint32_t vision_max_tokens = 0;
+  uint32_t vision_residency = 0;
   uint32_t vision_item_max_tokens = 0;
   uint64_t vision_embedding_pool_request = 0;
   uint32_t attention_text_max_keys = 0;
@@ -1184,6 +1186,11 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
     speculative_backend = options->speculative_backend;
     draft_tokens = options->draft_tokens;
     vision_max_tokens = options->vision_max_tokens;
+    vision_residency = options->vision_residency;
+    if (vision_residency > 2 || (vision_max_tokens == 0 && vision_residency != 0)) {
+      set_error("ignis_model_load: invalid vision residency (needs vision and code 0..2)");
+      return nullptr;
+    }
     vision_item_max_tokens = options->vision_item_max_tokens;
     vision_embedding_pool_request = options->vision_embedding_pool_bytes;
     rope_scaling.factor = options->rope_scaling_factor;
@@ -1257,6 +1264,7 @@ std::unique_ptr<ignis_model> validate_and_bind(const struct ignis_bound_tensor *
   out.speculative_backend = speculative_backend;
   out.draft_tokens = draft_tokens;
   out.vision_max_tokens = vision_max_tokens;
+  out.vision_residency = vision_residency;
   // An item never holds more than its request may: no bound, or one past
   // the envelope, is the envelope.
   out.vision_item_max_tokens = vision_item_max_tokens == 0
@@ -1446,6 +1454,8 @@ struct LoadSizes {
   // media encode runs between prefill steps, never inside one, so the two
   // are never live at once -- ninfer sizes its single workspace the same
   // way.
+  std::size_t transient_vision = 0;
+
   std::size_t workspace() const {
     return std::max(prefill_scratch + text_readout + attention_readout, vision_workspace);
   }
@@ -1453,7 +1463,7 @@ struct LoadSizes {
   ignis_model_reservations reservations() const {
     const bool vision = media_embedding > 0;
     ignis_model_reservations out{};
-    out.workspace_bytes = workspace();
+    out.workspace_bytes = workspace() + transient_vision;
     out.media_embedding_bytes = media_embedding;
     // sampling_single_{configs, positions, out}, sampling_decode_{configs,
     // positions, out, logits} and the workspace, as the load allocates them.
@@ -1638,8 +1648,13 @@ LoadSizes plan_load_sizes(const ignis_model &model, const ignis_topology &topolo
     const auto text_keys = static_cast<std::int32_t>(options.attention_text_max_keys);
     sizes.attention_readout = attention_readout_bytes(std::max(item_tokens, text_keys), text_keys) -
                               attention_readout_bytes(text_keys, text_keys);
-    sizes.vision_workspace =
-        ignis_vision_workspace_bytes(item_tokens, std::min(item_tokens, kVisionMaxSegments));
+    if (options.vision_residency == 0) {
+      sizes.vision_workspace = ignis_vision_workspace_bytes(item_tokens, std::min(item_tokens, kVisionMaxSegments));
+    } else if (options.vision_residency == 2) {
+      // Leave peak encode capacity free; no device allocation holds it while idle.
+      sizes.transient_vision = ignis_vision_weight_bytes(model.vision) +
+          ignis_vision_workspace_bytes(item_tokens, std::min(item_tokens, kVisionMaxSegments));
+    }
     sizes.media_embedding =
         vision_embedding_pool_bytes(g.hidden, tokens, options.vision_embedding_pool_bytes);
   }
@@ -1702,7 +1717,7 @@ ignis_model_reservations reserved_of(const ignis_model &model) {
     return arena != nullptr ? arena->capacity() : 0;
   };
   ignis_model_reservations out{};
-  out.workspace_bytes = capacity(model.scratch);
+  out.workspace_bytes = capacity(model.scratch) + model.vision_transient_bytes;
   out.media_embedding_bytes = bytes(model.vision_pool.buffer);
   out.sampling_bytes = bytes(model.sampling_single_configs) + bytes(model.sampling_single_positions) +
                        bytes(model.sampling_single_out) + bytes(model.sampling_decode_configs) +
@@ -1928,6 +1943,8 @@ extern "C" int32_t ignis_model_load(const struct ignis_bound_tensor *tensors, ui
   // that does not fit the free memory fails the load naming it.
   if (vision_max_tokens > 0) {
     model->vision_max_tokens = vision_max_tokens;
+    model->vision_residency = load.vision_residency;
+    model->vision_transient_bytes = sizes.transient_vision;
     model->vision_item_max_tokens = load.vision_item_max_tokens;
     try {
       const std::size_t output_bytes = sizes.media_embedding;
