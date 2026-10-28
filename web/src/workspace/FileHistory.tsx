@@ -41,7 +41,8 @@ export function FileEditor({ file, whom, onSave }: { file: WorkspaceFile; whom: 
     <div className="flex flex-col gap-2">
       <textarea
         aria-label={`The text of ${file.name}`}
-        value={shown.text}
+        // With LF line endings, as the box reads its value back: a value with CR in it would be set again at each render, the caret moved.
+        value={shown.text.replace(/\r\n/g, "\n")}
         spellCheck={false}
         className="min-h-[40vh] w-full resize-y rounded-[2px] border border-line bg-surface px-2.5 py-2 font-mono text-xs leading-relaxed text-ink focus:border-ember focus:outline-none"
         onChange={(e) => setDraft({ base: shown.base, text: e.currentTarget.value })}

@@ -44,6 +44,14 @@ describe("a text file's editor", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Discard changes<\/button>/);
     expect(html).toContain("Ctrl+S saves");
   });
+
+  it("holds a file with CRLF line endings as the browser's box holds it, with LF ones", () => {
+    // A box given a value with CR in it reads back without, and would be given it again at each render, its caret moved.
+    const crlf: WorkspaceFile = { ...notes, versions: [v(1, USER, "a\r\nb\r\n")] };
+    const html = renderToStaticMarkup(<FileEditor file={crlf} whom={whom} onSave={save} />);
+    expect(html).toContain(">a\nb\n</textarea>");
+    expect(html).not.toContain("\r");
+  });
 });
 
 describe("a file's history", () => {

@@ -140,9 +140,9 @@ changes** takes the newest version back. While you have typed nothing the box
 follows the file, so a version the model writes meanwhile shows at once; once
 you have typed, a newer version leaves your text alone and the editor names
 it, and saving makes your text the newest version, the other kept in the
-history. A file with CRLF line
-endings keeps them. What you type waits in the box while you look at the
-file's other tabs; opening another file, or **← All files**, drops it.
+history. A file with CRLF line endings keeps them. What you type waits in the
+box while you look at the file's other tabs; opening another file, **← All
+files**, closing the panel, or a deletion of the file meanwhile, drops it.
 
 The model reads your change before it changes the file again: its next
 `write_file`, `edit_file` or `delete_file` of that file is refused until it
