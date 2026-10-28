@@ -652,6 +652,7 @@ impl StepLeaf for CudaLeaf {
             Some(v) if v.residency() == ignis_core::vision::VisionResidency::Cpu => {
                 let encoder = ignis_core::vision_cpu::CpuVision::load(&self.reader, v.cpu_threads())
                     .map_err(|e| leaf_error("CPU vision load", e))?;
+                // hotpath-lint-allow: one line per model load, not per encode.
                 tracing::info!(name: "ignis.vision.cpu_loaded", host_bytes = encoder.host_bytes(), "CPU vision tower ready");
                 Some(encoder)
             }
