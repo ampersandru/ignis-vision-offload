@@ -333,6 +333,7 @@ export function App() {
             speech={model.speech}
             drawer={transcribeDrawer}
             onDrawer={setTranscribeDrawer}
+            workspaces={pageWorkspaces()}
             onOpenInChat={(markdown) => {
               // A new chat, its prompt box seeded with the Transcript; nothing is sent (Q89).
               newSession();
