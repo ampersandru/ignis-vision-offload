@@ -114,14 +114,33 @@ message the page puts right before your prompt, after the conversation so far
   the last notice by someone other than this chat: you, from **Memory** in the
   header, or another chat. What this chat's own `memory_save` and `memory_delete` calls
   did, its agents' included, is not repeated to it.
+- With **Workspace** on, the files of the
+  [chat's workspace](chat.md#the-chats-workspace) follow the notes. At a
+  chat's first prompt, a chat you bound to a workspace with the picker
+  included, it lists each file with its kind and size, as `list_files` gives
+  them; the files changed last are kept first up to 4,000 characters, with a
+  line counting the others.
+- At a later prompt it lists only the files created, changed, renamed or
+  deleted since the last notice by someone other than this chat: you, in the
+  [workspace panel](chat.md#the-workspace-panel) (a save in the editor, an
+  upload, a restore, a rename, a deletion), or another chat working in the
+  same workspace; a workspace you delete reads as its files deleted. What
+  this chat's own calls wrote, edited, deleted or read, its agents' and
+  `make_image`'s included, is not repeated to it.
+- A file the prompt attaches is not in its notice, since the prompt names it
+  (`[Attached to the workspace: brief.pdf]`), and later notices count it as
+  told. With **Workspace** off the notice names no file.
 - With **Update every prompt** on, it carries the [moment](#date-and-time)
   too, ahead of the notes.
 - A prompt with nothing to tell carries no notice.
 
 A notice is kept with its prompt, in the chat and across a reload, and every
-later request sends it again byte for byte; a chat saved before the notice
-sends the moments its prompts carry as it always did. An agent gets every
-title in a notice ahead of its task. A server whose
+later request sends it again byte for byte; what it told is kept with it, so
+the next notice after a reload tells only what changed since. A chat saved
+before the notice sends the moments its prompts carry as it always did, and
+its next prompt hears every title and every file. An agent gets every title
+in a notice ahead of its task, and no file: it lists them with `list_files`.
+A server whose
 `--server-developer-message-policy` joins or gathers developer messages
 (`into-system`, `after-system`, `one-after-system`,
 [prompting](../configuration/prompting.md)) loses the reuse for it, as it does
@@ -178,10 +197,10 @@ and a full-screen view at desktop, tablet or phone width.
 The ignis system prompt's workspace part and the five tools are the same in
 every chat, whatever the workspace holds and whatever you attach, so a file
 never changes the head of the prompt ([the turn notice](#the-turn-notice)).
-With the switch off the model has no workspace tool and **File** leaves the
-prompt box's **+** menu; pictures can still be attached, sent with the prompt
-alone, the pictures `make_image` makes stay in its reply as they did before
-workspaces, and the files stay in this browser.
+With the switch off the model has no workspace tool, the turn notice names no
+file, and **File** leaves the prompt box's **+** menu; pictures can still be
+attached, sent with the prompt alone, the pictures `make_image` makes stay in
+its reply as they did before workspaces, and the files stay in this browser.
 
 ### Pictures the model reads
 

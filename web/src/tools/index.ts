@@ -42,7 +42,7 @@ export type ToolsState = {
   jsSafetyCheck: boolean;
   plan: boolean;
   memory: boolean;
-  /** list_files, read_file, write_file, edit_file and delete_file on the chat's workspace, and files attached in the prompt box. */
+  /** list_files, read_file, write_file, edit_file and delete_file on the chat's workspace, files attached in the prompt box, and the files the turn notice names. */
   workspace: boolean;
   /** make_image: pictures from the image model, a switch there and back per reply that calls it. */
   images: boolean;

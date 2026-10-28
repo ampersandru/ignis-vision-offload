@@ -47,6 +47,7 @@ import { agentNotice, turnNotice } from "../tools/notice.ts";
 import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
 import { type AttachedFile, attachedChip, commitAttached, fromLegacy, readAttached, withAttached } from "../workspace/attach.ts";
+import { noticeFiles } from "../workspace/notice.ts";
 import type { ChatNames } from "../workspace/panel.ts";
 import { boxPictures, madeIn } from "../workspace/pictures.ts";
 import { seenIn } from "../workspace/tools.ts";
@@ -355,6 +356,8 @@ export function useConversation({
     // The prompt the switch is shown on: the new one, or the one a regenerate answers again.
     let switchOn = [...history].reverse().find((m) => m.role === "user")?.id;
     if (prompt !== null) {
+      // The notice tells of the workspace as it is now, the prompt's own files in it; a store that cannot say leaves it out.
+      const files = tools.enabled && tools.workspace ? await noticeFiles(workspaces, chat.bound()) : undefined;
       const user: Message = {
         id: newId(),
         role: "user",
@@ -363,7 +366,7 @@ export function useConversation({
         streaming: false,
         ...(images.length > 0 ? { images } : {}),
         ...(named.length > 0 ? { attached: named } : {}),
-        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list() }),
+        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list(), files, attached: named }),
       };
       setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, [user]) }));
       void keepSent(sessionId, user);

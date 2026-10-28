@@ -120,8 +120,8 @@ export type NoteMark = Pick<MemoryNote, "id" | "title" | "savedAt">;
 
 export const markOf = ({ id, title, savedAt }: MemoryNote): NoteMark => ({ id, title, savedAt });
 
-/** The lines that fit in MEMORY_PROMPT_LIMIT, the newest (the last) kept first, and how many did not fit. */
-function newestFitting(lines: string[]): { listed: string[]; left: number } {
+/** The lines that fit in MEMORY_PROMPT_LIMIT, the newest (the last) kept first, and how many did not fit: the cap of every list a turn notice holds. */
+export function newestFitting(lines: string[]): { listed: string[]; left: number } {
   const listed: string[] = [];
   let used = 0;
   for (const line of [...lines].reverse()) {

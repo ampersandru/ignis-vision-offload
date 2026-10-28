@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { buildChatRequest, conversationTurns, type Settings, type Turn } from "../api/request.ts";
-import { responseItems } from "../api/responses.ts";
+import { buildResponseCreate, responseItems } from "../api/responses.ts";
 import { exchangeOf } from "../app/useConversation.ts";
 import { createSession, type Message, type Session } from "../sessions/sessions.ts";
 import { CHAT_VERSION, restoreChats, toStored } from "../sessions/stored.ts";
+import { createMemoryStore } from "../store/memory.ts";
+import { USER, WORKSPACE_FORMAT, type WorkspaceFile } from "../workspace/files.ts";
+import { noticeFiles } from "../workspace/notice.ts";
+import { saveText } from "../workspace/panel.ts";
+import { madeIn } from "../workspace/pictures.ts";
+import type { WorkspaceAccess } from "../workspace/tools.ts";
+import { createWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
 import type { AgentRun } from "./agents/agents.ts";
 import { dateTimePrompt } from "./datetime/datetime.ts";
+import type { ImageRun } from "./image/image.ts";
 import { ALL_TOOLS, toolExtras } from "./index.ts";
-import type { LocalRun } from "./local/local.ts";
+import { type LocalRun, runLocalCalls } from "./local/local.ts";
 import { browserMemory, type MemoryNote } from "./local/memory.ts";
 import { agentNotice, turnNotice } from "./notice.ts";
 
@@ -76,8 +84,8 @@ describe("a chat's first turn", () => {
   });
 });
 
-/** A reply that called memory tools, as the chat ran them: the runs it shows, and the results after it. */
-function calledMemory(id: number, runs: LocalRun[]): Message[] {
+/** A reply that called local tools, memory or workspace, as the chat ran them: the runs it shows, and the results after it. */
+function calledLocal(id: number, runs: LocalRun[]): Message[] {
   const calls = runs.map((run) => ({ id: run.callId, name: run.tool, arguments: "{}" }));
   return [
     { id, role: "assistant", content: "", reasoning: "", streaming: false, toolCalls: calls, local: runs },
@@ -95,7 +103,7 @@ describe("a later turn", () => {
   /** A first turn told of `first`, whose reply saved m4 and deleted m3 itself. */
   const history = [
     prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: first })),
-    ...calledMemory(2, [saveRun("c1", trip), deleteRun("c2", "m3")]),
+    ...calledLocal(2, [saveRun("c1", trip), deleteRun("c2", "m3")]),
     answer(5, "Noted."),
   ];
 
@@ -157,7 +165,7 @@ describe("a turn with nothing to report", () => {
     const first = turnNotice(ALL_TOOLS, [], { now, notes: [] });
     expect(first.notice).toBeUndefined();
     const trip = note("m1", "Trip", "2026-10-28T08:31:00.000Z");
-    const history = [prompt(1, "Hi", first), ...calledMemory(2, [saveRun("c1", trip)]), answer(4, "Noted.")];
+    const history = [prompt(1, "Hi", first), ...calledLocal(2, [saveRun("c1", trip)]), answer(4, "Noted.")];
     expect(turnNotice(ALL_TOOLS, history, { now, notes: [trip] }).notice).toBeUndefined();
   });
 
@@ -265,5 +273,302 @@ describe("an agent", () => {
     expect(agentNotice(live, [note("m1", "Language"), note("m2", "Team")])).toBe("# Memory notes\nSaved notes, by title:\n- [m1] Language\n- [m2] Team");
     expect(agentNotice(live, [])).toBeUndefined();
     expect(agentNotice({ ...ALL_TOOLS, memory: false }, [note("m1", "Language")])).toBeUndefined();
+  });
+});
+
+// The workspace half of the notice (#393): the files of the chat's workspace,
+// whole at its first turn and later only what someone other than this chat
+// created, changed, renamed or deleted, driven through the workspace module
+// over the in-memory store and its tools as a turn runs them.
+
+/** A clock that moves one minute per reading, from 28 October 2026 at 09:00 local time. */
+function clock() {
+  let minute = 0;
+  return () => new Date(2026, 9, 28, 9, minute++).getTime();
+}
+
+function workspaceModule(): Workspaces {
+  let n = 0;
+  return createWorkspaces(createMemoryStore(), { now: clock(), newId: () => `id${++n}`, measure: async () => ({ width: 1024, height: 1024 }) });
+}
+
+/** A chat bound to `workspace`, as the picker or its first file binds it, under its store key. */
+function boundChat(workspaces: Workspaces, workspace: string, key = "chat-a"): WorkspaceAccess {
+  return { workspaces, chat: workspaces.chat(key, { bound: () => workspace, name: () => "Trip plan", onBorn: () => {} }) };
+}
+
+let callN = 0;
+
+/** One workspace call as the local tools' router runs it in a turn, by the chat's reader, or by `access.reader`. */
+async function call(access: WorkspaceAccess, name: string, args: object): Promise<LocalRun> {
+  const calls = [{ id: `w${++callN}`, name, arguments: JSON.stringify(args) }];
+  const [ran] = await runLocalCalls(calls, { settings, signal: new AbortController().signal, jsSafetyCheck: false, workspace: access }, () => {});
+  return ran;
+}
+
+/** A workspace "Trip" holding the user's `files`, each a text file. */
+async function tripWith(workspaces: Workspaces, files: Record<string, string>) {
+  const trip = await workspaces.create("Trip");
+  await workspaces.add(trip.id, Object.entries(files).map(([name, text]) => ({ name, kind: "text" as const, text })), USER);
+  const named = async (name: string) => (await workspaces.files(trip.id)).find((f) => f.name === name)!;
+  return { id: trip.id, files: () => workspaces.files(trip.id), named };
+}
+
+const textFile = (id: string, name: string, text: string, at: number): WorkspaceFile => ({
+  format: WORKSPACE_FORMAT,
+  id,
+  workspace: "w1",
+  name,
+  kind: "text",
+  versions: [{ n: 1, author: USER, at, text }],
+});
+
+describe("a chat's first turn, with a workspace", () => {
+  it("lists the files of the workspace the picker bound it to, with their kind and size, on both transports", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n\n- Rome\n" });
+    const other = boundChat(workspaces, trip.id, "chat-b");
+    await call(other, "write_file", { name: "site/index.html", content: "<h1>Trip</h1>" });
+    await call(other, "write_file", { name: "old.md", content: "x" });
+    await call(other, "delete_file", { name: "old.md" });
+    const first = prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() }));
+    const notice = ["# Workspace files", "Files in the chat's workspace:", "- notes.md: text, 3 lines, 15 characters", "- site/index.html: text, 1 line, 13 characters"].join("\n");
+    expect(first.notice).toBe(notice);
+    const turns = wireTurns([first]);
+    expect(buildChatRequest(settings, turns).messages).toEqual([
+      { role: "developer", content: notice },
+      { role: "user", content: "Hi" },
+    ]);
+    expect(responseItems(turns)).toEqual([developer(notice), userItem("Hi")]);
+  });
+
+  it("rides behind the moment and the memory notes, in the same notice", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "- Rome\n" });
+    const live = { ...ALL_TOOLS, dateTimeLive: true };
+    expect(turnNotice(live, [], { now, notes: [note("m1", "Language")], files: await trip.files() }).notice).toBe(
+      `${dateTimePrompt(now)}\n\n# Memory notes\nSaved notes, by title:\n- [m1] Language\n\n# Workspace files\nFiles in the chat's workspace:\n- notes.md: text, 1 line, 7 characters`,
+    );
+  });
+
+  it("has no files section while the chat has no workspace, and never tells the chat of the file it writes itself", async () => {
+    const workspaces = workspaceModule();
+    let bound: string | undefined;
+    const chat = workspaces.chat("chat-a", { bound: () => bound, name: () => "Trip plan", onBorn: (id) => (bound = id) });
+    const first = turnNotice(ALL_TOOLS, [], { now, notes: [], files: await noticeFiles(workspaces, bound) });
+    expect(first).toEqual({ knownNotes: [], knownFiles: [] });
+    const wrote = await call({ workspaces, chat }, "write_file", { name: "plan.md", content: "- Rome\n" });
+    const history = [prompt(1, "Hi", first), ...calledLocal(2, [wrote]), answer(4, "Written.")];
+    expect(turnNotice(ALL_TOOLS, history, { now, notes: [], files: await noticeFiles(workspaces, bound) })).toEqual({});
+  });
+
+  it("keeps the memory's cap: the files changed last that fit in 4,000 characters, in the order they changed, and a line counting the others", () => {
+    // 50 files, f10 to f59, changed in that order, whose lines are 99 characters each: 40 of them fit with their line breaks.
+    const files = Array.from({ length: 50 }, (_, i) => textFile(`id${i}`, `f${i + 10}-${"x".repeat(63)}.md`, "x", i));
+    const lines = (turnNotice(ALL_TOOLS, [], { now, notes: [], files }).notice ?? "").split("\n");
+    expect(lines.slice(0, 2)).toEqual(["# Workspace files", "Files in the chat's workspace:"]);
+    expect(lines[2]).toBe(`- f20-${"x".repeat(63)}.md: text, 1 line, 1 character`);
+    expect(lines.slice(2, -1).map((line) => line.slice(0, 5))).toEqual(Array.from({ length: 40 }, (_, i) => `- f${i + 20}`));
+    expect(lines.at(-1)).toBe("(10 older files not listed; list_files lists them all.)");
+  });
+});
+
+describe("a later turn, with a workspace", () => {
+  it("tells only what the user or another chat created, changed, renamed or deleted since the last notice, on both transports", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "budget.csv": "item,cost\n", "notes.md": "# Trip\n", "old.md": "x" });
+    const history = [prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() })), answer(2, "Hello.")];
+    // In the panel the user edits notes.md, renames budget.csv and deletes old.md; another chat writes todo.md.
+    await saveText(workspaces, await trip.named("notes.md"), "# Trip\n\n- Rome\n");
+    await workspaces.renameFile(trip.id, (await trip.named("budget.csv")).id, "costs.csv");
+    await workspaces.deleteFile(trip.id, (await trip.named("old.md")).id, USER);
+    await call(boundChat(workspaces, trip.id, "chat-b"), "write_file", { name: "todo.md", content: "- Book\n" });
+    const next = prompt(3, "Next", turnNotice(ALL_TOOLS, history, { now, notes: [], files: await trip.files() }));
+    const notice = [
+      "# Workspace files",
+      "Changed by the user or another chat since the last notice:",
+      "- renamed budget.csv to costs.csv",
+      "- changed notes.md: text, 3 lines, 15 characters",
+      "- deleted old.md",
+      "- created todo.md: text, 1 line, 7 characters",
+    ].join("\n");
+    expect(next.notice).toBe(notice);
+    const turns = wireTurns([...history, next]);
+    expect(buildChatRequest(settings, turns).messages.slice(-2)).toEqual([
+      { role: "developer", content: notice },
+      { role: "user", content: "Next" },
+    ]);
+    expect(responseItems(turns).slice(-2)).toEqual([developer(notice), userItem("Next")]);
+    // Told once: the prompt after it hears nothing more of them.
+    expect(turnNotice(ALL_TOOLS, [...history, next, answer(4, "Noted.")], { now, notes: [], files: await trip.files() })).toEqual({});
+  });
+
+  it("says nothing of what the chat wrote, edited, deleted or made itself, nor of what its agents did", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "budget.csv": "item,cost\n", "notes.md": "# Trip\n", "old.md": "x" });
+    const a = boundChat(workspaces, trip.id);
+    const first = prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() }));
+    const own = [
+      await call(a, "read_file", { name: "notes.md" }),
+      await call(a, "edit_file", { name: "notes.md", old: "# Trip", new: "# Trip to Rome" }),
+      await call(a, "write_file", { name: "plan.md", content: "- Day 1\n" }),
+      await call(a, "read_file", { name: "old.md" }),
+      await call(a, "delete_file", { name: "old.md" }),
+    ];
+    // One of its agents reads and deletes budget.csv and writes agenda.md; make_image lands a picture.
+    const helper = { ...a, reader: a.chat.agent({ call: "a1", name: "agent" }) };
+    const agentRun: AgentRun = {
+      callId: "a1",
+      name: "agent",
+      prompt: "tidy up",
+      status: "done",
+      reasoning: "",
+      content: "Done.",
+      local: [
+        await call(helper, "read_file", { name: "budget.csv" }),
+        await call(helper, "delete_file", { name: "budget.csv" }),
+        await call(helper, "write_file", { name: "agenda.md", content: "- 9:00\n" }),
+      ],
+    };
+    const picture = await madeIn(workspaces, a.chat).land(new Blob(["png"], { type: "image/png" }), "map.png");
+    const made: ImageRun = { callId: "i1", prompt: "a map", references: [], transparent: false, count: 1, status: "done", made: [{ name: "map.png", size: "1024 × 1024", file: picture }] };
+    expect([...own, ...(agentRun.local ?? [])].map((run) => run.status)).toEqual(Array(8).fill("done"));
+    const history = [
+      first,
+      ...calledLocal(2, own),
+      { ...answer(8, ""), toolCalls: [{ id: "a1", name: "agent", arguments: "{}" }], agents: [agentRun] },
+      { id: 9, role: "tool" as const, content: "Done.", toolCallId: "a1", reasoning: "", streaming: false },
+      { ...answer(10, ""), toolCalls: [{ id: "i1", name: "make_image", arguments: "{}" }], imageRuns: [made] },
+      { id: 11, role: "tool" as const, content: "Made map.png.", toolCallId: "i1", reasoning: "", streaming: false },
+      answer(12, "Tidied."),
+    ];
+    const next = turnNotice(ALL_TOOLS, history, { now, notes: [], files: await trip.files() });
+    expect(next.notice).toBeUndefined();
+    expect(turnNotice(ALL_TOOLS, [...history, prompt(13, "Next", next), answer(14, "Fine.")], { now, notes: [], files: await trip.files() })).toEqual({});
+  });
+
+  it("tells of every file it knew once the user deletes the workspace, and the chat has none", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n", "plan.md": "- Rome\n" });
+    const history = [prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() })), answer(2, "Hello.")];
+    await workspaces.remove(trip.id, []);
+    // Deleting a workspace unbinds its chats.
+    expect(turnNotice(ALL_TOOLS, history, { now, notes: [], files: await noticeFiles(workspaces, undefined) })).toEqual({
+      notice: "# Workspace files\nChanged by the user or another chat since the last notice:\n- deleted notes.md\n- deleted plan.md",
+      knownFiles: [],
+    });
+  });
+
+  it("does not tell again a change the chat read in its turn", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n" });
+    const first = prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() }));
+    await saveText(workspaces, await trip.named("notes.md"), "# Trip\n\n- Rome\n");
+    const read = await call(boundChat(workspaces, trip.id), "read_file", { name: "notes.md" });
+    const history = [first, ...calledLocal(2, [read]), answer(4, "It says Rome.")];
+    expect(turnNotice(ALL_TOOLS, history, { now, notes: [], files: await trip.files() })).toEqual({});
+  });
+
+  it("does not repeat the files a prompt attaches, which it names itself, nor tell of them after", async () => {
+    const workspaces = workspaceModule();
+    // The first prompt attaches brief.txt, the workspace's only file.
+    const trip = await tripWith(workspaces, { "brief.txt": "Rome, 3 days\n" });
+    const firstNotice = turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files(), attached: ["brief.txt"] });
+    expect(firstNotice.notice).toBeUndefined();
+    const history = [prompt(1, "Plan it", { attached: ["brief.txt"], ...firstNotice }), answer(2, "Planned.")];
+    // The user edits brief.txt in the panel; the next prompt attaches map.txt.
+    await saveText(workspaces, await trip.named("brief.txt"), "Rome, 4 days\n");
+    await workspaces.add(trip.id, [{ name: "map.txt", kind: "text", text: "Colosseum\n" }], USER);
+    const nextNotice = turnNotice(ALL_TOOLS, history, { now, notes: [], files: await trip.files(), attached: ["map.txt"] });
+    const next = prompt(3, "And the map", { attached: ["map.txt"], ...nextNotice });
+    const notice = "# Workspace files\nChanged by the user or another chat since the last notice:\n- changed brief.txt: text, 1 line, 13 characters";
+    expect(next.notice).toBe(notice);
+    expect(buildChatRequest(settings, wireTurns([...history, next])).messages.slice(-2)).toEqual([
+      { role: "developer", content: notice },
+      { role: "user", content: "And the map\n\n[Attached to the workspace: map.txt]" },
+    ]);
+    // A prompt that attaches a file and has nothing else to tell carries no notice, and the chat knows the file after it.
+    await workspaces.add(trip.id, [{ name: "route.txt", kind: "text", text: "Via Appia\n" }], USER);
+    const later = [...history, next, answer(4, "Mapped.")];
+    const third = turnNotice(ALL_TOOLS, later, { now, notes: [], files: await trip.files(), attached: ["route.txt"] });
+    expect(third.notice).toBeUndefined();
+    const last = [...later, prompt(5, "And the route", { attached: ["route.txt"], ...third }), answer(6, "Routed.")];
+    expect(turnNotice(ALL_TOOLS, last, { now, notes: [], files: await trip.files() })).toEqual({});
+  });
+});
+
+describe("a notice with the Workspace switch off", () => {
+  it("names no file, and the first prompt after the switch is back on hears every one", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "- Rome\n" });
+    const notes = [note("m1", "Language")];
+    const off = turnNotice({ ...ALL_TOOLS, workspace: false }, [], { now, notes, files: await trip.files() });
+    expect(off.notice).toBe("# Memory notes\nSaved notes, by title:\n- [m1] Language");
+    expect(off.knownFiles).toBeUndefined();
+    expect(turnNotice({ ...ALL_TOOLS, enabled: false }, [], { now, notes, files: await trip.files() })).toEqual({});
+    const history = [prompt(1, "Hi", off), answer(2, "Hello.")];
+    expect(turnNotice(ALL_TOOLS, history, { now, notes, files: await trip.files() }).notice).toBe(
+      "# Workspace files\nFiles in the chat's workspace:\n- notes.md: text, 1 line, 7 characters",
+    );
+  });
+});
+
+describe("a notice of the workspace the model never read", () => {
+  const listing = "# Workspace files\nFiles in the chat's workspace:\n- notes.md: text, 1 line, 7 characters";
+
+  it("does not count once its prompt is dropped with a failed reply: the next prompt hears every file again", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "- Rome\n" });
+    const history = [prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() })), { ...answer(2, ""), error: "the engine is full" }];
+    expect(history[0].notice).toBe(listing);
+    expect(turnNotice(ALL_TOOLS, history, { now, notes: [], files: await trip.files() }).notice).toBe(listing);
+  });
+
+  it("is not sent when the store cannot read the workspace: the next prompt tells what it could not", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "- Rome\n" });
+    const files = await noticeFiles({ files: () => Promise.reject(new Error("the store is closed")) }, trip.id);
+    expect(files).toBeUndefined();
+    const history = [prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files })), answer(2, "Hello.")];
+    expect(history[0].notice).toBeUndefined();
+    expect(turnNotice(ALL_TOOLS, history, { now, notes: [], files: await noticeFiles(workspaces, trip.id) }).notice).toBe(listing);
+  });
+});
+
+describe("a notice of the workspace once sent", () => {
+  it("is re-sent byte-identical through a reload, on both transports, and the next prompt hears only what changed since", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n" });
+    const first = prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() }));
+    const session: Session = { ...createSession(1, now), messages: [first, answer(2, "Hello.")], workspaceId: trip.id };
+    const [reloaded] = restoreChats([toStored(session, { key: "k", order: 1 })], 10).sessions;
+    await saveText(workspaces, await trip.named("notes.md"), "# Trip\n\n- Rome\n");
+    const next = prompt(20, "Again", turnNotice(ALL_TOOLS, reloaded.messages, { now, notes: [], files: await trip.files() }));
+    expect(next.notice).toBe("# Workspace files\nChanged by the user or another chat since the last notice:\n- changed notes.md: text, 3 lines, 15 characters");
+    const before = wireTurns(session.messages);
+    const after = wireTurns([...reloaded.messages, next]);
+    const chat = (turns: Turn[]) => buildChatRequest(settings, turns).messages;
+    expect(chat(before)[0]).toEqual({ role: "developer", content: "# Workspace files\nFiles in the chat's workspace:\n- notes.md: text, 1 line, 7 characters" });
+    expect(chat(after).slice(0, chat(before).length)).toEqual(chat(before));
+    expect(responseItems(after).slice(0, responseItems(before).length)).toEqual(responseItems(before));
+  });
+});
+
+describe("the system prompt and the tools block, with a workspace", () => {
+  it("are the same whatever the workspace holds: its files reach the notice alone, on both transports", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n", "site/index.html": "<h1>Trip</h1>" });
+    const extras = toolExtras(ALL_TOOLS, { now });
+    const empty = wireTurns([prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: [] }))]);
+    const full = wireTurns([prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: await trip.files() }))]);
+    const [a, b] = [empty, full].map((turns) => buildChatRequest(settings, turns, extras));
+    expect(JSON.stringify(b.messages[0])).toBe(JSON.stringify(a.messages[0]));
+    expect(JSON.stringify(b.tools)).toBe(JSON.stringify(a.tools));
+    expect(a.messages.slice(1)).toEqual([{ role: "user", content: "Hi" }]);
+    expect(b.messages[1]).toEqual({ role: "developer", content: expect.stringContaining("- site/index.html: text, 1 line, 13 characters") });
+    const [x, y] = [empty, full].map((turns) => buildResponseCreate({ settings, turns, extras }, "s", responseItems(turns)));
+    expect(y.instructions).toBe(x.instructions);
+    expect(JSON.stringify(y.tools)).toBe(JSON.stringify(x.tools));
+    expect(x.instructions).not.toContain("notes.md");
   });
 });
