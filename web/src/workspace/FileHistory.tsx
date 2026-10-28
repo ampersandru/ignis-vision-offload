@@ -249,9 +249,9 @@ const LAYOUTS: { id: DiffLayout; label: string }[] = [
   { id: "unified", label: "Unified" },
 ];
 
-const SHEET_BUTTON = "font-display text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-40";
+export const SHEET_BUTTON = "font-display text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-40";
 
-const underlined = (on: boolean) => `border-b-2 pb-0.5 ${on ? "border-[#ff5a1f] text-[#eae8e4]" : "border-transparent text-[#939ba4] hover:text-[#eae8e4]"}`;
+export const underlined = (on: boolean) => `border-b-2 pb-0.5 ${on ? "border-[#ff5a1f] text-[#eae8e4]" : "border-transparent text-[#939ba4] hover:text-[#eae8e4]"}`;
 
 /** The rows the full-screen diff shows: the lines in two columns or one, folded unless `showAll`. */
 function sheetRows(lines: ReturnType<typeof lineDiff>, layout: DiffLayout, showAll: boolean): DiffRow[] | SideRow[] {

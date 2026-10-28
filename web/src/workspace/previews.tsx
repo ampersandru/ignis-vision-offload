@@ -63,8 +63,8 @@ export function SvgPreview({ text, name }: { text: string; name: string }) {
 /** The most rows of a CSV file the table draws. */
 export const CSV_ROWS = 500;
 
-/** A CSV file as a table, its first row the header. */
-export function CsvTable({ text }: { text: string }) {
+/** A CSV file as a table, its first row the header; in the full screen (`sheet`) the page scrolls it. */
+export function CsvTable({ text, sheet = false }: { text: string; sheet?: boolean }) {
   const rows = parseCsv(text);
   if (rows.length === 0) return <p className="text-xs leading-snug text-ash">The file is empty.</p>;
   const [head, ...body] = rows;
@@ -73,7 +73,7 @@ export function CsvTable({ text }: { text: string }) {
   const shown = body.slice(0, CSV_ROWS);
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="max-h-[60vh] overflow-auto bg-surface">
+      <div className={sheet ? "overflow-x-auto bg-surface" : "max-h-[60vh] overflow-auto bg-surface"}>
         <table className="w-full border-collapse text-left text-xs text-ink">
           <thead className="sticky top-0 bg-line">
             <tr>

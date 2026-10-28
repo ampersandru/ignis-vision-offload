@@ -150,8 +150,12 @@ versions ([below](#editing-by-hand-history-and-restore)).
 - A Markdown file opens drawn as a reply is, an SVG file as the picture it
   draws (without running the scripts it may hold), and a CSV file as a table
   whose first row is the header, up to 500 rows. **Edit** beside the drawing
-  is the file's text.
-- Any other text file opens in the editor.
+  is the file's text. **Expand**, above the drawing, opens it full screen on
+  a page of its own (**Rendered**, **Table** or **Picture**, or **Source** with
+  numbered lines; **Full width** lets the page fill the window; Esc closes it),
+  read-only: editing stays in **Edit**.
+- Any other text file opens in the editor; **Expand**, above it, opens its
+  newest saved version full screen with numbered lines.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click
   opens it full screen.
