@@ -1406,13 +1406,6 @@ prefill/decode/CUDA-graph-adjacent files that fails `cargo test` on any
 INFO-or-above `tracing` call or raw `println!`/`eprintln!`/`print!` found
 there.
 
-**Playground**:
-The opt-in browser page ignis serves for trying the engine by hand: a chat
-against its own OpenAI surface, with per-request figures the browser measures
-itself, and the **Monitor**. A debugging aid for the owner — not a product UI,
-not an operator surface (that is Prometheus), and never a source of facts the
-engine does not already expose.
-
 **Monitor**:
 The Playground's live dashboard over the Prometheus exposition (GitHub #165):
 the browser
@@ -1420,6 +1413,40 @@ scrapes `/ui/metrics`, keeps a rolling in-memory history, and derives rates,
 latency quantiles and a plain-words verdict from ADR 0017's contract metrics
 only. Offered only when metrics are on; not a replacement for Prometheus, and
 gone on reload.
+
+### Playground
+
+**Playground**:
+The opt-in browser page ignis serves for working with its models by hand —
+chat, pictures, speech and **workspaces** — with per-request figures the
+browser measures itself, and the **Monitor**. The user's workbench over the
+engine: not an operator surface (that is Prometheus), and never a source of
+facts the engine does not already expose.
+
+**Workspace**:
+A named set of **workspace files** the user and the model work on together,
+kept by the page and never by ignis. Born with its first file, it outlives the
+chat that made it: a chat works in at most one, its own or one the user picked.
+_Avoid_: project, library, artifact (the `.ninfer` container)
+
+**Workspace file**:
+One named item of a **workspace** — text, a picture or audio — that the model
+and the user both read and change; "file" alone when the workspace is clear.
+_Avoid_: artifact, document
+
+**Memory note**:
+A note the Playground keeps across every chat, a title and a body: the model
+sees the titles and reads a body when one looks relevant. Never part of a
+**workspace**.
+_Avoid_: memory (bare: that is the device's), workspace file
+
+**Turn notice**:
+The **instruction message** the page adds after the history at a turn: at a
+chat's first turn the titles of the **memory notes** and the files of its
+**workspace**, later only what someone else changed since, and the moment when
+it is live. Kept with its turn once sent, so the **system prompt** never
+changes.
+_Avoid_: context note
 
 ### Acceptance
 
