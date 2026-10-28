@@ -1,9 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
-import type { PanelActions } from "./WorkspacePanel.tsx";
+import { idleActions as actions } from "./fixture.ts";
 import { FileViewer } from "./WorkspacePanel.tsx";
-import { TextSheet, type TextKind, type TextView, textKind } from "./TextSheet.tsx";
+import { sheetAfter, TextSheet, type TextKind, type TextView, textKind } from "./TextSheet.tsx";
 
 // The full-screen text as the page renders it: the sheet's markup per kind
 // and the Expand button on the viewer. Clicks and Esc are not exercised: there
@@ -12,19 +12,6 @@ import { TextSheet, type TextKind, type TextView, textKind } from "./TextSheet.t
 const at = 0;
 const text = (t: string): Version => ({ n: 3, author: USER, at, text: t });
 const file = (name: string, kind: WorkspaceFile["kind"], v: Version): WorkspaceFile => ({ format: 1, id: `f-${name}`, workspace: "w", name, kind, versions: [v] });
-const actions: PanelActions = {
-  create: async () => null,
-  upload: () => {},
-  rename: async () => null,
-  remove: () => {},
-  download: () => {},
-  content: async () => null,
-  derive: async () => null,
-  save: async () => ({ ok: true, version: 2 }),
-  restore: () => {},
-  exportZip: () => {},
-  importZip: () => {},
-};
 const viewer = (f: WorkspaceFile) => renderToStaticMarkup(<FileViewer file={f} whom={() => "you"} onBack={() => {}} actions={actions} files={[f]} />);
 
 const sheet = (kind: TextKind, body: string, over: { view?: TextView; full?: boolean } = {}) =>
@@ -60,6 +47,10 @@ describe("the full-screen text", () => {
 
   it("draws a CSV as a table, and an SVG as a picture, with the source one choice away", () => {
     const csv = sheet("csv", "name,note\nBo,hi\n");
+    // On the page the table is as tall as it is, the page scrolling it, where the panel's scrolls past 60% of the screen.
+    expect(csv).toContain('<div class="overflow-x-auto bg-surface"><table');
+    expect(csv).not.toContain("max-h-[60vh]");
+    expect(viewer(file("a.csv", "text", text("name,note\nBo,hi\n")))).toContain('<div class="max-h-[60vh] overflow-auto bg-surface"><table');
     expect(csv).toMatch(/<th[^>]*>name<\/th>/);
     expect(csv).toMatch(/<td[^>]*>hi<\/td>/);
     expect(csv).toMatch(/aria-checked="true"[^>]*>Table<\/button>/);
@@ -100,6 +91,32 @@ describe("the Expand button on the viewer", () => {
     expect(viewer(file("a.html", "text", text("<p>x</p>")))).not.toContain(">Expand<");
     const bytes = { n: 1, author: USER, at, bytes: { store: "image" as const, id: "sha", type: "image/png", size: 3 } };
     expect(viewer(file("a.png", "picture", bytes))).not.toContain(">Expand<");
-    expect(viewer(file("a.wav", "audio", { n: 1, author: USER, at, bytes: { store: "blob" as never, id: "x", type: "audio/wav", size: 3 } as never }))).not.toContain(">Expand<");
+    expect(viewer(file("a.wav", "audio", { n: 1, author: USER, at, bytes: { store: "blob", id: "x", type: "audio/wav", size: 3 } }))).not.toContain(">Expand<");
+  });
+});
+
+describe("the full screen once its file changes", () => {
+  const notes = file("notes.md", "text", text("# Trip\n"));
+  const later = (f: WorkspaceFile, change: Partial<Version>): WorkspaceFile => ({ ...f, versions: [...f.versions, { n: f.versions.length + 3, author: USER, at, ...change }] });
+  /** The sheet's state after each of the file's states in turn, from open on `notes.md`. */
+  const after = (states: WorkspaceFile[]) => states.reduce<string | null>((open, f) => sheetAfter(open, f), "notes.md");
+
+  it("stays open on a new version, which it then shows", () => {
+    expect(after([later(notes, { text: "# Trip\n- Rome\n" })])).toBe("notes.md");
+  });
+
+  it("closes when the file is deleted, and a restore then does not open it again", () => {
+    const deleted = later(notes, { deleted: true });
+    expect(after([deleted])).toBeNull();
+    expect(after([deleted, later(deleted, { text: "# Trip\n" })])).toBeNull();
+  });
+
+  it("closes on a rename, and renaming to HTML and back does not open it again", () => {
+    expect(after([{ ...notes, name: "trip.md" }])).toBeNull();
+    expect(after([{ ...notes, name: "notes.html" }, notes])).toBeNull();
+  });
+
+  it("stays closed until Expand opens it", () => {
+    expect(sheetAfter(null, notes)).toBeNull();
   });
 });

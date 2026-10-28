@@ -7,7 +7,8 @@ import { LocalStrip } from "../tools/local/LocalStrip.tsx";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
 import { StaticWorkspaceFiles } from "./WorkspaceFiles.tsx";
 import { authorName } from "./panel.ts";
-import { FileViewer, type PanelActions } from "./WorkspacePanel.tsx";
+import { idleActions as actions } from "./fixture.ts";
+import { FileViewer } from "./WorkspacePanel.tsx";
 
 // Pictures of the workspace as the page shows them (#394): the panel's viewer,
 // a reply's picture shown from the workspace file its make_image call made,
@@ -18,20 +19,6 @@ const at = new Date(2026, 9, 28, 14, 5).getTime();
 const picture = (n: number, id: string): Version => ({ n, author: { by: "chat", chat: "k" }, at, bytes: { store: "image", id, type: "image/png", size: 2048, width: 2752, height: 1536 } });
 
 const file = (versions: Version[]): WorkspaceFile => ({ format: 1, id: "f1", workspace: "w1", name: "made-1.png", kind: "picture", versions });
-
-const actions: PanelActions = {
-  create: async () => null,
-  upload: () => {},
-  exportZip: () => {},
-  importZip: () => {},
-  rename: async () => null,
-  remove: () => {},
-  download: () => {},
-  save: async () => ({ ok: true, version: 2 }),
-  restore: () => {},
-  content: async () => null,
-  derive: async () => null,
-};
 
 const whom = (author: Version["author"]) => authorName(author, { here: (key) => key === "k", title: () => undefined });
 

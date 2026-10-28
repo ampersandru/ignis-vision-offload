@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindWorkspace, createSession, openSession, removeSession } from "../sessions/sessions.ts";
+import { bornInto, createSession, moveWorkspace, openSession, removeSession } from "../sessions/sessions.ts";
 import { createMemoryStore } from "../store/memory.ts";
 import { freedBy, latest, present, USER, type Version, type WorkspaceFile } from "./files.ts";
 import { commitAttached } from "./attach.ts";
@@ -280,13 +280,13 @@ describe("a workspace and its chats", () => {
     const { workspaces } = module();
     // Chat 1 is born into a workspace with its first file, then deleted.
     let list = { sessions: [createSession(1)], activeId: 1 };
-    const first = workspaces.chat("key-1", { bound: () => list.sessions.find((s) => s.id === 1)?.workspaceId, name: () => "Trip plan", onBorn: (id) => (list = { ...list, sessions: bindWorkspace(list.sessions, 1, id) }) });
+    const first = workspaces.chat("key-1", { bound: () => list.sessions.find((s) => s.id === 1)?.workspaceId, name: () => "Trip plan", onBorn: (id) => (list = { ...list, sessions: bornInto(list.sessions, 1, id) }) });
     await workspaces.writeText(await first.workspace(), "notes.md", "# Trip", first.reader);
     list = openSession(removeSession(list, 1, 2), 3);
     const [kept] = await workspaces.list();
     expect(kept).toMatchObject({ name: "Trip plan" });
     // Chat 2 binds to it from the picker's list, and the model finds the file there.
-    list = { ...list, sessions: bindWorkspace(list.sessions, list.activeId, kept.id) };
+    list = { ...list, sessions: moveWorkspace(list.sessions, list.activeId, kept.id, { at: 0 }) };
     const second = workspaces.chat("key-2", { bound: () => list.sessions.find((s) => s.id === list.activeId)?.workspaceId, name: () => "", onBorn: () => {} });
     expect(await second.workspace()).toBe(kept.id);
     const listed = await runWorkspaceTool("list_files", {}, { workspaces, chat: second });

@@ -107,9 +107,12 @@ notice](tools-and-agents.md#the-turn-notice), and what the chat and its
 agents read in the workspace it left does not count in the new one, so the
 model reads a file there before it changes it ([Changes the model has not
 seen](tools-and-agents.md#changes-the-model-has-not-seen)). A reply's card
-keeps opening the version in the workspace that reply wrote it in. **Move
-to…** waits while a reply of the chat runs, and a fork works in the
-workspace its chat is in when you fork it.
+keeps opening the version in the workspace that reply wrote it in. A fork
+works in the workspace its chat is in when you fork it.
+
+While a reply of the chat runs, the picker waits, whether the chat has a
+workspace yet or not: no workspace is picked and the chat does not move. Its
+choices say why, and open again once the reply ends.
 
 A delete asks first, naming how many files go. It removes the workspace, its
 files and every version, and frees what nothing else uses: the bytes no other
@@ -155,7 +158,10 @@ versions ([below](#editing-by-hand-history-and-restore)).
   numbered lines; **Full width** lets the page fill the window; Esc closes it),
   read-only: editing stays in **Edit**.
 - Any other text file opens in the editor; **Expand**, above it, opens its
-  newest saved version full screen with numbered lines.
+  newest saved version full screen with numbered lines. A text file's full
+  screen shows a new version as it is saved, and closes for good when the
+  file is deleted or renamed: restoring it, or renaming it back, leaves it
+  closed until **Expand**.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click
   opens it full screen.
@@ -164,6 +170,12 @@ versions ([below](#editing-by-hand-history-and-restore)).
 - Any other file, an archive or a spreadsheet, shows its name and size: the
   model sees it in `list_files`, and `read_file` answers that it cannot read
   it.
+
+A full screen, a page's preview, a text file's or a diff's, holds the
+keyboard while it is open: the focus moves into it, Tab reaches nothing
+behind it, and Esc closes it and nothing else, a drawer or a dictation under
+way staying as they were. The focus then goes back to the button that opened
+it.
 
 What you do here is yours: each version it makes is authored by you.
 

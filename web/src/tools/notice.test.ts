@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildChatRequest, conversationTurns, type Settings, type Turn } from "../api/request.ts";
 import { buildResponseCreate, responseItems } from "../api/responses.ts";
 import { exchangeOf } from "../app/useConversation.ts";
-import { createSession, type Message, moveWorkspace, type Session } from "../sessions/sessions.ts";
+import { createSession, forkSession, type Message, moveWorkspace, type Session } from "../sessions/sessions.ts";
 import { CHAT_VERSION, restoreChats, toStored } from "../sessions/stored.ts";
 import { createMemoryStore } from "../store/memory.ts";
 import { USER, WORKSPACE_FORMAT, type WorkspaceFile } from "../workspace/files.ts";
@@ -571,9 +571,9 @@ describe("a notice of the workspace once sent", () => {
 // says so, names the workspace left and lists the one it works in now whole,
 // as a first turn does; the turns after it hear only others' changes again.
 
-/** A workspace "Small site" holding the user's `files`, each a text file. */
-async function siteWith(workspaces: Workspaces, files: Record<string, string>) {
-  const site = await workspaces.create("Small site");
+/** A workspace, "Small site" unless named, holding the user's `files`, each a text file. */
+async function siteWith(workspaces: Workspaces, files: Record<string, string>, name = "Small site") {
+  const site = await workspaces.create(name);
   await workspaces.add(site.id, Object.entries(files).map(([name, text]) => ({ name, kind: "text" as const, text })), USER);
   return { id: site.id, files: () => workspaces.files(site.id) };
 }
@@ -685,10 +685,75 @@ describe("a chat moved to another workspace", () => {
       knownNotes: [{ id: "m1", title: "Language", savedAt: "2026-10-27T10:00:00.000Z" }],
     });
     expect(turnNotice({ ...ALL_TOOLS, enabled: false }, moved.messages, { now, notes: [], files: await site.files(), moved: moved.moved })).toEqual({});
+    // On the wire, on both transports: the memory's notice alone, then the prompt; with every tool off, the prompt alone.
+    const offTurns = wireTurns([...moved.messages, prompt(3, "Next", off)]);
+    expect(buildChatRequest(settings, offTurns).messages.slice(-2)).toEqual([
+      { role: "developer", content: off.notice },
+      { role: "user", content: "Next" },
+    ]);
+    expect(responseItems(offTurns).slice(-2)).toEqual([developer(off.notice!), userItem("Next")]);
+    const none = wireTurns([...moved.messages, prompt(3, "Next", turnNotice({ ...ALL_TOOLS, enabled: false }, moved.messages, { now, notes: [], files: await site.files(), moved: moved.moved }))]);
+    expect(buildChatRequest(settings, none).messages.slice(-2)).toEqual([
+      { role: "assistant", content: "Hello." },
+      { role: "user", content: "Next" },
+    ]);
+    expect(responseItems(none).at(-2)).not.toMatchObject({ role: "developer" });
+    for (const body of [JSON.stringify(buildChatRequest(settings, offTurns)), JSON.stringify(responseItems(offTurns)), JSON.stringify(responseItems(none))]) {
+      expect(body).not.toContain("index.html");
+      expect(body).not.toContain("moved out");
+    }
     const history = [...moved.messages, prompt(3, "Next", off), answer(4, "Noted.")];
     const on = turnNotice(ALL_TOOLS, history, { now, notes: [note("m1", "Language")], files: await site.files(), moved: moved.moved });
     expect(on.notice).toBe(["# Workspace files", LEFT_TRIP, "Files in the chat's workspace now:", "- index.html: text, 1 line, 13 characters"].join("\n"));
     expect(on.moved).toEqual(moved.moved);
+  });
+
+  it("names no workspace its model was never told of: a chat that talked with none, picked one, then moved on, hears the new one's files as news", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n" });
+    const site = await siteWith(workspaces, { "index.html": "<h1>Site</h1>" });
+    // Its first prompt went out with no workspace: its notice told of no file.
+    const talked: Session = { ...createSession(1, now), messages: [prompt(1, "Hi", turnNotice(ALL_TOOLS, [], { now, notes: [], files: [] })), answer(2, "Hello.")] };
+    const [picked] = moveWorkspace([talked], 1, trip.id, { at: 50 });
+    const [moved] = moveWorkspace([picked], 1, site.id, { at: 100, name: "Trip" });
+    expect(moved.moved).toBeUndefined();
+    const next = prompt(3, "Next", turnNotice(ALL_TOOLS, moved.messages, { now, notes: [], files: await site.files(), moved: moved.moved }));
+    const notice = "# Workspace files\nChanged by the user or another chat since the last notice:\n- created index.html: text, 1 line, 13 characters";
+    expect(next.notice).toBe(notice);
+    const turns = wireTurns([...moved.messages, next]);
+    expect(buildChatRequest(settings, turns).messages.slice(-2)).toEqual([
+      { role: "developer", content: notice },
+      { role: "user", content: "Next" },
+    ]);
+    expect(responseItems(turns).slice(-2)).toEqual([developer(notice), userItem("Next")]);
+  });
+
+  it("tells a fork taken before a told move of the workspace its own messages know, not of the one its chat left last", async () => {
+    const workspaces = workspaceModule();
+    const { trip, session } = await talkedInTrip(workspaces);
+    const site = await siteWith(workspaces, { "index.html": "<h1>Site</h1>" });
+    const third = await siteWith(workspaces, { "plan.md": "- Rome\n" }, "Third");
+    // The chat moves to the site and is told so, then moves on to Third.
+    const [toSite] = moveWorkspace([session], 1, site.id, { at: 100, name: "Trip" });
+    const toldSite = prompt(3, "Next", turnNotice(ALL_TOOLS, toSite.messages, { now, notes: [], files: await site.files(), moved: toSite.moved }));
+    const [toThird] = moveWorkspace([{ ...toSite, messages: [...toSite.messages, toldSite, answer(4, "Noted.")] }], 1, third.id, { at: 200, name: "Small site" });
+    expect(toThird.moved).toEqual({ from: site.id, name: "Small site", at: 200 });
+    // A fork of the first reply knows Trip's files alone: it hears it moved out of Trip, into Third.
+    const [fork] = forkSession({ sessions: [toThird], activeId: 1 }, 1, 2, 9).sessions;
+    expect(fork.workspaceId).toBe(third.id);
+    expect(fork.moved).toEqual({ from: trip.id, name: "Trip", at: 100 });
+    const next = prompt(10, "Again", turnNotice(ALL_TOOLS, fork.messages, { now, notes: [], files: await third.files(), moved: fork.moved }));
+    const notice = ["# Workspace files", LEFT_TRIP, "Files in the chat's workspace now:", "- plan.md: text, 1 line, 7 characters"].join("\n");
+    expect(next.notice).toBe(notice);
+    const turns = wireTurns([...fork.messages, next]);
+    expect(buildChatRequest(settings, turns).messages.slice(-2)).toEqual([
+      { role: "developer", content: notice },
+      { role: "user", content: "Again" },
+    ]);
+    expect(responseItems(turns).slice(-2)).toEqual([developer(notice), userItem("Again")]);
+    // A fork after the told move knows the site, and hears its chat's last move as its chat does.
+    const [later] = forkSession({ sessions: [toThird], activeId: 1 }, 1, 4, 11).sessions;
+    expect(later.moved).toEqual(toThird.moved);
   });
 
   it("keeps the first turn's cap for the new workspace's files: the files changed last that fit, and a line counting the others", async () => {

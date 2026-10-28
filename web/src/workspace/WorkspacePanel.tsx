@@ -9,9 +9,9 @@ import { Lightbox } from "../ui/Lightbox.tsx";
 import { AudioViewer, Recording } from "./audio.tsx";
 import { type Author, KIND_LABEL, latest, present, refusal, timeLabel, USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
 import { FileEditor, FileHistory, type SaveOutcome } from "./FileHistory.tsx";
-import { BUTTON, Source } from "./looks.tsx";
+import { BUTTON, ExpandButton, Source } from "./looks.tsx";
 import { CsvTable, MarkdownPreview, SitePreview, SvgPreview } from "./previews.tsx";
-import { ExpandButton, TextFullscreen, textKind } from "./TextSheet.tsx";
+import { sheetAfter, TextFullscreen, textKind } from "./TextSheet.tsx";
 import { isCsvName, isMarkdownName, isSvgName } from "./site.ts";
 import { authorName, type ChatNames, createFile, downloadName, fileTree, saveText, sizeLabel, type TreeNode, uploadFiles } from "./panel.ts";
 import { createRecorder } from "./recorder.ts";
@@ -468,7 +468,10 @@ export function FileViewer({ file, whom, onBack, actions, speech, files = [] }: 
   const tabs: ViewerTab[] = v.deleted ? ["history"] : drawn ? ["preview", "edit", "history"] : editable ? ["edit", "history"] : ["view", "history"];
   const [chosen, setTab] = useState<ViewerTab>(tabs[0]);
   const tab = tabs.includes(chosen) ? chosen : tabs[0];
-  const [expanded, setExpanded] = useState(false);
+  // The name the full screen opened on; it closes for good once the file is deleted or renamed (sheetAfter).
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const shown = sheetAfter(expanded, file);
+  if (shown !== expanded) setExpanded(shown);
   const kind = editable ? textKind(file.name) : null;
   // The full screen opens from the drawn preview, or from the source of a text with no preview.
   const expandable = kind !== null && !v.deleted && (drawn ? tab === "preview" : tab === "edit");
@@ -526,10 +529,10 @@ export function FileViewer({ file, whom, onBack, actions, speech, files = [] }: 
       )}
       {expandable && (
         <div className="flex justify-end">
-          <ExpandButton onClick={() => setExpanded(true)} />
+          <ExpandButton onClick={() => setExpanded(file.name)} />
         </div>
       )}
-      {expanded && kind !== null && v.text !== undefined && <TextFullscreen name={file.name} version={v.n} text={v.text} kind={kind} onClose={() => setExpanded(false)} />}
+      {shown !== null && kind !== null && v.text !== undefined && <TextFullscreen name={file.name} version={v.n} text={v.text} kind={kind} onClose={() => setExpanded(null)} />}
       {/* The editor stays mounted while another tab shows: what is typed in it waits there. */}
       {editable && (
         <div hidden={tab !== "edit"}>

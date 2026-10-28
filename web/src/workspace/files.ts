@@ -82,6 +82,18 @@ export type WorkspaceFile = {
   versions: Version[];
 };
 
+/**
+ * A workspace file as a chat knows it, in the workspace it is in: what a
+ * later turn's notice compares the files with (workspace/notice.ts).
+ */
+export type FileMark = { id: string; workspace: WorkspaceId; name: string; version: number };
+
+/**
+ * A chat's move out of a workspace its model knew (#404): the one it left,
+ * by its id and by the name it had then (none once deleted), and when.
+ */
+export type WorkspaceMove = { from: WorkspaceId; name?: string; at: number };
+
 /** The file's newest version. */
 export const latest = (file: WorkspaceFile): Version => file.versions[file.versions.length - 1];
 

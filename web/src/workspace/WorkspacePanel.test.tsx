@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
 import { authorName, fileTree } from "./panel.ts";
-import { FileTree, FileViewer, NameField, type PanelActions, PanelView } from "./WorkspacePanel.tsx";
+import { idleActions as actions } from "./fixture.ts";
+import { FileTree, FileViewer, NameField, PanelView } from "./WorkspacePanel.tsx";
 
 // The workspace panel as it renders: the files as a tree, each file's viewer,
 // the actions on each, and what it says when the browser refused a change.
@@ -23,20 +24,6 @@ const files: WorkspaceFile[] = [
   file("data.zip", "other", [{ n: 1, author: USER, at, bytes: { store: "blob", id: "b1", type: "application/zip", size: 2048 } }]),
   file("gone.txt", "text", [text("x"), { n: 2, author: USER, at, deleted: true }]),
 ];
-
-const actions: PanelActions = {
-  create: async () => null,
-  upload: () => {},
-  exportZip: () => {},
-  importZip: () => {},
-  rename: async () => null,
-  remove: () => {},
-  download: () => {},
-  save: async () => ({ ok: true, version: 2 }),
-  restore: () => {},
-  content: async () => null,
-  derive: async () => null,
-};
 
 /** The chat the panel is open in is "k", the chat that wrote site/index.html's version 2. */
 const chats = { here: (key: string) => key === "k", title: () => undefined };

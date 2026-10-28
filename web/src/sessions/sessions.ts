@@ -10,7 +10,8 @@ import type { Attachment } from "../tools/local/attachments.ts";
 import type { LocalRun } from "../tools/local/local.ts";
 import type { NoteMark } from "../tools/local/memory.ts";
 import type { WebRun } from "../tools/web/web.ts";
-import type { FileMark } from "../workspace/notice.ts";
+import type { FileMark, WorkspaceId, WorkspaceMove } from "../workspace/files.ts";
+import type { FileAt } from "../workspace/workspaces.ts";
 
 // Playground sessions: separate conversations, each with its own log of
 // per-reply figures. The page's store keeps them across a reload (stored.ts).
@@ -153,12 +154,6 @@ export function createSession(id: number, startedAt = new Date()): Session {
   return { id, title: UNTITLED, messages: [], log: [], attachments: [], startedAt };
 }
 
-/**
- * A chat's move out of a workspace its model knew (#404): the one it left,
- * by its id and by the name it had then (none once deleted), and when.
- */
-export type WorkspaceMove = { from: string; name?: string; at: number };
-
 const sameMove = (a: WorkspaceMove | undefined, b: WorkspaceMove) => a !== undefined && a.from === b.from && a.at === b.at;
 
 /**
@@ -169,9 +164,47 @@ const sameMove = (a: WorkspaceMove | undefined, b: WorkspaceMove) => a !== undef
 export const untoldMove = (history: Message[], moved: WorkspaceMove | undefined): WorkspaceMove | undefined =>
   moved && !keptMessages(history).some((m) => sameMove(m.moved, moved)) ? moved : undefined;
 
-/** Binds a chat with no workspace to the one picked for it; a chat that has one moves instead (`moveWorkspace`). */
-export function bindWorkspace(sessions: Session[], sessionId: number, workspaceId: string): Session[] {
-  return sessions.map((s) => (s.id === sessionId && s.workspaceId === undefined ? { ...s, workspaceId } : s));
+/** What the picker says while a chat's workspace waits. */
+export const PICK_WAITS = "The workspace changes once this chat's reply ends.";
+
+/**
+ * Why the chat `sessionId` may not pick a workspace now, nor move to another
+ * (#404): a reply of its runs, among those `replying`; null while it may. No
+ * pick and no move during a reply, whether the chat has a workspace or not:
+ * the turn reads its workspace as it was when it started, and a first file
+ * its reply is writing is born into the one the chat names then (`bornInto`).
+ */
+export const pickHeld = (replying: ReadonlySet<number>, sessionId: number): string | null => (replying.has(sessionId) ? PICK_WAITS : null);
+
+/**
+ * The workspace files a message's calls showed its model, in order: what they
+ * wrote, edited, deleted or read, its agents' included, and the pictures its
+ * make_image calls landed.
+ */
+export function filesTaught(m: Message): FileAt[] {
+  const runs = [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])].map((run) => run.written ?? run.seen);
+  const made = (m.imageRuns ?? []).flatMap((r) => r.made ?? []).map((picture) => picture.file);
+  return [...runs, ...made].filter((v): v is FileAt => v !== undefined);
+}
+
+/**
+ * The workspace whose files the chat's model knows after `history`, or
+ * undefined while it knows none: the one its last notice told it the files
+ * of, or the one its own calls worked in since (a first file born a workspace
+ * there). A notice that told of no file leaves it knowing none, and, as for
+ * the files themselves (knownFilesOf), only what the model reads counts.
+ */
+export function knownWorkspaceOf(history: Message[]): WorkspaceId | undefined {
+  let told = false;
+  let known: WorkspaceId | undefined;
+  for (const m of keptMessages(history)) {
+    if (m.knownFiles) {
+      told = true;
+      known = m.knownFiles[0]?.workspace;
+    }
+    if (told) for (const v of filesTaught(m)) known = v.workspace;
+  }
+  return known;
 }
 
 /**
@@ -179,19 +212,35 @@ export function bindWorkspace(sessions: Session[], sessionId: number, workspaceI
  * its next file then starting a new one named after the chat. A chat with no
  * workspace binds to the one picked; one with a workspace, deleted or not,
  * moves. Only the binding changes: the files stay where they are, and the
- * workspace left keeps them and its other chats. A chat that has talked keeps
- * the move, with `left.name`, the name of the workspace it leaves, until a
- * notice tells its model; moving again before that keeps the workspace first
- * left, and moving back to it leaves nothing to tell.
+ * workspace left keeps them and its other chats. A chat leaving the
+ * workspace its model knows (`knownWorkspaceOf`) keeps the move, with
+ * `departure.name`, the name of the workspace it leaves, until a notice tells
+ * its model; moving again before that keeps the workspace last told, moving
+ * back to it leaves nothing to tell, and leaving one its model was never told
+ * of keeps nothing either.
  */
-export function moveWorkspace(sessions: Session[], sessionId: number, to: string | undefined, left: { at: number; name?: string }): Session[] {
+export function moveWorkspace(sessions: Session[], sessionId: number, to: WorkspaceId | undefined, departure: { at: number; name?: string }): Session[] {
   return sessions.map((s) => {
     if (s.id !== sessionId || s.workspaceId === to) return s;
-    const { workspaceId: from, moved: _told, ...rest } = s;
-    const leaving = from !== undefined && s.messages.length > 0 ? { from, ...(left.name !== undefined ? { name: left.name } : {}), at: left.at } : undefined;
-    const move = untoldMove(s.messages, s.moved) ?? leaving;
+    const { workspaceId: from, moved: lastMove, ...rest } = s;
+    const leaving = from !== undefined && from === knownWorkspaceOf(s.messages) ? { from, ...(departure.name !== undefined ? { name: departure.name } : {}), at: departure.at } : undefined;
+    const move = untoldMove(s.messages, lastMove) ?? leaving;
     return { ...rest, ...(to !== undefined ? { workspaceId: to } : {}), ...(move && move.from !== to ? { moved: move } : {}) };
   });
+}
+
+/**
+ * The move a fork's model has yet to hear of: out of the workspace the
+ * fork's own messages (`kept`) know, when its chat works in another now, as
+ * the chat recorded that move, told after the fork or not yet; none while
+ * they know the workspace the chat is in, or none at all.
+ */
+function forkMove(source: Session, kept: Message[]): WorkspaceMove | undefined {
+  const known = knownWorkspaceOf(kept);
+  if (known === undefined || known === source.workspaceId) return undefined;
+  const moves = [...source.messages.map((m) => m.moved), source.moved];
+  for (let i = moves.length - 1; i >= 0; i--) if (moves[i]?.from === known) return moves[i];
+  return undefined;
 }
 
 /**
@@ -301,14 +350,16 @@ export function forkSession(list: SessionList, sessionId: number, messageId: num
   const source = list.sessions.find((s) => s.id === sessionId);
   const index = source ? source.messages.findIndex((m) => m.id === messageId) : -1;
   if (!source || index === -1) return list;
+  const messages = source.messages.slice(0, index + 1).map((m) => ({ ...m, streaming: false }));
+  const moved = forkMove(source, messages);
   const fork: Session = {
     id: newId,
     title: `${source.title} (fork)`,
-    messages: source.messages.slice(0, index + 1).map((m) => ({ ...m, streaming: false })),
+    messages,
     log: [],
     attachments: source.attachments,
     ...(source.workspaceId !== undefined ? { workspaceId: source.workspaceId } : {}),
-    ...(source.moved ? { moved: source.moved } : {}),
+    ...(moved ? { moved } : {}),
     startedAt: source.startedAt,
   };
   return { sessions: [fork, ...list.sessions], activeId: newId };

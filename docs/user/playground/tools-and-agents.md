@@ -134,6 +134,11 @@ message the page puts right before your prompt, after the conversation so far
   move to **New workspace** it says the chat has no workspace. The prompts
   after it hear only others' changes again, and a move made while
   **Workspace** is off is told at the first prompt with the switch back on.
+  The workspace it names is the one whose files the model was last told of:
+  two moves before a prompt are told as one, out of that workspace, and a
+  chat that was never told a file of the one it leaves hears no move, only
+  the new workspace's files as created. A fork is told the move out of the
+  workspace its own messages knew.
 - A file the prompt attaches is not in its notice, since the prompt names it
   (`[Attached to the workspace: brief.pdf]`), and later notices count it as
   told. With **Workspace** off the notice names no file.

@@ -1,6 +1,6 @@
-import { keptMessages, type Message, untoldMove, type WorkspaceMove } from "../sessions/sessions.ts";
-import type { WorkspaceFile } from "../workspace/files.ts";
-import { type FileMark, workspaceNotice } from "../workspace/notice.ts";
+import { filesTaught, keptMessages, type Message, untoldMove } from "../sessions/sessions.ts";
+import type { FileMark, WorkspaceFile, WorkspaceMove } from "../workspace/files.ts";
+import { workspaceNotice } from "../workspace/notice.ts";
 import type { FileAt } from "../workspace/workspaces.ts";
 import { type ToolsState, turnDateTime } from "./index.ts";
 import { MEMORY_DELETE, MEMORY_SAVE } from "./local/local.ts";
@@ -61,12 +61,11 @@ export function knownFilesOf(history: Message[]): FileMark[] | undefined {
   let known: Map<string, FileMark> | undefined;
   const learn = (v: FileAt | undefined) => {
     const was = v && known?.get(v.file);
-    if (v && (!was || was.version <= v.version)) known?.set(v.file, { id: v.file, name: v.name, version: v.version });
+    if (v && (!was || was.version <= v.version)) known?.set(v.file, { id: v.file, workspace: v.workspace, name: v.name, version: v.version });
   };
   for (const m of keptMessages(history)) {
     if (m.knownFiles) known = new Map(m.knownFiles.map((f) => [f.id, f]));
-    for (const run of [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])]) learn(run.written ?? run.seen);
-    for (const made of (m.imageRuns ?? []).flatMap((r) => r.made ?? [])) learn(made.file);
+    for (const v of filesTaught(m)) learn(v);
   }
   return known && [...known.values()];
 }

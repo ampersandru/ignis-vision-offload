@@ -187,6 +187,16 @@ describe("a dictation", () => {
     expect(idle.prevented).toBe(false);
   });
 
+  it("leaves an Esc something on the page took already: a full screen's Esc closes it and keeps the dictation", async () => {
+    const h = harness({ value: "draft" });
+    h.controller.toggle();
+    await settle();
+    h.session().handlers.onDelta("parole");
+    h.controller.keyDown({ ...key("Escape"), defaultPrevented: true });
+    expect(h.session().calls).toEqual([]);
+    expect(h.state().phase).toBe("listening");
+  });
+
   it("lets the mic go when the page closes it mid-sentence", async () => {
     const h = harness();
     h.controller.toggle();

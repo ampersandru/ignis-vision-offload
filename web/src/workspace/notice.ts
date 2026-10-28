@@ -1,6 +1,5 @@
-import type { WorkspaceMove } from "../sessions/sessions.ts";
 import { CHANGED_SINCE, newestFitting, noticeSection } from "../tools/local/memory.ts";
-import { KIND_LABEL, latest, present, type WorkspaceFile, type WorkspaceId } from "./files.ts";
+import { type FileMark, KIND_LABEL, latest, present, type WorkspaceFile, type WorkspaceId, type WorkspaceMove } from "./files.ts";
 import { sizeOf } from "./tools.ts";
 import type { Workspaces } from "./workspaces.ts";
 
@@ -16,10 +15,7 @@ import type { Workspaces } from "./workspaces.ts";
 // hears at its next turn which one it left, then the one it works in now
 // whole, as a first turn does.
 
-/** A workspace file as a chat knows it: what a later turn's notice compares the files with. */
-export type FileMark = { id: string; name: string; version: number };
-
-export const fileMarkOf = (file: WorkspaceFile): FileMark => ({ id: file.id, name: file.name, version: latest(file).n });
+export const fileMarkOf = (file: WorkspaceFile): FileMark => ({ id: file.id, workspace: file.workspace, name: file.name, version: latest(file).n });
 
 const facts = (file: WorkspaceFile) => `${KIND_LABEL[file.kind]}, ${sizeOf(latest(file))}`;
 
@@ -64,8 +60,8 @@ export function workspaceNotice(known: FileMark[] | undefined, files: WorkspaceF
   const told = (file: WorkspaceFile) => !attached.includes(file.name);
   /** Every file, as many as fit, and the line counting the others. */
   const whole = () => {
-    const { listed, left } = fitting(files.filter((f) => present(f) && told(f)).map((f) => ({ at: latest(f).at, line: `- ${f.name}: ${facts(f)}` })));
-    return { listed, leftOut: left > 0 ? `(${left} older files not listed; list_files lists them all.)` : "" };
+    const { listed, left: unlisted } = fitting(files.filter((f) => present(f) && told(f)).map((f) => ({ at: latest(f).at, line: `- ${f.name}: ${facts(f)}` })));
+    return { listed, leftOut: unlisted > 0 ? `(${unlisted} older files not listed; list_files lists them all.)` : "" };
   };
   // A chat never told of a workspace has none it moved out of: the files it works in now say it all.
   if (known === undefined) {
