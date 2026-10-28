@@ -7,14 +7,13 @@ import {
   isLocalTool,
   MEMORY_DELETE_TOOL,
   MEMORY_READ_TOOL,
+  MEMORY_PROMPT,
   MEMORY_SAVE_TOOL,
-  memoryPrompt,
   PLAN_PROMPT,
   RUN_JS_TOOL,
   runJsPrompt,
   UPDATE_PLAN_TOOL,
 } from "./local/local.ts";
-import { browserMemory, type MemoryNote } from "./local/memory.ts";
 import { isWebTool, WEB_FETCH_TOOL, WEB_IGNIS_PROMPT, WEB_SEARCH_TOOL } from "./web/web.ts";
 import { LIST_FILES_TOOL, READ_FILE_TOOL, WORKSPACE_PROMPT, WRITE_FILE_TOOL } from "../workspace/tools.ts";
 
@@ -96,8 +95,8 @@ const CHOICES = ["agents", "web", "askUser", "dateTime", "runJs", "plan", "memor
 /** How many tools are in use. */
 export const toolsInUse = (tools: ToolsState) => (tools.enabled ? CHOICES.filter((choice) => tools[choice]).length : 0);
 
-/** What the prompt depends on besides the switches; each defaults to now and the saved notes. */
-export type PromptContext = { now?: Date; notes?: MemoryNote[] };
+/** What the prompt depends on besides the switches: the moment, which defaults to now. */
+export type PromptContext = { now?: Date };
 
 /**
  * The tools in use: each one's own switch, under the switch for all of them.
@@ -129,7 +128,7 @@ export function ignisPrompt(tools: ToolsState, context: PromptContext = {}): str
     on.askUser ? ASK_USER_IGNIS_PROMPT : "",
     on.runJs ? runJsPrompt(tools.jsSafetyCheck) : "",
     on.plan ? PLAN_PROMPT : "",
-    on.memory ? memoryPrompt(context.notes ?? browserMemory.list()) : "",
+    on.memory ? MEMORY_PROMPT : "",
     on.workspace ? WORKSPACE_PROMPT : "",
     on.images ? IMAGE_IGNIS_PROMPT : "",
   ]
@@ -138,10 +137,11 @@ export function ignisPrompt(tools: ToolsState, context: PromptContext = {}): str
 }
 
 /**
- * The developer message a turn sent at `now` carries, or `undefined` when the
- * date and time tool is off or writes the session's moment into the system
- * prompt instead. It rides after the history, the one place in a prompt where
- * the moment can change between turns without moving a token ahead of it.
+ * The moment a turn sent at `now` carries in its notice (notice.ts), or
+ * `undefined` when the date and time tool is off or writes the session's
+ * moment into the system prompt instead. It rides after the history, the one
+ * place in a prompt where the moment can change between turns without moving
+ * a token ahead of it.
  */
 export function turnDateTime(tools: ToolsState, now: Date): string | undefined {
   return tools.enabled && tools.dateTime && tools.dateTimeLive ? dateTimePrompt(now) : undefined;

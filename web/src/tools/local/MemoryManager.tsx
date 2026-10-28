@@ -219,7 +219,7 @@ export function MemoryManager({ onClose, store = browserMemory }: { onClose: () 
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) add(e);
                 }}
-                placeholder="What ignis should keep. Only the title goes into every prompt."
+                placeholder="What ignis should keep. The chats are shown only its title."
                 className={`max-h-40 min-h-16 flex-1 resize-none text-sm leading-relaxed [field-sizing:content] ${FIELD}`}
               />
               <button

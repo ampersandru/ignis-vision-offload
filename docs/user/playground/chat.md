@@ -175,7 +175,10 @@ loaded, so it cannot start a switch by accident (the
 [two names pitfall](../concepts/switching-and-idle-unload.md)). It carries
 the settings (`reasoning_effort`, `thinking_budget`, `temperature`, `top_p`,
 `max_tokens` or `max_output_tokens`, and `class`, the lane tag), the tools
-that are on, and the system prompt.
+that are on, and the system prompt, which stays the same from turn to turn.
+What the page tells the model about a turn, the titles of the memory notes
+and the moment, goes ahead of the prompt as its
+[turn notice](tools-and-agents.md#the-turn-notice).
 
 ## A reply
 

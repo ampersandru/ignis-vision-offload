@@ -59,13 +59,14 @@ export type Turn = {
    */
   reasoning?: string;
   /**
-   * What the date and time tool wrote for the moment this turn was sent, when
-   * it updates every prompt: a developer message goes in ahead of the turn.
-   * Each turn keeps the one it was sent with, so a later request repeats them
-   * unchanged and only appends — which is what leaves the engine a prefix to
-   * reuse. Rewriting them to the present moment would cost the whole prefill.
+   * The turn notice this turn was sent with (ADR 0072): a developer message
+   * goes in ahead of the turn, with what the page told the model about it —
+   * the memory notes, the moment. Each turn keeps the one it was sent with,
+   * so a later request repeats them unchanged and only appends — which is
+   * what leaves the engine a prefix to reuse. Rewriting them to the present
+   * would cost the whole prefill.
    */
-  dateTime?: string;
+  notice?: string;
 };
 
 /** What the page asks a transport for: one reply to `turns`, with these settings and tools. */
@@ -116,9 +117,22 @@ export type Exchange = Turn & { failed: boolean };
  * a reply keeps its reasoning for the transports that resend it.
  */
 export function conversationTurns(entries: Exchange[]): Turn[] {
-  const turns: Turn[] = [];
+  return keptEntries(entries).map((entry) => ({
+    role: entry.role,
+    content: entry.content,
+    ...(entry.images?.length ? { images: entry.images } : {}),
+    ...(entry.toolCalls?.length ? { toolCalls: entry.toolCalls } : {}),
+    ...(entry.toolCallId ? { toolCallId: entry.toolCallId } : {}),
+    ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
+    ...(entry.notice ? { notice: entry.notice } : {}),
+  }));
+}
+
+/** The entries `conversationTurns` sends back, whole: the part of the conversation the model reads. */
+export function keptEntries<T extends Pick<Exchange, "role" | "content" | "toolCalls" | "failed">>(entries: T[]): T[] {
+  const kept: T[] = [];
   // A reply that only called tools is not empty: its calls are the turn.
-  const empty = (e: Exchange | undefined) =>
+  const empty = (e: T | undefined) =>
     e !== undefined && e.role === "assistant" && (e.failed || (!e.content && !e.toolCalls?.length));
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -127,17 +141,9 @@ export function conversationTurns(entries: Exchange[]): Turn[] {
       continue;
     }
     if (empty(entry)) continue;
-    turns.push({
-      role: entry.role,
-      content: entry.content,
-      ...(entry.images?.length ? { images: entry.images } : {}),
-      ...(entry.toolCalls?.length ? { toolCalls: entry.toolCalls } : {}),
-      ...(entry.toolCallId ? { toolCallId: entry.toolCallId } : {}),
-      ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
-      ...(entry.dateTime ? { dateTime: entry.dateTime } : {}),
-    });
+    kept.push(entry);
   }
-  return turns;
+  return kept;
 }
 
 /**
@@ -151,7 +157,7 @@ function wireContent(turn: Turn): string | ContentPart[] {
   return turn.content === "" ? images : [...images, { type: "text", text: turn.content }];
 }
 
-/** A turn on the wire, behind the developer message carrying its moment when it has one. Reasoning is never resent. */
+/** A turn on the wire, behind the developer message carrying its notice when it has one. Reasoning is never resent. */
 function wireMessages(turn: Turn): WireMessage[] {
   const message: WireMessage = {
     role: turn.role,
@@ -167,7 +173,7 @@ function wireMessages(turn: Turn): WireMessage[] {
       : {}),
     ...(turn.toolCallId ? { tool_call_id: turn.toolCallId } : {}),
   };
-  return turn.dateTime ? [{ role: "developer", content: turn.dateTime }, message] : [message];
+  return turn.notice ? [{ role: "developer", content: turn.notice }, message] : [message];
 }
 
 /**

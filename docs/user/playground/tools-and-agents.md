@@ -66,8 +66,8 @@ Only the conversation asks; agents do not.
 **Date and time** writes the day, date, time and time zone into the ignis
 system prompt once per session. It is frozen on purpose: a prompt that changes
 every turn could not be reused from the server's cache. **Update every
-prompt** sends the moment of each turn as a developer message after the
-conversation instead.
+prompt** sends the moment of each turn in its [turn notice](#the-turn-notice),
+after the conversation, instead.
 
 ## Run JavaScript
 
@@ -87,13 +87,45 @@ it works: done, in progress, pending.
 
 ## Memory
 
-**Memory** lets the model save short notes about you in this browser and see
-their titles in every session (up to 4,000 characters of titles); it reads a
-note's body when it needs it. **Memory** in the header opens the notes: search
-them, edit them, delete them, or write one yourself. They live in this
-browser's `localStorage`, never on the server.
+**Memory** lets the model save short notes about you in this browser, each a
+title and a body, shared by every chat. The model sees the titles in the
+[turn notice](#the-turn-notice): every one at a chat's first prompt, and later
+only the notes you or another chat saved, changed or deleted since. It reads a
+note's body with `memory_read` when it needs it. **Memory** in the header opens
+the notes: search them, edit them, delete them, or write one yourself. They
+live in this browser's `localStorage`, never on the server.
 
 ![What ignis remembers](../images/playground/memory.png)
+
+## The turn notice
+
+The ignis system prompt and the tools block are the same in every chat,
+whatever the memory and the workspace hold, so the server reuses a conversation's prefix
+instead of prefilling it again ([when reuse
+misses](../concepts/kv-cache-and-prompt-reuse.md#when-reuse-misses)). What
+changes from turn to turn rides in the **turn notice** instead: a developer
+message the page puts right before your prompt, after the conversation so far
+([ADR 0072](../../adr/0072-the-playgrounds-system-prompt-never-changes.md)).
+
+- At a chat's first prompt it lists the titles of the memory notes, newest
+  kept first up to 4,000 characters, with a line counting the older ones left
+  out.
+- At a later prompt it lists only the notes saved, changed or deleted since
+  the last notice by someone other than this chat: you, from **Memory** in the
+  header, or another chat. What this chat's own `memory_save` and `memory_delete` calls
+  did, its agents' included, is not repeated to it.
+- With **Update every prompt** on, it carries the [moment](#date-and-time)
+  too, ahead of the notes.
+- A prompt with nothing to tell carries no notice.
+
+A notice is kept with its prompt, in the chat and across a reload, and every
+later request sends it again byte for byte; a chat saved before the notice
+sends the moments its prompts carry as it always did. An agent gets every
+title in a notice ahead of its task. A server whose
+`--server-developer-message-policy` joins or gathers developer messages
+(`into-system`, `after-system`, `one-after-system`,
+[prompting](../configuration/prompting.md)) loses the reuse for it, as it does
+for the moment.
 
 ## Workspace
 
@@ -127,9 +159,7 @@ width.
 
 The ignis system prompt's workspace part and the three tools are the same in
 every chat, whatever the workspace holds and whatever you attach, so a file
-never changes the head of the prompt and the server's cache of the
-conversation still holds
-([ADR 0072](../../adr/0072-the-playgrounds-system-prompt-never-changes.md)).
+never changes the head of the prompt ([the turn notice](#the-turn-notice)).
 With the switch off the model has no workspace tool and **File** leaves the
 prompt box's **+** menu; pictures can still be attached, and the files stay in
 this browser.

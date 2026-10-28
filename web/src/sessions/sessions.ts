@@ -8,6 +8,7 @@ import type { UnknownCall } from "../tools/errors.ts";
 import type { PromptImage } from "../conversation/images.ts";
 import type { Attachment } from "../tools/local/attachments.ts";
 import type { LocalRun } from "../tools/local/local.ts";
+import type { NoteMark } from "../tools/local/memory.ts";
 import type { WebRun } from "../tools/web/web.ts";
 
 // Playground sessions: separate conversations, each with its own log of
@@ -59,10 +60,24 @@ export type Message = {
   /** The switch a turn made before its first request, shown on the prompt it answered. */
   switch?: TurnSwitch;
   /**
-   * The moment this turn was sent, as the date and time tool writes it, while
-   * the tool updates every prompt. Kept with the turn rather than written
-   * fresh on each request: the history a later request repeats has to be the
-   * one it sent, or the engine is left no prefix to reuse.
+   * The turn notice this prompt was sent with (ADR 0072): the developer
+   * message ahead of it that tells the model what changed for this turn, the
+   * memory notes and, while the date and time tool updates every prompt, the
+   * moment. Kept with the turn rather than written fresh on each request: the
+   * history a later request repeats has to be the one it sent, or the engine
+   * is left no prefix to reuse.
+   */
+  notice?: string;
+  /**
+   * The memory notes as this chat knows them from this prompt on, set when
+   * its notice told the model of them (or there was none to tell, at the
+   * chat's first turn): what the next turn's notice compares the notes with.
+   */
+  knownNotes?: NoteMark[];
+  /**
+   * A prompt sent before the turn notice kept only the moment it was sent, as
+   * the date and time tool wrote it while it updated every prompt. It goes out
+   * as that prompt's notice, as it always did.
    */
   dateTime?: string;
 };

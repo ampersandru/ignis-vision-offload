@@ -18,8 +18,8 @@ import {
 import {
   MEMORY_DELETE_TOOL,
   MEMORY_READ_TOOL,
+  MEMORY_PROMPT,
   MEMORY_SAVE_TOOL,
-  memoryPrompt,
   PLAN_PROMPT,
   RUN_JS_TOOL,
   runJsPrompt,
@@ -42,7 +42,7 @@ const settings: Settings = {
 };
 
 const now = new Date("2026-09-15T01:52:00+02:00");
-const ctx = { now, notes: [] };
+const ctx = { now };
 const all = {
   enabled: true,
   agents: true,
@@ -109,7 +109,7 @@ describe("tools", () => {
         ASK_USER_IGNIS_PROMPT,
         runJsPrompt(true),
         PLAN_PROMPT,
-        memoryPrompt([]),
+        MEMORY_PROMPT,
         WORKSPACE_PROMPT,
         IMAGE_IGNIS_PROMPT,
       ].join("\n\n"),

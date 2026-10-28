@@ -158,6 +158,11 @@ export type RunAgentsOptions = {
   onUpdate: (run: AgentRun) => void;
   /** The tools agents get: the session's, less `agent`. */
   tools?: ToolExtras;
+  /**
+   * The turn notice every agent's prompt goes out behind (ADR 0072): an agent
+   * has no history to put one after, so it opens its one conversation.
+   */
+  notice?: string;
   /** For the agents' web searches. */
   tavilyKey?: string | null;
   /** For the agents' local tools: the safety check, the chat's workspace, the check log. Each agent reads and writes the workspace as a reader of its own. */
@@ -300,7 +305,7 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
   }
 
   async function runOne(task: AgentTask) {
-    let turns: Turn[] = [{ role: "user", content: task.prompt }];
+    let turns: Turn[] = [{ role: "user", content: task.prompt, ...(options.notice ? { notice: options.notice } : {}) }];
     for (let round = 0; ; round++) {
       const answer = await request(task, turns, round);
       if (!answer) return;
