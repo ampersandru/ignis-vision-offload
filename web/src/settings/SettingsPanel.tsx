@@ -78,7 +78,6 @@ function GeneralSettings(props: {
   attachments: Attachment[];
 }) {
   const { settings, set } = props;
-  const notes = useMemoryNotes();
   // ignis refuses greedy sampling with a top_p it would ignore.
   const greedyConflict = settings.temperature === 0 && settings.topP !== 1;
   return (
@@ -86,7 +85,7 @@ function GeneralSettings(props: {
       <SystemPromptField
         value={settings.systemPrompt}
         onChange={(v) => set("systemPrompt", v)}
-        ignis={ignisPrompt(props.tools, { notes, attachments: props.attachments })}
+        ignis={ignisPrompt(props.tools, { attachments: props.attachments })}
       />
 
       <div className="flex flex-col gap-4">

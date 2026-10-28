@@ -38,7 +38,9 @@ import { unknownCall } from "../tools/errors.ts";
 import { type ImageRun, imageToolResult, parseImageCall, runImages } from "../tools/image/image.ts";
 import { type Attachment, attachmentFromFile } from "../tools/local/attachments.ts";
 import { type LocalContext, type LocalRun, localToolResult, runLocalCalls, startedRun } from "../tools/local/local.ts";
-import { agentExtras, routeCall, toolExtras, type ToolsState, turnDateTime } from "../tools/index.ts";
+import { agentExtras, routeCall, toolExtras, type ToolsState } from "../tools/index.ts";
+import { browserMemory } from "../tools/local/memory.ts";
+import { agentNotice, turnNotice } from "../tools/notice.ts";
 import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
 
@@ -69,7 +71,8 @@ export function canStartTurn(streaming: ReadonlySet<number>, sessionId: number, 
 /** A session's stream on the socket: its turns continue one another there, and its agents' streams are named under it. */
 export const sessionStream = (sessionId: number) => `session-${sessionId}`;
 
-const exchangeOf = (m: Message): Exchange => ({
+/** A message as the turns of a request read it; a prompt sent before the turn notice goes out with its moment as its notice. */
+export const exchangeOf = (m: Message): Exchange => ({
   role: m.role,
   content: m.content,
   images: m.images,
@@ -77,7 +80,7 @@ const exchangeOf = (m: Message): Exchange => ({
   failed: m.error !== undefined,
   toolCalls: m.toolCalls,
   toolCallId: m.toolCallId,
-  dateTime: m.dateTime,
+  notice: m.notice ?? m.dateTime,
 });
 
 export function useConversation({
@@ -218,10 +221,10 @@ export function useConversation({
     // page asks again which that is, so the header follows a switch another client made.
     refreshModel();
     const requestSettings: Settings = settings;
-    // The notes and files the tools write into the prompt are as they were when the turn started. The date and
+    // The files the tools write into the prompt are as they were when the turn started. The date and
     // time is the session's, not this turn's: it sits ahead of the whole conversation, so a moment that moved
     // between two turns would change the prompt's first tokens and cost a prefill of everything (GitHub #186).
-    // The tool's "update every prompt" option is what sends this turn's own moment, from behind the history.
+    // What changes between turns, the memory notes and "update every prompt"'s moment, rides in the turn notice.
     const session = list.sessions.find((s) => s.id === sessionId);
     const attachments = session?.attachments ?? [];
     const promptContext = { now: session?.startedAt ?? new Date(), attachments };
@@ -248,7 +251,6 @@ export function useConversation({
     // The prompt the switch is shown on: the new one, or the one a regenerate answers again.
     let switchOn = [...history].reverse().find((m) => m.role === "user")?.id;
     if (prompt !== null) {
-      const stamp = turnDateTime(tools, new Date());
       const user: Message = {
         id: newId(),
         role: "user",
@@ -256,7 +258,7 @@ export function useConversation({
         reasoning: "",
         streaming: false,
         ...(images.length > 0 ? { images } : {}),
-        ...(stamp ? { dateTime: stamp } : {}),
+        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list() }),
       };
       setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, [user]) }));
       void keepSent(sessionId, user);
@@ -462,6 +464,7 @@ export function useConversation({
         settings: requestSettings,
         streamId: sessionStream(sessionId),
         tools: agentTools,
+        notice: agentNotice(tools, browserMemory.list()),
         tavilyKey: getTavilyKey(),
         local,
         maxRounds,

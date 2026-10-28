@@ -3,8 +3,8 @@ import { buildChatRequest, type ChatRequest, type ConversationRequest, type Sett
 import type { StreamOptions, StreamResult } from "../../api/stream.ts";
 import type { Timeline } from "../../metrics/figures.ts";
 import { type Attachment, readPiece, uniqueName } from "./attachments.ts";
-import { type LocalContext, type LocalRun, memoryPrompt, runLocalCalls } from "./local.ts";
-import { createMemoryStore } from "./memory.ts";
+import { type LocalContext, type LocalRun, runLocalCalls } from "./local.ts";
+import { createMemoryStore, memoryNotice } from "./memory.ts";
 import { JS_CHECK_SYSTEM_PROMPT, parseVerdict, runJs, type WorkerFactory, workerMain, type WorkerScope } from "./runjs.ts";
 
 /** The chat body a request goes out as over HTTP. */
@@ -129,14 +129,14 @@ describe("update_plan, memory, files", () => {
     expect((await runOne("update_plan", { steps: [] })).run.status).toBe("failed");
   });
 
-  it("saves notes with a title, lists only the titles in the prompt, and reads bodies on demand", async () => {
+  it("saves notes with a title, tells a chat only their titles, and reads bodies on demand", async () => {
     const memory = createMemoryStore(null);
     const saved = await runOne("memory_save", { title: "Language", body: "Prefers answers in Italian, technical terms in English." }, { memory });
     expect(saved.run.result).toBe('Saved as m1: "Language".');
     await runOne("memory_save", { title: "Team", body: "Supports AS Roma." }, { memory });
-    const prompt = memoryPrompt(memory.list());
-    expect(prompt).toContain("- [m1] Language\n- [m2] Team");
-    expect(prompt).not.toContain("Supports AS Roma");
+    const notice = memoryNotice(undefined, memory.list()).text;
+    expect(notice).toContain("- [m1] Language\n- [m2] Team");
+    expect(notice).not.toContain("Supports AS Roma");
 
     const read = await runOne("memory_read", { ids: ["m2", "m7"] }, { memory });
     expect(read.run.result).toBe("[m2] Team\nSupports AS Roma.\n\nNo saved note has the id m7.");
@@ -147,7 +147,7 @@ describe("update_plan, memory, files", () => {
     expect((await runOne("memory_delete", { id: "m1" }, { memory })).run.result).toBe("Deleted m1.");
     expect((await runOne("memory_delete", { id: "m9" }, { memory })).run.error).toBe('No saved note has the id "m9".');
     expect(memory.list().map((n) => n.id)).toEqual(["m2"]);
-    expect(memoryPrompt([])).toContain("No notes saved yet.");
+    expect(memoryNotice(undefined, []).text).toBeUndefined();
   });
 
   it("creates a file with a safe name", async () => {
