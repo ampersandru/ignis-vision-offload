@@ -3,14 +3,17 @@ import { caption, fieldLook } from "../ui/classes.ts";
 import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { type Author, KIND_LABEL, latest, present, USER, type Workspace, type WorkspaceFile } from "./files.ts";
-import { createFile, downloadName, fileTree, refusal, sizeLabel, type TreeNode, uploadFiles } from "./panel.ts";
+import { FileEditor, FileHistory, type SaveOutcome } from "./FileHistory.tsx";
+import { authorName, type ChatNames, createFile, downloadName, fileTree, refusal, saveText, sizeLabel, timeLabel, type TreeNode, uploadFiles } from "./panel.ts";
 import type { WorkspaceView } from "./useWorkspaces.ts";
 import type { ChatBinding, Workspaces } from "./workspaces.ts";
 
 // The Chat view's workspace panel (spec #170): the files of the chat's
 // workspace as a tree of their names, each opening in a viewer for its kind,
 // and the user's actions on them — a new empty text file, uploads by the
-// picker or by a drop, rename, delete and download. Everything goes through
+// picker or by a drop, rename, delete and download, a text file's edits by
+// hand, and any file's history with its diff and restore, deleted files'
+// included (FileHistory.tsx). Everything goes through
 // the workspace module as the user's; a chat with no workspace yet gets one
 // with the first file made here. What the browser refuses, the panel says.
 
@@ -21,6 +24,10 @@ export type PanelActions = {
   rename: (file: string, name: string) => Promise<string | null>;
   remove: (file: string) => void;
   download: (file: WorkspaceFile) => void;
+  /** The editor's Save: the text as a new version of the user's. */
+  save: (file: WorkspaceFile, text: string) => Promise<SaveOutcome>;
+  /** Restores version `n` of a file as its newest. */
+  restore: (file: string, n: number) => void;
 };
 
 const BUTTON = "cut flex shrink-0 items-center gap-1.5 bg-surface px-2.5 py-1.5 font-display text-xs font-semibold text-ink [--cut-size:6px] hover:bg-line";
@@ -30,21 +37,12 @@ const ICON_SHAPE = "flex size-7 shrink-0 items-center justify-center text-ash";
 
 const ICON_BUTTON = `${ICON_SHAPE} hover:text-ink`;
 
-const pad = (n: number) => String(n).padStart(2, "0");
-
-function when(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** Who made a version, as the user reads it. */
-const byWhom = (author: Author) => (author.by === "user" ? "you" : author.agent ? `the sub-agent ${author.agent.name}` : "the model");
-
 /** The panel for the chat's workspace, reading and changing it through the workspace module. */
 export function WorkspacePanel({
   workspaces,
   view,
   chat,
+  chats,
   onClose,
 }: {
   workspaces: Workspaces;
@@ -52,6 +50,8 @@ export function WorkspacePanel({
   view: WorkspaceView;
   /** The chat's hold on its workspace: the first file made here gives it one. */
   chat: () => ChatBinding;
+  /** The chat the panel is open in, and the page's chats by their keys: who made each version. */
+  chats: ChatNames;
   onClose: () => void;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
@@ -88,9 +88,19 @@ export function WorkspacePanel({
         if (blob) save(blob, downloadName(file.name));
         else setNotice(`${file.name} came from an older chat, which kept only its text: there are no bytes to download.`);
       }),
+    save: async (file, text) => {
+      const out = await attempt(() => saveText(workspaces, file, text));
+      return "refused" in out ? { ok: false, error: out.refused } : out.ok ? { ok: true, version: out.written.version } : out;
+    },
+    restore: (file, n) => {
+      if (!id) return;
+      void attempt(() => workspaces.restore(id, file, n)).then((out) => {
+        if (!("refused" in out) && !out.ok) setNotice(out.error);
+      });
+    },
   };
 
-  return <PanelView workspace={view.workspace} files={view.files} notice={notice} onClose={onClose} actions={actions} />;
+  return <PanelView workspace={view.workspace} files={view.files} chats={chats} notice={notice} onClose={onClose} actions={actions} />;
 }
 
 function save(blob: Blob, name: string) {
@@ -106,12 +116,14 @@ function save(blob: Blob, name: string) {
 export function PanelView({
   workspace,
   files,
+  chats,
   notice,
   onClose,
   actions,
 }: {
   workspace: Workspace | null | undefined;
   files: WorkspaceFile[];
+  chats: ChatNames;
   notice?: string | null;
   onClose: () => void;
   actions: PanelActions;
@@ -120,8 +132,12 @@ export function PanelView({
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [over, setOver] = useState(false);
-  const open = files.find((f) => f.id === opened && present(f));
-  const tree = fileTree(files);
+  const [showDeleted, setShowDeleted] = useState(false);
+  // A file deleted while open stays open, on its history.
+  const open = files.find((f) => f.id === opened);
+  const deleted = files.filter((f) => !present(f)).length;
+  const tree = fileTree(files, showDeleted);
+  const whom = (author: Author) => authorName(author, chats);
 
   const drag = (e: DragEvent) => {
     if (![...e.dataTransfer.types].includes("Files")) return;
@@ -155,7 +171,7 @@ export function PanelView({
       </div>
 
       {open ? (
-        <FileViewer file={open} onBack={() => setOpened(null)} actions={actions} />
+        <FileViewer key={open.id} file={open} whom={whom} onBack={() => setOpened(null)} actions={actions} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -178,6 +194,16 @@ export function PanelView({
               />
             </label>
             <span className="text-xs text-ash">or drop files here</span>
+            {deleted > 0 && (
+              <button
+                type="button"
+                aria-pressed={showDeleted}
+                className="ml-auto shrink-0 font-display text-xs text-ash hover:text-ink"
+                onClick={() => setShowDeleted((s) => !s)}
+              >
+                {showDeleted ? "Hide deleted files" : `Show deleted files (${deleted})`}
+              </button>
+            )}
           </div>
           {creating && (
             <NameField
@@ -258,6 +284,16 @@ export function FileTree({
 }
 
 function FileRow({ file, name, onOpen, onRename, actions }: { file: WorkspaceFile; name: string; onOpen: () => void; onRename: () => void; actions: PanelActions }) {
+  if (!present(file)) {
+    return (
+      <div className="flex min-w-0 items-center gap-1 hover:bg-surface">
+        <button type="button" title={`${file.name}, deleted: open its history`} className="min-w-0 flex-1 truncate py-1 pl-1 text-left text-sm text-ash line-through" onClick={onOpen}>
+          {name}
+        </button>
+        <span className="shrink-0 pr-1 font-display text-xs text-ash">deleted</span>
+      </div>
+    );
+  }
   return (
     <div className="flex min-w-0 items-center gap-1 hover:bg-surface">
       <button type="button" title={file.name} className="min-w-0 flex-1 truncate py-1 pl-1 text-left text-sm text-ink" onClick={onOpen}>
@@ -321,12 +357,25 @@ export function NameField({
   );
 }
 
-/** A file opened from the tree, its latest version in the viewer for its kind. */
-export function FileViewer({ file, onBack, actions }: { file: WorkspaceFile; onBack: () => void; actions: PanelActions }) {
+type ViewerTab = "preview" | "edit" | "view" | "history";
+
+const TAB_LABEL: Record<Exclude<ViewerTab, "history">, string> = { preview: "Preview", edit: "Edit", view: "File" };
+
+/**
+ * A file opened from the tree, its latest version in the viewer for its kind,
+ * a text file's in its editor (an HTML file's a tab after its preview), and
+ * its history a tab away. A deleted file opens on its history alone.
+ */
+export function FileViewer({ file, whom, onBack, actions }: { file: WorkspaceFile; whom: (author: Author) => string; onBack: () => void; actions: PanelActions }) {
   const v = latest(file);
+  const editable = v.text !== undefined;
+  const html = editable && isHtmlName(file.name);
+  const tabs: ViewerTab[] = v.deleted ? ["history"] : html ? ["preview", "edit", "history"] : editable ? ["edit", "history"] : ["view", "history"];
+  const [chosen, setTab] = useState<ViewerTab>(tabs[0]);
+  const tab = tabs.includes(chosen) ? chosen : tabs[0];
   let body: ReactNode = null;
   if (v.text !== undefined) {
-    body = isHtmlName(file.name) ? <HtmlPreview html={v.text} name={file.name} /> : <Source text={v.text} />;
+    body = html ? <HtmlPreview html={v.text} name={file.name} /> : null;
   } else if (file.kind === "pdf" && v.derived !== undefined) {
     body = (
       <>
@@ -337,21 +386,48 @@ export function FileViewer({ file, onBack, actions }: { file: WorkspaceFile; onB
   } else if (file.kind === "other") {
     body = <p className="text-xs leading-snug text-ash">The model sees its name and size, and cannot read it.</p>;
   }
+  const history = <FileHistory file={file} whom={whom} onRestore={(n) => actions.restore(file.id, n)} />;
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-3">
       <div className="flex items-center gap-2">
         <button type="button" className="font-display text-xs font-semibold text-ash hover:text-ink" onClick={onBack}>
           ← All files
         </button>
-        <button type="button" aria-label={`Download ${file.name}`} title="Download" className={`${ICON_BUTTON} ml-auto`} onClick={() => actions.download(file)}>
-          <IconDownload />
-        </button>
+        {!v.deleted && (
+          <button type="button" aria-label={`Download ${file.name}`} title="Download" className={`${ICON_BUTTON} ml-auto`} onClick={() => actions.download(file)}>
+            <IconDownload />
+          </button>
+        )}
       </div>
-      <p className="font-display text-sm font-semibold break-all text-ink">{file.name}</p>
+      <p className={`font-display text-sm font-semibold break-all ${v.deleted ? "text-ash line-through" : "text-ink"}`}>{file.name}</p>
       <p className="text-xs leading-snug text-ash">
-        {KIND_LABEL[file.kind]}, {sizeLabel(v)}; version {v.n}, changed {when(v.at)} by {byWhom(v.author)}
+        {v.deleted
+          ? `Deleted in version ${v.n}, ${timeLabel(v.at)}, by ${whom(v.author)}. Restore a version to bring it back.`
+          : `${KIND_LABEL[file.kind]}, ${sizeLabel(v)}; version ${v.n}, changed ${timeLabel(v.at)} by ${whom(v.author)}`}
       </p>
-      {body}
+      {tabs.length > 1 && (
+        <div role="tablist" aria-label={file.name} className="flex items-center gap-3 border-b border-line">
+          {tabs.map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={t === tab}
+              className={`-mb-px border-b-2 pb-1 font-display text-xs font-semibold ${t === tab ? "border-ember text-ink" : "border-transparent text-ash hover:text-ink"}`}
+              onClick={() => setTab(t)}
+            >
+              {t === "history" ? `History (${file.versions.length})` : TAB_LABEL[t]}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* The editor stays mounted while another tab shows: what is typed in it waits there. */}
+      {editable && (
+        <div hidden={tab !== "edit"}>
+          <FileEditor file={file} whom={whom} onSave={actions.save} />
+        </div>
+      )}
+      {tab === "history" ? history : tab !== "edit" && body}
     </div>
   );
 }

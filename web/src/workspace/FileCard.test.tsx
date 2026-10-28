@@ -46,6 +46,14 @@ describe("a reply's file card", () => {
     expect(html).toMatch(/<button[^>]*>Open the latest<\/button>/);
   });
 
+  it("is marked deleted once a newer version deletes the file, and still opens its own", () => {
+    const html = render([wrote(1)], [page([version(1, "<p>One</p>"), version(2, "<p>Two</p>"), { n: 3, author: { by: "user" }, at: 0, deleted: true }])]);
+    expect(html).toContain("Deleted in version 3; the workspace panel restores it from its history.");
+    expect(html).toContain("&lt;p&gt;One&lt;/p&gt;");
+    expect(html).not.toContain("Superseded");
+    expect(html).not.toContain("Open the latest");
+  });
+
   it("says so when the workspace no longer has the file", () => {
     expect(render([wrote(2)], [])).toContain("site/index.html, version 2: no longer in the workspace.");
   });

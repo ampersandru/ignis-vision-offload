@@ -156,8 +156,8 @@ get the same five tools, each as a reader of its own
 ([below](#changes-the-model-has-not-seen)). A file you attach with **File** in
 the prompt box becomes a file of the workspace when the prompt is sent, and
 the prompt says so after your words: `[Attached to the workspace: brief.pdf]`.
-You see the files, and add, rename, delete and download them, in the
-[workspace panel](chat.md#the-workspace-panel).
+You see the files, and add, edit, rename, delete, download and restore them,
+in the [workspace panel](chat.md#the-workspace-panel).
 
 A file the model writes or edits shows in its reply as a card: its name, the
 version that call made, its size, **Preview** and **Download**; a deletion is
@@ -180,7 +180,8 @@ The model never overwrites a change it has not seen. Each reader, the chat
 and each of its agents apart, has the version of each file it last read or
 wrote, and its `write_file` over an existing file, its `edit_file` or its
 `delete_file` is refused when the file is at another version now: you changed
-it, another chat working in the same workspace did, or another agent did. The
+it (a save in the [editor](chat.md#editing-by-hand-history-and-restore), a
+restore), another chat working in the same workspace did, or another agent did. The
 refusal names the file, says who changed it, and tells the model to read it
 again; the model reads it, and makes its change on what the file holds now.
 

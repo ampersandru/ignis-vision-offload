@@ -47,6 +47,7 @@ import { agentNotice, turnNotice } from "../tools/notice.ts";
 import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
 import { type AttachedFile, attachedChip, commitAttached, fromLegacy, readAttached, withAttached } from "../workspace/attach.ts";
+import type { ChatNames } from "../workspace/panel.ts";
 import { seenIn } from "../workspace/tools.ts";
 import { type ChatBinding, pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
 
@@ -732,6 +733,15 @@ export function useConversation({
     detach,
     /** The chat on screen's hold on its workspace: what the workspace panel makes files through. */
     binding: () => chatBinding(active.id, active.messages),
+    /** The chat on screen, and each chat's title by its store key: who made a version, as the workspace panel names it. */
+    chatNames: {
+      here: (key: string) => storage.idOf(key) === active.id,
+      title: (key: string) => {
+        const id = storage.idOf(key);
+        const title = list.sessions.find((s) => s.id === id)?.title;
+        return title === UNTITLED ? undefined : title;
+      },
+    } satisfies ChatNames,
     bindTo,
     deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */

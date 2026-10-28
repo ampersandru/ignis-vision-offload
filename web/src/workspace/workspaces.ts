@@ -24,7 +24,8 @@ import {
 // The workspace module (spec #170): the only writer of workspaces, their
 // files and their versions, in the page's store (ADR 0073) — IndexedDB, or
 // the in-memory store without it. It has two entrances: the user's actions
-// (the files a prompt attaches, and the panel to come) and the model's tool
+// (the files a prompt attaches, and the panel's: its files, hand edits and
+// restores) and the model's tool
 // calls (tools.ts, through the local tools' router). Both come here, so every
 // change is a version with its author, and every change is announced to the
 // page through `subscribe`.
@@ -138,6 +139,13 @@ export type Workspaces = {
    * version is made; the file keeps its id and its kind.
    */
   renameFile(workspace: WorkspaceId, file: string, name: string): Promise<FileOutcome>;
+  /**
+   * The user's restore of version `n` of a file: a new newest version with
+   * that version's content (its text, its bytes and the text derived from
+   * them), authored by the user, the versions between kept. A deleted file is
+   * restored the same way, from a version before its deletion.
+   */
+  restore(workspace: WorkspaceId, file: string, n: number): Promise<FileOutcome>;
   /** Called after every change, with the workspace and the file it touched. */
   subscribe(listener: (change: { workspace: WorkspaceId; file?: string }) => void): () => void;
 };
@@ -453,6 +461,27 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
         await touch(workspace, now());
         notify({ workspace, file: id });
         return { ok: true, written };
+      });
+    },
+    restore(workspace, id, n) {
+      return serial(async (): Promise<FileOutcome> => {
+        const value = await store.getDoc<unknown>(filesCollection(workspace), id);
+        if (!isFile(value)) return { ok: false, error: "The workspace has no such file." };
+        const old = value.versions.find((v) => v.n === n);
+        const newest = latest(value);
+        if (!old) return { ok: false, error: `${value.name} has no version ${n}.` };
+        if (old.deleted) return { ok: false, error: `Version ${n} of ${value.name} is its deletion, which has no content to restore.` };
+        if (old === newest) return { ok: false, error: `Version ${n} is already the newest of ${value.name}.` };
+        const version: Version = {
+          n: newest.n + 1,
+          author: USER,
+          at: now(),
+          ...(old.text !== undefined ? { text: old.text } : {}),
+          ...(old.bytes ? { bytes: old.bytes } : {}),
+          ...(old.derived !== undefined ? { derived: old.derived } : {}),
+        };
+        const outcome = await commit({ ...value, versions: [...value.versions, version] }, version, USER, false);
+        return outcome.ok ? { ok: true, written: outcome.written } : outcome;
       });
     },
     subscribe(listener) {
