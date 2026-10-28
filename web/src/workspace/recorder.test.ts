@@ -80,6 +80,22 @@ describe("the recorder", () => {
     expect(saved).toEqual([]);
   });
 
+  it("keeps nothing when stopped before the microphone started, and lets it go once it does", async () => {
+    let started: (capture: { flush: () => Promise<void>; stop: () => void }) => void = () => {};
+    let stopped = false;
+    const saved: File[] = [];
+    const recorder = createRecorder({ capture: () => new Promise((resolve) => (started = resolve)), now: () => at, limit: async () => null });
+    const starting = recorder.start(async (file) => void saved.push(file));
+    expect(recorder.getState()).toEqual({ phase: "starting" });
+    // The panel closing while the browser still asks for the microphone.
+    await recorder.stop();
+    expect(recorder.getState()).toEqual({ phase: "idle", blocked: false });
+    started({ flush: async () => {}, stop: () => void (stopped = true) });
+    await starting;
+    expect(stopped).toBe(true);
+    expect(saved).toEqual([]);
+  });
+
   it("stops and saves at the longest clip the server transcribes", async () => {
     const m = mic();
     const saved: File[] = [];

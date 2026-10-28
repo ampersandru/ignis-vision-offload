@@ -22,7 +22,7 @@ export type RecorderState =
 export type Recorder = {
   /** Starts recording; `save` takes the file once it ends. Called inside the press, which the microphone needs. */
   start(save: (file: File) => Promise<void>): Promise<void>;
-  /** Ends the recording and saves it. */
+  /** Ends the recording and saves it; before the microphone started, there is nothing to save, and it cancels. */
   stop(): Promise<void>;
   /** Ends the recording and keeps nothing. */
   cancel(): void;
@@ -120,6 +120,16 @@ export function createRecorder(deps: RecorderDeps = {}): Recorder {
     for (const listener of listeners) listener();
   };
 
+  function cancel() {
+    const current = take;
+    if (!current) return;
+    take = null;
+    current.stopping = true;
+    current.ended = true;
+    current.capture?.stop();
+    set({ phase: "idle", blocked: false });
+  }
+
   async function finish(current: Take, note?: string) {
     if (current.stopping) return;
     current.stopping = true;
@@ -178,17 +188,11 @@ export function createRecorder(deps: RecorderDeps = {}): Recorder {
       if (!current.stopping) set({ phase: "recording", seconds: current.samples / TARGET_RATE, level: 0, limit: current.limit });
     },
     async stop() {
-      if (take && !take.ended) await finish(take);
+      if (!take || take.ended) return;
+      if (!take.capture) return cancel();
+      await finish(take);
     },
-    cancel() {
-      const current = take;
-      if (!current) return;
-      take = null;
-      current.stopping = true;
-      current.ended = true;
-      current.capture?.stop();
-      set({ phase: "idle", blocked: false });
-    },
+    cancel,
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener);
