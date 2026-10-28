@@ -99,7 +99,19 @@ opens a file, with its kind, size and latest version, and when and by whom it
 last changed: you, the model or one of its agents.
 
 - An HTML file opens in the same sandboxed preview as a reply's card, with
-  its source, **Save as PDF** and the full-screen view.
+  its **Source** a click away, **Save as PDF** and the full-screen view. A
+  site of several files shows whole: the page's `<link rel="stylesheet"
+  href>`, `<script src>` and `<img src>` that name files of the same
+  workspace are put into the page, each name read from the HTML file's own
+  folder (`css/main.css` beside `site/index.html` is `site/css/main.css`;
+  `../` goes up a folder, and a leading `/` starts at the workspace's top).
+  Nothing else is looked up: a CSS `url()`, a `fetch`, a link, a `srcset`,
+  an address on the web or a name that is not a file here stays as written,
+  and the page stays in the sandbox, with no access to the Playground.
+- A Markdown file opens drawn as a reply is, a SVG file as the picture it
+  draws (without running the scripts it may hold), and a CSV file as a table
+  whose first row is the header, up to 500 rows. Each has a **Source** tab
+  with the file's text.
 - Any other text file shows its source.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click

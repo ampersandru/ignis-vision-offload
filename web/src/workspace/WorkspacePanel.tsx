@@ -3,12 +3,14 @@ import type { SpeechStatus } from "../api/model.ts";
 import { usePictureUrl } from "../image/pictures.tsx";
 import type { ImageId } from "../store/imageStore.ts";
 import { caption, fieldLook } from "../ui/classes.ts";
-import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
+import { isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Lightbox } from "../ui/Lightbox.tsx";
 import { AudioViewer, Recording } from "./audio.tsx";
 import { type Author, KIND_LABEL, latest, present, USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
 import { BUTTON, Source } from "./looks.tsx";
+import { CsvPreview, MarkdownPreview, SitePreview, SvgPreview } from "./previews.tsx";
+import { isCsvName, isMarkdownName, isSvgName } from "./site.ts";
 import { createFile, downloadName, fileTree, refusal, sizeLabel, type TreeNode, uploadFiles } from "./panel.ts";
 import { createRecorder } from "./recorder.ts";
 import type { WorkspaceView } from "./useWorkspaces.ts";
@@ -198,7 +200,7 @@ export function PanelView({
       </div>
 
       {open ? (
-        <FileViewer file={open} onBack={() => setOpened(null)} actions={actions} speech={speech} />
+        <FileViewer file={open} onBack={() => setOpened(null)} actions={actions} speech={speech} files={files} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -366,11 +368,11 @@ export function NameField({
 }
 
 /** A file opened from the tree, its latest version in the viewer for its kind. */
-export function FileViewer({ file, onBack, actions, speech }: { file: WorkspaceFile; onBack: () => void; actions: PanelActions; speech?: SpeechStatus }) {
+export function FileViewer({ file, onBack, actions, speech, files = [] }: { file: WorkspaceFile; onBack: () => void; actions: PanelActions; speech?: SpeechStatus; files?: WorkspaceFile[] }) {
   const v = latest(file);
   let body: ReactNode = null;
   if (v.text !== undefined) {
-    body = isHtmlName(file.name) ? <HtmlPreview html={v.text} name={file.name} /> : <Source text={v.text} />;
+    body = textBody(file, v.text, files, actions);
   } else if (file.kind === "pdf" && v.derived !== undefined) {
     body = (
       <>
@@ -429,4 +431,13 @@ function PictureView({ id, name, width, height }: { id: ImageId; name: string; w
       )}
     </>
   );
+}
+
+/** A text file in the viewer for its name: a page with its site, Markdown, SVG or CSV drawn, anything else as text. */
+function textBody(file: WorkspaceFile, text: string, files: WorkspaceFile[], actions: PanelActions): ReactNode {
+  if (isHtmlName(file.name)) return <SitePreview file={file} text={text} files={files} content={actions.content} />;
+  if (isMarkdownName(file.name)) return <MarkdownPreview text={text} name={file.name} />;
+  if (isSvgName(file.name)) return <SvgPreview text={text} name={file.name} />;
+  if (isCsvName(file.name)) return <CsvPreview text={text} name={file.name} />;
+  return <Source text={text} />;
 }
