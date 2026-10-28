@@ -144,7 +144,9 @@ What you do here is yours: each version it makes is authored by you.
   `.zip`: every file starts at version 1, yours, and its kind is recognised as
   on upload, a picture the browser already holds is not stored twice, and
   folder entries are skipped. A zip that cannot be read is said so in the
-  panel and makes no workspace. The new workspace is one to pick in the
+  panel and makes no workspace, and so is one that would unpack to more than
+  the page takes in: 256 MB for one file, 512 MB for all of them, refused
+  before anything is unpacked. The new workspace is one to pick in the
   Workspace menu of a chat that has none yet.
 - On each file's row, the pencil renames it, the arrow downloads its latest
   version under the last part of its name, and the bin deletes it. A name

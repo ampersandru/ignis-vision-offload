@@ -38,7 +38,42 @@ async function through(data: Uint8Array, stream: CompressionStream | Decompressi
 }
 
 const deflate = (data: Uint8Array) => through(data, new CompressionStream("deflate-raw"));
-const inflate = (data: Uint8Array) => through(data, new DecompressionStream("deflate-raw"));
+
+/** `data` inflated, or null once it inflates past `most` bytes: the stream is read a piece at a time and stopped there. */
+async function inflate(data: Uint8Array, most: number): Promise<Uint8Array | null> {
+  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+  const reader = stream.getReader();
+  const pieces: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > most) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    pieces.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of pieces) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+/** The most one file of a zip being imported may hold once unpacked, checked before it is inflated. */
+export const ZIP_FILE_LIMIT = 256 << 20;
+
+/** The most all the files of a zip being imported may hold once unpacked: a small zip can unpack to far more than a tab holds. */
+export const ZIP_TOTAL_LIMIT = 512 << 20;
+
+/** What a zip being read may unpack to, in bytes: each file, and all of them. */
+export type ZipLimits = { file: number; total: number };
+
+const sizeWords = (n: number) => (n % (1 << 20) === 0 ? `${(n >> 20).toLocaleString("en-US")} MB` : `${n.toLocaleString("en-US")} bytes`);
 
 function dosStamp(ms: number): { time: number; date: number } {
   const d = new Date(ms);
@@ -113,8 +148,11 @@ export async function writeZip(entries: ZipEntry[]): Promise<Uint8Array> {
 /** A directory entry: its name ends in `/`. */
 export const isDirectory = (name: string) => name.endsWith("/");
 
-/** The entries of `zip`, directories included with no data; rejects with an Error whose message the user can read when the zip cannot be read. */
-export async function readZip(zip: Uint8Array): Promise<ZipEntry[]> {
+/**
+ * The entries of `zip`, directories included with no data; rejects with an Error whose message the user can read
+ * when the zip cannot be read, or when it unpacks to more than `limits` allow, which is refused before inflating.
+ */
+export async function readZip(zip: Uint8Array, limits: ZipLimits = { file: ZIP_FILE_LIMIT, total: ZIP_TOTAL_LIMIT }): Promise<ZipEntry[]> {
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const bad = (why: string) => new Error(`This is not a zip ignis can read: ${why}.`);
   let end = -1;
@@ -131,6 +169,7 @@ export async function readZip(zip: Uint8Array): Promise<ZipEntry[]> {
   if (count === 0xffff || size === 0xffffffff || at === 0xffffffff) throw bad("it needs zip64, which is not supported");
   const decoder = new TextDecoder("utf-8");
   const entries: ZipEntry[] = [];
+  let unpacked = 0;
   for (let n = 0; n < count; n++) {
     if (at + 46 > zip.length || view.getUint32(at, true) !== SIG_CENTRAL) throw bad("its central directory is damaged");
     const flags = view.getUint16(at + 8, true);
@@ -154,13 +193,18 @@ export async function readZip(zip: Uint8Array): Promise<ZipEntry[]> {
     if (local + 30 > zip.length || view.getUint32(local, true) !== SIG_LOCAL) throw bad(`the header of ${name} is damaged`);
     const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
     if (start + packedSize > zip.length) throw bad(`${name} is cut short`);
+    if (fullSize > limits.file) throw bad(`${name} holds more than ${sizeWords(limits.file)} once unpacked`);
+    unpacked += fullSize;
+    if (unpacked > limits.total) throw bad(`its files hold more than ${sizeWords(limits.total)} once unpacked`);
     const body = zip.subarray(start, start + packedSize);
-    let data: Uint8Array;
+    let data: Uint8Array | null;
     try {
-      data = method === 8 ? await inflate(body) : body.slice();
+      // Never past the size the header declares: a header that understates it is a damaged entry.
+      data = method === 8 ? await inflate(body, fullSize) : body.slice();
     } catch {
       throw bad(`${name} is damaged`);
     }
+    if (data === null) throw bad(`${name} is damaged (it holds more than its header says)`);
     if (data.length !== fullSize || crc32(data) !== crc) throw bad(`${name} is damaged (its checksum differs)`);
     entries.push({ name, data });
   }
