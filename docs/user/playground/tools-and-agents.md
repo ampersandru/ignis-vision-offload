@@ -138,9 +138,14 @@ whenever the switch is on, whether the chat has a file yet or not:
   or another chat.
 - `read_file`: a text file as numbered lines, a range at a time (`offset` is
   the first line, `limit` the most lines), up to 20,000 characters a call; a
-  PDF reads as its text, the same way. A picture comes back as the picture
-  itself when the loaded model has vision ([below](#pictures-the-model-reads)).
-  A file of a kind it cannot read answers with its kind and size.
+  PDF reads as its text, and an audio file as its transcript, the same way.
+  A PDF's text and a transcript are computed on the first read of a version
+  and kept with it; a transcript comes from the server's speech model, and
+  without one the call answers why
+  ([audio in the workspace](chat.md#audio-in-the-workspace)), the model
+  still free to delete the file. A picture comes back as the picture itself
+  when the loaded model has vision ([below](#pictures-the-model-reads)). A
+  file of a kind it cannot read answers with its kind and size.
 - `write_file`: creates a text file or replaces it whole. A name may hold `/`
   for folders, as in `site/index.html`, and is unique in its workspace.
 - `edit_file`: replaces one passage of a text file (`old`) with another

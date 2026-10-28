@@ -702,7 +702,7 @@ export function useConversation({
     setList((l) => forkSession(l, sessionId, messageId, id));
   }
 
-  /** Reads files for the next prompt, text or PDF; the ones that cannot be read are named in `attachError`. */
+  /** Reads files for the next prompt, text, PDF or audio; the ones that cannot be read are named in `attachError`. */
   async function attach(files: File[]) {
     const taken = [...attached.map((f) => f.name), ...active.attachments.map((a) => a.name)];
     const added: AttachedFile[] = [];

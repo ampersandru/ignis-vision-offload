@@ -30,7 +30,7 @@ describe("attaching files", () => {
     expect(pdf.ok && pdf.file.blob?.size).toBe(4);
     // A `.ts` file a browser calls a video is still text when its bytes are.
     expect(await readAttached(new File(["let x = 1;"], "app.ts", { type: "video/mp2t" }), [], pdfReader)).toMatchObject({ ok: true, file: { kind: "text" } });
-    expect(await readAttached(new File([new Uint8Array([0, 1, 2])], "blob.bin"), [], pdfReader)).toEqual({ ok: false, error: "blob.bin is not a text or PDF file." });
+    expect(await readAttached(new File([new Uint8Array([0, 1, 2])], "blob.bin"), [], pdfReader)).toEqual({ ok: false, error: "blob.bin is not a text, PDF or audio file." });
     expect(await readAttached(new File(["x"], "notes.txt"), ["notes.txt"], pdfReader)).toMatchObject({ ok: true, file: { name: "notes (2).txt" } });
   });
 
@@ -52,6 +52,23 @@ describe("attaching files", () => {
     expect(withAttached("Summarise them", names)).toBe("Summarise them\n\n[Attached to the workspace: notes.txt, brief.pdf]");
     expect(withAttached("", ["notes.txt"])).toBe("[Attached to the workspace: notes.txt]");
     expect(withAttached("Hi", undefined)).toBe("Hi");
+  });
+
+  it("attaches audio, which becomes an audio file of the workspace with its bytes, and the prompt names it", async () => {
+    const { workspaces, chat, bound } = binding();
+    const read = await readAttached(new File([new Uint8Array(2048)], "standup.m4a", { type: "audio/mp4" }), [], pdfReader);
+    expect(read).toMatchObject({ ok: true, file: { name: "standup.m4a", kind: "audio", size: 2048 } });
+    if (!read.ok) throw new Error("unread");
+    expect(read.file.blob?.size).toBe(2048);
+    expect(read.file.text).toBeUndefined();
+    expect(attachedChip(read.file)).toEqual({ name: "standup.m4a", kind: "audio", characters: 0, size: 2048 });
+    // Its transcript is not made here: the model's first read of it asks the server.
+    expect(read.file.derived).toBeUndefined();
+    const names = await commitAttached(workspaces, chat, [read.file]);
+    expect(withAttached("What did we decide?", names)).toBe("What did we decide?\n\n[Attached to the workspace: standup.m4a]");
+    const [file] = await workspaces.files(bound()!);
+    expect([file.name, file.kind, latest(file).author]).toEqual(["standup.m4a", "audio", { by: "user" }]);
+    expect(latest(file).bytes).toMatchObject({ store: "blob", type: "audio/mp4", size: 2048 });
   });
 
   it("gives an attached file a name of its own when the workspace already has one", async () => {
@@ -76,8 +93,8 @@ describe("attaching files", () => {
       ["notes.txt", "text", "hello", undefined],
     ]);
     expect(older.map(fromLegacy).map(attachedChip)).toEqual([
-      { name: "notes.txt", kind: "text", characters: 5 },
-      { name: "brief.pdf", kind: "pdf", characters: 18 },
+      { name: "notes.txt", kind: "text", characters: 5, size: 5 },
+      { name: "brief.pdf", kind: "pdf", characters: 18, size: 900 },
     ]);
   });
 

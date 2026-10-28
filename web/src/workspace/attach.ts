@@ -6,22 +6,25 @@ import type { ChatBinding, Incoming, Workspaces } from "./workspaces.ts";
 // until the prompt is sent, read there so that a file that cannot be read is
 // said at once; sending adds them to the chat's workspace, born if the chat
 // has none, and the prompt names them. A PDF keeps its bytes and the text
-// pdf.js reads from it, computed once. An older chat's attachments, kept with
-// the chat as text, take the same way when the chat is resumed.
+// pdf.js reads from it, computed once. Audio keeps its bytes alone: its
+// transcript is the server's, asked at the model's first read (#395). An
+// older chat's attachments, kept with the chat as text, take the same way
+// when the chat is resumed.
 
 /** A file waiting in the prompt box: what the workspace will keep, and its size. */
 export type AttachedFile = Incoming & { size: number };
 
-/** What the prompt box shows of a file it will send. */
-export type AttachedChip = { name: string; kind: "text" | "pdf"; characters: number };
+/** What the prompt box shows of a file it will send: a text's characters (a PDF's text), audio's bytes. */
+export type AttachedChip = { name: string; kind: "text" | "pdf" | "audio"; characters: number; size: number };
 
-export const attachedChip = (file: Incoming): AttachedChip => ({
+export const attachedChip = (file: AttachedFile): AttachedChip => ({
   name: file.name,
-  kind: file.kind === "pdf" ? "pdf" : "text",
+  kind: file.kind === "pdf" || file.kind === "audio" ? file.kind : "text",
   characters: (file.text ?? file.derived ?? "").length,
+  size: file.size,
 });
 
-/** A text or PDF file for the prompt, under a name the box does not hold yet, or why it cannot be one. */
+/** A text, PDF or audio file for the prompt, under a name the box does not hold yet, or why it cannot be one. */
 export async function readAttached(
   file: File,
   taken: string[],
@@ -34,8 +37,9 @@ export async function readAttached(
       const blob = new Blob([await file.arrayBuffer()], { type: "application/pdf" });
       return { ok: true, file: { name, kind, size: file.size, blob, derived: await readPdf(await blob.arrayBuffer()) } };
     }
+    if (kind === "audio") return { ok: true, file: { name, kind, size: file.size, blob: new Blob([await file.arrayBuffer()], { type: file.type }) } };
     const text = kind === "text" || kind === "other" ? await file.text() : null;
-    if (text === null || text.includes("\u0000")) return { ok: false, error: `${file.name} is not a text or PDF file.` };
+    if (text === null || text.includes("\u0000")) return { ok: false, error: `${file.name} is not a text, PDF or audio file.` };
     return { ok: true, file: { name, kind: "text", size: file.size, text } };
   } catch (err) {
     return { ok: false, error: `${file.name} could not be read: ${err instanceof Error ? err.message : String(err)}` };
@@ -83,7 +87,7 @@ export function withAttached(content: string, names: string[] | undefined): stri
 }
 
 /** A PDF's text, page by page (pdf.js, loaded on first use). */
-async function pdfText(data: ArrayBuffer): Promise<string> {
+export async function pdfText(data: ArrayBuffer): Promise<string> {
   const pdfjs = await import("pdfjs-dist");
   const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
   pdfjs.GlobalWorkerOptions.workerSrc = worker.default;

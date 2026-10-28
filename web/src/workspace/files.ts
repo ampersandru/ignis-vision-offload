@@ -65,7 +65,7 @@ export type Version = {
   text?: string;
   /** Any other file's content. */
   bytes?: StoredBytes;
-  /** Text derived from the bytes, computed once and kept with the version: a PDF's text, an audio file's transcript (#395). */
+  /** Text derived from the bytes, computed on the version's first read (or when a PDF is attached) and kept with it: a PDF's text, an audio file's transcript (#395). */
   derived?: string;
   /** This version marks the file deleted; the history keeps the versions before it. */
   deleted?: true;
@@ -168,6 +168,3 @@ export function linesOf(text: string): string[] {
   if (lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
-
-/** The text the model reads of a version: a text file's own, or the text derived from its bytes. */
-export const readableText = (version: Version): string | undefined => version.text ?? version.derived;

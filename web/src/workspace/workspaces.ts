@@ -1,7 +1,11 @@
+import { readModel, type SpeechStatus } from "../api/model.ts";
+import { transcribe } from "../api/transcriptions.ts";
 import type { ImageId, ImageStore } from "../store/imageStore.ts";
 import { newKey } from "../store/docs.ts";
 import { pageStore } from "../store/index.ts";
 import { makeThumb } from "../store/pictures.ts";
+import { unavailable } from "../speech/availability.ts";
+import { pdfText } from "./attach.ts";
 import {
   type Author,
   authorLabel,
@@ -101,6 +105,24 @@ export type WriteOutcome = { ok: true; written: Written; version: Version; creat
 /** What a change to one file did: the version it made, or why it made none. */
 export type FileOutcome = { ok: true; written: Written } | { ok: false; error: string };
 
+/**
+ * How the text of a version's bytes is computed on its first read (#395): a
+ * PDF's by pdf.js, an audio file's by the server's transcription route while
+ * the models listing says a speech model can serve. Injected, so a test needs
+ * neither a browser nor a network.
+ */
+export type Deriving = {
+  /** A PDF's text, page by page. */
+  pdfText: (data: ArrayBuffer) => Promise<string>;
+  /** The speech model's availability as the models listing says it now: undefined when the server says nothing. */
+  speech: () => Promise<SpeechStatus | undefined>;
+  /** An audio file's transcript; rejects with the server's reason. */
+  transcribe: (audio: Blob, name: string, signal?: AbortSignal) => Promise<string>;
+};
+
+/** The text a read gives of a version, none for a kind that has no text (a picture, any other file), or why it cannot be had now. */
+export type Readable = { ok: true; text: string | undefined } | { ok: false; error: string };
+
 export type Workspaces = {
   /** Every workspace, the last changed first. */
   list(): Promise<Workspace[]>;
@@ -143,6 +165,14 @@ export type Workspaces = {
    * version is made; the file keeps its id and its kind.
    */
   renameFile(workspace: WorkspaceId, file: string, name: string): Promise<FileOutcome>;
+  /**
+   * The text the model reads of a version: a text file's own, or the text
+   * derived from its bytes, a PDF's text or an audio file's transcript,
+   * computed on the version's first read and kept with it, so every read
+   * after it gives the same and asks nobody. Reads of one version at once
+   * share one computation, stopped once every read waiting on it has stopped.
+   */
+  readable(file: WorkspaceFile, version: Version, signal?: AbortSignal): Promise<Readable>;
   /** Called after every change, with the workspace and the file it touched. */
   subscribe(listener: (change: { workspace: WorkspaceId; file?: string }) => void): () => void;
 };
@@ -178,11 +208,14 @@ export type MeasurePicture = (blob: Blob) => Promise<{ width: number; height: nu
 
 export function createWorkspaces(
   store: ImageStore,
-  options: { now?: () => number; newId?: () => string; measure?: MeasurePicture } = {},
+  options: { now?: () => number; newId?: () => string; measure?: MeasurePicture; derive?: Deriving } = {},
 ): Workspaces {
   const now = options.now ?? Date.now;
   const newId = options.newId ?? newKey;
   const measure = options.measure ?? ((blob: Blob) => makeThumb(blob));
+  const derive = options.derive;
+  // The text being computed for a version, by the file's id and the version's number.
+  const deriving = new Map<string, { result: Promise<Readable>; stop: AbortController; waiting: number }>();
   const listeners = new Set<(change: { workspace: WorkspaceId; file?: string }) => void>();
   // The workspace each chat's first file is creating, by the chat's key, kept once born.
   const births = new Map<string, Promise<WorkspaceId>>();
@@ -279,6 +312,57 @@ export function createWorkspaces(
     });
   }
 
+  async function content(version: Version): Promise<Blob | null> {
+    if (version.text !== undefined) return new Blob([version.text], { type: "text/plain;charset=utf-8" });
+    if (!version.bytes) return null;
+    return version.bytes.store === "image" ? store.getImage(version.bytes.id) : store.getBlob(version.bytes.id);
+  }
+
+  /** Keeps `text` with the file's version `n`, as the file is now: the computation may have outlived a rename or a newer version. */
+  function keepDerived(file: WorkspaceFile, n: number, text: string): Promise<void> {
+    return serial(async () => {
+      const value = await store.getDoc<unknown>(filesCollection(file.workspace), file.id);
+      if (!isFile(value) || !value.versions.some((v) => v.n === n && v.derived === undefined && v.text === undefined)) return;
+      const versions = value.versions.map((v) => (v.n === n ? { ...v, derived: text } : v));
+      await store.putDoc(filesCollection(file.workspace), file.id, { ...value, versions });
+      notify({ workspace: file.workspace, file: file.id });
+    });
+  }
+
+  /**
+   * Computes a version's text from its bytes, outside the write queue (a long
+   * clip takes minutes), and keeps it; what it cannot compute it says. A store
+   * that refuses rejects.
+   */
+  async function compute(file: WorkspaceFile, version: Version, signal: AbortSignal): Promise<Readable> {
+    const bytes = await content(version);
+    if (!bytes) return { ok: false, error: `${file.name} came from an older chat, which kept no bytes of it to read.` };
+    if (!derive) return { ok: false, error: `${file.name}'s text cannot be computed here.` };
+    let text: string;
+    if (file.kind === "pdf") {
+      try {
+        text = await derive.pdfText(await bytes.arrayBuffer());
+      } catch (err) {
+        return { ok: false, error: `${file.name} could not be read as a PDF: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    } else {
+      const speech = await derive.speech().catch(() => undefined);
+      if (speech?.available !== true) {
+        const why = unavailable({ secure: true, speech, blocked: false })?.sentence ?? "The server reports no speech model.";
+        return { ok: false, error: `No speech model can transcribe ${file.name} now. ${why}` };
+      }
+      try {
+        text = await derive.transcribe(bytes, file.name.slice(file.name.lastIndexOf("/") + 1), signal);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        return { ok: false, error: `The transcription of ${file.name} failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+    if (signal.aborted) throw new Error("stopped");
+    await keepDerived(file, version.n, text);
+    return { ok: true, text };
+  }
+
   /** Keeps the file with its new version `version`, made by `by`, and says what it wrote. */
   async function commit(file: WorkspaceFile, version: Version, by: Changer, created: boolean): Promise<WriteOutcome> {
     await store.putDoc(filesCollection(file.workspace), file.id, file);
@@ -311,11 +395,7 @@ export function createWorkspaces(
       const value = await store.getDoc<unknown>(filesCollection(workspace), id);
       return isFile(value) ? value : null;
     },
-    async content(version) {
-      if (version.text !== undefined) return new Blob([version.text], { type: "text/plain;charset=utf-8" });
-      if (!version.bytes) return null;
-      return version.bytes.store === "image" ? store.getImage(version.bytes.id) : store.getBlob(version.bytes.id);
-    },
+    content,
     create,
     rename(id, raw) {
       return serial(async () => {
@@ -491,6 +571,47 @@ export function createWorkspaces(
         return { ok: true, written };
       });
     },
+    readable(file, version, signal) {
+      if (version.text !== undefined) return Promise.resolve({ ok: true, text: version.text });
+      if (version.derived !== undefined) return Promise.resolve({ ok: true, text: version.derived });
+      if (version.deleted || (file.kind !== "pdf" && file.kind !== "audio")) return Promise.resolve({ ok: true, text: undefined });
+      const key = `${file.workspace}/${file.id}:${version.n}`;
+      let job = deriving.get(key);
+      if (!job) {
+        const stop = new AbortController();
+        const made = { result: compute(file, version, stop.signal), stop, waiting: 0 };
+        const done = () => deriving.get(key) === made && deriving.delete(key);
+        made.result.then(done, done);
+        deriving.set(key, made);
+        job = made;
+      }
+      const shared = job;
+      shared.waiting++;
+      const stopped: Readable = { ok: false, error: `Stopped before ${file.kind === "audio" ? "the transcript" : "the text"} of ${file.name} was ready.` };
+      return new Promise<Readable>((resolve, reject) => {
+        const leave = () => {
+          // The last read waiting stops the computation: nothing is kept, and the next read starts again.
+          if (--shared.waiting === 0) {
+            shared.stop.abort();
+            if (deriving.get(key) === shared) deriving.delete(key);
+          }
+          resolve(stopped);
+        };
+        if (signal?.aborted) return leave();
+        signal?.addEventListener("abort", leave, { once: true });
+        shared.result.then(
+          (out) => {
+            signal?.removeEventListener("abort", leave);
+            resolve(out);
+          },
+          (err) => {
+            signal?.removeEventListener("abort", leave);
+            if (signal?.aborted || shared.stop.signal.aborted) resolve(stopped);
+            else reject(err);
+          },
+        );
+      });
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -502,6 +623,6 @@ let page: Workspaces | null = null;
 
 /** The page's one workspace module, on the page's store: one queue of writes and one set of listeners for every chat. */
 export function pageWorkspaces(): Workspaces {
-  page ??= createWorkspaces(pageStore());
+  page ??= createWorkspaces(pageStore(), { derive: { pdfText, speech: async () => (await readModel()).speech, transcribe } });
   return page;
 }
