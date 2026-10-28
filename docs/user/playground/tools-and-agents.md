@@ -238,14 +238,16 @@ again; the model reads it, and makes its change on what the file holds now.
 - A file the reader never read is refused the same way, a file you attached
   included: the model reads it before it rewrites or deletes it.
 - A reader's own write counts as its read: the model edits a file it just
-  wrote without reading it back.
+  wrote without reading it back, and deletes a picture its `make_image` call
+  just made in the workspace.
 - A new file has no guard, and a deleted file the reader never knew is a new
   file to it: writing it makes its next version. A file deleted since the
   reader read it is refused until the model reads it again.
 - A chat's reads go with the replies that made them, kept with the chat: they
   hold across a reload, a fork has read what the turns it copies read, and a
   reply regenerated, or a prompt edited and sent again, leaves out the reads
-  of the replies it drops.
+  of the replies it drops. A reply that failed, which no request sends back,
+  counts no read either.
 - An agent starts having read nothing, whatever the conversation read, and
   its reads end with its run.
 - Your own changes are never refused.

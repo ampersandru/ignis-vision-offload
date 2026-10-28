@@ -1,5 +1,4 @@
-import { keptEntries } from "../api/request.ts";
-import type { Message } from "../sessions/sessions.ts";
+import { keptMessages, type Message } from "../sessions/sessions.ts";
 import type { WorkspaceFile } from "../workspace/files.ts";
 import { type FileMark, workspaceNotice } from "../workspace/notice.ts";
 import type { Written } from "../workspace/workspaces.ts";
@@ -37,7 +36,7 @@ export function noticeText(sections: NoticeSections): string | undefined {
  */
 export function knownNotesOf(history: Message[]): NoteMark[] | undefined {
   let known: Map<string, NoteMark> | undefined;
-  for (const m of keptEntries(history.map((m) => ({ ...m, failed: m.error !== undefined })))) {
+  for (const m of keptMessages(history)) {
     if (m.knownNotes) known = new Map(m.knownNotes.map((n) => [n.id, n]));
     for (const run of [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])]) {
       if (run.status !== "done") continue;
@@ -62,7 +61,7 @@ export function knownFilesOf(history: Message[]): FileMark[] | undefined {
     const was = v && known?.get(v.file);
     if (v && (!was || was.version <= v.version)) known?.set(v.file, { id: v.file, name: v.name, version: v.version });
   };
-  for (const m of keptEntries(history.map((m) => ({ ...m, failed: m.error !== undefined })))) {
+  for (const m of keptMessages(history)) {
     if (m.knownFiles) known = new Map(m.knownFiles.map((f) => [f.id, f]));
     for (const run of [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])]) learn(run.written ?? run.seen);
     for (const made of (m.imageRuns ?? []).flatMap((r) => r.made ?? [])) learn(made.file);

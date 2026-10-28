@@ -152,8 +152,12 @@ export type Workspaces = {
   writeText(workspace: WorkspaceId, name: string, text: string, by: Changer): Promise<WriteOutcome>;
   /** Replaces the one occurrence of `old` in the text file `file` (its id) with `replacement`, as a new version. */
   editText(workspace: WorkspaceId, file: string, old: string, replacement: string, by: Changer): Promise<WriteOutcome>;
-  /** Files the user brings, each a new file under a name no other file of the workspace holds. */
-  add(workspace: WorkspaceId, files: Incoming[], author: Author): Promise<Written[]>;
+  /**
+   * New files, each under a name no other file of the workspace holds: the
+   * user's, or a reader's (the pictures make_image makes), which has seen
+   * the versions it adds.
+   */
+  add(workspace: WorkspaceId, files: Incoming[], by: Changer): Promise<Written[]>;
   /**
    * Deletes a file: a new version by `by` marking it deleted, the versions
    * before it kept in its history. The one way to delete, the user's and the
@@ -523,7 +527,7 @@ export function createWorkspaces(
         return commit({ ...file, versions: [...file.versions, version] }, version, by, false);
       });
     },
-    add(workspace, incoming, author) {
+    add(workspace, incoming, by) {
       return serial(async () => {
         const taken = (await files(workspace)).map((f) => f.name);
         const written: Written[] = [];
@@ -534,7 +538,7 @@ export function createWorkspaces(
           const { kind, bytes } = await keep(item);
           const version: Version = {
             n: 1,
-            author,
+            author: authorOf(by),
             at,
             ...(item.text !== undefined ? { text: item.text } : {}),
             ...(bytes ? { bytes } : {}),
@@ -545,6 +549,7 @@ export function createWorkspaces(
           written.push({ workspace, file: file.id, name, version: 1 });
         }
         if (written.length > 0) await touch(workspace, now());
+        for (const w of written) saw(by, w.file, w.version);
         for (const w of written) notify({ workspace, file: w.file });
         return written;
       });

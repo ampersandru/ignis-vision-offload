@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Settings, Turn } from "../api/request.ts";
+import type { Message } from "../sessions/sessions.ts";
 import type { StreamOptions, StreamResult } from "../api/stream.ts";
 import { sha256 } from "../store/imageStore.ts";
 import { createMemoryStore } from "../store/memory.ts";
@@ -8,9 +9,9 @@ import { agentExtras, NO_TOOLS } from "../tools/index.ts";
 import { type LocalRun, localToolImages, localToolResult, runLocalCalls } from "../tools/local/local.ts";
 import { commitAttached, withAttached } from "./attach.ts";
 import { latest, USER } from "./files.ts";
-import { boxPictures } from "./pictures.ts";
-import type { WorkspaceAccess } from "./tools.ts";
-import { createWorkspaces, type Workspaces } from "./workspaces.ts";
+import { boxPictures, madeIn } from "./pictures.ts";
+import { seenIn, type WorkspaceAccess } from "./tools.ts";
+import { createWorkspaces, type Seen, type Workspaces } from "./workspaces.ts";
 
 // Pictures as workspace files (#394), over the in-memory store: their bytes
 // kept once in the image store image sessions use, what the model sees of one
@@ -189,6 +190,41 @@ describe("a sub-agent reading a picture", () => {
     expect(sent[1].at(-1)).toMatchObject({ role: "tool", toolCallId: "r1", images: [{ name: "photo.png", url: "data:image/jpeg;base64,U0NBTEVE" }] });
     expect(ran.local?.[0]).toMatchObject({ tool: "read_file", status: "done", picture: { name: "photo.png", seen: true } });
     expect(ran.local?.[0].images).toBeUndefined();
+  });
+});
+
+describe("a picture make_image made", () => {
+  const deleting = (access: WorkspaceAccess, name: string) =>
+    runLocalCalls([{ id: `c${++callN}`, name: "delete_file", arguments: JSON.stringify({ name }) }], { settings, signal: new AbortController().signal, jsSafetyCheck: false, workspace: access }, () => {}).then(([ran]) => ran);
+
+  it("is the chat's own write: it deletes the picture without reading it, in the turn that made it and in a later one", async () => {
+    const { workspaces } = module();
+    let bound: string | undefined;
+    const binding = (seen?: Seen[]) => workspaces.chat("chat-a", { bound: () => bound, name: () => "Fox", onBorn: (id) => (bound = id), seen });
+    const now = binding();
+    const landing = madeIn(workspaces, now);
+    const first = await landing.land(png(3), "made-1.png");
+    const second = await landing.land(png(4), "made-2.png");
+    // In the turn that made it: the same reader.
+    expect((await deleting({ workspaces, chat: now }, "made-1.png")).status).toBe("done");
+    // In a later turn, the reader starts from the history, whose reply holds the picture call.
+    const history: Message[] = [
+      { id: 1, role: "user", content: "a fox", reasoning: "", streaming: false },
+      {
+        id: 2,
+        role: "assistant",
+        content: "",
+        reasoning: "",
+        streaming: false,
+        toolCalls: [{ id: "i1", name: "make_image", arguments: "{}" }],
+        imageRuns: [{ callId: "i1", prompt: "a fox", references: [], transparent: false, count: 2, status: "done", made: [first, second].map((file, i) => ({ name: `made-${i + 1}`, file, size: "8x6" })) }],
+      },
+    ];
+    expect(seenIn(history)).toEqual([
+      { file: first.file, version: 1 },
+      { file: second.file, version: 1 },
+    ]);
+    expect((await deleting({ workspaces, chat: binding(seenIn(history)) }, "made-2.png")).status).toBe("done");
   });
 });
 

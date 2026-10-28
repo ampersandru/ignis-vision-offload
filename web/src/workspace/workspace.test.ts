@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Settings } from "../api/request.ts";
 import type { StreamOptions, StreamResult } from "../api/stream.ts";
+import type { Message } from "../sessions/sessions.ts";
 import { createMemoryStore } from "../store/memory.ts";
 import { runAgents } from "../tools/agents/agents.ts";
 import { agentExtras, NO_TOOLS } from "../tools/index.ts";
@@ -542,8 +543,19 @@ describe("the user's hand edits", () => {
 });
 
 describe("a chat's reads across turns", () => {
-  /** The messages a turn leaves, as the chat keeps them: its reply's local runs. */
-  const reply = (local: LocalRun[]) => ({ local });
+  let messageN = 0;
+  /** A reply as the chat keeps it: the calls it made, and their local runs. */
+  const reply = (local: LocalRun[], more: Partial<Message> = {}): Message => ({
+    id: ++messageN,
+    role: "assistant",
+    content: "",
+    reasoning: "",
+    streaming: false,
+    toolCalls: local.map((r) => ({ id: r.callId, name: r.tool, arguments: "{}" })),
+    local,
+    ...more,
+  });
+  const prompt = (content: string): Message => ({ id: ++messageN, role: "user", content, reasoning: "", streaming: false });
 
   it("hold after a reload: a resumed chat changes a file its history read, and not one the user changed since", async () => {
     const store = createMemoryStore();
@@ -570,10 +582,10 @@ describe("a chat's reads across turns", () => {
     const id = await a.access.chat.workspace();
     await workspaces.add(id, [{ name: "brief.md", kind: "text", text: "Keep it short." }], USER);
     const dropped = reply([await run(a.access, "read_file", { name: "brief.md" })]);
-    const prompt = { local: undefined };
-    expect(seenIn([prompt, dropped])).toEqual([{ file: expect.any(String), version: 1 }]);
+    const asked = prompt("Read the brief.");
+    expect(seenIn([asked, dropped])).toEqual([{ file: expect.any(String), version: 1 }]);
     // The reply is regenerated: the turn starts again from the prompt alone.
-    const again = workspaces.chat("chat-a", { bound: () => id, name: () => "Trip plan", onBorn: () => {}, seen: seenIn([prompt]) });
+    const again = workspaces.chat("chat-a", { bound: () => id, name: () => "Trip plan", onBorn: () => {}, seen: seenIn([asked]) });
     expect((await run({ workspaces, chat: again }, "write_file", { name: "brief.md", content: "Long." })).error).toMatch(/^brief\.md is a file you have not read/);
   });
 
@@ -585,12 +597,18 @@ describe("a chat's reads across turns", () => {
         { callId: "r", tool: "read_file", status: "done", seen: { workspace: "w1", file: "f1", name: "a.md", version: 2 } },
         { callId: "e", tool: "edit_file", status: "failed", error: "refused" },
       ]),
-      { ...reply([deleted]), agents: [{ local: [agentWrite] }] },
+      reply([deleted], { agents: [{ callId: "a1", name: "helper", prompt: "", status: "done", reasoning: "", content: "", local: [agentWrite] }] }),
     ];
     expect(seenIn(messages)).toEqual([
       { file: "f1", version: 2 },
       { file: "f1", version: 3 },
     ]);
+  });
+
+  it("are those of the history the model reads: a failed reply, which a request leaves out, has read nothing", () => {
+    const read = (file: string): LocalRun => ({ callId: `r-${file}`, tool: "read_file", status: "done", seen: { workspace: "w1", file, name: `${file}.md`, version: 1 } });
+    const messages = [prompt("Read both."), reply([read("f1")]), reply([read("f2")], { error: "503: engine full" })];
+    expect(seenIn(messages)).toEqual([{ file: "f1", version: 1 }]);
   });
 });
 

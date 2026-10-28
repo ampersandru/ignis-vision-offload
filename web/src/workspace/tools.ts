@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "../api/request.ts";
+import { keptMessages, type Message } from "../sessions/sessions.ts";
 import type { LocalRun } from "../tools/local/local.ts";
 import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, type Version, type WorkspaceFile } from "./files.ts";
 import type { ChatBinding, Reader, Seen, Workspaces } from "./workspaces.ts";
@@ -318,16 +319,18 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
 
 /**
  * What a chat's history has shown its model of the workspace: the version of
- * each file its own calls read or made, oldest first; its sub-agents' calls
- * are theirs. The chat's reader starts each turn from it (ChatBinding), so a
- * chat resumed after a reload has seen what it read before, and a turn run
- * again without the reply that read a file has not.
+ * each file its own calls read or made, the pictures its make_image calls
+ * landed among them, oldest first; its sub-agents' calls are theirs. Only the
+ * history the model reads counts, as for the turn notice (knownFilesOf): a
+ * failed reply a request leaves out read nothing. The chat's reader starts
+ * each turn from it (ChatBinding), so a chat resumed after a reload has seen
+ * what it read before, and a turn run again without the reply that read a
+ * file has not.
  */
-export function seenIn(messages: readonly { local?: LocalRun[] }[]): Seen[] {
-  return messages
-    .flatMap((m) => m.local ?? [])
-    .flatMap((run) => {
-      const version = run.written ?? run.seen;
-      return version ? [{ file: version.file, version: version.version }] : [];
-    });
+export function seenIn(messages: Message[]): Seen[] {
+  const versions = keptMessages(messages).flatMap((m) => [
+    ...(m.local ?? []).map((run) => run.written ?? run.seen),
+    ...(m.imageRuns ?? []).flatMap((r) => r.made ?? []).map((made) => made.file),
+  ]);
+  return versions.flatMap((v) => (v ? [{ file: v.file, version: v.version }] : []));
 }

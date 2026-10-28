@@ -1,5 +1,5 @@
 import type { Figures } from "../metrics/figures.ts";
-import type { LaneTag, ReasoningEffort } from "../api/request.ts";
+import { keptEntries, type LaneTag, type ReasoningEffort } from "../api/request.ts";
 import type { ToolCall } from "../api/sse.ts";
 import type { AgentRun } from "../tools/agents/agents.ts";
 import type { ImageRun } from "../tools/image/image.ts";
@@ -89,6 +89,12 @@ export type Message = {
    */
   dateTime?: string;
 };
+
+/** A reply that failed: a request no longer sends it, nor the prompt it alone answered (`keptEntries`). */
+export const failedReply = (m: Message): boolean => m.error !== undefined;
+
+/** The messages of `history` the model reads, as a request sends them back: a failed reply, and a prompt dropped with it, are not among them. */
+export const keptMessages = (history: Message[]): Message[] => keptEntries(history.map((m) => ({ ...m, failed: failedReply(m) })));
 
 /** A switch to another model before a turn's first request: the owner's choice of model, or the way back from the image model. */
 export type TurnSwitch = { to: string; from?: string; status: "switching" | "switched" | "stopped" | "failed"; error?: string };

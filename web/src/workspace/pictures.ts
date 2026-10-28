@@ -12,7 +12,7 @@ import type { ChatBinding, Workspaces, Written } from "./workspaces.ts";
 
 /** Where make_image's pictures go, and where a later call that edits one reads it back. */
 export type MadeLanding = {
-  /** A picture made for the chat, as a file of its workspace authored by the chat; rejects when the store refuses it. */
+  /** A picture made for the chat, as a file of its workspace authored by the chat, which has seen it; rejects when the store refuses it. */
   land: (picture: Blob, name: string) => Promise<Written>;
   /** The bytes of the version a picture landed as; null once its workspace is gone. */
   read: (file: Written) => Promise<Blob | null>;
@@ -21,7 +21,7 @@ export type MadeLanding = {
 export function madeIn(workspaces: Workspaces, chat: ChatBinding): MadeLanding {
   return {
     async land(picture, name) {
-      const [written] = await workspaces.add(await chat.workspace(), [{ name, kind: "picture", blob: picture }], chat.reader.author);
+      const [written] = await workspaces.add(await chat.workspace(), [{ name, kind: "picture", blob: picture }], chat.reader);
       if (!written) throw new Error("the workspace did not take the picture");
       return written;
     },
