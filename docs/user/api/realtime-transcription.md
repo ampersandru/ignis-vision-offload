@@ -254,7 +254,8 @@ deltas.
   revise, so deltas only ever append.
 - `conversation.item.input_audio_transcription.completed` `{item_id,
   content_index, transcript, usage: {type: "duration", seconds}}`. Its
-  `transcript` is the item's deltas joined.
+  `transcript` is the item's deltas joined, unless the item is taken for a
+  copy of the context: then it is empty, whatever its deltas said.
 - `conversation.item.input_audio_transcription.failed` `{item_id,
   content_index, error}`: the item held more than `speech.max_clip_seconds`
   (1200) of audio, it ran past `server.stream_timeout` from its first audio

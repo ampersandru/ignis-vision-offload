@@ -107,8 +107,9 @@ On a clip with little or no speech, a pause's room noise or a short "yes", the
 model can write a line of the context instead of what it heard ([the
 measurement](../../findings/2026-10-27-asr-context-echo.md)). A transcript that
 only repeats a line of the context, the whole line or three or more of its
-words in a row, is taken for no speech: the text comes back empty, with no
-language. One word is kept, since a name the context lists is said alone too. A clip longer than
+words in a row (`speech.context_copy_words`; 0 turns this off), is taken for
+no speech: the text comes back empty, with no language unless one was forced.
+One word is kept, since a name the context lists is said alone too. A clip longer than
 `speech.max_clip_seconds` (1200, the model's limit) is a `400` naming the
 limit, and is never split. The body limit is 384 MiB, enough for 20 minutes of
 48 kHz stereo WAV.
@@ -135,7 +136,9 @@ Aider needs only `OPENAI_API_BASE=http://127.0.0.1:8000/v1`: it sends
   `no_speech_prob`, ...) are 0.
 - **`stream: true`**: `text/event-stream`. `transcript.text.delta` events as the
   text becomes stable, then one `transcript.text.done` with the whole `text`
-  (the deltas, joined) and `usage` in audio seconds, then `data: [DONE]`.
+  (the deltas, joined, unless the clip is taken for a copy of the context:
+  then it is empty, whatever the deltas said) and `usage` in audio seconds,
+  then `data: [DONE]`.
 
 ## Waiting and refusing
 

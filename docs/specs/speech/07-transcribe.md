@@ -435,7 +435,11 @@ a forced language, for partials and commits alike. One word is never a copy. App
 empties 15 of the 17 copies (the two left are `migrazione della`, two words) and nothing else. The parser also drops
 a second `<asr_text>` marker, which came back as text 4 times in 50 with no context. A partial is emptied only when
 the whole of it is a copy, so a live row can show the first two words of one (`migrazione della`) before its commit
-empties it and the row goes. Not done: dropping the topic or
+empties it and the row goes. After the fourth review: the run is `speech.context_copy_words` (3; 0 turns the guard
+off), the owner's rule that limits are config fields; a line's label is read off only when it is one word of letters
+before the first colon, never at a colon further on (`10:30`); and an item emptied as a copy after its stable text
+went out as deltas completes empty without the `ignis.speech.stable_text_revised` warning, the API pages saying a
+copy is the one case where the deltas joined are not the transcript. Not done: dropping the topic or
 rewording the context to copy less is the owner's to decide (Q128); a copied pause that held a real "sì" loses it.
 
 ### Ask in the flow (2026-10-27)

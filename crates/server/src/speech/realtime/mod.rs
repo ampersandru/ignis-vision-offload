@@ -1398,7 +1398,9 @@ impl Connection {
                 "content_index": 0,
                 "delta": delta,
             })),
-            None if !transcript.text.starts_with(item.emitted.as_str()) => {
+            // An item taken for a copy of its context completes empty, whatever its deltas sent
+            // (`speech.context_copy_words`): no revision.
+            None if !transcript.text.is_empty() && !transcript.text.starts_with(item.emitted.as_str()) => {
                 // The executor revised stable text, which spec 01 §4
                 // says it never does: the transcript is still its own.
                 tracing::warn!(

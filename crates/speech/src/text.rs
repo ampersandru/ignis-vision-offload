@@ -215,17 +215,19 @@ pub fn parse(output: &str, forced: Option<&str>) -> Parsed {
 /// of room noise or a backchannel, the model can write a line of its system turn instead of what
 /// it heard: the topic, the keyword line. A transcript is taken for such a copy when its words
 /// (letters and digits, lower-cased) are a whole line of the context of two words or more, or
-/// three or more of one line's words in a row; a line's leading `Label:` is read with and without
-/// it. A single word never is: a name the context lists is said alone too.
-pub fn copies_context(context: &str, transcript: &str) -> bool {
+/// `run` or more of one line's words in a row (`speech.context_copy_words`, 3; 0 turns the guard
+/// off); a line's leading one-word `Label:` is read with and without it, never a colon further
+/// on (`10:30`). A single word never is: a name the context lists is said alone too.
+pub fn copies_context(context: &str, transcript: &str, run: usize) -> bool {
     let said = words(transcript);
-    if said.len() < 2 {
+    if run == 0 || said.len() < 2 {
         return false;
     }
+    let unlabelled = |line: &str| line.split_once(':').filter(|(label, _)| label.chars().all(char::is_alphabetic) && !label.is_empty()).map(|(_, rest)| rest.to_string());
     context.lines().any(|line| {
-        std::iter::once(line).chain(line.split_once(':').map(|(_, rest)| rest)).any(|line| {
-            let line = words(line);
-            said == line || (said.len() >= 3 && line.windows(said.len()).any(|run| run == said))
+        std::iter::once(line.to_string()).chain(unlabelled(line)).any(|line| {
+            let line = words(&line);
+            said == line || (said.len() >= run && line.windows(said.len()).any(|run| run == said))
         })
     })
 }
@@ -265,26 +267,44 @@ mod tests {
     fn a_transcript_that_only_repeats_a_line_of_the_context_is_a_copy() {
         // The keyword line whole, as the model wrote it on a pause.
         let line = CONTEXT.lines().last().unwrap();
-        assert!(copies_context(CONTEXT, line));
+        assert!(copies_context(CONTEXT, line, 3));
         // The topic, with or without its label, its period or not, and its head.
-        assert!(copies_context(CONTEXT, "migrazione della pila software verso GitOps."));
-        assert!(copies_context(CONTEXT, "Topic: migrazione della pila software verso GitOps"));
-        assert!(copies_context(CONTEXT, "Migrazione della pila"));
+        assert!(copies_context(CONTEXT, "migrazione della pila software verso GitOps.", 3));
+        assert!(copies_context(CONTEXT, "Topic: migrazione della pila software verso GitOps", 3));
+        assert!(copies_context(CONTEXT, "Migrazione della pila", 3));
         // Three of the keyword line's words in a row.
-        assert!(copies_context(CONTEXT, "Jenkins, Helm Chart"));
+        assert!(copies_context(CONTEXT, "Jenkins, Helm Chart", 3));
         // A context cut by its token cap: the lines the model read.
-        assert!(copies_context("ra della pila software verso GitOps.\npila software, Argo CD", "pila software, Argo CD"));
+        assert!(copies_context("ra della pila software verso GitOps.\npila software, Argo CD", "pila software, Argo CD", 3));
+    }
+
+    #[test]
+    fn the_run_a_copy_takes_is_the_servers_and_0_turns_the_guard_off() {
+        assert!(!copies_context(CONTEXT, "Jenkins, Helm Chart", 4));
+        assert!(copies_context(CONTEXT, "migrazione della", 2));
+        assert!(!copies_context(CONTEXT, CONTEXT.lines().last().unwrap(), 0));
+        // One word is never a copy, whatever the run.
+        assert!(!copies_context(CONTEXT, "Marta", 1));
+    }
+
+    #[test]
+    fn only_a_leading_one_word_label_is_read_off_a_line() {
+        // The rest of a line after a colon further on is no line of its own.
+        let context = "La riunione è alle 10:30 sharp";
+        assert!(!copies_context(context, "30 sharp", 3));
+        assert!(copies_context(context, "riunione è alle", 3));
+        assert!(copies_context("Topic: rilascio settimanale", "rilascio settimanale", 3));
     }
 
     #[test]
     fn a_transcript_that_says_something_of_its_own_is_no_copy() {
         // Two words of a longer line, and one word, are said for real too.
-        assert!(!copies_context(CONTEXT, "migrazione della"));
-        assert!(!copies_context(CONTEXT, "Marta?"));
-        assert!(!copies_context(CONTEXT, "Italian."));
+        assert!(!copies_context(CONTEXT, "migrazione della", 3));
+        assert!(!copies_context(CONTEXT, "Marta?", 3));
+        assert!(!copies_context(CONTEXT, "Italian.", 3));
         // A sentence that names what the context lists.
-        assert!(!copies_context(CONTEXT, "Marta ha aggiornato la Helm Chart ieri."));
-        assert!(!copies_context(CONTEXT, "la migrazione della pila software parte lunedì"));
-        assert!(!copies_context("", "migrazione della pila software"));
+        assert!(!copies_context(CONTEXT, "Marta ha aggiornato la Helm Chart ieri.", 3));
+        assert!(!copies_context(CONTEXT, "la migrazione della pila software parte lunedì", 3));
+        assert!(!copies_context("", "migrazione della pila software", 3));
     }
 }
