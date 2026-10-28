@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: vision-offload-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   cpu-tests:
     strategy:
