@@ -6,7 +6,8 @@ import type { Question } from "../tools/ask/ask.ts";
 import type { ImageRun } from "../tools/image/image.ts";
 import type { LocalRun } from "../tools/local/local.ts";
 import type { WebRun } from "../tools/web/web.ts";
-import type { LogRow, Message, Session, WorkspaceMove } from "./sessions.ts";
+import type { WorkspaceMove } from "../workspace/files.ts";
+import type { LogRow, Message, Session } from "./sessions.ts";
 
 // A chat session as the page's store keeps it (spec playground-enhancements/03):
 // a document of `chat-sessions`, under a key of its own (store/docs.ts). Plain

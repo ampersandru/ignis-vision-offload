@@ -269,18 +269,18 @@ export function useConversation({
 
   /**
    * The picker's choice for the chat on screen: an existing workspace before its first file, or once it has one a
-   * move there, or out of its own to none (`to` null), `left` naming the workspace it leaves (`moveWorkspace`).
+   * move there, or out of its own to none (`to` null), `leftName` naming the workspace it leaves (`moveWorkspace`).
    * While a reply of the chat runs nothing changes, by the same rule as the picker's, read from the turns
    * themselves: why, or null once done.
    */
-  function pickWorkspace(to: string | null, left?: string): string | null {
+  function pickWorkspace(to: string | null, leftName?: string): string | null {
     const sessionId = active.id;
     const held = pickHeld(running(), sessionId);
     if (held) return held;
     // A workspace born for the chat on this page stands in for its binding no longer: the list's is the one now.
     born.current.delete(sessionId);
-    const move = { at: Date.now(), ...(left !== undefined ? { name: left } : {}) };
-    setList((l) => ({ ...l, sessions: moveWorkspace(l.sessions, sessionId, to ?? undefined, move) }));
+    const departure = { at: Date.now(), ...(leftName !== undefined ? { name: leftName } : {}) };
+    setList((l) => ({ ...l, sessions: moveWorkspace(l.sessions, sessionId, to ?? undefined, departure) }));
     return null;
   }
 
