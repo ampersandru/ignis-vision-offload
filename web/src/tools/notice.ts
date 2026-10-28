@@ -1,4 +1,4 @@
-import { keptMessages, type Message } from "../sessions/sessions.ts";
+import { keptMessages, type Message, untoldMove, type WorkspaceMove } from "../sessions/sessions.ts";
 import type { WorkspaceFile } from "../workspace/files.ts";
 import { type FileMark, workspaceNotice } from "../workspace/notice.ts";
 import type { FileAt } from "../workspace/workspaces.ts";
@@ -13,9 +13,11 @@ import { markOf, type MemoryNote, memoryNotice, type NoteMark } from "./local/me
 // notes; a later one only what someone other than this chat saved, changed or
 // deleted since; the moment rides along while the date and time tool updates
 // every prompt. The workspace's files ride the same way (#393): every one at
-// the first turn, later only what the user or another chat changed. A turn
-// with nothing to tell carries no notice. Once sent, the notice is kept with
-// its prompt and every later request repeats its bytes.
+// the first turn, later only what the user or another chat changed, and,
+// after the user moves the chat to another workspace (#404), the move and the
+// new workspace's files whole. A turn with nothing to tell carries no notice.
+// Once sent, the notice is kept with its prompt and every later request
+// repeats its bytes.
 
 /** A notice's sections, each under its own heading, in the order they are written. */
 export type NoticeSections = { moment?: string; memory?: string; files?: string };
@@ -75,20 +77,26 @@ export function knownFilesOf(history: Message[]): FileMark[] | undefined {
  * workspace's files the chat knows from it on, when that changes. `notes`
  * are the memory notes now; `files` the chat's workspace's now
  * (workspace/notice.ts, noticeFiles), undefined when they could not be read;
- * `attached` the names of the files the prompt attaches, which it names itself.
+ * `attached` the names of the files the prompt attaches, which it names itself;
+ * `moved` the chat's last move to another workspace (`Session.moved`), which
+ * the notice tells, and the prompt then marks told, while no prompt the model
+ * reads in `history` has.
  */
 export function turnNotice(
   tools: ToolsState,
   history: Message[],
-  { now, notes, files, attached }: { now: Date; notes: MemoryNote[]; files?: WorkspaceFile[]; attached?: readonly string[] },
-): Pick<Message, "notice" | "knownNotes" | "knownFiles"> {
+  { now, notes, files, attached, moved }: { now: Date; notes: MemoryNote[]; files?: WorkspaceFile[]; attached?: readonly string[]; moved?: WorkspaceMove },
+): Pick<Message, "notice" | "knownNotes" | "knownFiles" | "moved"> {
   const memory = tools.enabled && tools.memory ? memoryNotice(knownNotesOf(history), notes) : {};
-  const workspace = tools.enabled && tools.workspace && files ? workspaceNotice(knownFilesOf(history), files, attached) : {};
+  const move = untoldMove(history, moved);
+  const told = tools.enabled && tools.workspace && files !== undefined;
+  const workspace = told ? workspaceNotice(knownFilesOf(history), files, attached, move) : {};
   const notice = noticeText({ moment: turnDateTime(tools, now), memory: memory.text, files: workspace.text });
   return {
     ...(notice ? { notice } : {}),
     ...(memory.known ? { knownNotes: memory.known } : {}),
     ...(workspace.known ? { knownFiles: workspace.known } : {}),
+    ...(told && move ? { moved: move } : {}),
   };
 }
 

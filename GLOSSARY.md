@@ -1437,7 +1437,8 @@ facts the engine does not already expose.
 **Workspace**:
 A named set of **workspace files** the user and the model work on together,
 kept by the page and never by ignis. Born with its first file, it outlives the
-chat that made it: a chat works in at most one, its own or one the user picked.
+chat that made it: a chat works in at most one at a time, its own or one the
+user picked.
 _Avoid_: project, library, artifact (the `.ninfer` container)
 
 **Workspace file**:

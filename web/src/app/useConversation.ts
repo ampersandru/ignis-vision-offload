@@ -16,7 +16,6 @@ import { createFrameBatch, type FrameBatch } from "./frameBatch.ts";
 import {
   addLogRow,
   addMessages,
-  bindWorkspace,
   bornInto,
   clearAttachments,
   createSession,
@@ -24,8 +23,8 @@ import {
   failedReply,
   forkSession,
   type LogRow,
-  mayPickWorkspace,
   type Message,
+  moveWorkspace,
   openSession,
   removeAttachment,
   removeSession,
@@ -264,23 +263,30 @@ export function useConversation({
     });
   }
 
-  /** The chat on screen may pick an existing workspace: it has none, and none was born for it on this page. */
-  const canPick = mayPickWorkspace(active) && !born.current.has(active.id);
+  /** The chat on screen may move to another workspace: no reply of its runs (#404). */
+  const canMove = !streamingHere;
 
-  /** Binds the chat on screen to an existing workspace, the picker's choice before its first file; a bound chat stays where it is. */
-  function bindTo(workspaceId: string) {
+  /**
+   * The picker's choice for the chat on screen: an existing workspace before its first file, or once it has one a
+   * move there, or out of its own to none (`to` null), `left` naming the workspace it leaves (`moveWorkspace`). A
+   * chat with a workspace stays in it while a reply of its runs.
+   */
+  function pickWorkspace(to: string | null, left?: string) {
     const sessionId = active.id;
-    if (!canPick) return;
-    setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, workspaceId) }));
+    if ((born.current.has(sessionId) || active.workspaceId !== undefined) && controllers.current.has(sessionId)) return;
+    // A workspace born for the chat on this page stands in for its binding no longer: the list's is the one now.
+    born.current.delete(sessionId);
+    const move = { at: Date.now(), ...(left !== undefined ? { name: left } : {}) };
+    setList((l) => ({ ...l, sessions: moveWorkspace(l.sessions, sessionId, to ?? undefined, move) }));
   }
 
   /**
    * Deletes a workspace, freeing the pictures neither a chat nor an image
    * session names (none while either has not read its sessions). The chats
    * that worked in it keep their messages and still name it, as a chat
-   * whose workspace another tab deleted does: each picks no other, and its
-   * next file starts a new workspace (`bornInto`). A store that refuses the
-   * delete rejects.
+   * whose workspace another tab deleted does: each moves to an existing
+   * workspace from the picker, or its next file starts a new workspace
+   * (`bornInto`). A store that refuses the delete rejects.
    */
   async function deleteWorkspace(workspaceId: string) {
     const chats = pictures();
@@ -389,7 +395,7 @@ export function useConversation({
         streaming: false,
         ...(images.length > 0 ? { images } : {}),
         ...(named.length > 0 ? { attached: named } : {}),
-        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list(), files: workspaceFiles, attached: named }),
+        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list(), files: workspaceFiles, attached: named, moved: session?.moved }),
       };
       setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, [user]) }));
       void keepSent(sessionId, user);
@@ -810,8 +816,8 @@ export function useConversation({
         return title === UNTITLED ? undefined : title;
       },
     } satisfies ChatNames,
-    canPick,
-    bindTo,
+    canMove,
+    pickWorkspace,
     deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */
     attachments: [...attached, ...active.attachments.map(fromLegacy)].map(attachedChip),

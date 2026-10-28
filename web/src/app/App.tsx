@@ -375,8 +375,9 @@ export function App() {
               workspace={chatWorkspace.workspace}
               files={chatWorkspace.files}
               list={workspaceList}
-              canPick={chat.canPick}
-              onPick={chat.bindTo}
+              deleted={active.workspaceId !== undefined && chatWorkspace.workspace === null}
+              canMove={chat.canMove}
+              onPick={(id) => chat.pickWorkspace(id, chatWorkspace.workspace?.name)}
               onRename={async (name) => {
                 const id = chatWorkspace.workspace?.id;
                 if (!id) return null;

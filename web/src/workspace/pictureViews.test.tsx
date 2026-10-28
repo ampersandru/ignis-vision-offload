@@ -89,6 +89,11 @@ describe("a reply's picture made into the workspace", () => {
     expect(html).toContain(">PNG<");
   });
 
+  it("is shown from its own workspace once the chat moved to another", () => {
+    const elsewhere: WorkspaceFile = { ...file([picture(1, "p2")]), workspace: "w2" };
+    expect(render(run(1), [elsewhere, file([picture(1, "p1")])])).toMatch(/<img[^>]*src="blob:one"/);
+  });
+
   it("says so once its workspace is gone", () => {
     const html = render(run(1), []);
     expect(html).not.toContain("<img");

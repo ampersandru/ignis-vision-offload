@@ -6,7 +6,7 @@ import type { Question } from "../tools/ask/ask.ts";
 import type { ImageRun } from "../tools/image/image.ts";
 import type { LocalRun } from "../tools/local/local.ts";
 import type { WebRun } from "../tools/web/web.ts";
-import type { LogRow, Message, Session } from "./sessions.ts";
+import type { LogRow, Message, Session, WorkspaceMove } from "./sessions.ts";
 
 // A chat session as the page's store keeps it (spec playground-enhancements/03):
 // a document of `chat-sessions`, under a key of its own (store/docs.ts). Plain
@@ -40,6 +40,8 @@ export type StoredChat = {
   attachments: Session["attachments"];
   /** `Session.workspaceId`, absent while the chat has none. */
   workspaceId?: string;
+  /** `Session.moved`, absent while the chat never moved. */
+  moved?: WorkspaceMove;
 };
 
 /** What a call left without a result is answered with when the session is read back. */
@@ -61,6 +63,7 @@ export function toStored(s: Session, { key, order }: Stamp): StoredChat {
     log: s.log,
     attachments: s.attachments,
     ...(s.workspaceId !== undefined ? { workspaceId: s.workspaceId } : {}),
+    ...(s.moved ? { moved: s.moved } : {}),
   };
 }
 
@@ -86,12 +89,17 @@ export function freedBy(gone: Session, left: Session[], elsewhere: Iterable<Imag
   return unreferenced(picturesOf(gone), new Set<ImageId>([...left.flatMap((s) => [...picturesOf(s)]), ...elsewhere]));
 }
 
+const isMove = (value: unknown): value is WorkspaceMove => {
+  const move = value as Partial<WorkspaceMove> | null | undefined;
+  return typeof move?.from === "string" && typeof move.at === "number" && (move.name === undefined || typeof move.name === "string");
+};
+
 /** A stored value read as a session document of this page's schema, or null. */
 function readStored(value: unknown): StoredChat | null {
   if (typeof value !== "object" || value === null) return null;
-  const { workspaceId, ...doc } = value as Partial<StoredChat>;
+  const { workspaceId, moved, ...doc } = value as Partial<StoredChat>;
   if (doc.version !== CHAT_VERSION || typeof doc.key !== "string" || typeof doc.order !== "number" || !Array.isArray(doc.messages)) return null;
-  const workspace = typeof workspaceId === "string" ? { workspaceId } : {};
+  const workspace = { ...(typeof workspaceId === "string" ? { workspaceId } : {}), ...(isMove(moved) ? { moved } : {}) };
   return { ...doc, title: doc.title ?? "", startedAt: doc.startedAt ?? Date.now(), log: doc.log ?? [], attachments: doc.attachments ?? [], ...workspace } as StoredChat;
 }
 
@@ -111,7 +119,7 @@ export function restoreChats(values: unknown[], nextId: number): { sessions: Ses
   const stamps = new Map<number, Stamp>();
   const sessions = items.map((doc) => {
     stamps.set(doc.id, { key: doc.key, order: doc.order });
-    const workspace = doc.workspaceId !== undefined ? { workspaceId: doc.workspaceId } : {};
+    const workspace = { ...(doc.workspaceId !== undefined ? { workspaceId: doc.workspaceId } : {}), ...(doc.moved ? { moved: doc.moved } : {}) };
     return settle({ id: doc.id, title: doc.title, startedAt: new Date(doc.startedAt), messages: doc.messages, log: doc.log, attachments: doc.attachments, ...workspace }, newId);
   });
   return { sessions, stamps, nextId: next };
