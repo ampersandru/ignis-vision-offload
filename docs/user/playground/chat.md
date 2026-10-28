@@ -137,10 +137,10 @@ A text file opens in the editor, its text in a box. Typing changes the box
 alone; **Save**, or **Ctrl+S** in the box (**Cmd+S** on a Mac), makes a new
 version of the file, authored by you: one version per save. **Discard
 changes** takes the newest version back. While you have typed nothing the box
-follows the file, so a
-version the model writes meanwhile shows at once; once you have typed, a newer
-version leaves your text alone and the editor names it, and saving makes your
-text the newest version, the other kept in the history. A file with CRLF line
+follows the file, so a version the model writes meanwhile shows at once; once
+you have typed, a newer version leaves your text alone and the editor names
+it, and saving makes your text the newest version, the other kept in the
+history. A file with CRLF line
 endings keeps them. What you type waits in the box while you look at the
 file's other tabs; opening another file, or **← All files**, drops it.
 
