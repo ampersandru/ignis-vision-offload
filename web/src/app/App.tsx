@@ -36,7 +36,7 @@ import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
 import { AGENT_SYSTEM_PROMPT, type AgentRun } from "../tools/agents/agents.ts";
 import { ALL_TOOLS, type ToolsState } from "../tools/index.ts";
-import { refusal } from "../workspace/panel.ts";
+import { refusal } from "../workspace/files.ts";
 import { useWorkspace, useWorkspaceList } from "../workspace/useWorkspaces.ts";
 import { StoreWorkspaceFiles } from "../workspace/WorkspaceFiles.tsx";
 import { WorkspacePanel } from "../workspace/WorkspacePanel.tsx";
@@ -182,7 +182,12 @@ export function App() {
     setInput("");
     setImages([]);
     setImageError(null);
-    chat.send(text, images);
+    // A prompt whose files the store refused is not sent: the box gets back what it held, ahead of anything typed since.
+    void chat.send(text, images).then((sent) => {
+      if (sent) return;
+      setInput((now) => [text, now].filter((t) => t !== "").join("\n"));
+      setImages((now) => [...images, ...now]);
+    });
   }
 
   /** Picked or pasted files as prompt images; the ones that cannot be read are named instead. */
@@ -370,6 +375,7 @@ export function App() {
               workspace={chatWorkspace.workspace}
               files={chatWorkspace.files}
               list={workspaceList}
+              canPick={chat.canPick}
               onPick={chat.bindTo}
               onRename={async (name) => {
                 const id = chatWorkspace.workspace?.id;

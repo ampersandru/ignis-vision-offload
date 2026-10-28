@@ -1,8 +1,7 @@
-import { keptEntries } from "../api/request.ts";
-import type { Message } from "../sessions/sessions.ts";
+import { keptMessages, type Message } from "../sessions/sessions.ts";
 import type { WorkspaceFile } from "../workspace/files.ts";
 import { type FileMark, workspaceNotice } from "../workspace/notice.ts";
-import type { Written } from "../workspace/workspaces.ts";
+import type { FileAt } from "../workspace/workspaces.ts";
 import { type ToolsState, turnDateTime } from "./index.ts";
 import { MEMORY_DELETE, MEMORY_SAVE } from "./local/local.ts";
 import { markOf, type MemoryNote, memoryNotice, type NoteMark } from "./local/memory.ts";
@@ -37,7 +36,7 @@ export function noticeText(sections: NoticeSections): string | undefined {
  */
 export function knownNotesOf(history: Message[]): NoteMark[] | undefined {
   let known: Map<string, NoteMark> | undefined;
-  for (const m of keptEntries(history.map((m) => ({ ...m, failed: m.error !== undefined })))) {
+  for (const m of keptMessages(history)) {
     if (m.knownNotes) known = new Map(m.knownNotes.map((n) => [n.id, n]));
     for (const run of [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])]) {
       if (run.status !== "done") continue;
@@ -58,11 +57,11 @@ export function knownNotesOf(history: Message[]): NoteMark[] | undefined {
  */
 export function knownFilesOf(history: Message[]): FileMark[] | undefined {
   let known: Map<string, FileMark> | undefined;
-  const learn = (v: Written | undefined) => {
+  const learn = (v: FileAt | undefined) => {
     const was = v && known?.get(v.file);
     if (v && (!was || was.version <= v.version)) known?.set(v.file, { id: v.file, name: v.name, version: v.version });
   };
-  for (const m of keptEntries(history.map((m) => ({ ...m, failed: m.error !== undefined })))) {
+  for (const m of keptMessages(history)) {
     if (m.knownFiles) known = new Map(m.knownFiles.map((f) => [f.id, f]));
     for (const run of [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])]) learn(run.written ?? run.seen);
     for (const made of (m.imageRuns ?? []).flatMap((r) => r.made ?? [])) learn(made.file);
@@ -94,10 +93,13 @@ export function turnNotice(
 }
 
 /**
- * The notice an agent's one prompt goes out behind: every title, as a chat's
- * first turn hears them, or undefined when there is none to tell. No moment:
- * an agent keeps the session's in its system prompt (`agentExtras`).
+ * The notice an agent's one prompt goes out behind: every title, and every
+ * file of the chat's workspace (`files`, as noticeFiles reads them), as a
+ * chat's first turn hears them, or undefined when there is none to tell. No
+ * moment: an agent keeps the session's in its system prompt (`agentExtras`).
  */
-export function agentNotice(tools: ToolsState, notes: MemoryNote[]): string | undefined {
-  return tools.enabled && tools.memory ? noticeText({ memory: memoryNotice(undefined, notes).text }) : undefined;
+export function agentNotice(tools: ToolsState, notes: MemoryNote[], files?: WorkspaceFile[]): string | undefined {
+  const memory = tools.enabled && tools.memory ? memoryNotice(undefined, notes).text : undefined;
+  const workspace = tools.enabled && tools.workspace && files ? workspaceNotice(undefined, files).text : undefined;
+  return noticeText({ memory, files: workspace });
 }

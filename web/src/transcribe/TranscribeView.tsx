@@ -18,7 +18,7 @@ import { Switch } from "../ui/Switch.tsx";
 import { HintText } from "../speech/Dictation.tsx";
 import { fileStem, toMarkdown, toSrt, toText, toVtt } from "./export.ts";
 import { StoreWorkspaceChooser } from "../workspace/WorkspaceChooser.tsx";
-import type { Destination } from "../workspace/send.ts";
+import { type Destination, sentLine } from "../workspace/send.ts";
 import { pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
 import { sendTranscript, workspaceNameFor } from "./toWorkspace.ts";
 import { chooseFilePace, FILE_PACE_CHOICES, useFilePace } from "./filePace.ts";
@@ -540,8 +540,8 @@ function Exports({ transcript: t, onOpenInChat, workspaces }: { transcript: Tran
             onChoose={(destination: Destination) => {
               setChoosing(false);
               sendTranscript(workspaces ?? pageWorkspaces(), t, destination).then(
-                (done) => setSent(`Added ${done.written.name} to ${done.workspace.name}`),
-                (err: unknown) => setSent(`Not sent: ${err instanceof Error ? err.message : String(err)}`),
+                (done) => setSent(sentLine({ ok: true, file: done.written.name, workspace: done.workspace.name })),
+                (err: unknown) => setSent(sentLine({ ok: false, error: err instanceof Error ? err.message : String(err) })),
               );
             }}
           />

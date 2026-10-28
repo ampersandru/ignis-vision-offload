@@ -58,4 +58,22 @@ describe("zip", () => {
     encrypted[zip.length - 22 - (46 + 5) + 8] |= 1;
     await expect(readZip(encrypted)).rejects.toThrow(/a\.txt is encrypted/);
   });
+
+  it("refuses an entry, or a zip, larger than its cap once inflated, before inflating it", async () => {
+    const zip = await writeZip([
+      { name: "a.txt", data: bytes("x".repeat(600)) },
+      { name: "b.txt", data: bytes("y".repeat(600)) },
+    ]);
+    await expect(readZip(zip, { file: 1000, total: 2000 })).resolves.toHaveLength(2);
+    await expect(readZip(zip, { file: 500, total: 2000 })).rejects.toThrow("This is not a zip ignis can read: a.txt holds more than 500 bytes once unpacked.");
+    await expect(readZip(zip, { file: 1000, total: 1000 })).rejects.toThrow("This is not a zip ignis can read: its files hold more than 1,000 bytes once unpacked.");
+  });
+
+  it("stops inflating an entry past the size its header declares: a lying header is a damaged entry, not a full tab", async () => {
+    const zip = await writeZip([{ name: "zeros.bin", data: new Uint8Array(1 << 20) }]);
+    // The central directory's full size of the one entry, made to declare 100 bytes of the megabyte it inflates to.
+    const lying = zip.slice();
+    new DataView(lying.buffer).setUint32(zip.length - 22 - (46 + 9) + 24, 100, true);
+    await expect(readZip(lying)).rejects.toThrow("This is not a zip ignis can read: zeros.bin is damaged (it holds more than its header says).");
+  });
 });

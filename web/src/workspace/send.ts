@@ -14,12 +14,17 @@ export type Sent = { workspace: Workspace; written: Written };
 
 /** The file in the destination, added through the user's entrance. */
 export async function sendFile(workspaces: Workspaces, destination: Destination, file: Incoming): Promise<Sent> {
-  const workspace = destination.kind === "new" ? await workspaces.create(destination.name) : await workspaces.get(destination.id);
+  // A new one is kept with the file: a file the store refuses leaves no workspace behind.
+  const workspace = destination.kind === "new" ? workspaces.reserve(destination.name) : await workspaces.get(destination.id);
   if (!workspace) throw new Error("That workspace is gone.");
   const [written] = await workspaces.add(workspace.id, [file], USER);
   if (!written) throw new Error("The workspace did not take the file.");
   return { workspace: (await workspaces.get(workspace.id)) ?? workspace, written };
 }
+
+/** The line under a send: what was added where, or why nothing was. */
+export const sentLine = (outcome: { ok: true; file: string; workspace: string } | { ok: false; error: string }): string =>
+  outcome.ok ? `Added ${outcome.file} to ${outcome.workspace}` : `Not sent: ${outcome.error}`;
 
 /** The text as a file of the destination. */
 export const sendText = (workspaces: Workspaces, destination: Destination, file: { name: string; text: string }): Promise<Sent> =>

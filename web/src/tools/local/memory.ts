@@ -120,20 +120,23 @@ export type NoteMark = Pick<MemoryNote, "id" | "title" | "savedAt">;
 
 export const markOf = ({ id, title, savedAt }: MemoryNote): NoteMark => ({ id, title, savedAt });
 
-/** The lines that fit in MEMORY_PROMPT_LIMIT, the newest (the last) kept first, and how many did not fit: the cap of every list a turn notice holds. */
-export function newestFitting(lines: string[]): { listed: string[]; left: number } {
+/** The lines that fit in `limit` characters, the newest (the last) kept first, and how many did not fit: how every list a turn notice holds is cut. */
+export function newestFitting(lines: string[], limit: number): { listed: string[]; left: number } {
   const listed: string[] = [];
   let used = 0;
   for (const line of [...lines].reverse()) {
-    if (used + line.length > MEMORY_PROMPT_LIMIT) break;
+    if (used + line.length > limit) break;
     listed.unshift(line);
     used += line.length + 1;
   }
   return { listed, left: lines.length - listed.length };
 }
 
-/** The memory section's text: its heading, what the lines are, the lines, and what was left out, if anything. */
-const section = (what: string, lines: string[], leftOut: string) => ["# Memory notes", what, ...lines, ...(leftOut ? [leftOut] : [])].join("\n");
+/** A turn notice's section: its heading, what the lines are, the lines, and what was left out, if anything. */
+export const noticeSection = (heading: string, what: string, lines: string[], leftOut: string) => [heading, what, ...lines, ...(leftOut ? [leftOut] : [])].join("\n");
+
+/** What a later notice's lines are: the changes since the one before, by anyone but the chat it goes to. */
+export const CHANGED_SINCE = "Changed by the user or another chat since the last notice:";
 
 /**
  * The memory section of a turn notice (ADR 0072), and the notes the chat
@@ -147,8 +150,8 @@ export function memoryNotice(known: NoteMark[] | undefined, notes: MemoryNote[])
   const marks = notes.map(markOf);
   if (known === undefined) {
     if (notes.length === 0) return { known: marks };
-    const { listed, left } = newestFitting(notes.map((n) => `- [${n.id}] ${n.title}`));
-    return { text: section("Saved notes, by title:", listed, left > 0 ? `(${left} older notes not listed.)` : ""), known: marks };
+    const { listed, left } = newestFitting(notes.map((n) => `- [${n.id}] ${n.title}`), MEMORY_PROMPT_LIMIT);
+    return { text: noticeSection("# Memory notes", "Saved notes, by title:", listed, left > 0 ? `(${left} older notes not listed.)` : ""), known: marks };
   }
   const before = new Map(known.map((n) => [n.id, n]));
   const kept = new Set(notes.map((n) => n.id));
@@ -161,9 +164,8 @@ export function memoryNotice(known: NoteMark[] | undefined, notes: MemoryNote[])
     }),
   ];
   if (changes.length === 0) return {};
-  const { listed, left } = newestFitting(changes);
-  const what = "Changed by the user or another chat since the last notice:";
-  return { text: section(what, listed, left > 0 ? `(${left} older changes not listed.)` : ""), known: marks };
+  const { listed, left } = newestFitting(changes, MEMORY_PROMPT_LIMIT);
+  return { text: noticeSection("# Memory notes", CHANGED_SINCE, listed, left > 0 ? `(${left} older changes not listed.)` : ""), known: marks };
 }
 
 export function useMemoryNotes(store: MemoryStore = browserMemory): MemoryNote[] {

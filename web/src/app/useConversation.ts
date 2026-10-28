@@ -17,11 +17,14 @@ import {
   addLogRow,
   addMessages,
   bindWorkspace,
+  bornInto,
   clearAttachments,
   createSession,
   editMessage,
+  failedReply,
   forkSession,
   type LogRow,
+  mayPickWorkspace,
   type Message,
   openSession,
   removeAttachment,
@@ -30,7 +33,6 @@ import {
   titleOf,
   truncateFrom,
   type TurnSwitch,
-  unbindWorkspace,
   UNTITLED,
   updateMessage,
 } from "../sessions/sessions.ts";
@@ -46,7 +48,7 @@ import { browserMemory } from "../tools/local/memory.ts";
 import { agentNotice, turnNotice } from "../tools/notice.ts";
 import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
-import { type AttachedFile, attachedChip, commitAttached, fromLegacy, readAttached, withAttached } from "../workspace/attach.ts";
+import { type AttachedFile, attachedChip, fromLegacy, readAttached, type Taken, takeTurnFiles, turnAdds, withAttached } from "../workspace/attach.ts";
 import { noticeFiles } from "../workspace/notice.ts";
 import type { ChatNames } from "../workspace/panel.ts";
 import { boxPictures, madeIn } from "../workspace/pictures.ts";
@@ -81,10 +83,20 @@ export function canStartTurn(streaming: ReadonlySet<number>, sessionId: number, 
 /** A session's stream on the socket: its turns continue one another there, and its agents' streams are named under it. */
 export const sessionStream = (sessionId: number) => `session-${sessionId}`;
 
-/** The files a turn adds to the workspace, and the names a resent prompt already attached there. */
-type TurnFiles = { add: AttachedFile[]; named: string[] };
+/**
+ * What a turn brings beside its prompt: the box's files and pictures for the workspace, the names a resent prompt
+ * already attached there, the message a resend or a regenerate replaces, and whom to tell once the prompt is sent,
+ * or not sent because the store refused its files, with what the page says of a refusal.
+ */
+type TurnInput = {
+  add: AttachedFile[];
+  pictures: AttachedFile[];
+  named: string[];
+  replaces?: number;
+  sent?: (sent: boolean, said?: string) => void;
+};
 
-const NO_FILES: TurnFiles = { add: [], named: [] };
+const NO_FILES: TurnInput = { add: [], pictures: [], named: [] };
 
 /**
  * A message as the turns of a request read it: a prompt with the files it attached named after its words, and a
@@ -95,7 +107,7 @@ export const exchangeOf = (m: Message): Exchange => ({
   content: withAttached(m.content, m.attached),
   images: m.images,
   reasoning: m.reasoning,
-  failed: m.error !== undefined,
+  failed: failedReply(m),
   toolCalls: m.toolCalls,
   toolCallId: m.toolCallId,
   notice: m.notice ?? m.dateTime,
@@ -240,37 +252,40 @@ export function useConversation({
   function chatBinding(sessionId: number, history: Message[], title?: string): ChatBinding {
     const now = () => listNow.current.sessions.find((s) => s.id === sessionId);
     return workspaces.chat(storage.keyOf(sessionId), {
-      bound: () => now()?.workspaceId ?? born.current.get(sessionId),
+      // The one born on this page first: until the list shows it, the chat names the deleted one it replaces.
+      bound: () => born.current.get(sessionId) ?? now()?.workspaceId,
       // A chat not named yet leaves the workspace the module's own name.
       name: () => title ?? (now()?.title === UNTITLED ? "" : (now()?.title ?? "")),
-      onBorn: (id) => {
+      onBorn: (id, replaced) => {
         born.current.set(sessionId, id);
-        setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, id) }));
+        setList((l) => ({ ...l, sessions: bornInto(l.sessions, sessionId, id, replaced) }));
       },
       seen: seenIn(history),
     });
   }
 
+  /** The chat on screen may pick an existing workspace: it has none, and none was born for it on this page. */
+  const canPick = mayPickWorkspace(active) && !born.current.has(active.id);
+
   /** Binds the chat on screen to an existing workspace, the picker's choice before its first file; a bound chat stays where it is. */
   function bindTo(workspaceId: string) {
     const sessionId = active.id;
-    if (active.workspaceId !== undefined || born.current.has(sessionId)) return;
+    if (!canPick) return;
     setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, workspaceId) }));
   }
 
   /**
    * Deletes a workspace, freeing the pictures neither a chat nor an image
-   * session names (none while either has not read its sessions), and lets
-   * go of the chats that worked in it: their messages stay, and their next
-   * file starts a new workspace. A store that refuses the delete rejects, and
-   * the chats stay bound.
+   * session names (none while either has not read its sessions). The chats
+   * that worked in it keep their messages and still name it, as a chat
+   * whose workspace another tab deleted does: each picks no other, and its
+   * next file starts a new workspace (`bornInto`). A store that refuses the
+   * delete rejects.
    */
   async function deleteWorkspace(workspaceId: string) {
     const chats = pictures();
     const images = live ? live() : [];
     await workspaces.remove(workspaceId, chats === null || images === null ? null : [...chats, ...images]);
-    for (const [sessionId, id] of born.current) if (id === workspaceId) born.current.delete(sessionId);
-    setList((l) => ({ ...l, sessions: unbindWorkspace(l.sessions, workspaceId) }));
   }
 
   function deleteSession(sessionId: number) {
@@ -284,7 +299,7 @@ export function useConversation({
   /**
    * One turn, streamed into `sessionId` after `history`: to `prompt` sent as
    * a new user message (send, resend), with `images` on it when it carries
-   * any and the `files` it attaches, or to the history as it stands when
+   * any and the files `input` attaches, or to the history as it stands when
    * `prompt` is null (regenerate).
    * A reply that calls agents starts them, hands their answers back and
    * streams the next reply, until one answers without calling a tool. Stop
@@ -295,9 +310,9 @@ export function useConversation({
     history: Message[],
     prompt: string | null,
     images: PromptImage[] = [],
-    files: TurnFiles = NO_FILES,
+    input: TurnInput = NO_FILES,
   ) {
-    if (!canStartTurn(running(), sessionId, parallel) || !canTake) return;
+    if (!canStartTurn(running(), sessionId, parallel) || !canTake) return input.sent?.(false);
     // The model the turn goes to, when it is not the one loaded: the owner's choice in the picker, or the way back
     // from the image model. The page switches there before the first request, which names no model either way.
     const target = next.switches && next.id !== null ? { to: next.id, ...(next.from ? { from: next.from } : {}) } : null;
@@ -318,7 +333,7 @@ export function useConversation({
     // A first prompt names the chat, and so the workspace its files bring to life.
     const firstTitle =
       prompt !== null && history.length === 0
-        ? titleOf({ id: 0, role: "user", content: prompt, images, attached: files.add.map((f) => f.name), reasoning: "", streaming: false })
+        ? titleOf({ id: 0, role: "user", content: prompt, images, attached: input.add.map((f) => f.name), reasoning: "", streaming: false })
         : undefined;
     const chat = chatBinding(sessionId, history, firstTitle);
     const local: Omit<LocalContext, "settings" | "signal"> = {
@@ -335,29 +350,37 @@ export function useConversation({
     // on the session it shows.
     following.current = true;
     setStreaming((s) => new Set(s).add(sessionId));
+    const end = () => {
+      controllers.current.delete(sessionId);
+      setStreaming((s) => {
+        const rest = new Set(s);
+        rest.delete(sessionId);
+        return rest;
+      });
+    };
 
-    // The files go to the workspace before the turn is sent: the prompt's own, and an older chat's attachments,
-    // which become the first files of its workspace (spec #170). The prompt names them while the model has the
-    // workspace's tools. A store that refuses them fails the turn, after the prompt is shown.
-    let named = files.named;
-    let refused: string | null = null;
-    const legacy = session?.attachments ?? [];
-    if (legacy.length > 0 || files.add.length > 0) {
-      try {
-        const names = await commitAttached(workspaces, chat, [...legacy.map(fromLegacy), ...files.add]);
-        if (legacy.length > 0) setList((l) => ({ ...l, sessions: clearAttachments(l.sessions, sessionId) }));
-        if (tools.enabled && tools.workspace) named = [...named, ...names];
-      } catch (err) {
-        refused = `Not saved in this browser: ${err instanceof Error ? err.message : String(err)}`;
-      }
+    // The files go to the workspace before the turn is sent, while the Workspace switch is on: the prompt's own, and
+    // an older chat's attachments, which become the first files of its workspace (spec #170). The prompt names them.
+    // Files the store refuses leave the turn unsent, with nothing lost; a picture it refuses still goes inline.
+    const adds = turnAdds(tools.enabled && tools.workspace, session?.attachments ?? [], { files: input.add, pictures: input.pictures });
+    const taken: Taken = adds.files.length + adds.pictures.length > 0 ? await takeTurnFiles(workspaces, chat, adds) : { sent: true, named: [] };
+    if (!taken.sent) {
+      end();
+      input.sent?.(false, taken.said);
+      return;
     }
+    if (adds.clearsLegacy) setList((l) => ({ ...l, sessions: clearAttachments(l.sessions, sessionId) }));
+    const named = [...input.named, ...taken.named];
+    // What the turn replaces goes once its files are in.
+    const replaces = input.replaces;
+    if (replaces !== undefined) setList((l) => ({ ...l, sessions: truncateFrom(l.sessions, sessionId, replaces) }));
 
     let conversation = history;
     // The prompt the switch is shown on: the new one, or the one a regenerate answers again.
     let switchOn = [...history].reverse().find((m) => m.role === "user")?.id;
     if (prompt !== null) {
       // The notice tells of the workspace as it is now, the prompt's own files in it; a store that cannot say leaves it out.
-      const files = tools.enabled && tools.workspace ? await noticeFiles(workspaces, chat.bound()) : undefined;
+      const workspaceFiles = tools.enabled && tools.workspace ? await noticeFiles(workspaces, chat.bound()) : undefined;
       const user: Message = {
         id: newId(),
         role: "user",
@@ -366,13 +389,14 @@ export function useConversation({
         streaming: false,
         ...(images.length > 0 ? { images } : {}),
         ...(named.length > 0 ? { attached: named } : {}),
-        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list(), files, attached: named }),
+        ...turnNotice(tools, history, { now: new Date(), notes: browserMemory.list(), files: workspaceFiles, attached: named }),
       };
       setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, [user]) }));
       void keepSent(sessionId, user);
       conversation = [...conversation, user];
       switchOn = user.id;
     }
+    input.sent?.(true, taken.said);
     const markSwitch = (state: TurnSwitch) => {
       if (switchOn === undefined) return;
       const id = switchOn;
@@ -383,7 +407,6 @@ export function useConversation({
     // The pictures this turn's calls made, by the round that made them: `made-N` counts on across rounds.
     const turnImages: ImageRun[] = [];
     try {
-      if (refused) throw new Error(refused);
       if (target) {
         markSwitch({ ...target, status: "switching" });
         const failed = await switchAndWait(target.to, { signal: abort.signal, onModelChange: refreshModel });
@@ -436,12 +459,7 @@ export function useConversation({
         ),
       }));
     } finally {
-      controllers.current.delete(sessionId);
-      setStreaming((s) => {
-        const rest = new Set(s);
-        rest.delete(sessionId);
-        return rest;
-      });
+      end();
     }
   }
 
@@ -568,12 +586,14 @@ export function useConversation({
             waiting.current.set(key, settle);
           }),
       );
+    // The agents hear the workspace's files as a chat's first turn does: the workspace prompt they share says a notice brings them.
+    const agentFiles = tasks.length > 0 && tools.enabled && tools.workspace && local.workspace ? await noticeFiles(workspaces, local.workspace.chat.bound()) : undefined;
     await Promise.all([
       runAgents(tasks, {
         settings: requestSettings,
         streamId: sessionStream(sessionId),
         tools: agentTools,
-        notice: agentNotice(tools, browserMemory.list()),
+        notice: agentNotice(tools, browserMemory.list(), agentFiles),
         tavilyKey: getTavilyKey(),
         local,
         maxRounds,
@@ -666,16 +686,32 @@ export function useConversation({
     setList((l) => ({ ...l, sessions: addLogRow(l.sessions, sessionId, { at: new Date().toLocaleTimeString(), ...row }) }));
   }
 
-  /** Sends `prompt`, and the images and files picked with it, in the active session when a turn can start. */
-  function send(prompt: string, images: PromptImage[] = []) {
-    if (!canRun) return;
+  /**
+   * Sends `prompt`, and the images and files picked with it, in the active session when a turn can start. Resolves
+   * once the prompt is sent, or with false when it is not: the store refused its files, which the box gets back,
+   * as the caller gives it back the prompt and its images.
+   */
+  function send(prompt: string, images: PromptImage[] = []): Promise<boolean> {
+    if (!canRun) return Promise.resolve(false);
     // With the Workspace switch off the box hides its files and keeps them for when it is back on.
     const workspace = tools.enabled && tools.workspace;
     const files = workspace ? attached : [];
     if (files.length > 0) setAttached([]);
     setAttachError(null);
-    // The prompt's pictures go inline as they always did, and become files of the workspace too (#394).
-    void exchange(active.id, active.messages, prompt, images, { add: workspace ? [...files, ...boxPictures(images)] : [], named: [] });
+    return new Promise((resolve) => {
+      // The prompt's pictures go inline as they always did, and become files of the workspace too (#394).
+      const input: TurnInput = {
+        add: files,
+        pictures: workspace ? boxPictures(images) : [],
+        named: [],
+        sent: (sent, said) => {
+          if (!sent && files.length > 0) setAttached((current) => [...files, ...current]);
+          if (said) setAttachError(said);
+          resolve(sent);
+        },
+      };
+      void exchange(active.id, active.messages, prompt, images, input);
+    });
   }
 
   /**
@@ -690,8 +726,12 @@ export function useConversation({
     const images = active.messages[index].images ?? [];
     // Its files too: they are in the workspace already, and the prompt names them again.
     const named = active.messages[index].attached ?? [];
-    setList((l) => ({ ...l, sessions: truncateFrom(l.sessions, sessionId, messageId) }));
-    void exchange(sessionId, active.messages.slice(0, index), prompt, prompt === null ? [] : images, prompt === null ? NO_FILES : { add: [], named });
+    // The turn drops the message and what follows once an older chat's attachments are in its workspace: a store that refuses them leaves the chat as it was.
+    const sent = (_sent: boolean, said?: string) => {
+      if (said) setAttachError(said);
+    };
+    const input: TurnInput = { ...NO_FILES, named: prompt === null ? [] : named, replaces: messageId, sent };
+    void exchange(sessionId, active.messages.slice(0, index), prompt, prompt === null ? [] : images, input);
   }
 
   function saveEdit(messageId: number, text: string) {
@@ -770,6 +810,7 @@ export function useConversation({
         return title === UNTITLED ? undefined : title;
       },
     } satisfies ChatNames,
+    canPick,
     bindTo,
     deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */

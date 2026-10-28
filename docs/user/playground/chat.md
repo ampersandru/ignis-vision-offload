@@ -32,11 +32,26 @@ agents included. The **+** button adds to the prompt:
   the box until you send, its size beside it (a text's characters, a PDF's
   text's, a recording's bytes), and **×** takes it out; sending adds it to the
   workspace and names it in the prompt. The model reads a recording as its
-  transcript ([audio in the workspace](#audio-in-the-workspace)). It is offered
-  while the **Workspace** switch is on
+  transcript ([audio in the workspace](#audio-in-the-workspace)). A file is
+  text when its name or its type says so, or its name says nothing else, and
+  it holds no NUL byte, as in the [panel](#the-workspace-panel); any other
+  file, an archive or a spreadsheet, is refused here, and the panel keeps it
+  as bytes. It is offered while the **Workspace** switch is on
   ([Tools and agents](tools-and-agents.md#workspace)).
 
 An image or a file alone is a prompt. Nothing is sent until you press Send.
+
+### When the browser refuses a file
+
+A refusal never costs you what you attached, and the page says it was not
+saved in the workspace, with the browser's reason (a full quota, a store
+another tab holds). When the browser refuses to store the files a prompt
+attaches, nothing is sent: the prompt, its files and its pictures are back in
+the box, and the line under them says which files were not saved. When it
+refuses only a picture, the prompt goes as without a workspace, the picture
+inline, and the line says the model sees it in that prompt only. A picture
+`make_image` makes stays in its reply the same way
+([Pictures](tools-and-agents.md#pictures)).
 
 ## The chat's workspace
 
@@ -45,8 +60,9 @@ kept in this browser and never on the server. It is born with the chat's
 first file, a file you attach, make in the [panel](#the-workspace-panel) or
 one the model writes, and takes the chat's title as its name; a chat that
 makes no file has none, unless you pick an existing workspace for it
-([the picker](#the-workspace-picker)). The chat stays in that workspace until
-the workspace is deleted, a fork shares it, and deleting the chat keeps it.
+([the picker](#the-workspace-picker)). A first file the browser refuses to
+store leaves no workspace behind. The chat stays in that workspace until the
+workspace is deleted, a fork shares it, and deleting the chat keeps it.
 
 A prompt that attached files lists them under its text, by the names they
 took in the workspace: a name the workspace already holds gets a number,
@@ -65,8 +81,10 @@ The model's side, its tools and the **Workspace** switch:
 
 A chat saved before workspaces shows as it did, its files from `create_file`
 and the pictures `make_image` made in it included. The files it had attached
-wait in the prompt box until its next turn, which makes them the first files
-of its workspace.
+wait in the prompt box until its next turn with the **Workspace** switch on,
+which makes them the first files of its workspace and names them in its
+prompt; while the switch is off the box hides them, they stay with the chat,
+and the model is not told of them.
 
 ### The workspace picker
 
@@ -84,8 +102,11 @@ files go. It removes the workspace, its files and every version, and frees
 what nothing else uses: the bytes no other workspace holds, and the pictures
 no chat, image session or other workspace names. It cannot be undone. The
 chats that worked in it keep their messages, and their next file starts a new
-workspace, as if they never had one. Deleting a chat never deletes its
-workspace.
+workspace, named after the chat; until then the picker reads **New
+workspace** and offers no existing one, so that a chat's history never mixes
+two workspaces. A chat whose workspace another tab deleted is the same, and
+the model's `list_files` says the workspace was deleted. Deleting a chat never
+deletes its workspace.
 
 ### The workspace panel
 
@@ -144,7 +165,9 @@ What you do here is yours: each version it makes is authored by you.
   `.zip`: every file starts at version 1, yours, and its kind is recognised as
   on upload, a picture the browser already holds is not stored twice, and
   folder entries are skipped. A zip that cannot be read is said so in the
-  panel and makes no workspace. The new workspace is one to pick in the
+  panel and makes no workspace, and so is one that would unpack to more than
+  the page takes in: 256 MB for one file, 512 MB for all of them, refused
+  before anything is unpacked. The new workspace is one to pick in the
   Workspace menu of a chat that has none yet.
 - On each file's row, the pencil renames it, the arrow downloads its latest
   version under the last part of its name, and the bin deletes it. A name

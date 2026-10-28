@@ -261,7 +261,7 @@ export function ToolsSetting({
             label="Workspace"
             on={tools.workspace}
             onChange={(workspace) => onChange({ ...tools, workspace })}
-            description="The model lists, reads, writes, edits and deletes the files of the chat's workspace, and the prompt box attaches text and PDF files to it. Off, the files stay yours."
+            description="The model lists, reads, writes, edits and deletes the files of the chat's workspace, and the prompt box attaches text, PDF and audio files, and pictures, to it. Off, the files stay yours."
           />
           <ToolRow
             id="images"

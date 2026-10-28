@@ -52,14 +52,6 @@ export function sizeLabel(version: Version): string {
   return `${(version.derived ?? "").length.toLocaleString("en-US")} characters of text`;
 }
 
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** When a version was made, as the panel shows it: the local date and time to the minute. */
-export function timeLabel(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 /** The chats the panel names a version's author by, by their keys: whether it is the chat the panel is open in, and its title while the page has it. */
 export type ChatNames = { here: (key: string) => boolean; title: (key: string) => string | undefined };
 
@@ -99,9 +91,6 @@ export function editing(file: WorkspaceFile, draft: Draft): Editing {
 
 /** The name a download saves a file under: the last part of its name. */
 export const downloadName = (name: string) => name.slice(name.lastIndexOf("/") + 1);
-
-/** What the panel says when the browser's store refused a change. */
-export const refusal = (err: unknown) => `Not saved in this browser: ${err instanceof Error ? err.message : String(err)}`;
 
 /** An empty text file of the user's, named `raw`; a name another file holds takes a number, as an attached file's does. */
 export async function createFile(workspaces: Workspaces, chat: ChatBinding, raw: string): Promise<FileOutcome> {

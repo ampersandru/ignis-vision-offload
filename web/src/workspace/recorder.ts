@@ -1,7 +1,7 @@
 import { readConfig } from "../server/routes.ts";
 import { type Capture, MicBlocked, startCapture } from "../speech/capture.ts";
 import { levelOf, TARGET_RATE } from "../speech/pcm.ts";
-import { refusal } from "./panel.ts";
+import { refusal } from "./files.ts";
 
 // Recording from the microphone into the workspace (#395): the dictation's
 // capture (speech/capture.ts), whose worklet gives 16 kHz mono PCM16, kept

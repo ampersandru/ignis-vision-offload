@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "../api/request.ts";
+import { keptMessages, type Message } from "../sessions/sessions.ts";
 import type { LocalRun } from "../tools/local/local.ts";
-import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, type Version, type WorkspaceFile } from "./files.ts";
+import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, timeLabel, type Version, type WorkspaceFile } from "./files.ts";
 import type { ChatBinding, Reader, Seen, Workspaces } from "./workspaces.ts";
 
 // The model's entrance to the workspace module: list_files, read_file,
@@ -102,15 +103,9 @@ export type WorkspaceOutcome = { ok: true; run: Partial<LocalRun> & { result: st
 
 const NO_WORKSPACE = "This chat has no workspace yet: it is created with the first file you write or the user attaches.";
 
+const DELETED = "This chat's workspace was deleted: a new one is created with the next file you write or the user attaches.";
+
 const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** A moment as a list line gives it, in the page's own time. */
-function moment(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 /** The reader calling: the sub-agent's own, or the chat's. */
 const readerOf = (access: WorkspaceAccess): Reader => access.reader ?? access.chat.reader;
@@ -127,7 +122,7 @@ export function sizeOf(version: Version): string {
 
 const fileLine = (file: WorkspaceFile, access: WorkspaceAccess) => {
   const v = latest(file);
-  return `- ${file.name}: ${KIND_LABEL[file.kind]}, ${sizeOf(v)}; version ${v.n}, changed ${moment(v.at)} by ${authorLabel(v.author, readerOf(access).author)}`;
+  return `- ${file.name}: ${KIND_LABEL[file.kind]}, ${sizeOf(v)}; version ${v.n}, changed ${timeLabel(v.at)} by ${authorLabel(v.author, readerOf(access).author)}`;
 };
 
 /** The workspace's file named `name`, or a deleted file of that name, or why there is none. */
@@ -135,6 +130,7 @@ async function find(access: WorkspaceAccess, raw: string): Promise<{ file: Works
   const id = access.chat.bound();
   if (!id) return { error: NO_WORKSPACE };
   const all = await access.workspaces.files(id);
+  if (all.length === 0 && !(await access.workspaces.get(id))) return { error: DELETED };
   const listed = all.filter(present);
   const name = cleanName(raw);
   const file = listed.find((f) => f.name === name) ?? all.find((f) => f.name === name);
@@ -221,8 +217,9 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       const id = access.chat.bound();
       if (!id) return { ok: true, run: { listed: 0, result: NO_WORKSPACE } };
       const [workspace, all] = await Promise.all([access.workspaces.get(id), access.workspaces.files(id)]);
+      if (!workspace) return { ok: true, run: { listed: 0, result: DELETED } };
       const listed = all.filter(present);
-      const title = `The workspace "${workspace?.name ?? ""}"`;
+      const title = `The workspace "${workspace.name}"`;
       return {
         ok: true,
         run: {
@@ -250,7 +247,7 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       const outcome: WorkspaceOutcome = version.deleted
         ? {
             ok: true,
-            run: { result: `[${tag}: deleted by ${authorLabel(version.author, reader.author)}, ${moment(version.at)}. Its history keeps the versions before it; write_file creates the file again.]` },
+            run: { result: `[${tag}: deleted by ${authorLabel(version.author, reader.author)}, ${timeLabel(version.at)}. Its history keeps the versions before it; write_file creates the file again.]` },
           }
         : file.kind === "picture" && version.bytes?.store === "image"
           ? await readPicture(access, file.name, version, version.bytes)
@@ -318,16 +315,18 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
 
 /**
  * What a chat's history has shown its model of the workspace: the version of
- * each file its own calls read or made, oldest first; its sub-agents' calls
- * are theirs. The chat's reader starts each turn from it (ChatBinding), so a
- * chat resumed after a reload has seen what it read before, and a turn run
- * again without the reply that read a file has not.
+ * each file its own calls read or made, the pictures its make_image calls
+ * landed among them, oldest first; its sub-agents' calls are theirs. Only the
+ * history the model reads counts, as for the turn notice (knownFilesOf): a
+ * failed reply a request leaves out read nothing. The chat's reader starts
+ * each turn from it (ChatBinding), so a chat resumed after a reload has seen
+ * what it read before, and a turn run again without the reply that read a
+ * file has not.
  */
-export function seenIn(messages: readonly { local?: LocalRun[] }[]): Seen[] {
-  return messages
-    .flatMap((m) => m.local ?? [])
-    .flatMap((run) => {
-      const version = run.written ?? run.seen;
-      return version ? [{ file: version.file, version: version.version }] : [];
-    });
+export function seenIn(messages: Message[]): Seen[] {
+  const versions = keptMessages(messages).flatMap((m) => [
+    ...(m.local ?? []).map((run) => run.written ?? run.seen),
+    ...(m.imageRuns ?? []).flatMap((r) => r.made ?? []).map((made) => made.file),
+  ]);
+  return versions.flatMap((v) => (v ? [{ file: v.file, version: v.version }] : []));
 }

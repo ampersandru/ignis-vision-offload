@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import { bindWorkspace, createSession, openSession, removeSession } from "../sessions/sessions.ts";
 import { createMemoryStore } from "../store/memory.ts";
 import { freedBy, latest, present, USER, type Version, type WorkspaceFile } from "./files.ts";
+import { commitAttached } from "./attach.ts";
 import { uploadFiles } from "./panel.ts";
+import { madeIn } from "./pictures.ts";
+import { sendFile } from "./send.ts";
 import { runWorkspaceTool } from "./tools.ts";
-import { createWorkspaces } from "./workspaces.ts";
+import { createWorkspaces, filesCollection } from "./workspaces.ts";
 
 // The user's side of the workspace module, the panel's and the picker's
 // actions, over the in-memory store: deleting, renaming, a name unique in its
@@ -166,16 +169,97 @@ describe("deleting a workspace", () => {
     expect(await store.getBlob(kept.versions[0].bytes!.id)).toBeNull();
   });
 
-  it("leaves a chat bound to it free to start again: a chat born into a workspace no longer finds it", async () => {
+  it("leaves the chats bound to it naming a workspace that is gone: the next file of one starts a new workspace, which it binds in place of the old", async () => {
     const { workspaces } = module();
     let bound: string | undefined;
-    const chat = workspaces.chat("chat-a", { bound: () => bound, name: () => "Trip", onBorn: () => {} });
-    const first = await chat.workspace();
-    await workspaces.remove(first, []);
-    bound = undefined;
-    const second = await chat.workspace();
-    expect(second).not.toBe(first);
-    expect(await workspaces.get(second)).toMatchObject({ name: "Trip" });
+    const born: [string, string | undefined][] = [];
+    const chat = workspaces.chat("chat-a", { bound: () => bound, name: () => "Trip", onBorn: (id, replaced) => (born.push([id, replaced]), (bound = id)) });
+    await uploadFiles(workspaces, chat, [new File(["# Trip"], "notes.md")]);
+    const [first] = await workspaces.list();
+    await workspaces.remove(first.id, []);
+    // The chat still names it; its next file goes to a new workspace, named after the chat.
+    expect(await uploadFiles(workspaces, chat, [new File(["- Rome"], "plan.md")])).toEqual(["plan.md"]);
+    const [second] = await workspaces.list();
+    expect(second).toMatchObject({ name: "Trip" });
+    expect(second.id).not.toBe(first.id);
+    expect(born).toEqual([
+      [first.id, undefined],
+      [second.id, first.id],
+    ]);
+  });
+
+  it("deleted in another tab is the same: the chat's next write starts a new workspace, and leaves no file behind in the one that is gone", async () => {
+    const store = createMemoryStore();
+    let n = 0;
+    const here = createWorkspaces(store, { now: clock(), newId: () => `here${++n}` });
+    const there = createWorkspaces(store, { now: clock(), newId: () => `there${++n}` });
+    let bound: string | undefined;
+    const chat = here.chat("chat-a", { bound: () => bound, name: () => "Trip", onBorn: (id) => (bound = id) });
+    expect((await runWorkspaceTool("write_file", { name: "a.md", content: "a" }, { workspaces: here, chat })).ok).toBe(true);
+    const gone = bound!;
+    await there.remove(gone, []);
+    const deleted = "This chat's workspace was deleted: a new one is created with the next file you write or the user attaches.";
+    expect(await runWorkspaceTool("list_files", {}, { workspaces: here, chat })).toEqual({ ok: true, run: { listed: 0, result: deleted } });
+    expect(await runWorkspaceTool("read_file", { name: "a.md" }, { workspaces: here, chat })).toEqual({ ok: false, error: deleted });
+    const wrote = await runWorkspaceTool("write_file", { name: "b.md", content: "b" }, { workspaces: here, chat });
+    expect(wrote.ok && wrote.run.result).toBe('Created b.md, version 1 (1 line, 1 character), in the workspace "Trip". The user sees it in your reply.');
+    expect(bound).not.toBe(gone);
+    expect(await store.listDocs(filesCollection(gone))).toEqual([]);
+    expect((await here.list()).map((w) => w.id)).toEqual([bound]);
+  });
+});
+
+describe("a workspace born with its first file", () => {
+  /** The workspace module over a store that refuses what `refuses` names while `refuse.now` holds, and a chat of it with no workspace yet. */
+  function refusing(refuses: "putBlob" | "putImage" | "files") {
+    const store = createMemoryStore();
+    const refuse = { now: true };
+    const no = <T>(then: () => Promise<T>) => (refuse.now ? Promise.reject(new Error("The quota is exceeded.")) : then());
+    const refused = {
+      ...store,
+      ...(refuses === "files"
+        ? { putDoc: (c: string, id: string, v: unknown) => (c.startsWith("workspace-files/") ? no(() => store.putDoc(c, id, v)) : store.putDoc(c, id, v)) }
+        : refuses === "putBlob"
+          ? { putBlob: (blob: Blob) => no(() => store.putBlob(blob)) }
+          : { putImage: (blob: Blob, info: { width: number; height: number }) => no(() => store.putImage(blob, info)) }),
+    };
+    let n = 0;
+    const workspaces = createWorkspaces(refused, { now: clock(), newId: () => `id${++n}`, measure: async () => ({ width: 8, height: 6 }) });
+    const born: string[] = [];
+    const chat = workspaces.chat("chat-a", { bound: () => born.at(-1), name: () => "Trip", onBorn: (id) => born.push(id) });
+    return { workspaces, chat, born, refuse };
+  }
+
+  it("leaves no workspace when the store refuses the files a prompt attaches, and the chat unbound", async () => {
+    const { workspaces, chat, born } = refusing("putBlob");
+    await expect(commitAttached(workspaces, chat, [{ name: "memo.wav", kind: "audio", blob: new Blob([new Uint8Array([1])]) }])).rejects.toThrow("The quota is exceeded.");
+    expect(await workspaces.list()).toEqual([]);
+    expect(born).toEqual([]);
+  });
+
+  it("leaves no workspace when the store refuses the picture make_image made", async () => {
+    const { workspaces, chat, born } = refusing("putImage");
+    await expect(madeIn(workspaces, chat).land(new Blob([new Uint8Array([2])], { type: "image/png" }), "made-1.png")).rejects.toThrow("The quota is exceeded.");
+    expect(await workspaces.list()).toEqual([]);
+    expect(born).toEqual([]);
+  });
+
+  it("leaves no workspace when the store refuses a file sent to a new workspace", async () => {
+    const { workspaces } = refusing("putBlob");
+    await expect(sendFile(workspaces, { kind: "new", name: "Fox" }, { name: "fox.wav", kind: "audio", blob: new Blob([new Uint8Array([3])]) })).rejects.toThrow("The quota is exceeded.");
+    expect(await workspaces.list()).toEqual([]);
+  });
+
+  it("leaves no workspace when the store refuses the model's first write, and is born with the next one the store takes", async () => {
+    const { workspaces, chat, born, refuse } = refusing("files");
+    await expect(runWorkspaceTool("write_file", { name: "notes.md", content: "x" }, { workspaces, chat })).rejects.toThrow("The quota is exceeded.");
+    expect(await workspaces.list()).toEqual([]);
+    expect(born).toEqual([]);
+    refuse.now = false;
+    expect((await runWorkspaceTool("write_file", { name: "notes.md", content: "x" }, { workspaces, chat })).ok).toBe(true);
+    expect((await workspaces.list()).map((w) => [w.id, w.name])).toEqual([[born[0], "Trip"]]);
+    expect(born).toHaveLength(1);
+    expect((await workspaces.files(born[0])).map((f) => f.name)).toEqual(["notes.md"]);
   });
 });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryStore } from "../store/memory.ts";
-import { latest, USER, type Version, type WorkspaceFile } from "./files.ts";
-import { authorName, createFile, downloadName, editing, fileTree, refusal, saveText, sizeLabel, uploadFiles } from "./panel.ts";
+import { latest, refusal, USER, type Version, type WorkspaceFile } from "./files.ts";
+import { authorName, createFile, downloadName, editing, fileTree, saveText, sizeLabel, uploadFiles } from "./panel.ts";
 import { createWorkspaces } from "./workspaces.ts";
 
 // What the workspace panel does, apart from how it looks: its tree of the

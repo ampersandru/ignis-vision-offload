@@ -155,12 +155,14 @@ function Shown({ picture, url, id, gone, onPicture }: { picture: MadePicture; ur
         {picture.seed !== undefined && <span>Seed {picture.seed}</span>}
         {picture.kept && <span>Marked area only</span>}
         {picture.file && <span title="Kept as a file of the chat's workspace">{picture.file.name} in the workspace</span>}
-        {picture.unkept && <span className="whitespace-normal text-[#ff7b6b]">Not kept in the workspace: {picture.unkept}</span>}
+        {picture.unkept && <span className="whitespace-normal text-[#ff7b6b]">Not saved in the workspace, kept in this reply: {picture.unkept}</span>}
         {url && (
           <button
             type="button"
             className="ml-auto flex items-center gap-1.5 font-display font-medium text-[#b9bec4] hover:text-white"
-            onClick={() => downloadImage({ id: 0, url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })}
+            onClick={() =>
+              downloadImage({ id: 0, url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })
+            }
           >
             <IconDownload />
             PNG

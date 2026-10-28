@@ -139,7 +139,8 @@ later request sends it again byte for byte; what it told is kept with it, so
 the next notice after a reload tells only what changed since. A chat saved
 before the notice sends the moments its prompts carry as it always did, and
 its next prompt hears every title and every file. An agent gets every title
-in a notice ahead of its task, and no file: it lists them with `list_files`.
+in a notice ahead of its task and, with **Workspace** on, every file of the
+chat's workspace, as a chat's first prompt hears them.
 A server whose
 `--server-developer-message-policy` joins or gathers developer messages
 (`into-system`, `after-system`, `one-after-system`,
@@ -238,14 +239,16 @@ again; the model reads it, and makes its change on what the file holds now.
 - A file the reader never read is refused the same way, a file you attached
   included: the model reads it before it rewrites or deletes it.
 - A reader's own write counts as its read: the model edits a file it just
-  wrote without reading it back.
+  wrote without reading it back, and deletes a picture its `make_image` call
+  just made in the workspace.
 - A new file has no guard, and a deleted file the reader never knew is a new
   file to it: writing it makes its next version. A file deleted since the
   reader read it is refused until the model reads it again.
 - A chat's reads go with the replies that made them, kept with the chat: they
   hold across a reload, a fork has read what the turns it copies read, and a
   reply regenerated, or a prompt edited and sent again, leaves out the reads
-  of the replies it drops.
+  of the replies it drops. A reply that failed, which no request sends back,
+  counts no read either.
 - An agent starts having read nothing, whatever the conversation read, and
   its reads end with its run.
 - Your own changes are never refused.
@@ -269,7 +272,9 @@ made, read from the workspace. The reply shows the picture
 from the workspace with its file's name under it, never from a copy kept in
 the message. Once the workspace is deleted the reply says the picture is no
 longer in it, and a call naming it fails, saying so. When the browser refuses
-to store a picture, the reply keeps it as before and the model is told why.
+to store a picture, the reply keeps it as before, says **Not saved in the
+workspace, kept in this reply** with the browser's reason, and the model is
+told why ([when the browser refuses](chat.md#when-the-browser-refuses-a-file)).
 The pictures of a chat saved before workspaces show as they did.
 
 A picture can be marked, opened full screen, downloaded, or opened in the

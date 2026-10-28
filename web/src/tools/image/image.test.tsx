@@ -377,4 +377,12 @@ describe("the strip", () => {
     expect(done).toContain(">PNG<");
     expect(done).toContain("1 picture");
   });
+
+  it("says a picture the store refused was not saved in the workspace, and shows it from the reply", () => {
+    const html = renderToStaticMarkup(
+      <ImageStrip runs={[{ ...task(), status: "done", made: [{ name: "made-1", url: "data:image/png;base64,AAA", size: "2752x1536", unkept: "the quota is full" }] }]} />,
+    );
+    expect(html).toContain('src="data:image/png;base64,AAA"');
+    expect(html).toContain("Not saved in the workspace, kept in this reply: the quota is full");
+  });
 });

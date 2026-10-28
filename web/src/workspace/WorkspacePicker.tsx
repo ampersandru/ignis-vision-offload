@@ -1,25 +1,19 @@
 import { useState } from "react";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconChevron } from "../ui/icons.tsx";
-import { present, type Workspace, type WorkspaceFile, type WorkspaceId } from "./files.ts";
+import { present, timeLabel, type Workspace, type WorkspaceFile, type WorkspaceId } from "./files.ts";
 import { NameField } from "./WorkspacePanel.tsx";
 
 // The picker in the chat's header (spec #170): the workspace the chat works
 // in. Before the chat binds it offers a new workspace, the default, born
 // with the chat's first file, or one of the existing ones, and picking one
 // binds the chat to it for good. Once bound, it names the workspace and
-// renames or deletes it, a delete only after a confirmation.
+// renames or deletes it, a delete only after a confirmation. A chat whose
+// workspace was deleted is offered the new one alone.
 
 export type PickerMode = "choices" | "actions" | "rename" | "confirm";
 
 const MENU_ROW = "flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-line";
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-function when(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 const count = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "file" : "files"}`;
 
@@ -56,15 +50,18 @@ export function WorkspacePicker({
   workspace,
   files,
   list,
+  canPick = true,
   onPick,
   onRename,
   onDelete,
 }: {
-  /** The chat's workspace: null before it binds, undefined while it is read. */
+  /** The chat's workspace: null before it binds, or once it is deleted; undefined while it is read. */
   workspace: Workspace | null | undefined;
   files: WorkspaceFile[];
   /** The workspaces there are, as useWorkspaceList reads them. */
   list: Workspace[] | null;
+  /** The chat may pick an existing workspace: false once its workspace was deleted. */
+  canPick?: boolean;
   /** Binds the chat to an existing workspace. */
   onPick: (id: WorkspaceId) => void;
   /** Renames the chat's workspace; the refusal, or null once done. */
@@ -105,6 +102,7 @@ export function WorkspacePicker({
             workspace={workspace ?? null}
             files={files}
             list={list}
+            canPick={canPick}
             onMode={setMode}
             onPick={(id) => {
               menu.close();
@@ -132,6 +130,7 @@ export function PickerMenu({
   workspace,
   files,
   list,
+  canPick = true,
   onPick,
   onMode,
   onRename,
@@ -141,13 +140,17 @@ export function PickerMenu({
   workspace: Workspace | null;
   files: WorkspaceFile[];
   list: Workspace[] | null;
+  canPick?: boolean;
   /** A workspace picked, or null for a new one. */
   onPick: (id: WorkspaceId | null) => void;
   onMode: (mode: PickerMode) => void;
   onRename: (name: string) => Promise<string | null>;
   onDelete: () => void;
 }) {
-  if (!workspace || mode === "choices") return <WorkspaceChoices list={list} current={workspace?.id ?? null} onPick={onPick} />;
+  if (!workspace || mode === "choices") {
+    const instead = canPick ? undefined : "This chat's workspace was deleted: its next file starts a new one. It picks no other, so that its history never mixes two.";
+    return <WorkspaceChoices list={list} current={workspace?.id ?? null} onPick={onPick} instead={instead} />;
+  }
   if (mode === "rename") {
     return (
       <div className="px-3 py-2">
@@ -171,9 +174,20 @@ export function PickerMenu({
 /**
  * A new workspace or one of the existing ones, the last changed first: the
  * chat header's choice before the chat binds, and any view's that sends
- * something to a workspace. `current` is the one chosen, null for a new one.
+ * something to a workspace. `current` is the one chosen, null for a new one;
+ * `instead`, why the existing ones are not offered, in their place.
  */
-export function WorkspaceChoices({ list, current, onPick }: { list: Workspace[] | null; current: WorkspaceId | null; onPick: (id: WorkspaceId | null) => void }) {
+export function WorkspaceChoices({
+  list,
+  current,
+  onPick,
+  instead,
+}: {
+  list: Workspace[] | null;
+  current: WorkspaceId | null;
+  onPick: (id: WorkspaceId | null) => void;
+  instead?: string;
+}) {
   const row = (id: WorkspaceId | null, name: string, line: string) => (
     <button key={id ?? "new"} type="button" role="menuitemradio" aria-checked={current === id} className={MENU_ROW} onClick={() => onPick(id)}>
       <span className={`cut mt-1 size-2.5 shrink-0 [--cut-size:3px] ${current === id ? "bg-ember" : "border border-line"}`} aria-hidden />
@@ -186,12 +200,14 @@ export function WorkspaceChoices({ list, current, onPick }: { list: Workspace[] 
   return (
     <div role="menu" aria-label="Workspace" className="flex max-h-[60vh] flex-col overflow-y-auto">
       {row(null, "New workspace", "Created with the chat's first file, named after the chat.")}
-      {list === null ? (
+      {instead ? (
+        <p className="px-3 py-2 text-xs leading-snug text-ash">{instead}</p>
+      ) : list === null ? (
         <p className="px-3 py-2 text-xs text-ash">Reading the workspaces…</p>
       ) : list.length === 0 ? (
         <p className="px-3 py-2 text-xs text-ash">No other workspace yet.</p>
       ) : (
-        list.map((w) => row(w.id, w.name, `changed ${when(w.updated)}`))
+        list.map((w) => row(w.id, w.name, `changed ${timeLabel(w.updated)}`))
       )}
     </div>
   );

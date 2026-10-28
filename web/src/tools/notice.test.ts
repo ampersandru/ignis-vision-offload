@@ -323,6 +323,19 @@ const textFile = (id: string, name: string, text: string, at: number): Workspace
   versions: [{ n: 1, author: USER, at, text }],
 });
 
+describe("an agent, with a workspace", () => {
+  it("hears the files of the chat's workspace in its notice, as a chat's first turn does, beside the titles, while the switch is on", async () => {
+    const workspaces = workspaceModule();
+    const trip = await tripWith(workspaces, { "notes.md": "# Trip\n\n- Rome\n" });
+    const files = await trip.files();
+    const listing = ["# Workspace files", "Files in the chat's workspace:", "- notes.md: text, 3 lines, 15 characters"].join("\n");
+    expect(agentNotice(ALL_TOOLS, [note("m1", "Language")], files)).toBe(`# Memory notes\nSaved notes, by title:\n- [m1] Language\n\n${listing}`);
+    expect(agentNotice({ ...ALL_TOOLS, memory: false }, [], files)).toBe(listing);
+    expect(agentNotice({ ...ALL_TOOLS, workspace: false }, [], files)).toBeUndefined();
+    expect(agentNotice(ALL_TOOLS, [], [])).toBeUndefined();
+  });
+});
+
 describe("a chat's first turn, with a workspace", () => {
   it("lists the files of the workspace the picker bound it to, with their kind and size, on both transports", async () => {
     const workspaces = workspaceModule();

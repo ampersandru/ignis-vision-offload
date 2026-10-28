@@ -28,7 +28,7 @@ listening in Transcribe goes on whichever view shows.
 
 | View | What it is for | What it asks the server | Page |
 |---|---|---|---|
-| **Playground** | Chat with the model: reasoning, tools, subagents, images and files in the prompt, several sessions | `/v1/responses` over a WebSocket, or `/v1/chat/completions` | [Chat](chat.md), [Settings](settings.md), [Tools and agents](tools-and-agents.md), [Sessions](sessions.md) |
+| **Playground** | Chat with the model: reasoning, tools, subagents, pictures in the prompt, a workspace of files the model and you work on in a panel beside the chat, several sessions | `/v1/responses` over a WebSocket, or `/v1/chat/completions` | [Chat](chat.md), [Settings](settings.md), [Tools and agents](tools-and-agents.md), [Sessions](sessions.md) |
 | **Decide** | Ask many questions over one piece of evidence, answered from one prefill with nothing generated | `POST /v1/decide` | [Decide](decide.md) |
 | **Image** | Make and edit pictures with the image model, step by step | `/v1/images/generations`, `/v1/images/edits` | [Image studio](image-studio.md) |
 | **Transcribe** | Write a conversation down, from the microphone, a call or a file, with its speakers | `/v1/realtime?intent=transcription` over a WebSocket | [Transcribe](transcribe.md) |

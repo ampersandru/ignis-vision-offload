@@ -2,7 +2,7 @@ import { useState } from "react";
 import { pageStore } from "../store/index.ts";
 import type { ImageStore } from "../store/imageStore.ts";
 import { type Workspace, type WorkspaceFile } from "../workspace/files.ts";
-import type { Destination } from "../workspace/send.ts";
+import { type Destination, sentLine } from "../workspace/send.ts";
 import { useWorkspace, useWorkspaceList } from "../workspace/useWorkspaces.ts";
 import { StoreWorkspaceChooser } from "../workspace/WorkspaceChooser.tsx";
 import { pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
@@ -15,10 +15,6 @@ import { sendPicture, workspaceNameFor } from "./toWorkspace.ts";
 // #170): "Send to workspace" on a pool picture, which asks which workspace,
 // and "From a workspace" in the prompt box's pool menu, which adds a
 // workspace's pictures as inputs. Neither copies bytes.
-
-/** The line under a send: what was added where, or why nothing was. */
-export const sentLine = (outcome: { ok: true; file: string; workspace: string } | { ok: false; error: string }): string =>
-  outcome.ok ? `Added ${outcome.file} to ${outcome.workspace}` : `Not sent: ${outcome.error}`;
 
 /** "Send to workspace" for the viewer's picture: the question, then the send. `tool` is the button's class. */
 export function SendToWorkspace({
