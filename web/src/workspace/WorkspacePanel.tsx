@@ -3,13 +3,15 @@ import type { SpeechStatus } from "../api/model.ts";
 import { usePictureUrl } from "../image/pictures.tsx";
 import type { ImageId } from "../store/imageStore.ts";
 import { caption, fieldLook } from "../ui/classes.ts";
-import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
+import { isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Lightbox } from "../ui/Lightbox.tsx";
 import { AudioViewer, Recording } from "./audio.tsx";
 import { type Author, KIND_LABEL, latest, present, USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
 import { FileEditor, FileHistory, type SaveOutcome } from "./FileHistory.tsx";
 import { BUTTON, Source } from "./looks.tsx";
+import { CsvTable, MarkdownPreview, SitePreview, SvgPreview } from "./previews.tsx";
+import { isCsvName, isMarkdownName, isSvgName } from "./site.ts";
 import { authorName, type ChatNames, createFile, downloadName, fileTree, refusal, saveText, sizeLabel, timeLabel, type TreeNode, uploadFiles } from "./panel.ts";
 import { createRecorder } from "./recorder.ts";
 import type { WorkspaceView } from "./useWorkspaces.ts";
@@ -214,7 +216,7 @@ export function PanelView({
       </div>
 
       {open ? (
-        <FileViewer key={open.id} file={open} whom={whom} onBack={() => setOpened(null)} actions={actions} speech={speech} />
+        <FileViewer key={open.id} file={open} whom={whom} onBack={() => setOpened(null)} actions={actions} speech={speech} files={files} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -410,16 +412,16 @@ const TAB_LABEL: Record<Exclude<ViewerTab, "history">, string> = { preview: "Pre
  * a text file's in its editor (an HTML file's a tab after its preview), and
  * its history a tab away. A deleted file opens on its history alone.
  */
-export function FileViewer({ file, whom, onBack, actions, speech }: { file: WorkspaceFile; whom: (author: Author) => string; onBack: () => void; actions: PanelActions; speech?: SpeechStatus }) {
+export function FileViewer({ file, whom, onBack, actions, speech, files = [] }: { file: WorkspaceFile; whom: (author: Author) => string; onBack: () => void; actions: PanelActions; speech?: SpeechStatus; files?: WorkspaceFile[] }) {
   const v = latest(file);
   const editable = v.text !== undefined;
-  const html = editable && isHtmlName(file.name);
-  const tabs: ViewerTab[] = v.deleted ? ["history"] : html ? ["preview", "edit", "history"] : editable ? ["edit", "history"] : ["view", "history"];
+  const drawn = editable && isDrawnName(file.name);
+  const tabs: ViewerTab[] = v.deleted ? ["history"] : drawn ? ["preview", "edit", "history"] : editable ? ["edit", "history"] : ["view", "history"];
   const [chosen, setTab] = useState<ViewerTab>(tabs[0]);
   const tab = tabs.includes(chosen) ? chosen : tabs[0];
   let body: ReactNode = null;
   if (v.text !== undefined) {
-    body = html ? <HtmlPreview html={v.text} name={file.name} /> : null;
+    body = textBody(file, v.text, files, actions);
   } else if (file.kind === "pdf" && v.derived !== undefined) {
     body = (
       <>
@@ -505,4 +507,16 @@ function PictureView({ id, name, width, height }: { id: ImageId; name: string; w
       )}
     </>
   );
+}
+
+/** Whether a text file has a drawn preview: a page, Markdown, SVG or CSV. */
+const isDrawnName = (name: string) => isHtmlName(name) || isMarkdownName(name) || isSvgName(name) || isCsvName(name);
+
+/** A text file in the viewer for its name: a page with its site, Markdown, SVG or CSV drawn, anything else as text. */
+function textBody(file: WorkspaceFile, text: string, files: WorkspaceFile[], actions: PanelActions): ReactNode {
+  if (isHtmlName(file.name)) return <SitePreview file={file} text={text} files={files} content={actions.content} />;
+  if (isMarkdownName(file.name)) return <MarkdownPreview text={text} />;
+  if (isSvgName(file.name)) return <SvgPreview text={text} name={file.name} />;
+  if (isCsvName(file.name)) return <CsvTable text={text} />;
+  return null;
 }

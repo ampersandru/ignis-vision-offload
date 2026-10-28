@@ -104,7 +104,19 @@ versions ([below](#editing-by-hand-history-and-restore)).
 
 - An HTML file opens in the same sandboxed preview as a reply's card, with
   its source, **Save as PDF** and the full-screen view; **Edit** beside it
-  opens its text in the editor.
+  opens its text in the editor. A site of several files shows whole: the
+  page's `<link rel="stylesheet" href>`, `<script src>` and `<img src>`
+  that name files of the same workspace are put into the page, each name read
+  from the HTML file's own folder (`css/main.css` beside `site/index.html` is
+  `site/css/main.css`; `../` goes up a folder, and a leading `/` starts at
+  the workspace's top). Nothing else is looked up: a CSS `url()`, a
+  `fetch`, a link, a `srcset`, an address on the web or a name that is not
+  a file here stays as written, and the page stays in the sandbox, with no
+  access to the Playground.
+- A Markdown file opens drawn as a reply is, an SVG file as the picture it
+  draws (without running the scripts it may hold), and a CSV file as a table
+  whose first row is the header, up to 500 rows. **Edit** beside the drawing
+  is the file's text.
 - Any other text file opens in the editor.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click
