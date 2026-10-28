@@ -21,6 +21,8 @@ const actions: PanelActions = {
   derive: async () => null,
   save: async () => ({ ok: true, version: 2 }),
   restore: () => {},
+  exportZip: () => {},
+  importZip: () => {},
 };
 
 const whom = () => "you";
