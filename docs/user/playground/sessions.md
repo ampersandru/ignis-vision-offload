@@ -52,7 +52,11 @@ stores. Clearing the site's data in the browser deletes the sessions.
 :::
 
 When the browser refuses the space, the session list says so in red and the
-page goes on without saving.
+page goes on without saving. The same happens when the Playground's store has
+moved to a newer version (workspaces brought one) while another tab of the
+same origin still runs the older page: the list says another tab holds the
+store at an older version, and once that tab is closed a reload of this one
+reads the sessions back.
 
 ## Read more
 

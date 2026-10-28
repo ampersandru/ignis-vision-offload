@@ -614,9 +614,11 @@ export function useConversation({
   /** Sends `prompt`, and the images and files picked with it, in the active session when a turn can start. */
   function send(prompt: string, images: PromptImage[] = []) {
     if (!canRun) return;
-    setAttached([]);
+    // With the Workspace switch off the box hides its files and keeps them for when it is back on.
+    const files = tools.enabled && tools.workspace ? attached : [];
+    if (files.length > 0) setAttached([]);
     setAttachError(null);
-    void exchange(active.id, active.messages, prompt, images, { add: attached, named: [] });
+    void exchange(active.id, active.messages, prompt, images, { add: files, named: [] });
   }
 
   /**
