@@ -1,18 +1,24 @@
-import { type DragEvent, type ReactNode, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useState } from "react";
+import type { SpeechStatus } from "../api/model.ts";
 import { caption, fieldLook } from "../ui/classes.ts";
 import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
-import { type Author, KIND_LABEL, latest, present, USER, type Workspace, type WorkspaceFile } from "./files.ts";
+import { AudioViewer, Recording } from "./audio.tsx";
+import { type Author, KIND_LABEL, latest, present, USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
+import { BUTTON, Source } from "./looks.tsx";
 import { createFile, downloadName, fileTree, refusal, sizeLabel, type TreeNode, uploadFiles } from "./panel.ts";
+import { createRecorder } from "./recorder.ts";
 import type { WorkspaceView } from "./useWorkspaces.ts";
 import type { ChatBinding, Workspaces } from "./workspaces.ts";
 
 // The Chat view's workspace panel (spec #170): the files of the chat's
 // workspace as a tree of their names, each opening in a viewer for its kind,
 // and the user's actions on them — a new empty text file, uploads by the
-// picker or by a drop, rename, delete and download. Everything goes through
-// the workspace module as the user's; a chat with no workspace yet gets one
-// with the first file made here. What the browser refuses, the panel says.
+// picker or by a drop, a recording from the microphone (#395), rename, delete
+// and download; an audio file plays beside its transcript. Everything goes
+// through the workspace module as the user's; a chat with no workspace yet
+// gets one with the first file made here. What the browser refuses, the panel
+// says.
 
 /** What the panel's controls do; a name a field sends back comes with the refusal, or null once done. */
 export type PanelActions = {
@@ -21,9 +27,11 @@ export type PanelActions = {
   rename: (file: string, name: string) => Promise<string | null>;
   remove: (file: string) => void;
   download: (file: WorkspaceFile) => void;
+  /** A version's bytes, for a player. */
+  content: (version: Version) => Promise<Blob | null>;
+  /** Computes the text the model reads of a file's latest version, a recording's transcript, and keeps it; why it could not, or null. */
+  derive: (file: WorkspaceFile) => Promise<string | null>;
 };
-
-const BUTTON = "cut flex shrink-0 items-center gap-1.5 bg-surface px-2.5 py-1.5 font-display text-xs font-semibold text-ink [--cut-size:6px] hover:bg-line";
 
 /** An icon button's shape; its hover colour is the caller's (two `hover:text-*` on one element, and Tailwind's order picks). */
 const ICON_SHAPE = "flex size-7 shrink-0 items-center justify-center text-ash";
@@ -45,6 +53,7 @@ export function WorkspacePanel({
   workspaces,
   view,
   chat,
+  speech,
   onClose,
 }: {
   workspaces: Workspaces;
@@ -52,10 +61,15 @@ export function WorkspacePanel({
   view: WorkspaceView;
   /** The chat's hold on its workspace: the first file made here gives it one. */
   chat: () => ChatBinding;
+  /** Whether the speech model can serve, from the models listing: a recording's microphone and transcript need it. */
+  speech?: SpeechStatus;
   onClose: () => void;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   const id = view.workspace?.id;
+  const [recorder] = useState(() => createRecorder());
+  // A recording under way when the panel closes is saved, not lost.
+  useEffect(() => () => void recorder.stop(), [recorder]);
 
   /** `job`, with what the store refused said in the panel. */
   async function attempt<T>(job: () => Promise<T>): Promise<T | { refused: string }> {
@@ -88,9 +102,30 @@ export function WorkspacePanel({
         if (blob) save(blob, downloadName(file.name));
         else setNotice(`${file.name} came from an older chat, which kept only its text: there are no bytes to download.`);
       }),
+    content: (version) => workspaces.content(version),
+    derive: async (file) => {
+      const out = await attempt(() => workspaces.readable(file, latest(file)));
+      return "refused" in out ? out.refused : out.ok ? null : out.error;
+    },
   };
 
-  return <PanelView workspace={view.workspace} files={view.files} notice={notice} onClose={onClose} actions={actions} />;
+  // The chat a recording goes to is the one on screen when Record was pressed, whichever is on screen when it ends.
+  const recordInto = () => {
+    const binding = chat();
+    return async (file: File) => void (await uploadFiles(workspaces, binding, [file]));
+  };
+
+  return (
+    <PanelView
+      workspace={view.workspace}
+      files={view.files}
+      notice={notice}
+      onClose={onClose}
+      actions={actions}
+      speech={speech}
+      recording={<Recording recorder={recorder} speech={speech} save={recordInto} />}
+    />
+  );
 }
 
 function save(blob: Blob, name: string) {
@@ -109,12 +144,17 @@ export function PanelView({
   notice,
   onClose,
   actions,
+  speech,
+  recording,
 }: {
   workspace: Workspace | null | undefined;
   files: WorkspaceFile[];
   notice?: string | null;
   onClose: () => void;
   actions: PanelActions;
+  speech?: SpeechStatus;
+  /** Record, and the recording under way. */
+  recording?: ReactNode;
 }) {
   const [opened, setOpened] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -155,7 +195,7 @@ export function PanelView({
       </div>
 
       {open ? (
-        <FileViewer file={open} onBack={() => setOpened(null)} actions={actions} />
+        <FileViewer file={open} onBack={() => setOpened(null)} actions={actions} speech={speech} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -177,6 +217,7 @@ export function PanelView({
                 }}
               />
             </label>
+            {recording}
             <span className="text-xs text-ash">or drop files here</span>
           </div>
           {creating && (
@@ -322,7 +363,7 @@ export function NameField({
 }
 
 /** A file opened from the tree, its latest version in the viewer for its kind. */
-export function FileViewer({ file, onBack, actions }: { file: WorkspaceFile; onBack: () => void; actions: PanelActions }) {
+export function FileViewer({ file, onBack, actions, speech }: { file: WorkspaceFile; onBack: () => void; actions: PanelActions; speech?: SpeechStatus }) {
   const v = latest(file);
   let body: ReactNode = null;
   if (v.text !== undefined) {
@@ -334,6 +375,8 @@ export function FileViewer({ file, onBack, actions }: { file: WorkspaceFile; onB
         <Source text={v.derived} />
       </>
     );
+  } else if (file.kind === "audio") {
+    body = <AudioViewer file={file} version={v} speech={speech} load={actions.content} transcribe={actions.derive} />;
   } else if (file.kind === "other") {
     body = <p className="text-xs leading-snug text-ash">The model sees its name and size, and cannot read it.</p>;
   }
@@ -355,7 +398,3 @@ export function FileViewer({ file, onBack, actions }: { file: WorkspaceFile; onB
     </div>
   );
 }
-
-const Source = ({ text }: { text: string }) => (
-  <pre className="max-h-[60vh] overflow-auto bg-surface px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
-);

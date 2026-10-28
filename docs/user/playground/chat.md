@@ -25,9 +25,12 @@ agents included. The **+** button adds to the prompt:
   built-in `rtx5090` profile turns it on. A pasted image lands here too. Each
   thumbnail can be **marked**: circles or strokes drawn on it, so the model
   sees what you point at.
-- **File**: a text or PDF file for the chat's workspace. It waits in the box
-  until you send, and **×** takes it out; sending adds it to the workspace and
-  names it in the prompt. It is offered while the **Workspace** switch is on
+- **File**: a text, PDF or audio file for the chat's workspace. It waits in
+  the box until you send, its size beside it (a text's characters, a PDF's
+  text's, a recording's bytes), and **×** takes it out; sending adds it to the
+  workspace and names it in the prompt. The model reads a recording as its
+  transcript ([audio in the workspace](#audio-in-the-workspace)). It is offered
+  while the **Workspace** switch is on
   ([Tools and agents](tools-and-agents.md#workspace)).
 
 An image or a file alone is a prompt. Nothing is sent until you press Send.
@@ -90,6 +93,8 @@ last changed: you, the model or one of its agents.
   its source, **Save as PDF** and the full-screen view.
 - Any other text file shows its source.
 - A PDF shows the text the model reads of it.
+- An audio file plays in a player beside its transcript, or **Transcribe**
+  while it has none yet ([audio in the workspace](#audio-in-the-workspace)).
 - Any other file, an archive or a spreadsheet, shows its name and size: the
   model sees it in `list_files`, and `read_file` answers that it cannot read
   it.
@@ -100,6 +105,8 @@ What you do here is yours: each version it makes is authored by you.
   folders; a name the workspace already holds gets a number, `notes (2).md`.
 - **Upload**, or files dropped anywhere on the panel, adds files of any kind:
   text as text, a PDF with its text, anything else as its bytes.
+- **Record** records from the microphone into a new audio file
+  ([recording](#recording-into-the-workspace)).
 - On each file's row, the pencil renames it, the arrow downloads its latest
   version under the last part of its name, and the bin deletes it. A name
   another file holds, a deleted one included, is refused; a rename keeps the
@@ -112,6 +119,59 @@ works with the **Workspace** switch off too: the switch takes the model's
 tools away, never your files. When the browser refuses to store a change, the
 panel says so in red, **Not saved in this browser:** and the reason; a refused
 delete of a workspace is said in the bar.
+
+### Audio in the workspace
+
+An audio file, attached with **File**, uploaded, dropped or recorded, keeps
+its bytes in this browser, and the model reads it as its **transcript**: plain
+text, without speakers. The server's
+[transcription route](../api/transcriptions.md) makes it the first time a
+version is read, by the model's `read_file` or by **Transcribe** in the panel,
+and the transcript is kept with that version: every later read gives the same
+text at once and asks the server nothing. The speech model runs beside the
+model loaded, so a transcript is made whichever model serves the chat, and
+during a model switch too.
+
+A transcription needs the server's speech model. While the models listing says
+it cannot serve, `read_file` answers the model with the reason, the same
+sentence the struck mic shows ([when the mic is struck through](#when-the-mic-is-struck-through)),
+and **Transcribe** is struck with it. A transcription the server refuses is
+answered with the server's words, and nothing is kept, so the next read asks
+again:
+
+- a clip longer than `speech.max_clip_seconds` (1200 seconds, 20 minutes, by
+  default; [speech](../configuration/speech.md)) is refused whole, never split;
+- Opus is not decoded yet: an `.opus` file, or WebM or Ogg holding Opus, as
+  many voice notes and a browser's own recordings are, is refused, naming the
+  formats the server takes (WAV, FLAC, MP3, AAC or M4A, and FLAC in Ogg or
+  WebM).
+
+**Stop** ends a turn that waits on a transcription, and the transcription
+with it unless the panel's **Transcribe** waits on it too; a stopped one keeps
+nothing.
+
+### Recording into the workspace
+
+**Record** in the panel records from the microphone into a new audio file of
+the chat's workspace, born with it if the chat has none, named after the
+moment it started: `recording 2026-10-28 14.05.09.wav`. While it records, the
+panel shows the time, the level and the limit; **Stop and save** saves it as
+yours, **Cancel** keeps nothing. The file is a WAV, 16 kHz mono, the format the
+server transcribes; a minute takes about 1.8 MB of the browser's storage.
+
+A recording stops and saves itself at the longest clip the server transcribes,
+`speech.max_clip_seconds`, read from the server's configuration when it
+starts. It goes to the chat on screen when you pressed **Record**, whichever
+chat is on screen when it ends, and closing the panel saves it rather than
+lose it.
+
+**Record** takes the microphone under the same rules as dictation: struck
+through, the reason under it, while the page is not on https or localhost,
+while no speech model can serve, and while the Transcribe view listens. A
+microphone the browser blocked leaves it pressable, which asks again
+([when the mic is struck through](#when-the-mic-is-struck-through)). The
+recording stays in this browser; nothing reaches the server until it is
+transcribed.
 
 ## Dictating a prompt
 

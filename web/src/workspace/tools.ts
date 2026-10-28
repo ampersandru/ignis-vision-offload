@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../api/request.ts";
 import type { LocalRun } from "../tools/local/local.ts";
-import { type Author, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, readableText, type Version, type WorkspaceFile } from "./files.ts";
+import { type Author, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type Version, type WorkspaceFile } from "./files.ts";
 import type { ChatBinding, Workspaces } from "./workspaces.ts";
 
 // The model's entrance to the workspace module: list_files, read_file and
@@ -35,7 +35,7 @@ export const LIST_FILES_TOOL = tool(LIST_FILES, "List the files of the chat's wo
 
 export const READ_FILE_TOOL = tool(
   READ_FILE,
-  `Read a file of the workspace as numbered lines: a text file, or a PDF's text. Returns up to ${READ_LIMIT.toLocaleString("en-US")} characters at a time, and where to go on.`,
+  `Read a file of the workspace as numbered lines: a text file, a PDF's text, or an audio file's transcript (no speakers). Returns up to ${READ_LIMIT.toLocaleString("en-US")} characters at a time, and where to go on.`,
   {
     name: { type: "string", description: "The file's name, as list_files gives it." },
     offset: { type: "integer", description: "The first line to read, from 1; 1 by default." },
@@ -57,7 +57,7 @@ export const WRITE_FILE_TOOL = tool(
 export const WORKSPACE_PROMPT = `# Workspace
 The chat can have a workspace: files you and the user work on together, which stay across turns and chats. It is created with its first file, which you write or the user attaches; a file the user attaches is named in their message.
 - See what it holds with \`list_files\`: each file's name, kind, size, last change and author.
-- Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text. Read a file before you rely on it.
+- Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text, and an audio file as its transcript, without speakers. Read a file before you rely on it.
 - Write a text file with \`write_file\`: code, a document, data — anything worth keeping. It creates the file or replaces it whole. Mention the file in your reply instead of repeating its content.
 - A name may hold \`/\` for folders, like \`site/index.html\`.`;
 
@@ -149,7 +149,7 @@ function readLines(name: string, version: Version, text: string, offset?: number
 }
 
 /** Runs one workspace call: `name` is the tool, `args` its parsed arguments. */
-export async function runWorkspaceTool(name: string, args: Record<string, unknown>, access: WorkspaceAccess): Promise<WorkspaceOutcome> {
+export async function runWorkspaceTool(name: string, args: Record<string, unknown>, access: WorkspaceAccess, signal?: AbortSignal): Promise<WorkspaceOutcome> {
   const author: Author = { by: "chat", chat: access.chat.key, ...(access.agent ? { agent: access.agent } : {}) };
   switch (name) {
     case LIST_FILES: {
@@ -173,8 +173,11 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       if ("error" in found) return { ok: false, error: found.error };
       const { file } = found;
       const version = latest(file);
-      const text = readableText(version);
-      if ((file.kind !== "text" && file.kind !== "pdf") || text === undefined) {
+      // A PDF's text or an audio file's transcript is computed on the version's first read, and kept with it.
+      const readable = await access.workspaces.readable(file, version, signal);
+      if (!readable.ok) return { ok: false, error: readable.error };
+      const text = readable.text;
+      if ((file.kind !== "text" && file.kind !== "pdf" && file.kind !== "audio") || text === undefined) {
         return { ok: false, error: `${file.name} is ${file.kind === "other" ? "a file of a kind" : `a ${KIND_LABEL[file.kind]} file, which`} read_file cannot read.` };
       }
       return readLines(file.name, version, text, integer(args.offset), integer(args.limit));

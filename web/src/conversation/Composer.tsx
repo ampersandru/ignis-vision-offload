@@ -1,5 +1,6 @@
 import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
+import { formatBytes } from "../decide/evidenceFile.ts";
 import type { ContextUsage } from "../metrics/context.ts";
 import { ContextMeter } from "../metrics/ContextMeter.tsx";
 import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
@@ -87,8 +88,7 @@ export function Composer(props: {
             <span key={a.name} className="cut flex min-w-0 items-center gap-1.5 bg-surface py-1 pr-1.5 pl-2.5 text-xs [--cut-size:6px]">
               <span className="min-w-0 truncate font-display font-semibold text-ink">{a.name}</span>
               <span className="shrink-0 font-display tabular-nums text-ash">
-                {a.kind === "pdf" ? "PDF, " : ""}
-                {a.characters.toLocaleString()} chars
+                {a.kind === "audio" ? `audio, ${formatBytes(a.size)}` : `${a.kind === "pdf" ? "PDF, " : ""}${a.characters.toLocaleString()} chars`}
               </span>
               <button type="button" aria-label={`Remove ${a.name}`} onClick={() => props.onDetach(a.name)} className="shrink-0 text-ash hover:text-fault">
                 <IconClose />
@@ -144,7 +144,7 @@ export function Composer(props: {
             <AddMenuItem
               icon={<IconPaperclip />}
               label="File"
-              hint="Text or PDF, into the chat's workspace"
+              hint="Text, PDF or audio, into the chat's workspace"
               onChoose={() => picker.current?.click()}
             />
           )}

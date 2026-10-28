@@ -253,7 +253,7 @@ async function runLocal(call: ToolCall, context: LocalContext, onUpdate: (run: L
       if (!WORKSPACE_TOOL_NAMES.includes(call.name)) return fail(`"${call.name}" is not a local tool.`);
       if (!context.workspace) return fail("The workspace is not available here.");
       try {
-        const outcome = await runWorkspaceTool(call.name, args, context.workspace);
+        const outcome = await runWorkspaceTool(call.name, args, context.workspace, signal);
         return outcome.ok ? update({ status: "done", ...outcome.run }) : fail(outcome.error);
       } catch (err) {
         // The store refused: the reply says so, and the model hears the same.
