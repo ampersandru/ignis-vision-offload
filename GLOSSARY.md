@@ -510,8 +510,9 @@ runs against. A model-load option, fixed for the life of the load.
 
 **Model family**:
 The architecture an artifact runs as (`Qwen3.8-27B`, `Qwen3.8-Flash-Next`,
-`Qwen-Image-2.1`), read from the artifact's own header, never declared beside
-it. It decides the forward program, the drafter and the family scope.
+`Qwen-Image-2.1`), read from the artifact's own header: a catalog entry may
+state it, and the header must agree (ADR 0074). It decides the forward
+program, the drafter and the family scope.
 _Avoid_: model (for the architecture)
 
 **Model kind**:
@@ -530,10 +531,18 @@ tells artifacts of one family apart; the family never does.
 _Avoid_: model name
 
 **Alias**:
-A served id one catalog entry also answers to: its family's default id, on a
-**card class** below the default entry's (ADR 0064). It resolves only within
+A served id one catalog entry also answers to on a **card class** below that
+id's own entry: its family's default id, or another entry's served id of the
+same family (ADR 0064, ADR 0074). It resolves only within
 one model family — the entry that answers to it holds an artifact whose header
 names that family — and only to an entry the card can load.
+
+**Uncensored variant**:
+A catalog entry of a model family whose weights carry an abliteration of the
+refusal direction: the same family, told apart by its served id, and it does
+not refuse.
+_Avoid_: abliterated model (the upstream checkpoint), graft (the DFlash2
+module's)
 
 **Catalog**:
 The models the server knows how to fetch: the **built-in catalog**, shipped
@@ -546,8 +555,10 @@ registry"), model list
 One published model: its served id, repo, revision, the artifact to load, every
 file it needs with its byte count and SHA-256 pinned, the smallest **card
 class** it loads on (`card_class`, optional: an entry stating none is never
-refused by class; every built-in one states it), and the **aliases** it may
-answer to (ADR 0064). An operator entry never reuses a built-in id.
+refused by class; every built-in one states it), the **aliases** it may
+answer to (ADR 0064), and its **model family** when neither its id nor its
+aliases name one (`family`, ADR 0074). An operator entry never reuses a
+built-in id.
 
 **Endpoint**:
 The server a catalog entry's files are fetched from: Hugging Face by default,
