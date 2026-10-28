@@ -26,6 +26,12 @@ export type Message = {
    * while the bytes stay the same.
    */
   images?: PromptImage[];
+  /**
+   * The workspace files this prompt attached, by the names they took there
+   * (spec #170). The prompt names them on the wire (`withAttached`), the same
+   * bytes on every request that repeats it.
+   */
+  attached?: string[];
   reasoning: string;
   streaming: boolean;
   /** The engine was full when this reply was sent: it waits for a lane before its first token. */
@@ -82,8 +88,17 @@ export type Session = {
   title: string;
   messages: Message[];
   log: LogRow[];
-  /** Files the user attached, for read_file. */
+  /**
+   * Files the user attached before the workspace (#170), in an older chat:
+   * its next turn makes them the first files of its workspace, and empties this.
+   */
   attachments: Attachment[];
+  /**
+   * The chat's workspace (spec #170): set when its first file is created, or
+   * when the user picks one before that, and never changed afterwards. A chat
+   * with no file has none.
+   */
+  workspaceId?: string;
   /**
    * When this conversation began: the moment the date and time tool writes
    * into its system prompt, the same for every turn. A fork inherits it, so
@@ -102,12 +117,17 @@ export function createSession(id: number, startedAt = new Date()): Session {
   return { id, title: UNTITLED, messages: [], log: [], attachments: [], startedAt };
 }
 
-/** Files attached to a session. */
-export function addAttachments(sessions: Session[], sessionId: number, added: Attachment[]): Session[] {
-  return sessions.map((s) => (s.id === sessionId ? { ...s, attachments: [...s.attachments, ...added] } : s));
+/** Binds a session to its workspace: once, since a chat never changes workspace. */
+export function bindWorkspace(sessions: Session[], sessionId: number, workspaceId: string): Session[] {
+  return sessions.map((s) => (s.id === sessionId && s.workspaceId === undefined ? { ...s, workspaceId } : s));
 }
 
-/** Drops the attached file called `name`. */
+/** An older chat's attachments, gone once they are files of its workspace. */
+export function clearAttachments(sessions: Session[], sessionId: number): Session[] {
+  return sessions.map((s) => (s.id === sessionId && s.attachments.length > 0 ? { ...s, attachments: [] } : s));
+}
+
+/** Drops the older chat's attached file called `name`. */
 export function removeAttachment(sessions: Session[], sessionId: number, name: string): Session[] {
   return sessions.map((s) => (s.id === sessionId ? { ...s, attachments: s.attachments.filter((a) => a.name !== name) } : s));
 }
@@ -124,10 +144,12 @@ export function titleFrom(prompt: string): string {
   return line.length > TITLE_LENGTH ? `${line.slice(0, TITLE_LENGTH - 1).trimEnd()}…` : line;
 }
 
-/** A session's title from its first prompt, falling back to the image's name when the prompt is only an image. */
-function titleOf(first: Message): string {
+/** A session's title from its first prompt, falling back to the image's or the file's name when the prompt is only that. */
+export function titleOf(first: Message): string {
   const title = titleFrom(first.content);
-  return title === UNTITLED && first.images?.length ? titleFrom(first.images[0].name) : title;
+  if (title !== UNTITLED) return title;
+  if (first.images?.length) return titleFrom(first.images[0].name);
+  return first.attached?.length ? titleFrom(first.attached[0]) : title;
 }
 
 /**
@@ -203,6 +225,7 @@ export function forkSession(list: SessionList, sessionId: number, messageId: num
     messages: source.messages.slice(0, index + 1).map((m) => ({ ...m, streaming: false })),
     log: [],
     attachments: source.attachments,
+    ...(source.workspaceId !== undefined ? { workspaceId: source.workspaceId } : {}),
     startedAt: source.startedAt,
   };
   return { sessions: [fork, ...list.sessions], activeId: newId };

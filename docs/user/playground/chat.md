@@ -1,6 +1,6 @@
 ---
 title: "Chat"
-description: "The Playground's chat: a reply with its reasoning and figures, the prompt box and its dictation, the model picker, the context meter and the session log."
+description: "The Playground's chat: a reply with its reasoning and figures, the prompt box and its dictation, the chat's workspace, the model picker, the context meter and the session log."
 sidebar:
   order: 2
 ---
@@ -24,11 +24,32 @@ agents included. The **+** button adds to the prompt:
   built-in `rtx5090` profile turns it on. A pasted image lands here too. Each
   thumbnail can be **marked**: circles or strokes drawn on it, so the model
   sees what you point at.
-- **File**: a text or PDF file the model reads in pieces with its `read_file`
-  tool; it is offered while the Attachments tool is on
-  ([Tools and agents](tools-and-agents.md#attachments)).
+- **File**: a text or PDF file for the chat's workspace. It waits in the box
+  until you send, and **×** takes it out; sending adds it to the workspace and
+  names it in the prompt. It is offered while the **Workspace** switch is on
+  ([Tools and agents](tools-and-agents.md#workspace)).
 
-An image alone is a prompt. Nothing is sent until you press Send.
+An image or a file alone is a prompt. Nothing is sent until you press Send.
+
+## The chat's workspace
+
+A chat can have a **workspace**: files you and the model work on together,
+kept in this browser and never on the server. It is born with the chat's
+first file, a file you attach or one the model writes, and takes the chat's
+title as its name; a chat that makes no file has none. The chat stays in that
+workspace for good, a fork shares it, and deleting the chat keeps it.
+
+A prompt that attached files lists them under its text, by the names they
+took in the workspace: a name the workspace already holds gets a number,
+`notes (2).txt`. A file the model writes shows in its reply as a card with the
+version that reply wrote; once a newer version exists, the card says
+**Superseded by version 2** and **Open the latest** shows that one. The model's
+side, its tools and the **Workspace** switch:
+[Tools and agents](tools-and-agents.md#workspace).
+
+A chat saved before workspaces shows as it did, its files from `create_file`
+included. The files it had attached wait in the prompt box until its next
+turn, which makes them the first files of its workspace.
 
 ## Dictating a prompt
 

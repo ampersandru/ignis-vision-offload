@@ -36,6 +36,8 @@ import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
 import { AGENT_SYSTEM_PROMPT, type AgentRun } from "../tools/agents/agents.ts";
 import { ALL_TOOLS, type ToolsState } from "../tools/index.ts";
+import { StoreWorkspaceFiles } from "../workspace/WorkspaceFiles.tsx";
+import { pageWorkspaces } from "../workspace/workspaces.ts";
 import { Header, type View } from "./Header.tsx";
 import { KeyPage } from "./KeyPage.tsx";
 import { TransportNotice } from "./TransportNotice.tsx";
@@ -163,8 +165,9 @@ export function App() {
 
   function send() {
     const text = input.trim();
-    // A dictation under way is never sent: Send waits until it ends (Q4).
-    if ((!text && images.length === 0) || !chat.canRun || dictation.controller.active) return;
+    // A dictation under way is never sent: Send waits until it ends (Q4). Files attached are a prompt by themselves.
+    const files = tools.enabled && tools.workspace ? chat.attachments.length : 0;
+    if ((!text && images.length === 0 && files === 0) || !chat.canRun || dictation.controller.active) return;
     setInput("");
     setImages([]);
     setImageError(null);
@@ -265,8 +268,10 @@ export function App() {
   if (auth.needsKey) return <KeyPage rejected={auth.rejected} />;
 
   return (
-    // Stored pictures are shown by URLs read once from the page's store: the Image view's, and the chat's.
+    // Stored pictures are shown by URLs read once from the page's store: the Image view's, and the chat's. A reply's
+    // file card reads the version it wrote from the chat's workspace.
     <StorePictures store={pageStore()}>
+    <StoreWorkspaceFiles workspaces={pageWorkspaces()}>
     <div className="flex h-dvh flex-col overflow-hidden">
       <Header
         model={model}
@@ -370,8 +375,8 @@ export function App() {
               usage={contextUsage(active.log, settings.maxTokens, canChat(model) ? model.contextLimit : null)}
               onSend={send}
               onStop={chat.stop}
-              canAttach={tools.enabled && tools.readFiles}
-              attachments={active.attachments}
+              canAttach={tools.enabled && tools.workspace}
+              attachments={chat.attachments}
               attachError={chat.attachError}
               onAttach={(files) => void chat.attach(files)}
               onDetach={chat.detach}
@@ -394,7 +399,6 @@ export function App() {
             onMarkdownChange={setMarkdown}
             parallel={parallel}
             onParallelChange={setParallel}
-            attachments={active.attachments}
             onOpenMemory={() => setMemoryOpen(true)}
           />
         </div>
@@ -432,6 +436,7 @@ export function App() {
         </>
       )}
     </div>
+    </StoreWorkspaceFiles>
     </StorePictures>
   );
 }

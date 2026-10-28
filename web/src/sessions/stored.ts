@@ -38,13 +38,15 @@ export type StoredChat = {
   messages: StoredMessage[];
   log: LogRow[];
   attachments: Session["attachments"];
+  /** `Session.workspaceId`, absent while the chat has none. */
+  workspaceId?: string;
 };
 
 /** What a call left without a result is answered with when the session is read back. */
 export const CLOSED_MID_CALL = "Stopped: the page was closed before the call finished.";
 
 /** A session with nothing in it is not written: an empty one is what a new page opens with anyway. */
-export const worthKeeping = (s: Session): boolean => s.messages.length > 0 || s.attachments.length > 0;
+export const worthKeeping = (s: Session): boolean => s.messages.length > 0 || s.attachments.length > 0 || s.workspaceId !== undefined;
 
 const storedImage = ({ full: _full, markup: _markup, ...image }: PromptImage): StoredImage => image;
 
@@ -58,6 +60,7 @@ export function toStored(s: Session, { key, order }: Stamp): StoredChat {
     messages: s.messages.map(({ images, ...m }) => (images ? { ...m, images: images.map(storedImage) } : m)),
     log: s.log,
     attachments: s.attachments,
+    ...(s.workspaceId !== undefined ? { workspaceId: s.workspaceId } : {}),
   };
 }
 
@@ -86,9 +89,10 @@ export function freedBy(gone: Session, left: Session[], elsewhere: Iterable<Imag
 /** A stored value read as a session document of this page's schema, or null. */
 function readStored(value: unknown): StoredChat | null {
   if (typeof value !== "object" || value === null) return null;
-  const doc = value as Partial<StoredChat>;
+  const { workspaceId, ...doc } = value as Partial<StoredChat>;
   if (doc.version !== CHAT_VERSION || typeof doc.key !== "string" || typeof doc.order !== "number" || !Array.isArray(doc.messages)) return null;
-  return { ...doc, title: doc.title ?? "", startedAt: doc.startedAt ?? Date.now(), log: doc.log ?? [], attachments: doc.attachments ?? [] } as StoredChat;
+  const workspace = typeof workspaceId === "string" ? { workspaceId } : {};
+  return { ...doc, title: doc.title ?? "", startedAt: doc.startedAt ?? Date.now(), log: doc.log ?? [], attachments: doc.attachments ?? [], ...workspace } as StoredChat;
 }
 
 /**
@@ -107,7 +111,8 @@ export function restoreChats(values: unknown[], nextId: number): { sessions: Ses
   const stamps = new Map<number, Stamp>();
   const sessions = items.map((doc) => {
     stamps.set(doc.id, { key: doc.key, order: doc.order });
-    return settle({ id: doc.id, title: doc.title, startedAt: new Date(doc.startedAt), messages: doc.messages, log: doc.log, attachments: doc.attachments }, newId);
+    const workspace = doc.workspaceId !== undefined ? { workspaceId: doc.workspaceId } : {};
+    return settle({ id: doc.id, title: doc.title, startedAt: new Date(doc.startedAt), messages: doc.messages, log: doc.log, attachments: doc.attachments, ...workspace }, newId);
   });
   return { sessions, stamps, nextId: next };
 }

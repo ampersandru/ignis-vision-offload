@@ -160,7 +160,7 @@ export type RunAgentsOptions = {
   tools?: ToolExtras;
   /** For the agents' web searches. */
   tavilyKey?: string | null;
-  /** For the agents' local tools: the safety check, the attachments, the check log. */
+  /** For the agents' local tools: the safety check, the chat's workspace, the check log. Each agent reads and writes the workspace as a reader of its own. */
   local?: Omit<LocalContext, "settings" | "signal">;
   limit?: number;
   /** How many replies in a row an agent may call tools in; the session's tool rounds. */
@@ -249,7 +249,8 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
    * Runs one request's declared web and local calls at once, answers any
    * other call as an unknown tool, and resolves with each call's result.
    */
-  async function runCalls(callId: string, calls: ToolCall[]): Promise<Map<string, string>> {
+  async function runCalls(task: AgentTask, calls: ToolCall[]): Promise<Map<string, string>> {
+    const { callId } = task;
     const earlierWeb = get(callId).web ?? [];
     const earlierLocal = get(callId).local ?? [];
     const declared = (call: ToolCall) => available.includes(call.name);
@@ -278,7 +279,13 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
       ),
       runLocalCalls(
         localCalls,
-        { jsSafetyCheck: true, attachments: [], ...options.local, settings: options.settings, signal },
+        {
+          jsSafetyCheck: true,
+          ...options.local,
+          ...(options.local?.workspace ? { workspace: { ...options.local.workspace, agent: { call: callId, name: task.name } } } : {}),
+          settings: options.settings,
+          signal,
+        },
         (run) => {
           local = local.map((r) => (r.callId === run.callId ? run : r));
           show();
@@ -310,7 +317,7 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
         });
       }
       const content = get(task.callId).content;
-      const results = await runCalls(task.callId, calls);
+      const results = await runCalls(task, calls);
       turns = [
         ...turns,
         { role: "assistant", content, ...(reasoning ? { reasoning } : {}), toolCalls: calls },

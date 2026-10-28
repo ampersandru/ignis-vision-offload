@@ -109,6 +109,20 @@ describe("a chat session in the store", () => {
     expect(worthKeeping(empty)).toBe(false);
     expect(worthKeeping({ ...empty, attachments: finished().attachments })).toBe(true);
     expect(worthKeeping({ ...empty, messages: [msg(1, "user", "hi")] })).toBe(true);
+    // A chat bound to a workspace before its first message is kept: the binding never changes.
+    expect(worthKeeping({ ...empty, workspaceId: "w1" })).toBe(true);
+  });
+
+  it("keeps the workspace it is bound to, and a chat with none comes back with none", () => {
+    const bound = toStored({ ...finished(), workspaceId: "w1" }, { key: "a", order: 1 });
+    expect(bound.workspaceId).toBe("w1");
+    const unbound = toStored(finished(), { key: "b", order: 2 });
+    expect(unbound).not.toHaveProperty("workspaceId");
+    // Newest first: a workspace id that is not a string is no binding.
+    const [odd, none, back] = restoreChats([bound, unbound, { ...toStored(finished(), { key: "c", order: 3 }), workspaceId: 7 }], 1).sessions;
+    expect(odd).not.toHaveProperty("workspaceId");
+    expect(none).not.toHaveProperty("workspaceId");
+    expect(back.workspaceId).toBe("w1");
   });
 });
 

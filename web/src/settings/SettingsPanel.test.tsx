@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { activeTransport, chooseTransport, fallBackToHttp } from "../api/transport.ts";
 import { chooseSilence, dictationSilence } from "../speech/silence.ts";
-import { NO_TOOLS, type ToolsState } from "../tools/index.ts";
+import { ALL_TOOLS, NO_TOOLS, type ToolsState } from "../tools/index.ts";
 import { DEFAULT_SETTINGS, type PlaygroundSettings } from "./defaults.ts";
 import { SettingsPanel, ToolsSetting } from "./SettingsPanel.tsx";
 import { readBudgetInput } from "./ThinkingBudgetField.tsx";
@@ -26,6 +26,14 @@ describe("ToolsSetting", () => {
     expect(html).toContain("All tools");
     expect(html).not.toContain("Tool rounds");
   });
+
+  it("has one Workspace switch, on by default, where Create files and Attachments were", () => {
+    const html = render(ALL_TOOLS);
+    expect(html).toMatch(/id="tool-workspace-label"[^>]*>Workspace</);
+    expect(html).not.toContain("Create files");
+    expect(html).not.toContain("Attachments");
+    expect(ALL_TOOLS.workspace).toBe(true);
+  });
 });
 
 // The thinking budget sits beside the effort it caps (spec playground/04):
@@ -44,7 +52,6 @@ const panel = (change: Partial<PlaygroundSettings> = {}) =>
       onMarkdownChange={() => {}}
       parallel={false}
       onParallelChange={() => {}}
-      attachments={[]}
       onOpenMemory={() => {}}
     />,
   );

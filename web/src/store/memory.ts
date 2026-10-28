@@ -1,8 +1,9 @@
-import { type ImageId, type ImageStore, sha256, type StoredImage } from "./imageStore.ts";
+import { type BlobId, type ImageId, type ImageStore, sha256, type StoredBlob, type StoredImage } from "./imageStore.ts";
 
 /** An `ImageStore` in memory: what the tests use, and the page's fallback where the browser has no IndexedDB. */
 export function createMemoryStore(): ImageStore {
   const images = new Map<ImageId, { info: StoredImage; blob: Blob; thumb?: Blob }>();
+  const blobs = new Map<BlobId, { info: StoredBlob; blob: Blob }>();
   const docs = new Map<string, Map<string, unknown>>();
   const collection = (name: string) => {
     let c = docs.get(name);
@@ -29,6 +30,16 @@ export function createMemoryStore(): ImageStore {
     imageInfo: async (id) => (images.has(id) ? { ...images.get(id)!.info } : null),
     listImages: async () => [...images.values()].map((i) => ({ ...i.info })),
     deleteImage: async (id) => void images.delete(id),
+    async putBlob(blob) {
+      const id = await sha256(blob);
+      const had = blobs.get(id);
+      if (had) return { ...had.info };
+      const info: StoredBlob = { id, type: blob.type || "application/octet-stream", bytes: blob.size, added: Date.now() };
+      blobs.set(id, { info, blob });
+      return { ...info };
+    },
+    getBlob: async (id) => blobs.get(id)?.blob ?? null,
+    deleteBlob: async (id) => void blobs.delete(id),
     putDoc: async (name, id, value) => void collection(name).set(id, copy(value)),
     getDoc: async <T,>(name: string, id: string) => (collection(name).has(id) ? copy(collection(name).get(id) as T) : null),
     listDocs: async <T,>(name: string) => [...collection(name).values()].map((v) => copy(v as T)),

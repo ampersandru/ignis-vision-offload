@@ -1,16 +1,21 @@
-import { type ImageId, type ImageStore, sha256, type StoredImage } from "./imageStore.ts";
+import { type ImageId, type ImageStore, sha256, type StoredBlob, type StoredImage } from "./imageStore.ts";
 
-// The `ImageStore` on IndexedDB. Four object stores: `images` holds what is
+// The `ImageStore` on IndexedDB. Five object stores: `images` holds what is
 // known of each image (StoredImage) and `bytes` its bytes, so listing the
 // images or adding up their size never reads a picture; `thumbs` the small
 // copies; `docs` the documents, keyed [collection, id] with an index on the
-// collection. Bytes are kept as an ArrayBuffer with their type, not as a
+// collection; `blobs` the bytes that are not a picture, each with what is
+// known of it. Bytes are kept as an ArrayBuffer with their type, not as a
 // Blob: every structured-clone implementation copies an ArrayBuffer, which is
 // not true of a Blob.
+//
+// Version 2 added `blobs` (the workspaces' files, #170). An upgrade creates
+// only the object stores the database does not have, and keeps the rest.
 
-const VERSION = 1;
+const VERSION = 2;
 
 type Bytes = { id: ImageId; type: string; data: ArrayBuffer };
+type BlobEntry = StoredBlob & { data: ArrayBuffer };
 type Doc = { collection: string; id: string; value: unknown };
 
 const done = <T,>(request: IDBRequest<T>) =>
@@ -31,12 +36,19 @@ function open(factory: IDBFactory, name: string): Promise<IDBDatabase> {
     const request = factory.open(name, VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      db.createObjectStore("images", { keyPath: "id" });
-      db.createObjectStore("bytes", { keyPath: "id" });
-      db.createObjectStore("thumbs", { keyPath: "id" });
-      db.createObjectStore("docs", { keyPath: ["collection", "id"] }).createIndex("collection", "collection");
+      const has = (store: string) => db.objectStoreNames.contains(store);
+      for (const store of ["images", "bytes", "thumbs", "blobs"]) if (!has(store)) db.createObjectStore(store, { keyPath: "id" });
+      if (!has("docs")) db.createObjectStore("docs", { keyPath: ["collection", "id"] }).createIndex("collection", "collection");
     };
-    request.onsuccess = () => resolve(request.result);
+    // A page of an older version that holds the database open stops the upgrade until it closes, and it never
+    // closes by itself: the page says so rather than wait for good. A page of this version steps aside for a newer one.
+    request.onblocked = () =>
+      reject(new Error("another tab of the Playground holds this browser's store at an older version: close it, then reload this page"));
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -79,6 +91,22 @@ export function openIndexedDbStore(factory: IDBFactory, name = "ignis-playground
     async deleteImage(id) {
       const tx = (await connect()).transaction(["images", "bytes", "thumbs"], "readwrite");
       for (const store of ["images", "bytes", "thumbs"]) tx.objectStore(store).delete(id);
+      await finished(tx);
+    },
+    async putBlob(blob) {
+      const id = await sha256(blob);
+      const data = await blob.arrayBuffer();
+      const tx = (await connect()).transaction("blobs", "readwrite");
+      const had = (await done(tx.objectStore("blobs").get(id))) as BlobEntry | undefined;
+      const entry: BlobEntry = had ?? { id, type: blob.type || "application/octet-stream", bytes: blob.size, added: Date.now(), data };
+      if (!had) tx.objectStore("blobs").put(entry);
+      await finished(tx);
+      return { id: entry.id, type: entry.type, bytes: entry.bytes, added: entry.added };
+    },
+    getBlob: async (id) => asBlob(await read<BlobEntry>("blobs", id)),
+    async deleteBlob(id) {
+      const tx = (await connect()).transaction("blobs", "readwrite");
+      tx.objectStore("blobs").delete(id);
       await finished(tx);
     },
     async putDoc(collection, id, value) {

@@ -28,11 +28,13 @@ nothing is sent to the server for safekeeping.
 
 | What | Where | Survives a reload |
 |---|---|---|
-| Chat sessions: every message, its reasoning, tool runs, figures and log, attached files | IndexedDB `ignis-playground`, collection `chat-sessions` | yes |
+| Chat sessions: every message, its reasoning, tool runs, figures and log, the workspace it is in | IndexedDB `ignis-playground`, collection `chat-sessions` | yes |
+| Workspaces: their names, and every file with every version and its author | same database, `workspaces`, and `workspace-files/<id>` for each one's files | yes; deleting a chat keeps its workspace |
 | Decide's decisions: drafts, evidence, answers | same database, `decide-sessions` | yes |
 | Image sessions and their steps | same database, `image-sessions` | yes |
 | Transcripts: each utterance's text, times and speaker, the speakers' names and the corrections, the context it is told, the suggestions and what became of them, how far the text model has checked it, the notes, the questions asked and their answers, never audio | same database, `transcribe-sessions` | yes; a listening under way ends, its completed utterances kept |
 | Pictures (sent in the chat, made, marked), stored once and shared | same database, `images` and `bytes` | yes |
+| A workspace's other bytes, such as a PDF's, stored once | same database, `blobs` | yes |
 | The session that was open, per view | same database, `active-session` | yes |
 | The API key | `localStorage` `ignis.apiKey` | yes |
 | Parallel sessions, the HTTP transport | `localStorage` `ignis.parallelSessions`, `ignis.httpTransport` | yes |

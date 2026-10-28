@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { buildChatRequest, type ChatRequest, type ConversationRequest, type Settings } from "../../api/request.ts";
 import type { StreamOptions, StreamResult } from "../../api/stream.ts";
 import type { Timeline } from "../../metrics/figures.ts";
-import { type Attachment, readPiece, uniqueName } from "./attachments.ts";
 import { type LocalContext, type LocalRun, memoryPrompt, runLocalCalls } from "./local.ts";
 import { createMemoryStore } from "./memory.ts";
 import { JS_CHECK_SYSTEM_PROMPT, parseVerdict, runJs, type WorkerFactory, workerMain, type WorkerScope } from "./runjs.ts";
@@ -43,7 +42,6 @@ function context(change: Partial<LocalContext> = {}): LocalContext {
     settings,
     signal: new AbortController().signal,
     jsSafetyCheck: false,
-    attachments: [],
     memory: createMemoryStore(null),
     createWorker: inlineWorker,
     ...change,
@@ -150,32 +148,12 @@ describe("update_plan, memory, files", () => {
     expect(memoryPrompt([])).toContain("No notes saved yet.");
   });
 
-  it("creates a file with a safe name", async () => {
-    const { run } = await runOne("create_file", { name: "out/report.md", content: "# Hi" });
-    expect(run).toMatchObject({ status: "done", file: { name: "out_report.md", content: "# Hi" } });
-  });
 });
 
-describe("read_file and attachments", () => {
-  const doc: Attachment = { name: "notes.txt", size: 30, kind: "text", text: "a".repeat(25_000) };
-
-  it("reads a piece and says where the rest starts", async () => {
-    const { run } = await runOne("read_file", { name: "notes.txt" }, { attachments: [doc] });
-    expect(run.read).toEqual({ name: "notes.txt", from: 0, to: 20_000, total: 25_000 });
-    expect(run.result?.endsWith("[notes.txt: characters 0–20000 of 25000. Call read_file with offset 20000 for the rest.]")).toBe(true);
-    expect(readPiece(doc, 24_990, 50)).toMatchObject({ from: 24_990, to: 25_000 });
-  });
-
-  it("names the attached files when the name is wrong", async () => {
-    expect((await runOne("read_file", { name: "x.pdf" }, { attachments: [doc] })).run.error).toBe(
-      'No attached file is named "x.pdf". The files are: "notes.txt".',
-    );
-    expect((await runOne("read_file", { name: "x" })).run.error).toBe("The user has not attached any file.");
-  });
-
-  it("gives a second file of the same name a number", () => {
-    expect(uniqueName("a.txt", ["a.txt"])).toBe("a (2).txt");
-    expect(uniqueName("a.txt", ["a.txt", "a (2).txt"])).toBe("a (3).txt");
-    expect(uniqueName("README", ["README"])).toBe("README (2)");
+describe("the workspace's tools", () => {
+  // Their own tests drive them over a workspace (workspace/workspace.test.ts); here, the router's side.
+  it("fail where no workspace is given, and create_file is no local tool any more", async () => {
+    expect((await runOne("write_file", { name: "a.md", content: "x" })).run.error).toBe("The workspace is not available here.");
+    expect((await runOne("create_file", { name: "a.md", content: "x" })).run.error).toBe('"create_file" is not a local tool.');
   });
 });

@@ -38,7 +38,7 @@ import { createServerSim, type MockAnswer } from "./mockServer.ts";
 // `found`.
 //
 // Ask: with `ask_user` declared, a prompt containing "/ask" asks which team.
-// Local: "/js", "/plan", "/file" and "/html" call run_js, update_plan and create_file.
+// Local: "/js", "/plan", "/file" and "/html" call run_js, update_plan and write_file.
 // "/math" answers with formulas; "/long" streams a long reply for scrolling.
 //
 // Server view (mockServer.ts, spec playground/05): /v1/models is the 27B
@@ -145,7 +145,7 @@ export function mockIgnis(): Plugin {
         const offersWeb = tools.some((t) => t.function?.name === "web_search");
         const offersAsk = tools.some((t) => t.function?.name === "ask_user");
         const offers = (name: string) => tools.some((t) => t.function?.name === name);
-        const offersLocal = offers("run_js") || offers("update_plan") || offers("create_file");
+        const offersLocal = offers("run_js") || offers("update_plan") || offers("write_file");
         const lastRole = messages.at(-1)?.role;
         let content = ["Hello ", "from ", "the ", "mock ", "engine. ", "You ", "said: ", last];
         let calls: { tool: string; args: object }[] = [];
@@ -197,11 +197,11 @@ export function mockIgnis(): Plugin {
             "where $\\rho$ is the density, \\(g\\) the gravity and $h$ the depth. In display form:\n\n",
             "\\[\n\\int_0^h \\rho g \\, dz = \\rho g h\n\\]",
           ];
-        } else if (offers("create_file") && last.includes("/html")) {
+        } else if (offers("write_file") && last.includes("/html")) {
           content = ["Here ", "is ", "the ", "page."];
           calls = [
             {
-              tool: "create_file",
+              tool: "write_file",
               args: {
                 name: "hello.html",
                 content:
@@ -209,9 +209,9 @@ export function mockIgnis(): Plugin {
               },
             },
           ];
-        } else if (offers("create_file") && last.includes("/file")) {
+        } else if (offers("write_file") && last.includes("/file")) {
           content = ["I ", "wrote ", "it ", "to ", "a ", "file."];
-          calls = [{ tool: "create_file", args: { name: "notes.md", content: "# Notes\n\n- one\n- two\n" } }];
+          calls = [{ tool: "write_file", args: { name: "notes.md", content: "# Notes\n\n- one\n- two\n" } }];
         } else if (offersAsk && last.includes("/ask")) {
           content = ["I ", "need ", "one ", "detail ", "first."];
           calls = [{ tool: "ask_user", args: { question: "Which team do you mean?", options: ["AS Roma", "SS Lazio"] } }];
