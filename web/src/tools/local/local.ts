@@ -10,7 +10,8 @@ import { checkJs, type JsCheck, JS_OUTPUT_LIMIT, JS_TIMEOUT_MS, runJs, type Work
 // The local tools: everything that runs in the browser with no network.
 // run_js computes in a sandboxed worker, update_plan shows the model's plan,
 // memory_save and memory_delete keep notes across sessions, and list_files,
-// read_file and write_file work on the chat's workspace (workspace/tools.ts).
+// read_file, write_file, edit_file and delete_file work on the chat's
+// workspace (workspace/tools.ts).
 
 export const RUN_JS = "run_js";
 export const UPDATE_PLAN = "update_plan";
@@ -19,7 +20,7 @@ export const MEMORY_READ = "memory_read";
 export const MEMORY_DELETE = "memory_delete";
 /** The file tool of older chats, gone since the workspace (#170): their replies still show its cards. */
 export const CREATE_FILE = "create_file";
-export { LIST_FILES, READ_FILE, WRITE_FILE } from "../../workspace/tools.ts";
+export { DELETE_FILE, EDIT_FILE, LIST_FILES, READ_FILE, WRITE_FILE } from "../../workspace/tools.ts";
 
 const LOCAL_TOOL_NAMES: readonly string[] = [RUN_JS, UPDATE_PLAN, MEMORY_SAVE, MEMORY_READ, MEMORY_DELETE, ...WORKSPACE_TOOL_NAMES];
 
@@ -123,8 +124,10 @@ export type LocalRun = {
   recalled?: MemoryNote[];
   deletedId?: string;
   file?: CreatedFile;
-  /** The version a write_file call made, which its card opens. */
+  /** The version a write_file, edit_file or delete_file call made, which a write's or an edit's card opens. */
   written?: Written;
+  /** The version of a file a read_file call showed the model: the chat's reader has seen it (seenIn). */
+  seen?: Written;
   /** How many files a list_files call found. */
   listed?: number;
   /** What a read_file call read: lines from and to, or — in an older chat's run — characters. */

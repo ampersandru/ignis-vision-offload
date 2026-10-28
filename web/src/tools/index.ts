@@ -15,7 +15,7 @@ import {
   UPDATE_PLAN_TOOL,
 } from "./local/local.ts";
 import { isWebTool, WEB_FETCH_TOOL, WEB_IGNIS_PROMPT, WEB_SEARCH_TOOL } from "./web/web.ts";
-import { LIST_FILES_TOOL, READ_FILE_TOOL, WORKSPACE_PROMPT, WRITE_FILE_TOOL } from "../workspace/tools.ts";
+import { DELETE_FILE_TOOL, EDIT_FILE_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, WORKSPACE_PROMPT, WRITE_FILE_TOOL } from "../workspace/tools.ts";
 
 // The Playground's tools. Turning one on declares it to the model and adds
 // its part to the ignis system prompt; the conversation loop reacts to its
@@ -42,7 +42,7 @@ export type ToolsState = {
   jsSafetyCheck: boolean;
   plan: boolean;
   memory: boolean;
-  /** list_files, read_file and write_file on the chat's workspace, and files attached in the prompt box. */
+  /** list_files, read_file, write_file, edit_file and delete_file on the chat's workspace, and files attached in the prompt box. */
   workspace: boolean;
   /** make_image: pictures from the image model, a switch there and back per reply that calls it. */
   images: boolean;
@@ -159,7 +159,7 @@ export function toolExtras(tools: ToolsState, context: PromptContext = {}): Tool
       ...(on.runJs ? [RUN_JS_TOOL] : []),
       ...(on.plan ? [UPDATE_PLAN_TOOL] : []),
       ...(on.memory ? [MEMORY_SAVE_TOOL, MEMORY_READ_TOOL, MEMORY_DELETE_TOOL] : []),
-      ...(on.workspace ? [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL] : []),
+      ...(on.workspace ? [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, DELETE_FILE_TOOL] : []),
       ...(on.images ? [IMAGE_TOOL] : []),
     ],
   };

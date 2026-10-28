@@ -200,6 +200,11 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
   const { signal } = options;
 
   const runs = new Map(tasks.map((task) => [task.callId, { ...queued(task), systemPrompt }]));
+  // Each agent works on the workspace as a reader of its own, made once for its whole run: what the
+  // conversation or another agent read is not what it read, and an agent of a later reply that takes the
+  // same call id (a chat completion numbers its calls from call_0) starts with nothing read.
+  const workspace = options.local?.workspace;
+  const access = new Map(tasks.map((task) => [task.callId, workspace && { ...workspace, reader: workspace.chat.agent({ call: task.callId, name: task.name }) }]));
   const get = (callId: string) => runs.get(callId)!;
   const set = (callId: string, change: Partial<AgentRun>) => {
     const run = { ...get(callId), ...change };
@@ -287,7 +292,7 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
         {
           jsSafetyCheck: true,
           ...options.local,
-          ...(options.local?.workspace ? { workspace: { ...options.local.workspace, agent: { call: callId, name: task.name } } } : {}),
+          workspace: access.get(callId),
           settings: options.settings,
           signal,
         },

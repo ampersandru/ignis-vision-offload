@@ -26,7 +26,7 @@ import {
   UPDATE_PLAN_TOOL,
 } from "./local/local.ts";
 import { WEB_FETCH_TOOL, WEB_IGNIS_PROMPT, WEB_SEARCH_TOOL } from "./web/web.ts";
-import { LIST_FILES_TOOL, READ_FILE_TOOL, WORKSPACE_PROMPT, WRITE_FILE_TOOL } from "../workspace/tools.ts";
+import { DELETE_FILE_TOOL, EDIT_FILE_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, WORKSPACE_PROMPT, WRITE_FILE_TOOL } from "../workspace/tools.ts";
 import { withAttached } from "../workspace/attach.ts";
 import { buildChatRequest, type Settings, type Turn } from "../api/request.ts";
 import { buildResponseCreate, responseItems } from "../api/responses.ts";
@@ -126,6 +126,8 @@ describe("tools", () => {
         LIST_FILES_TOOL,
         READ_FILE_TOOL,
         WRITE_FILE_TOOL,
+        EDIT_FILE_TOOL,
+        DELETE_FILE_TOOL,
         IMAGE_TOOL,
       ],
     });
@@ -135,7 +137,7 @@ describe("tools", () => {
   it("declares the workspace's tools whenever its switch is on, and tells run_js about the safety check", () => {
     expect(toolExtras({ ...NO_TOOLS, workspace: true }, ctx)).toEqual({
       ignisPrompt: WORKSPACE_PROMPT,
-      tools: [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL],
+      tools: [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, DELETE_FILE_TOOL],
     });
     expect(ignisPrompt({ ...NO_TOOLS, runJs: true, jsSafetyCheck: false }, ctx)).toBe(runJsPrompt(false));
     expect(runJsPrompt(true)).toContain("reviewed before it runs");
@@ -146,15 +148,20 @@ describe("tools", () => {
    * ADR 0072: the system prompt and the tools block open every request, and
    * what the chat holds never moves them. A file attached is named in the
    * prompt that brought it, behind the history, and the model reaches the
-   * workspace's files through its tools.
+   * workspace's files through its tools: a write, an edit, a deletion or a
+   * refusal of the guard changes nothing ahead of the history either.
    */
-  it("keeps the system prompt and the tools block byte-identical whatever the chat attaches or writes", () => {
+  it("keeps the system prompt and the tools block byte-identical whatever the chat attaches, writes, edits or deletes", () => {
     const extras = toolExtras(all, ctx);
     const first: Turn[] = [{ role: "user", content: "Plan a trip" }];
     const later: Turn[] = [
       ...first,
       { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "write_file", arguments: '{"name":"plan.md","content":"x"}' }] },
       { role: "tool", toolCallId: "c1", content: "Created plan.md, version 1" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c2", name: "edit_file", arguments: '{"name":"plan.md","old":"x","new":"y"}' }] },
+      { role: "tool", toolCallId: "c2", content: "The edit_file call failed: plan.md changed since you last read it" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c3", name: "delete_file", arguments: '{"name":"old.md"}' }] },
+      { role: "tool", toolCallId: "c3", content: "Deleted old.md: version 2 marks it deleted" },
       { role: "assistant", content: "Done." },
       { role: "user", content: withAttached("Add these", ["brief.pdf", "notes.txt"]) },
     ];
@@ -165,7 +172,9 @@ describe("tools", () => {
     const [x, y] = [first, later].map((turns) => buildResponseCreate({ settings, turns, extras }, "s", responseItems(turns)));
     expect(y.instructions).toBe(x.instructions);
     expect(JSON.stringify(y.tools)).toBe(JSON.stringify(x.tools));
-    expect(names(extras)).toEqual(expect.arrayContaining(["list_files", "read_file", "write_file"]));
+    expect(names(extras)).toEqual(expect.arrayContaining(["list_files", "read_file", "write_file", "edit_file", "delete_file"]));
+    expect(extras.ignisPrompt).toContain("`edit_file`");
+    expect(extras.ignisPrompt).toContain("`delete_file`");
   });
 
   it("declares nothing while the switch for all tools is off", () => {
@@ -185,6 +194,8 @@ describe("tools", () => {
       "list_files",
       "read_file",
       "write_file",
+      "edit_file",
+      "delete_file",
     ]);
     expect(agentExtras({ ...NO_TOOLS, agents: true, askUser: true, plan: true, images: true }, ctx)).toEqual({ ignisPrompt: "", tools: [] });
   });
@@ -214,7 +225,7 @@ describe("tools", () => {
     expect(routeCall("ask_user", every)).toBe("ask");
     expect(routeCall("make_image", every)).toBe("image");
     expect(routeCall("make_image", names(toolExtras({ ...all, images: false }, ctx)))).toBe("unknown");
-    for (const local of ["run_js", "update_plan", "memory_save", "memory_read", "memory_delete", "list_files", "read_file", "write_file"]) {
+    for (const local of ["run_js", "update_plan", "memory_save", "memory_read", "memory_delete", "list_files", "read_file", "write_file", "edit_file", "delete_file"]) {
       expect(routeCall(local, every)).toBe("local");
     }
     expect(routeCall("create_file", every)).toBe("unknown");

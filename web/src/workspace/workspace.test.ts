@@ -5,8 +5,8 @@ import { createMemoryStore } from "../store/memory.ts";
 import { runAgents } from "../tools/agents/agents.ts";
 import { agentExtras, NO_TOOLS } from "../tools/index.ts";
 import { type LocalRun, runLocalCalls } from "../tools/local/local.ts";
-import { USER } from "./files.ts";
-import { READ_LIMIT, type WorkspaceAccess } from "./tools.ts";
+import { latest, USER } from "./files.ts";
+import { READ_LIMIT, seenIn, type WorkspaceAccess } from "./tools.ts";
 import { createWorkspaces, type Workspaces } from "./workspaces.ts";
 
 // The workspace module driven through its two entrances, over the in-memory
@@ -209,7 +209,342 @@ describe("read_file", () => {
     await workspaces.add(id, [{ name: "a.txt", kind: "text", text: "" }, { name: "data.zip", kind: "other", blob: new Blob([new Uint8Array([80, 75])]) }], USER);
     expect((await run(a.access, "read_file", { name: "x.txt" })).error).toBe('No file is named "x.txt". The files are: "a.txt", "data.zip".');
     expect((await run(a.access, "read_file", { name: "a.txt" })).result).toBe("[a.txt, version 1: the file is empty.]");
-    expect((await run(a.access, "read_file", { name: "data.zip" })).error).toBe("data.zip is a file of a kind read_file cannot read.");
+    // Said as the call's result, with the version: what the model has seen of a file it may still delete.
+    expect((await run(a.access, "read_file", { name: "data.zip" })).result).toBe("[data.zip, version 1: a file of a kind read_file cannot read; 2 bytes.]");
+  });
+});
+
+describe("edit_file", () => {
+  it("replaces the one occurrence of old, as a new version of the file", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "notes.md", content: "# Trip\n\n- Rome\n- Pisa\n" });
+    const edited = await run(a.access, "edit_file", { name: "notes.md", old: "- Pisa", new: "- Florence\n- Siena" });
+    expect(edited.status).toBe("done");
+    expect(edited.result).toBe("Edited notes.md, version 2 (5 lines, 34 characters). The user sees it in your reply.");
+    const [file] = await workspaces.files(a.bound()!);
+    expect(file.versions.map((v) => [v.n, v.author, v.text])).toEqual([
+      [1, { by: "chat", chat: "chat-a" }, "# Trip\n\n- Rome\n- Pisa\n"],
+      [2, { by: "chat", chat: "chat-a" }, "# Trip\n\n- Rome\n- Florence\n- Siena\n"],
+    ]);
+    expect(edited.written).toEqual({ workspace: a.bound(), file: file.id, name: "notes.md", version: 2 });
+  });
+
+  it("refuses a passage that occurs nowhere or more than once, and says which", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "list.txt", content: "a = 1\nb = 1\nc = 2\nd = 1\n" });
+    expect((await run(a.access, "edit_file", { name: "list.txt", old: "e = 1", new: "e = 2" })).error).toBe(
+      'The passage to replace ("old") occurs nowhere in list.txt. Copy it exactly as read_file shows it, without the line numbers.',
+    );
+    expect((await run(a.access, "edit_file", { name: "list.txt", old: " = 1", new: " = 3" })).error).toBe(
+      'The passage to replace ("old") occurs 3 times in list.txt, on lines 1, 2 and 4: give more of the text around the one to change, so that it occurs once.',
+    );
+    expect((await run(a.access, "edit_file", { name: "list.txt", old: "=", new: ":" })).error).toBe(
+      'The passage to replace ("old") occurs 4 times in list.txt, on lines 1, 2, 3 and 4: give more of the text around the one to change, so that it occurs once.',
+    );
+    await run(a.access, "write_file", { name: "row.txt", content: "x = 1; y = 1\n" });
+    expect((await run(a.access, "edit_file", { name: "row.txt", old: " = 1", new: " = 2" })).error).toBe(
+      'The passage to replace ("old") occurs 2 times in row.txt, on line 1: give more of the text around the one to change, so that it occurs once.',
+    );
+    expect((await run(a.access, "edit_file", { name: "list.txt", old: "", new: "x" })).error).toBe('The passage to replace ("old") is empty.');
+    expect((await run(a.access, "edit_file", { name: "list.txt", old: "c = 2" })).error).toBe(
+      'The call needs "old", the passage to replace, and "new", the text that takes its place, both as text.',
+    );
+    expect((await workspaces.files(a.bound()!))[0].versions).toHaveLength(1);
+  });
+
+  it("matches a passage over several lines of a file with Windows line endings, as read_file shows it", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    const id = await a.access.chat.workspace();
+    await workspaces.add(id, [{ name: "todo.txt", kind: "text", text: "one\r\ntwo\r\nthree\r\n" }], USER);
+    await run(a.access, "read_file", { name: "todo.txt" });
+    expect((await run(a.access, "edit_file", { name: "todo.txt", old: "one\ntwo", new: "one\n1.5\ntwo" })).status).toBe("done");
+    expect(latest((await workspaces.files(id))[0]).text).toBe("one\r\n1.5\r\ntwo\r\nthree\r\n");
+  });
+
+  it("edits text files only", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    const id = await a.access.chat.workspace();
+    await workspaces.add(id, [{ name: "brief.pdf", kind: "pdf", blob: new Blob([new Uint8Array([1])]), derived: "[Page 1]\nHello" }], USER);
+    await run(a.access, "read_file", { name: "brief.pdf" });
+    expect((await run(a.access, "edit_file", { name: "brief.pdf", old: "Hello", new: "Bye" })).error).toBe(
+      "brief.pdf is a PDF file, and only a text file can be edited.",
+    );
+  });
+});
+
+describe("delete_file", () => {
+  it("marks the file deleted as a new version: it leaves the list, and its history keeps it", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "draft.md", content: "old idea" });
+    await run(a.access, "write_file", { name: "plan.md", content: "the plan" });
+    const deleted = await run(a.access, "delete_file", { name: "draft.md" });
+    expect(deleted.status).toBe("done");
+    expect(deleted.result).toBe("Deleted draft.md: version 2 marks it deleted, and its history keeps the versions before it.");
+    expect((await run(a.access, "list_files", {})).result).toBe(
+      'The workspace "Trip plan" holds 1 file:\n- plan.md: text, 1 line, 8 characters; version 1, changed 2026-10-28 14:02 by you',
+    );
+    const draft = (await workspaces.files(a.bound()!)).find((f) => f.name === "draft.md")!;
+    expect(draft.versions.map((v) => [v.n, v.author, v.text, v.deleted])).toEqual([
+      [1, { by: "chat", chat: "chat-a" }, "old idea", undefined],
+      [2, { by: "chat", chat: "chat-a" }, undefined, true],
+    ]);
+    expect(deleted.written).toEqual({ workspace: a.bound(), file: draft.id, name: "draft.md", version: 2 });
+    expect((await run(a.access, "read_file", { name: "draft.md" })).result).toBe(
+      "[draft.md, version 2: deleted by you, 2026-10-28 14:03. Its history keeps the versions before it; write_file creates the file again.]",
+    );
+    expect((await run(a.access, "delete_file", { name: "draft.md" })).error).toBe("draft.md was deleted by you (version 2).");
+    expect((await run(a.access, "edit_file", { name: "draft.md", old: "old", new: "new" })).error).toBe("draft.md was deleted by you (version 2).");
+  });
+
+  it("writes a deleted file again as its next version", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "draft.md", content: "one" });
+    await run(a.access, "delete_file", { name: "draft.md" });
+    const again = await run(a.access, "write_file", { name: "draft.md", content: "two" });
+    expect(again.result).toBe('Created draft.md, version 3 (1 line, 3 characters), in the workspace "Trip plan". The user sees it in your reply.');
+    const [draft] = await workspaces.files(a.bound()!);
+    expect(draft.versions.map((v) => v.text ?? "deleted")).toEqual(["one", "deleted", "two"]);
+  });
+
+  it("is the user's deletion too, which the guard never refuses", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "draft.md", content: "one" });
+    const [draft] = await workspaces.files(a.bound()!);
+    const outcome = await workspaces.remove(a.bound()!, draft.id, USER);
+    expect(outcome).toMatchObject({ ok: true, written: { name: "draft.md", version: 2 }, created: false });
+    expect(latest((await workspaces.files(a.bound()!))[0])).toMatchObject({ n: 2, author: USER, deleted: true });
+    expect(await workspaces.remove(a.bound()!, draft.id, USER)).toEqual({ ok: false, error: "draft.md was deleted (version 2)." });
+  });
+
+  it("deletes a file of a kind the model cannot read, once it has read what it is", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    const id = await a.access.chat.workspace();
+    await workspaces.add(id, [{ name: "data.zip", kind: "other", blob: new Blob([new Uint8Array([80, 75])]) }], USER);
+    expect((await run(a.access, "delete_file", { name: "data.zip" })).error).toBe(
+      "data.zip is a file you have not read: it is at version 1, by the user. Read it with read_file before you change it.",
+    );
+    await run(a.access, "read_file", { name: "data.zip" });
+    expect((await run(a.access, "delete_file", { name: "data.zip" })).status).toBe("done");
+  });
+});
+
+describe("the guard", () => {
+  /** A workspace with notes.md written by chat a, and chat a's access. */
+  async function written() {
+    const workspaces = module();
+    const a = chat(workspaces);
+    await run(a.access, "write_file", { name: "notes.md", content: "- Rome\n" });
+    const id = a.bound()!;
+    const [file] = await workspaces.files(id);
+    return { workspaces, a, id, file };
+  }
+
+  it("counts a reader's own writes as its reads: it edits a file it just wrote without reading it back", async () => {
+    const { workspaces, a, id } = await written();
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "- Rome", new: "- Rome\n- Naples" })).status).toBe("done");
+    expect((await run(a.access, "write_file", { name: "notes.md", content: "- Turin\n" })).status).toBe("done");
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "Turin", new: "Milan" })).status).toBe("done");
+    expect((await run(a.access, "delete_file", { name: "notes.md" })).status).toBe("done");
+    expect((await workspaces.files(id))[0].versions.map((v) => v.n)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("refuses a change over the user's, naming the file and asking for a new read, then takes it once the file is read", async () => {
+    const { workspaces, a, id } = await written();
+    expect(await workspaces.writeText(id, "notes.md", "- Rome\n- Venice\n", USER)).toMatchObject({ ok: true, written: { version: 2 } });
+    for (const [tool, args] of [
+      ["write_file", { name: "notes.md", content: "- Bari\n" }],
+      ["edit_file", { name: "notes.md", old: "- Rome", new: "- Bari" }],
+      ["delete_file", { name: "notes.md" }],
+    ] as const) {
+      const refused = await run(a.access, tool, args);
+      expect(refused.status).toBe("failed");
+      expect(refused.error).toBe(
+        "notes.md changed since you last read it: it is at version 2, by the user, and you last read version 1. Read it again with read_file before you change it.",
+      );
+    }
+    expect((await workspaces.files(id))[0].versions).toHaveLength(2);
+    const read = await run(a.access, "read_file", { name: "notes.md" });
+    expect(read.seen).toMatchObject({ name: "notes.md", version: 2 });
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "- Venice", new: "- Venice\n- Bari" })).status).toBe("done");
+    expect(latest((await workspaces.files(id))[0]).text).toBe("- Rome\n- Venice\n- Bari\n");
+  });
+
+  it("refuses a change to a file the reader never read, and guards no new file", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    const id = await a.access.chat.workspace();
+    await workspaces.add(id, [{ name: "brief.md", kind: "text", text: "Keep it short." }], USER);
+    expect((await run(a.access, "write_file", { name: "brief.md", content: "Make it long." })).error).toBe(
+      "brief.md is a file you have not read: it is at version 1, by the user. Read it with read_file before you change it.",
+    );
+    expect((await run(a.access, "write_file", { name: "summary.md", content: "New." })).status).toBe("done");
+    await run(a.access, "read_file", { name: "brief.md", offset: 1, limit: 1 });
+    expect((await run(a.access, "write_file", { name: "brief.md", content: "Make it long." })).status).toBe("done");
+  });
+
+  it("refuses to write again a file deleted since the reader read it, until it reads the deletion; a deleted file it never knew is new to it", async () => {
+    const { workspaces, a, id, file } = await written();
+    await workspaces.remove(id, file.id, USER);
+    expect((await run(a.access, "write_file", { name: "notes.md", content: "- Bari\n" })).error).toBe(
+      "notes.md was deleted by the user since you last read it (version 2). Read it again with read_file before you write it.",
+    );
+    expect((await run(a.access, "read_file", { name: "notes.md" })).result).toContain("deleted by the user");
+    expect((await run(a.access, "write_file", { name: "notes.md", content: "- Bari\n" })).written).toMatchObject({ version: 3 });
+    await workspaces.remove(id, file.id, USER);
+    const b = chat(workspaces, "chat-b", "Other");
+    b.bind(id);
+    expect((await run(b.access, "write_file", { name: "notes.md", content: "- Lecce\n" })).written).toMatchObject({ version: 5 });
+  });
+
+  it("keeps two sub-agents on one file apart: neither overwrites the other's change without reading it", async () => {
+    const { workspaces, a, id } = await written();
+    const one: WorkspaceAccess = { ...a.access, reader: a.access.chat.agent({ call: "call_1", name: "one" }) };
+    const two: WorkspaceAccess = { ...a.access, reader: a.access.chat.agent({ call: "call_2", name: "two" }) };
+    // Neither has read what the conversation wrote.
+    expect((await run(one, "edit_file", { name: "notes.md", old: "Rome", new: "Roma" })).error).toBe(
+      "notes.md is a file you have not read: it is at version 1, by the conversation that started you. Read it with read_file before you change it.",
+    );
+    await run(one, "read_file", { name: "notes.md" });
+    await run(two, "read_file", { name: "notes.md" });
+    expect((await run(one, "edit_file", { name: "notes.md", old: "- Rome", new: "- Rome\n- Pisa" })).status).toBe("done");
+    expect((await run(two, "edit_file", { name: "notes.md", old: "- Rome", new: "- Rome\n- Lucca" })).error).toBe(
+      "notes.md changed since you last read it: it is at version 2, by the sub-agent one, and you last read version 1. Read it again with read_file before you change it.",
+    );
+    // Nor does the conversation, which read version 1 too.
+    expect((await run(a.access, "write_file", { name: "notes.md", content: "- Bari\n" })).error).toContain("by the sub-agent one, and you last read version 1");
+    await run(two, "read_file", { name: "notes.md" });
+    expect((await run(two, "edit_file", { name: "notes.md", old: "- Pisa", new: "- Pisa\n- Lucca" })).status).toBe("done");
+    expect(latest((await workspaces.files(id))[0]).text).toBe("- Rome\n- Pisa\n- Lucca\n");
+  });
+
+  it("lets one of two sub-agents' edits at once win, and refuses the other", async () => {
+    const { workspaces, a, id } = await written();
+    const agents = ["call_1", "call_2"].map((call): WorkspaceAccess => ({ ...a.access, reader: a.access.chat.agent({ call, name: call }) }));
+    for (const agent of agents) await run(agent, "read_file", { name: "notes.md" });
+    const runs = await Promise.all(agents.map((agent, i) => run(agent, "write_file", { name: "notes.md", content: `- take ${i + 1}\n` })));
+    expect(runs.map((r) => r.status).sort()).toEqual(["done", "failed"]);
+    expect((await workspaces.files(id))[0].versions).toHaveLength(2);
+  });
+
+  it("makes each agent of a reply a reader of its own, and an agent of a later reply with the same call id one that has read nothing", async () => {
+    const { workspaces, a, id } = await written();
+    // Each agent reads notes.md, then writes it: the request after a read is the write, and the agents that
+    // read write only once both have read.
+    let read = 0;
+    let bothRead = () => {};
+    const reads = new Promise<void>((resolve) => (bothRead = resolve));
+    const stream = async (o: StreamOptions): Promise<StreamResult> => {
+      const asked = o.request.turns.length;
+      const task = o.request.turns[0].content;
+      if (asked === 1 && task.startsWith("read")) o.onEvent({ kind: "tool_call", call: { id: "r", name: "read_file", arguments: '{"name":"notes.md"}' } });
+      else if (asked <= 3 && !o.request.turns.some((t) => t.toolCallId === "w")) {
+        if (task.startsWith("read")) {
+          if (++read === 2) bothRead();
+          await reads;
+        }
+        o.onEvent({ kind: "tool_call", call: { id: "w", name: "write_file", arguments: JSON.stringify({ name: "notes.md", content: `${task}\n` }) } });
+      } else o.onEvent({ kind: "content", text: "Done." });
+      return { ok: true, timeline: { sentAt: 0, firstTokenAt: 1, lastTokenAt: 2, endedAt: 3, finishReason: "stop", stopped: false } };
+    };
+    const options = {
+      settings,
+      tools: agentExtras({ ...NO_TOOLS, workspace: true }),
+      local: { jsSafetyCheck: false, workspace: a.access },
+      signal: new AbortController().signal,
+      onUpdate: () => {},
+      stream,
+    };
+    const writes = (ran: Awaited<ReturnType<typeof runAgents>>) => ran.map((r) => r.local?.find((l) => l.tool === "write_file"));
+    // One reply: two agents read version 1; the first to write wins, the other is refused.
+    const first = await runAgents(
+      [
+        { callId: "call_0", name: "one", prompt: "read, then write one" },
+        { callId: "call_1", name: "two", prompt: "read, then write two" },
+      ],
+      options,
+    );
+    expect(writes(first).map((w) => w?.status).sort()).toEqual(["done", "failed"]);
+    expect(writes(first).find((w) => w?.status === "failed")?.error).toMatch(/^notes\.md changed since you last read it: it is at version 2, by the sub-agent (one|two)/);
+    // A later reply's agent takes call_0 again, and writes without a read: it has read nothing.
+    const [later] = await runAgents([{ callId: "call_0", name: "three", prompt: "write three" }], options);
+    expect(later.local?.[0]).toMatchObject({ tool: "write_file", status: "failed" });
+    expect(later.local?.[0].error).toMatch(/^notes\.md is a file you have not read: it is at version 2/);
+    expect((await workspaces.files(id))[0].versions).toHaveLength(2);
+  });
+
+  it("refuses two chats on one workspace each other's unseen changes, the same way", async () => {
+    const { workspaces, a, id } = await written();
+    const b = chat(workspaces, "chat-b", "Other");
+    b.bind(id);
+    await run(b.access, "read_file", { name: "notes.md" });
+    expect((await run(b.access, "edit_file", { name: "notes.md", old: "Rome", new: "Roma" })).status).toBe("done");
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "Roma", new: "Rome" })).error).toBe(
+      "notes.md changed since you last read it: it is at version 2, by another chat, and you last read version 1. Read it again with read_file before you change it.",
+    );
+    await run(a.access, "read_file", { name: "notes.md" });
+    expect((await run(a.access, "edit_file", { name: "notes.md", old: "Roma", new: "Rome" })).status).toBe("done");
+    expect((await run(b.access, "delete_file", { name: "notes.md" })).error).toContain("it is at version 3, by another chat, and you last read version 2");
+  });
+});
+
+describe("a chat's reads across turns", () => {
+  /** The messages a turn leaves, as the chat keeps them: its reply's local runs. */
+  const reply = (local: LocalRun[]) => ({ local });
+
+  it("hold after a reload: a resumed chat changes a file its history read, and not one the user changed since", async () => {
+    const store = createMemoryStore();
+    let n = 0;
+    const before = createWorkspaces(store, { now: clock(), newId: () => `id${++n}` });
+    const a = chat(before);
+    const id = await a.access.chat.workspace();
+    await before.add(id, [{ name: "plan.md", kind: "text", text: "- one\n" }, { name: "notes.md", kind: "text", text: "- a\n" }], USER);
+    const history = [reply([await run(a.access, "read_file", { name: "plan.md" }), await run(a.access, "read_file", { name: "notes.md" })])];
+    await before.writeText(id, "notes.md", "- a\n- b\n", USER);
+    // The page reloads: a new module on the same store, and the chat's reader starts from its history.
+    const after = createWorkspaces(store, { now: clock(), newId: () => `id${++n}` });
+    const binding = after.chat("chat-a", { bound: () => id, name: () => "Trip plan", onBorn: () => {}, seen: seenIn(history) });
+    const resumed: WorkspaceAccess = { workspaces: after, chat: binding };
+    expect((await run(resumed, "edit_file", { name: "plan.md", old: "one", new: "two" })).status).toBe("done");
+    expect((await run(resumed, "edit_file", { name: "notes.md", old: "- b", new: "- c" })).error).toBe(
+      "notes.md changed since you last read it: it is at version 2, by the user, and you last read version 1. Read it again with read_file before you change it.",
+    );
+  });
+
+  it("go with the reply that made them: a turn run again without that reply has not read the file", async () => {
+    const workspaces = module();
+    const a = chat(workspaces);
+    const id = await a.access.chat.workspace();
+    await workspaces.add(id, [{ name: "brief.md", kind: "text", text: "Keep it short." }], USER);
+    const dropped = reply([await run(a.access, "read_file", { name: "brief.md" })]);
+    const prompt = { local: undefined };
+    expect(seenIn([prompt, dropped])).toEqual([{ file: expect.any(String), version: 1 }]);
+    // The reply is regenerated: the turn starts again from the prompt alone.
+    const again = workspaces.chat("chat-a", { bound: () => id, name: () => "Trip plan", onBorn: () => {}, seen: seenIn([prompt]) });
+    expect((await run({ workspaces, chat: again }, "write_file", { name: "brief.md", content: "Long." })).error).toMatch(/^brief\.md is a file you have not read/);
+  });
+
+  it("are the chat's own: what its sub-agents read or wrote does not count", () => {
+    const agentWrite: LocalRun = { callId: "w", tool: "write_file", status: "done", written: { workspace: "w1", file: "f2", name: "x.md", version: 4 } };
+    const deleted: LocalRun = { callId: "d", tool: "delete_file", status: "done", written: { workspace: "w1", file: "f1", name: "a.md", version: 3 } };
+    const messages = [
+      reply([
+        { callId: "r", tool: "read_file", status: "done", seen: { workspace: "w1", file: "f1", name: "a.md", version: 2 } },
+        { callId: "e", tool: "edit_file", status: "failed", error: "refused" },
+      ]),
+      { ...reply([deleted]), agents: [{ local: [agentWrite] }] },
+    ];
+    expect(seenIn(messages)).toEqual([
+      { file: "f1", version: 2 },
+      { file: "f1", version: 3 },
+    ]);
   });
 });
 
@@ -228,7 +563,7 @@ describe("write_file", () => {
   it("authors a sub-agent's write as the sub-agent of its chat", async () => {
     const workspaces = module();
     const a = chat(workspaces);
-    const agent: WorkspaceAccess = { ...a.access, agent: { call: "call_7", name: "researcher" } };
+    const agent: WorkspaceAccess = { ...a.access, reader: a.access.chat.agent({ call: "call_7", name: "researcher" }) };
     await run(agent, "write_file", { name: "found.md", content: "facts" });
     const [file] = await workspaces.files(a.bound()!);
     expect(file.versions[0].author).toEqual({ by: "chat", chat: "chat-a", agent: { call: "call_7", name: "researcher" } });
