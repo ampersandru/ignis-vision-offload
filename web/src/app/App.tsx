@@ -428,7 +428,7 @@ export function App() {
             />
           </main>
 
-          {workspaceOpen && <WorkspacePanel workspaces={workspaces} view={chatWorkspace} chat={chat.binding} speech={model.speech} onClose={() => setWorkspaceOpen(false)} />}
+          {workspaceOpen && <WorkspacePanel workspaces={workspaces} view={chatWorkspace} chat={chat.binding} chats={chat.chatNames} speech={model.speech} onClose={() => setWorkspaceOpen(false)} />}
 
           <SettingsPanel
             open={drawer === "settings"}

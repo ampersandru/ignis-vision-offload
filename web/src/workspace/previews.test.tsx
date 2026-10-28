@@ -19,9 +19,12 @@ const actions: PanelActions = {
   download: () => {},
   content: async () => null,
   derive: async () => null,
+  save: async () => ({ ok: true, version: 2 }),
+  restore: () => {},
 };
 
-const view = (f: WorkspaceFile, files: WorkspaceFile[] = [f]) => renderToStaticMarkup(<FileViewer file={f} onBack={() => {}} actions={actions} files={files} />);
+const whom = () => "you";
+const view = (f: WorkspaceFile, files: WorkspaceFile[] = [f]) => renderToStaticMarkup(<FileViewer file={f} whom={whom} onBack={() => {}} actions={actions} files={files} />);
 
 describe("an HTML file with its site", () => {
   const index = file("site/index.html", "text", text('<link rel="stylesheet" href="main.css"><script src="app.js"></script><img src="logo.png"><img src="https://x.test/y.png">'));
@@ -50,18 +53,18 @@ describe("an HTML file with its site", () => {
 });
 
 describe("Markdown, SVG and CSV files", () => {
-  it("opens Markdown rendered as a reply is, with its source one tab away", () => {
+  it("opens Markdown rendered as a reply is, with its text one tab away, in the editor", () => {
     const html = view(file("notes.md", "text", text("# Trip\n\n- **bread**")));
     expect(html).toContain("<h1>Trip</h1>");
     expect(html).toContain("<strong>bread</strong>");
-    expect(html).toMatch(/role="tab"[^>]*>Source</);
+    expect(html).toMatch(/role="tab"[^>]*>Edit</);
   });
 
   it("opens an SVG as an image, which runs none of its scripts", () => {
     const html = view(file("logo.svg", "text", text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')));
     expect(html).toMatch(/<img[^>]*src="data:image\/svg\+xml;charset=utf-8,%3Csvg/);
     expect(html).not.toContain("<script>");
-    expect(html).toMatch(/role="tab"[^>]*>Source</);
+    expect(html).toMatch(/role="tab"[^>]*>Edit</);
   });
 
   it("opens a CSV as a table with a header row", () => {
@@ -69,11 +72,11 @@ describe("Markdown, SVG and CSV files", () => {
     expect(html).toMatch(/<th[^>]*>name<\/th>/);
     expect(html).toMatch(/<td[^>]*>Rossi, Anna<\/td>/);
     expect(html).toContain("a &quot;b&quot;");
-    expect(html).toMatch(/role="tab"[^>]*>Source</);
+    expect(html).toMatch(/role="tab"[^>]*>Edit</);
   });
 
-  it("keeps other text files as text", () => {
-    expect(view(file("a.txt", "text", text("plain")))).toMatch(/<pre[^>]*>plain<\/pre>/);
+  it("keeps other text files in the editor alone", () => {
+    expect(view(file("a.txt", "text", text("plain")))).not.toContain("<iframe");
   });
 
   it("caps a long table", () => {

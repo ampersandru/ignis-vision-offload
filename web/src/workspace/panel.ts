@@ -1,11 +1,12 @@
 import { formatBytes } from "../decide/evidenceFile.ts";
 import { readUpload } from "./attach.ts";
-import { cleanName, KIND_LABEL, kindOf, present, USER, type Version, type WorkspaceFile } from "./files.ts";
-import type { ChatBinding, FileOutcome, Workspaces } from "./workspaces.ts";
+import { type Author, cleanName, KIND_LABEL, kindOf, latest, present, USER, type Version, type WorkspaceFile } from "./files.ts";
+import type { ChatBinding, FileOutcome, Workspaces, WriteOutcome } from "./workspaces.ts";
 
 // What the workspace panel does, apart from how it looks (WorkspacePanel.tsx):
-// the tree it shows of the files' names, the size it gives each one, and the
-// user's actions that make a file, through the workspace module. A chat with
+// the tree it shows of the files' names, the size it gives each one, who it
+// says made a version, the editor's state, and the user's actions that make a
+// file or save one, through the workspace module. A chat with
 // no workspace yet gets one born with the first file the user makes or
 // brings here, named after the chat, as with an attached file.
 
@@ -19,10 +20,10 @@ const byName = (a: TreeNode, b: TreeNode) => {
   return x < y ? -1 : x > y ? 1 : 0;
 };
 
-/** The files in the workspace as a tree of their names split on `/`: folders first, then files, each by name. */
-export function fileTree(files: WorkspaceFile[]): TreeNode[] {
+/** The files in the workspace as a tree of their names split on `/`: folders first, then files, each by name; the deleted files too when `deleted`. */
+export function fileTree(files: WorkspaceFile[], deleted = false): TreeNode[] {
   const root: TreeNode[] = [];
-  for (const file of files.filter(present)) {
+  for (const file of deleted ? files : files.filter(present)) {
     const parts = file.name.split("/");
     let level = root;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -51,6 +52,51 @@ export function sizeLabel(version: Version): string {
   return `${(version.derived ?? "").length.toLocaleString("en-US")} characters of text`;
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** When a version was made, as the panel shows it: the local date and time to the minute. */
+export function timeLabel(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** The chats the panel names a version's author by, by their keys: whether it is the chat the panel is open in, and its title while the page has it. */
+export type ChatNames = { here: (key: string) => boolean; title: (key: string) => string | undefined };
+
+/** Who made a version, as the user reads it: you, this chat or one of its sub-agents, or another chat, by its title while the page has it. */
+export function authorName(author: Author, chats: ChatNames): string {
+  if (author.by === "user") return "you";
+  if (chats.here(author.chat)) return author.agent ? `this chat's sub-agent ${author.agent.name}` : "this chat";
+  const title = chats.title(author.chat);
+  const chat = title ? `the chat “${title}”` : "another chat";
+  return author.agent ? `the sub-agent ${author.agent.name} of ${chat}` : chat;
+}
+
+/** What the editor holds: the version it opened or last saved, and the text in its box. */
+export type Draft = { base: number; text: string };
+
+/** The editor over the file as it is now: the text it shows, whether that is a change to save, and the newer version made since it opened, if one was. */
+export type Editing = Draft & { dirty: boolean; since: Version | null };
+
+/** Two texts the same but for their line endings, which a browser's text box turns into LF. */
+const sameText = (a: string, b: string) => a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
+
+/**
+ * The editor's state over the file as it is now. While nothing is typed it
+ * follows the newest version; once something is, it keeps the text and names
+ * the newer version made since, which a Save keeps in the history. A version
+ * it saved and the file does not hold yet is not a change.
+ */
+export function editing(file: WorkspaceFile, draft: Draft): Editing {
+  const newest = latest(file);
+  const base = file.versions.find((v) => v.n === draft.base);
+  if (!base) return { ...draft, dirty: false, since: null };
+  if (newest.text !== undefined && sameText(newest.text, draft.text)) return { base: newest.n, text: draft.text, dirty: false, since: null };
+  const dirty = !sameText(draft.text, base.text ?? "");
+  if (!dirty && newest.text !== undefined) return { base: newest.n, text: newest.text, dirty: false, since: null };
+  return { ...draft, dirty, since: newest.n !== draft.base ? newest : null };
+}
+
 /** The name a download saves a file under: the last part of its name. */
 export const downloadName = (name: string) => name.slice(name.lastIndexOf("/") + 1);
 
@@ -66,6 +112,18 @@ export async function createFile(workspaces: Workspaces, chat: ChatBinding, raw:
   if (kind !== "text") return { ok: false, error: `A new file is a text file, and ${name} names a ${KIND_LABEL[kind]} file.` };
   const [written] = await workspaces.add(await chat.workspace(), [{ name, kind: "text", text: "" }], USER);
   return { ok: true, written };
+}
+
+/**
+ * The editor's Save: the text the user typed, as a new version of the file
+ * authored by the user, through the user's entrance, which the guard never
+ * refuses; the model's next change to the file is refused until it reads it
+ * again. A browser's text box gives its text with LF line endings, so a file
+ * with CRLF ones keeps them.
+ */
+export function saveText(workspaces: Workspaces, file: WorkspaceFile, text: string): Promise<WriteOutcome> {
+  const crlf = latest(file).text?.includes("\r\n") ?? false;
+  return workspaces.writeText(file.workspace, file.name, crlf ? text.replace(/\r?\n/g, "\r\n") : text, USER);
 }
 
 /** Files the user uploads or drops on the panel, of any kind, as the user's; the names they took in the workspace. */

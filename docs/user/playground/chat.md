@@ -57,8 +57,10 @@ prompt, a workspace and an image session is one copy. The pictures the model
 makes with `make_image` land in the workspace too, and its reply shows them
 from there ([Pictures](tools-and-agents.md#pictures)). A file the model writes or edits shows in its reply as a card
 with the version that call made; once a newer version exists, the card says
-**Superseded by version 2** and **Open the latest** shows that one. The model's
-side, its tools and the **Workspace** switch:
+**Superseded by version 2** and **Open the latest** shows that one, and once
+the newest version deletes the file it says **Deleted in version 3**: the
+panel [restores it](#editing-by-hand-history-and-restore) from its history.
+The model's side, its tools and the **Workspace** switch:
 [Tools and agents](tools-and-agents.md#workspace).
 
 A chat saved before workspaces shows as it did, its files from `create_file`
@@ -96,23 +98,26 @@ open.
 The files are a tree of their names: `site/css/main.css` sits in `site`, then
 `css`, folders first and each level by name, with each file's size. A click
 opens a file, with its kind, size and latest version, and when and by whom it
-last changed: you, the model or one of its agents.
+last changed: you, this chat, one of its agents, or another chat working in
+the same workspace, by its title. **History** beside it holds the file's
+versions ([below](#editing-by-hand-history-and-restore)).
 
 - An HTML file opens in the same sandboxed preview as a reply's card, with
-  its **Source** a click away, **Save as PDF** and the full-screen view. A
-  site of several files shows whole: the page's `<link rel="stylesheet"
-  href>`, `<script src>` and `<img src>` that name files of the same
-  workspace are put into the page, each name read from the HTML file's own
-  folder (`css/main.css` beside `site/index.html` is `site/css/main.css`;
-  `../` goes up a folder, and a leading `/` starts at the workspace's top).
-  Nothing else is looked up: a CSS `url()`, a `fetch`, a link, a `srcset`,
-  an address on the web or a name that is not a file here stays as written,
-  and the page stays in the sandbox, with no access to the Playground.
-- A Markdown file opens drawn as a reply is, a SVG file as the picture it
+  its source, **Save as PDF** and the full-screen view; **Edit** beside it
+  opens its text in the editor. A site of several files shows whole: the
+  page's `<link rel="stylesheet" href>`, `<script src>` and `<img src>`
+  that name files of the same workspace are put into the page, each name read
+  from the HTML file's own folder (`css/main.css` beside `site/index.html` is
+  `site/css/main.css`; `../` goes up a folder, and a leading `/` starts at
+  the workspace's top). Nothing else is looked up: a CSS `url()`, a
+  `fetch`, a link, a `srcset`, an address on the web or a name that is not
+  a file here stays as written, and the page stays in the sandbox, with no
+  access to the Playground.
+- A Markdown file opens drawn as a reply is, an SVG file as the picture it
   draws (without running the scripts it may hold), and a CSV file as a table
-  whose first row is the header, up to 500 rows. Each has a **Source** tab
-  with the file's text.
-- Any other text file shows its source.
+  whose first row is the header, up to 500 rows. **Edit** beside the drawing
+  is the file's text.
+- Any other text file opens in the editor.
 - A PDF shows the text the model reads of it.
 - A picture shows at the panel's width with its size in pixels; a click
   opens it full screen.
@@ -144,6 +149,45 @@ works with the **Workspace** switch off too: the switch takes the model's
 tools away, never your files. When the browser refuses to store a change, the
 panel says so in red, **Not saved in this browser:** and the reason; a refused
 delete of a workspace is said in the bar.
+
+### Editing by hand, history and restore
+
+A text file opens in the editor, its text in a box. Typing changes the box
+alone; **Save**, or **Ctrl+S** in the box (**Cmd+S** on a Mac), makes a new
+version of the file, authored by you: one version per save. **Discard
+changes** takes the newest version back. While you have typed nothing the box
+follows the file, so a version the model writes meanwhile shows at once; once
+you have typed, a newer version leaves your text alone and the editor names
+it, and saving makes your text the newest version, the other kept in the
+history. A file with CRLF line endings keeps them. What you type waits in the
+box while you look at the file's other tabs; opening another file, **← All
+files**, closing the panel, or a deletion of the file meanwhile, drops it.
+
+The model reads your change before it changes the file again: its next
+`write_file`, `edit_file` or `delete_file` of that file is refused until it
+reads the file
+([changes the model has not seen](tools-and-agents.md#changes-the-model-has-not-seen)).
+
+**History** lists every version of the file, the newest first, with its time,
+who made it and its size, or that it deleted the file. A rename changes no
+content and makes no version: the history holds the file's versions under its
+new name.
+
+- **Compare two versions**, for a text file with two versions or more, picks
+  any two of them (the two newest at first) and shows the lines the second
+  removes, in red with `-`, and adds, in green with `+`, numbered in each
+  version. Unchanged lines further than three lines from a change fold into a
+  row that counts them. Two versions that differ by more than 1,000 lines
+  removed and added show the lines between the start and the end they share
+  removed whole, then added.
+- **Restore**, on any version but the newest, makes a new version with that
+  version's content, authored by you; the versions in between stay. A
+  restore is undone by another one.
+
+A deleted file leaves the tree. **Show deleted files**, beside **Upload** with
+their count, puts them back in it, struck through: a click opens one on its
+history, where **Restore** brings back a version from before its deletion. A
+deleted file keeps its name meanwhile, so no other file takes it.
 
 ### Audio in the workspace
 

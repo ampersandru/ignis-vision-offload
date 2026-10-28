@@ -34,6 +34,7 @@ const actions: ImageSessionsActions = {
   reuseStep: none,
   reusePicture: none,
   importPictures: async () => {},
+  addFromWorkspace: async () => {},
   switchToImage: none,
 };
 

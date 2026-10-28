@@ -131,7 +131,7 @@ function PlanCard({ steps }: { steps: PlanStep[] }) {
 /**
  * The card of a version a write_file or edit_file call made: that version,
  * read from the workspace, and once a newer one exists a mark saying so with
- * the way to it.
+ * the way to it, or, when the newest deletes the file, a mark saying that.
  */
 function WrittenCard({ written }: { written: Written }) {
   const file = useWorkspaceFile(written.workspace, written.file);
@@ -149,6 +149,7 @@ function WrittenCard({ written }: { written: Written }) {
   }
   const newest = latest(file);
   const superseded = newest.n > own.n && !newest.deleted;
+  const deleted = newest.n > own.n && newest.deleted;
   const shown = showLatest && superseded ? newest : own;
   return (
     <FileCard
@@ -156,13 +157,15 @@ function WrittenCard({ written }: { written: Written }) {
       content={shown.text ?? ""}
       version={shown.n}
       note={
-        superseded && (
+        superseded ? (
           <span className="flex min-w-0 items-center gap-2 font-display text-xs text-ash">
             {showLatest ? `The latest, version ${newest.n}; this reply wrote version ${own.n}.` : `Superseded by version ${newest.n}.`}
             <button type="button" onClick={() => setShowLatest((s) => !s)} className="shrink-0 text-ember hover:text-ink">
               {showLatest ? `Open version ${own.n}` : "Open the latest"}
             </button>
           </span>
+        ) : (
+          deleted && <span className="font-display text-xs text-ash">{`Deleted in version ${newest.n}; the workspace panel restores it from its history.`}</span>
         )
       }
     />

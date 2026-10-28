@@ -15,15 +15,18 @@ export function WorkspaceChooser({
   newName,
   onChoose,
   onCancel,
+  above = false,
 }: {
   workspaces: Workspace[] | null;
   /** The name a new workspace would have. */
   newName: string;
   onChoose: (destination: Destination) => void;
   onCancel: () => void;
+  /** Opens upward, for a button at the foot of the page. */
+  above?: boolean;
 }) {
   return (
-    <div role="dialog" aria-label="Send to a workspace" className="absolute right-0 z-20 mt-1 flex w-64 flex-col border border-line bg-surface py-1 shadow-lg">
+    <div role="dialog" aria-label="Send to a workspace" className={`absolute right-0 z-20 flex w-64 flex-col border border-line bg-surface py-1 shadow-lg ${above ? "bottom-full mb-1" : "mt-1"}`}>
       <button type="button" className={`${row} font-semibold`} onClick={() => onChoose({ kind: "new", name: newName })}>
         New workspace: {newName}
       </button>

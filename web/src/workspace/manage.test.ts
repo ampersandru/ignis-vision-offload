@@ -65,6 +65,52 @@ describe("deleting a file", () => {
   });
 });
 
+describe("restoring a version", () => {
+  it("makes it the newest: a new version of the user's with its content, the versions between kept", async () => {
+    const { workspaces } = module();
+    const w = await workspaces.create("Trip");
+    const [notes] = await workspaces.add(w.id, [{ name: "notes.md", kind: "text", text: "- Rome\n" }], USER);
+    const chat = workspaces.chat(CHAT.chat, { bound: () => w.id, name: () => "Trip", onBorn: () => {} }).reader;
+    workspaces.read(chat, (await workspaces.file(w.id, notes.file))!);
+    await workspaces.writeText(w.id, "notes.md", "- Naples\n", chat);
+    const heard: unknown[] = [];
+    workspaces.subscribe((change) => heard.push(change));
+    expect(await workspaces.restore(w.id, notes.file, 1)).toEqual({ ok: true, written: { workspace: w.id, file: notes.file, name: "notes.md", version: 3 } });
+    const file = (await workspaces.file(w.id, notes.file))!;
+    expect(file.versions.map((v) => [v.n, v.author, v.text])).toEqual([
+      [1, USER, "- Rome\n"],
+      [2, CHAT, "- Naples\n"],
+      [3, USER, "- Rome\n"],
+    ]);
+    expect(heard).toEqual([{ workspace: w.id, file: notes.file }]);
+  });
+
+  it("brings a deleted file back, of any kind, with the bytes and the text its version held", async () => {
+    const { workspaces } = module();
+    const w = await workspaces.create("Trip");
+    const [brief] = await workspaces.add(w.id, [{ name: "brief.pdf", kind: "pdf", blob: new Blob(["%PDF"]), derived: "[Page 1]\nThe brief" }], USER);
+    await workspaces.deleteFile(w.id, brief.file, USER);
+    expect(await workspaces.restore(w.id, brief.file, 1)).toMatchObject({ ok: true, written: { version: 3 } });
+    const file = (await workspaces.file(w.id, brief.file))!;
+    expect(present(file)).toBe(true);
+    const [first, , restored] = file.versions;
+    expect(restored).toEqual({ n: 3, author: USER, at: restored.at, bytes: first.bytes, derived: "[Page 1]\nThe brief" });
+    expect(await (await workspaces.content(restored))!.text()).toBe("%PDF");
+  });
+
+  it("refuses the newest version, a deletion, a version the file never had and a file that is not there", async () => {
+    const { workspaces } = module();
+    const w = await workspaces.create("Trip");
+    const [notes] = await workspaces.add(w.id, [{ name: "notes.md", kind: "text", text: "x" }], USER);
+    expect(await workspaces.restore(w.id, notes.file, 1)).toEqual({ ok: false, error: "Version 1 is already the newest of notes.md." });
+    await workspaces.deleteFile(w.id, notes.file, USER);
+    expect(await workspaces.restore(w.id, notes.file, 2)).toEqual({ ok: false, error: "Version 2 of notes.md is its deletion, which has no content to restore." });
+    expect(await workspaces.restore(w.id, notes.file, 7)).toEqual({ ok: false, error: "notes.md has no version 7." });
+    expect(await workspaces.restore(w.id, "nope", 1)).toEqual({ ok: false, error: "The workspace has no such file." });
+    expect((await workspaces.file(w.id, notes.file))!.versions).toHaveLength(2);
+  });
+});
+
 describe("a file's content", () => {
   it("is its text, or its bytes from the store, for a download", async () => {
     const { workspaces } = module();

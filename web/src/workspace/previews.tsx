@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { HtmlPreview, Previewed } from "../ui/HtmlPreview.tsx";
+import { HtmlPreview } from "../ui/HtmlPreview.tsx";
 import { Markdown } from "../ui/Markdown.tsx";
 import { latest, present, type Version, type WorkspaceFile } from "./files.ts";
 import { dataUrl, inlineSite, parseCsv, siteRefs, type SiteFiles, svgDataUrl } from "./site.ts";
 
 // The panel's previews: an HTML file with the files it names put into it, and
 // Markdown, SVG and CSV files drawn rather than shown as text. Each is one
-// tab away from its source (Previewed).
+// the editor tab beside them is its source.
 
 /** What the workspace's text files put into a page at once: stylesheets, scripts and SVGs; the pictures to read are `pictures`. */
 export function readySiteFiles(html: string, from: string, files: WorkspaceFile[]): { ready: Map<string, string>; pictures: { file: string; version: Version }[] } {
@@ -47,19 +47,17 @@ export function SitePreview({ file, text, files, content }: { file: WorkspaceFil
   return <HtmlPreview html={text} name={file.name} shown={all.size > 0 ? inlineSite(text, file.name, all) : undefined} />;
 }
 
-export function MarkdownPreview({ text, name }: { text: string; name: string }) {
-  return <Previewed name={name} rendered={<div className="max-h-[60vh] overflow-auto"><Markdown text={text} /></div>} source={text} />;
+export function MarkdownPreview({ text }: { text: string }) {
+  return (
+    <div className="max-h-[60vh] overflow-auto">
+      <Markdown text={text} />
+    </div>
+  );
 }
 
 /** An SVG drawn as an image, which a browser does without running the scripts in it. */
 export function SvgPreview({ text, name }: { text: string; name: string }) {
-  return (
-    <Previewed
-      name={name}
-      rendered={<img src={svgDataUrl(text)} alt={name} className="stage-checker block max-h-[60vh] max-w-full object-contain" />}
-      source={text}
-    />
-  );
+  return <img src={svgDataUrl(text)} alt={name} className="stage-checker block max-h-[60vh] max-w-full object-contain" />;
 }
 
 /** The most rows of a CSV file the table draws. */
@@ -106,8 +104,4 @@ export function CsvTable({ text }: { text: string }) {
       )}
     </div>
   );
-}
-
-export function CsvPreview({ text, name }: { text: string; name: string }) {
-  return <Previewed name={name} rendered={<CsvTable text={text} />} source={text} />;
 }
