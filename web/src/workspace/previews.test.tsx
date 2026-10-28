@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
 import { CSV_ROWS, CsvTable, readySiteFiles } from "./previews.tsx";
-import { FileViewer, type PanelActions } from "./WorkspacePanel.tsx";
+import { idleActions as actions } from "./fixture.ts";
+import { FileViewer } from "./WorkspacePanel.tsx";
 
 // The previews as the panel renders them. Clicks (the Source tab) and the
 // reading of a picture are not exercised: there is no DOM here.
@@ -10,20 +11,6 @@ import { FileViewer, type PanelActions } from "./WorkspacePanel.tsx";
 const at = 0;
 const text = (t: string): Version => ({ n: 1, author: USER, at, text: t });
 const file = (name: string, kind: WorkspaceFile["kind"], v: Version): WorkspaceFile => ({ format: 1, id: `f-${name}`, workspace: "w", name, kind, versions: [v] });
-
-const actions: PanelActions = {
-  create: async () => null,
-  upload: () => {},
-  rename: async () => null,
-  remove: () => {},
-  download: () => {},
-  content: async () => null,
-  derive: async () => null,
-  save: async () => ({ ok: true, version: 2 }),
-  restore: () => {},
-  exportZip: () => {},
-  importZip: () => {},
-};
 
 const whom = () => "you";
 const view = (f: WorkspaceFile, files: WorkspaceFile[] = [f]) => renderToStaticMarkup(<FileViewer file={f} whom={whom} onBack={() => {}} actions={actions} files={files} />);

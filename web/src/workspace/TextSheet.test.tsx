@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
-import type { PanelActions } from "./WorkspacePanel.tsx";
+import { idleActions as actions } from "./fixture.ts";
 import { FileViewer } from "./WorkspacePanel.tsx";
 import { sheetAfter, TextSheet, type TextKind, type TextView, textKind } from "./TextSheet.tsx";
 
@@ -12,19 +12,6 @@ import { sheetAfter, TextSheet, type TextKind, type TextView, textKind } from ".
 const at = 0;
 const text = (t: string): Version => ({ n: 3, author: USER, at, text: t });
 const file = (name: string, kind: WorkspaceFile["kind"], v: Version): WorkspaceFile => ({ format: 1, id: `f-${name}`, workspace: "w", name, kind, versions: [v] });
-const actions: PanelActions = {
-  create: async () => null,
-  upload: () => {},
-  rename: async () => null,
-  remove: () => {},
-  download: () => {},
-  content: async () => null,
-  derive: async () => null,
-  save: async () => ({ ok: true, version: 2 }),
-  restore: () => {},
-  exportZip: () => {},
-  importZip: () => {},
-};
 const viewer = (f: WorkspaceFile) => renderToStaticMarkup(<FileViewer file={f} whom={() => "you"} onBack={() => {}} actions={actions} files={[f]} />);
 
 const sheet = (kind: TextKind, body: string, over: { view?: TextView; full?: boolean } = {}) =>
@@ -60,6 +47,10 @@ describe("the full-screen text", () => {
 
   it("draws a CSV as a table, and an SVG as a picture, with the source one choice away", () => {
     const csv = sheet("csv", "name,note\nBo,hi\n");
+    // On the page the table is as tall as it is, the page scrolling it, where the panel's scrolls past 60% of the screen.
+    expect(csv).toContain('<div class="overflow-x-auto bg-surface"><table');
+    expect(csv).not.toContain("max-h-[60vh]");
+    expect(viewer(file("a.csv", "text", text("name,note\nBo,hi\n")))).toContain('<div class="max-h-[60vh] overflow-auto bg-surface"><table');
     expect(csv).toMatch(/<th[^>]*>name<\/th>/);
     expect(csv).toMatch(/<td[^>]*>hi<\/td>/);
     expect(csv).toMatch(/aria-checked="true"[^>]*>Table<\/button>/);
@@ -100,7 +91,7 @@ describe("the Expand button on the viewer", () => {
     expect(viewer(file("a.html", "text", text("<p>x</p>")))).not.toContain(">Expand<");
     const bytes = { n: 1, author: USER, at, bytes: { store: "image" as const, id: "sha", type: "image/png", size: 3 } };
     expect(viewer(file("a.png", "picture", bytes))).not.toContain(">Expand<");
-    expect(viewer(file("a.wav", "audio", { n: 1, author: USER, at, bytes: { store: "blob" as never, id: "x", type: "audio/wav", size: 3 } as never }))).not.toContain(">Expand<");
+    expect(viewer(file("a.wav", "audio", { n: 1, author: USER, at, bytes: { store: "blob", id: "x", type: "audio/wav", size: 3 } }))).not.toContain(">Expand<");
   });
 });
 
