@@ -120,6 +120,15 @@ What you do here is yours: each version it makes is authored by you.
   most browsers) is kept as bytes of a kind the model cannot read.
 - **Record** records from the microphone into a new audio file
   ([recording](#recording-into-the-workspace)).
+- **Export zip** saves the workspace as a zip named after it: each file's
+  latest version under its name, `/` making folders in the zip too. Deleted
+  files and the history are not in it. **Import zip** reads a zip, one made
+  here or by any other tool, into a new workspace named after it without
+  `.zip`: every file starts at version 1, yours, and its kind is recognised as
+  on upload, a picture the browser already holds is not stored twice, and
+  folder entries are skipped. A zip that cannot be read is said so in the
+  panel and makes no workspace. The new workspace is one to pick in the
+  Workspace menu of a chat that has none yet.
 - On each file's row, the pencil renames it, the arrow downloads its latest
   version under the last part of its name, and the bin deletes it. A name
   another file holds, a deleted one included, is refused; a rename keeps the

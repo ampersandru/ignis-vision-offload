@@ -27,6 +27,8 @@ const files: WorkspaceFile[] = [
 const actions: PanelActions = {
   create: async () => null,
   upload: () => {},
+  exportZip: () => {},
+  importZip: () => {},
   rename: async () => null,
   remove: () => {},
   download: () => {},
@@ -51,6 +53,16 @@ describe("the workspace panel", () => {
     expect(html).toContain("Upload");
     expect(html).toContain("or drop files here");
     expect(html).toContain("2 KB");
+  });
+
+  it("offers Import zip always and Export zip once there are files, and says what an import made", () => {
+    const withFiles = renderToStaticMarkup(<PanelView workspace={workspace} files={files} onClose={() => {}} actions={actions} made="Imported 2 files as the new workspace Trip." />);
+    expect(withFiles).toMatch(/Import zip<input[^>]*type="file"[^>]*accept="\.zip,application\/zip"/);
+    expect(withFiles).toMatch(/<button[^>]*>Export zip<\/button>/);
+    expect(withFiles).toContain("Imported 2 files as the new workspace Trip.");
+    const none = renderToStaticMarkup(<PanelView workspace={null} files={[]} onClose={() => {}} actions={actions} />);
+    expect(none).toContain("Import zip");
+    expect(none).not.toContain("Export zip");
   });
 
   it("says when the chat has no workspace yet, and still offers to make the first file", () => {
