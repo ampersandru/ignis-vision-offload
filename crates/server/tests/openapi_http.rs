@@ -742,6 +742,10 @@ fn the_document_describes_the_realtime_transcription_session() {
         "`turn_detection: null`",
         "session.ignis.provisional_tail",
         "ignis.input_audio_transcription.provisional",
+        // Spec speech/07: each item's language, opt-in.
+        "session.ignis.item_language",
+        "ignis.input_audio_transcription.language",
+        "naming it and the four",
         "speech.max_sessions",
         "speech.max_clip_seconds",
         "server.socket_idle_close",

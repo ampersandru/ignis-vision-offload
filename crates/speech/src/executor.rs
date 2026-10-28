@@ -77,6 +77,8 @@ pub struct Settings {
     pub unfixed_partials: usize,
     /// `speech.context_max_tokens` (Q50).
     pub context_max_tokens: usize,
+    /// `speech.context_copy_words`: the words in a row of one context line a copy repeats (#362).
+    pub context_copy_words: usize,
     /// `speech.max_clip_seconds`: the KV cache is sized for it (Q19, Q36).
     pub max_clip_seconds: u32,
 }
@@ -91,6 +93,7 @@ impl Default for Settings {
             rollback_tokens: 10,
             unfixed_partials: 2,
             context_max_tokens: 512,
+            context_copy_words: 3,
             max_clip_seconds: 1200,
         }
     }
@@ -104,12 +107,18 @@ pub struct SessionTuning {
     pub context_max_tokens: usize,
     pub rollback_tokens: usize,
     pub unfixed_partials: usize,
+    pub context_copy_words: usize,
 }
 
 impl Settings {
     /// What a session reads of these settings at its opening.
     pub fn tuning(&self) -> SessionTuning {
-        SessionTuning { context_max_tokens: self.context_max_tokens, rollback_tokens: self.rollback_tokens, unfixed_partials: self.unfixed_partials }
+        SessionTuning {
+            context_max_tokens: self.context_max_tokens,
+            rollback_tokens: self.rollback_tokens,
+            unfixed_partials: self.unfixed_partials,
+            context_copy_words: self.context_copy_words,
+        }
     }
 }
 

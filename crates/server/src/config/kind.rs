@@ -232,6 +232,10 @@ count_kind!(
     Partials: u32, "partials", "partial count"
 );
 count_kind!(
+    /// A count of words.
+    Words: u32, "words", "word count"
+);
+count_kind!(
     /// A whole multiple of something.
     Times: u32, "times", "whole multiple"
 );

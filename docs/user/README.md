@@ -14,7 +14,7 @@ client) starts at [the agent path](paths/agent.md).
 | Guides | [Get a model](guides/models.md), [air-gapped machines](guides/air-gapped.md), [Knative](guides/knative.md), [telemetry](guides/telemetry.md), [measure a 16 GB card](guides/measure-a-16gb-card.md) |
 | Concepts | [How ignis serves a request](concepts/how-ignis-serves.md) |
 | Configuration | [Fields, precedence, profiles](configuration/index.md) |
-| Playground | [Overview](playground/index.md), [chat](playground/chat.md), [settings](playground/settings.md), [tools and agents](playground/tools-and-agents.md), [Decide](playground/decide.md), [image studio](playground/image-studio.md), [Monitor](playground/monitor.md), [Server](playground/server.md) |
+| Playground | [Overview](playground/index.md), [chat](playground/chat.md), [settings](playground/settings.md), [tools and agents](playground/tools-and-agents.md), [Decide](playground/decide.md), [image studio](playground/image-studio.md), [Transcribe](playground/transcribe.md), [Monitor](playground/monitor.md), [Server](playground/server.md) |
 | API | [Endpoints](api/index.md), [chat completions](api/chat-completions.md), [Responses](api/responses.md), [speech to text](api/transcriptions.md), [live transcription](api/realtime-transcription.md) |
 | Reference | [Every config field](reference/configuration.md), [profiles](reference/profiles.md), [models](reference/models.md), [metrics](reference/metrics.md), [HTTP routes](reference/http-routes.md) |
 | Troubleshooting | [Troubleshooting](troubleshooting.md) |

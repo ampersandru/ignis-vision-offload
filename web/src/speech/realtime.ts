@@ -156,7 +156,11 @@ type ServerEvent = {
   delta?: string;
   text?: string;
   transcript?: string;
-  error?: { message?: string; code?: string };
+  audio_start_ms?: number;
+  audio_end_ms?: number;
+  speaker?: number;
+  language?: string;
+  error?: { message?: string; code?: string; event_id?: string | null; param?: string | null };
 };
 
 export function openTranscription(
@@ -279,5 +283,275 @@ export function openTranscription(
       close();
     },
     close,
+  };
+}
+
+/** The speakers' geometry a listening asks for (spec speech/08): `"live"` for audio at real time, `"file"` for a file. */
+export type Diarization = "live" | "file";
+
+/**
+ * What a listening's transcription is told (spec speech/07, Q128, Q130): the context as its `prompt`, the terms as
+ * its `keywords`, and a `language` to force; `""`, none and `null` send nothing.
+ */
+export type Told = { prompt: string; keywords: string[]; language: string | null };
+
+export const NOTHING_TOLD: Told = { prompt: "", keywords: [], language: null };
+
+/** The configuration's `transcription`: only what is told. */
+const transcriptionOf = ({ prompt, keywords, language }: Told) => ({
+  ...(prompt === "" ? {} : { prompt }),
+  ...(keywords.length === 0 ? {} : { keywords }),
+  ...(language === null ? {} : { language }),
+});
+
+/** An update's `transcription`: every field, `null` putting back what is no longer told. */
+const transcriptionUpdate = ({ prompt, keywords, language }: Told) => ({
+  prompt: prompt === "" ? null : prompt,
+  keywords: keywords.length === 0 ? null : keywords,
+  language,
+});
+
+const sameTold = (a: Told, b: Told) => a.prompt === b.prompt && a.language === b.language && a.keywords.join("\n") === b.keywords.join("\n");
+
+export type ListeningOptions = {
+  context: Told;
+  /** `null`: no speakers (Speakers off, or a call's microphone, which is "Me"). */
+  diarization: Diarization | null;
+  /** The silence that ends an utterance, in ms (Q122); absent or `null`, the server's `speech.vad_silence_duration_ms`. */
+  silenceMs?: number | null;
+};
+
+/** What a listening's session hears, each item by its id: items overlap, an item's `completed` coming after the next one starts. */
+export type ListeningEvent =
+  | { type: "started"; item: string; atMs: number }
+  | { type: "stopped"; item: string; atMs: number }
+  | { type: "committed"; item: string }
+  | { type: "delta"; item: string; text: string }
+  | { type: "tail"; item: string; text: string }
+  | { type: "speaker"; item: string; speaker: number }
+  /** The language the model heard the item in, by ISO code (`session.ignis.item_language`, Q131). */
+  | { type: "language"; item: string; language: string }
+  | { type: "completed"; item: string; transcript: string }
+  | { type: "item_failed"; item: string; message: string }
+  /** The server refused an event of ours; `eventId` is the one the page gave it. The session goes on. */
+  | { type: "error"; code: string | null; message: string; eventId: string | null }
+  | { type: "refused"; refusal: Refusal }
+  /** The server has read every event sent before the page's last `flush()`, its appends included. */
+  | { type: "flushed" }
+  /** The connection closed under the session. */
+  | { type: "closed" };
+
+export type Listening = {
+  /** `eventId` comes back on the `error` that refuses this append (spec speech/08's queue limit). */
+  append: (pcm: Int16Array, eventId?: string) => void;
+  /** What the transcription is told, from the next utterance on (Q87, Q128). */
+  setContext: (context: Told) => void;
+  /** The silence that ends an utterance, at once (`server_vad`'s fields hold at once: spec speech/05). */
+  setSilence: (silenceMs: number) => void;
+  /** Ends the utterance under way: its transcript follows. */
+  commit: () => void;
+  /**
+   * Asks for a `flushed` once the server has read everything sent before: an empty `session.update`, answered in
+   * order. Before it, the VAD's events for the last audio sent may still be on their way.
+   */
+  flush: () => void;
+  close: () => void;
+};
+
+/** The event id of a listening's configuration: the `error` that refuses it names it. */
+export const CONFIGURATION_EVENT = "listening_configuration";
+
+/** The event id of a flush's empty update. */
+export const FLUSH_EVENT = "listening_flush";
+
+/** The code of an update refused for the speakers it asks for: the session goes on without them (spec speech/08). */
+export const DIARIZER_UNAVAILABLE = "ignis_diarizer_unavailable";
+
+/** A diarizer that failed mid-session: the session goes on without speakers (spec speech/08). */
+export const DIARIZER_FAILED = "ignis_diarizer_failed";
+
+/** An append past the audio a session may hold not computed yet (spec speech/08): it is refused, not read. */
+export const QUEUE_FULL = "ignis_audio_queue_full";
+
+/** The `param` a server older than the items' language refuses the configuration with: asked again without it. */
+const ITEM_LANGUAGE = "session.ignis.item_language";
+
+/** `server_vad` with the view's silence, the server's threshold and padding. */
+const vad = (silenceMs: number | null | undefined) => (silenceMs == null ? { type: "server_vad" } : { type: "server_vad", silence_duration_ms: silenceMs });
+
+/** A listening's configuration (spec speech/07, "The session"); `languages`, each item's language asked for (Q131). */
+function listeningConfiguration({ context, diarization, silenceMs }: ListeningOptions, languages: boolean) {
+  return {
+    type: "session.update",
+    event_id: CONFIGURATION_EVENT,
+    session: {
+      type: "transcription",
+      audio: {
+        input: {
+          format: { type: "audio/pcm", rate: TARGET_RATE },
+          transcription: transcriptionOf(context),
+          // The server's `speech.vad_*` fields, but for the silence the view sets (Q122), never the dictation's (Q80).
+          turn_detection: vad(silenceMs),
+        },
+      },
+      // No `max_utterance_seconds`: the server's length guard holds (spec speech/08).
+      ignis: { provisional_tail: true, ...(diarization === null ? {} : { diarization }), ...(languages ? { item_language: true } : {}) },
+    },
+  };
+}
+
+/**
+ * One listening's session on the Realtime route (spec speech/07): a sibling of
+ * a dictation's, not one. It asks for the server's turn detection at the
+ * server's lengths and hears every commit as an utterance of its own, never
+ * ending at the first; the speakers come when the options ask for them. The
+ * audio waits, as a dictation's does, until the server has taken the
+ * configuration. A refused upgrade is asked about as a dictation's is.
+ */
+export function openListening(asked: ListeningOptions, onEvent: (event: ListeningEvent) => void, deps: RealtimeDeps = {}): Listening {
+  let options = asked;
+  let silenceMs = asked.silenceMs ?? null;
+  const open = deps.open ?? ((url, offered) => new WebSocket(url, offered) as unknown as SocketLike);
+  const doFetch = deps.fetch ?? ((input, init) => fetch(input, init));
+  let context = options.context;
+  /** Each item's language is asked for, until a server older than it refuses the key. */
+  let languages = true;
+  /** The page closed it: nothing more is said, a refusal still being asked about included. */
+  let closedByPage = false;
+  /** The connection is over, by the page or under it. */
+  let ended = false;
+  let opened = false;
+  let greeted = false;
+  let configured = false;
+  const waiting: object[] = [];
+  /** The page's updates after the configuration, in the order sent: each is answered by one `session.updated`. */
+  const updates: ("setting" | "flush")[] = [];
+  let socket: SocketLike | null = null;
+  const send = (event: object) => socket?.send(JSON.stringify(event));
+  const say = (event: ListeningEvent) => closedByPage || onEvent(event);
+
+  function onMessage(event: ServerEvent) {
+    const item = event.item_id ?? "";
+    switch (event.type) {
+      case "session.created":
+        greeted = true;
+        send(listeningConfiguration({ ...options, context, silenceMs }, languages));
+        return;
+      case "session.updated":
+        if (configured) {
+          if (updates.shift() === "flush") say({ type: "flushed" });
+          return;
+        }
+        configured = true;
+        for (const queued of waiting.splice(0)) send(queued);
+        return;
+      case "input_audio_buffer.speech_started":
+        return say({ type: "started", item, atMs: event.audio_start_ms ?? 0 });
+      case "input_audio_buffer.speech_stopped":
+        return say({ type: "stopped", item, atMs: event.audio_end_ms ?? 0 });
+      case "input_audio_buffer.committed":
+        return say({ type: "committed", item });
+      case "conversation.item.input_audio_transcription.delta":
+        return say({ type: "delta", item, text: event.delta ?? "" });
+      case "ignis.input_audio_transcription.provisional":
+        return say({ type: "tail", item, text: event.text ?? "" });
+      case "ignis.input_audio_transcription.speaker":
+        if (typeof event.speaker === "number") say({ type: "speaker", item, speaker: event.speaker });
+        return;
+      case "ignis.input_audio_transcription.language":
+        if (typeof event.language === "string" && event.language !== "") say({ type: "language", item, language: event.language });
+        return;
+      case "conversation.item.input_audio_transcription.completed":
+        return say({ type: "completed", item, transcript: event.transcript ?? "" });
+      case "conversation.item.input_audio_transcription.failed":
+        return say({ type: "item_failed", item, message: event.error?.message ?? "the server could not transcribe it" });
+      case "error":
+        // A server older than the items' language refuses the key, and the whole update with it: configured again
+        // without it, in silence, the session goes on with no language suggested.
+        if (!configured && event.error?.event_id === CONFIGURATION_EVENT && event.error.param === ITEM_LANGUAGE && languages) {
+          languages = false;
+          send(listeningConfiguration({ ...options, context, silenceMs }, languages));
+          return;
+        }
+        // The diarizer refuses the whole update: configured again without speakers, the session goes on.
+        if (!configured && event.error?.event_id === CONFIGURATION_EVENT && event.error.code === DIARIZER_UNAVAILABLE && options.diarization !== null) {
+          options = { ...options, diarization: null };
+          send(listeningConfiguration({ ...options, context, silenceMs }, languages));
+        }
+        return say({
+          type: "error",
+          code: event.error?.code ?? null,
+          message: event.error?.message ?? "the server refused an event",
+          eventId: event.error?.event_id ?? null,
+        });
+    }
+  }
+
+  /** Sent once the configuration is taken; held until then, in order. */
+  const sendConfigured = (event: object) => (configured ? send(event) : waiting.push(event));
+  const refused = () => void probe(doFetch).then((refusal) => say({ type: "refused", refusal }));
+
+  try {
+    socket = open(deps.url?.() ?? pageUrl(), protocols());
+  } catch {
+    // A key that is not a valid subprotocol token throws: a refused upgrade like any other.
+    ended = true;
+    refused();
+  }
+  if (socket) {
+    socket.onopen = () => {
+      opened = true;
+    };
+    socket.onerror = () => {};
+    socket.onmessage = (message) => {
+      if (ended) return;
+      try {
+        onMessage(JSON.parse(String(message.data)) as ServerEvent);
+      } catch {
+        // Not JSON: nothing this session reads.
+      }
+    };
+    socket.onclose = () => {
+      if (ended) return;
+      ended = true;
+      if (opened) say({ type: "closed" });
+      else refused();
+    };
+  }
+
+  return {
+    append(pcm, eventId) {
+      if (ended) return;
+      sendConfigured({ type: "input_audio_buffer.append", audio: pcmBase64(pcm), ...(eventId === undefined ? {} : { event_id: eventId }) });
+    },
+    setContext(next) {
+      if (ended || sameTold(next, context)) return;
+      context = next;
+      // Not greeted yet: the configuration carries it.
+      if (!greeted) return;
+      updates.push("setting");
+      sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { transcription: transcriptionUpdate(next) } } } });
+    },
+    setSilence(next) {
+      if (ended || next === silenceMs) return;
+      silenceMs = next;
+      // Not greeted yet: the configuration carries it.
+      if (!greeted) return;
+      updates.push("setting");
+      sendConfigured({ type: "session.update", session: { type: "transcription", audio: { input: { turn_detection: vad(next) } } } });
+    },
+    flush() {
+      if (ended) return;
+      updates.push("flush");
+      sendConfigured({ type: "session.update", event_id: FLUSH_EVENT, session: { type: "transcription" } });
+    },
+    commit() {
+      if (!ended) sendConfigured({ type: "input_audio_buffer.commit" });
+    },
+    close() {
+      closedByPage = true;
+      ended = true;
+      socket?.close();
+    },
   };
 }

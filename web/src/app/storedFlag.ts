@@ -17,6 +17,14 @@ export const STORED_FLAGS = {
   httpTransport: "ignis.httpTransport",
   /** The Image view's "Enhance the prompt", as last set: what a session that never touched it uses. Off at first. */
   imageEnhance: "ignis.imageEnhance",
+  /** The Transcribe view tells a listening's voices apart (spec speech/07, Q112). On at first. */
+  transcribeSpeakers: "ignis.transcribeSpeakers",
+  /** On a call, the Transcribe view holds the mic while the far side speaks (spec speech/07, Q121). On at first. */
+  transcribeHoldMic: "ignis.transcribeHoldMic",
+  /** The Transcribe view keeps a listening's notes up as it goes (spec speech/07, Q126). Off at first. */
+  transcribeNotesLive: "ignis.transcribeNotesLive",
+  /** The Transcribe view suggests the languages, the topic, a title and terms while listening (Q132). On at first. */
+  transcribeSuggestions: "ignis.transcribeSuggestions",
 } as const;
 
 /**

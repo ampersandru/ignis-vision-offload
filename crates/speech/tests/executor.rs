@@ -272,9 +272,9 @@ fn a_partial_stops_at_every_step_of_its_decode() {
 fn a_session_holds_the_tuning_it_opened_with() {
     let files = synthetic::pair("tuning");
     let e = exec(&files, Settings { rollback_tokens: 10, unfixed_partials: 2, context_max_tokens: 512, ..settings() });
-    let tuned = SessionTuning { context_max_tokens: 64, rollback_tokens: 3, unfixed_partials: 0 };
+    let tuned = SessionTuning { context_max_tokens: 64, rollback_tokens: 3, unfixed_partials: 0, context_copy_words: 4 };
     assert_eq!(e.open_tuned("", None, tuned).unwrap().tuning(), tuned);
-    assert_eq!(e.open("", None).unwrap().tuning(), SessionTuning { context_max_tokens: 512, rollback_tokens: 10, unfixed_partials: 2 });
+    assert_eq!(e.open("", None).unwrap().tuning(), SessionTuning { context_max_tokens: 512, rollback_tokens: 10, unfixed_partials: 2, context_copy_words: 3 });
 }
 
 /// Acceptance 19 (Q44): a commit is a unit of work a step, so the server's one worker runs other
@@ -443,6 +443,20 @@ fn a_forced_language_is_the_official_prefill() {
     // The synthetic decoder's one token is no `language X<asr_text>` header: auto-detection
     // labels nothing.
     assert_eq!(transcribe(None).language, None);
+}
+
+/// #362: a transcript is checked for a copy of the context the model read, which past the cap
+/// is only the context's last `max_context` tokens.
+#[test]
+fn the_prompt_keeps_the_context_the_model_reads() {
+    let files = synthetic::pair("context-read");
+    let model = Model::load(&files.decoder, &files.encoder, false).unwrap();
+    let text = &model.text;
+    let context = "Topic: the release plan.\nalpha, beta, gamma, delta";
+    assert_eq!(Prompt::new(text, context, 512, None).context, context);
+    let cut = Prompt::new(text, context, 4, None);
+    assert_eq!(cut.context_tokens, 4);
+    assert!(!cut.context.is_empty() && cut.context.len() < context.len() && context.ends_with(&cut.context), "{:?}", cut.context);
 }
 
 /// Acceptance 20: `auto` is the physical cores less one, an explicit count is used as given.

@@ -108,6 +108,14 @@
     --series-2: #2a78d6;
     --series-3: #1baf7a;
     --series-4: #4a3aa7;
+    /* A Transcript's speakers (spec speech/07): six hues told apart on the
+       ground, the ember kept for what is live. */
+    --speaker-1: #2a78d6;
+    --speaker-2: #11865d;
+    --speaker-3: #6a4fc9;
+    --speaker-4: #a86500;
+    --speaker-5: #c0336b;
+    --speaker-6: #0f7c8c;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -126,6 +134,12 @@
       --series-2: #3987e5;
       --series-3: #199e70;
       --series-4: #9085e9;
+      --speaker-1: #6aa6ef;
+      --speaker-2: #3ecf8e;
+      --speaker-3: #a99ff0;
+      --speaker-4: #fab219;
+      --speaker-5: #f17fa8;
+      --speaker-6: #4cc3d4;
     }
   }
 
@@ -229,6 +243,23 @@
   }
   .dictation-bar {
     transition: height 90ms linear;
+  }
+  /* The Transcribe view's spine (spec speech/07): an utterance under way
+     burns along it with the dictation's heat, top to bottom. */
+  .spine-live {
+    background: var(--heat);
+    background-size: 100% 200%;
+    animation: spine-heat 1.4s linear infinite;
+  }
+  @keyframes spine-heat {
+    to {
+      background-position: 0 -200%;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spine-live {
+      animation: none;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .dictation-heat,
@@ -515,6 +546,55 @@
 @media (prefers-reduced-motion: reduce) {
   .md[data-streaming="true"] > :last-child::after {
     animation: none;
+  }
+}
+
+/* A Transcript's notes (transcribe/Notes.tsx): the panel's measure, and each
+   section's heading in the display face behind an ember square. */
+@layer components {
+  .notes .md {
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .notes .md h2 {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin-top: 1.3em;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .notes .md h2::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    background: var(--ember);
+  }
+  .notes .md > h2:first-child {
+    margin-top: 0;
+  }
+  .notes .md h2 + * {
+    margin-top: 0.35em;
+  }
+  .notes .md ul,
+  .notes .md ol {
+    padding-left: 1.1em;
+  }
+  .notes-answer .md {
+    font-size: 13px;
+  }
+  /* A moment named as [mm:ss]: a link to the utterance (jump.ts), in the time's own face. */
+  .notes .md a[href^="#t="] {
+    padding: 0 0.25em;
+    font-family: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.92em;
+    font-variant-numeric: tabular-nums;
+    text-decoration: none;
+    background: color-mix(in oklab, var(--ember) 14%, transparent);
+  }
+  .notes .md a[href^="#t="]:hover {
+    background: color-mix(in oklab, var(--ember) 28%, transparent);
   }
 }
 

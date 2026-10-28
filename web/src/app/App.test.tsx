@@ -44,6 +44,12 @@ describe("App", () => {
     expect(html).not.toContain('aria-label="Model"');
   });
 
+  it("offers the Transcribe view from the start, and mounts it only once it is opened (spec speech/07, AC 1)", () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain(">Transcribe<");
+    expect(html).not.toContain('aria-label="Transcripts"');
+  });
+
   it("gives every form field an id or a name, as the browser asks", () => {
     const fields = renderToStaticMarkup(<App />).match(/<(input|textarea|select)\b[^>]*>/g) ?? [];
     expect(fields.length).toBeGreaterThan(0);

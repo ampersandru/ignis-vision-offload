@@ -23,8 +23,8 @@ defaults are the ones measured on the owner's own cards.
 5. **[The Playground](../playground/index.md)** — every view, with screenshots:
    the [chat](../playground/chat.md) and its [settings](../playground/settings.md),
    [subagents and tools](../playground/tools-and-agents.md), [Decide](../playground/decide.md),
-   the [image studio](../playground/image-studio.md), the [Monitor](../playground/monitor.md)
-   and the [Server view](../playground/server.md).
+   the [image studio](../playground/image-studio.md), [Transcribe](../playground/transcribe.md),
+   the [Monitor](../playground/monitor.md) and the [Server view](../playground/server.md).
 6. **[Connect a client](../start/connect-a-client.md)** — the base URL and the
    key, the OpenAI SDKs, coding agents and chat front ends.
 7. **[Troubleshooting](../troubleshooting.md)** — what a refusal or a WARN line

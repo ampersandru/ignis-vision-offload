@@ -173,6 +173,8 @@ export class DictationController {
   private seq = 0;
   private secure = true;
   private speech: SpeechStatus | undefined;
+  /** The Transcribe view is listening (spec speech/07, Q85). */
+  private listening = false;
   /** What the last refused upgrade said, until GET /v1/models is read again. */
   private refusedReason: string | null = null;
   private blocked = false;
@@ -196,10 +198,11 @@ export class DictationController {
     return this.state.phase !== "idle";
   }
 
-  /** The page's secure context and the server's word on the speech model. */
-  setAvailability({ secure, speech }: { secure: boolean; speech?: SpeechStatus }) {
+  /** The page's secure context, the server's word on the speech model, and whether the Transcribe view listens. */
+  setAvailability({ secure, speech, listening = false }: { secure: boolean; speech?: SpeechStatus; listening?: boolean }) {
     this.secure = secure;
     this.speech = speech;
+    this.listening = listening;
     this.refusedReason = null;
     this.update({});
   }
@@ -310,8 +313,8 @@ export class DictationController {
     if (holder === this) holder = null;
   }
 
-  /** Another field's mic was pressed: this dictation ends, and what it heard lands here. */
-  private giveWay() {
+  /** Another field's mic was pressed, or a listening started: this dictation ends, and what it heard lands here. */
+  giveWay() {
     if (this.state.phase === "listening") void this.done();
     else if (this.state.phase === "failed") this.insertHeard();
     else if (this.state.phase === "waiting") {
@@ -481,6 +484,7 @@ export class DictationController {
       secure: this.secure,
       speech: this.refusedReason !== null ? { available: false, reason: this.refusedReason } : this.speech,
       blocked: this.blocked,
+      listening: this.listening,
     });
     const same = cause?.sentence === next.unavailable?.sentence && cause?.blocked === next.unavailable?.blocked;
     this.state = { ...next, unavailable: same ? next.unavailable : cause };
@@ -490,6 +494,14 @@ export class DictationController {
     if (was !== underWay.size > 0) for (const listener of pageListeners) listener();
     for (const listener of this.listeners) listener();
   }
+}
+
+/**
+ * A listening in the Transcribe view starts (spec speech/07, Q85): the dictation under way ends as it does when
+ * another mic starts, its text landing in its own field.
+ */
+export function endDictation() {
+  holder?.giveWay();
 }
 
 /** What the mic, the strip and the hint line read and press: the controller, or a fixed one in a test. */

@@ -1,6 +1,7 @@
 import { computeFigures, type Figures } from "../../metrics/figures.ts";
 import type { ConversationRequest, Settings, ToolDefinition, ToolExtras, Turn } from "../../api/request.ts";
 import type { ToolCall } from "../../api/sse.ts";
+import { abortableSleep, isEngineFull } from "../../api/busy.ts";
 import { streamChat } from "../../api/stream.ts";
 import { type UnknownCall, unknownCall, unknownToolError } from "../errors.ts";
 import { isLocalTool, type LocalContext, type LocalRun, localToolResult, runLocalCalls, startedRun } from "../local/local.ts";
@@ -148,15 +149,6 @@ export function agentSummary(runs: AgentRun[]): string {
     .filter(([, n]) => n > 0)
     .map(([status, n]) => `${n} ${status}`);
   return `${runs.length} ${runs.length === 1 ? "agent" : "agents"}${parts.length ? `: ${parts.join(", ")}` : ""}`;
-}
-
-const isEngineFull = (message: string) => /engine_full|all lanes in use/i.test(message);
-
-function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
-  });
 }
 
 export type RunAgentsOptions = {

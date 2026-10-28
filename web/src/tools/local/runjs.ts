@@ -1,4 +1,5 @@
 import type { ConversationRequest, Settings } from "../../api/request.ts";
+import { abortableSleep, isEngineFull } from "../../api/busy.ts";
 import { streamChat } from "../../api/stream.ts";
 import { computeFigures, type Figures } from "../../metrics/figures.ts";
 
@@ -149,13 +150,6 @@ export function parseVerdict(text: string): JsCheck {
   return { verdict: "unsafe", reason: "The safety check gave no clear verdict." };
 }
 
-function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
-  });
-}
-
 /** Asks the model whether `code` is safe to run: greedy, thinking off, on an agent lane; a full engine is waited out. */
 export async function checkJs(
   code: string,
@@ -189,7 +183,7 @@ export async function checkJs(
         if (event.kind === "content") content += event.text;
       },
     });
-    if (!result.ok && /engine_full|all lanes in use/i.test(result.message) && attempt < 60 && !options.signal.aborted) {
+    if (!result.ok && isEngineFull(result.message) && attempt < 60 && !options.signal.aborted) {
       await sleep(1000, options.signal);
       continue;
     }

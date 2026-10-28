@@ -1250,6 +1250,20 @@ The longest clip one transcription takes, in seconds; a longer one is refused an
 
 The most tokens of context (`prompt` and `keywords[]`) a transcription reads; over it the last ones are kept. 0 reads none.
 
+### `speech.context_copy_words`
+
+| | |
+|---|---|
+| Flag | `--speech-context-copy-words` |
+| Env var | `IGNIS_SPEECH_CONTEXT_COPY_WORDS` |
+| Kind | `words` |
+| Default | `3` |
+| Rule | 0..=32 |
+| Models | all |
+| `/v1/config` | shown by `GET`, patchable live |
+
+On a pause the model can write a line of its context in place of what it heard: a transcript that only repeats this many words in a row of one context line, or a whole line of two words or more, is taken for no speech and comes back empty. One word alone never is. 0 turns the guard off. Read when a session opens, so a change holds from the next one.
+
 ### `speech.pinned_weights`
 
 | | |

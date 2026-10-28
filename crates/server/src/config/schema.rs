@@ -706,6 +706,13 @@ config_group! {
         /// The most tokens of context (`prompt` and `keywords[]`) a
         /// transcription reads; over it the last ones are kept. 0 reads none.
         context_max_tokens: Tokens = 512, between(0, 4096), ALL, [Visible, Patchable];
+        /// On a pause the model can write a line of its context in place of
+        /// what it heard: a transcript that only repeats this many words in a
+        /// row of one context line, or a whole line of two words or more, is
+        /// taken for no speech and comes back empty. One word alone never is.
+        /// 0 turns the guard off. Read when a session opens, so a change
+        /// holds from the next one.
+        context_copy_words: Words = 3, between(0, 32), ALL, [Visible, Patchable];
         /// Pin the speech model's weights in host memory instead of mapping
         /// the file. Read by the load, so a change holds from the next one.
         pinned_weights: Bool = false, NO_RULE, ALL, [Visible, Patchable];

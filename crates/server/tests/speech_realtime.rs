@@ -1,8 +1,8 @@
 //! `GET /v1/realtime?intent=transcription` (spec speech/03, GitHub #353)
 //! over a live listener, on a scripted executor ([`FakeExecutor`]): the
 //! upgrade and its refusals, the session's configuration, the audio, the
-//! items and their events, the stable deltas and the opt-in provisional
-//! tail, the context prefilled when the session opens, the limits, the
+//! items and their events, the stable deltas, the opt-in provisional tail and
+//! the opt-in item's language, the context prefilled when the session opens, the limits, the
 //! sessions taking turns on the worker, and the socket's place outside the
 //! serving gate.
 //!
@@ -37,6 +37,7 @@ const DELTA: &str = "conversation.item.input_audio_transcription.delta";
 const COMPLETED: &str = "conversation.item.input_audio_transcription.completed";
 const FAILED: &str = "conversation.item.input_audio_transcription.failed";
 const PROVISIONAL: &str = "ignis.input_audio_transcription.provisional";
+const LANGUAGE: &str = "ignis.input_audio_transcription.language";
 
 fn saying(words: &[&str]) -> Arc<FakeExecutor> {
     Arc::new(FakeExecutor::saying(words))
@@ -253,6 +254,7 @@ async fn the_deltas_are_stable_text_and_join_to_the_transcript() {
     assert_eq!(completed["content_index"], 0);
     assert!(of(&events, DELTA).iter().all(|delta| delta["item_id"] == completed["item_id"] && delta["content_index"] == 0));
     assert!(of(&events, PROVISIONAL).is_empty(), "a session that did not opt in never gets the tail");
+    assert!(of(&events, LANGUAGE).is_empty(), "nor the item's language");
 }
 
 /// AC 6: a session that opted in gets the whole current tail after each
@@ -271,6 +273,58 @@ async fn the_provisional_tail_reaches_only_a_session_that_opted_in() {
     assert!(of(&events, PROVISIONAL).iter().all(|tail| tail["item_id"] == completed["item_id"]));
     let deltas: String = of(&events, DELTA).iter().map(|event| event["delta"].as_str().unwrap()).collect();
     assert_eq!(deltas, completed["transcript"].as_str().unwrap(), "the tail is never part of the deltas");
+}
+
+/// One item of a second, committed: its events, to `completed`.
+async fn one_item(socket: &mut Socket) -> Vec<Value> {
+    send(socket, append(16_000)).await;
+    send(socket, commit()).await;
+    until(socket, COMPLETED).await
+}
+
+/// Spec speech/07: a session that opted in with `session.ignis.item_language`
+/// gets each item's language, the model's label by its ISO 639 code, right
+/// before its `completed`: the language the model heard, then the one the
+/// session forces; `null` turns it off, and a session that never opted in
+/// never gets it.
+#[tokio::test]
+async fn the_items_language_reaches_only_a_session_that_opted_in() {
+    let executor = saying(&["ciao"]);
+    let (live, _server, _dir) = served(&executor, |_| {}).await;
+    let mut socket = session_16k(&live).await;
+    assert!(of(&one_item(&mut socket).await, LANGUAGE).is_empty(), "a session that did not opt in never gets it");
+    send(&mut socket, update(json!({ "ignis": { "item_language": true } }))).await;
+    assert_eq!(next_event(&mut socket).await["session"]["ignis"]["item_language"], true);
+    let events = one_item(&mut socket).await;
+    let (language, completed) = (&events[events.len() - 2], &events[events.len() - 1]);
+    assert_eq!(language, &json!({ "type": LANGUAGE, "event_id": language["event_id"], "item_id": completed["item_id"], "content_index": 0, "language": "en" }), "{events:?}");
+    assert_eq!(of(&events, LANGUAGE).len(), 1, "{events:?}");
+    send(&mut socket, update(json!({ "audio": { "input": { "transcription": { "language": "it" } } } }))).await;
+    assert_eq!(next_event(&mut socket).await["type"], "session.updated");
+    let events = one_item(&mut socket).await;
+    assert_eq!(events[events.len() - 2]["language"], "it", "a forced language is what the model labels: {events:?}");
+    send(&mut socket, update(json!({ "ignis": { "item_language": null } }))).await;
+    assert_eq!(next_event(&mut socket).await["session"]["ignis"]["item_language"], false);
+    assert!(of(&one_item(&mut socket).await, LANGUAGE).is_empty(), "null turns it off");
+}
+
+/// Spec speech/07: an item the model labelled `None` (no speech), or with a
+/// label outside its 30 languages, gets no language event, and completes as
+/// any other.
+#[tokio::test]
+async fn an_item_with_no_language_of_the_thirty_gets_none() {
+    for label in [None, Some("Klingon")] {
+        let mut scripted = FakeExecutor::saying(&["hm"]);
+        scripted.language = label.map(str::to_owned);
+        let executor = Arc::new(scripted);
+        let (live, _server, _dir) = served(&executor, |_| {}).await;
+        let mut socket = session_16k(&live).await;
+        send(&mut socket, update(json!({ "ignis": { "item_language": true } }))).await;
+        assert_eq!(next_event(&mut socket).await["type"], "session.updated");
+        let events = one_item(&mut socket).await;
+        assert!(of(&events, LANGUAGE).is_empty(), "{label:?}: {events:?}");
+        assert_eq!(of(&events, COMPLETED)[0]["transcript"], "hm");
+    }
 }
 
 /// AC 18 (Q74): refreshes are best effort. With the worker behind, none is

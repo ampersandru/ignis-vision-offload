@@ -22,21 +22,23 @@ control sends: what you click in the Playground is what you can script.
 
 ## The views
 
-The header switches between five views. The chat stays mounted under the
-others, so a reply keeps streaming while you look at the Monitor.
+The header switches between six views. The chat stays mounted under the
+others, so a reply keeps streaming while you look at the Monitor, and a
+listening in Transcribe goes on whichever view shows.
 
 | View | What it is for | What it asks the server | Page |
 |---|---|---|---|
 | **Playground** | Chat with the model: reasoning, tools, subagents, images and files in the prompt, several sessions | `/v1/responses` over a WebSocket, or `/v1/chat/completions` | [Chat](chat.md), [Settings](settings.md), [Tools and agents](tools-and-agents.md), [Sessions](sessions.md) |
 | **Decide** | Ask many questions over one piece of evidence, answered from one prefill with nothing generated | `POST /v1/decide` | [Decide](decide.md) |
 | **Image** | Make and edit pictures with the image model, step by step | `/v1/images/generations`, `/v1/images/edits` | [Image studio](image-studio.md) |
+| **Transcribe** | Write a conversation down, from the microphone, a call or a file, with its speakers | `/v1/realtime?intent=transcription` over a WebSocket | [Transcribe](transcribe.md) |
 | **Monitor** | The server's Prometheus metrics, drawn live: load, latency, the VRAM plan, reuse, speculation | `GET /ui/metrics` | [Monitor](monitor.md) |
 | **Server** | The loaded model, the models a switch can go to, and the running configuration as a form | `/v1/models`, `/v1/models/switch`, `/v1/config` | [Server](server.md) |
 
 The Monitor tab appears only while the server serves metrics (`server.metrics`,
 on by default). Below 640 px wide the tabs become one menu, and below 1024 px
-the side columns of the chat, Decide and Image views open as drawers from the
-header.
+the side columns of the chat, Decide, Image and Transcribe views open as
+drawers from the header.
 
 ## The header
 
@@ -45,7 +47,8 @@ the view tabs; the **model status** (the model's id with a green square when
 it serves, `Loading…` or `Switching to…` while it does not, `· unloaded` in
 grey after an [idle unload](../api/idle-unload.md)); in the chat, a chip with
 how many requests are running and the server's token rate, which opens the
-Monitor; **Memory**, the notes the model keeps about you
+Monitor; while a [Transcribe](transcribe.md) listening is under way, its
+state and time, which open that view; **Memory**, the notes the model keeps about you
 ([Tools and agents](tools-and-agents.md#memory)); and **Lock** while an API key
 is stored.
 
@@ -61,8 +64,8 @@ request as `Authorization: Bearer`; the WebSocket offers it as a subprotocol.
 
 ## What the page keeps
 
-The chat's sessions, the Decide tab's decisions and the Image view's sessions
-and pictures are stored in this browser (IndexedDB) and come back after a
+The chat's sessions, the Decide tab's decisions, the Image view's sessions
+and pictures and the Transcribe view's transcripts are stored in this browser (IndexedDB) and come back after a
 reload; nothing is stored on the server. Settings are not stored, apart from
 the three marked *stored* in [Settings](settings.md): a reload puts the
 defaults back. The details, and what each key holds:

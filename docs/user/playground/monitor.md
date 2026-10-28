@@ -2,7 +2,7 @@
 title: "Monitor"
 description: "The Monitor: the server's own metrics, scraped by the browser and drawn live, from the verdict in words to the VRAM plan."
 sidebar:
-  order: 8
+  order: 9
 ---
 
 The **Monitor** is a live dashboard over the server's Prometheus metrics. The
