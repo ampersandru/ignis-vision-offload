@@ -226,6 +226,8 @@ function SimpleRow({ run }: { run: LocalRun }) {
       ? run.recalled.map((n) => `${n.title} (${n.id})`).join(", ")
       : run.deletedId
       ? run.deletedId
+      : run.picture
+        ? `${run.picture.name}, ${run.picture.seen ? "seen" : "as text: the model has no vision"}`
       : run.read
         ? `${run.read.name}, ${unit} ${run.read.from.toLocaleString()}–${run.read.to.toLocaleString()} of ${run.read.total.toLocaleString()}`
         : run.seen

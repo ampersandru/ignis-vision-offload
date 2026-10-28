@@ -1,16 +1,22 @@
 import { useState } from "react";
 import type { ChatPicture, PictureAction } from "../../conversation/images.ts";
 import { PictureTools } from "../../conversation/UserTurn.tsx";
+import { usePictureUrl } from "../../image/pictures.tsx";
 import { downloadImage, progressShare, sidesOf } from "../../image/studio.ts";
 import { IconChevron, IconDownload } from "../../ui/icons.tsx";
 import { Lightbox } from "../../ui/Lightbox.tsx";
+import { versionOf } from "../../workspace/pictures.ts";
+import { useWorkspaceFile } from "../../workspace/WorkspaceFiles.tsx";
+import type { Written } from "../../workspace/workspaces.ts";
 import { StatusMark } from "../agents/status.tsx";
 import { type ImageRun, type ImageStatus, imageSummary, type MadePicture } from "./image.ts";
 
 // The pictures a reply asked for, inside the reply: each call on the kiln's
 // dark plate, as on the Image view's stage — the switch and the steps while
 // it works, then the pictures with their names, which is how the model and
-// the user both refer to them afterwards.
+// the user both refer to them afterwards. A picture that landed in the chat's
+// workspace is shown from there, the version the call made; an older chat's
+// from the data URL its run kept.
 
 const STATUS_WORDS: Record<ImageStatus, string> = {
   queued: "Waiting for the other tools",
@@ -96,27 +102,51 @@ function PictureCall({ run, onPicture }: { run: ImageRun; onPicture?: OnPicture 
   );
 }
 
+function Picture({ picture, onPicture }: { picture: MadePicture; onPicture?: OnPicture }) {
+  if (picture.file) return <WorkspacePicture picture={picture} file={picture.file} onPicture={onPicture} />;
+  return <Shown picture={picture} url={picture.url ?? null} onPicture={onPicture} />;
+}
+
+/** A picture that landed in the workspace: the version the call made, by its bytes in the page's store. */
+function WorkspacePicture({ picture, file, onPicture }: { picture: MadePicture; file: Written; onPicture?: OnPicture }) {
+  const found = useWorkspaceFile(file.workspace, file.file);
+  const bytes = versionOf(found, file.version)?.bytes;
+  const id = bytes?.store === "image" ? bytes.id : undefined;
+  const lookup = usePictureUrl();
+  const url = id ? lookup(id, "full") : null;
+  const gone = found === null || (found !== undefined && id === undefined);
+  return <Shown picture={picture} url={url} id={id} gone={gone ? `${file.name} is no longer in the workspace.` : undefined} onPicture={onPicture} />;
+}
+
 // Marking and the Image view sit over the picture, as on the user's own
 // (PictureTools), and a click on it opens it full screen; the line under it
 // wraps a whole piece at a time, so two pictures side by side never break a
 // name or a seed.
-function Picture({ picture, onPicture }: { picture: MadePicture; onPicture?: OnPicture }) {
-  const chat: ChatPicture = { name: `${picture.name}.png`, url: picture.url };
+function Shown({ picture, url, id, gone, onPicture }: { picture: MadePicture; url: string | null; id?: string; gone?: string; onPicture?: OnPicture }) {
+  const chat: ChatPicture | null = url ? { name: `${picture.name}.png`, url, ...(id ? { id } : {}) } : null;
   const alt = picture.revisedPrompt ?? picture.name;
   const [full, setFull] = useState(false);
   return (
     <li className="flex min-w-0 flex-col">
       <div className="flex justify-center bg-[#23282f] p-2">
-        <span className="group/pic relative block max-w-full">
-          <button type="button" aria-label={`Open ${picture.name} full screen`} title="Full screen" className="block max-w-full cursor-zoom-in" onClick={() => setFull(true)}>
-            <img src={picture.url} alt={alt} className="stage-checker block max-h-[28rem] max-w-full object-contain" />
-          </button>
-          {onPicture && <PictureTools picture={chat} onPicture={onPicture} />}
-        </span>
+        {gone ? (
+          <p className="px-1 py-6 text-sm text-[#939ba4]">{gone}</p>
+        ) : (
+          <span className="group/pic relative block max-w-full">
+            <button type="button" aria-label={`Open ${picture.name} full screen`} title="Full screen" className="block max-w-full cursor-zoom-in" onClick={() => setFull(true)}>
+              {url ? (
+                <img src={url} alt={alt} className="stage-checker block max-h-[28rem] max-w-full object-contain" />
+              ) : (
+                <span role="img" aria-label={alt} className="block h-48 w-64 max-w-full bg-[#2e343c]" />
+              )}
+            </button>
+            {onPicture && chat && <PictureTools picture={chat} onPicture={onPicture} />}
+          </span>
+        )}
       </div>
-      {full && (
+      {full && url && (
         <Lightbox onClose={() => setFull(false)}>
-          <img src={picture.url} alt={alt} className="stage-checker block max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain" />
+          <img src={url} alt={alt} className="stage-checker block max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain" />
         </Lightbox>
       )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-xs whitespace-nowrap text-[#939ba4] tabular-nums">
@@ -124,16 +154,18 @@ function Picture({ picture, onPicture }: { picture: MadePicture; onPicture?: OnP
         <span>{sidesOf(picture.size)}</span>
         {picture.seed !== undefined && <span>Seed {picture.seed}</span>}
         {picture.kept && <span>Marked area only</span>}
-        <button
-          type="button"
-          className="ml-auto flex items-center gap-1.5 font-display font-medium text-[#b9bec4] hover:text-white"
-          onClick={() =>
-            downloadImage({ id: 0, url: picture.url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })
-          }
-        >
-          <IconDownload />
-          PNG
-        </button>
+        {picture.file && <span title="Kept as a file of the chat's workspace">{picture.file.name} in the workspace</span>}
+        {picture.unkept && <span className="whitespace-normal text-[#ff7b6b]">Not kept in the workspace: {picture.unkept}</span>}
+        {url && (
+          <button
+            type="button"
+            className="ml-auto flex items-center gap-1.5 font-display font-medium text-[#b9bec4] hover:text-white"
+            onClick={() => downloadImage({ id: 0, url, prompt: picture.name, size: picture.size, edit: false, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) })}
+          >
+            <IconDownload />
+            PNG
+          </button>
+        )}
       </div>
     </li>
   );

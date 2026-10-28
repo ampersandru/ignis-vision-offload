@@ -1,7 +1,10 @@
 import { type DragEvent, type ReactNode, useState } from "react";
+import { usePictureUrl } from "../image/pictures.tsx";
+import type { ImageId } from "../store/imageStore.ts";
 import { caption, fieldLook } from "../ui/classes.ts";
 import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
+import { Lightbox } from "../ui/Lightbox.tsx";
 import { type Author, KIND_LABEL, latest, present, USER, type Workspace, type WorkspaceFile } from "./files.ts";
 import { FileEditor, FileHistory, type SaveOutcome } from "./FileHistory.tsx";
 import { authorName, type ChatNames, createFile, downloadName, fileTree, refusal, saveText, sizeLabel, timeLabel, type TreeNode, uploadFiles } from "./panel.ts";
@@ -383,6 +386,8 @@ export function FileViewer({ file, whom, onBack, actions }: { file: WorkspaceFil
         <Source text={v.derived} />
       </>
     );
+  } else if (file.kind === "picture" && v.bytes?.store === "image") {
+    body = <PictureView id={v.bytes.id} name={file.name} width={v.bytes.width} height={v.bytes.height} />;
   } else if (file.kind === "other") {
     body = <p className="text-xs leading-snug text-ash">The model sees its name and size, and cannot read it.</p>;
   }
@@ -429,6 +434,33 @@ export function FileViewer({ file, whom, onBack, actions }: { file: WorkspaceFil
       )}
       {tab === "history" ? history : tab !== "edit" && body}
     </div>
+  );
+}
+
+/** A picture of the workspace from the page's store, at the panel's width; a click opens it full screen. */
+function PictureView({ id, name, width, height }: { id: ImageId; name: string; width?: number; height?: number }) {
+  const url = usePictureUrl()(id, "full");
+  const [full, setFull] = useState(false);
+  return (
+    <>
+      {width && height && (
+        <p className="text-xs text-ash tabular-nums">
+          {width} × {height} pixels
+        </p>
+      )}
+      <button type="button" aria-label={`Open ${name} full screen`} title="Full screen" className="block cursor-zoom-in bg-surface" onClick={() => setFull(true)} disabled={!url}>
+        {url ? (
+          <img src={url} alt={name} className="stage-checker block max-h-[60vh] max-w-full object-contain" />
+        ) : (
+          <span role="img" aria-label={name} className="block h-40 w-full bg-line/60" />
+        )}
+      </button>
+      {full && url && (
+        <Lightbox onClose={() => setFull(false)}>
+          <img src={url} alt={name} className="stage-checker block max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain" />
+        </Lightbox>
+      )}
+    </>
   );
 }
 

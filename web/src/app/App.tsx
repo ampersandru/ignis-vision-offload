@@ -137,8 +137,9 @@ export function App() {
     onUnavailable: refreshModel,
   });
   // Held here, not in the view: the chat hands pictures to it.
-  // Each keeps the pictures the other names when it deletes a session: the store holds both views' pictures once.
-  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures });
+  // Each keeps the pictures the other names when it deletes a session, and those of the workspaces: the store holds
+  // every view's pictures once.
+  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures, held: () => pageWorkspaces().pictures() });
   studioPictures.current = () => (studio.loaded ? studio.sessions.flatMap((s) => [...imagesOf(s)]) : null);
   const [chatMarking, setChatMarking] = useState<ChatMarking | null>(null);
   // A switch or a load runs the header's flame and heat bar as a reply does (spec playground/05).
@@ -243,8 +244,11 @@ export function App() {
   }
 
   /** A picture of the conversation: marked into the prompt box, or opened in a new session of the Image view. */
-  function onPicture(picture: ChatPicture, action: PictureAction) {
-    const source = blobOf(picture, picture.name);
+  async function onPicture(picture: ChatPicture, action: PictureAction) {
+    // One the page's store holds (a workspace's) is read from there; the store's bytes are what the Image view keeps.
+    const stored = picture.id && !picture.full ? await pageStore().getImage(picture.id).catch(() => null) : null;
+    if (picture.id && !picture.full && !stored) return;
+    const source = stored ?? blobOf(picture, picture.name);
     if (action === "image") {
       void studioActions.importPictures([{ blob: source, name: picture.name }], "new");
       setImageOpened(true);
@@ -398,7 +402,7 @@ export function App() {
               onSave={chat.saveEdit}
               onFork={chat.fork}
               onAnswer={chat.answer}
-              onPicture={onPicture}
+              onPicture={(picture, action) => void onPicture(picture, action)}
             />
             <Composer
               value={input}
