@@ -10,6 +10,8 @@ import { ideasFor } from "./examples.ts";
 import { Picture } from "./pictures.tsx";
 import { inputNumbers, type ImageSession, pictureOf, wireImages } from "./sessions.ts";
 import { ACCEPTED_IMAGES, paramsOf, parseSeed, runPlan } from "./studio.ts";
+import { pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
+import { StoreWorkspacePictures } from "./WorkspaceBridge.tsx";
 import type { ImageSessionsActions, ImageSessionsState } from "./useImageSessions.ts";
 
 // The foot of the image view, as the chat's prompt box is the foot of the
@@ -24,11 +26,13 @@ export function StudioComposer({
   state,
   actions,
   dictation,
+  workspaces,
 }: {
   model: ModelState;
   state: ImageSessionsState;
   actions: ImageSessionsActions;
   dictation: Dictation;
+  workspaces?: Workspaces;
 }) {
   const s = state.active;
   const { draft } = s;
@@ -91,7 +95,7 @@ export function StudioComposer({
             if (canRun) actions.run();
           }}
         >
-          <PoolButton session={s} actions={actions} />
+          <PoolButton session={s} actions={actions} workspaces={workspaces} />
           <textarea
             ref={dictation.field}
             name="prompt"
@@ -202,9 +206,10 @@ function Inputs({ session: s, max, actions }: { session: ImageSession; max: numb
 }
 
 /** The `+` of the prompt box: the session's pool to pick inputs from, and an upload. */
-function PoolButton({ session: s, actions }: { session: ImageSession; actions: ImageSessionsActions }) {
+function PoolButton({ session: s, actions, workspaces }: { session: ImageSession; actions: ImageSessionsActions; workspaces?: Workspaces }) {
   const menu = useAnchoredMenu();
   const input = useRef<HTMLInputElement>(null);
+  const [fromWorkspace, setFromWorkspace] = useState(false);
   return (
     <div className="shrink-0">
       <button
@@ -215,7 +220,10 @@ function PoolButton({ session: s, actions }: { session: ImageSession; actions: I
         aria-haspopup="menu"
         aria-expanded={menu.open}
         className={`grid size-10 place-items-center hover:text-ink [&>svg]:size-[18px] ${menu.open ? "text-ink" : "text-ash"}`}
-        onClick={menu.toggle}
+        onClick={() => {
+          setFromWorkspace(false);
+          menu.toggle();
+        }}
       >
         <IconPlus />
       </button>
@@ -280,6 +288,21 @@ function PoolButton({ session: s, actions }: { session: ImageSession; actions: I
               <IconImage />
               Upload pictures
             </button>
+            {fromWorkspace ? (
+              <StoreWorkspacePictures
+                source={workspaces ?? pageWorkspaces()}
+                onTake={(pictures) => {
+                  menu.close();
+                  setFromWorkspace(false);
+                  void actions.addFromWorkspace(pictures);
+                }}
+              />
+            ) : (
+              <button type="button" role="menuitem" className="flex items-center gap-2 self-start py-1 font-display text-sm font-semibold text-ink hover:text-ember" onClick={() => setFromWorkspace(true)}>
+                <IconImage />
+                From a workspace
+              </button>
+            )}
           </div>,
           document.body,
         )}

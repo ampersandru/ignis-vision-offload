@@ -13,6 +13,7 @@ import { StudioSessions, StudioSettings } from "./StudioPanels.tsx";
 import { sidesOf } from "./studio.ts";
 import type { ImageSessionsActions, ImageSessionsState, StudioRun } from "./useImageSessions.ts";
 import { Viewer } from "./Viewer.tsx";
+import type { Workspaces } from "../workspace/workspaces.ts";
 
 // The image view (image/sessions.ts says what a session is), laid out as the
 // chat is: the sessions on the left, the next step's settings on the right,
@@ -31,6 +32,7 @@ export function ImageStudio({
   drawer,
   onDrawer,
   onSendToChat,
+  workspaces,
 }: {
   model: ModelState;
   state: ImageSessionsState;
@@ -39,6 +41,8 @@ export function ImageStudio({
   onDrawer: (drawer: StudioDrawer) => void;
   /** A pool picture into the chat's prompt box; absent, the viewer offers no way there. */
   onSendToChat?: (picture: PoolImage) => void;
+  /** The workspaces the pictures move to and from; the page's own when left out. */
+  workspaces?: Workspaces;
 }) {
   // Dictation into the prompt (spec speech/04): opened with the last step's prompt, as the enhancement rewrote it,
   // and the prompt as it stands.
@@ -63,10 +67,10 @@ export function ImageStudio({
       />
       <main aria-label="Image" className="flex min-w-0 flex-1 flex-col">
         <Timeline state={state} actions={actions} />
-        <StudioComposer model={model} state={state} actions={actions} dictation={dictation} />
+        <StudioComposer model={model} state={state} actions={actions} dictation={dictation} workspaces={workspaces} />
       </main>
       <StudioSettings open={drawer === "settings"} state={state} actions={actions} />
-      {state.viewing !== null && <Viewer session={state.active} n={state.viewing} actions={actions} onSendToChat={onSendToChat} />}
+      {state.viewing !== null && <Viewer session={state.active} n={state.viewing} actions={actions} onSendToChat={onSendToChat} workspaces={workspaces} />}
       <Marking state={state} actions={actions} />
     </div>
   );
