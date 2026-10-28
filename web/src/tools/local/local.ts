@@ -3,7 +3,7 @@ import type { ToolCall } from "../../api/sse.ts";
 import type { streamChat } from "../../api/stream.ts";
 import type { Figures } from "../../metrics/figures.ts";
 import { type Attachment, READ_LIMIT, readPiece } from "./attachments.ts";
-import { browserMemory, MEMORY_PROMPT_LIMIT, type MemoryNote, type MemoryStore } from "./memory.ts";
+import { browserMemory, type MemoryNote, type MemoryStore } from "./memory.ts";
 import { checkJs, type JsCheck, JS_OUTPUT_LIMIT, JS_TIMEOUT_MS, runJs, type WorkerFactory } from "./runjs.ts";
 
 // The local tools: everything that runs in the browser with no network.
@@ -54,7 +54,7 @@ export const UPDATE_PLAN_TOOL = tool(
 
 export const MEMORY_SAVE_TOOL = tool(
   MEMORY_SAVE,
-  "Save a note that stays across sessions: a lasting fact about the user, a preference, or project context. Only its title is listed in every prompt; the body is read on demand.",
+  "Save a note that stays across sessions: a lasting fact about the user, a preference, or project context. Only its title is shown to the chats; the body is read on demand.",
   {
     title: { type: "string", description: "A few words that say what the note is about." },
     body: { type: "string", description: "The full note, self-contained." },
@@ -110,26 +110,15 @@ For a task with several steps, keep a plan the user can follow with \`update_pla
 - Send every step each time; the list replaces the previous one.
 - Skip it for simple requests.`;
 
-export function memoryPrompt(notes: MemoryNote[]): string {
-  const lines: string[] = [];
-  let used = 0;
-  for (const n of [...notes].reverse()) {
-    const line = `- [${n.id}] ${n.title}`;
-    if (used + line.length > MEMORY_PROMPT_LIMIT) break;
-    lines.unshift(line);
-    used += line.length + 1;
-  }
-  const hidden = notes.length - lines.length;
-  const saved =
-    notes.length === 0
-      ? "No notes saved yet."
-      : `Saved notes, by title:\n${lines.join("\n")}${hidden > 0 ? `\n(${hidden} older notes not listed.)` : ""}`;
-  return `# Memory
-You keep notes that last across sessions. Only their titles are listed here: read the full text with \`memory_read\` when a title looks relevant, before you rely on it.
+/**
+ * The memory's part of the ignis system prompt: fixed text, the same whatever
+ * notes are saved (ADR 0072). The titles reach the model in the turn notice,
+ * after the history (tools/notice.ts).
+ */
+export const MEMORY_PROMPT = `# Memory
+You keep notes that last across chats, each a title and a body. Their titles reach you in a notice after the conversation: at a chat's first turn the title of every saved note, if there is any, and later only the notes the user or another chat saved, changed or deleted since the last notice. Read a note's full text with \`memory_read\` when a title looks relevant, before you rely on it.
 - Save a note with \`memory_save\` when you learn something that will still matter later — who the user is, their preferences, their projects — not the details of this conversation. Give it a title that says what it is about.
-- Delete a note with \`memory_delete\` when it turns out wrong or outdated; to change one, delete it and save the new version.
-${saved}`;
-}
+- Delete a note with \`memory_delete\` when it turns out wrong or outdated; to change one, delete it and save the new version.`;
 
 export const FILES_PROMPT = `# Files
 You can give the user a file with \`create_file\`: code, CSV, a long document — anything they will want to keep. Mention the file in your reply instead of repeating its content.`;

@@ -46,9 +46,9 @@ describe("conversationTurns", () => {
     ]);
   });
 
-  it("keeps the moment each turn was sent with, rather than the moment of this request", () => {
-    expect(conversationTurns([{ ...user("a"), dateTime: "It is now 01:52." }, reply("b")])).toEqual([
-      { role: "user", content: "a", dateTime: "It is now 01:52." },
+  it("keeps the notice each turn was sent with, rather than one written for this request", () => {
+    expect(conversationTurns([{ ...user("a"), notice: "It is now 01:52." }, reply("b")])).toEqual([
+      { role: "user", content: "a", notice: "It is now 01:52." },
       { role: "assistant", content: "b" },
     ]);
   });
@@ -144,11 +144,11 @@ describe("buildChatRequest", () => {
     ]);
   });
 
-  it("puts a turn's moment in a developer message ahead of it, and leaves the other turns alone", () => {
+  it("puts a turn's notice in a developer message ahead of it, and leaves the other turns alone", () => {
     const body = buildChatRequest({ ...settings, systemPrompt: "" }, [
-      { role: "user", content: "a", dateTime: "It is now 01:52." },
+      { role: "user", content: "a", notice: "It is now 01:52." },
       { role: "assistant", content: "b" },
-      { role: "user", content: "c", dateTime: "It is now 02:04." },
+      { role: "user", content: "c", notice: "It is now 02:04." },
     ]);
     expect(body.messages).toEqual([
       { role: "developer", content: "It is now 01:52." },
@@ -160,17 +160,17 @@ describe("buildChatRequest", () => {
   });
 
   /**
-   * The property the date and time tool's live option rests on: a turn's
-   * moment never moves a token of what went before it, so a request finds the
-   * last one whole at its head and the engine prefills only the new tail.
-   * Rewriting the earlier moments to the present instead would diverge at the
-   * first of them and cost a full prefill — 25 s of it at 98K tokens.
+   * The property the turn notice rests on (ADR 0072): a turn's notice never
+   * moves a token of what went before it, so a request finds the last one
+   * whole at its head and the engine prefills only the new tail. Rewriting the
+   * earlier notices to the present instead would diverge at the first of them
+   * and cost a full prefill — 25 s of it at 98K tokens.
    */
   it("grows a conversation by appending, leaving one request a prefix of the next", () => {
     const turns = [
-      { role: "user" as const, content: "a", dateTime: "It is now 01:52." },
+      { role: "user" as const, content: "a", notice: "It is now 01:52." },
       { role: "assistant" as const, content: "b" },
-      { role: "user" as const, content: "c", dateTime: "It is now 02:04." },
+      { role: "user" as const, content: "c", notice: "It is now 02:04." },
       { role: "assistant" as const, content: "d" },
     ];
     const before = buildChatRequest(settings, turns.slice(0, 2)).messages;

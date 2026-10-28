@@ -48,16 +48,16 @@ const text = (text: string): InputContent[] => [{ type: "input_text", text }];
 
 /** One turn's items, in the order a reply is generated: reasoning, text, calls. */
 function turnItems(turn: Turn): InputItem[] {
-  const moment: InputItem[] = turn.dateTime ? [{ type: "message", role: "developer", content: text(turn.dateTime) }] : [];
-  if (turn.role === "tool") return [...moment, { type: "function_call_output", call_id: turn.toolCallId ?? "", output: turn.content }];
+  const notice: InputItem[] = turn.notice ? [{ type: "message", role: "developer", content: text(turn.notice) }] : [];
+  if (turn.role === "tool") return [...notice, { type: "function_call_output", call_id: turn.toolCallId ?? "", output: turn.content }];
   if (turn.role === "user") {
     // Images first and the text behind them, as the chat request orders its parts; no words, no text part.
     const images = (turn.images ?? []).map((image): InputContent => ({ type: "input_image", image_url: image.url }));
     const content = images.length > 0 && turn.content === "" ? images : [...images, ...text(turn.content)];
-    return [...moment, { type: "message", role: "user", content }];
+    return [...notice, { type: "message", role: "user", content }];
   }
   return [
-    ...moment,
+    ...notice,
     ...(turn.reasoning ? [{ type: "reasoning" as const, content: [{ type: "reasoning_text" as const, text: turn.reasoning }], summary: [] as [] }] : []),
     ...(turn.content ? [{ type: "message" as const, role: "assistant" as const, content: [{ type: "output_text" as const, text: turn.content }] }] : []),
     ...(turn.toolCalls ?? []).map((c): InputItem => ({ type: "function_call", call_id: c.id, name: c.name, arguments: c.arguments })),

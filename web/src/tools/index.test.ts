@@ -22,8 +22,8 @@ import {
   FILES_PROMPT,
   MEMORY_DELETE_TOOL,
   MEMORY_READ_TOOL,
+  MEMORY_PROMPT,
   MEMORY_SAVE_TOOL,
-  memoryPrompt,
   PLAN_PROMPT,
   READ_FILE_TOOL,
   RUN_JS_TOOL,
@@ -33,7 +33,7 @@ import {
 import { WEB_FETCH_TOOL, WEB_IGNIS_PROMPT, WEB_SEARCH_TOOL } from "./web/web.ts";
 
 const now = new Date("2026-09-15T01:52:00+02:00");
-const ctx = { now, notes: [] };
+const ctx = { now };
 const doc: Attachment = { name: "a.txt", size: 2, kind: "text", text: "hi" };
 const all = {
   enabled: true,
@@ -102,7 +102,7 @@ describe("tools", () => {
         ASK_USER_IGNIS_PROMPT,
         runJsPrompt(true),
         PLAN_PROMPT,
-        memoryPrompt([]),
+        MEMORY_PROMPT,
         FILES_PROMPT,
         IMAGE_IGNIS_PROMPT,
         attachmentsPrompt([doc]),

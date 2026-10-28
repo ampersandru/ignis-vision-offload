@@ -65,7 +65,7 @@ describe("responseItems", () => {
   it("writes each turn as the items the Responses API reads, reasoning included", () => {
     const image = { name: "a.jpg", url: "data:image/jpeg;base64,AA", width: 8, height: 6 };
     const turns: Turn[] = [
-      { role: "user", content: "look", images: [image], dateTime: "It is now 01:52." },
+      { role: "user", content: "look", images: [image], notice: "It is now 01:52." },
       { role: "assistant", content: "Let me check.", reasoning: "hm", toolCalls: [{ id: "call_0", name: "agent", arguments: '{"prompt":"x"}' }] },
       { role: "tool", content: "a cat", toolCallId: "call_0" },
       { role: "assistant", content: "A cat." },
