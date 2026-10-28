@@ -49,6 +49,14 @@ describe("the workspace picker", () => {
     expect(html).toContain("changed 2026-10-27 09:31");
   });
 
+  it("offers only a new workspace to a chat whose workspace was deleted, saying why", () => {
+    const html = menu({ mode: "choices", canPick: false });
+    expect(html).toContain("New workspace");
+    expect(html).not.toContain("Small site");
+    expect(html).not.toContain("Trip plan");
+    expect(html).toContain("This chat&#x27;s workspace was deleted: its next file starts a new one. It picks no other, so that its history never mixes two.");
+  });
+
   it("says when there is no workspace to pick yet", () => {
     expect(menu({ mode: "choices", list: [] })).toContain("No other workspace yet.");
     expect(menu({ mode: "choices", list: null })).toContain("Reading the workspaces…");

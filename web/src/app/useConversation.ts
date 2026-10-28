@@ -17,12 +17,14 @@ import {
   addLogRow,
   addMessages,
   bindWorkspace,
+  bornInto,
   clearAttachments,
   createSession,
   editMessage,
   failedReply,
   forkSession,
   type LogRow,
+  mayPickWorkspace,
   type Message,
   openSession,
   removeAttachment,
@@ -31,7 +33,6 @@ import {
   titleOf,
   truncateFrom,
   type TurnSwitch,
-  unbindWorkspace,
   UNTITLED,
   updateMessage,
 } from "../sessions/sessions.ts";
@@ -241,37 +242,40 @@ export function useConversation({
   function chatBinding(sessionId: number, history: Message[], title?: string): ChatBinding {
     const now = () => listNow.current.sessions.find((s) => s.id === sessionId);
     return workspaces.chat(storage.keyOf(sessionId), {
-      bound: () => now()?.workspaceId ?? born.current.get(sessionId),
+      // The one born on this page first: until the list shows it, the chat names the deleted one it replaces.
+      bound: () => born.current.get(sessionId) ?? now()?.workspaceId,
       // A chat not named yet leaves the workspace the module's own name.
       name: () => title ?? (now()?.title === UNTITLED ? "" : (now()?.title ?? "")),
-      onBorn: (id) => {
+      onBorn: (id, replaced) => {
         born.current.set(sessionId, id);
-        setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, id) }));
+        setList((l) => ({ ...l, sessions: bornInto(l.sessions, sessionId, id, replaced) }));
       },
       seen: seenIn(history),
     });
   }
 
+  /** The chat on screen may pick an existing workspace: it has none, and none was born for it on this page. */
+  const canPick = mayPickWorkspace(active) && !born.current.has(active.id);
+
   /** Binds the chat on screen to an existing workspace, the picker's choice before its first file; a bound chat stays where it is. */
   function bindTo(workspaceId: string) {
     const sessionId = active.id;
-    if (active.workspaceId !== undefined || born.current.has(sessionId)) return;
+    if (!canPick) return;
     setList((l) => ({ ...l, sessions: bindWorkspace(l.sessions, sessionId, workspaceId) }));
   }
 
   /**
    * Deletes a workspace, freeing the pictures neither a chat nor an image
-   * session names (none while either has not read its sessions), and lets
-   * go of the chats that worked in it: their messages stay, and their next
-   * file starts a new workspace. A store that refuses the delete rejects, and
-   * the chats stay bound.
+   * session names (none while either has not read its sessions). The chats
+   * that worked in it keep their messages and still name it, as a chat
+   * whose workspace another tab deleted does: each picks no other, and its
+   * next file starts a new workspace (`bornInto`). A store that refuses the
+   * delete rejects.
    */
   async function deleteWorkspace(workspaceId: string) {
     const chats = pictures();
     const images = live ? live() : [];
     await workspaces.remove(workspaceId, chats === null || images === null ? null : [...chats, ...images]);
-    for (const [sessionId, id] of born.current) if (id === workspaceId) born.current.delete(sessionId);
-    setList((l) => ({ ...l, sessions: unbindWorkspace(l.sessions, workspaceId) }));
   }
 
   function deleteSession(sessionId: number) {
@@ -771,6 +775,7 @@ export function useConversation({
         return title === UNTITLED ? undefined : title;
       },
     } satisfies ChatNames,
+    canPick,
     bindTo,
     deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */

@@ -124,8 +124,10 @@ export type Session = {
   attachments: Attachment[];
   /**
    * The chat's workspace (spec #170): set when its first file is created, or
-   * when the user picks one before that, and never changed afterwards. A chat
-   * with no file has none.
+   * when the user picks one before that, and never changed afterwards but by
+   * a deletion. A chat with no file has none. A chat whose workspace was
+   * deleted, in this tab or another, still names it: it picks no other, and
+   * its next file starts a new one, which takes its place (`bornInto`).
    */
   workspaceId?: string;
   /**
@@ -146,18 +148,25 @@ export function createSession(id: number, startedAt = new Date()): Session {
   return { id, title: UNTITLED, messages: [], log: [], attachments: [], startedAt };
 }
 
-/** Binds a session to its workspace: once, since a chat never changes workspace. */
+/**
+ * Whether the chat may pick an existing workspace: only before it has one,
+ * so that its history never mixes two. A chat whose workspace was deleted
+ * still names it, and picks no other.
+ */
+export const mayPickWorkspace = (s: Session): boolean => s.workspaceId === undefined;
+
+/** Binds a session to the workspace picked for it, while it may pick one: a chat never changes workspace. */
 export function bindWorkspace(sessions: Session[], sessionId: number, workspaceId: string): Session[] {
-  return sessions.map((s) => (s.id === sessionId && s.workspaceId === undefined ? { ...s, workspaceId } : s));
+  return sessions.map((s) => (s.id === sessionId && mayPickWorkspace(s) ? { ...s, workspaceId } : s));
 }
 
-/** The chats of a workspace that was deleted, unbound: each may bind again, to a new workspace or another one. */
-export function unbindWorkspace(sessions: Session[], workspaceId: string): Session[] {
-  return sessions.map((s) => {
-    if (s.workspaceId !== workspaceId) return s;
-    const { workspaceId: _gone, ...rest } = s;
-    return rest;
-  });
+/**
+ * Binds a session to the workspace its first file was born into, in place of
+ * `replaced`, the deleted workspace it named, if any; a workspace picked for
+ * it meanwhile stays.
+ */
+export function bornInto(sessions: Session[], sessionId: number, workspaceId: string, replaced?: string): Session[] {
+  return sessions.map((s) => (s.id === sessionId && (mayPickWorkspace(s) || s.workspaceId === replaced) ? { ...s, workspaceId } : s));
 }
 
 /** An older chat's attachments, gone once they are files of its workspace. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { bindWorkspace, clearAttachments, createSession, forkSession, openSession, removeAttachment, type Session, unbindWorkspace } from "./sessions.ts";
+import { bindWorkspace, bornInto, clearAttachments, createSession, forkSession, mayPickWorkspace, openSession, removeAttachment, type Session } from "./sessions.ts";
 
 // A chat's files: an older chat's attachments, kept with it until its next
 // turn makes them files of its workspace, and the workspace it binds to.
@@ -28,14 +28,20 @@ describe("a chat's files", () => {
     expect(same[0]).toBe(sessions[0]);
   });
 
-  it("lets the chats of a deleted workspace go, and leaves the others as they were", () => {
-    const sessions = [...bindWorkspace([createSession(1)], 1, "w1"), ...bindWorkspace([createSession(2)], 2, "w2"), ...bindWorkspace([createSession(3)], 3, "w1")];
-    const left = unbindWorkspace(sessions, "w1");
-    expect(left.map((s) => s.workspaceId)).toEqual([undefined, "w2", undefined]);
-    expect(left[1]).toBe(sessions[1]);
-    expect("workspaceId" in left[0]).toBe(false);
-    // Unbound, a chat can bind again.
-    expect(bindWorkspace(left, 1, "w3")[0].workspaceId).toBe("w3");
+  it("lets a chat pick an existing workspace only before it has one: never again once its workspace is deleted", () => {
+    const fresh = createSession(1);
+    expect(mayPickWorkspace(fresh)).toBe(true);
+    const [bound] = bindWorkspace([fresh], 1, "w1");
+    expect(mayPickWorkspace(bound)).toBe(false);
+    // Its workspace deleted, here or in another tab, the chat still names it: picking another is refused.
+    expect(bindWorkspace([bound], 1, "w2")[0]).toBe(bound);
+  });
+
+  it("binds the workspace born with a chat's next file in place of the deleted one it named, and keeps a pick made meanwhile", () => {
+    const sessions = [...bindWorkspace([createSession(1)], 1, "gone"), createSession(2), ...bindWorkspace([createSession(3)], 3, "picked")];
+    const born = bornInto(bornInto(bornInto(sessions, 1, "new1", "gone"), 2, "new2"), 3, "new3");
+    expect(born.map((s) => s.workspaceId)).toEqual(["new1", "new2", "picked"]);
+    expect(born[2]).toBe(sessions[2]);
   });
 
   it("opens a new session rather than reuse an empty one bound to a workspace", () => {

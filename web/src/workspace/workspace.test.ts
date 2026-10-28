@@ -206,7 +206,8 @@ describe("read_file", () => {
   it("names the files when the name is wrong, and says what it cannot read", async () => {
     const workspaces = module();
     const a = chat(workspaces);
-    const id = await a.access.chat.workspace();
+    // A workspace with no file yet, the chat bound to it with the picker.
+    const id = a.bind((await workspaces.create("Trip plan")).id);
     expect((await run(a.access, "read_file", { name: "x.txt" })).error).toBe('No file is named "x.txt": the workspace holds no files.');
     await workspaces.add(id, [{ name: "a.txt", kind: "text", text: "" }, { name: "data.zip", kind: "other", blob: new Blob([new Uint8Array([80, 75])]) }], USER);
     expect((await run(a.access, "read_file", { name: "x.txt" })).error).toBe('No file is named "x.txt". The files are: "a.txt", "data.zip".');

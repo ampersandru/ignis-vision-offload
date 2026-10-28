@@ -103,6 +103,8 @@ export type WorkspaceOutcome = { ok: true; run: Partial<LocalRun> & { result: st
 
 const NO_WORKSPACE = "This chat has no workspace yet: it is created with the first file you write or the user attaches.";
 
+const DELETED = "This chat's workspace was deleted: a new one is created with the next file you write or the user attaches.";
+
 const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -136,6 +138,7 @@ async function find(access: WorkspaceAccess, raw: string): Promise<{ file: Works
   const id = access.chat.bound();
   if (!id) return { error: NO_WORKSPACE };
   const all = await access.workspaces.files(id);
+  if (all.length === 0 && !(await access.workspaces.get(id))) return { error: DELETED };
   const listed = all.filter(present);
   const name = cleanName(raw);
   const file = listed.find((f) => f.name === name) ?? all.find((f) => f.name === name);
@@ -222,8 +225,9 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
       const id = access.chat.bound();
       if (!id) return { ok: true, run: { listed: 0, result: NO_WORKSPACE } };
       const [workspace, all] = await Promise.all([access.workspaces.get(id), access.workspaces.files(id)]);
+      if (!workspace) return { ok: true, run: { listed: 0, result: DELETED } };
       const listed = all.filter(present);
-      const title = `The workspace "${workspace?.name ?? ""}"`;
+      const title = `The workspace "${workspace.name}"`;
       return {
         ok: true,
         run: {

@@ -45,8 +45,9 @@ kept in this browser and never on the server. It is born with the chat's
 first file, a file you attach, make in the [panel](#the-workspace-panel) or
 one the model writes, and takes the chat's title as its name; a chat that
 makes no file has none, unless you pick an existing workspace for it
-([the picker](#the-workspace-picker)). The chat stays in that workspace until
-the workspace is deleted, a fork shares it, and deleting the chat keeps it.
+([the picker](#the-workspace-picker)). A first file the browser refuses to
+store leaves no workspace behind. The chat stays in that workspace until the
+workspace is deleted, a fork shares it, and deleting the chat keeps it.
 
 A prompt that attached files lists them under its text, by the names they
 took in the workspace: a name the workspace already holds gets a number,
@@ -84,8 +85,11 @@ files go. It removes the workspace, its files and every version, and frees
 what nothing else uses: the bytes no other workspace holds, and the pictures
 no chat, image session or other workspace names. It cannot be undone. The
 chats that worked in it keep their messages, and their next file starts a new
-workspace, as if they never had one. Deleting a chat never deletes its
-workspace.
+workspace, named after the chat; until then the picker reads **New
+workspace** and offers no existing one, so that a chat's history never mixes
+two workspaces. A chat whose workspace another tab deleted is the same, and
+the model's `list_files` says the workspace was deleted. Deleting a chat never
+deletes its workspace.
 
 ### The workspace panel
 

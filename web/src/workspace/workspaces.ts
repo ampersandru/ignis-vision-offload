@@ -83,7 +83,12 @@ export type ChatBinding = {
   readonly key: string;
   /** The workspace the chat is bound to, if it is. */
   bound(): WorkspaceId | undefined;
-  /** The chat's workspace, born now and named after the chat when it has none: once, however many calls ask at once. */
+  /**
+   * The chat's workspace: the one it is bound to while the store holds it,
+   * else a new one named after the chat, reserved once however many calls ask
+   * at once, which the store keeps with its first file (`reserve`). A chat
+   * whose workspace was deleted, in this tab or another, gets a new one so.
+   */
   workspace(): Promise<WorkspaceId>;
   /** The chat's model as a reader: it has seen what its history read or made, and what it reads or makes in this turn. */
   readonly reader: Reader;
@@ -95,8 +100,12 @@ export type BindingOptions = {
   bound: () => WorkspaceId | undefined;
   /** The new workspace's name: the chat's title as it is now. */
   name: () => string;
-  /** The workspace born for the chat: the chat records it, and never changes it after. */
-  onBorn: (id: WorkspaceId) => void;
+  /**
+   * The workspace born for the chat, once the store keeps it with its first
+   * file: the chat records it, in place of `replaced`, the deleted one it
+   * named, if any, and never changes it after.
+   */
+  onBorn: (id: WorkspaceId, replaced?: WorkspaceId) => void;
   /** The versions the chat's history read or made (tools.ts, seenIn): what its reader has seen when the turn starts. */
   seen?: Iterable<Seen>;
 };
@@ -134,6 +143,13 @@ export type Workspaces = {
   /** A version's content, as a download gives it: its text, or its bytes; null when the page holds no bytes of it. */
   content(version: Version): Promise<Blob | null>;
   create(name: string): Promise<Workspace>;
+  /**
+   * A new workspace that the store keeps only with its first file, written by
+   * `add` or `writeText`: one whose first file the store refuses leaves no
+   * workspace behind (spec #170, a workspace is born with its first file).
+   * Until then `list` and `get` do not know it.
+   */
+  reserve(name: string): Workspace;
   rename(id: WorkspaceId, name: string): Promise<{ ok: true; workspace: Workspace } | { ok: false; error: string }>;
   /**
    * Deletes a workspace with its files and every version, and frees the bytes
@@ -229,10 +245,10 @@ export function createWorkspaces(
   // The text being computed for a version, by the file's id and the version's number.
   const deriving = new Map<string, { result: Promise<Readable>; stop: AbortController; waiting: number }>();
   const listeners = new Set<(change: { workspace: WorkspaceId; file?: string }) => void>();
-  // The workspace each chat's first file is creating, by the chat's key, kept once born.
-  const births = new Map<string, Promise<WorkspaceId>>();
-  // The same once born, read without waiting: deleting a workspace forgets the births into it.
-  const bornTo = new Map<string, WorkspaceId>();
+  // The workspaces reserved and not kept yet, waiting for their first file, with what keeping one tells.
+  const pending = new Map<WorkspaceId, { workspace: Workspace; onKept?: (id: WorkspaceId) => void }>();
+  // The workspace reserved for each chat with none, by the chat's key: deleting a workspace forgets the ones reserved as it.
+  const reservations = new Map<string, WorkspaceId>();
   // The guard's memory: for each reader, the newest version of each file (by its id) it read or made.
   const seen = new WeakMap<Reader, Map<string, number>>();
   let queue: Promise<unknown> = Promise.resolve();
@@ -324,6 +340,30 @@ export function createWorkspaces(
     });
   }
 
+  function reserve(name: string, onKept?: (id: WorkspaceId) => void): Workspace {
+    const at = now();
+    const workspace: Workspace = { format: WORKSPACE_FORMAT, id: newId(), name: name.trim() || "Workspace", created: at, updated: at };
+    pending.set(workspace.id, { workspace, ...(onKept ? { onKept } : {}) });
+    return workspace;
+  }
+
+  /** The workspace a new file goes into: the store's, or one reserved for its first file; null once it is deleted. */
+  async function home(id: WorkspaceId): Promise<Workspace | null> {
+    return pending.get(id)?.workspace ?? (await get(id));
+  }
+
+  /** The workspace changed at `at`: a reserved one is kept now, with the first file just written into it. */
+  async function changed(id: WorkspaceId, at: number): Promise<Workspace> {
+    const reserved = pending.get(id);
+    if (!reserved) return touch(id, at);
+    const workspace = { ...reserved.workspace, updated: at };
+    await store.putDoc(WORKSPACES, id, workspace);
+    pending.delete(id);
+    reserved.onKept?.(id);
+    notify({ workspace: id });
+    return workspace;
+  }
+
   async function content(version: Version): Promise<Blob | null> {
     if (version.text !== undefined) return new Blob([version.text], { type: "text/plain;charset=utf-8" });
     if (!version.bytes) return null;
@@ -378,10 +418,17 @@ export function createWorkspaces(
   /** Keeps the file with its new version `version`, made by `by`, and says what it wrote. */
   async function commit(file: WorkspaceFile, version: Version, by: Changer, created: boolean): Promise<WriteOutcome> {
     await store.putDoc(filesCollection(file.workspace), file.id, file);
-    const changed = await touch(file.workspace, version.at);
+    let workspace: Workspace;
+    try {
+      workspace = await changed(file.workspace, version.at);
+    } catch (err) {
+      // The first file of a workspace the store did not keep is not left behind in it.
+      if (pending.has(file.workspace)) await store.deleteDoc(filesCollection(file.workspace), file.id).catch(() => {});
+      throw err;
+    }
     saw(by, file.id, version.n);
     notify({ workspace: file.workspace, file: file.id });
-    return { ok: true, written: { workspace: file.workspace, file: file.id, name: file.name, version: version.n }, version, created, workspace: changed };
+    return { ok: true, written: { workspace: file.workspace, file: file.id, name: file.name, version: version.n }, version, created, workspace };
   }
 
   /** The file `id` of `workspace` as it is now, with the version `by` adds to it, or why `by` may not change it. */
@@ -409,6 +456,7 @@ export function createWorkspaces(
     },
     content,
     create,
+    reserve: (name) => reserve(name),
     rename(id, raw) {
       return serial(async () => {
         const name = raw.trim();
@@ -429,8 +477,8 @@ export function createWorkspaces(
         const freed = freedBy(gone, others, elsewhere);
         for (const file of gone) await store.deleteDoc(filesCollection(id), file.id);
         await store.deleteDoc(WORKSPACES, id);
-        // A chat born into it starts again with its next file.
-        for (const [key, born] of bornTo) if (born === id) births.delete(key), bornTo.delete(key);
+        // A chat it was reserved for gets a new one with its next file.
+        for (const [key, reserved] of reservations) if (reserved === id) reservations.delete(key);
         // What the store fails to free stays in it, unnamed; the workspace is gone either way.
         for (const blob of freed.blobs) await store.deleteBlob(blob).catch(() => {});
         for (const image of freed.images) await store.deleteImage(image).catch(() => {});
@@ -451,20 +499,18 @@ export function createWorkspaces(
         agent: (agent) => newReader({ by: "chat", chat: key, agent: { call: agent.call, name: agent.name } }),
         bound: binding.bound,
         workspace() {
-          const bound = binding.bound();
-          if (bound) return Promise.resolve(bound);
-          let birth = births.get(key);
-          if (!birth) {
-            birth = create(binding.name()).then((workspace) => {
-              bornTo.set(key, workspace.id);
-              binding.onBorn(workspace.id);
-              return workspace.id;
-            });
-            births.set(key, birth);
-            // A birth the store refused is tried again by the next call.
-            birth.catch(() => births.delete(key));
-          }
-          return birth;
+          // In the queue of writes: two calls at once reserve one workspace, and a deletion before them is seen.
+          return serial(async () => {
+            const bound = binding.bound();
+            if (bound !== undefined && (await home(bound))) return bound;
+            // A reservation whose first file the store refused waits for the next one.
+            const reserved = reservations.get(key);
+            if (reserved !== undefined && (await home(reserved))) return reserved;
+            // None yet, or the one the chat names is gone: a new one, kept with its first file.
+            const workspace = reserve(binding.name(), (id) => binding.onBorn(id, bound));
+            reservations.set(key, workspace.id);
+            return workspace.id;
+          });
         },
       };
     },
@@ -477,6 +523,8 @@ export function createWorkspaces(
       return serial(async (): Promise<WriteOutcome> => {
         const name = cleanName(raw);
         if (!name) return { ok: false, error: `"${raw}" is not a file name.` };
+        // Nothing is written under a workspace that is gone.
+        if (!(await home(workspace))) return { ok: false, error: "That workspace was deleted." };
         const kind = kindOf(name);
         const had = named(await files(workspace), name);
         if (had ? had.kind !== "text" : kind !== "text") {
@@ -529,26 +577,34 @@ export function createWorkspaces(
     },
     add(workspace, incoming, by) {
       return serial(async () => {
+        // Nothing is written under a workspace that is gone.
+        if (!(await home(workspace))) throw new Error("That workspace was deleted.");
         const taken = (await files(workspace)).map((f) => f.name);
         const written: Written[] = [];
-        for (const item of incoming) {
-          const at = now();
-          const name = uniqueName(cleanName(item.name) ?? "file", taken);
-          taken.push(name);
-          const { kind, bytes } = await keep(item);
-          const version: Version = {
-            n: 1,
-            author: authorOf(by),
-            at,
-            ...(item.text !== undefined ? { text: item.text } : {}),
-            ...(bytes ? { bytes } : {}),
-            ...(item.derived !== undefined ? { derived: item.derived } : {}),
-          };
-          const file: WorkspaceFile = { format: WORKSPACE_FORMAT, id: newId(), workspace, name, kind, versions: [version] };
-          await store.putDoc(filesCollection(workspace), file.id, file);
-          written.push({ workspace, file: file.id, name, version: 1 });
+        try {
+          for (const item of incoming) {
+            const at = now();
+            const name = uniqueName(cleanName(item.name) ?? "file", taken);
+            taken.push(name);
+            const { kind, bytes } = await keep(item);
+            const version: Version = {
+              n: 1,
+              author: authorOf(by),
+              at,
+              ...(item.text !== undefined ? { text: item.text } : {}),
+              ...(bytes ? { bytes } : {}),
+              ...(item.derived !== undefined ? { derived: item.derived } : {}),
+            };
+            const file: WorkspaceFile = { format: WORKSPACE_FORMAT, id: newId(), workspace, name, kind, versions: [version] };
+            await store.putDoc(filesCollection(workspace), file.id, file);
+            written.push({ workspace, file: file.id, name, version: 1 });
+          }
+          if (written.length > 0) await changed(workspace, now());
+        } catch (err) {
+          // All of them or none: the files the store took before it refused one go again, and a workspace born with them is not kept.
+          for (const w of written) await store.deleteDoc(filesCollection(workspace), w.file).catch(() => {});
+          throw err;
         }
-        if (written.length > 0) await touch(workspace, now());
         for (const w of written) saw(by, w.file, w.version);
         for (const w of written) notify({ workspace, file: w.file });
         return written;

@@ -57,7 +57,8 @@ export async function importWorkspace(
   if (kept.length === 0) return { ok: false, error: `${zip.name} holds no files.` };
   const incoming: Incoming[] = [];
   for (const entry of kept) incoming.push(await readUpload(new File([entry.data as BlobPart], entry.name), readPdf));
-  const workspace = await workspaces.create(workspaceNamed(zip.name));
+  // Kept with its files: a zip whose files the store refuses makes no workspace either.
+  const workspace = workspaces.reserve(workspaceNamed(zip.name));
   await workspaces.add(workspace.id, incoming, USER);
   return { ok: true, workspace, files: incoming.length };
 }

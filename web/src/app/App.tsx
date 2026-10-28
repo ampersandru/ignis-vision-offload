@@ -370,6 +370,7 @@ export function App() {
               workspace={chatWorkspace.workspace}
               files={chatWorkspace.files}
               list={workspaceList}
+              canPick={chat.canPick}
               onPick={chat.bindTo}
               onRename={async (name) => {
                 const id = chatWorkspace.workspace?.id;
