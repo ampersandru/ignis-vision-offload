@@ -73,3 +73,6 @@ export function toVtt(t: Transcript): string {
   );
   return `WEBVTT\n\n${cues.join("\n")}`;
 }
+
+/** A file name from a title: what the downloads are saved as, and what Send to workspace names its file. */
+export const fileStem = (title: string) => title.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "transcript";

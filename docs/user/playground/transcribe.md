@@ -265,6 +265,8 @@ as:
 box. Nothing is sent until you press Send: ask for a summary, the decisions,
 the action items.
 
+**Send to workspace** asks which workspace, a new one named after the transcript or one you already have, and adds the transcript to it as a Markdown file, the very text the `.md` download writes, so the model can read it in a chat whose workspace it is. A name the workspace already holds gets a number, as any file you add does. The transcript stays here as it was; the file is a copy, and a later correction does not reach it until you send again.
+
 ## Asking about it
 
 The field at the foot of the transcript, over the deck, asks the text model
