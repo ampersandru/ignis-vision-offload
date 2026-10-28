@@ -123,3 +123,53 @@ export function folded(lines: DiffLine[], context = 3): DiffRow[] {
   flush();
   return rows;
 }
+
+/** One side of a side-by-side row: the line and its number in that version, or nothing where the other side has a line the first lacks. */
+export type Cell = { kind: DiffLine["kind"]; text: string; n: number } | null;
+
+/** A row of the side-by-side diff: the before line and the after line it faces (`changed` unless both are the same line), or a run of kept lines folded across both columns. */
+export type SideRow = { kind: "pair"; left: Cell; right: Cell; changed: boolean } | { kind: "skipped"; count: number };
+
+/**
+ * The diff in two columns, the before on the left and the after on the right.
+ * A run of removed lines next to a run of added ones pairs up row by row, the
+ * shorter side padded with empty cells; a kept line faces itself. Kept lines
+ * far from a change fold across both columns unless `showAll`.
+ */
+export function sideBySide(lines: DiffLine[], showAll = false): SideRow[] {
+  const rows: SideRow[] = [];
+  let gone: Cell[] = [];
+  let come: Cell[] = [];
+  const flush = () => {
+    for (let i = 0; i < Math.max(gone.length, come.length); i++) rows.push({ kind: "pair", left: gone[i] ?? null, right: come[i] ?? null, changed: true });
+    gone = [];
+    come = [];
+  };
+  for (const row of showAll ? lines : folded(lines)) {
+    if (row.kind === "removed") gone.push({ kind: "removed", text: row.text, n: row.before });
+    else if (row.kind === "added") come.push({ kind: "added", text: row.text, n: row.after });
+    else {
+      flush();
+      if (row.kind === "skipped") rows.push(row);
+      else rows.push({ kind: "pair", left: { kind: "same", text: row.text, n: row.before }, right: { kind: "same", text: row.text, n: row.after }, changed: false });
+    }
+  }
+  flush();
+  return rows;
+}
+
+/** The indexes of the rows that start a change block, a run of changed rows: what the previous and next buttons visit. Works on the unified rows and the side-by-side ones alike. */
+export function changeAnchors(rows: (DiffRow | SideRow)[]): number[] {
+  const changed = (r: DiffRow | SideRow) => (r.kind === "pair" ? r.changed : r.kind === "removed" || r.kind === "added");
+  const anchors: number[] = [];
+  rows.forEach((row, i) => {
+    if (changed(row) && (i === 0 || !changed(rows[i - 1]))) anchors.push(i);
+  });
+  return anchors;
+}
+
+/** The lines the diff removes and adds. */
+export function changeCounts(lines: DiffLine[]): { removed: number; added: number } {
+  const removed = lines.filter((l) => l.kind === "removed").length;
+  return { removed, added: lines.filter((l) => l.kind === "added").length };
+}
