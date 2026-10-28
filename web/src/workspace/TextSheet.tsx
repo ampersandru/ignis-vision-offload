@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { isHtmlName } from "../ui/HtmlPreview.tsx";
 import { Markdown } from "../ui/Markdown.tsx";
 import { SHEET_BUTTON, Sheet, underlined } from "../ui/Sheet.tsx";
-import { BUTTON } from "./looks.tsx";
 import { CsvTable } from "./previews.tsx";
 import { isCsvName, isMarkdownName, isSvgName, svgDataUrl } from "./site.ts";
 
@@ -40,15 +39,6 @@ const VIEWS: Record<TextKind, { id: TextView; label: string }[]> = {
   ],
   text: [],
 };
-
-/** The button that opens the file full screen. */
-export function ExpandButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button type="button" className={BUTTON} onClick={onClick}>
-      Expand
-    </button>
-  );
-}
 
 /** A text's lines numbered from 1, in the mono face, wrapped; the newline that ends the text starts no line. */
 function NumberedSource({ text }: { text: string }) {

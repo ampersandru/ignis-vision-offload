@@ -138,16 +138,16 @@ export type SideRow = { kind: "pair"; left: Cell; right: Cell; changed: boolean 
  */
 export function sideBySide(lines: DiffLine[], showAll = false): SideRow[] {
   const rows: SideRow[] = [];
-  let gone: Cell[] = [];
-  let come: Cell[] = [];
+  let removed: Cell[] = [];
+  let added: Cell[] = [];
   const flush = () => {
-    for (let i = 0; i < Math.max(gone.length, come.length); i++) rows.push({ kind: "pair", left: gone[i] ?? null, right: come[i] ?? null, changed: true });
-    gone = [];
-    come = [];
+    for (let i = 0; i < Math.max(removed.length, added.length); i++) rows.push({ kind: "pair", left: removed[i] ?? null, right: added[i] ?? null, changed: true });
+    removed = [];
+    added = [];
   };
   for (const row of showAll ? lines : folded(lines)) {
-    if (row.kind === "removed") gone.push({ kind: "removed", text: row.text, n: row.before });
-    else if (row.kind === "added") come.push({ kind: "added", text: row.text, n: row.after });
+    if (row.kind === "removed") removed.push({ kind: "removed", text: row.text, n: row.before });
+    else if (row.kind === "added") added.push({ kind: "added", text: row.text, n: row.after });
     else {
       flush();
       if (row.kind === "skipped") rows.push(row);

@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { SideRow } from "./diff.ts";
 import { USER, type Version, type WorkspaceFile } from "./files.ts";
-import { changeKey, DiffSheet, DiffView, FileEditor, FileHistory } from "./FileHistory.tsx";
+import { changeKey, DiffSheet, diffSheetView, DiffView, FileEditor, FileHistory } from "./FileHistory.tsx";
+import { BUTTON } from "./looks.tsx";
 import { authorName } from "./panel.ts";
 
 // A text file's editor, and any file's history with the diff between two
@@ -142,6 +144,8 @@ describe("the Expand button of the panel's diff", () => {
   it("opens the diff full screen from beside the count, and the panel keeps its unified table", () => {
     const html = renderToStaticMarkup(<FileHistory file={notes} whom={whom} onRestore={() => {}} />);
     expect(html).toMatch(/<p[^>]*>1 line removed, 1 added<\/p><button[^>]*>Expand<\/button>/);
+    // The same button as the text viewer's Expand.
+    expect(html).toContain(`<button type="button" class="${BUTTON}">Expand</button>`);
     expect(html).toContain('data-diff="removed"');
     expect(html).not.toContain('role="dialog"');
   });
@@ -154,20 +158,22 @@ describe("the Expand button of the panel's diff", () => {
 
 describe("the full-screen diff", () => {
   const versions = [v(1, USER, "# Trip\n- Rome\n- Pisa\n"), v(2, THIS, "# Trip\n- Naples\n- Bari\n- Pisa\n")];
-  const sheet = (over: Partial<Parameters<typeof DiffSheet>[0]> = {}) =>
+  /** The sheet for the two `versions`, laid out as `layout` and `showAll` say, as DiffFullscreen hands it its view. */
+  const sheet = ({ layout = "split", showAll = false, versions: shown = versions, ...over }: Partial<Omit<Parameters<typeof DiffSheet>[0], "view">> = {}) =>
     renderToStaticMarkup(
       <DiffSheet
         name="notes.md"
-        versions={versions}
+        versions={shown}
         whom={whom}
         from={1}
         to={2}
         onChoose={() => {}}
-        layout="split"
+        view={diffSheetView(shown[0].text ?? "", shown[1].text ?? "", layout, showAll)}
+        layout={layout}
         onLayout={() => {}}
-        showAll={false}
+        showAll={showAll}
         onShowAll={() => {}}
-        at={0}
+        block={0}
         onGo={() => {}}
         onClose={() => {}}
         {...over}
@@ -224,7 +230,7 @@ describe("the full-screen diff", () => {
     expect(first).not.toMatch(/title="Next change \(n\)"[^>]*disabled=""/);
     expect(first).toMatch(/title="Previous change \(p\)"[^>]*disabled=""/);
     expect((first.match(/data-anchor/g) ?? []).length).toBe(2);
-    expect(sheet({ versions: two, at: 1 })).toMatch(/title="Next change \(n\)"[^>]*disabled=""/);
+    expect(sheet({ versions: two, block: 1 })).toMatch(/title="Next change \(n\)"[^>]*disabled=""/);
   });
 
   it("says when two versions hold the same text, or differ only in their line endings", () => {
@@ -233,6 +239,28 @@ describe("the full-screen diff", () => {
     expect(sheet({ versions: same })).not.toContain("Show all lines");
     const eol = [v(1, USER, "a\r\nb\r\n"), v(2, THIS, "a\nb")];
     expect(sheet({ versions: eol })).toContain("The two versions differ only in their line endings, or the newline at the end.");
+  });
+});
+
+describe("what the full-screen diff shows", () => {
+  const long = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+  const edited = long.replace("line 3\n", "line 3!\n").replace("line 26\n", "line 26!\n");
+
+  it("counts the lines and finds the change blocks of the rows it lays out, once, for the buttons, the keys and the marks alike", () => {
+    const split = diffSheetView(long, edited, "split", false);
+    expect([split.removed, split.added, split.same]).toEqual([2, 2, false]);
+    // Lines 1 and 2, the change, lines 4 to 6, 16 lines folded, lines 23 to 25, the change, then lines 27 to 30: a fold of one line shows it.
+    expect((split.rows as SideRow[]).map((r) => (r.kind === "skipped" ? `skip ${r.count}` : r.changed ? "changed" : "same"))).toEqual([
+      "same", "same", "changed", "same", "same", "same", "skip 16", "same", "same", "same", "changed", "same", "same", "same", "same",
+    ]);
+    expect(split.anchors).toEqual([2, 10]);
+    const unified = diffSheetView(long, edited, "unified", true);
+    expect(unified.rows).toHaveLength(32);
+    expect(unified.anchors).toEqual([2, 26]);
+  });
+
+  it("says when the two texts hold the same lines", () => {
+    expect(diffSheetView("a\n", "a\n", "split", false)).toMatchObject({ same: true, anchors: [] });
   });
 });
 

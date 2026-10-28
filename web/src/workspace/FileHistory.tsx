@@ -1,9 +1,10 @@
-import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { caption } from "../ui/classes.ts";
 import { SHEET_BUTTON, Sheet, underlined } from "../ui/Sheet.tsx";
 import { type Cell, changeAnchors, changeCounts, type DiffRow, folded, lineDiff, type SideRow, sideBySide } from "./diff.ts";
 import { type Author, latest, timeLabel, type Version, type WorkspaceFile } from "./files.ts";
+import { ExpandButton } from "./looks.tsx";
 import { type Draft, editing, sizeLabel } from "./panel.ts";
 
 // A file of the workspace panel by hand (spec #170): a text file's editor,
@@ -18,6 +19,9 @@ export type SaveOutcome = { ok: true; version: number } | { ok: false; error: st
 const BUTTON = "cut shrink-0 bg-surface px-2.5 py-1.5 font-display text-xs font-semibold text-ink [--cut-size:6px] hover:bg-line disabled:cursor-not-allowed disabled:opacity-50";
 
 const SELECT = "min-w-0 rounded-[2px] border border-line bg-surface px-2 py-1 text-xs text-ink focus:border-ember focus:outline-none";
+
+/** The text of version `n` among `versions`, none if it holds no text. */
+const textOf = (versions: Version[], n: number) => versions.find((v) => v.n === n)?.text;
 
 const SAVE = "cut shrink-0 bg-ember px-3 py-1.5 font-display text-xs font-semibold text-[#1c2026] [--cut-size:6px] hover:bg-[#ff7a45] disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -82,7 +86,6 @@ export function FileHistory({ file, whom, onRestore }: { file: WorkspaceFile; wh
   const [expanded, setExpanded] = useState(false);
   const newest = latest(file);
   const [from, to] = pair ?? (texts.length >= 2 ? [texts[texts.length - 2].n, texts[texts.length - 1].n] : [0, 0]);
-  const textOf = (n: number) => texts.find((v) => v.n === n)?.text;
   const choose = (side: 0 | 1, n: number) => setPair(side === 0 ? [n, to] : [from, n]);
   const option = (v: Version) => (
     <option key={v.n} value={v.n}>
@@ -104,7 +107,7 @@ export function FileHistory({ file, whom, onRestore }: { file: WorkspaceFile; wh
               {texts.map(option)}
             </select>
           </div>
-          <DiffView before={textOf(from) ?? ""} after={textOf(to) ?? ""} onExpand={() => setExpanded(true)} />
+          <DiffView before={textOf(texts, from) ?? ""} after={textOf(texts, to) ?? ""} onExpand={() => setExpanded(true)} />
           {expanded && <DiffFullscreen name={file.name} versions={texts} whom={whom} from={from} to={to} onChoose={choose} onClose={() => setExpanded(false)} />}
         </div>
       )}
@@ -162,11 +165,7 @@ export function DiffView({ before, after, onExpand }: { before: string; after: s
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-ash">{countLabel(removed, added)}</p>
-        {onExpand && (
-          <button type="button" className={BUTTON} onClick={onExpand}>
-            Expand
-          </button>
-        )}
+        {onExpand && <ExpandButton onClick={onExpand} />}
       </div>
       <div className="max-h-[50vh] overflow-auto bg-surface">
         <UnifiedTable rows={folded(lines)} sheet={false} />
@@ -175,11 +174,10 @@ export function DiffView({ before, after, onExpand }: { before: string; after: s
   );
 }
 
-/** The unified rows as a table; in the sheet each row carries its index and the rows that start a change block are marked, for previous and next to scroll to. */
-function UnifiedTable({ rows, sheet }: { rows: DiffRow[]; sheet: boolean }) {
+/** The unified rows as a table; in the sheet each row carries its index and the rows that start a change block (`anchors`) are marked, for previous and next to scroll to. */
+function UnifiedTable({ rows, sheet, anchors = [] }: { rows: DiffRow[]; sheet: boolean; anchors?: number[] }) {
   const palette = sheet ? SHEET_ROW : ROW;
   const ash = sheet ? "text-[#939ba4]" : "text-ash";
-  const anchors = sheet ? changeAnchors(rows) : [];
   return (
     <table className="w-full border-collapse font-mono text-xs leading-relaxed">
       <tbody>
@@ -204,9 +202,8 @@ function UnifiedTable({ rows, sheet }: { rows: DiffRow[]; sheet: boolean }) {
   );
 }
 
-/** The two columns of a side-by-side diff: before on the left, after on the right, each with its line numbers, a folded run across both. */
-function SideTable({ rows }: { rows: SideRow[] }) {
-  const anchors = changeAnchors(rows);
+/** The two columns of a side-by-side diff: before on the left, after on the right, each with its line numbers, a folded run across both; the rows that start a change block (`anchors`) marked. */
+function SideTable({ rows, anchors }: { rows: SideRow[]; anchors: number[] }) {
   const side = (cell: Cell, edge: boolean) => {
     const tone = cell ? SHEET_ROW[cell.kind] : "";
     const fill = cell?.kind === "removed" ? "bg-[#ff7b6b]/10" : cell?.kind === "added" ? "bg-[#3ecf8e]/10" : "";
@@ -254,6 +251,17 @@ function sheetRows(lines: ReturnType<typeof lineDiff>, layout: DiffLayout, showA
   return layout === "split" ? sideBySide(lines, showAll) : showAll ? lines : folded(lines);
 }
 
+/** What the full-screen diff shows of two texts: the counts, whether they hold the same lines, the rows it lays out and the change blocks among them. */
+export type DiffSheetView = { before: string; after: string; removed: number; added: number; same: boolean; rows: DiffRow[] | SideRow[]; anchors: number[] };
+
+/** The diff of `before` and `after` as the sheet lays it out, worked out once for its header, its body, and the keys and buttons that visit the changes. */
+export function diffSheetView(before: string, after: string, layout: DiffLayout, showAll: boolean): DiffSheetView {
+  const lines = lineDiff(before, after);
+  const { removed, added } = changeCounts(lines);
+  const rows = sheetRows(lines, layout, showAll);
+  return { before, after, removed, added, same: removed === 0 && added === 0, rows, anchors: changeAnchors(rows) };
+}
+
 type SheetProps = {
   name: string;
   versions: Version[];
@@ -264,7 +272,7 @@ type SheetProps = {
   onClose: () => void;
 };
 
-/** The full-screen diff's sheet, header and body, as props: the state, and the keys but Esc (`onKey`), are `DiffFullscreen`'s. */
+/** The full-screen diff's sheet, header and body, as props: the state, what it shows (`view`), and the keys but Esc (`onKey`), are `DiffFullscreen`'s. */
 export function DiffSheet({
   name,
   versions,
@@ -272,34 +280,29 @@ export function DiffSheet({
   from,
   to,
   onChoose,
+  view,
   layout,
   onLayout,
   showAll,
   onShowAll,
-  at,
+  block,
   onGo,
   onClose,
   onKey,
   bodyRef,
 }: SheetProps & {
+  view: DiffSheetView;
   layout: DiffLayout;
   onLayout: (layout: DiffLayout) => void;
   showAll: boolean;
   onShowAll: (on: boolean) => void;
   /** The change block last visited, from 0. */
-  at: number;
+  block: number;
   onGo: (block: number) => void;
   onKey?: (event: KeyboardEvent<HTMLDivElement>) => void;
   bodyRef?: RefObject<HTMLDivElement | null>;
 }) {
-  const textOf = (n: number) => versions.find((v) => v.n === n)?.text ?? "";
-  const before = textOf(from);
-  const after = textOf(to);
-  const lines = lineDiff(before, after);
-  const { removed, added } = changeCounts(lines);
-  const same = removed === 0 && added === 0;
-  const rows = sheetRows(lines, layout, showAll);
-  const blocks = changeAnchors(rows).length;
+  const { before, after, removed, added, same, rows, anchors } = view;
   const select = (label: string, side: 0 | 1, value: number): ReactNode => (
     <select aria-label={label} value={value} className={SHEET_SELECT} onChange={(e) => onChoose(side, Number(e.currentTarget.value))}>
       {versions.map((v) => (
@@ -330,14 +333,14 @@ export function DiffSheet({
             Show all lines
           </button>
           <div className="flex gap-4">
-            <button type="button" title="Previous change (p)" disabled={at <= 0} onClick={() => onGo(at - 1)} className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}>
+            <button type="button" title="Previous change (p)" disabled={block <= 0} onClick={() => onGo(block - 1)} className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}>
               Previous change
             </button>
             <button
               type="button"
               title="Next change (n)"
-              disabled={at >= blocks - 1}
-              onClick={() => onGo(at + 1)}
+              disabled={block >= anchors.length - 1}
+              onClick={() => onGo(block + 1)}
               className={`${SHEET_BUTTON} text-[#939ba4] hover:text-[#eae8e4]`}
             >
               Next change
@@ -352,9 +355,9 @@ export function DiffSheet({
       {same ? (
         <SameText before={before} after={after} />
       ) : layout === "split" ? (
-        <SideTable rows={rows as SideRow[]} />
+        <SideTable rows={rows as SideRow[]} anchors={anchors} />
       ) : (
-        <UnifiedTable rows={rows as DiffRow[]} sheet />
+        <UnifiedTable rows={rows as DiffRow[]} sheet anchors={anchors} />
       )}
     </Sheet>
   );
@@ -384,14 +387,16 @@ function DiffFullscreen(props: SheetProps) {
   const { versions, from, to } = props;
   const [layout, setLayout] = useState<DiffLayout>("split");
   const [showAll, setShowAll] = useState(false);
-  const [at, setAt] = useState(0);
+  const [block, setBlock] = useState(0);
   const body = useRef<HTMLDivElement>(null);
-  const textOf = (n: number) => versions.find((v) => v.n === n)?.text ?? "";
-  const anchors = changeAnchors(sheetRows(lineDiff(textOf(from), textOf(to)), layout, showAll));
+  const before = textOf(versions, from) ?? "";
+  const after = textOf(versions, to) ?? "";
+  const view = useMemo(() => diffSheetView(before, after, layout, showAll), [before, after, layout, showAll]);
+  const { anchors } = view;
 
-  const go = (block: number) => {
-    const k = Math.max(0, Math.min(block, anchors.length - 1));
-    setAt(k);
+  const go = (target: number) => {
+    const k = Math.max(0, Math.min(target, anchors.length - 1));
+    setBlock(k);
     body.current?.querySelector(`[data-row="${anchors[k]}"]`)?.scrollIntoView({ block: "center" });
   };
 
@@ -399,12 +404,12 @@ function DiffFullscreen(props: SheetProps) {
   useEffect(() => go(0), [layout, showAll, from, to]);
 
   const key = (e: KeyboardEvent<HTMLDivElement>) => {
-    const block = changeKey(e, at, anchors.length);
-    if (block !== null) go(block);
+    const next = changeKey(e, block, anchors.length);
+    if (next !== null) go(next);
   };
 
   return createPortal(
-    <DiffSheet {...props} layout={layout} onLayout={setLayout} showAll={showAll} onShowAll={setShowAll} at={at} onGo={go} onKey={key} bodyRef={body} />,
+    <DiffSheet {...props} view={view} layout={layout} onLayout={setLayout} showAll={showAll} onShowAll={setShowAll} block={block} onGo={go} onKey={key} bodyRef={body} />,
     document.body,
   );
 }
