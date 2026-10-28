@@ -48,6 +48,7 @@ export type SheetActions = Pick<
   | "acceptRewrite"
   | "closeRewrite"
   | "forgetAnswer"
+  | "askFrom"
 >;
 
 /**
@@ -70,6 +71,7 @@ export const Sheet = memo(function Sheet({
   canRewrite,
   readTo,
   asking,
+  readingFrom = null,
 }: {
   transcript: Transcript;
   /** The utterances under way of the listening appending here; none when it appends elsewhere. */
@@ -98,6 +100,8 @@ export const Sheet = memo(function Sheet({
   readTo: { untilMs: number; nextAt: number | null } | null;
   /** The question about this Transcript under way or failed (Q139); `null` when there is none, or it is another's. */
   asking: AskerState | null;
+  /** What did I miss? reads from this utterance on (missed.ts): the spine is tinted from it; `null`, not shown. */
+  readingFrom?: number | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -216,6 +220,7 @@ export const Sheet = memo(function Sheet({
                   canRewrite={canRewrite && !rewrite?.writing}
                   unchecked={rewrite?.utterance === u.id && autoCheck && (readTo === null || u.endMs > readTo.untilMs)}
                   lit={lit === u.id}
+                  missed={readingFrom === null || i < readingFrom ? null : i === readingFrom ? "from" : "in"}
                 />
                 </Fragment>
               ))}
@@ -303,6 +308,8 @@ function Row({
   label,
   id,
   lit = false,
+  missed = null,
+  onTime,
   children,
 }: {
   time: string;
@@ -310,15 +317,32 @@ function Row({
   label: ReactNode;
   id?: number;
   lit?: boolean;
+  /** What did I miss? reads from this row, or it is among those it reads: the spine and the time in the ember. */
+  missed?: "from" | "in" | null;
+  /** Its time picks it as where What did I miss? reads from. */
+  onTime?: () => void;
   children: ReactNode;
 }) {
+  const tone = missed === "from" ? "text-ember" : missed === "in" ? "text-ember/70" : "text-ash";
   return (
     <li
       data-utterance={id}
       className={`grid grid-cols-[3.75rem_1fr] gap-x-4 transition-colors duration-700 motion-reduce:transition-none sm:grid-cols-[4.5rem_1fr] ${lit ? "bg-ember/12" : ""}`}
     >
-      <span className="pt-[3px] text-right font-display text-[13px] text-ash tabular-nums">{time}</span>
-      <div className="relative border-l-2 border-line pb-5 pl-4">
+      {onTime ? (
+        <button
+          type="button"
+          onClick={onTime}
+          aria-label={`Ask what was said from ${time}`}
+          title={missed === "from" ? "What did I miss? reads from here. Press again for the last 5 minutes." : "Ask what was said from here"}
+          className={`self-start pt-[3px] text-right font-display text-[13px] tabular-nums hover:text-ember ${tone}`}
+        >
+          {time}
+        </button>
+      ) : (
+        <span className="pt-[3px] text-right font-display text-[13px] text-ash tabular-nums">{time}</span>
+      )}
+      <div className={`relative border-l-2 pb-5 pl-4 ${missed ? "border-ember/45" : "border-line"}`}>
         <span
           aria-hidden="true"
           className={`absolute top-1 bottom-5 -left-[3px] w-1 ${tick.burning ? "spine-live" : ""}`}
@@ -464,6 +488,7 @@ const UtteranceRow = memo(function UtteranceRow({
   canRewrite,
   unchecked,
   lit,
+  missed,
 }: {
   utterance: Utterance;
   speaker: Speaker | undefined;
@@ -476,6 +501,8 @@ const UtteranceRow = memo(function UtteranceRow({
   unchecked: boolean;
   /** A jump just landed on it (Q141). */
   lit: boolean;
+  /** What did I miss? reads from it, or it is among those it reads. */
+  missed: "from" | "in" | null;
 }) {
   const [editing, setEditing] = useState(false);
   const cursor = useRef(0);
@@ -490,7 +517,7 @@ const UtteranceRow = memo(function UtteranceRow({
     />
   );
   return (
-    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id} lit={lit}>
+    <Row time={startOf(u)} tick={{ color }} label={label} id={u.id} lit={lit} missed={missed} onTime={() => actions.askFrom(u.startMs)}>
       {editing ? (
         <div className="flex flex-col gap-1.5">
           <textarea

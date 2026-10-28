@@ -66,6 +66,8 @@ const actions: TranscribeActions = {
   askAbout: none,
   stopAsking: none,
   forgetAnswer: none,
+  askFrom: none,
+  clearMissed: none,
 };
 
 const at = (state: Partial<ListeningState>): ListeningState => ({ ...IDLE, ...state });
@@ -214,7 +216,7 @@ describe("the speakers' hues", () => {
 
 const state = (patch: Partial<TranscribeState> = {}): TranscribeState => {
   const list = startList();
-  return { list, active: list.transcripts[0], draft: null, deleted: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, textBlocked: null, contextTokens: 512, suggestionsOn: true, storeError: null, ...patch };
+  return { list, active: list.transcripts[0], draft: null, deleted: null, speakers: true, speakersUnavailable: null, holdMic: true, notesLive: false, textBlocked: null, contextTokens: 512, suggestionsOn: true, missedFrom: null, storeError: null, ...patch };
 };
 
 describe("the deck", () => {
@@ -446,6 +448,27 @@ describe("asking about the conversation, in its flow (Q139, Q141)", () => {
     renderToStaticMarkup(
       <Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={asking} />,
     );
+
+  it("reads What did I miss? from where the user left or picked, its moment on the button, and tints that stretch of the spine", () => {
+    const t = two();
+    expect(bar(t, quiet, { missedFrom: { kind: "picked", startMs: 12_000 } })).toMatch(/What did I miss\?<span[^>]*>since 00:12<\/span>/);
+    expect(bar(t, quiet, { missedFrom: { kind: "away", seenUntilMs: 8_000 } })).toMatch(/What did I miss\?<span[^>]*>since 00:12<\/span>/);
+    const tinted = renderToStaticMarkup(
+      <Sheet transcript={t} live={[]} phase="idle" call={false} here actions={actions} deleted={null} hits={[]} current={0} rewrite={null} canRewrite readTo={null} seek={0} autoCheck asking={null} readingFrom={1} />,
+    );
+    // Each time picks its utterance; from the one read from on, the time and the spine in the ember.
+    expect(tinted).toMatch(/aria-label="Ask what was said from 00:04"[^>]*class="[^"]*text-ash/);
+    expect(tinted).toMatch(/aria-label="Ask what was said from 00:12"[^>]*class="[^"]*text-ember /);
+    expect(tinted.match(/border-ember\/45/g)).toHaveLength(1);
+    expect(sheetAsking(t)).not.toContain("border-ember/45");
+  });
+
+  it("gives the field, Ask and the quick questions one height", () => {
+    const html = bar(room());
+    expect(html).toMatch(/aria-label="Question about the conversation"[^>]*class="h-8 /);
+    expect(html).toMatch(/type="submit"[^>]*class="cut h-8 /);
+    expect(html.match(/class="flex h-8 shrink-0/g)).toHaveLength(3);
+  });
 
   it("offers the quick questions and the field under the sheet, once something is heard", () => {
     const html = bar(room());

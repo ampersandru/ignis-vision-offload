@@ -480,6 +480,17 @@ Continue never asks. Save as default, the owner's addition, keeps a context in t
 Start asks all the same, the owner's word: it costs a click and spares a call told another's context. Clear the
 default, in an empty draft, drops it.
 
+### What did I miss? from a moment (2026-10-28)
+
+The owner asked for other spans than five minutes, without more buttons, and the field, Ask and the quick questions
+at one height (all 32 px now). What did I miss? reads from a point (missed.ts, `MissedFrom`): the last five minutes by
+default; after the page was hidden or its window left for a minute or more while listening (`AwayWatch`, on the
+page's state, so another view counts as present), from the first utterance that ended after what the user had seen;
+or from an utterance picked by its time on the spine, the time a button now. The button says since when
+(`missedSince`: "since 12:40 · 8 min"); a second press on the time picked, or Escape outside a field, puts back the
+five minutes, and so does asking it. The spine and the times from that utterance on are in the ember while the point
+stands or the button is pointed at. Decisions and Who does what read the whole call, as before.
+
 ### Not done here
 
 - No live check: the view was built against fakes and the dev mock, which has no Realtime socket. The owner's live

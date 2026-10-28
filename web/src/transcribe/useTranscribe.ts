@@ -18,7 +18,8 @@ import { readConfig } from "../server/routes.ts";
 import { type NotesHandle, NotesWriter } from "./notesWriter.ts";
 import { Analyst, type AnalystHandle } from "./analyst.ts";
 import { acceptRewrite, Rewriter, type RewriterHandle } from "./rewrite.ts";
-import { Asker, type AskerHandle, withAnswer } from "./ask.ts";
+import { Asker, type AskerHandle, readUntil, withAnswer } from "./ask.ts";
+import { AwayWatch, type MissedFrom, pickFrom } from "./missed.ts";
 import { accept, analysisOffers, dismiss, dropTerm, followFixes, languageOffer, suggest } from "./suggestions.ts";
 import { ListeningController, type ListeningHandle, type ListeningSource } from "./listening.ts";
 import { activeOf, freeTranscriptId, openTranscript, removeTranscript, startList, type TranscriptList, updateTranscript } from "./sessions.ts";
@@ -70,6 +71,8 @@ export type TranscribeState = {
   contextTokens: number;
   /** Suggest while listening (Q132): this browser's, on at first. */
   suggestionsOn: boolean;
+  /** Where the open Transcript's What did I miss? reads from (missed.ts), `null` for the last five minutes. */
+  missedFrom: MissedFrom | null;
   /** What keeping the Transcripts in this browser ran into. */
   storeError: string | null;
 };
@@ -121,6 +124,10 @@ export type TranscribeActions = {
   stopAsking: () => void;
   /** Drops a question and its answer from the open Transcript. */
   forgetAnswer: (id: number) => void;
+  /** What did I miss? reads the open Transcript from the utterance at `startMs`, or the last five minutes again when it did. */
+  askFrom: (startMs: number) => void;
+  /** What did I miss? reads the open Transcript's last five minutes again. */
+  clearMissed: () => void;
   /** The open Transcript's kind of notes, and this browser's next default. */
   setNoteKind: (kind: NoteKind) => void;
   /** Writes the open Transcript's notes now. */
@@ -233,6 +240,32 @@ export function useTranscribe({
       }),
   );
   useEffect(() => () => asker.stop(), [asker]);
+
+  // Where What did I miss? reads from (missed.ts): from what the user had seen when they left the page, hidden or its
+  // window left, for a minute or more while listening; or from a moment they picked.
+  const [missed, setMissed] = useState<{ transcript: number; from: MissedFrom } | null>(null);
+  useEffect(() => {
+    const watch = new AwayWatch();
+    const leave = () => {
+      const listening = controller.getState();
+      const t = listening.phase === "listening" ? listNow.current.transcripts.find((x) => x.id === listening.transcript) : undefined;
+      if (t) watch.leave(Date.now(), t.id, readUntil(t));
+    };
+    const back = () => {
+      if (document.visibilityState === "hidden") return;
+      const away = watch.back(Date.now());
+      if (away) setMissed(away);
+    };
+    const onVisibility = () => (document.visibilityState === "hidden" ? leave() : back());
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", leave);
+    window.addEventListener("focus", back);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", leave);
+      window.removeEventListener("focus", back);
+    };
+  }, [controller]);
 
   // Keeping up while listening, a look every few seconds: the languages the server heard, then, while a text model
   // serves, the notes and the look for suggestions, each on its own cadence.
@@ -391,6 +424,13 @@ export function useTranscribe({
       },
       stopAsking: () => asker.stop(),
       forgetAnswer: (id) => correct((t) => ({ ...t, asked: (t.asked ?? []).filter((a) => a.id !== id) })),
+      askFrom: (startMs) =>
+        setMissed((m) => {
+          const id = listNow.current.activeId;
+          const from = pickFrom(m?.transcript === id ? m.from : null, startMs);
+          return from ? { transcript: id, from } : null;
+        }),
+      clearMissed: () => setMissed((m) => (m?.transcript === listNow.current.activeId ? null : m)),
       holdUndo: (hold) => {
         clearTimeout(undoTimer.current);
         if (!hold && deletedNow.current) undoTimer.current = setTimeout(() => setDeleted(null), UNDO_DELETE_MS);
@@ -441,6 +481,7 @@ export function useTranscribe({
       textBlocked: text.blocked,
       contextTokens,
       suggestionsOn,
+      missedFrom: missed?.transcript === active.id ? missed.from : null,
       storeError: kept.error,
     },
     actions,

@@ -271,7 +271,13 @@ The field at the foot of the transcript, over the deck, asks the text model
 about it, while listening too. **What did I miss?** asks what was said in the last five minutes,
 **Decisions** what was decided and what is still open, **Who does what** who
 agreed to do what, each answered in the conversation's language; a question you
-type is answered in its own. The answer streams in on the time spine where you
+type is answered in its own. Come back to the page after a minute or more away
+from it (another tab, another window) while it listens, and **What did I
+miss?** reads from what you had last seen instead, its button saying since
+when. A time on the left of the transcript picks the moment it reads from;
+press it again, or Escape, for the last five minutes. Pointing at the button
+colours, on the time spine, what it will read; once asked, it reads the last
+five minutes again. The answer streams in on the time spine where you
 asked, after the last utterance it read, that moment's time in orange beside
 it, and stays there while the conversation goes on under it; **Forget** drops
 one. It reads the transcript alone, so a word heard wrong stays wrong in it.

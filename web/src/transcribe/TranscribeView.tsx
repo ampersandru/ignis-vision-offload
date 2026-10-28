@@ -9,6 +9,7 @@ import { ContextCard } from "./Context.tsx";
 import { AskBar } from "./Ask.tsx";
 import type { CallContext } from "./context.ts";
 import { useSavedContext } from "./defaultContext.ts";
+import { missedSince } from "./missed.ts";
 import { Deck } from "./Deck.tsx";
 import { Notes } from "./Notes.tsx";
 import { Suggestions } from "./Suggestions.tsx";
@@ -72,6 +73,23 @@ export function TranscribeView({
   const at = hits.length === 0 ? 0 : Math.min(current, hits.length - 1);
   const searchField = useRef<HTMLInputElement>(null);
   const saved = useSavedContext();
+  // What did I miss?: what it reads, tinted on the spine while it is moved from the last five minutes or pointed at.
+  const [previewing, setPreviewing] = useState(false);
+  const missedFrom = state.missedFrom;
+  const readingFrom = useMemo(
+    () => (missedFrom !== null || previewing ? missedSince(state.active.utterances, missedFrom).index : null),
+    [state.active.utterances, missedFrom, previewing],
+  );
+  useEffect(() => {
+    if (missedFrom === null) return;
+    const back = (e: globalThis.KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing = target?.closest("input, textarea, select, [contenteditable]");
+      if (e.key === "Escape" && !typing && !drawer) actions.clearMissed();
+    };
+    window.addEventListener("keydown", back);
+    return () => window.removeEventListener("keydown", back);
+  }, [missedFrom, drawer, actions]);
   // The first Start's question, for the Transcript it was raised on, until it is started (Deck.tsx).
   const [checking, setChecking] = useState<number | null>(null);
   const checkingContext = checking === state.active.id && state.active.source === null && listening.phase === "idle";
@@ -176,8 +194,9 @@ export function TranscribeView({
           canRewrite={state.textBlocked === null && !rewrite.writing}
           readTo={readTo}
           asking={asking.transcript === state.active.id ? asking : null}
+          readingFrom={readingFrom}
         />
-        <AskBar transcript={state.active} state={state} actions={actions} asking={asking} />
+        <AskBar transcript={state.active} state={state} actions={actions} asking={asking} onPreview={setPreviewing} />
         <Deck
           state={state}
           listening={listening}

@@ -18,11 +18,14 @@ export function AskBar({
   state,
   actions,
   asking,
+  onPreview = () => {},
 }: {
   transcript: Transcript;
   state: TranscribeState;
-  actions: Pick<TranscribeActions, "askAbout" | "stopAsking">;
+  actions: Pick<TranscribeActions, "askAbout" | "stopAsking" | "clearMissed">;
   asking: AskerState;
+  /** What did I miss? is pointed at or focused: the sheet tints what it would read. */
+  onPreview?: (on: boolean) => void;
 }) {
   const [question, setQuestion] = useState("");
   const here = asking.transcript === t.id;
@@ -56,12 +59,12 @@ export function AskBar({
                 value={question}
                 onChange={(e) => setQuestion(e.currentTarget.value)}
                 placeholder="Ask about the conversation"
-                className="min-w-0 flex-1 rounded-[2px] border border-line bg-surface px-2.5 py-1.5 text-[14px] text-ink placeholder:text-ash focus:border-ember focus:outline-none"
+                className="h-8 min-w-0 flex-1 rounded-[2px] border border-line bg-surface px-2.5 text-[14px] text-ink placeholder:text-ash focus:border-ember focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={!writing && (cannot || question.trim() === "")}
-                className={`cut px-3.5 py-1.5 font-display text-[13px] font-semibold [--cut-size:7px] disabled:cursor-not-allowed disabled:opacity-50 ${writing ? "bg-surface text-ink hover:bg-line" : "bg-ink text-ground hover:bg-ember"}`}
+                className={`cut h-8 px-3.5 font-display text-[13px] font-semibold [--cut-size:7px] disabled:cursor-not-allowed disabled:opacity-50 ${writing ? "bg-surface text-ink hover:bg-line" : "bg-ink text-ground hover:bg-ember"}`}
               >
                 {writing ? "Stop" : "Ask"}
               </button>
@@ -69,14 +72,24 @@ export function AskBar({
             {!state.textBlocked && (
               // On a phone one row under the field, scrolled sideways, so the sheet keeps its height.
               <div className="flex gap-1.5 max-sm:w-full max-sm:overflow-x-auto">
-                {quickQuestions(t).map((q) => (
+                {quickQuestions(t, state.missedFrom).map((q) => (
                   <button
                     key={q.label}
                     type="button"
-                    title={q.question}
+                    title={q.missed ? `${q.question} A time on the left picks another moment; Escape goes back to the last 5 minutes.` : q.question}
                     disabled={writing || cannot}
-                    onClick={() => actions.askAbout(q.question, q.sent)}
-                    className="shrink-0 border border-line px-2.5 py-1 font-display text-xs font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      actions.askAbout(q.question, q.sent);
+                      // Asked: the moment it read from is spent, and the next reads the last five minutes again.
+                      if (q.missed) actions.clearMissed();
+                    }}
+                    {...(q.missed && {
+                      onMouseEnter: () => onPreview(true),
+                      onMouseLeave: () => onPreview(false),
+                      onFocus: () => onPreview(true),
+                      onBlur: () => onPreview(false),
+                    })}
+                    className={`flex h-8 shrink-0 items-center border px-2.5 font-display text-xs font-medium text-ink hover:border-ember disabled:cursor-not-allowed disabled:opacity-50 ${q.missed && state.missedFrom ? "border-ember/60" : "border-line"}`}
                   >
                     {q.label}
                     {q.detail && <span className="ml-1.5 font-normal text-ash">{q.detail}</span>}

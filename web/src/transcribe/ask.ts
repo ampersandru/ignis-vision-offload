@@ -1,6 +1,7 @@
 import type { ConversationRequest, Settings } from "../api/request.ts";
 import { type AskDeps, askModel, assistRequest, settle, transcriptInput, Watched } from "./assist.ts";
 import { clock } from "./export.ts";
+import { type MissedFrom, missedSince } from "./missed.ts";
 import type { Transcript, Utterance } from "./transcript.ts";
 
 // Ask about this conversation (spec speech/07, Q139): a question about the
@@ -38,25 +39,28 @@ export function askRequest(t: Transcript, question: string, contextLimit: number
   return assistRequest(ASK_SETTINGS, ASK_TASK, `${content}\nQuestion: ${question.trim()}`);
 }
 
-/** How far back "What did I miss?" reads: the utterances that ended in the last five minutes. */
-export const MISSED_MS = 5 * 60_000;
-
-/** The questions a tap asks: what the user sees, and what the model is sent. */
-export type QuickQuestion = { label: string; detail?: string; question: string; sent: string };
+/** The questions a tap asks: what the user sees, and what the model is sent; `missed`, What did I miss?. */
+export type QuickQuestion = { label: string; detail?: string; question: string; sent: string; missed?: true };
 
 /**
  * The quick questions of a call. Written in English for the page, their answers asked in the conversation's
- * language. "What did I miss?" names the first utterance of the last five minutes by its time, a line the model
- * finds as it is written: asked from the end less five minutes, a time that shares the last line's seconds, the
- * model took one for the other and said nothing came since.
+ * language. "What did I miss?" reads from `from` (missed.ts: the last five minutes unless the user was away or
+ * picked a moment) and names its first utterance by its time, a line the model finds as it is written: asked from
+ * the end less five minutes, a time that shares the last line's seconds, the model took one for the other and said
+ * nothing came since.
  */
-export function quickQuestions(t: Transcript): QuickQuestion[] {
+export function quickQuestions(t: Transcript, from: MissedFrom | null = null): QuickQuestion[] {
   const own = "Answer in the language of the conversation.";
-  const end = Math.max(0, ...t.utterances.map((u) => u.endMs));
-  const first = t.utterances.find((u) => u.endMs > end - MISSED_MS);
-  const since = clock(first?.startMs ?? 0);
+  const missed = missedSince(t.utterances, from);
+  const since = clock(missed.startMs);
   return [
-    { label: "What did I miss?", detail: "last 5 min", question: `What was said since ${since}?`, sent: `What was said from [${since}] on? The main points, briefly. ${own}` },
+    {
+      label: "What did I miss?",
+      detail: missed.detail,
+      question: `What was said since ${since}?`,
+      sent: `What was said from [${since}] on? The main points, briefly. ${own}`,
+      missed: true,
+    },
     { label: "Decisions", question: "What has been decided so far, and what is still open?", sent: `What has been decided so far, and what is still open? ${own}` },
     { label: "Who does what", question: "Who agreed to do what, and by when?", sent: `Who agreed to do what, and by when? ${own}` },
   ];
