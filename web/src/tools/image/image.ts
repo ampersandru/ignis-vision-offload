@@ -7,6 +7,7 @@ import { switchAndWait } from "../../api/switching.ts";
 import { fileFromDataUrl, imageModelRow, limitsOf, progressLine, refusalLine, shapeOf, transparentPrompt } from "../../image/studio.ts";
 import { keepOutside } from "../../markup/markup.ts";
 import { readCatalog, readConfig, unavailableReason } from "../../server/routes.ts";
+import type { Written } from "../../workspace/workspaces.ts";
 import { unknownToolError } from "../errors.ts";
 
 // The picture tool: `make_image` lets the conversation's model make a picture,
@@ -16,8 +17,10 @@ import { unknownToolError } from "../errors.ts";
 // would in the Image view: it switches to the image model, makes every
 // picture the reply asked for, and switches back to the text model the turn
 // was talking to before the next request, which would otherwise be refused as
-// the wrong kind. The picture shows in the reply; the model is told its name,
-// size and seed, not what it looks like.
+// the wrong kind. Each picture lands in the chat's workspace as a file (#394),
+// which the reply shows; an older chat's, made before the workspace, kept its
+// picture as a data URL in the run. The model is told its name, size and seed,
+// not what it looks like.
 //
 // The pictures of a session have names the model can pass back: `user-N` is
 // the Nth picture the user sent, `made-N` the Nth this tool made.
@@ -76,10 +79,15 @@ You can make and edit pictures with \`make_image\`. The user sees each picture i
 
 export type ImageStatus = "queued" | "switching" | "making" | "returning" | "done" | "failed" | "stopped";
 
-/** A picture the tool made. */
+/** A picture the tool made: a file of the chat's workspace, or a data URL kept in the run (an older chat's, or one the store refused). */
 export type MadePicture = {
   name: string;
-  url: string;
+  /** The picture itself, when the workspace does not hold it. */
+  url?: string;
+  /** The workspace file and version it landed as, which the reply shows. */
+  file?: Written;
+  /** Why the browser's store did not keep it in the workspace. */
+  unkept?: string;
   size: string;
   seed?: Seed;
   revisedPrompt?: string;
@@ -92,7 +100,7 @@ export type MadePicture = {
  * redraw for the vision tower is smaller); and, for one marked to change only its marked area, that area and the
  * original to keep around it.
  */
-export type NamedPicture = { url: string; full?: Blob; keep?: { source: Blob; region: Blob }; seed?: Seed };
+export type NamedPicture = { url?: string; file?: Written; full?: Blob; keep?: { source: Blob; region: Blob }; seed?: Seed };
 
 type SessionPicture = { url: string; full?: Blob; markup?: { source: Blob; keepOutside: boolean; region: Blob } };
 
@@ -180,14 +188,18 @@ export function picturesByName(messages: { role: string; images?: SessionPicture
         names.set(`user-${++user}`, { url: image.url, ...(image.full ? { full: image.full } : {}), ...(keep ? { keep } : {}) });
       }
     }
-    for (const run of m.imageRuns ?? []) for (const made of run.made ?? []) names.set(made.name, { url: made.url, ...(made.seed !== undefined ? { seed: made.seed } : {}) });
+    for (const run of m.imageRuns ?? [])
+      for (const made of run.made ?? [])
+        names.set(made.name, { ...(made.file ? { file: made.file } : { url: made.url }), ...(made.seed !== undefined ? { seed: made.seed } : {}) });
   }
   return names;
 }
 
-/** A named picture as a file of the request: at its own size when the chat kept it. */
-export function fileOfPicture(picture: NamedPicture, name: string): File {
-  return picture.full ? new File([picture.full], name, { type: picture.full.type || "image/png" }) : fileFromDataUrl(picture.url, name);
+/** A named picture as a file of the request: at its own size when the chat kept it, from the workspace when it landed there; null once that is gone. */
+export async function fileOfPicture(picture: NamedPicture, name: string, read?: (file: Written) => Promise<Blob | null>): Promise<File | null> {
+  const blob = picture.full ?? (picture.file && read ? await read(picture.file) : null);
+  if (blob) return new File([blob], name, { type: blob.type || "image/png" });
+  return picture.url ? fileFromDataUrl(picture.url, name) : null;
 }
 
 /** The result laid over a marked picture's original through its marked area, as a data URL (browser only). */
@@ -211,7 +223,7 @@ export function imageToolResult(run: ImageRun): string {
   const dropped = run.seedDropped ? ["The seed was not reused: it made a picture this call edits, and the same noise again builds up into grain."] : [];
   const lines = made.map(
     (p) =>
-      `Made ${p.name}: ${p.size}${p.seed !== undefined ? `, seed ${p.seed}` : ""}.${p.revisedPrompt ? ` The prompt was rewritten as: ${p.revisedPrompt}` : ""}`,
+      `Made ${p.name}: ${p.size}${p.seed !== undefined ? `, seed ${p.seed}` : ""}.${p.file ? ` It is in the workspace as ${p.file.name}.` : ""}${p.unkept ? ` The browser did not keep it in the workspace: ${p.unkept}.` : ""}${p.revisedPrompt ? ` The prompt was rewritten as: ${p.revisedPrompt}` : ""}`,
   );
   if (run.status === "failed") {
     return [`The make_image call failed: ${run.error ?? "unknown error"}`, ...(made.length ? ["Before it failed:", ...lines] : [])].join("\n");
@@ -248,6 +260,10 @@ export type RunImagesOptions = {
   switchTimeoutMs?: number;
   /** Lays a picture over a marked reference's original through its area; the canvas one in the browser. */
   keepAround?: (url: string, keep: { source: Blob; region: Blob }) => Promise<string>;
+  /** Where each picture lands: a file of the chat's workspace (workspace/pictures.ts). Absent, the run keeps it as a data URL. */
+  land?: (picture: Blob, name: string) => Promise<Written>;
+  /** A landed picture's bytes, for a later call that names it. */
+  read?: (file: Written) => Promise<Blob | null>;
 };
 
 /**
@@ -315,6 +331,13 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
         });
         continue;
       }
+      const references = await Promise.all(task.references.map((name, k) => fileOfPicture(pictures.get(name)!, `${name}-${k + 1}.png`, options.read)));
+      const gone = task.references.find((_, k) => references[k] === null);
+      if (gone !== undefined) {
+        const file = pictures.get(gone)?.file?.name ?? gone;
+        update(i, { status: "failed", line: undefined, error: `${gone} is gone: the workspace that held it as ${file} was deleted.` });
+        continue;
+      }
       // An edit that starts again from the noise that made a picture it edits builds that noise up into grain.
       const seedDropped = task.seed !== undefined && task.references.some((name) => pictures.get(name)?.seed === task.seed);
       update(i, { status: "making", line: "Sending the request…", ...(seedDropped ? { seedDropped: true as const } : {}) });
@@ -324,7 +347,7 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
         size: sizeForAspect(task.aspect, limits.sizes),
         seed: seedDropped ? null : (task.seed ?? null),
         enhance: false,
-        images: task.references.map((name, k) => fileOfPicture(pictures.get(name)!, `${name}-${k + 1}.png`)),
+        images: references.filter((f): f is File => f !== null),
         ...(task.transparent ? { background: "transparent" as const } : {}),
       };
       // The first reference marked to change only its area: each picture is laid over its original before it lands.
@@ -350,15 +373,26 @@ export async function runImages(tasks: ImageTask[], options: RunImagesOptions): 
                   // The picture as the model made it, then.
                 }
               }
+              // Into the chat's workspace, which the reply shows it from; kept in the run when the store refuses it.
+              let file: Written | undefined;
+              let unkept: string | undefined;
+              if (options.land) {
+                try {
+                  file = await options.land(fileFromDataUrl(url, `${name}.png`), `${name}.png`);
+                } catch (err) {
+                  unkept = err instanceof Error ? err.message : String(err);
+                }
+              }
               const picture: MadePicture = {
                 name,
-                url,
+                ...(file ? { file } : { url }),
+                ...(unkept ? { unkept } : {}),
                 size: image.size ?? params.size,
                 ...(image.seed !== undefined ? { seed: nthSeed(image.seed, image.index) } : {}),
                 ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
                 ...(kept ? { kept: true as const } : {}),
               };
-              pictures.set(name, { url, ...(picture.seed !== undefined ? { seed: picture.seed } : {}) });
+              pictures.set(name, { ...(file ? { file } : { url }), ...(picture.seed !== undefined ? { seed: picture.seed } : {}) });
               pictureList.push(picture);
               update(i, { made: [...pictureList] });
             });

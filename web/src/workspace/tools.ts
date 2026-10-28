@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../api/request.ts";
 import type { LocalRun } from "../tools/local/local.ts";
-import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type Version, type WorkspaceFile } from "./files.ts";
+import { authorLabel, cleanName, KIND_LABEL, kindOf, latest, linesOf, present, type StoredBytes, type Version, type WorkspaceFile } from "./files.ts";
 import type { ChatBinding, Reader, Seen, Workspaces } from "./workspaces.ts";
 
 // The model's entrance to the workspace module: list_files, read_file,
@@ -22,12 +22,23 @@ export const WORKSPACE_TOOL_NAMES: readonly string[] = [LIST_FILES, READ_FILE, W
 /** The most read_file returns at once, in characters. */
 export const READ_LIMIT = 20_000;
 
+/** A picture redrawn for the model as an attached one is (conversation/images.ts): a `data:` URI and its size. */
+export type ScalePicture = (blob: Blob, name: string) => Promise<{ url: string; width: number; height: number }>;
+
 /** Who calls a workspace tool: the chat, and the reader calling, which is the chat's own unless a sub-agent of it calls. */
 export type WorkspaceAccess = {
   workspaces: Workspaces;
   chat: ChatBinding;
   /** A sub-agent's reader (ChatBinding.agent), made once for its whole run; the chat's own reader when absent. */
   reader?: Reader;
+  /**
+   * Whether the loaded model has vision, asked at each call: a picture goes
+   * into the tool's output only when it has, since with vision off any
+   * picture in the prompt refuses the whole request. Absent, it has none.
+   */
+  vision?: () => boolean;
+  /** How a picture read with vision is redrawn for the model; the browser's canvas in the page. */
+  scale?: ScalePicture;
 };
 
 const tool = (name: string, description: string, properties: object, required: string[]): ToolDefinition => ({
@@ -39,7 +50,7 @@ export const LIST_FILES_TOOL = tool(LIST_FILES, "List the files of the chat's wo
 
 export const READ_FILE_TOOL = tool(
   READ_FILE,
-  `Read a file of the workspace as numbered lines: a text file, a PDF's text, or an audio file's transcript (no speakers). Returns up to ${READ_LIMIT.toLocaleString("en-US")} characters at a time, and where to go on.`,
+  `Read a file of the workspace as numbered lines: a text file, a PDF's text, or an audio file's transcript (no speakers). Returns up to ${READ_LIMIT.toLocaleString("en-US")} characters at a time, and where to go on. A picture comes back as the picture itself when you can see pictures, else as its size.`,
   {
     name: { type: "string", description: "The file's name, as list_files gives it." },
     offset: { type: "integer", description: "The first line to read, from 1; 1 by default." },
@@ -79,7 +90,7 @@ export const DELETE_FILE_TOOL = tool(
 export const WORKSPACE_PROMPT = `# Workspace
 The chat can have a workspace: files you and the user work on together, which stay across turns and chats. It is created with its first file, which you write or the user attaches; a file the user attaches is named in their message.
 - See what it holds with \`list_files\`: each file's name, kind, size, last change and author.
-- Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text, and an audio file as its transcript, without speakers. Read a file before you rely on it or change it.
+- Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text, an audio file as its transcript, without speakers, and a picture is shown to you when you can see pictures. Read a file before you rely on it or change it.
 - Write a text file with \`write_file\`: code, a document, data — anything worth keeping. It creates the file or replaces it whole. Mention the file in your reply instead of repeating its content.
 - Change part of a text file with \`edit_file\`: it replaces one passage, which must occur exactly once in the file. Prefer it to rewriting a file whole for a small change.
 - Delete a file that is no longer needed with \`delete_file\`; its history keeps it.
@@ -171,6 +182,35 @@ function readLines(name: string, version: Version, text: string, offset?: number
   };
 }
 
+/**
+ * A picture as read_file returns it: with vision, the picture itself redrawn
+ * to the long edge an attached one gets, beside a line saying what it is;
+ * without, that line alone, with the picture's size in pixels and in bytes.
+ */
+async function readPicture(access: WorkspaceAccess, name: string, version: Version, bytes: StoredBytes & { store: "image" }): Promise<WorkspaceOutcome> {
+  const pixels = bytes.width && bytes.height ? ` of ${bytes.width} × ${bytes.height} pixels` : "";
+  const facts = `${name}, version ${version.n}: a picture${pixels}, ${count(bytes.size, "byte")}`;
+  if (!access.vision?.() || !access.scale) {
+    return { ok: true, run: { picture: { name, seen: false }, result: `[${facts}. The loaded model has no vision, so the picture itself is not shown to you.]` } };
+  }
+  const blob = await access.workspaces.content(version);
+  if (!blob) return { ok: false, error: `The browser no longer holds the bytes of ${name}.` };
+  let scaled: Awaited<ReturnType<ScalePicture>>;
+  try {
+    scaled = await access.scale(blob, name);
+  } catch (err) {
+    return { ok: false, error: `${name} could not be redrawn for you: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return {
+    ok: true,
+    run: {
+      picture: { name, seen: true },
+      images: [{ name, url: scaled.url, width: scaled.width, height: scaled.height }],
+      result: `[${facts}, shown here at ${scaled.width} × ${scaled.height}.]`,
+    },
+  };
+}
+
 /** Runs one workspace call: `name` is the tool, `args` its parsed arguments. */
 export async function runWorkspaceTool(name: string, args: Record<string, unknown>, access: WorkspaceAccess, signal?: AbortSignal): Promise<WorkspaceOutcome> {
   const reader = readerOf(access);
@@ -212,7 +252,9 @@ export async function runWorkspaceTool(name: string, args: Record<string, unknow
             ok: true,
             run: { result: `[${tag}: deleted by ${authorLabel(version.author, reader.author)}, ${moment(version.at)}. Its history keeps the versions before it; write_file creates the file again.]` },
           }
-        : (file.kind !== "text" && file.kind !== "pdf" && file.kind !== "audio") || text === undefined
+        : file.kind === "picture" && version.bytes?.store === "image"
+          ? await readPicture(access, file.name, version, version.bytes)
+          : (file.kind !== "text" && file.kind !== "pdf" && file.kind !== "audio") || text === undefined
           ? {
               ok: true,
               run: { result: `[${tag}: ${file.kind === "other" ? "a file of a kind" : `a ${KIND_LABEL[file.kind]} file, which`} read_file cannot read; ${sizeOf(version)}.]` },

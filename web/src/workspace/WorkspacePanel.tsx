@@ -1,8 +1,11 @@
 import { type DragEvent, type ReactNode, useEffect, useState } from "react";
 import type { SpeechStatus } from "../api/model.ts";
+import { usePictureUrl } from "../image/pictures.tsx";
+import type { ImageId } from "../store/imageStore.ts";
 import { caption, fieldLook } from "../ui/classes.ts";
 import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
+import { Lightbox } from "../ui/Lightbox.tsx";
 import { AudioViewer, Recording } from "./audio.tsx";
 import { type Author, KIND_LABEL, latest, present, USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
 import { BUTTON, Source } from "./looks.tsx";
@@ -377,6 +380,8 @@ export function FileViewer({ file, onBack, actions, speech }: { file: WorkspaceF
     );
   } else if (file.kind === "audio") {
     body = <AudioViewer file={file} version={v} speech={speech} load={actions.content} transcribe={actions.derive} />;
+  } else if (file.kind === "picture" && v.bytes?.store === "image") {
+    body = <PictureView id={v.bytes.id} name={file.name} width={v.bytes.width} height={v.bytes.height} />;
   } else if (file.kind === "other") {
     body = <p className="text-xs leading-snug text-ash">The model sees its name and size, and cannot read it.</p>;
   }
@@ -396,5 +401,32 @@ export function FileViewer({ file, onBack, actions, speech }: { file: WorkspaceF
       </p>
       {body}
     </div>
+  );
+}
+
+/** A picture of the workspace from the page's store, at the panel's width; a click opens it full screen. */
+function PictureView({ id, name, width, height }: { id: ImageId; name: string; width?: number; height?: number }) {
+  const url = usePictureUrl()(id, "full");
+  const [full, setFull] = useState(false);
+  return (
+    <>
+      {width && height && (
+        <p className="text-xs text-ash tabular-nums">
+          {width} × {height} pixels
+        </p>
+      )}
+      <button type="button" aria-label={`Open ${name} full screen`} title="Full screen" className="block cursor-zoom-in bg-surface" onClick={() => setFull(true)} disabled={!url}>
+        {url ? (
+          <img src={url} alt={name} className="stage-checker block max-h-[60vh] max-w-full object-contain" />
+        ) : (
+          <span role="img" aria-label={name} className="block h-40 w-full bg-line/60" />
+        )}
+      </button>
+      {full && url && (
+        <Lightbox onClose={() => setFull(false)}>
+          <img src={url} alt={name} className="stage-checker block max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain" />
+        </Lightbox>
+      )}
+    </>
   );
 }

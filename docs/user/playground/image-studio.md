@@ -95,7 +95,8 @@ the next step's inputs, or is **sent to the chat**. The step shows the size,
 the seed, `marked area only` when it applies, the prompt as rewritten when the
 enhancer rewrote it, and the server's warnings, such as the size the inputs
 were scaled to. Pictures are stored once in this browser and shared with the
-chat ([Sessions and storage](sessions.md)).
+chat and its workspaces: deleting a session frees only the pictures no chat,
+workspace or other session names ([Sessions and storage](sessions.md)).
 
 ## Read more
 

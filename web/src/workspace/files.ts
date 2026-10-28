@@ -46,8 +46,14 @@ export function authorLabel(author: Author, reader: ChatAuthor): string {
   return author.agent ? `the sub-agent ${author.agent.name}` : "the conversation that started you";
 }
 
-/** Bytes kept in the page's store rather than inline: a picture in the image store (#394), anything else as a blob. */
-export type StoredBytes = { store: "blob"; id: BlobId; type: string; size: number } | { store: "image"; id: ImageId; type: string; size: number };
+/**
+ * Bytes kept in the page's store rather than inline: a picture in the image
+ * store image sessions use (#394), so that a picture shared with one is one
+ * copy, with its size in pixels as it was measured there; anything else as a blob.
+ */
+export type StoredBytes =
+  | { store: "blob"; id: BlobId; type: string; size: number }
+  | { store: "image"; id: ImageId; type: string; size: number; width?: number; height?: number };
 
 export type Version = {
   /** 1 for the file's first version, counting up. */

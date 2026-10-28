@@ -5,7 +5,7 @@ import type { ToolCall } from "../api/sse.ts";
 import { streamChat } from "../api/stream.ts";
 import { switchAndWait } from "../api/switching.ts";
 import type { NextModel } from "../conversation/nextModel.ts";
-import type { PromptImage } from "../conversation/images.ts";
+import { type PromptImage, redrawn } from "../conversation/images.ts";
 import { computeFigures } from "../metrics/figures.ts";
 import { mergeLoaded } from "../store/docs.ts";
 import type { ImageId, ImageStore } from "../store/imageStore.ts";
@@ -40,14 +40,16 @@ import { type AgentRun, parseAgentCall, runAgents, toolResult } from "../tools/a
 import { askToolResult, parseAskCall } from "../tools/ask/ask.ts";
 import { unknownCall } from "../tools/errors.ts";
 import { type ImageRun, imageToolResult, parseImageCall, runImages } from "../tools/image/image.ts";
-import { type LocalContext, type LocalRun, localToolResult, runLocalCalls, startedRun } from "../tools/local/local.ts";
+import { type LocalContext, type LocalRun, localToolImages, localToolResult, runLocalCalls, shownRun, startedRun } from "../tools/local/local.ts";
 import { agentExtras, routeCall, toolExtras, type ToolsState } from "../tools/index.ts";
 import { browserMemory } from "../tools/local/memory.ts";
 import { agentNotice, turnNotice } from "../tools/notice.ts";
 import { getTavilyKey } from "../tools/web/tavilyKey.ts";
 import { parseWebCall, runWeb, type WebRun, webToolResult } from "../tools/web/web.ts";
 import { type AttachedFile, attachedChip, commitAttached, fromLegacy, readAttached, withAttached } from "../workspace/attach.ts";
+import { boxPictures, madeIn } from "../workspace/pictures.ts";
 import { seenIn } from "../workspace/tools.ts";
+import { useVision } from "../workspace/vision.ts";
 import { type ChatBinding, pageWorkspaces, type Workspaces } from "../workspace/workspaces.ts";
 
 // The conversation loop: the sessions, the replies streaming into them, and
@@ -144,6 +146,8 @@ export function useConversation({
   const setSoon = (key: string, update: (l: SessionList) => SessionList) => frames.current?.set(key, update);
   const listNow = useRef(list);
   listNow.current = list;
+  // Whether the model the chat talks to has vision, read again after each switch, and asked when a tool reads a picture.
+  const vision = useVision(model);
   const storage = useStoredSessions({
     store,
     collection: CHAT_SESSIONS,
@@ -165,7 +169,14 @@ export function useConversation({
       return { loaded, stamps: restored.stamps };
     },
     onRemoved: (gone, left) => {
-      for (const id of freedBy(gone, left, live ? live() : [])) void store.deleteImage(id).catch(() => {});
+      // What the workspaces hold stays too: a prompt's picture is one of its workspace's files (#394).
+      void workspaces.pictures().then(
+        (held) => {
+          const elsewhere = live ? live() : [];
+          for (const id of freedBy(gone, left, elsewhere === null ? null : [...elsewhere, ...held])) void store.deleteImage(id).catch(() => {});
+        },
+        () => {},
+      );
     },
   });
   // The sessions a reply is streaming into, for the render.
@@ -310,7 +321,7 @@ export function useConversation({
     const chat = chatBinding(sessionId, history, firstTitle);
     const local: Omit<LocalContext, "settings" | "signal"> = {
       jsSafetyCheck: tools.jsSafetyCheck,
-      workspace: { workspaces, chat },
+      workspace: { workspaces, chat, vision, scale: redrawn },
       onCheck: (figures, error) =>
         logRow(sessionId, { laneTag: "agent", reasoningEffort: "none", figures, error, agent: "run_js safety check" }),
     };
@@ -525,7 +536,7 @@ export function useConversation({
           web,
           unknownTools,
           questions: asked,
-          local: localNow,
+          local: localNow.map(shownRun),
           ...(pictures.length > 0 ? { imageRuns: pictures } : {}),
         })),
       }));
@@ -586,6 +597,8 @@ export function useConversation({
       messages: [...conversation, { role: "assistant", imageRuns: turnImages }],
       signal,
       onModelChange: refreshModel,
+      // While the Workspace switch is on the pictures land in the chat's workspace (#394), which the reply shows them from.
+      ...(tools.workspace && local.workspace ? madeIn(local.workspace.workspaces, local.workspace.chat) : {}),
       onUpdate: (run) => {
         imageRuns = imageRuns.map((r) => (r.callId === run.callId ? run : r));
         show();
@@ -613,7 +626,9 @@ export function useConversation({
       ...localRuns.map((run) => [run.callId, localToolResult(run)] as const),
       ...imageRuns.map((run) => [run.callId, imageToolResult(run)] as const),
     ]);
-    return addToolResults(sessionId, calls.map((c) => ({ callId: c.id, content: results.get(c.id) ?? "" })));
+    // A picture a read_file call read with vision rides on its result, which keeps it: every later request sends the same bytes.
+    const readPictures = new Map(localRuns.map((run) => [run.callId, localToolImages(run)] as const));
+    return addToolResults(sessionId, calls.map((c) => ({ callId: c.id, content: results.get(c.id) ?? "", images: readPictures.get(c.id) })));
   }
 
   /** The pictures beside a sent prompt's redraws, into the store, and named on its images once there. */
@@ -627,9 +642,17 @@ export function useConversation({
     return storage.loaded ? new Set(listNow.current.sessions.flatMap((s) => [...picturesOf(s)])) : null;
   }
 
-  function addToolResults(sessionId: number, results: { callId: string; content: string }[]): Message[] {
+  function addToolResults(sessionId: number, results: { callId: string; content: string; images?: PromptImage[] }[]): Message[] {
     const messages = results.map(
-      (r): Message => ({ id: newId(), role: "tool", content: r.content, toolCallId: r.callId, reasoning: "", streaming: false }),
+      (r): Message => ({
+        id: newId(),
+        role: "tool",
+        content: r.content,
+        ...(r.images?.length ? { images: r.images } : {}),
+        toolCallId: r.callId,
+        reasoning: "",
+        streaming: false,
+      }),
     );
     setList((l) => ({ ...l, sessions: addMessages(l.sessions, sessionId, messages) }));
     return messages;
@@ -643,10 +666,12 @@ export function useConversation({
   function send(prompt: string, images: PromptImage[] = []) {
     if (!canRun) return;
     // With the Workspace switch off the box hides its files and keeps them for when it is back on.
-    const files = tools.enabled && tools.workspace ? attached : [];
+    const workspace = tools.enabled && tools.workspace;
+    const files = workspace ? attached : [];
     if (files.length > 0) setAttached([]);
     setAttachError(null);
-    void exchange(active.id, active.messages, prompt, images, { add: files, named: [] });
+    // The prompt's pictures go inline as they always did, and become files of the workspace too (#394).
+    void exchange(active.id, active.messages, prompt, images, { add: workspace ? [...files, ...boxPictures(images)] : [], named: [] });
   }
 
   /**

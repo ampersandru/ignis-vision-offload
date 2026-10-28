@@ -218,6 +218,28 @@ describe("buildChatRequest", () => {
     });
   });
 
+  it("sends a tool result's picture as content parts of its tool message, the picture ahead of the text", () => {
+    const picture = { name: "photo.png", url: "data:image/jpeg;base64,AA", width: 1176, height: 1568 };
+    const call = { id: "call_0", name: "read_file", arguments: '{"name":"photo.png"}' };
+    const turns = [
+      { role: "user" as const, content: "what is in my photo?" },
+      { role: "assistant" as const, content: "", toolCalls: [call] },
+      { role: "tool" as const, content: "[photo.png, version 1: a picture]", toolCallId: "call_0", images: [picture] },
+    ];
+    const tool = buildChatRequest(settings, turns).messages.at(-1);
+    expect(tool).toEqual({
+      role: "tool",
+      content: [
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,AA" } },
+        { type: "text", text: "[photo.png, version 1: a picture]" },
+      ],
+      tool_call_id: "call_0",
+    });
+    // Kept with the turn, the picture goes out the same on every later request.
+    const later = buildChatRequest(settings, [...conversationTurns(turns.map((t) => ({ ...t, failed: false }))), { role: "assistant", content: "A dog." }]);
+    expect(later.messages[3]).toEqual(tool);
+  });
+
   it("leaves max_tokens out when unset, so the engine's own cap applies", () => {
     const body = buildChatRequest({ ...settings, maxTokens: null }, [{ role: "user", content: "hi" }]);
     expect("max_tokens" in body).toBe(false);
