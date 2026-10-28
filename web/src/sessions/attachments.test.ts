@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { bindWorkspace, clearAttachments, createSession, forkSession, removeAttachment, type Session } from "./sessions.ts";
+import { bindWorkspace, clearAttachments, createSession, forkSession, openSession, removeAttachment, type Session, unbindWorkspace } from "./sessions.ts";
 
 // A chat's files: an older chat's attachments, kept with it until its next
 // turn makes them files of its workspace, and the workspace it binds to.
@@ -26,6 +26,26 @@ describe("a chat's files", () => {
     const same = bindWorkspace(sessions, 1, "w2");
     expect(same[0].workspaceId).toBe("w1");
     expect(same[0]).toBe(sessions[0]);
+  });
+
+  it("lets the chats of a deleted workspace go, and leaves the others as they were", () => {
+    const sessions = [...bindWorkspace([createSession(1)], 1, "w1"), ...bindWorkspace([createSession(2)], 2, "w2"), ...bindWorkspace([createSession(3)], 3, "w1")];
+    const left = unbindWorkspace(sessions, "w1");
+    expect(left.map((s) => s.workspaceId)).toEqual([undefined, "w2", undefined]);
+    expect(left[1]).toBe(sessions[1]);
+    expect("workspaceId" in left[0]).toBe(false);
+    // Unbound, a chat can bind again.
+    expect(bindWorkspace(left, 1, "w3")[0].workspaceId).toBe("w3");
+  });
+
+  it("opens a new session rather than reuse an empty one bound to a workspace", () => {
+    const bound = { sessions: bindWorkspace([createSession(1)], 1, "w1"), activeId: 1 };
+    const next = openSession(bound, 2);
+    expect(next.activeId).toBe(2);
+    expect(next.sessions.map((s) => [s.id, s.workspaceId])).toEqual([
+      [2, undefined],
+      [1, "w1"],
+    ]);
   });
 
   it("keeps the files and the workspace in a fork", () => {

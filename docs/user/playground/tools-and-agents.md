@@ -147,7 +147,9 @@ earlier versions are kept. The model's first file creates the workspace.
 Agents get the same tools, and their writes are their own. A file you attach
 with **File** in the prompt box becomes a file of the workspace when the
 prompt is sent, and the prompt says so after your words:
-`[Attached to the workspace: brief.pdf]`.
+`[Attached to the workspace: brief.pdf]`. You see the files, and add, rename,
+delete and download them, in the
+[workspace panel](chat.md#the-workspace-panel).
 
 A file the model writes shows in its reply as a card: its name, the version
 that reply wrote, its size, **Preview** and **Download**. An HTML file opens on

@@ -7,8 +7,9 @@ sidebar:
 
 The **Playground** tab is a streaming chat with the loaded model. Sessions are
 on the left ([Sessions](sessions.md)), the settings on the right
-([Settings](settings.md)), the conversation in the middle, and under all three
-the session's log. Every reply shows what the model reasoned, what it called,
+([Settings](settings.md)), the conversation in the middle under the bar that
+names its [workspace](#the-chats-workspace), whose panel opens on the right,
+and under all of them the session's log. Every reply shows what the model reasoned, what it called,
 what it answered, and the figures the browser measured while it streamed.
 
 ![A reply: reasoning folded, the answer, the figures line and the context meter's details](../images/playground/chat-reply.png)
@@ -35,9 +36,11 @@ An image or a file alone is a prompt. Nothing is sent until you press Send.
 
 A chat can have a **workspace**: files you and the model work on together,
 kept in this browser and never on the server. It is born with the chat's
-first file, a file you attach or one the model writes, and takes the chat's
-title as its name; a chat that makes no file has none. The chat stays in that
-workspace for good, a fork shares it, and deleting the chat keeps it.
+first file, a file you attach, make in the [panel](#the-workspace-panel) or
+one the model writes, and takes the chat's title as its name; a chat that
+makes no file has none, unless you pick an existing workspace for it
+([the picker](#the-workspace-picker)). The chat stays in that workspace until
+the workspace is deleted, a fork shares it, and deleting the chat keeps it.
 
 A prompt that attached files lists them under its text, by the names they
 took in the workspace: a name the workspace already holds gets a number,
@@ -50,6 +53,65 @@ side, its tools and the **Workspace** switch:
 A chat saved before workspaces shows as it did, its files from `create_file`
 included. The files it had attached wait in the prompt box until its next
 turn, which makes them the first files of its workspace.
+
+### The workspace picker
+
+The bar above the conversation names the chat's workspace. Before the chat
+has one it reads **New workspace**, the default: a workspace born with the
+chat's first file. Open it to pick one of the existing workspaces instead,
+the last changed first; the chat works in that one from then on, with the
+files it holds. To work in another workspace, start a new chat: **New
+session** opens a new one rather than reuse an empty chat already given a
+workspace.
+
+Once the chat has a workspace, the picker shows its name and offers
+**Rename** and **Delete workspace…**. A delete asks first, naming how many
+files go. It removes the workspace, its files and every version, and frees
+what nothing else uses: the bytes no other workspace holds, and the pictures
+no chat, image session or other workspace names. It cannot be undone. The
+chats that worked in it keep their messages, and their next file starts a new
+workspace, as if they never had one. Deleting a chat never deletes its
+workspace.
+
+### The workspace panel
+
+**Files** at the right end of the bar opens the panel of the workspace's
+files, with their count beside it. On a screen 1,536 pixels wide or more the
+panel is a column beside the conversation; on a narrower one it opens over
+the right side, and **×** closes it. This browser remembers whether it is
+open.
+
+The files are a tree of their names: `site/css/main.css` sits in `site`, then
+`css`, folders first and each level by name, with each file's size. A click
+opens a file, with its kind, size and latest version, and when and by whom it
+last changed: you, the model or one of its agents.
+
+- An HTML file opens in the same sandboxed preview as a reply's card, with
+  its source, **Save as PDF** and the full-screen view.
+- Any other text file shows its source.
+- A PDF shows the text the model reads of it.
+- Any other file, an archive or a spreadsheet, shows its name and size: the
+  model sees it in `list_files`, and `read_file` answers that it cannot read
+  it.
+
+What you do here is yours: each version it makes is authored by you.
+
+- **New file** makes an empty text file under the name you type, `/` making
+  folders; a name the workspace already holds gets a number, `notes (2).md`.
+- **Upload**, or files dropped anywhere on the panel, adds files of any kind:
+  text as text, a PDF with its text, anything else as its bytes.
+- On each file's row, the pencil renames it, the arrow downloads its latest
+  version under the last part of its name, and the bin deletes it. A name
+  another file holds, a deleted one included, is refused; a rename keeps the
+  file's versions. A delete is a new version that marks the file deleted,
+  with the versions before it kept.
+
+With no workspace yet, the first file you make or upload here creates it,
+named after the chat, or **Workspace** while the chat has no title. The panel
+works with the **Workspace** switch off too: the switch takes the model's
+tools away, never your files. When the browser refuses to store a change, the
+panel says so in red, **Not saved in this browser:** and the reason; a refused
+delete of a workspace is said in the bar.
 
 ## Dictating a prompt
 

@@ -42,6 +42,28 @@ export async function readAttached(
   }
 }
 
+/**
+ * A file the workspace panel takes in, whatever its kind: text inline, a PDF
+ * with its text (none when pdf.js cannot read it), anything else as its bytes.
+ * Text a file turns out not to be (a NUL in it) is kept as bytes too.
+ */
+export async function readUpload(file: File, readPdf: (data: ArrayBuffer) => Promise<string> = pdfText): Promise<Incoming> {
+  const kind = kindOf(file.name, file.type);
+  const blob = () => new Blob([file], { type: file.type });
+  if (kind === "pdf") {
+    const bytes = new Blob([await file.arrayBuffer()], { type: "application/pdf" });
+    const derived = await readPdf(await bytes.arrayBuffer()).catch(() => undefined);
+    return { name: file.name, kind, blob: bytes, ...(derived !== undefined ? { derived } : {}) };
+  }
+  // A name that says nothing else is tried as text, whatever the browser's type guessed (it calls a `.ts` file a video).
+  if (kind === "text" || kindOf(file.name) === "text") {
+    const text = await file.text();
+    if (!text.includes("\u0000")) return { name: file.name, kind: "text", text };
+    return { name: file.name, kind: "other", blob: blob() };
+  }
+  return { name: file.name, kind, blob: blob() };
+}
+
 /** An older chat's attachment as a workspace file: its text, or a PDF's text with no bytes, which that chat never kept. */
 export const fromLegacy = (a: Attachment): AttachedFile =>
   a.kind === "pdf" ? { name: a.name, kind: "pdf", size: a.size, derived: a.text } : { name: a.name, kind: "text", size: a.size, text: a.text };
