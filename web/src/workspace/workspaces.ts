@@ -1,9 +1,11 @@
 import type { ImageId, ImageStore } from "../store/imageStore.ts";
 import { newKey } from "../store/docs.ts";
 import { pageStore } from "../store/index.ts";
+import { makeThumb } from "../store/pictures.ts";
 import {
   type Author,
   authorLabel,
+  bytesOf,
   type ChatAuthor,
   cleanName,
   type FileKind,
@@ -12,6 +14,7 @@ import {
   kindOf,
   latest,
   present,
+  type StoredBytes,
   uniqueName,
   USER,
   type Version,
@@ -116,6 +119,8 @@ export type Workspaces = {
    * no picture is freed). The chats that worked in it are the caller's.
    */
   remove(id: WorkspaceId, elsewhere: Iterable<ImageId> | null): Promise<{ files: number }>;
+  /** The image store's pictures the workspaces hold, every version's: what deleting a chat or an image session keeps. */
+  pictures(): Promise<Set<ImageId>>;
   /** A chat's hold on its workspace, for its turns. */
   chat(key: string, options: BindingOptions): ChatBinding;
   /** The file's newest version, as `reader` receives it: from then on the guard holds it as the version that reader read. */
@@ -168,9 +173,16 @@ const lineAt = (text: string, index: number) => text.slice(0, index).split("\n")
 /** "3", "3 and 9", "3, 9 and 14". */
 const listed = (items: number[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
 
-export function createWorkspaces(store: ImageStore, options: { now?: () => number; newId?: () => string } = {}): Workspaces {
+/** A picture's size in pixels, and a thumbnail to keep beside it; rejects when the browser cannot decode it. */
+export type MeasurePicture = (blob: Blob) => Promise<{ width: number; height: number; thumb?: Blob }>;
+
+export function createWorkspaces(
+  store: ImageStore,
+  options: { now?: () => number; newId?: () => string; measure?: MeasurePicture } = {},
+): Workspaces {
   const now = options.now ?? Date.now;
   const newId = options.newId ?? newKey;
+  const measure = options.measure ?? ((blob: Blob) => makeThumb(blob));
   const listeners = new Set<(change: { workspace: WorkspaceId; file?: string }) => void>();
   // The workspace each chat's first file is creating, by the chat's key, kept once born.
   const births = new Map<string, Promise<WorkspaceId>>();
@@ -219,6 +231,25 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
   const notify = (change: { workspace: WorkspaceId; file?: string }) => {
     for (const listener of listeners) listener(change);
   };
+
+  /**
+   * An incoming file's bytes into the store: a picture into the image store,
+   * with its size and a thumbnail, and as bytes the model cannot read when the
+   * browser cannot decode it; anything else as a blob.
+   */
+  async function keep(item: Incoming): Promise<{ kind: FileKind; bytes?: StoredBytes }> {
+    if (!item.blob) return { kind: item.kind };
+    if (item.kind === "picture") {
+      const measured = await measure(item.blob).catch(() => null);
+      if (measured) {
+        const { width, height, thumb } = measured;
+        const image = await store.putImage(item.blob, { width, height, ...(thumb ? { thumb } : {}) });
+        return { kind: "picture", bytes: { store: "image", id: image.id, type: image.type, size: image.bytes, width: image.width, height: image.height } };
+      }
+    }
+    const blob = await store.putBlob(item.blob);
+    return { kind: item.kind === "picture" ? "other" : item.kind, bytes: { store: "blob", id: blob.id, type: blob.type, size: blob.bytes } };
+  }
 
   async function get(id: WorkspaceId): Promise<Workspace | null> {
     const value = await store.getDoc<unknown>(WORKSPACES, id);
@@ -316,6 +347,11 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
         return { files: gone.length };
       });
     },
+    async pictures() {
+      const held = new Set<ImageId>();
+      for (const w of await store.listDocs<unknown>(WORKSPACES)) if (isWorkspace(w)) for (const id of bytesOf(await files(w.id)).images) held.add(id);
+      return held;
+    },
     chat(key, binding) {
       return {
         key,
@@ -407,16 +443,16 @@ export function createWorkspaces(store: ImageStore, options: { now?: () => numbe
           const at = now();
           const name = uniqueName(cleanName(item.name) ?? "file", taken);
           taken.push(name);
-          const stored = item.blob ? await store.putBlob(item.blob) : null;
+          const { kind, bytes } = await keep(item);
           const version: Version = {
             n: 1,
             author,
             at,
             ...(item.text !== undefined ? { text: item.text } : {}),
-            ...(stored ? { bytes: { store: "blob" as const, id: stored.id, type: stored.type, size: stored.bytes } } : {}),
+            ...(bytes ? { bytes } : {}),
             ...(item.derived !== undefined ? { derived: item.derived } : {}),
           };
-          const file: WorkspaceFile = { format: WORKSPACE_FORMAT, id: newId(), workspace, name, kind: item.kind, versions: [version] };
+          const file: WorkspaceFile = { format: WORKSPACE_FORMAT, id: newId(), workspace, name, kind, versions: [version] };
           await store.putDoc(filesCollection(workspace), file.id, file);
           written.push({ workspace, file: file.id, name, version: 1 });
         }

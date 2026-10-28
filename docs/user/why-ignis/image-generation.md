@@ -37,6 +37,9 @@ prompts; with the 27B already loaded, the rewrite runs first and the server
 switches once. The Playground's [Image studio](../playground/image-studio.md)
 adds image sessions, marks drawn on a picture, and a `make_image` tool the chat
 can call: it switches to the image model, makes the pictures and switches back.
+The pictures it makes land in the chat's workspace as files, and the model
+reads them back with `read_file` when the loaded model has vision
+([tools and agents](../playground/tools-and-agents.md#pictures)).
 
 ![A 2752×1536 picture made in the Playground's image studio](../images/playground/image-studio.png)
 

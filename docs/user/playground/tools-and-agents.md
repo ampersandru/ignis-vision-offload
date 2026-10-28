@@ -138,8 +138,9 @@ whenever the switch is on, whether the chat has a file yet or not:
   or another chat.
 - `read_file`: a text file as numbered lines, a range at a time (`offset` is
   the first line, `limit` the most lines), up to 20,000 characters a call; a
-  PDF reads as its text, the same way. A file of a kind it cannot read
-  answers with its kind and size.
+  PDF reads as its text, the same way. A picture comes back as the picture
+  itself when the loaded model has vision ([below](#pictures-the-model-reads)).
+  A file of a kind it cannot read answers with its kind and size.
 - `write_file`: creates a text file or replaces it whole. A name may hold `/`
   for folders, as in `site/index.html`, and is unique in its workspace.
 - `edit_file`: replaces one passage of a text file (`old`) with another
@@ -156,7 +157,9 @@ get the same five tools, each as a reader of its own
 ([below](#changes-the-model-has-not-seen)). A file you attach with **File** in
 the prompt box becomes a file of the workspace when the prompt is sent, and
 the prompt says so after your words: `[Attached to the workspace: brief.pdf]`.
-You see the files, and add, rename, delete and download them, in the
+A picture you attach or paste goes with the prompt as it always did and
+becomes a file of the workspace too, named the same way. You see the files,
+and add, rename, delete and download them, in the
 [workspace panel](chat.md#the-workspace-panel).
 
 A file the model writes or edits shows in its reply as a card: its name, the
@@ -171,8 +174,31 @@ The ignis system prompt's workspace part and the five tools are the same in
 every chat, whatever the workspace holds and whatever you attach, so a file
 never changes the head of the prompt ([the turn notice](#the-turn-notice)).
 With the switch off the model has no workspace tool and **File** leaves the
-prompt box's **+** menu; pictures can still be attached, and the files stay in
-this browser.
+prompt box's **+** menu; pictures can still be attached, sent with the prompt
+alone, the pictures `make_image` makes stay in its reply as they did before
+workspaces, and the files stay in this browser.
+
+### Pictures the model reads
+
+When the loaded model has vision, `read_file` on a picture returns the picture
+itself as a part of the tool's output, ahead of a line that names it: its
+version, its size in pixels and in bytes, and the size it is shown at. The page
+redraws it as it does a picture you attach, as a JPEG at most 1,568 pixels on
+its long edge, so reading a picture costs no more than attaching it. The redraw is
+kept with the call's result, and every later request sends the same bytes: an
+`image_url` part on the `tool` message over chat completions, an
+`input_image` part of the `function_call_output` over the Responses socket.
+Its row in the reply reads **Read** *name*, **seen**. Agents read pictures the
+same way.
+
+Without vision, `read_file` answers with that line alone, the picture's name,
+its size in pixels and in bytes, and says that the model has no vision: with
+vision off the server refuses any request that holds a picture
+(`vision_disabled`, [vision](../configuration/vision.md)), so the page never
+sends one on a guess. It learns whether the model has vision from the
+server's running configuration, the loaded family's `vision.enabled` in
+`GET /v1/config`, read again after every switch, `make_image`'s visit to the
+image model included; until that read has answered, the model has none.
 
 ### Changes the model has not seen
 
@@ -206,10 +232,24 @@ page switches the server to the image model, makes up to four variants per
 call, and switches back to the text model before the next request: each reply
 that makes a picture costs two model loads, about half a minute on an RTX
 5090. The model is told each picture's name (`made-1`, or `user-1` for one you
-sent), size and seed, not what it looks like. A picture can be marked, opened
-full screen, downloaded, or opened in the [Image studio](image-studio.md).
-Agents do not get this tool. The weights are for non-commercial use only
-([images](../api/images.md)).
+sent), size and seed, not what it looks like.
+
+While the **Workspace** switch is on, each picture lands in the
+[chat's workspace](chat.md#the-chats-workspace) as a file authored by the
+chat, born for it if the chat had none: `made-1` is `made-1.png`, or
+`made-1 (2).png` when the workspace already holds that name. The model is
+told the file's name, so it can read the picture back with `read_file` when it
+has vision, and a later call that edits `made-1` sends the version that call
+made, read from the workspace. The reply shows the picture
+from the workspace with its file's name under it, never from a copy kept in
+the message. Once the workspace is deleted the reply says the picture is no
+longer in it, and a call naming it fails, saying so. When the browser refuses
+to store a picture, the reply keeps it as before and the model is told why.
+The pictures of a chat saved before workspaces show as they did.
+
+A picture can be marked, opened full screen, downloaded, or opened in the
+[Image studio](image-studio.md). Agents do not get this tool. The weights are
+for non-commercial use only ([images](../api/images.md)).
 
 ## Read more
 

@@ -24,7 +24,10 @@ agents included. The **+** button adds to the prompt:
   must run with image input on ([vision](../configuration/vision.md)); the
   built-in `rtx5090` profile turns it on. A pasted image lands here too. Each
   thumbnail can be **marked**: circles or strokes drawn on it, so the model
-  sees what you point at.
+  sees what you point at. While the **Workspace** switch is on, sending also
+  makes each picture a file of the chat's workspace, as you picked it (or as
+  you marked it), and names it in the prompt, so a later turn can read it
+  again without your sending it twice.
 - **File**: a text or PDF file for the chat's workspace. It waits in the box
   until you send, and **×** takes it out; sending adds it to the workspace and
   names it in the prompt. It is offered while the **Workspace** switch is on
@@ -44,15 +47,21 @@ the workspace is deleted, a fork shares it, and deleting the chat keeps it.
 
 A prompt that attached files lists them under its text, by the names they
 took in the workspace: a name the workspace already holds gets a number,
-`notes (2).txt`. A file the model writes or edits shows in its reply as a card
+`notes (2).txt`, and a pasted `image.png` sent twice is `image (2).png`. A
+picture keeps its bytes once in this browser, by their SHA-256, in the store
+the [Image view](image-studio.md)'s sessions use: the same picture in a
+prompt, a workspace and an image session is one copy. The pictures the model
+makes with `make_image` land in the workspace too, and its reply shows them
+from there ([Pictures](tools-and-agents.md#pictures)). A file the model writes or edits shows in its reply as a card
 with the version that call made; once a newer version exists, the card says
 **Superseded by version 2** and **Open the latest** shows that one. The model's
 side, its tools and the **Workspace** switch:
 [Tools and agents](tools-and-agents.md#workspace).
 
 A chat saved before workspaces shows as it did, its files from `create_file`
-included. The files it had attached wait in the prompt box until its next
-turn, which makes them the first files of its workspace.
+and the pictures `make_image` made in it included. The files it had attached
+wait in the prompt box until its next turn, which makes them the first files
+of its workspace.
 
 ### The workspace picker
 
@@ -90,6 +99,8 @@ last changed: you, the model or one of its agents.
   its source, **Save as PDF** and the full-screen view.
 - Any other text file shows its source.
 - A PDF shows the text the model reads of it.
+- A picture shows at the panel's width with its size in pixels; a click
+  opens it full screen.
 - Any other file, an archive or a spreadsheet, shows its name and size: the
   model sees it in `list_files`, and `read_file` answers that it cannot read
   it.
@@ -99,7 +110,9 @@ What you do here is yours: each version it makes is authored by you.
 - **New file** makes an empty text file under the name you type, `/` making
   folders; a name the workspace already holds gets a number, `notes (2).md`.
 - **Upload**, or files dropped anywhere on the panel, adds files of any kind:
-  text as text, a PDF with its text, anything else as its bytes.
+  text as text, a PDF with its text, a picture into the store pictures share,
+  anything else as its bytes. A picture this browser cannot decode (HEIC in
+  most browsers) is kept as bytes of a kind the model cannot read.
 - On each file's row, the pencil renames it, the arrow downloads its latest
   version under the last part of its name, and the bin deletes it. A name
   another file holds, a deleted one included, is refused; a rename keeps the
