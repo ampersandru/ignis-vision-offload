@@ -57,6 +57,28 @@ describe("a reply's file card", () => {
     expect(html).toContain(">Download<");
   });
 
+  it("opens the version an edit made, as a write's", () => {
+    const edit: LocalRun = { ...wrote(2), tool: "edit_file" };
+    const html = render([edit], [page([version(1, "<p>One</p>"), version(2, "<p>Two</p>")])]);
+    expect(html).toContain("version 2");
+    expect(html).toContain("&lt;p&gt;Two&lt;/p&gt;");
+  });
+
+  it("names the file a deletion took out, a read that showed no lines, and a refusal", () => {
+    const html = render(
+      [
+        { callId: "d", tool: "delete_file", status: "done", written: { workspace: "w1", file: "f1", name: "draft.md", version: 3 } },
+        { callId: "r", tool: "read_file", status: "done", seen: { workspace: "w1", file: "f2", name: "data.zip", version: 1 } },
+        { callId: "e", tool: "edit_file", status: "failed", error: "notes.md changed since you last read it" },
+      ],
+      [],
+    );
+    expect(html).toMatch(/Delete<\/span><span[^>]*>draft\.md<\/span>/);
+    expect(html).toMatch(/Read<\/span><span[^>]*>data\.zip, version 1<\/span>/);
+    expect(html).toMatch(/Edit<\/span>/);
+    expect(html).toContain("notes.md changed since you last read it");
+  });
+
   it("names what list_files and read_file did, and an older chat's read in characters", () => {
     const html = render(
       [

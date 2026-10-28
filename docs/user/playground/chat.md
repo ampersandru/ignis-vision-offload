@@ -47,8 +47,8 @@ the workspace is deleted, a fork shares it, and deleting the chat keeps it.
 
 A prompt that attached files lists them under its text, by the names they
 took in the workspace: a name the workspace already holds gets a number,
-`notes (2).txt`. A file the model writes shows in its reply as a card with the
-version that reply wrote; once a newer version exists, the card says
+`notes (2).txt`. A file the model writes or edits shows in its reply as a card
+with the version that call made; once a newer version exists, the card says
 **Superseded by version 2** and **Open the latest** shows that one. The model's
 side, its tools and the **Workspace** switch:
 [Tools and agents](tools-and-agents.md#workspace).
