@@ -27,6 +27,8 @@ const actions: PanelActions = {
   download: () => {},
   save: async () => ({ ok: true, version: 2 }),
   restore: () => {},
+  content: async () => null,
+  derive: async () => null,
 };
 
 const whom = (author: Version["author"]) => authorName(author, { here: (key) => key === "k", title: () => undefined });

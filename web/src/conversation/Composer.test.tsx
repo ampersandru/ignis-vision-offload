@@ -89,7 +89,7 @@ describe("the chat's prompt box with dictation", () => {
 });
 
 describe("the chat's prompt box and the workspace", () => {
-  const brief: AttachedChip = { name: "brief.pdf", kind: "pdf", characters: 1200 };
+  const brief: AttachedChip = { name: "brief.pdf", kind: "pdf", characters: 1200, size: 48_000 };
 
   it("attaches files into the workspace while the Workspace switch is on, and a file alone is a prompt", () => {
     const html = render({}, { value: "", canAttach: true, attachments: [brief] });
@@ -98,6 +98,14 @@ describe("the chat's prompt box and the workspace", () => {
     expect(html).toContain('aria-label="Remove brief.pdf"');
     expect(send(html)).not.toContain('disabled=""');
     expect(send(render({}, { value: "", canAttach: true }))).toContain('disabled=""');
+  });
+
+  it("shows an attached PDF by its text and an attached recording by its size", () => {
+    const memo: AttachedChip = { name: "standup.m4a", kind: "audio", characters: 0, size: 2_457_600 };
+    const html = render({}, { value: "", canAttach: true, attachments: [brief, memo] });
+    expect(html).toMatch(/brief\.pdf<\/span><span[^>]*>PDF, 1,200 chars<\/span>/);
+    expect(html).toMatch(/standup\.m4a<\/span><span[^>]*>audio, 2\.3 MB<\/span>/);
+    expect(html).toContain('aria-label="Remove standup.m4a"');
   });
 
   it("offers pictures only while the Workspace switch is off", () => {

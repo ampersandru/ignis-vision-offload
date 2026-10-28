@@ -1,24 +1,29 @@
-import { type DragEvent, type ReactNode, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useState } from "react";
+import type { SpeechStatus } from "../api/model.ts";
 import { usePictureUrl } from "../image/pictures.tsx";
 import type { ImageId } from "../store/imageStore.ts";
 import { caption, fieldLook } from "../ui/classes.ts";
 import { HtmlPreview, isHtmlName } from "../ui/HtmlPreview.tsx";
 import { IconClose, IconDownload, IconPencil, IconPlus, IconTrash } from "../ui/icons.tsx";
 import { Lightbox } from "../ui/Lightbox.tsx";
-import { type Author, KIND_LABEL, latest, present, USER, type Workspace, type WorkspaceFile } from "./files.ts";
+import { AudioViewer, Recording } from "./audio.tsx";
+import { type Author, KIND_LABEL, latest, present, USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
 import { FileEditor, FileHistory, type SaveOutcome } from "./FileHistory.tsx";
+import { BUTTON, Source } from "./looks.tsx";
 import { authorName, type ChatNames, createFile, downloadName, fileTree, refusal, saveText, sizeLabel, timeLabel, type TreeNode, uploadFiles } from "./panel.ts";
+import { createRecorder } from "./recorder.ts";
 import type { WorkspaceView } from "./useWorkspaces.ts";
 import type { ChatBinding, Workspaces } from "./workspaces.ts";
 
 // The Chat view's workspace panel (spec #170): the files of the chat's
 // workspace as a tree of their names, each opening in a viewer for its kind,
 // and the user's actions on them — a new empty text file, uploads by the
-// picker or by a drop, rename, delete and download, a text file's edits by
-// hand, and any file's history with its diff and restore, deleted files'
-// included (FileHistory.tsx). Everything goes through
-// the workspace module as the user's; a chat with no workspace yet gets one
-// with the first file made here. What the browser refuses, the panel says.
+// picker or by a drop, a recording from the microphone (#395), rename, delete
+// and download; an audio file plays beside its transcript; a text file's
+// edits by hand, and any file's history with its diff and restore, deleted
+// files' included (FileHistory.tsx). Everything goes through the workspace
+// module as the user's; a chat with no workspace yet gets one with the first
+// file made here. What the browser refuses, the panel says.
 
 /** What the panel's controls do; a name a field sends back comes with the refusal, or null once done. */
 export type PanelActions = {
@@ -31,9 +36,11 @@ export type PanelActions = {
   save: (file: WorkspaceFile, text: string) => Promise<SaveOutcome>;
   /** Restores version `n` of a file as its newest. */
   restore: (file: string, n: number) => void;
+  /** A version's bytes, for a player. */
+  content: (version: Version) => Promise<Blob | null>;
+  /** Computes the text the model reads of a file's latest version, a recording's transcript, and keeps it; why it could not, or null. */
+  derive: (file: WorkspaceFile) => Promise<string | null>;
 };
-
-const BUTTON = "cut flex shrink-0 items-center gap-1.5 bg-surface px-2.5 py-1.5 font-display text-xs font-semibold text-ink [--cut-size:6px] hover:bg-line";
 
 /** An icon button's shape; its hover colour is the caller's (two `hover:text-*` on one element, and Tailwind's order picks). */
 const ICON_SHAPE = "flex size-7 shrink-0 items-center justify-center text-ash";
@@ -46,6 +53,7 @@ export function WorkspacePanel({
   view,
   chat,
   chats,
+  speech,
   onClose,
 }: {
   workspaces: Workspaces;
@@ -55,10 +63,15 @@ export function WorkspacePanel({
   chat: () => ChatBinding;
   /** The chat the panel is open in, and the page's chats by their keys: who made each version. */
   chats: ChatNames;
+  /** Whether the speech model can serve, from the models listing: a recording's microphone and transcript need it. */
+  speech?: SpeechStatus;
   onClose: () => void;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   const id = view.workspace?.id;
+  const [recorder] = useState(() => createRecorder());
+  // A recording under way when the panel closes is saved, not lost.
+  useEffect(() => () => void recorder.stop(), [recorder]);
 
   /** `job`, with what the store refused said in the panel. */
   async function attempt<T>(job: () => Promise<T>): Promise<T | { refused: string }> {
@@ -101,9 +114,31 @@ export function WorkspacePanel({
         if (!("refused" in out) && !out.ok) setNotice(out.error);
       });
     },
+    content: (version) => workspaces.content(version),
+    derive: async (file) => {
+      const out = await attempt(() => workspaces.readable(file, latest(file)));
+      return "refused" in out ? out.refused : out.ok ? null : out.error;
+    },
   };
 
-  return <PanelView workspace={view.workspace} files={view.files} chats={chats} notice={notice} onClose={onClose} actions={actions} />;
+  // The chat a recording goes to is the one on screen when Record was pressed, whichever is on screen when it ends.
+  const recordInto = () => {
+    const binding = chat();
+    return async (file: File) => void (await uploadFiles(workspaces, binding, [file]));
+  };
+
+  return (
+    <PanelView
+      workspace={view.workspace}
+      files={view.files}
+      chats={chats}
+      notice={notice}
+      onClose={onClose}
+      actions={actions}
+      speech={speech}
+      recording={<Recording recorder={recorder} speech={speech} save={recordInto} />}
+    />
+  );
 }
 
 function save(blob: Blob, name: string) {
@@ -123,6 +158,8 @@ export function PanelView({
   notice,
   onClose,
   actions,
+  speech,
+  recording,
 }: {
   workspace: Workspace | null | undefined;
   files: WorkspaceFile[];
@@ -130,6 +167,9 @@ export function PanelView({
   notice?: string | null;
   onClose: () => void;
   actions: PanelActions;
+  speech?: SpeechStatus;
+  /** Record, and the recording under way. */
+  recording?: ReactNode;
 }) {
   const [opened, setOpened] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -174,7 +214,7 @@ export function PanelView({
       </div>
 
       {open ? (
-        <FileViewer key={open.id} file={open} whom={whom} onBack={() => setOpened(null)} actions={actions} />
+        <FileViewer key={open.id} file={open} whom={whom} onBack={() => setOpened(null)} actions={actions} speech={speech} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -196,6 +236,7 @@ export function PanelView({
                 }}
               />
             </label>
+            {recording}
             <span className="text-xs text-ash">or drop files here</span>
             {deleted > 0 && (
               <button
@@ -369,7 +410,7 @@ const TAB_LABEL: Record<Exclude<ViewerTab, "history">, string> = { preview: "Pre
  * a text file's in its editor (an HTML file's a tab after its preview), and
  * its history a tab away. A deleted file opens on its history alone.
  */
-export function FileViewer({ file, whom, onBack, actions }: { file: WorkspaceFile; whom: (author: Author) => string; onBack: () => void; actions: PanelActions }) {
+export function FileViewer({ file, whom, onBack, actions, speech }: { file: WorkspaceFile; whom: (author: Author) => string; onBack: () => void; actions: PanelActions; speech?: SpeechStatus }) {
   const v = latest(file);
   const editable = v.text !== undefined;
   const html = editable && isHtmlName(file.name);
@@ -386,6 +427,8 @@ export function FileViewer({ file, whom, onBack, actions }: { file: WorkspaceFil
         <Source text={v.derived} />
       </>
     );
+  } else if (file.kind === "audio") {
+    body = <AudioViewer file={file} version={v} speech={speech} load={actions.content} transcribe={actions.derive} />;
   } else if (file.kind === "picture" && v.bytes?.store === "image") {
     body = <PictureView id={v.bytes.id} name={file.name} width={v.bytes.width} height={v.bytes.height} />;
   } else if (file.kind === "other") {
@@ -463,7 +506,3 @@ function PictureView({ id, name, width, height }: { id: ImageId; name: string; w
     </>
   );
 }
-
-const Source = ({ text }: { text: string }) => (
-  <pre className="max-h-[60vh] overflow-auto bg-surface px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
-);

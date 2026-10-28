@@ -32,6 +32,8 @@ const actions: PanelActions = {
   download: () => {},
   save: async () => ({ ok: true, version: 2 }),
   restore: () => {},
+  content: async () => null,
+  derive: async () => null,
 };
 
 /** The chat the panel is open in is "k", the chat that wrote site/index.html's version 2. */
@@ -162,5 +164,28 @@ describe("a file's viewer", () => {
     expect(html).toContain("900 B");
     expect(html).toContain("Its text, as the model reads it");
     expect(html).toContain("[Page 1]\nThe brief");
+  });
+
+  it("opens an audio file in the player's view, beside its transcript or the way to it", () => {
+    const bytes = { store: "blob" as const, id: "b3", type: "audio/wav", size: 64_044 };
+    const heard = view(file("memo.wav", "audio", [{ n: 1, author: USER, at, bytes, derived: "Buy bread." }]));
+    expect(heard).toContain("audio, 62.5 KB");
+    expect(heard).toContain("Its transcript, as the model reads it");
+    expect(heard).toMatch(/<pre[^>]*>Buy bread.<\/pre>/);
+    const unheard = renderToStaticMarkup(
+      <FileViewer file={file("memo.wav", "audio", [{ n: 1, author: USER, at, bytes }])} whom={whom} onBack={() => {}} actions={actions} speech={{ available: false, reason: "the speech model is turned off" }} />,
+    );
+    expect(unheard).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
+    expect(unheard).toContain("Speech is turned off on this server");
+  });
+});
+
+describe("the panel's recorder", () => {
+  it("sits beside New file and Upload", () => {
+    const html = renderToStaticMarkup(
+      <PanelView workspace={workspace} files={files} chats={chats} onClose={() => {}} actions={actions} recording={<button type="button">Record</button>} />,
+    );
+    expect(html.indexOf(">Upload<")).toBeLessThan(html.indexOf(">Record<"));
+    expect(html.indexOf(">Record<")).toBeLessThan(html.indexOf("or drop files here"));
   });
 });
