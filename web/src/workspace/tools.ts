@@ -88,7 +88,7 @@ export const DELETE_FILE_TOOL = tool(
 );
 
 export const WORKSPACE_PROMPT = `# Workspace
-The chat can have a workspace: files you and the user work on together, which stay across turns and chats. It is created with its first file, which you write or the user attaches; a file the user attaches is named in their message.
+The chat can have a workspace: files you and the user work on together, which stay across turns and chats. It is created with its first file, which you write or the user attaches; a file the user attaches is named in their message. Its files reach you in a notice after the conversation: at a chat's first turn each file's name, kind and size, and later only the files the user or another chat created, changed, renamed or deleted since the last notice.
 - See what it holds with \`list_files\`: each file's name, kind, size, last change and author.
 - Read a file with \`read_file\` as numbered lines, a range at a time; a PDF reads as its text, an audio file as its transcript, without speakers, and a picture is shown to you when you can see pictures. Read a file before you rely on it or change it.
 - Write a text file with \`write_file\`: code, a document, data — anything worth keeping. It creates the file or replaces it whole. Mention the file in your reply instead of repeating its content.
@@ -118,7 +118,7 @@ const readerOf = (access: WorkspaceAccess): Reader => access.reader ?? access.ch
 const textSize = (text: string) => `${count(linesOf(text).length, "line")}, ${count(text.length, "character")}`;
 
 /** The version's size: lines and characters for text, bytes for the rest, and the text derived from them. */
-function sizeOf(version: Version): string {
+export function sizeOf(version: Version): string {
   if (version.text !== undefined) return textSize(version.text);
   // An older chat's PDF comes with its text alone: that chat never kept the bytes.
   const parts = [...(version.bytes ? [count(version.bytes.size, "byte")] : []), ...(version.derived !== undefined ? [`its text ${count(version.derived.length, "character")}`] : [])];
