@@ -94,9 +94,8 @@ tool, each explained in [Tools and agents](tools-and-agents.md):
 | Run JavaScript | on | **Safety check** (on) |
 | Plan | on | |
 | Memory | on | **Open memory** |
-| Create files | on | |
+| Workspace | on | |
 | Pictures | on | |
-| Attachments | on | |
 
 A tool is declared to the model only while its switch is on, and its
 instructions go into the ignis system prompt; the `ignis` tab of the system

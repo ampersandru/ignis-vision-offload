@@ -101,8 +101,8 @@ export type DictationDeps = {
   onUnavailable?: () => void;
 };
 
-/** The part of a keyboard event the shortcut reads. */
-export type KeyLike = { key: string; code: string; ctrlKey: boolean; shiftKey: boolean; repeat: boolean; preventDefault: () => void };
+/** The part of a keyboard event the shortcut reads; `defaultPrevented` once something on the page took it, as a full screen takes its Esc. */
+export type KeyLike = { key: string; code: string; ctrlKey: boolean; shiftKey: boolean; repeat: boolean; defaultPrevented?: boolean; preventDefault: () => void };
 
 const silenceOf = (deps: DictationDeps) => (deps.silence ?? dictationSilence)();
 
@@ -271,7 +271,7 @@ export class DictationController {
   }
 
   keyDown(event: KeyLike) {
-    if (event.key === "Escape" && this.state.phase !== "idle") {
+    if (event.key === "Escape" && !event.defaultPrevented && this.state.phase !== "idle") {
       event.preventDefault();
       return this.discard();
     }

@@ -1,11 +1,12 @@
 import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
+import { formatBytes } from "../decide/evidenceFile.ts";
 import type { ContextUsage } from "../metrics/context.ts";
 import { ContextMeter } from "../metrics/ContextMeter.tsx";
 import { DictationMic, DictationStrip, HintText, toneClass } from "../speech/Dictation.tsx";
 import { dictationHint } from "../speech/dictation.ts";
 import { type Dictation, dictationKeys, useDictationState } from "../speech/useDictation.ts";
-import type { Attachment } from "../tools/local/attachments.ts";
+import type { AttachedChip } from "../workspace/attach.ts";
 import { useAnchoredMenu } from "../ui/anchoredMenu.ts";
 import { IconBrush, IconClose, IconImage, IconPaperclip, IconPlus } from "../ui/icons.tsx";
 import { dataUriBytes, type PromptImage } from "./images.ts";
@@ -15,9 +16,9 @@ export const IDLE_HINT = "Enter sends, Shift+Enter adds a line. Dictate with the
 
 /**
  * The prompt box under the conversation: Send, or Stop while this session
- * streams, the mic beside it (spec speech/04), the session's attached files,
- * the images this prompt will carry, the model the next message goes to, and
- * the context bar.
+ * streams, the mic beside it (spec speech/04), the files this prompt adds to
+ * the chat's workspace, the images it will carry, the model the next message
+ * goes to, and the context bar.
  */
 export function Composer(props: {
   value: string;
@@ -33,9 +34,10 @@ export function Composer(props: {
   usage: ContextUsage;
   onSend: () => void;
   onStop: () => void;
-  /** The attachments tool is on: files can be attached, and the attached ones show. */
+  /** The Workspace switch is on: files can be attached, and the attached ones show. Pictures can be either way. */
   canAttach: boolean;
-  attachments: Attachment[];
+  /** The files the next prompt adds to the chat's workspace. */
+  attachments: AttachedChip[];
   attachError: string | null;
   onAttach: (files: File[]) => void;
   onDetach: (name: string) => void;
@@ -60,8 +62,8 @@ export function Composer(props: {
       : { text: mic.unavailable?.sentence ?? IDLE_HINT, tone: "ash" as const });
   const picker = useRef<HTMLInputElement>(null);
   const imagePicker = useRef<HTMLInputElement>(null);
-  /** An empty prompt still goes out when it carries an image: the picture is the question. */
-  const hasPrompt = props.value.trim() !== "" || props.images.length > 0;
+  /** An empty prompt still goes out when it carries an image or a file: the picture or the file is the question. */
+  const hasPrompt = props.value.trim() !== "" || props.images.length > 0 || (props.canAttach && props.attachments.length > 0);
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -86,8 +88,7 @@ export function Composer(props: {
             <span key={a.name} className="cut flex min-w-0 items-center gap-1.5 bg-surface py-1 pr-1.5 pl-2.5 text-xs [--cut-size:6px]">
               <span className="min-w-0 truncate font-display font-semibold text-ink">{a.name}</span>
               <span className="shrink-0 font-display tabular-nums text-ash">
-                {a.kind === "pdf" ? "PDF, " : ""}
-                {a.text.length.toLocaleString()} chars
+                {a.kind === "audio" ? `audio, ${formatBytes(a.size)}` : `${a.kind === "pdf" ? "PDF, " : ""}${a.characters.toLocaleString()} chars`}
               </span>
               <button type="button" aria-label={`Remove ${a.name}`} onClick={() => props.onDetach(a.name)} className="shrink-0 text-ash hover:text-fault">
                 <IconClose />
@@ -143,7 +144,7 @@ export function Composer(props: {
             <AddMenuItem
               icon={<IconPaperclip />}
               label="File"
-              hint="Text or PDF, for the model to read"
+              hint="Text, PDF or audio, into the chat's workspace"
               onChoose={() => picker.current?.click()}
             />
           )}

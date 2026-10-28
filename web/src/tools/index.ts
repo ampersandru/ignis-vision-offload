@@ -3,24 +3,19 @@ import { AGENT_TOOL, AGENT_TOOL_NAME, AGENTS_IGNIS_PROMPT } from "./agents/agent
 import { ASK_USER_IGNIS_PROMPT, ASK_USER_TOOL, ASK_USER_TOOL_NAME } from "./ask/ask.ts";
 import { dateTimePrompt } from "./datetime/datetime.ts";
 import { IMAGE_IGNIS_PROMPT, IMAGE_TOOL, isImageTool } from "./image/image.ts";
-import type { Attachment } from "./local/attachments.ts";
 import {
-  attachmentsPrompt,
-  CREATE_FILE_TOOL,
-  FILES_PROMPT,
   isLocalTool,
   MEMORY_DELETE_TOOL,
   MEMORY_READ_TOOL,
+  MEMORY_PROMPT,
   MEMORY_SAVE_TOOL,
-  memoryPrompt,
   PLAN_PROMPT,
-  READ_FILE_TOOL,
   RUN_JS_TOOL,
   runJsPrompt,
   UPDATE_PLAN_TOOL,
 } from "./local/local.ts";
-import { browserMemory, type MemoryNote } from "./local/memory.ts";
 import { isWebTool, WEB_FETCH_TOOL, WEB_IGNIS_PROMPT, WEB_SEARCH_TOOL } from "./web/web.ts";
+import { DELETE_FILE_TOOL, EDIT_FILE_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, WORKSPACE_PROMPT, WRITE_FILE_TOOL } from "../workspace/tools.ts";
 
 // The Playground's tools. Turning one on declares it to the model and adds
 // its part to the ignis system prompt; the conversation loop reacts to its
@@ -47,10 +42,10 @@ export type ToolsState = {
   jsSafetyCheck: boolean;
   plan: boolean;
   memory: boolean;
-  files: boolean;
+  /** list_files, read_file, write_file, edit_file and delete_file on the chat's workspace, files attached in the prompt box, and the files the turn notice names. */
+  workspace: boolean;
   /** make_image: pictures from the image model, a switch there and back per reply that calls it. */
   images: boolean;
-  readFiles: boolean;
   /**
    * An option of every tool, not a tool: how many replies in a row may call
    * tools before the calls stop being run — the conversation's own loop, and
@@ -73,9 +68,8 @@ export const NO_TOOLS: ToolsState = {
   jsSafetyCheck: true,
   plan: false,
   memory: false,
-  files: false,
+  workspace: false,
   images: false,
-  readFiles: false,
   maxRounds: DEFAULT_TOOL_ROUNDS,
 };
 
@@ -91,22 +85,25 @@ export const ALL_TOOLS: ToolsState = {
   jsSafetyCheck: true,
   plan: true,
   memory: true,
-  files: true,
+  workspace: true,
   images: true,
-  readFiles: true,
   maxRounds: DEFAULT_TOOL_ROUNDS,
 };
 
-const CHOICES = ["agents", "web", "askUser", "dateTime", "runJs", "plan", "memory", "files", "images", "readFiles"] as const;
+const CHOICES = ["agents", "web", "askUser", "dateTime", "runJs", "plan", "memory", "workspace", "images"] as const;
 
 /** How many tools are in use. */
 export const toolsInUse = (tools: ToolsState) => (tools.enabled ? CHOICES.filter((choice) => tools[choice]).length : 0);
 
-/** What the prompt depends on besides the switches; each defaults to now, the saved notes and no attachments. */
-export type PromptContext = { now?: Date; notes?: MemoryNote[]; attachments?: Attachment[] };
+/** What the prompt depends on besides the switches: the moment, which defaults to now. */
+export type PromptContext = { now?: Date };
 
-/** The tools in use: each one's own switch, under the switch for all of them. read_file needs an attached file. */
-function inUse(tools: ToolsState, attachments: Attachment[]) {
+/**
+ * The tools in use: each one's own switch, under the switch for all of them.
+ * Nothing a chat holds counts (ADR 0072): the workspace's tools are declared
+ * with or without a file, so attaching one never changes the tools block.
+ */
+function inUse(tools: ToolsState) {
   const on = (choice: (typeof CHOICES)[number]) => tools.enabled && tools[choice];
   return {
     agents: on("agents"),
@@ -116,16 +113,14 @@ function inUse(tools: ToolsState, attachments: Attachment[]) {
     runJs: on("runJs"),
     plan: on("plan"),
     memory: on("memory"),
-    files: on("files"),
+    workspace: on("workspace"),
     images: on("images"),
-    readFiles: on("readFiles") && attachments.length > 0,
   };
 }
 
 /** The read-only ignis system prompt: what the enabled tools add, in a fixed order. */
 export function ignisPrompt(tools: ToolsState, context: PromptContext = {}): string {
-  const attachments = context.attachments ?? [];
-  const on = inUse(tools, attachments);
+  const on = inUse(tools);
   return [
     on.dateTime && !tools.dateTimeLive ? dateTimePrompt(context.now ?? new Date()) : "",
     on.agents ? AGENTS_IGNIS_PROMPT : "",
@@ -133,20 +128,20 @@ export function ignisPrompt(tools: ToolsState, context: PromptContext = {}): str
     on.askUser ? ASK_USER_IGNIS_PROMPT : "",
     on.runJs ? runJsPrompt(tools.jsSafetyCheck) : "",
     on.plan ? PLAN_PROMPT : "",
-    on.memory ? memoryPrompt(context.notes ?? browserMemory.list()) : "",
-    on.files ? FILES_PROMPT : "",
+    on.memory ? MEMORY_PROMPT : "",
+    on.workspace ? WORKSPACE_PROMPT : "",
     on.images ? IMAGE_IGNIS_PROMPT : "",
-    on.readFiles ? attachmentsPrompt(attachments) : "",
   ]
     .filter((part) => part !== "")
     .join("\n\n");
 }
 
 /**
- * The developer message a turn sent at `now` carries, or `undefined` when the
- * date and time tool is off or writes the session's moment into the system
- * prompt instead. It rides after the history, the one place in a prompt where
- * the moment can change between turns without moving a token ahead of it.
+ * The moment a turn sent at `now` carries in its notice (notice.ts), or
+ * `undefined` when the date and time tool is off or writes the session's
+ * moment into the system prompt instead. It rides after the history, the one
+ * place in a prompt where the moment can change between turns without moving
+ * a token ahead of it.
  */
 export function turnDateTime(tools: ToolsState, now: Date): string | undefined {
   return tools.enabled && tools.dateTime && tools.dateTimeLive ? dateTimePrompt(now) : undefined;
@@ -154,7 +149,7 @@ export function turnDateTime(tools: ToolsState, now: Date): string | undefined {
 
 /** The prompt and definitions a request carries for the enabled tools. */
 export function toolExtras(tools: ToolsState, context: PromptContext = {}): ToolExtras {
-  const on = inUse(tools, context.attachments ?? []);
+  const on = inUse(tools);
   return {
     ignisPrompt: ignisPrompt(tools, context),
     tools: [
@@ -164,9 +159,8 @@ export function toolExtras(tools: ToolsState, context: PromptContext = {}): Tool
       ...(on.runJs ? [RUN_JS_TOOL] : []),
       ...(on.plan ? [UPDATE_PLAN_TOOL] : []),
       ...(on.memory ? [MEMORY_SAVE_TOOL, MEMORY_READ_TOOL, MEMORY_DELETE_TOOL] : []),
-      ...(on.files ? [CREATE_FILE_TOOL] : []),
+      ...(on.workspace ? [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, DELETE_FILE_TOOL] : []),
       ...(on.images ? [IMAGE_TOOL] : []),
-      ...(on.readFiles ? [READ_FILE_TOOL] : []),
     ],
   };
 }

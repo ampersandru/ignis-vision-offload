@@ -23,6 +23,7 @@ import { useImageSessions } from "../image/useImageSessions.ts";
 import { ServerView } from "../server/ServerView.tsx";
 import { useServer, useTick } from "../server/useServer.ts";
 import { DEFAULT_SETTINGS, type PlaygroundSettings } from "../settings/defaults.ts";
+import { escapeFree } from "../ui/Sheet.tsx";
 import type { ImageId } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { SettingsPanel } from "../settings/SettingsPanel.tsx";
@@ -36,6 +37,12 @@ import { AgentReader } from "../tools/agents/AgentReader.tsx";
 import { MemoryManager } from "../tools/local/MemoryManager.tsx";
 import { AGENT_SYSTEM_PROMPT, type AgentRun } from "../tools/agents/agents.ts";
 import { ALL_TOOLS, type ToolsState } from "../tools/index.ts";
+import { refusal } from "../workspace/files.ts";
+import { useWorkspace, useWorkspaceList } from "../workspace/useWorkspaces.ts";
+import { StoreWorkspaceFiles } from "../workspace/WorkspaceFiles.tsx";
+import { WorkspacePanel } from "../workspace/WorkspacePanel.tsx";
+import { ChatWorkspaceBar } from "../workspace/WorkspacePicker.tsx";
+import { pageWorkspaces } from "../workspace/workspaces.ts";
 import { Header, type View } from "./Header.tsx";
 import { KeyPage } from "./KeyPage.tsx";
 import { TransportNotice } from "./TransportNotice.tsx";
@@ -96,6 +103,12 @@ export function App() {
   const studioPictures = useRef<() => Iterable<ImageId> | null>(() => null);
   const chat = useConversation({ model, next: nextModel.next, refreshModel, settings, tools, parallel, live: () => studioPictures.current() });
   const { active } = chat;
+  // The chat's workspace (spec #170): its picker in the chat's header, and the panel of its files on the right.
+  const workspaces = pageWorkspaces();
+  const chatWorkspace = useWorkspace(workspaces, active.workspaceId);
+  const workspaceList = useWorkspaceList(workspaces);
+  const [workspaceOpen, setWorkspaceOpen] = useStoredFlag(STORED_FLAGS.workspacePanel, false);
+  const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
   // Dictation into the prompt (spec speech/04): opened with the last reply and the prompt as it stands, in that order.
   const dictation = useDictation({
     onChange: setInput,
@@ -125,8 +138,9 @@ export function App() {
     onUnavailable: refreshModel,
   });
   // Held here, not in the view: the chat hands pictures to it.
-  // Each keeps the pictures the other names when it deletes a session: the store holds both views' pictures once.
-  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures });
+  // Each keeps the pictures the other names when it deletes a session, and those of the workspaces: the store holds
+  // every view's pictures once.
+  const [studio, studioActions] = useImageSessions(model, refreshModel, imaging, { live: chat.pictures, held: () => pageWorkspaces().pictures() });
   studioPictures.current = () => (studio.loaded ? studio.sessions.flatMap((s) => [...imagesOf(s)]) : null);
   const [chatMarking, setChatMarking] = useState<ChatMarking | null>(null);
   // A switch or a load runs the header's flame and heat bar as a reply does (spec playground/05).
@@ -145,7 +159,8 @@ export function App() {
 
   useEffect(() => {
     if (!drawer) return;
-    const close = (e: globalThis.KeyboardEvent) => e.key === "Escape" && setDrawer(null);
+    // An Esc a full screen took closes that alone.
+    const close = (e: globalThis.KeyboardEvent) => escapeFree(e) && setDrawer(null);
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [drawer]);
@@ -163,12 +178,18 @@ export function App() {
 
   function send() {
     const text = input.trim();
-    // A dictation under way is never sent: Send waits until it ends (Q4).
-    if ((!text && images.length === 0) || !chat.canRun || dictation.controller.active) return;
+    // A dictation under way is never sent: Send waits until it ends (Q4). Files attached are a prompt by themselves.
+    const files = tools.enabled && tools.workspace ? chat.attachments.length : 0;
+    if ((!text && images.length === 0 && files === 0) || !chat.canRun || dictation.controller.active) return;
     setInput("");
     setImages([]);
     setImageError(null);
-    chat.send(text, images);
+    // A prompt whose files the store refused is not sent: the box gets back what it held, ahead of anything typed since.
+    void chat.send(text, images).then((sent) => {
+      if (sent) return;
+      setInput((now) => [text, now].filter((t) => t !== "").join("\n"));
+      setImages((now) => [...images, ...now]);
+    });
   }
 
   /** Picked or pasted files as prompt images; the ones that cannot be read are named instead. */
@@ -230,8 +251,11 @@ export function App() {
   }
 
   /** A picture of the conversation: marked into the prompt box, or opened in a new session of the Image view. */
-  function onPicture(picture: ChatPicture, action: PictureAction) {
-    const source = blobOf(picture, picture.name);
+  async function onPicture(picture: ChatPicture, action: PictureAction) {
+    // One the page's store holds (a workspace's) is read from there; the store's bytes are what the Image view keeps.
+    const stored = picture.id && !picture.full ? await pageStore().getImage(picture.id).catch(() => null) : null;
+    if (picture.id && !picture.full && !stored) return;
+    const source = stored ?? blobOf(picture, picture.name);
     if (action === "image") {
       void studioActions.importPictures([{ blob: source, name: picture.name }], "new");
       setImageOpened(true);
@@ -265,8 +289,10 @@ export function App() {
   if (auth.needsKey) return <KeyPage rejected={auth.rejected} />;
 
   return (
-    // Stored pictures are shown by URLs read once from the page's store: the Image view's, and the chat's.
+    // Stored pictures are shown by URLs read once from the page's store: the Image view's, and the chat's. A reply's
+    // file card reads the version it wrote from the chat's workspace.
     <StorePictures store={pageStore()}>
+    <StoreWorkspaceFiles workspaces={pageWorkspaces()}>
     <div className="flex h-dvh flex-col overflow-hidden">
       <Header
         model={model}
@@ -318,6 +344,7 @@ export function App() {
             speech={model.speech}
             drawer={transcribeDrawer}
             onDrawer={setTranscribeDrawer}
+            workspaces={pageWorkspaces()}
             onOpenInChat={(markdown) => {
               // A new chat, its prompt box seeded with the Transcript; nothing is sent (Q89).
               newSession();
@@ -346,6 +373,32 @@ export function App() {
           />
 
           <main className="flex min-w-0 flex-1 flex-col">
+            <ChatWorkspaceBar
+              workspace={chatWorkspace.workspace}
+              files={chatWorkspace.files}
+              list={workspaceList}
+              deleted={active.workspaceId !== undefined && chatWorkspace.workspace === null}
+              held={chat.workspaceHeld}
+              onPick={(id) => setWorkspaceNotice(chat.pickWorkspace(id, chatWorkspace.workspace?.name))}
+              onRename={async (name) => {
+                const id = chatWorkspace.workspace?.id;
+                if (!id) return null;
+                try {
+                  const renamed = await workspaces.rename(id, name);
+                  return renamed.ok ? null : renamed.error;
+                } catch (err) {
+                  return refusal(err);
+                }
+              }}
+              onDelete={() => {
+                const id = chatWorkspace.workspace?.id;
+                setWorkspaceNotice(null);
+                if (id) void chat.deleteWorkspace(id).catch((err) => setWorkspaceNotice(refusal(err)));
+              }}
+              open={workspaceOpen}
+              onToggle={() => setWorkspaceOpen(!workspaceOpen)}
+              notice={workspaceNotice}
+            />
             <Transcript
               session={active}
               model={model}
@@ -358,7 +411,7 @@ export function App() {
               onSave={chat.saveEdit}
               onFork={chat.fork}
               onAnswer={chat.answer}
-              onPicture={onPicture}
+              onPicture={(picture, action) => void onPicture(picture, action)}
             />
             <Composer
               value={input}
@@ -370,8 +423,8 @@ export function App() {
               usage={contextUsage(active.log, settings.maxTokens, canChat(model) ? model.contextLimit : null)}
               onSend={send}
               onStop={chat.stop}
-              canAttach={tools.enabled && tools.readFiles}
-              attachments={active.attachments}
+              canAttach={tools.enabled && tools.workspace}
+              attachments={chat.attachments}
               attachError={chat.attachError}
               onAttach={(files) => void chat.attach(files)}
               onDetach={chat.detach}
@@ -384,6 +437,8 @@ export function App() {
             />
           </main>
 
+          {workspaceOpen && <WorkspacePanel workspaces={workspaces} view={chatWorkspace} chat={chat.binding} chats={chat.chatNames} speech={model.speech} onClose={() => setWorkspaceOpen(false)} />}
+
           <SettingsPanel
             open={drawer === "settings"}
             settings={settings}
@@ -394,7 +449,6 @@ export function App() {
             onMarkdownChange={setMarkdown}
             parallel={parallel}
             onParallelChange={setParallel}
-            attachments={active.attachments}
             onOpenMemory={() => setMemoryOpen(true)}
           />
         </div>
@@ -432,6 +486,7 @@ export function App() {
         </>
       )}
     </div>
+    </StoreWorkspaceFiles>
     </StorePictures>
   );
 }

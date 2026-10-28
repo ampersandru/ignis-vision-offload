@@ -1,25 +1,29 @@
 import type { Settings, ToolDefinition } from "../../api/request.ts";
 import type { ToolCall } from "../../api/sse.ts";
 import type { streamChat } from "../../api/stream.ts";
+import type { PromptImage } from "../../conversation/images.ts";
 import type { Figures } from "../../metrics/figures.ts";
-import { type Attachment, READ_LIMIT, readPiece } from "./attachments.ts";
-import { browserMemory, MEMORY_PROMPT_LIMIT, type MemoryNote, type MemoryStore } from "./memory.ts";
+import type { FileAt, Written } from "../../workspace/workspaces.ts";
+import { runWorkspaceTool, WORKSPACE_TOOL_NAMES, type WorkspaceAccess } from "../../workspace/tools.ts";
+import { browserMemory, type MemoryNote, type MemoryStore } from "./memory.ts";
 import { checkJs, type JsCheck, JS_OUTPUT_LIMIT, JS_TIMEOUT_MS, runJs, type WorkerFactory } from "./runjs.ts";
 
 // The local tools: everything that runs in the browser with no network.
 // run_js computes in a sandboxed worker, update_plan shows the model's plan,
-// memory_save and memory_delete keep notes across sessions, create_file hands
-// the user a file, read_file reads the files the user attached.
+// memory_save and memory_delete keep notes across sessions, and list_files,
+// read_file, write_file, edit_file and delete_file work on the chat's
+// workspace (workspace/tools.ts).
 
 export const RUN_JS = "run_js";
 export const UPDATE_PLAN = "update_plan";
 export const MEMORY_SAVE = "memory_save";
 export const MEMORY_READ = "memory_read";
 export const MEMORY_DELETE = "memory_delete";
+/** The file tool of older chats, gone since the workspace (#170): their replies still show its cards. */
 export const CREATE_FILE = "create_file";
-export const READ_FILE = "read_file";
+export { DELETE_FILE, EDIT_FILE, LIST_FILES, READ_FILE, WRITE_FILE } from "../../workspace/tools.ts";
 
-const LOCAL_TOOL_NAMES: readonly string[] = [RUN_JS, UPDATE_PLAN, MEMORY_SAVE, MEMORY_READ, MEMORY_DELETE, CREATE_FILE, READ_FILE];
+const LOCAL_TOOL_NAMES: readonly string[] = [RUN_JS, UPDATE_PLAN, MEMORY_SAVE, MEMORY_READ, MEMORY_DELETE, ...WORKSPACE_TOOL_NAMES];
 
 export const isLocalTool = (name: string) => LOCAL_TOOL_NAMES.includes(name);
 
@@ -54,7 +58,7 @@ export const UPDATE_PLAN_TOOL = tool(
 
 export const MEMORY_SAVE_TOOL = tool(
   MEMORY_SAVE,
-  "Save a note that stays across sessions: a lasting fact about the user, a preference, or project context. Only its title is listed in every prompt; the body is read on demand.",
+  "Save a note that stays across sessions: a lasting fact about the user, a preference, or project context. Only its title is shown to the chats; the body is read on demand.",
   {
     title: { type: "string", description: "A few words that say what the note is about." },
     body: { type: "string", description: "The full note, self-contained." },
@@ -76,27 +80,6 @@ export const MEMORY_DELETE_TOOL = tool(
   ["id"],
 );
 
-export const CREATE_FILE_TOOL = tool(
-  CREATE_FILE,
-  "Give the user a text file to download, shown in your reply.",
-  {
-    name: { type: "string", description: "The file name with its extension, like report.md or data.csv." },
-    content: { type: "string", description: "The whole content of the file." },
-  },
-  ["name", "content"],
-);
-
-export const READ_FILE_TOOL = tool(
-  READ_FILE,
-  `Read part of a file the user attached, up to ${READ_LIMIT} characters at a time.`,
-  {
-    name: { type: "string", description: "The attached file's name." },
-    offset: { type: "integer", description: "The character to start from; 0 by default." },
-    length: { type: "integer", description: `How many characters to read, at most ${READ_LIMIT}.` },
-  },
-  ["name"],
-);
-
 export function runJsPrompt(safetyCheck: boolean): string {
   return `# Running JavaScript
 You can run JavaScript with \`run_js\`, in a sandboxed worker: no network, no DOM, no storage, at most ${JS_TIMEOUT_MS / 1000} s per call.
@@ -110,39 +93,19 @@ For a task with several steps, keep a plan the user can follow with \`update_pla
 - Send every step each time; the list replaces the previous one.
 - Skip it for simple requests.`;
 
-export function memoryPrompt(notes: MemoryNote[]): string {
-  const lines: string[] = [];
-  let used = 0;
-  for (const n of [...notes].reverse()) {
-    const line = `- [${n.id}] ${n.title}`;
-    if (used + line.length > MEMORY_PROMPT_LIMIT) break;
-    lines.unshift(line);
-    used += line.length + 1;
-  }
-  const hidden = notes.length - lines.length;
-  const saved =
-    notes.length === 0
-      ? "No notes saved yet."
-      : `Saved notes, by title:\n${lines.join("\n")}${hidden > 0 ? `\n(${hidden} older notes not listed.)` : ""}`;
-  return `# Memory
-You keep notes that last across sessions. Only their titles are listed here: read the full text with \`memory_read\` when a title looks relevant, before you rely on it.
+/**
+ * The memory's part of the ignis system prompt: fixed text, the same whatever
+ * notes are saved (ADR 0072). The titles reach the model in the turn notice,
+ * after the history (tools/notice.ts).
+ */
+export const MEMORY_PROMPT = `# Memory
+You keep notes that last across chats, each a title and a body. Their titles reach you in a notice after the conversation: at a chat's first turn the title of every saved note, if there is any, and later only the notes the user or another chat saved, changed or deleted since the last notice. Read a note's full text with \`memory_read\` when a title looks relevant, before you rely on it.
 - Save a note with \`memory_save\` when you learn something that will still matter later — who the user is, their preferences, their projects — not the details of this conversation. Give it a title that says what it is about.
-- Delete a note with \`memory_delete\` when it turns out wrong or outdated; to change one, delete it and save the new version.
-${saved}`;
-}
-
-export const FILES_PROMPT = `# Files
-You can give the user a file with \`create_file\`: code, CSV, a long document — anything they will want to keep. Mention the file in your reply instead of repeating its content.`;
-
-export function attachmentsPrompt(attachments: Attachment[]): string {
-  const list = attachments.map((a) => `- ${a.name} (${a.kind === "pdf" ? "PDF, as text" : "text"}, ${a.text.length} characters)`);
-  return `# Attached files
-The user attached these files. Read them with \`read_file\`, up to ${READ_LIMIT} characters at a time, before you answer about them:
-${list.join("\n")}`;
-}
+- Delete a note with \`memory_delete\` when it turns out wrong or outdated; to change one, delete it and save the new version.`;
 
 export type PlanStep = { step: string; status: "pending" | "in_progress" | "done" };
 
+/** A file an older chat's create_file call handed the user, kept in its run. */
 export type CreatedFile = { name: string; content: string };
 
 export type LocalStatus = "checking" | "running" | "done" | "failed" | "blocked" | "stopped";
@@ -162,7 +125,21 @@ export type LocalRun = {
   recalled?: MemoryNote[];
   deletedId?: string;
   file?: CreatedFile;
-  read?: { name: string; from: number; to: number; total: number };
+  /** The version a write_file, edit_file or delete_file call made, which a write's or an edit's card opens. */
+  written?: Written;
+  /** The version of a file a read_file call showed the model: the chat's reader has seen it (seenIn). */
+  seen?: FileAt;
+  /** How many files a list_files call found. */
+  listed?: number;
+  /** What a read_file call read: lines from and to, or — in an older chat's run — characters. */
+  read?: { name: string; from: number; to: number; total: number; lines?: true };
+  /** The picture a read_file call read, and whether the model was shown it (only with vision). */
+  picture?: { name: string; seen: boolean };
+  /**
+   * The pictures the model receives beside `result`, redrawn for it: they
+   * ride on the tool's result, which keeps them, and not in the run (`shownRun`).
+   */
+  images?: PromptImage[];
   error?: string;
   /** What the model receives, once the call ends. */
   result?: string;
@@ -173,7 +150,8 @@ export type LocalContext = {
   signal: AbortSignal;
   /** Review run_js code with the model before it runs. */
   jsSafetyCheck: boolean;
-  attachments: Attachment[];
+  /** The chat's workspace, and who of the chat calls: the workspace tools fail without it. */
+  workspace?: WorkspaceAccess;
   memory?: MemoryStore;
   stream?: typeof streamChat;
   createWorker?: WorkerFactory;
@@ -192,6 +170,12 @@ export function runLocalCalls(calls: ToolCall[], context: LocalContext, onUpdate
 
 /** The tool result the model receives for an ended run. */
 export const localToolResult = (run: LocalRun) => run.result ?? `The ${run.tool} call did not finish.`;
+
+/** The pictures the model receives with an ended run's result: a picture read_file read with vision. */
+export const localToolImages = (run: LocalRun): PromptImage[] => run.images ?? [];
+
+/** A run as a reply shows and keeps it: its pictures are its result's, kept once there. */
+export const shownRun = ({ images: _images, ...run }: LocalRun): LocalRun => run;
 
 const cut = (text: string) =>
   text.length > JS_OUTPUT_LIMIT ? `${text.slice(0, JS_OUTPUT_LIMIT)}\n[Cut: ${text.length} characters in all.]` : text;
@@ -212,7 +196,7 @@ async function runLocal(call: ToolCall, context: LocalContext, onUpdate: (run: L
     onUpdate(run);
     return run;
   };
-  const fail = (error: string) => update({ status: "failed", error, result: `The ${call.name} call failed: ${error}` });
+  const fail = (error: string, run: Partial<LocalRun> = {}) => update({ status: "failed", error, result: `The ${call.name} call failed: ${error}`, ...run });
   const args = parseArgs(call);
   if (!args) return fail("The call's arguments are not a JSON object.");
   const text = (key: string) => (typeof args[key] === "string" ? (args[key] as string) : "");
@@ -282,36 +266,16 @@ async function runLocal(call: ToolCall, context: LocalContext, onUpdate: (run: L
       if (!memory.remove(id)) return fail(`No saved note has the id "${id}".`);
       return update({ status: "done", deletedId: id, result: `Deleted ${id}.` });
     }
-    case CREATE_FILE: {
-      const name = text("name").trim().replace(/[\\/:*?"<>|]+/g, "_");
-      if (!name) return fail('The call needs a non-empty "name".');
-      if (typeof args.content !== "string") return fail('The call needs "content" as text.');
-      const content = args.content;
-      return update({
-        status: "done",
-        file: { name, content },
-        result: `Created ${name} (${content.length} characters). The user can download it from your reply.`,
-      });
-    }
-    case READ_FILE: {
-      const name = text("name").trim();
-      const file = context.attachments.find((a) => a.name === name);
-      if (!file) {
-        return fail(
-          context.attachments.length > 0
-            ? `No attached file is named "${name}". The files are: ${context.attachments.map((a) => `"${a.name}"`).join(", ")}.`
-            : "The user has not attached any file.",
-        );
+    default: {
+      if (!WORKSPACE_TOOL_NAMES.includes(call.name)) return fail(`"${call.name}" is not a local tool.`);
+      if (!context.workspace) return fail("The workspace is not available here.");
+      try {
+        const outcome = await runWorkspaceTool(call.name, args, context.workspace, signal);
+        return outcome.ok ? update({ status: "done", ...outcome.run }) : fail(outcome.error, outcome.run);
+      } catch (err) {
+        // The store refused: the reply says so, and the model hears the same.
+        return fail(`The browser's store refused the workspace: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const piece = readPiece(file, typeof args.offset === "number" ? args.offset : 0, typeof args.length === "number" ? args.length : READ_LIMIT);
-      const more = piece.to < piece.total ? ` Call read_file with offset ${piece.to} for the rest.` : "";
-      return update({
-        status: "done",
-        read: { name, from: piece.from, to: piece.to, total: piece.total },
-        result: `${piece.text}\n\n[${name}: characters ${piece.from}–${piece.to} of ${piece.total}.${more}]`,
-      });
     }
-    default:
-      return fail(`"${call.name}" is not a local tool.`);
   }
 }

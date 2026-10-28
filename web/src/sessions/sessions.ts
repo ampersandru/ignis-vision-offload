@@ -1,5 +1,5 @@
 import type { Figures } from "../metrics/figures.ts";
-import type { LaneTag, ReasoningEffort } from "../api/request.ts";
+import { keptEntries, type LaneTag, type ReasoningEffort } from "../api/request.ts";
 import type { ToolCall } from "../api/sse.ts";
 import type { AgentRun } from "../tools/agents/agents.ts";
 import type { ImageRun } from "../tools/image/image.ts";
@@ -8,7 +8,10 @@ import type { UnknownCall } from "../tools/errors.ts";
 import type { PromptImage } from "../conversation/images.ts";
 import type { Attachment } from "../tools/local/attachments.ts";
 import type { LocalRun } from "../tools/local/local.ts";
+import type { NoteMark } from "../tools/local/memory.ts";
 import type { WebRun } from "../tools/web/web.ts";
+import type { FileMark, WorkspaceId, WorkspaceMove } from "../workspace/files.ts";
+import type { FileAt } from "../workspace/workspaces.ts";
 
 // Playground sessions: separate conversations, each with its own log of
 // per-reply figures. The page's store keeps them across a reload (stored.ts).
@@ -26,6 +29,12 @@ export type Message = {
    * while the bytes stay the same.
    */
   images?: PromptImage[];
+  /**
+   * The workspace files this prompt attached, by the names they took there
+   * (spec #170). The prompt names them on the wire (`withAttached`), the same
+   * bytes on every request that repeats it.
+   */
+  attached?: string[];
   reasoning: string;
   streaming: boolean;
   /** The engine was full when this reply was sent: it waits for a lane before its first token. */
@@ -53,13 +62,42 @@ export type Message = {
   /** The switch a turn made before its first request, shown on the prompt it answered. */
   switch?: TurnSwitch;
   /**
-   * The moment this turn was sent, as the date and time tool writes it, while
-   * the tool updates every prompt. Kept with the turn rather than written
+   * The turn notice this prompt was sent with (ADR 0072): the developer
+   * message ahead of it that tells the model what changed for this turn, the
+   * memory notes, the workspace's files and, while the date and time tool
+   * updates every prompt, the moment. Kept with the turn rather than written
    * fresh on each request: the history a later request repeats has to be the
    * one it sent, or the engine is left no prefix to reuse.
    */
+  notice?: string;
+  /**
+   * The memory notes as this chat knows them from this prompt on, set when
+   * its notice told the model of them (or there was none to tell, at the
+   * chat's first turn): what the next turn's notice compares the notes with.
+   */
+  knownNotes?: NoteMark[];
+  /**
+   * The workspace's files as this chat knows them from this prompt on, set
+   * when that differs from what its history knew: its notice told the model
+   * of them (or there was none to tell, at the chat's first turn), or the
+   * prompt attached some. What the next turn's notice compares the files with.
+   */
+  knownFiles?: FileMark[];
+  /** The chat's move to another workspace this prompt's notice told the model of (#404): from then on it is told. */
+  moved?: WorkspaceMove;
+  /**
+   * A prompt sent before the turn notice kept only the moment it was sent, as
+   * the date and time tool wrote it while it updated every prompt. It goes out
+   * as that prompt's notice, as it always did.
+   */
   dateTime?: string;
 };
+
+/** A reply that failed: a request no longer sends it, nor the prompt it alone answered (`keptEntries`). */
+export const failedReply = (m: Message): boolean => m.error !== undefined;
+
+/** The messages of `history` the model reads, as a request sends them back: a failed reply, and a prompt dropped with it, are not among them. */
+export const keptMessages = (history: Message[]): Message[] => keptEntries(history.map((m) => ({ ...m, failed: failedReply(m) })));
 
 /** A switch to another model before a turn's first request: the owner's choice of model, or the way back from the image model. */
 export type TurnSwitch = { to: string; from?: string; status: "switching" | "switched" | "stopped" | "failed"; error?: string };
@@ -82,8 +120,22 @@ export type Session = {
   title: string;
   messages: Message[];
   log: LogRow[];
-  /** Files the user attached, for read_file. */
+  /**
+   * Files the user attached before the workspace (#170), in an older chat:
+   * its next turn makes them the first files of its workspace, and empties this.
+   */
   attachments: Attachment[];
+  /**
+   * The chat's workspace (spec #170): set when its first file is created, or
+   * when the user picks one before that, and changed afterwards only when the
+   * user moves the chat (#404), to another workspace or out to none. A chat
+   * with no file has none. A chat whose workspace was deleted, in this tab or
+   * another, still names it until it moves, and its next file starts a new
+   * one, which takes its place (`bornInto`).
+   */
+  workspaceId?: string;
+  /** The chat's last move to another workspace (#404): its next turn notice tells the model of it, if no prompt it read has (`untoldMove`). */
+  moved?: WorkspaceMove;
   /**
    * When this conversation began: the moment the date and time tool writes
    * into its system prompt, the same for every turn. A fork inherits it, so
@@ -102,12 +154,110 @@ export function createSession(id: number, startedAt = new Date()): Session {
   return { id, title: UNTITLED, messages: [], log: [], attachments: [], startedAt };
 }
 
-/** Files attached to a session. */
-export function addAttachments(sessions: Session[], sessionId: number, added: Attachment[]): Session[] {
-  return sessions.map((s) => (s.id === sessionId ? { ...s, attachments: [...s.attachments, ...added] } : s));
+const sameMove = (a: WorkspaceMove | undefined, b: WorkspaceMove) => a !== undefined && a.from === b.from && a.at === b.at;
+
+/**
+ * The chat's move (`Session.moved`) while no prompt the model reads in
+ * `history` has told it: a prompt dropped with its failed reply, or by a
+ * rerun from before it, told the model nothing.
+ */
+export const untoldMove = (history: Message[], moved: WorkspaceMove | undefined): WorkspaceMove | undefined =>
+  moved && !keptMessages(history).some((m) => sameMove(m.moved, moved)) ? moved : undefined;
+
+/** What the picker says while a chat's workspace waits. */
+export const PICK_WAITS = "The workspace changes once this chat's reply ends.";
+
+/**
+ * Why the chat `sessionId` may not pick a workspace now, nor move to another
+ * (#404): a reply of its runs, among those `replying`; null while it may. No
+ * pick and no move during a reply, whether the chat has a workspace or not:
+ * the turn reads its workspace as it was when it started, and a first file
+ * its reply is writing is born into the one the chat names then (`bornInto`).
+ */
+export const pickHeld = (replying: ReadonlySet<number>, sessionId: number): string | null => (replying.has(sessionId) ? PICK_WAITS : null);
+
+/**
+ * The workspace files a message's calls showed its model, in order: what they
+ * wrote, edited, deleted or read, its agents' included, and the pictures its
+ * make_image calls landed.
+ */
+export function filesTaught(m: Message): FileAt[] {
+  const runs = [...(m.local ?? []), ...(m.agents ?? []).flatMap((a) => a.local ?? [])].map((run) => run.written ?? run.seen);
+  const made = (m.imageRuns ?? []).flatMap((r) => r.made ?? []).map((picture) => picture.file);
+  return [...runs, ...made].filter((v): v is FileAt => v !== undefined);
 }
 
-/** Drops the attached file called `name`. */
+/**
+ * The workspace whose files the chat's model knows after `history`, or
+ * undefined while it knows none: the one its last notice told it the files
+ * of, or the one its own calls worked in since (a first file born a workspace
+ * there). A notice that told of no file leaves it knowing none, and, as for
+ * the files themselves (knownFilesOf), only what the model reads counts.
+ */
+export function knownWorkspaceOf(history: Message[]): WorkspaceId | undefined {
+  let told = false;
+  let known: WorkspaceId | undefined;
+  for (const m of keptMessages(history)) {
+    if (m.knownFiles) {
+      told = true;
+      known = m.knownFiles[0]?.workspace;
+    }
+    if (told) for (const v of filesTaught(m)) known = v.workspace;
+  }
+  return known;
+}
+
+/**
+ * The picker's choice for a chat (#404): the existing workspace `to`, or none,
+ * its next file then starting a new one named after the chat. A chat with no
+ * workspace binds to the one picked; one with a workspace, deleted or not,
+ * moves. Only the binding changes: the files stay where they are, and the
+ * workspace left keeps them and its other chats. A chat leaving the
+ * workspace its model knows (`knownWorkspaceOf`) keeps the move, with
+ * `departure.name`, the name of the workspace it leaves, until a notice tells
+ * its model; moving again before that keeps the workspace last told, moving
+ * back to it leaves nothing to tell, and leaving one its model was never told
+ * of keeps nothing either.
+ */
+export function moveWorkspace(sessions: Session[], sessionId: number, to: WorkspaceId | undefined, departure: { at: number; name?: string }): Session[] {
+  return sessions.map((s) => {
+    if (s.id !== sessionId || s.workspaceId === to) return s;
+    const { workspaceId: from, moved: lastMove, ...rest } = s;
+    const leaving = from !== undefined && from === knownWorkspaceOf(s.messages) ? { from, ...(departure.name !== undefined ? { name: departure.name } : {}), at: departure.at } : undefined;
+    const move = untoldMove(s.messages, lastMove) ?? leaving;
+    return { ...rest, ...(to !== undefined ? { workspaceId: to } : {}), ...(move && move.from !== to ? { moved: move } : {}) };
+  });
+}
+
+/**
+ * The move a fork's model has yet to hear of: out of the workspace the
+ * fork's own messages (`kept`) know, when its chat works in another now, as
+ * the chat recorded that move, told after the fork or not yet; none while
+ * they know the workspace the chat is in, or none at all.
+ */
+function forkMove(source: Session, kept: Message[]): WorkspaceMove | undefined {
+  const known = knownWorkspaceOf(kept);
+  if (known === undefined || known === source.workspaceId) return undefined;
+  const moves = [...source.messages.map((m) => m.moved), source.moved];
+  for (let i = moves.length - 1; i >= 0; i--) if (moves[i]?.from === known) return moves[i];
+  return undefined;
+}
+
+/**
+ * Binds a session to the workspace its first file was born into, in place of
+ * `replaced`, the deleted workspace it named, if any; a workspace picked for
+ * it meanwhile stays.
+ */
+export function bornInto(sessions: Session[], sessionId: number, workspaceId: string, replaced?: string): Session[] {
+  return sessions.map((s) => (s.id === sessionId && (s.workspaceId === undefined || s.workspaceId === replaced) ? { ...s, workspaceId } : s));
+}
+
+/** An older chat's attachments, gone once they are files of its workspace. */
+export function clearAttachments(sessions: Session[], sessionId: number): Session[] {
+  return sessions.map((s) => (s.id === sessionId && s.attachments.length > 0 ? { ...s, attachments: [] } : s));
+}
+
+/** Drops the older chat's attached file called `name`. */
 export function removeAttachment(sessions: Session[], sessionId: number, name: string): Session[] {
   return sessions.map((s) => (s.id === sessionId ? { ...s, attachments: s.attachments.filter((a) => a.name !== name) } : s));
 }
@@ -124,10 +274,12 @@ export function titleFrom(prompt: string): string {
   return line.length > TITLE_LENGTH ? `${line.slice(0, TITLE_LENGTH - 1).trimEnd()}…` : line;
 }
 
-/** A session's title from its first prompt, falling back to the image's name when the prompt is only an image. */
-function titleOf(first: Message): string {
+/** A session's title from its first prompt, falling back to the image's or the file's name when the prompt is only that. */
+export function titleOf(first: Message): string {
   const title = titleFrom(first.content);
-  return title === UNTITLED && first.images?.length ? titleFrom(first.images[0].name) : title;
+  if (title !== UNTITLED) return title;
+  if (first.images?.length) return titleFrom(first.images[0].name);
+  return first.attached?.length ? titleFrom(first.attached[0]) : title;
 }
 
 /**
@@ -137,7 +289,8 @@ function titleOf(first: Message): string {
  */
 export function openSession(list: SessionList, newId: number): SessionList {
   const active = list.sessions.find((s) => s.id === list.activeId);
-  if (active && active.messages.length === 0) return list;
+  // An empty chat already bound to a workspace is a choice made for it, not a blank one to reuse.
+  if (active && active.messages.length === 0 && active.workspaceId === undefined) return list;
   return { sessions: [createSession(newId), ...list.sessions], activeId: newId };
 }
 
@@ -197,12 +350,16 @@ export function forkSession(list: SessionList, sessionId: number, messageId: num
   const source = list.sessions.find((s) => s.id === sessionId);
   const index = source ? source.messages.findIndex((m) => m.id === messageId) : -1;
   if (!source || index === -1) return list;
+  const messages = source.messages.slice(0, index + 1).map((m) => ({ ...m, streaming: false }));
+  const moved = forkMove(source, messages);
   const fork: Session = {
     id: newId,
     title: `${source.title} (fork)`,
-    messages: source.messages.slice(0, index + 1).map((m) => ({ ...m, streaming: false })),
+    messages,
     log: [],
     attachments: source.attachments,
+    ...(source.workspaceId !== undefined ? { workspaceId: source.workspaceId } : {}),
+    ...(moved ? { moved } : {}),
     startedAt: source.startedAt,
   };
   return { sessions: [fork, ...list.sessions], activeId: newId };

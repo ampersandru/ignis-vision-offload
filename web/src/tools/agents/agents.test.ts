@@ -237,6 +237,26 @@ describe("agents with tools", () => {
     ]);
   });
 
+  /** An agent has no history to put a notice after: its notice goes ahead of its one prompt, the same in every round. */
+  it("opens with the turn notice it is given ahead of its prompt, and keeps it in every round", async () => {
+    const bodies: ChatRequest[] = [];
+    const stream = async (o: StreamOptions): Promise<StreamResult> => {
+      bodies.push(chatBody(o.request));
+      if (bodies.length === 1) o.onEvent(callEvent("web_search", { query: "ignis" }));
+      else o.onEvent({ kind: "content", text: "final" });
+      return { ok: true, timeline: timeline() };
+    };
+    const notice = "# Memory notes\nSaved notes, by title:\n- [m1] Language";
+    await runAgents([task(1)], { settings, tools: webTools, notice, signal: new AbortController().signal, onUpdate: () => {}, stream, runWeb: doneWeb });
+    for (const body of bodies) {
+      expect(body.messages.slice(1, 3)).toEqual([
+        { role: "developer", content: notice },
+        { role: "user", content: "do 1" },
+      ]);
+    }
+    expect(bodies).toHaveLength(2);
+  });
+
   it("runs each agent on a stream of its own, and sends back each round's own reasoning (GitHub #283)", async () => {
     const seen: StreamOptions[] = [];
     const stream = async (o: StreamOptions): Promise<StreamResult> => {

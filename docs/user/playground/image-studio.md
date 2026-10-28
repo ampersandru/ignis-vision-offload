@@ -95,7 +95,32 @@ the next step's inputs, or is **sent to the chat**. The step shows the size,
 the seed, `marked area only` when it applies, the prompt as rewritten when the
 enhancer rewrote it, and the server's warnings, such as the size the inputs
 were scaled to. Pictures are stored once in this browser and shared with the
-chat ([Sessions and storage](sessions.md)).
+chat and its workspaces: deleting a session frees only the pictures no chat,
+workspace or other session names ([Sessions and storage](sessions.md)).
+
+### Pictures and workspaces
+
+A picture moves between a session and a [workspace](chat.md#the-chats-workspace)
+in both directions, and its bytes are never copied: both name the same stored
+picture.
+
+- **Send to workspace**, in the full-size view beside **Send to the chat**,
+  asks which workspace: a new one named after the session, or one you already
+  have. The picture becomes a picture file there, named as its download is
+  (`ignis-41-2752x1536.png`), and a name the workspace already holds gets a
+  number, as any file you add does. The model can then read it in a chat whose
+  workspace it is ([Tools and agents](tools-and-agents.md#workspace)). The
+  session keeps the picture too.
+- **From a workspace**, in the **+** menu of the prompt box under Upload
+  pictures, lists your workspaces; pick one, then a picture (or **Add all**).
+  The pictures join the pool as inputs of the next step, under the origin
+  *From a workspace* (the full-size view names it, with the file's name), and
+  count toward the request's limit of pictures like any upload. A workspace's
+  other files, and pictures the browser could not decode, are not offered.
+
+Deleting either side keeps the picture while the other still names it: a
+session's pictures that a workspace holds stay when the session goes, and a
+workspace's pictures that a session or chat names stay when the workspace goes.
 
 ## Read more
 

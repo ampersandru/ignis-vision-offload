@@ -4,7 +4,7 @@ import type { ToolCall } from "../../api/sse.ts";
 import { abortableSleep, isEngineFull } from "../../api/busy.ts";
 import { streamChat } from "../../api/stream.ts";
 import { type UnknownCall, unknownCall, unknownToolError } from "../errors.ts";
-import { isLocalTool, type LocalContext, type LocalRun, localToolResult, runLocalCalls, startedRun } from "../local/local.ts";
+import { isLocalTool, type LocalContext, type LocalRun, localToolImages, localToolResult, runLocalCalls, shownRun, startedRun } from "../local/local.ts";
 import { isWebTool, parseWebCall, runWeb, type WebRun, webToolResult } from "../web/web.ts";
 
 // The `agent` tool: the model hands one self-contained sub-task to an agent,
@@ -158,9 +158,14 @@ export type RunAgentsOptions = {
   onUpdate: (run: AgentRun) => void;
   /** The tools agents get: the session's, less `agent`. */
   tools?: ToolExtras;
+  /**
+   * The turn notice every agent's prompt goes out behind (ADR 0072): an agent
+   * has no history to put one after, so it opens its one conversation.
+   */
+  notice?: string;
   /** For the agents' web searches. */
   tavilyKey?: string | null;
-  /** For the agents' local tools: the safety check, the attachments, the check log. */
+  /** For the agents' local tools: the safety check, the chat's workspace, the check log. Each agent reads and writes the workspace as a reader of its own. */
   local?: Omit<LocalContext, "settings" | "signal">;
   limit?: number;
   /** How many replies in a row an agent may call tools in; the session's tool rounds. */
@@ -195,6 +200,11 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
   const { signal } = options;
 
   const runs = new Map(tasks.map((task) => [task.callId, { ...queued(task), systemPrompt }]));
+  // Each agent works on the workspace as a reader of its own, made once for its whole run: what the
+  // conversation or another agent read is not what it read, and an agent of a later reply that takes the
+  // same call id (a chat completion numbers its calls from call_0) starts with nothing read.
+  const workspace = options.local?.workspace;
+  const access = new Map(tasks.map((task) => [task.callId, workspace && { ...workspace, reader: workspace.chat.agent({ call: task.callId, name: task.name }) }]));
   const get = (callId: string) => runs.get(callId)!;
   const set = (callId: string, change: Partial<AgentRun>) => {
     const run = { ...get(callId), ...change };
@@ -247,9 +257,11 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
 
   /**
    * Runs one request's declared web and local calls at once, answers any
-   * other call as an unknown tool, and resolves with each call's result.
+   * other call as an unknown tool, and resolves with each call's result as
+   * its tool turn: a picture read_file read with vision rides on it.
    */
-  async function runCalls(callId: string, calls: ToolCall[]): Promise<Map<string, string>> {
+  async function runCalls(task: AgentTask, calls: ToolCall[]): Promise<Map<string, Pick<Turn, "content" | "images">>> {
+    const { callId } = task;
     const earlierWeb = get(callId).web ?? [];
     const earlierLocal = get(callId).local ?? [];
     const declared = (call: ToolCall) => available.includes(call.name);
@@ -261,7 +273,7 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
     const parsed = webCalls.map((call) => parseWebCall(call, available));
     let web: WebRun[] = parsed.map((p) => (p.ok ? { ...p.task, status: "running" } : p.run));
     let local: LocalRun[] = localCalls.map(startedRun);
-    const show = () => set(callId, { web: [...earlierWeb, ...web], local: [...earlierLocal, ...local] });
+    const show = () => set(callId, { web: [...earlierWeb, ...web], local: [...earlierLocal, ...local.map(shownRun)] });
     if (unknown.length > 0) set(callId, { unknownTools: [...(get(callId).unknownTools ?? []), ...unknown] });
     show();
     await Promise.all([
@@ -278,22 +290,29 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
       ),
       runLocalCalls(
         localCalls,
-        { jsSafetyCheck: true, attachments: [], ...options.local, settings: options.settings, signal },
+        {
+          jsSafetyCheck: true,
+          ...options.local,
+          workspace: access.get(callId),
+          settings: options.settings,
+          signal,
+        },
         (run) => {
           local = local.map((r) => (r.callId === run.callId ? run : r));
           show();
         },
       ),
     ]);
-    return new Map([
-      ...web.map((run) => [run.callId, webToolResult(run)] as const),
-      ...local.map((run) => [run.callId, localToolResult(run)] as const),
-      ...unknown.map((call) => [call.callId, call.error] as const),
+    const pictured = (run: LocalRun) => (localToolImages(run).length > 0 ? { images: localToolImages(run) } : {});
+    return new Map<string, Pick<Turn, "content" | "images">>([
+      ...web.map((run) => [run.callId, { content: webToolResult(run) }] as const),
+      ...local.map((run) => [run.callId, { content: localToolResult(run), ...pictured(run) }] as const),
+      ...unknown.map((call) => [call.callId, { content: call.error }] as const),
     ]);
   }
 
   async function runOne(task: AgentTask) {
-    let turns: Turn[] = [{ role: "user", content: task.prompt }];
+    let turns: Turn[] = [{ role: "user", content: task.prompt, ...(options.notice ? { notice: options.notice } : {}) }];
     for (let round = 0; ; round++) {
       const answer = await request(task, turns, round);
       if (!answer) return;
@@ -310,11 +329,11 @@ export async function runAgents(tasks: AgentTask[], options: RunAgentsOptions): 
         });
       }
       const content = get(task.callId).content;
-      const results = await runCalls(task.callId, calls);
+      const results = await runCalls(task, calls);
       turns = [
         ...turns,
         { role: "assistant", content, ...(reasoning ? { reasoning } : {}), toolCalls: calls },
-        ...calls.map((call): Turn => ({ role: "tool", content: results.get(call.id) ?? "", toolCallId: call.id })),
+        ...calls.map((call): Turn => ({ role: "tool", content: "", ...results.get(call.id), toolCallId: call.id })),
       ];
     }
   }

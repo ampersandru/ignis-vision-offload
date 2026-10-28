@@ -23,7 +23,8 @@ export type InputContent =
 export type InputItem =
   | { type: "message"; role: "user" | "developer" | "assistant"; content: InputContent[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
-  | { type: "function_call_output"; call_id: string; output: string }
+  /** A plain string, unless the result carries pictures: then its parts, as a user message's are. */
+  | { type: "function_call_output"; call_id: string; output: string | InputContent[] }
   | { type: "reasoning"; content: { type: "reasoning_text"; text: string }[]; summary: [] };
 
 /** A function tool in the Responses flat shape. */
@@ -46,18 +47,23 @@ export type ResponseCreate = {
 
 const text = (text: string): InputContent[] => [{ type: "input_text", text }];
 
+/** A turn's images first and its text behind them, as the chat request orders its parts; no words, no text part. */
+function parts(turn: Turn): InputContent[] {
+  const images = (turn.images ?? []).map((image): InputContent => ({ type: "input_image", image_url: image.url }));
+  return images.length > 0 && turn.content === "" ? images : [...images, ...text(turn.content)];
+}
+
 /** One turn's items, in the order a reply is generated: reasoning, text, calls. */
 function turnItems(turn: Turn): InputItem[] {
-  const moment: InputItem[] = turn.dateTime ? [{ type: "message", role: "developer", content: text(turn.dateTime) }] : [];
-  if (turn.role === "tool") return [...moment, { type: "function_call_output", call_id: turn.toolCallId ?? "", output: turn.content }];
-  if (turn.role === "user") {
-    // Images first and the text behind them, as the chat request orders its parts; no words, no text part.
-    const images = (turn.images ?? []).map((image): InputContent => ({ type: "input_image", image_url: image.url }));
-    const content = images.length > 0 && turn.content === "" ? images : [...images, ...text(turn.content)];
-    return [...moment, { type: "message", role: "user", content }];
+  const notice: InputItem[] = turn.notice ? [{ type: "message", role: "developer", content: text(turn.notice) }] : [];
+  if (turn.role === "tool") {
+    // A result that carries a picture (a workspace's, read with vision) is its parts; any other, the string it always was.
+    const output = turn.images?.length ? parts(turn) : turn.content;
+    return [...notice, { type: "function_call_output", call_id: turn.toolCallId ?? "", output }];
   }
+  if (turn.role === "user") return [...notice, { type: "message", role: "user", content: parts(turn) }];
   return [
-    ...moment,
+    ...notice,
     ...(turn.reasoning ? [{ type: "reasoning" as const, content: [{ type: "reasoning_text" as const, text: turn.reasoning }], summary: [] as [] }] : []),
     ...(turn.content ? [{ type: "message" as const, role: "assistant" as const, content: [{ type: "output_text" as const, text: turn.content }] }] : []),
     ...(turn.toolCalls ?? []).map((c): InputItem => ({ type: "function_call", call_id: c.id, name: c.name, arguments: c.arguments })),

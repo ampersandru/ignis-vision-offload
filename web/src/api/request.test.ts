@@ -46,9 +46,9 @@ describe("conversationTurns", () => {
     ]);
   });
 
-  it("keeps the moment each turn was sent with, rather than the moment of this request", () => {
-    expect(conversationTurns([{ ...user("a"), dateTime: "It is now 01:52." }, reply("b")])).toEqual([
-      { role: "user", content: "a", dateTime: "It is now 01:52." },
+  it("keeps the notice each turn was sent with, rather than one written for this request", () => {
+    expect(conversationTurns([{ ...user("a"), notice: "It is now 01:52." }, reply("b")])).toEqual([
+      { role: "user", content: "a", notice: "It is now 01:52." },
       { role: "assistant", content: "b" },
     ]);
   });
@@ -144,11 +144,11 @@ describe("buildChatRequest", () => {
     ]);
   });
 
-  it("puts a turn's moment in a developer message ahead of it, and leaves the other turns alone", () => {
+  it("puts a turn's notice in a developer message ahead of it, and leaves the other turns alone", () => {
     const body = buildChatRequest({ ...settings, systemPrompt: "" }, [
-      { role: "user", content: "a", dateTime: "It is now 01:52." },
+      { role: "user", content: "a", notice: "It is now 01:52." },
       { role: "assistant", content: "b" },
-      { role: "user", content: "c", dateTime: "It is now 02:04." },
+      { role: "user", content: "c", notice: "It is now 02:04." },
     ]);
     expect(body.messages).toEqual([
       { role: "developer", content: "It is now 01:52." },
@@ -160,17 +160,17 @@ describe("buildChatRequest", () => {
   });
 
   /**
-   * The property the date and time tool's live option rests on: a turn's
-   * moment never moves a token of what went before it, so a request finds the
-   * last one whole at its head and the engine prefills only the new tail.
-   * Rewriting the earlier moments to the present instead would diverge at the
-   * first of them and cost a full prefill — 25 s of it at 98K tokens.
+   * The property the turn notice rests on (ADR 0072): a turn's notice never
+   * moves a token of what went before it, so a request finds the last one
+   * whole at its head and the engine prefills only the new tail. Rewriting the
+   * earlier notices to the present instead would diverge at the first of them
+   * and cost a full prefill — 25 s of it at 98K tokens.
    */
   it("grows a conversation by appending, leaving one request a prefix of the next", () => {
     const turns = [
-      { role: "user" as const, content: "a", dateTime: "It is now 01:52." },
+      { role: "user" as const, content: "a", notice: "It is now 01:52." },
       { role: "assistant" as const, content: "b" },
-      { role: "user" as const, content: "c", dateTime: "It is now 02:04." },
+      { role: "user" as const, content: "c", notice: "It is now 02:04." },
       { role: "assistant" as const, content: "d" },
     ];
     const before = buildChatRequest(settings, turns.slice(0, 2)).messages;
@@ -216,6 +216,28 @@ describe("buildChatRequest", () => {
       role: "user",
       content: [{ type: "image_url", image_url: { url: "data:image/jpeg;base64,AA" } }],
     });
+  });
+
+  it("sends a tool result's picture as content parts of its tool message, the picture ahead of the text", () => {
+    const picture = { name: "photo.png", url: "data:image/jpeg;base64,AA", width: 1176, height: 1568 };
+    const call = { id: "call_0", name: "read_file", arguments: '{"name":"photo.png"}' };
+    const turns = [
+      { role: "user" as const, content: "what is in my photo?" },
+      { role: "assistant" as const, content: "", toolCalls: [call] },
+      { role: "tool" as const, content: "[photo.png, version 1: a picture]", toolCallId: "call_0", images: [picture] },
+    ];
+    const tool = buildChatRequest(settings, turns).messages.at(-1);
+    expect(tool).toEqual({
+      role: "tool",
+      content: [
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,AA" } },
+        { type: "text", text: "[photo.png, version 1: a picture]" },
+      ],
+      tool_call_id: "call_0",
+    });
+    // Kept with the turn, the picture goes out the same on every later request.
+    const later = buildChatRequest(settings, [...conversationTurns(turns.map((t) => ({ ...t, failed: false }))), { role: "assistant", content: "A dog." }]);
+    expect(later.messages[3]).toEqual(tool);
   });
 
   it("leaves max_tokens out when unset, so the engine's own cap applies", () => {

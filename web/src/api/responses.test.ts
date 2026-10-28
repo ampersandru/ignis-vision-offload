@@ -65,7 +65,7 @@ describe("responseItems", () => {
   it("writes each turn as the items the Responses API reads, reasoning included", () => {
     const image = { name: "a.jpg", url: "data:image/jpeg;base64,AA", width: 8, height: 6 };
     const turns: Turn[] = [
-      { role: "user", content: "look", images: [image], dateTime: "It is now 01:52." },
+      { role: "user", content: "look", images: [image], notice: "It is now 01:52." },
       { role: "assistant", content: "Let me check.", reasoning: "hm", toolCalls: [{ id: "call_0", name: "agent", arguments: '{"prompt":"x"}' }] },
       { role: "tool", content: "a cat", toolCallId: "call_0" },
       { role: "assistant", content: "A cat." },
@@ -88,6 +88,24 @@ describe("responseItems", () => {
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "A cat." }] },
       { type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/jpeg;base64,AA" }] },
     ]);
+  });
+
+  it("writes a tool result that carries a picture as an output of parts, the picture ahead of the text", () => {
+    const picture = { name: "photo.png", url: "data:image/jpeg;base64,AA", width: 1176, height: 1568 };
+    const turns: Turn[] = [
+      { role: "assistant", content: "", toolCalls: [{ id: "call_0", name: "read_file", arguments: '{"name":"photo.png"}' }] },
+      { role: "tool", content: "[photo.png, version 1: a picture]", toolCallId: "call_0", images: [picture] },
+    ];
+    expect(responseItems(turns).at(-1)).toEqual({
+      type: "function_call_output",
+      call_id: "call_0",
+      output: [
+        { type: "input_image", image_url: "data:image/jpeg;base64,AA" },
+        { type: "input_text", text: "[photo.png, version 1: a picture]" },
+      ],
+    });
+    // The same turn makes the same items every time, so a continued stream still finds its history whole.
+    expect(responseItems(turns)).toEqual(responseItems(structuredClone(turns)));
   });
 
   it("takes a reply's output as the items its turn becomes in the next request, when it has one message", () => {

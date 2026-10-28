@@ -1,6 +1,6 @@
 import type { ImageBackground } from "../api/images.ts";
 import type { Seed } from "../api/seed.ts";
-import type { ImageId, ImageStore, StoreUsage } from "../store/imageStore.ts";
+import { type ImageId, type ImageStore, type StoreUsage, unreferenced } from "../store/imageStore.ts";
 import type { Mark, MarkMode } from "../markup/markup.ts";
 import { AUTO_SIZE } from "./studio.ts";
 
@@ -22,7 +22,7 @@ import { AUTO_SIZE } from "./studio.ts";
 
 export const SESSIONS = "image-sessions";
 
-export type PoolOrigin = "upload" | "made" | "marked" | "chat";
+export type PoolOrigin = "upload" | "made" | "marked" | "chat" | "workspace";
 
 /** The marks a `marked` pool picture carries, and what was made of them. */
 export type PoolMarkup = {
@@ -350,6 +350,17 @@ export function keepFor(s: ImageSession, inputs: number[]): { source: ImageId; r
 /** Every image the session names: its pictures, and their masks and areas. */
 export function imagesOf(s: ImageSession): Set<ImageId> {
   return new Set(s.pool.flatMap((p) => [p.id, ...(p.markup ? [p.markup.mask, p.markup.region] : [])]));
+}
+
+/**
+ * The pictures deleting a session frees: those only it names. `others` are the other sessions, `live` the chat's
+ * pictures and `held` the workspaces' (null while not known: then nothing is freed, as a picture something else
+ * may name must not go).
+ */
+export function freedWithSession(gone: ImageSession, others: Iterable<ImageSession>, live: Iterable<ImageId> | null, held: Iterable<ImageId> | null): ImageId[] {
+  if (live === null || held === null) return [];
+  const keep = new Set<ImageId>([...[...others].flatMap((s) => [...imagesOf(s)]), ...live, ...held]);
+  return unreferenced(imagesOf(gone), keep);
 }
 
 /** The picture that stands for the session in the list: the last one made, else the last one added. */

@@ -1,15 +1,16 @@
 import { useSyncExternalStore } from "react";
 
 // Memory: notes the model keeps across sessions, in this browser's
-// localStorage. A note is a short title and a body. Only the titles go into
-// the ignis system prompt, so memory stays cheap however much it holds; the
-// model reads a body with memory_read when a title looks relevant.
+// localStorage. A note is a short title and a body. Only the titles reach the
+// model, in the turn notice after the history (ADR 0072), so memory stays
+// cheap however much it holds; the model reads a body with memory_read when a
+// title looks relevant.
 
 export type MemoryNote = { id: string; title: string; body: string; savedAt: string };
 
 const STORAGE_KEY = "ignis.memory";
 
-/** The titles the prompt lists, newest kept first, cut to this many characters in all. */
+/** The titles a turn notice lists, newest kept first, cut to this many characters in all. */
 export const MEMORY_PROMPT_LIMIT = 4000;
 export const MEMORY_TITLE_LIMIT = 80;
 
@@ -113,6 +114,59 @@ function browserStorage(): Storage | null {
 }
 
 export const browserMemory = createMemoryStore(browserStorage());
+
+/** A memory note as a chat was last told of it: what a later turn's notice compares the notes with. */
+export type NoteMark = Pick<MemoryNote, "id" | "title" | "savedAt">;
+
+export const markOf = ({ id, title, savedAt }: MemoryNote): NoteMark => ({ id, title, savedAt });
+
+/** The lines that fit in `limit` characters, the newest (the last) kept first, and how many did not fit: how every list a turn notice holds is cut. */
+export function newestFitting(lines: string[], limit: number): { listed: string[]; left: number } {
+  const listed: string[] = [];
+  let used = 0;
+  for (const line of [...lines].reverse()) {
+    if (used + line.length > limit) break;
+    listed.unshift(line);
+    used += line.length + 1;
+  }
+  return { listed, left: lines.length - listed.length };
+}
+
+/** A turn notice's section: its heading, what the lines are, the lines, and what was left out, if anything. */
+export const noticeSection = (heading: string, what: string, lines: string[], leftOut: string) => [heading, what, ...lines, ...(leftOut ? [leftOut] : [])].join("\n");
+
+/** What a later notice's lines are: the changes since the one before, by anyone but the chat it goes to. */
+export const CHANGED_SINCE = "Changed by the user or another chat since the last notice:";
+
+/**
+ * The memory section of a turn notice (ADR 0072), and the notes the chat
+ * knows once it has read it. A chat told nothing yet (`known` undefined)
+ * hears every title, as many as fit; with no note saved there is nothing to
+ * tell, but the chat now knows that. A chat told before hears only the notes
+ * saved, changed or deleted since, by anyone but itself — its own calls are
+ * already in `known` — and nothing at all when there are none.
+ */
+export function memoryNotice(known: NoteMark[] | undefined, notes: MemoryNote[]): { text?: string; known?: NoteMark[] } {
+  const marks = notes.map(markOf);
+  if (known === undefined) {
+    if (notes.length === 0) return { known: marks };
+    const { listed, left } = newestFitting(notes.map((n) => `- [${n.id}] ${n.title}`), MEMORY_PROMPT_LIMIT);
+    return { text: noticeSection("# Memory notes", "Saved notes, by title:", listed, left > 0 ? `(${left} older notes not listed.)` : ""), known: marks };
+  }
+  const before = new Map(known.map((n) => [n.id, n]));
+  const kept = new Set(notes.map((n) => n.id));
+  const changes = [
+    ...known.filter((n) => !kept.has(n.id)).map((n) => `- deleted [${n.id}] ${n.title}`),
+    ...notes.flatMap((n) => {
+      const was = before.get(n.id);
+      if (!was) return [`- saved [${n.id}] ${n.title}`];
+      return was.savedAt !== n.savedAt || was.title !== n.title ? [`- changed [${n.id}] ${n.title}`] : [];
+    }),
+  ];
+  if (changes.length === 0) return {};
+  const { listed, left } = newestFitting(changes, MEMORY_PROMPT_LIMIT);
+  return { text: noticeSection("# Memory notes", CHANGED_SINCE, listed, left > 0 ? `(${left} older changes not listed.)` : ""), known: marks };
+}
 
 export function useMemoryNotes(store: MemoryStore = browserMemory): MemoryNote[] {
   return useSyncExternalStore(store.subscribe, store.list, store.list);

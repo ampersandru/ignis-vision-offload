@@ -6,16 +6,16 @@ import { keepOutside, type MarkedPicture, promptStub } from "../markup/markup.ts
 import { afterSwitch } from "../server/outcome.ts";
 import { type CatalogRow, type ConfigDocument, readCatalog, readConfig } from "../server/routes.ts";
 import type { ImageId, ImageStore, StoreUsage } from "../store/imageStore.ts";
-import { unreferenced } from "../store/imageStore.ts";
 import { pageStore } from "../store/index.ts";
 import { keepPicture, keepPlain } from "../store/pictures.ts";
+import { fitInputs, poolEntries, type WorkspacePicture } from "./fromWorkspace.ts";
 import {
   addMarked,
   addToPool,
   byRecent,
   endStep,
+  freedWithSession,
   type ImageSession,
-  imagesOf,
   inputNumbers,
   isEmpty,
   keepFor,
@@ -118,6 +118,8 @@ export type ImageSessionsActions = {
   reusePicture: (n: number) => void;
   /** Pictures from elsewhere (the chat) into a new session, or the active one, as inputs; the view is the caller's to show. */
   importPictures: (pictures: { blob: Blob; name?: string }[], into: "new" | "active") => Promise<void>;
+  /** Pictures a workspace holds into the active session's pool, as inputs of the next step; their bytes stay where they are. */
+  addFromWorkspace: (pictures: WorkspacePicture[]) => Promise<void>;
   switchToImage: () => void;
 };
 
@@ -129,8 +131,11 @@ export function useImageSessions(
   model: ModelState,
   refreshModel: () => void,
   visible: boolean,
-  /** `live`: the store's pictures the chat's sessions name now, or null while it has not read them — then no picture goes. */
-  options: { store?: ImageStore; live?: () => Iterable<ImageId> | null } = {},
+  /**
+   * `live`: the store's pictures the chat's sessions name now, or null while it has not read them — then no picture
+   * goes. `held`: the pictures the workspaces hold (#394), read when a session is deleted; a failed read frees none.
+   */
+  options: { store?: ImageStore; live?: () => Iterable<ImageId> | null; held?: () => Promise<Iterable<ImageId>> } = {},
 ): [ImageSessionsState, ImageSessionsActions] {
   const store = options.store ?? pageStore();
   const [enhanceDefault, rememberEnhance] = useStoredFlag(STORED_FLAGS.imageEnhance, false);
@@ -439,10 +444,10 @@ export function useImageSessions(
     if (activeNow.current === id) setActiveId(list.current[0].id);
     try {
       await store.deleteDoc(SESSIONS, id);
-      // Only what no other session names, and nothing the chat holds now, goes with it.
+      // Only what no other session names, and nothing the chat or a workspace holds now, goes with it.
       const live = options.live ? options.live() : [];
-      const keep = new Set<ImageId>([...list.current.flatMap((s) => [...imagesOf(s)]), ...(live ?? [])]);
-      if (live !== null) for (const image of unreferenced(imagesOf(gone), keep)) await store.deleteImage(image);
+      const held = options.held ? await options.held().catch(() => null) : [];
+      for (const image of freedWithSession(gone, list.current, live, held)) await store.deleteImage(image);
     } finally {
       refreshUsage();
     }
@@ -535,6 +540,17 @@ export function useImageSessions(
         id,
         "chat",
       );
+    },
+    addFromWorkspace: async (pictures) => {
+      const sessionId = activeNow.current;
+      const s = find(sessionId);
+      if (!s) return;
+      const fit = fitInputs(pictures, wireCount(s), limitsNow.current.maxImages);
+      const kept = await Promise.all(fit.taken.map(async (p) => ((await store.imageInfo(p.id)) ? p : null)));
+      const there = kept.filter((p): p is WorkspacePicture => p !== null);
+      const lost = fit.taken.length - there.length;
+      setNotice([fit.notice, lost > 0 ? `${lost} ${lost === 1 ? "picture is" : "pictures are"} no longer in this browser's store.` : null].filter(Boolean).join(" ") || null);
+      if (there.length > 0) apply(sessionId, (x) => addToPool(x, poolEntries(there), Date.now(), true));
     },
     switchToImage,
   };

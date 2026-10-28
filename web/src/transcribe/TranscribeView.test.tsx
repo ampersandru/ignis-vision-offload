@@ -596,6 +596,7 @@ describe("the view", () => {
     );
     expect(html.indexOf('aria-label="Transcript title"')).toBeLessThan(html.indexOf(">Download"));
     expect(html).toContain(">Open in chat<");
+    expect(html).toContain(">Send to workspace<");
     // The Download menu opens downward: its chevron points down while it is closed.
     expect(html).toContain("rotate-180 transition-transform group-open:rotate-0");
     expect(html).toMatch(/role="tab" id="transcribe-tab-call" aria-selected="true"/);

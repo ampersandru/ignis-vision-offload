@@ -75,8 +75,80 @@ for (const [name, make] of ADAPTERS) {
       expect(await store.listDocs("image-sessions")).toHaveLength(1);
       expect(await store.getDoc("other", "s1")).toEqual({ title: "elsewhere" });
     });
+
+    it("keeps bytes that are not a picture by their SHA-256, once, apart from the images", async () => {
+      const store = make();
+      const pdf = () => new Blob([new Uint8Array([37, 80, 68, 70])], { type: "application/pdf" });
+      const stored = await store.putBlob(pdf());
+      expect(stored).toMatchObject({ id: await sha256(pdf()), type: "application/pdf", bytes: 4 });
+      expect(await store.putBlob(pdf())).toEqual(stored);
+      const back = await store.getBlob(stored.id);
+      expect(back?.type).toBe("application/pdf");
+      expect(await bytesOf(back)).toEqual([37, 80, 68, 70]);
+      expect(await store.getImage(stored.id)).toBeNull();
+      expect(await store.usage()).toMatchObject({ bytes: 0, images: 0 });
+      await store.deleteBlob(stored.id);
+      expect(await store.getBlob(stored.id)).toBeNull();
+    });
   });
 }
+
+describe("the IndexedDB store's upgrade", () => {
+  it("opens a database of the first version, keeping what it holds, and gains the byte store", async () => {
+    const factory = new IDBFactory();
+    await new Promise<void>((resolve, reject) => {
+      const request = factory.open("old", 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        for (const name of ["images", "bytes", "thumbs"]) db.createObjectStore(name, { keyPath: "id" });
+        db.createObjectStore("docs", { keyPath: ["collection", "id"] }).createIndex("collection", "collection");
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("docs", "readwrite");
+        tx.objectStore("docs").put({ collection: "chat-sessions", id: "k", value: { title: "Kept" } });
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      request.onerror = () => reject(request.error);
+    });
+    const store = openIndexedDbStore(factory, "old");
+    expect(await store.getDoc("chat-sessions", "k")).toEqual({ title: "Kept" });
+    const { id } = await store.putBlob(new Blob([new Uint8Array([1])], { type: "audio/wav" }));
+    expect(await bytesOf(await store.getBlob(id))).toEqual([1]);
+  });
+
+  it("says so when a page of the older version holds the database open, rather than waiting for good", async () => {
+    const factory = new IDBFactory();
+    // An older page's connection: it never closes for an upgrade.
+    await new Promise<void>((resolve, reject) => {
+      const request = factory.open("held", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("docs", { keyPath: ["collection", "id"] }).createIndex("collection", "collection");
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+    await expect(openIndexedDbStore(factory, "held").listDocs("chat-sessions")).rejects.toThrow(
+      "another tab of the Playground holds this browser's store at an older version: close it, then reload this page",
+    );
+  });
+
+  it("lets a newer page upgrade the database it holds open", async () => {
+    const factory = new IDBFactory();
+    const store = openIndexedDbStore(factory, "mine");
+    await store.putDoc("chat-sessions", "k", { title: "Kept" });
+    const newer = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = factory.open("mine", 99);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error("blocked"));
+    });
+    expect(newer.version).toBe(99);
+    newer.close();
+  });
+});
 
 describe("what can go", () => {
   it("is every image asked about that nothing keeps", () => {

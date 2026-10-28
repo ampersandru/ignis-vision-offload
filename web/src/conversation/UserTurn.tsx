@@ -67,6 +67,15 @@ function Prompt({
           <pre className="whitespace-pre-wrap break-words font-sans text-[15px] leading-normal">{m.content}</pre>
         </article>
       )}
+      {m.attached && m.attached.length > 0 && (
+        <ul aria-label="Attached to the workspace" className="flex flex-wrap justify-end gap-1.5">
+          {m.attached.map((name) => (
+            <li key={name} className="cut bg-surface px-2.5 py-1 font-display text-xs font-semibold text-ink [--cut-size:6px]">
+              {name}
+            </li>
+          ))}
+        </ul>
+      )}
       {m.switch && <SwitchLine change={m.switch} />}
       <ActionRow className="-mr-2">
         {m.edited && <EditedMark />}

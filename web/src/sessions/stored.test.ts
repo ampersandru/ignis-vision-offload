@@ -109,6 +109,34 @@ describe("a chat session in the store", () => {
     expect(worthKeeping(empty)).toBe(false);
     expect(worthKeeping({ ...empty, attachments: finished().attachments })).toBe(true);
     expect(worthKeeping({ ...empty, messages: [msg(1, "user", "hi")] })).toBe(true);
+    // A chat bound to a workspace before its first message is kept: the binding is a choice made for it.
+    expect(worthKeeping({ ...empty, workspaceId: "w1" })).toBe(true);
+  });
+
+  it("keeps the workspace it is bound to, and a chat with none comes back with none", () => {
+    const bound = toStored({ ...finished(), workspaceId: "w1" }, { key: "a", order: 1 });
+    expect(bound.workspaceId).toBe("w1");
+    const unbound = toStored(finished(), { key: "b", order: 2 });
+    expect(unbound).not.toHaveProperty("workspaceId");
+    // Newest first: a workspace id that is not a string is no binding.
+    const [odd, none, back] = restoreChats([bound, unbound, { ...toStored(finished(), { key: "c", order: 3 }), workspaceId: 7 }], 1).sessions;
+    expect(odd).not.toHaveProperty("workspaceId");
+    expect(none).not.toHaveProperty("workspaceId");
+    expect(back.workspaceId).toBe("w1");
+  });
+
+  it("keeps a chat's move to another workspace, and the mark of the prompt whose notice told it", () => {
+    const moved = { from: "w1", name: "Trip plan", at: 100 };
+    const told = { ...finished(), workspaceId: "w2", moved, messages: [msg(1, "user", "hi", { moved }), msg(2, "assistant", "hello")] };
+    const stored = toStored(told, { key: "a", order: 1 });
+    expect(stored.moved).toEqual(moved);
+    expect(toStored(finished(), { key: "b", order: 2 })).not.toHaveProperty("moved");
+    // Newest first: a move that is not one, as a damaged document holds it, is none.
+    const odd = { ...toStored(finished(), { key: "c", order: 3 }), moved: { from: 7, at: "now" } };
+    const [none, back] = restoreChats([stored, odd], 1).sessions;
+    expect(none).not.toHaveProperty("moved");
+    expect(back.moved).toEqual(moved);
+    expect(back.messages[0].moved).toEqual(moved);
   });
 });
 

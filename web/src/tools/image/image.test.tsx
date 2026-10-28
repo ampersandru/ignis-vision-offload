@@ -1,6 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { RGBA_TAIL } from "../../image/studio.ts";
+import { sha256 } from "../../store/imageStore.ts";
+import { createMemoryStore } from "../../store/memory.ts";
+import { latest } from "../../workspace/files.ts";
+import { madeIn } from "../../workspace/pictures.ts";
+import { createWorkspaces } from "../../workspace/workspaces.ts";
 import { ImageStrip } from "./ImageStrip.tsx";
 import {
   IMAGE_TOOL_NAME,
@@ -290,6 +295,72 @@ describe("a reply's visit to the image model", () => {
   });
 });
 
+describe("the pictures make_image makes, with a workspace", () => {
+  /** A chat with no workspace yet, whose pictures land in one born for them. */
+  function chatWorkspace() {
+    let n = 0;
+    const store = createMemoryStore();
+    const workspaces = createWorkspaces(store, { newId: () => `id${++n}`, measure: async () => ({ width: 2752, height: 1536 }) });
+    let bound: string | undefined;
+    const chat = workspaces.chat("chat-a", { bound: () => bound, name: () => "Fox pictures", onBorn: (id) => (bound = id) });
+    return { store, workspaces, chat, bound: () => bound };
+  }
+
+  async function make(tasks: ImageTask[], s: ReturnType<typeof server>, w: ReturnType<typeof chatWorkspace>, messages: Parameters<typeof picturesByName>[0] = []) {
+    return runImages(tasks, { messages, signal: new AbortController().signal, onUpdate: () => {}, fetch: s.fetcher, wait: async () => {}, ...madeIn(w.workspaces, w.chat) });
+  }
+
+  it("land as picture files of the chat's workspace, born for them, each named; the run keeps no data URL", async () => {
+    const w = chatWorkspace();
+    const [ran] = await make([task()], server(), w);
+    expect(ran.status).toBe("done");
+    expect(ran.made).toEqual([{ name: "made-1", size: "2752x1536", seed: "41", file: { workspace: w.bound(), file: expect.any(String), name: "made-1.png", version: 1 } }]);
+    const [workspace] = await w.workspaces.list();
+    expect(workspace).toMatchObject({ id: w.bound(), name: "Fox pictures" });
+    const [file] = await w.workspaces.files(w.bound()!);
+    expect(file).toMatchObject({ name: "made-1.png", kind: "picture" });
+    // The server's base64 "AAA" is two zero bytes, kept once in the image store.
+    const bytes = new Blob([new Uint8Array([0, 0])], { type: "image/png" });
+    expect(latest(file)).toMatchObject({ author: { by: "chat", chat: "chat-a" }, bytes: { store: "image", id: await sha256(bytes), width: 2752, height: 1536 } });
+    expect(imageToolResult(ran)).toBe("Made made-1: 2752x1536, seed 41. It is in the workspace as made-1.png.\nThe user sees the pictures in the conversation.");
+  });
+
+  it("send a landed picture's bytes from the workspace when a later call edits it", async () => {
+    const w = chatWorkspace();
+    const [first] = await make([task()], server(), w);
+    const s = server();
+    const [edit] = await make([task({ references: ["made-1"] })], s, w, [{ role: "assistant", imageRuns: [first] }]);
+    expect(edit.status).toBe("done");
+    const [sent] = (s.bodies[0] as FormData).getAll("image[]") as File[];
+    expect(sent.name).toBe("made-1-1.png");
+    expect([...new Uint8Array(await sent.arrayBuffer())]).toEqual([0, 0]);
+    expect(edit.made?.[0]).toMatchObject({ name: "made-2", file: { name: "made-2.png" } });
+  });
+
+  it("fail a call naming a picture the workspace no longer holds, and say so", async () => {
+    const w = chatWorkspace();
+    const [first] = await make([task()], server(), w);
+    await w.workspaces.remove(w.bound()!, []);
+    const [edit] = await make([task({ references: ["made-1"] })], server(), w, [{ role: "assistant", imageRuns: [first] }]);
+    expect(edit).toMatchObject({ status: "failed", error: "made-1 is gone: the workspace that held it as made-1.png was deleted." });
+  });
+
+  it("stay in the reply when the browser's store refuses them, and the model hears why", async () => {
+    const w = chatWorkspace();
+    const [ran] = await runImages([task()], {
+      messages: [],
+      signal: new AbortController().signal,
+      onUpdate: () => {},
+      fetch: server().fetcher,
+      wait: async () => {},
+      land: () => Promise.reject(new Error("the quota is full")),
+      read: madeIn(w.workspaces, w.chat).read,
+    });
+    expect(ran.made).toEqual([{ name: "made-1", url: "data:image/png;base64,AAA", size: "2752x1536", seed: "41", unkept: "the quota is full" }]);
+    expect(imageToolResult(ran)).toContain("Made made-1: 2752x1536, seed 41. The browser did not keep it in the workspace: the quota is full.");
+  });
+});
+
 describe("the strip", () => {
   it("shows the switch while it runs, then each picture with its name, size, seed and download", () => {
     const working = renderToStaticMarkup(<ImageStrip runs={[{ ...task(), status: "switching", line: "Switching to ignis-image-2.1-turbo…" }]} />);
@@ -305,5 +376,13 @@ describe("the strip", () => {
     expect(done).toContain("From user-1");
     expect(done).toContain(">PNG<");
     expect(done).toContain("1 picture");
+  });
+
+  it("says a picture the store refused was not saved in the workspace, and shows it from the reply", () => {
+    const html = renderToStaticMarkup(
+      <ImageStrip runs={[{ ...task(), status: "done", made: [{ name: "made-1", url: "data:image/png;base64,AAA", size: "2752x1536", unkept: "the quota is full" }] }]} />,
+    );
+    expect(html).toContain('src="data:image/png;base64,AAA"');
+    expect(html).toContain("Not saved in the workspace, kept in this reply: the quota is full");
   });
 });
