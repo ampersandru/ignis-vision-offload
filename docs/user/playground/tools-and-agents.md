@@ -271,7 +271,9 @@ made, read from the workspace. The reply shows the picture
 from the workspace with its file's name under it, never from a copy kept in
 the message. Once the workspace is deleted the reply says the picture is no
 longer in it, and a call naming it fails, saying so. When the browser refuses
-to store a picture, the reply keeps it as before and the model is told why.
+to store a picture, the reply keeps it as before, says **Not saved in the
+workspace, kept in this reply** with the browser's reason, and the model is
+told why ([when the browser refuses](chat.md#when-the-browser-refuses-a-file)).
 The pictures of a chat saved before workspaces show as they did.
 
 A picture can be marked, opened full screen, downloaded, or opened in the

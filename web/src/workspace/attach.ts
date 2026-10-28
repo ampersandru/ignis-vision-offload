@@ -1,5 +1,5 @@
 import type { Attachment } from "../tools/local/attachments.ts";
-import { kindOf, uniqueName, USER } from "./files.ts";
+import { kindOf, refusal, uniqueName, USER } from "./files.ts";
 import type { ChatBinding, Incoming, Workspaces } from "./workspaces.ts";
 
 // Files the user attaches in the prompt box (spec #170). They wait in the box
@@ -77,6 +77,51 @@ export async function commitAttached(workspaces: Workspaces, chat: ChatBinding, 
   if (files.length === 0) return [];
   const written = await workspaces.add(await chat.workspace(), files, USER);
   return written.map((w) => w.name);
+}
+
+/** What a turn takes into the chat's workspace before it is sent: its files, and its pictures apart. */
+export type TurnAdds = { files: AttachedFile[]; pictures: AttachedFile[]; clearsLegacy: boolean };
+
+/**
+ * What a turn takes into the chat's workspace: the box's files and pictures,
+ * and an older chat's attachments ahead of them, which then leave the chat.
+ * Nothing while the Workspace switch is off, when the model has no tool to
+ * read them: an older chat's attachments stay with it until the first turn
+ * with the switch on, whose prompt names them.
+ */
+export function turnAdds(workspaceOn: boolean, legacy: Attachment[], box: { files: AttachedFile[]; pictures: AttachedFile[] }): TurnAdds {
+  if (!workspaceOn) return { files: [], pictures: [], clearsLegacy: false };
+  return { files: [...legacy.map(fromLegacy), ...box.files], pictures: box.pictures, clearsLegacy: legacy.length > 0 };
+}
+
+/** What taking a turn's files did: the names its prompt gives them, and what the page says of a refusal; or that the turn is not sent. */
+export type Taken = { sent: true; named: string[]; said?: string } | { sent: false; said: string };
+
+/** What the page says of files the store refused for the workspace: they were not saved there, what became of them, and why. */
+const notSaved = (names: string[], then: string, err: unknown) =>
+  `${names.join(", ")} ${names.length === 1 ? "was" : "were"} not saved in the workspace: ${then} ${refusal(err)}`;
+
+/**
+ * Takes a turn's files into the chat's workspace, before the turn is sent.
+ * A refusal never costs the user their content, and the page says it was not
+ * saved in the workspace: files the store refuses, all of them, leave the
+ * turn unsent, its prompt back in the box; a picture it refuses still reaches
+ * the model inline, in this prompt only, as make_image's picture stays in its
+ * reply.
+ */
+export async function takeTurnFiles(workspaces: Workspaces, chat: ChatBinding, adds: TurnAdds): Promise<Taken> {
+  let named: string[] = [];
+  try {
+    named = await commitAttached(workspaces, chat, adds.files);
+  } catch (err) {
+    return { sent: false, said: notSaved(adds.files.map((f) => f.name), "nothing was sent, and nothing is lost.", err) };
+  }
+  try {
+    return { sent: true, named: [...named, ...(await commitAttached(workspaces, chat, adds.pictures))] };
+  } catch (err) {
+    const then = `the model sees ${adds.pictures.length === 1 ? "it" : "them"} in this prompt only.`;
+    return { sent: true, named, said: notSaved(adds.pictures.map((f) => f.name), then, err) };
+  }
 }
 
 /** A prompt as it goes on the wire: its text, then the files it attached to the workspace. */

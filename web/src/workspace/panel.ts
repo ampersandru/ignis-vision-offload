@@ -100,9 +100,6 @@ export function editing(file: WorkspaceFile, draft: Draft): Editing {
 /** The name a download saves a file under: the last part of its name. */
 export const downloadName = (name: string) => name.slice(name.lastIndexOf("/") + 1);
 
-/** What the panel says when the browser's store refused a change. */
-export const refusal = (err: unknown) => `Not saved in this browser: ${err instanceof Error ? err.message : String(err)}`;
-
 /** An empty text file of the user's, named `raw`; a name another file holds takes a number, as an attached file's does. */
 export async function createFile(workspaces: Workspaces, chat: ChatBinding, raw: string): Promise<FileOutcome> {
   if (!raw.trim()) return { ok: false, error: "The file needs a name, like notes.md or site/index.html." };

@@ -109,6 +109,9 @@ export function kindOf(name: string, type = ""): FileKind {
   return "text";
 }
 
+/** What the page says when the browser's store refused a change. */
+export const refusal = (err: unknown) => `Not saved in this browser: ${err instanceof Error ? err.message : String(err)}`;
+
 /** The kind as a sentence names it. */
 export const KIND_LABEL: Record<FileKind, string> = { text: "text", pdf: "PDF", picture: "picture", audio: "audio", other: "other" };
 

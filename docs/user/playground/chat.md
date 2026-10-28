@@ -38,6 +38,18 @@ agents included. The **+** button adds to the prompt:
 
 An image or a file alone is a prompt. Nothing is sent until you press Send.
 
+### When the browser refuses a file
+
+A refusal never costs you what you attached, and the page says it was not
+saved in the workspace, with the browser's reason (a full quota, a store
+another tab holds). When the browser refuses to store the files a prompt
+attaches, nothing is sent: the prompt, its files and its pictures are back in
+the box, and the line under them says which files were not saved. When it
+refuses only a picture, the prompt goes as without a workspace, the picture
+inline, and the line says the model sees it in that prompt only. A picture
+`make_image` makes stays in its reply the same way
+([Pictures](tools-and-agents.md#pictures)).
+
 ## The chat's workspace
 
 A chat can have a **workspace**: files you and the model work on together,
@@ -66,8 +78,10 @@ The model's side, its tools and the **Workspace** switch:
 
 A chat saved before workspaces shows as it did, its files from `create_file`
 and the pictures `make_image` made in it included. The files it had attached
-wait in the prompt box until its next turn, which makes them the first files
-of its workspace.
+wait in the prompt box until its next turn with the **Workspace** switch on,
+which makes them the first files of its workspace and names them in its
+prompt; while the switch is off the box hides them, they stay with the chat,
+and the model is not told of them.
 
 ### The workspace picker
 

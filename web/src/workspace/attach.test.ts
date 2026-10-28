@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryStore } from "../store/memory.ts";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { attachedChip, commitAttached, fromLegacy, readAttached, readUpload, withAttached } from "./attach.ts";
+import { type AttachedFile, attachedChip, commitAttached, fromLegacy, readAttached, readUpload, takeTurnFiles, turnAdds, withAttached } from "./attach.ts";
 import { latest } from "./files.ts";
 import { createWorkspaces } from "./workspaces.ts";
 
@@ -10,10 +10,12 @@ import { createWorkspaces } from "./workspaces.ts";
 // chat has none, and the prompt names it. An older chat's attachments become
 // the first files of its workspace when it is resumed.
 
-function binding(title = "Reading list") {
+function binding(title = "Reading list", refuses?: "putBlob" | "putImage") {
   let n = 0;
-  const store = createMemoryStore();
-  const workspaces = createWorkspaces(store, { newId: () => `id${++n}` });
+  const memory = createMemoryStore();
+  const no = () => Promise.reject(new Error("The quota is exceeded."));
+  const store = refuses ? { ...memory, [refuses]: no } : memory;
+  const workspaces = createWorkspaces(store, { newId: () => `id${++n}`, measure: async () => ({ width: 8, height: 6 }) });
   let bound: string | undefined;
   const chat = workspaces.chat("chat-a", { bound: () => bound, name: () => title, onBorn: (id) => (bound = id) });
   return { store, workspaces, chat, bound: () => bound };
@@ -114,6 +116,46 @@ describe("attaching files", () => {
     const broken = await readUpload(new File([new Uint8Array([1])], "bad.pdf"), async () => Promise.reject(new Error("bad XRef")));
     expect(broken).toMatchObject({ name: "bad.pdf", kind: "pdf" });
     expect(broken.derived).toBeUndefined();
+  });
+
+  it("leaves an older chat's attachments with it while the Workspace switch is off, and migrates them, first, at the first turn with it on", () => {
+    const older: Attachment[] = [{ name: "notes.txt", size: 5, kind: "text", text: "hello" }];
+    const box: AttachedFile[] = [{ name: "plan.md", kind: "text", text: "- go", size: 4 }];
+    const photo: AttachedFile = { name: "photo.png", kind: "picture", blob: new Blob([new Uint8Array([1])]), size: 1 };
+    expect(turnAdds(false, older, { files: box, pictures: [photo] })).toEqual({ files: [], pictures: [], clearsLegacy: false });
+    expect(turnAdds(true, older, { files: box, pictures: [photo] })).toEqual({ files: [...older.map(fromLegacy), ...box], pictures: [photo], clearsLegacy: true });
+    expect(turnAdds(true, [], { files: box, pictures: [] })).toEqual({ files: box, pictures: [], clearsLegacy: false });
+  });
+
+  it("takes a turn's files and pictures into the workspace, and names them for its prompt", async () => {
+    const { workspaces, chat, bound } = binding();
+    const taken = await takeTurnFiles(workspaces, chat, {
+      files: [{ name: "plan.md", kind: "text", text: "- go", size: 4 }],
+      pictures: [{ name: "photo.png", kind: "picture", blob: new Blob([new Uint8Array([1])], { type: "image/png" }), size: 1 }],
+      clearsLegacy: false,
+    });
+    expect(taken).toEqual({ sent: true, named: ["plan.md", "photo.png"] });
+    expect((await workspaces.files(bound()!)).map((f) => f.name)).toEqual(["photo.png", "plan.md"]);
+  });
+
+  it("sends no turn when the store refuses its files, which go back to the box, and says they were not saved in the workspace", async () => {
+    const { workspaces, chat } = binding("Reading list", "putBlob");
+    const memo: AttachedFile = { name: "memo.wav", kind: "audio", blob: new Blob([new Uint8Array([1])]), size: 1 };
+    expect(await takeTurnFiles(workspaces, chat, { files: [memo], pictures: [], clearsLegacy: false })).toEqual({
+      sent: false,
+      said: "memo.wav was not saved in the workspace: nothing was sent, and nothing is lost. Not saved in this browser: The quota is exceeded.",
+    });
+    expect(await workspaces.list()).toEqual([]);
+  });
+
+  it("sends a turn whose pictures the store refuses, the pictures inline as before, and says they were not saved in the workspace", async () => {
+    const { workspaces, chat } = binding("Reading list", "putImage");
+    const picture = (name: string): AttachedFile => ({ name, kind: "picture", blob: new Blob([new Uint8Array([2])], { type: "image/png" }), size: 1 });
+    expect(await takeTurnFiles(workspaces, chat, { files: [{ name: "plan.md", kind: "text", text: "- go", size: 4 }], pictures: [picture("a.png"), picture("b.png")], clearsLegacy: false })).toEqual({
+      sent: true,
+      named: ["plan.md"],
+      said: "a.png, b.png were not saved in the workspace: the model sees them in this prompt only. Not saved in this browser: The quota is exceeded.",
+    });
   });
 
   it("adds nothing, and births nothing, when nothing is attached", async () => {
