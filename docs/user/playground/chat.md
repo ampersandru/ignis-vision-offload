@@ -32,8 +32,11 @@ agents included. The **+** button adds to the prompt:
   the box until you send, its size beside it (a text's characters, a PDF's
   text's, a recording's bytes), and **×** takes it out; sending adds it to the
   workspace and names it in the prompt. The model reads a recording as its
-  transcript ([audio in the workspace](#audio-in-the-workspace)). It is offered
-  while the **Workspace** switch is on
+  transcript ([audio in the workspace](#audio-in-the-workspace)). A file is
+  text when its name or its type says so, or its name says nothing else, and
+  it holds no NUL byte, as in the [panel](#the-workspace-panel); any other
+  file, an archive or a spreadsheet, is refused here, and the panel keeps it
+  as bytes. It is offered while the **Workspace** switch is on
   ([Tools and agents](tools-and-agents.md#workspace)).
 
 An image or a file alone is a prompt. Nothing is sent until you press Send.

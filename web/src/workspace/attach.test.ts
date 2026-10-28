@@ -158,6 +158,26 @@ describe("attaching files", () => {
     });
   });
 
+  it("classifies a file the same way in the prompt box and in the panel: what one keeps as text the other does, and what the box refuses the panel keeps as bytes", async () => {
+    const bytes = new Uint8Array([0, 1, 2]);
+    const cases: [File, string][] = [
+      [new File(["hello\n"], "notes.txt", { type: "text/plain" }), "text"],
+      // A browser calls a `.ts` file a video: its name says text.
+      [new File(["let x = 1;"], "app.ts", { type: "video/mp2t" }), "text"],
+      [new File(["a,b"], "sheet.xlsx"), "other"],
+      [new File([bytes], "recording", { type: "audio/webm" }), "audio"],
+      [new File([bytes], "core"), "other"],
+      [new File([bytes], "photo.png", { type: "image/png" }), "picture"],
+      [new File([new Uint8Array([37, 80, 68, 70])], "brief.pdf", { type: "application/pdf" }), "pdf"],
+    ];
+    for (const [file, kind] of cases) {
+      const upload = await readUpload(file, pdfReader);
+      const attached = await readAttached(file, [], pdfReader);
+      expect([file.name, upload.kind]).toEqual([file.name, kind]);
+      expect([file.name, attached.ok ? attached.file.kind : "refused"]).toEqual([file.name, ["text", "pdf", "audio"].includes(kind) ? kind : "refused"]);
+    }
+  });
+
   it("adds nothing, and births nothing, when nothing is attached", async () => {
     const { workspaces, chat } = binding();
     expect(await commitAttached(workspaces, chat, [])).toEqual([]);
