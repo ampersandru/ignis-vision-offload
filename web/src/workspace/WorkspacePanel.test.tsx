@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Version, type Workspace, type WorkspaceFile } from "./files.ts";
-import { fileTree } from "./panel.ts";
+import { authorName, fileTree } from "./panel.ts";
 import { FileTree, FileViewer, NameField, type PanelActions, PanelView } from "./WorkspacePanel.tsx";
 
 // The workspace panel as it renders: the files as a tree, each file's viewer,
@@ -30,15 +30,21 @@ const actions: PanelActions = {
   rename: async () => null,
   remove: () => {},
   download: () => {},
+  save: async () => ({ ok: true, version: 2 }),
+  restore: () => {},
   content: async () => null,
   derive: async () => null,
 };
+
+/** The chat the panel is open in is "k", the chat that wrote site/index.html's version 2. */
+const chats = { here: (key: string) => key === "k", title: () => undefined };
+const whom = (author: Version["author"]) => authorName(author, chats);
 
 const byName = (name: string) => files.find((f) => f.name === name)!;
 
 describe("the workspace panel", () => {
   it("lists the workspace's files as a tree of their names, with the panel's actions", () => {
-    const html = renderToStaticMarkup(<PanelView workspace={workspace} files={files} onClose={() => {}} actions={actions} />);
+    const html = renderToStaticMarkup(<PanelView workspace={workspace} files={files} chats={chats} onClose={() => {}} actions={actions} />);
     expect(html).toContain('aria-label="Workspace"');
     expect(html).toContain("Trip plan");
     // The folders, then the files of each level, by the last part of their names.
@@ -53,8 +59,15 @@ describe("the workspace panel", () => {
     expect(html).toContain("2 KB");
   });
 
+  it("offers to show the deleted files, with their count", () => {
+    const html = renderToStaticMarkup(<PanelView workspace={workspace} files={files} chats={chats} onClose={() => {}} actions={actions} />);
+    expect(html).toMatch(/<button[^>]*aria-pressed="false"[^>]*>Show deleted files \(1\)<\/button>/);
+    const none = renderToStaticMarkup(<PanelView workspace={workspace} files={files.filter((f) => f.name !== "gone.txt")} chats={chats} onClose={() => {}} actions={actions} />);
+    expect(none).not.toContain("Show deleted files");
+  });
+
   it("says when the chat has no workspace yet, and still offers to make the first file", () => {
-    const html = renderToStaticMarkup(<PanelView workspace={null} files={[]} onClose={() => {}} actions={actions} />);
+    const html = renderToStaticMarkup(<PanelView workspace={null} files={[]} chats={chats} onClose={() => {}} actions={actions} />);
     expect(html).toContain("No workspace yet");
     expect(html).toContain("The first file you add here, attach or the model writes creates it.");
     expect(html).toMatch(/<button[^>]*>(<svg.*?<\/svg>)?New file<\/button>/);
@@ -62,7 +75,7 @@ describe("the workspace panel", () => {
 
   it("says when the browser refused a change", () => {
     const html = renderToStaticMarkup(
-      <PanelView workspace={workspace} files={files} notice="Not saved in this browser: QuotaExceededError" onClose={() => {}} actions={actions} />,
+      <PanelView workspace={workspace} files={files} chats={chats} notice="Not saved in this browser: QuotaExceededError" onClose={() => {}} actions={actions} />,
     );
     expect(html).toMatch(/role="status"[^>]*>Not saved in this browser: QuotaExceededError</);
   });
@@ -78,6 +91,15 @@ describe("the tree's rows", () => {
     }
   });
 
+  it("show a deleted file as deleted, to open its history, with nothing else to do to it", () => {
+    const html = renderToStaticMarkup(<FileTree nodes={fileTree(files, true)} renaming={null} onOpen={() => {}} onRenaming={() => {}} actions={actions} />);
+    expect(html).toMatch(/<button[^>]*title="gone.txt, deleted: open its history"[^>]*>gone.txt<\/button><span[^>]*>deleted<\/span>/);
+    expect(html).not.toContain('aria-label="Rename gone.txt"');
+    expect(html).not.toContain('aria-label="Download gone.txt"');
+    expect(html).not.toContain('aria-label="Delete gone.txt"');
+    expect(html).toContain('aria-label="Delete notes.md"');
+  });
+
   it("turn the file being renamed into a field holding its whole name", () => {
     const html = renderToStaticMarkup(<FileTree nodes={fileTree(files)} renaming="f-notes.md" onOpen={() => {}} onRenaming={() => {}} actions={actions} />);
     expect(html).toMatch(/<input[^>]*aria-label="New name for notes.md"[^>]*value="notes.md"/);
@@ -91,7 +113,7 @@ describe("the tree's rows", () => {
 });
 
 describe("a file's viewer", () => {
-  const view = (f: WorkspaceFile) => renderToStaticMarkup(<FileViewer file={f} onBack={() => {}} actions={actions} />);
+  const view = (f: WorkspaceFile) => renderToStaticMarkup(<FileViewer file={f} whom={whom} onBack={() => {}} actions={actions} />);
 
   it("opens an HTML file's latest version in the sandboxed preview, with full screen and Save as PDF", () => {
     const html = view(byName("site/index.html"));
@@ -101,14 +123,30 @@ describe("a file's viewer", () => {
     expect(html).toContain("Save as PDF");
     expect(html).toContain("Expand preview");
     expect(html).toContain("version 2");
-    expect(html).toContain("by the model");
+    expect(html).toContain("by this chat");
+    // The preview first, its editor and its history a tab away.
+    expect(html).toMatch(/<button[^>]*role="tab"[^>]*aria-selected="true"[^>]*>Preview<\/button>/);
+    expect(html).toMatch(/<button[^>]*role="tab"[^>]*aria-selected="false"[^>]*>Edit<\/button>/);
+    expect(html).toMatch(/<button[^>]*role="tab"[^>]*aria-selected="false"[^>]*>History \(2\)<\/button>/);
   });
 
-  it("shows any other text file's source", () => {
+  it("opens any other text file in its editor, its history a tab away", () => {
     const html = view(byName("site/css/main.css"));
-    expect(html).toMatch(/<pre[^>]*>h1\{color:red\}<\/pre>/);
+    expect(html).toMatch(/<textarea[^>]*aria-label="The text of site\/css\/main.css"[^>]*>h1\{color:red\}<\/textarea>/);
     expect(html).not.toContain("<iframe");
     expect(html).toContain("by you");
+    expect(html).toMatch(/<button[^>]*role="tab"[^>]*aria-selected="true"[^>]*>Edit<\/button>/);
+    expect(html).toMatch(/<button[^>]*role="tab"[^>]*aria-selected="false"[^>]*>History \(1\)<\/button>/);
+    expect(html).not.toContain(">Preview<");
+  });
+
+  it("opens a deleted file on its history, to restore a version from it", () => {
+    const html = view(byName("gone.txt"));
+    expect(html).toContain("Deleted in version 2, 2026-10-28 14:05, by you.");
+    expect(html).toContain('aria-label="Restore version 1 of gone.txt"');
+    expect(html).not.toContain("<textarea");
+    expect(html).not.toContain('aria-label="Download gone.txt"');
+    expect(html).not.toContain('role="tab"');
   });
 
   it("shows a file the model cannot read by its name and size", () => {
@@ -135,7 +173,7 @@ describe("a file's viewer", () => {
     expect(heard).toContain("Its transcript, as the model reads it");
     expect(heard).toMatch(/<pre[^>]*>Buy bread.<\/pre>/);
     const unheard = renderToStaticMarkup(
-      <FileViewer file={file("memo.wav", "audio", [{ n: 1, author: USER, at, bytes }])} onBack={() => {}} actions={actions} speech={{ available: false, reason: "the speech model is turned off" }} />,
+      <FileViewer file={file("memo.wav", "audio", [{ n: 1, author: USER, at, bytes }])} whom={whom} onBack={() => {}} actions={actions} speech={{ available: false, reason: "the speech model is turned off" }} />,
     );
     expect(unheard).toMatch(/<button[^>]*disabled=""[^>]*>Transcribe<\/button>/);
     expect(unheard).toContain("Speech is turned off on this server");
@@ -145,7 +183,7 @@ describe("a file's viewer", () => {
 describe("the panel's recorder", () => {
   it("sits beside New file and Upload", () => {
     const html = renderToStaticMarkup(
-      <PanelView workspace={workspace} files={files} onClose={() => {}} actions={actions} recording={<button type="button">Record</button>} />,
+      <PanelView workspace={workspace} files={files} chats={chats} onClose={() => {}} actions={actions} recording={<button type="button">Record</button>} />,
     );
     expect(html.indexOf(">Upload<")).toBeLessThan(html.indexOf(">Record<"));
     expect(html.indexOf(">Record<")).toBeLessThan(html.indexOf("or drop files here"));

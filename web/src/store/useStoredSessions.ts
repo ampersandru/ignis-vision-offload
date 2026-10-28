@@ -44,6 +44,8 @@ export function useStoredSessions<T extends { id: number }>(
   error: string | null;
   /** A session's key in the store, given the first time it is asked for and kept for good: the session's lasting name. */
   keyOf: (id: number) => string;
+  /** The session a key names, if one of the list's has been given it; asking gives no key. */
+  idOf: (key: string) => number | undefined;
 } {
   const now = useRef(options);
   now.current = options;
@@ -125,5 +127,10 @@ export function useStoredSessions<T extends { id: number }>(
     };
   }, []);
 
-  return { loaded, error, keyOf: (id) => stampOf(id).key };
+  return {
+    loaded,
+    error,
+    keyOf: (id) => stampOf(id).key,
+    idOf: (key) => [...stamps.current].find(([, stamp]) => stamp.key === key)?.[0],
+  };
 }
