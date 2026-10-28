@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { USER, type Workspace, type WorkspaceFile } from "./files.ts";
+import { PICK_WAITS } from "../sessions/sessions.ts";
 import { ChatWorkspaceBar, DeleteWorkspaceConfirm, PickerMenu, WorkspaceChoices, WorkspacePicker } from "./WorkspacePicker.tsx";
 
 // The picker in the chat's header as it renders: before the chat binds, a new
@@ -22,6 +23,8 @@ const file = (name: string, deleted = false): WorkspaceFile => ({
 });
 
 const noop = () => {};
+
+const WAITS = PICK_WAITS;
 const menu = (props: Partial<Parameters<typeof PickerMenu>[0]>) =>
   renderToStaticMarkup(
     <PickerMenu mode="choices" workspace={null} files={[]} list={[site, trip]} onPick={noop} onMode={noop} onRename={async () => null} onDelete={noop} {...props} />,
@@ -59,10 +62,13 @@ describe("the workspace picker", () => {
     expect(html).not.toMatch(/<button[^>]*disabled=""/);
   });
 
-  it("holds a deleted workspace's chat where it is while a reply runs: the existing workspaces wait", () => {
-    const html = menu({ mode: "choices", deleted: true, canMove: false });
-    expect(html.match(/<button[^>]*disabled=""[^>]*>/g)).toHaveLength(2);
-    expect(html).toMatch(/<button[^>]*aria-checked="true"(?![^>]*disabled="")[^>]*>/);
+  it("holds a chat where it is while a reply of its runs, with a workspace deleted or none yet, saying why", () => {
+    for (const deleted of [true, false]) {
+      const html = menu({ mode: "choices", deleted, held: WAITS });
+      expect(html.match(/<button[^>]*disabled=""[^>]*title="The workspace changes once this chat&#x27;s reply ends."[^>]*>/g)).toHaveLength(3);
+      expect(html).toContain(`>${WAITS.replace("'", "&#x27;")}</p>`);
+    }
+    expect(menu({ mode: "choices" })).not.toMatch(/disabled=""/);
   });
 
   it("says when there is no workspace to pick yet", () => {
@@ -80,9 +86,16 @@ describe("the workspace picker", () => {
   });
 
   it("disables the move while a reply runs, saying why", () => {
-    const html = menu({ mode: "actions", workspace: trip, files: [file("a.md")], canMove: false });
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="A chat moves once its reply ends."[^>]*>Move to…<\/button>/);
+    const html = menu({ mode: "actions", workspace: trip, files: [file("a.md")], held: WAITS });
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="The workspace changes once this chat&#x27;s reply ends."[^>]*>Move to…<\/button>/);
     expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Rename/);
+  });
+
+  it("holds every choice of a move begun before the reply started, saying why", () => {
+    const html = menu({ mode: "move", workspace: trip, files: [file("a.md")], held: WAITS });
+    expect(html.match(/<button[^>]*role="menuitem"[^>]*disabled=""[^>]*title="The workspace changes once this chat&#x27;s reply ends."/g)).toHaveLength(2);
+    expect(html).toContain(">The workspace changes once this chat&#x27;s reply ends.</p>");
+    expect(menu({ mode: "move", workspace: trip, files: [file("a.md")] })).not.toMatch(/disabled=""/);
   });
 
   it("moves the chat to one of the other workspaces, or out to a new one, saying the files stay", () => {

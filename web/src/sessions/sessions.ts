@@ -169,6 +169,18 @@ const sameMove = (a: WorkspaceMove | undefined, b: WorkspaceMove) => a !== undef
 export const untoldMove = (history: Message[], moved: WorkspaceMove | undefined): WorkspaceMove | undefined =>
   moved && !keptMessages(history).some((m) => sameMove(m.moved, moved)) ? moved : undefined;
 
+/** What the picker says while a chat's workspace waits. */
+export const PICK_WAITS = "The workspace changes once this chat's reply ends.";
+
+/**
+ * Why the chat `sessionId` may not pick a workspace now, nor move to another
+ * (#404): a reply of its runs, among those `replying`; null while it may. No
+ * pick and no move during a reply, whether the chat has a workspace or not:
+ * the turn reads its workspace as it was when it started, and a first file
+ * its reply is writing is born into the one the chat names then (`bornInto`).
+ */
+export const pickHeld = (replying: ReadonlySet<number>, sessionId: number): string | null => (replying.has(sessionId) ? PICK_WAITS : null);
+
 /** Binds a chat with no workspace to the one picked for it; a chat that has one moves instead (`moveWorkspace`). */
 export function bindWorkspace(sessions: Session[], sessionId: number, workspaceId: string): Session[] {
   return sessions.map((s) => (s.id === sessionId && s.workspaceId === undefined ? { ...s, workspaceId } : s));

@@ -107,9 +107,12 @@ notice](tools-and-agents.md#the-turn-notice), and what the chat and its
 agents read in the workspace it left does not count in the new one, so the
 model reads a file there before it changes it ([Changes the model has not
 seen](tools-and-agents.md#changes-the-model-has-not-seen)). A reply's card
-keeps opening the version in the workspace that reply wrote it in. **Move
-to…** waits while a reply of the chat runs, and a fork works in the
-workspace its chat is in when you fork it.
+keeps opening the version in the workspace that reply wrote it in. A fork
+works in the workspace its chat is in when you fork it.
+
+While a reply of the chat runs, the picker waits, whether the chat has a
+workspace yet or not: no workspace is picked and the chat does not move. Its
+choices say why, and open again once the reply ends.
 
 A delete asks first, naming how many files go. It removes the workspace, its
 files and every version, and frees what nothing else uses: the bytes no other

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attachment } from "../tools/local/attachments.ts";
-import { bindWorkspace, bornInto, clearAttachments, createSession, forkSession, type Message, moveWorkspace, openSession, removeAttachment, type Session, untoldMove } from "./sessions.ts";
+import { bindWorkspace, bornInto, clearAttachments, createSession, forkSession, type Message, moveWorkspace, openSession, PICK_WAITS, pickHeld, removeAttachment, type Session, untoldMove } from "./sessions.ts";
 
 // A chat's files: an older chat's attachments, kept with it until its next
 // turn makes them files of its workspace, and the workspace it binds to.
@@ -107,6 +107,19 @@ describe("a chat's move to another workspace (#404)", () => {
     const fork = forkSession({ sessions: [moved], activeId: 1 }, 1, 10, 9).sessions[0];
     expect(fork.workspaceId).toBe("w2");
     expect(fork.moved).toEqual({ from: "w1", name: "Trip plan", at: 100 });
+  });
+});
+
+describe("when a chat may pick or move its workspace (#404)", () => {
+  it("waits while a reply of the chat runs, saying why, whether the chat has a workspace or not", () => {
+    // The rule reads the chats replying alone: a chat bound or not, moved to a new workspace or deleted out of one, waits alike.
+    expect(pickHeld(new Set([1]), 1)).toBe(PICK_WAITS);
+    expect(PICK_WAITS).toBe("The workspace changes once this chat's reply ends.");
+  });
+
+  it("lets the chat pick or move while no reply of its runs, another chat's included", () => {
+    expect(pickHeld(new Set(), 1)).toBeNull();
+    expect(pickHeld(new Set([2, 3]), 1)).toBeNull();
   });
 });
 

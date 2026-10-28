@@ -10,8 +10,9 @@ import { NameField } from "./WorkspacePanel.tsx";
 // binds the chat to it. Once bound, it names the workspace and renames it,
 // moves the chat to another workspace or out of its own (#404), or deletes
 // it, a delete only after a confirmation. A chat whose workspace was deleted
-// is offered the new one, or a move to an existing one. A chat moves only
-// while no reply of its runs.
+// is offered the new one, or a move to an existing one. A chat picks or
+// moves only while no reply of its runs (`pickHeld`), every choice held and
+// saying why meanwhile.
 
 export type PickerMode = "choices" | "actions" | "rename" | "confirm" | "move";
 
@@ -53,7 +54,7 @@ export function WorkspacePicker({
   files,
   list,
   deleted = false,
-  canMove = true,
+  held = null,
   onPick,
   onRename,
   onDelete,
@@ -65,8 +66,8 @@ export function WorkspacePicker({
   list: Workspace[] | null;
   /** The chat still names a workspace that was deleted. */
   deleted?: boolean;
-  /** The chat may move: false while a reply of its runs. */
-  canMove?: boolean;
+  /** Why the chat may not pick or move now (`pickHeld`): a reply of its runs. */
+  held?: string | null;
   /** Binds the chat to an existing workspace, or moves it there, or out of its own to none (null). */
   onPick: (id: WorkspaceId | null) => void;
   /** Renames the chat's workspace; the refusal, or null once done. */
@@ -108,7 +109,7 @@ export function WorkspacePicker({
             files={files}
             list={list}
             deleted={deleted}
-            canMove={canMove}
+            held={held}
             onMode={setMode}
             onPick={(id) => {
               menu.close();
@@ -138,7 +139,7 @@ export function PickerMenu({
   files,
   list,
   deleted = false,
-  canMove = true,
+  held = null,
   onPick,
   onMode,
   onRename,
@@ -149,7 +150,7 @@ export function PickerMenu({
   files: WorkspaceFile[];
   list: Workspace[] | null;
   deleted?: boolean;
-  canMove?: boolean;
+  held?: string | null;
   /** A workspace picked, or null for a new one. */
   onPick: (id: WorkspaceId | null) => void;
   onMode: (mode: PickerMode) => void;
@@ -157,11 +158,11 @@ export function PickerMenu({
   onDelete: () => void;
 }) {
   if (!workspace || mode === "choices") {
-    // A chat whose workspace was deleted moves to an existing one, which waits while a reply of its runs.
+    // A chat whose workspace was deleted moves to an existing one.
     const note = deleted ? "This chat's workspace was deleted: its next file starts a new one, or pick one to move the chat there." : undefined;
-    return <WorkspaceChoices list={list} current={workspace?.id ?? null} onPick={onPick} note={note} held={deleted && !canMove} />;
+    return <WorkspaceChoices list={list} current={workspace?.id ?? null} onPick={onPick} note={note} held={held} />;
   }
-  if (mode === "move") return <MoveChoices workspace={workspace} list={list} onPick={onPick} />;
+  if (mode === "move") return <MoveChoices workspace={workspace} list={list} onPick={onPick} held={held} />;
   if (mode === "rename") {
     return (
       <div className="px-3 py-2">
@@ -178,8 +179,8 @@ export function PickerMenu({
       <button
         type="button"
         role="menuitem"
-        disabled={!canMove}
-        title={canMove ? undefined : "A chat moves once its reply ends."}
+        disabled={held !== null}
+        title={held ?? undefined}
         className={`${MENU_ROW} font-display text-sm font-semibold text-ink disabled:cursor-default disabled:text-ash disabled:hover:bg-transparent`}
         onClick={() => onMode("move")}
       >
@@ -194,16 +195,16 @@ export function PickerMenu({
 
 /**
  * One choice of workspace: a radio of a choice made (`checked`), or a plain
- * item of a move; `held` while it cannot be taken now.
+ * item of a move; `held`, why it cannot be taken now.
  */
-function Choice({ name, line, checked, held = false, onClick }: { name: string; line: string; checked?: boolean; held?: boolean; onClick: () => void }) {
+function Choice({ name, line, checked, held = null, onClick }: { name: string; line: string; checked?: boolean; held?: string | null; onClick: () => void }) {
   return (
     <button
       type="button"
       role={checked === undefined ? "menuitem" : "menuitemradio"}
       aria-checked={checked}
-      disabled={held}
-      title={held ? "A chat moves once its reply ends." : undefined}
+      disabled={held !== null}
+      title={held ?? undefined}
       className={`${MENU_ROW} disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent`}
       onClick={onClick}
     >
@@ -216,6 +217,9 @@ function Choice({ name, line, checked, held = false, onClick }: { name: string; 
   );
 }
 
+/** Why every choice of a menu waits, said above them. */
+const Waits = ({ held }: { held: string | null }) => (held ? <p className="px-3 py-2 text-xs leading-snug text-ash">{held}</p> : null);
+
 /** The existing workspaces, the last changed first, each a choice; what to say while there is none to offer. */
 function existing(list: Workspace[] | null, choice: (w: Workspace) => ReactNode) {
   if (list === null) return <p className="px-3 py-2 text-xs text-ash">Reading the workspaces…</p>;
@@ -227,24 +231,25 @@ function existing(list: Workspace[] | null, choice: (w: Workspace) => ReactNode)
  * A new workspace or one of the existing ones, the last changed first: the
  * chat header's choice before the chat binds, and once its workspace was
  * deleted. `current` is the one chosen, null for a new one; `note`, what the
- * choice means here; `held`, the existing ones wait while a reply runs.
+ * choice means here; `held`, why every choice waits: a reply runs.
  */
 export function WorkspaceChoices({
   list,
   current,
   onPick,
   note,
-  held = false,
+  held = null,
 }: {
   list: Workspace[] | null;
   current: WorkspaceId | null;
   onPick: (id: WorkspaceId | null) => void;
   note?: string;
-  held?: boolean;
+  held?: string | null;
 }) {
   return (
     <div role="menu" aria-label="Workspace" className="flex max-h-[60vh] flex-col overflow-y-auto">
-      <Choice name="New workspace" line="Created with the chat's first file, named after the chat." checked={current === null} onClick={() => onPick(null)} />
+      <Waits held={held} />
+      <Choice name="New workspace" line="Created with the chat's first file, named after the chat." checked={current === null} held={held} onClick={() => onPick(null)} />
       {note && <p className="px-3 py-2 text-xs leading-snug text-ash">{note}</p>}
       {existing(list, (w) => (
         <Choice key={w.id} name={w.name} line={`changed ${timeLabel(w.updated)}`} checked={current === w.id} held={held} onClick={() => onPick(w.id)} />
@@ -256,15 +261,17 @@ export function WorkspaceChoices({
 /**
  * Where a bound chat moves (#404): out to a new workspace, born with its next
  * file, or to one of the other existing ones. Only the chat moves: the files
- * stay in the workspace they are in.
+ * stay in the workspace they are in. `held`, why every choice waits: a reply
+ * runs.
  */
-export function MoveChoices({ workspace, list, onPick }: { workspace: Workspace; list: Workspace[] | null; onPick: (id: WorkspaceId | null) => void }) {
+export function MoveChoices({ workspace, list, onPick, held = null }: { workspace: Workspace; list: Workspace[] | null; onPick: (id: WorkspaceId | null) => void; held?: string | null }) {
   const others = list && list.filter((w) => w.id !== workspace.id);
   return (
     <div role="menu" aria-label="Move this chat to" className="flex max-h-[60vh] flex-col overflow-y-auto">
-      <Choice name="New workspace" line={`The chat leaves “${workspace.name}”: its next file starts a new workspace, named after the chat.`} onClick={() => onPick(null)} />
+      <Waits held={held} />
+      <Choice name="New workspace" line={`The chat leaves “${workspace.name}”: its next file starts a new workspace, named after the chat.`} held={held} onClick={() => onPick(null)} />
       {existing(others, (w) => (
-        <Choice key={w.id} name={w.name} line={`changed ${timeLabel(w.updated)}`} onClick={() => onPick(w.id)} />
+        <Choice key={w.id} name={w.name} line={`changed ${timeLabel(w.updated)}`} held={held} onClick={() => onPick(w.id)} />
       ))}
       <p className="px-3 py-2 text-xs leading-snug text-ash">The files stay where they are. The model hears of the move with the next prompt.</p>
     </div>

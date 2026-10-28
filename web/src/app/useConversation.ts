@@ -26,6 +26,7 @@ import {
   type Message,
   moveWorkspace,
   openSession,
+  pickHeld,
   removeAttachment,
   removeSession,
   type SessionList,
@@ -263,21 +264,24 @@ export function useConversation({
     });
   }
 
-  /** The chat on screen may move to another workspace: no reply of its runs (#404). */
-  const canMove = !streamingHere;
+  /** Why the chat on screen may not pick or move its workspace now, or null (`pickHeld`): what the picker shows. */
+  const workspaceHeld = pickHeld(streaming, active.id);
 
   /**
    * The picker's choice for the chat on screen: an existing workspace before its first file, or once it has one a
-   * move there, or out of its own to none (`to` null), `left` naming the workspace it leaves (`moveWorkspace`). A
-   * chat with a workspace stays in it while a reply of its runs.
+   * move there, or out of its own to none (`to` null), `left` naming the workspace it leaves (`moveWorkspace`).
+   * While a reply of the chat runs nothing changes, by the same rule as the picker's, read from the turns
+   * themselves: why, or null once done.
    */
-  function pickWorkspace(to: string | null, left?: string) {
+  function pickWorkspace(to: string | null, left?: string): string | null {
     const sessionId = active.id;
-    if ((born.current.has(sessionId) || active.workspaceId !== undefined) && controllers.current.has(sessionId)) return;
+    const held = pickHeld(running(), sessionId);
+    if (held) return held;
     // A workspace born for the chat on this page stands in for its binding no longer: the list's is the one now.
     born.current.delete(sessionId);
     const move = { at: Date.now(), ...(left !== undefined ? { name: left } : {}) };
     setList((l) => ({ ...l, sessions: moveWorkspace(l.sessions, sessionId, to ?? undefined, move) }));
+    return null;
   }
 
   /**
@@ -816,7 +820,7 @@ export function useConversation({
         return title === UNTITLED ? undefined : title;
       },
     } satisfies ChatNames,
-    canMove,
+    workspaceHeld,
     pickWorkspace,
     deleteWorkspace,
     /** What the prompt box shows of the files the next turn adds to the workspace: the box's, then an older chat's. */
