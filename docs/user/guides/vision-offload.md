@@ -69,6 +69,13 @@ change that routing policy.
 
 ## Validation
 
+Both CPU and on-demand GPU encoding have been manually tested by a user on
+Unraid with an RTX 5060 Ti 16 GB and the Qwen3.8-27B 16 GB artifact. The user
+reported that both worked and on-demand was faster. Their external router
+also recorded successful image requests to this server while a separate
+RTX 3090 served text requests. This is functional validation, not a controlled
+latency, accuracy or GPU memory-release benchmark.
+
 Keep the working image for rollback. CPU tests and compilation cannot establish
 image accuracy, real-world latency or GPU leak freedom. The GPU profile's
 `offloaded_towers_answer_images_and_release_encode_memory` test exercises both
