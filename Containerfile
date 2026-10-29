@@ -136,7 +136,8 @@ ENTRYPOINT ["/usr/local/bin/ignis-server"]
 # anyone passes after the image name, which is how `--server-ui` used to disappear
 # the moment someone added a flag.
 
-LABEL org.opencontainers.image.title="ignis" \
-      org.opencontainers.image.description="ignis: OpenAI-compatible inference server for Qwen3.8-27B NVFP4 on Blackwell (SM120a), with the Playground UI" \
-      org.opencontainers.image.source="https://github.com/gpillon/ignis" \
+LABEL org.opencontainers.image.title="ignis-vision-offload" \
+      org.opencontainers.image.description="Experimental Ignis fork: CPU vision and RAM-resident tower with per-image GPU staging and unload" \
+      org.opencontainers.image.source="https://github.com/ampersandru/ignis-vision-offload" \
+      org.opencontainers.image.version="0.9.1-vision-offload-experimental" \
       org.opencontainers.image.licenses="Apache-2.0"
