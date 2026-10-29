@@ -28,3 +28,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: CPU suite (does not validate the CUDA forward pass)
         run: cargo test --locked --workspace --target ${{ matrix.target }}
+  docker-image:
+    needs: cpu-tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Linux CUDA image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64
+          tags: ignis:vision-offload
+          load: true
+          build-args: KERNEL_BUILD_JOBS=2
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+      - name: Verify CUDA linkage and new CLI options without using a GPU
+        run: |
+          docker run --rm --entrypoint /bin/sh ignis:vision-offload -c 'ldd /usr/local/bin/ignis-server | grep libcudart.so'
+          docker run --rm ignis:vision-offload --help | grep vision-residency
+      - name: Export transferable Docker archive
+        run: |
+          mkdir -p dist
+          docker save ignis:vision-offload | gzip -1 > dist/ignis-vision-offload-linux-amd64.tar.gz
+          cd dist
+          sha256sum ignis-vision-offload-linux-amd64.tar.gz > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ignis-vision-offload-linux-amd64
+          path: dist/*
+          compression-level: 0
+          retention-days: 14

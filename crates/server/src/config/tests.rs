@@ -29,7 +29,7 @@ fn vision_residency_flags_and_environment_reach_the_load() {
     let env = env_map(&[("IGNIS_VISION_RESIDENCY", "on-demand")]);
     let dynamic = expect_config(resolve(&flags, env).unwrap());
     assert_eq!(dynamic.vision.unwrap().residency(), VisionResidency::OnDemand);
-    assert!(refused(&["--vision-residency", "cpu"]).contains("--vision-enabled"));
+    assert!(refused(&["--profile", "none", "--vision-residency", "cpu"]).contains("--vision-enabled"));
     assert!(refused(&["--vision-enabled", "--vision-residency", "unknown"]).contains("resident, cpu, or on-demand"));
 }
 
